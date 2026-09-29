@@ -1168,6 +1168,112 @@ async fn route_failover_drops_previous_provider_reasoning() {
     .await;
 }
 
+/// Wait until the session's inference wait carries a reason containing both
+/// fragments, then return the wait.
+async fn wait_for_wait_reason(
+    f: &Fixture,
+    id: SessionId,
+    first: &str,
+    second: &str,
+) -> swarmy_store::InferenceWait {
+    timeout(WAIT, async {
+        loop {
+            if let Some(wait) = f.store.inference_wait(id).await.unwrap()
+                && wait
+                    .reasons
+                    .iter()
+                    .any(|reason| reason.contains(first) && reason.contains(second))
+            {
+                return wait;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+/// Extract one `name=value` field from a claimed-step log line.
+fn log_field(line: &str, name: &str) -> String {
+    line.split_whitespace()
+        .find_map(|word| word.strip_prefix(name))
+        .unwrap()
+        .to_owned()
+}
+
+/// Check one old-session event for the expected summary request shape,
+/// recording which summary kind was seen.
+async fn check_summary_request(
+    f: &Fixture,
+    event: &Event,
+    found_prefix: &mut bool,
+    found_history: &mut bool,
+) {
+    if let Event::InferenceRequested { request_id, .. } = event {
+        let job: swarmy_llm::InferenceJob = f
+            .store
+            .get_inference_input(*request_id)
+            .await
+            .unwrap()
+            .unwrap();
+        if !job.summary {
+            return;
+        }
+        let Part::Text { text } = &job.request.messages[0].parts[0] else {
+            panic!("summary prompt missing")
+        };
+        if job.summary_prefix {
+            *found_prefix = true;
+            assert!(job.request.settings.max_output_tokens.unwrap() <= 8192);
+            assert!(text.starts_with("# Conversation\n"));
+            assert!(text.contains(swarmy_harness::TURN_PREFIX_SUMMARIZATION_PROMPT));
+        } else {
+            *found_history = true;
+            assert!(text.contains("Previous task"));
+            assert!(!text.contains("What time is it?"));
+        }
+    }
+}
+
+/// Wait until attempt one is durable: the session waits for inference or
+/// the request event is already in the log.
+async fn wait_for_durable_request(f: &Fixture, id: SessionId) {
+    timeout(WAIT, async {
+        loop {
+            let session = f.store.fetch_session(id).await.unwrap().unwrap();
+            if session.state == SessionState::WaitingInference {
+                break;
+            }
+            if f.store
+                .read_events(id, 0, 64)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, Event::InferenceRequested { .. }))
+            {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// Wait until the session's route step advances to the expected step.
+async fn wait_for_route_step(f: &Fixture, id: SessionId, step: u32) {
+    timeout(WAIT, async {
+        loop {
+            if f.store.fetch_session(id).await.unwrap().unwrap().route_step == step {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn all_entries_open_parks_until_earliest_retry() {
     run(|f| {
@@ -1201,27 +1307,7 @@ async fn all_entries_open_parks_until_earliest_retry() {
             // Both entries are open, so the session parks instead of calling.
             // The first park may blame a missing advertisement before the
             // gateway is ready; wait for the entry-named breaker reason.
-            timeout(WAIT, async {
-                loop {
-                    if f.store
-                        .inference_wait(id)
-                        .await
-                        .unwrap()
-                        .is_some_and(|wait| {
-                            wait.reasons.iter().any(|reason| {
-                                reason.contains("openai/primary")
-                                    && reason.contains("quota reached")
-                            })
-                        })
-                    {
-                        break;
-                    }
-                    sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .unwrap();
-            let wait = f.store.inference_wait(id).await.unwrap().unwrap();
+            let wait = wait_for_wait_reason(&f, id, "openai/primary", "quota reached").await;
             assert!(
                 wait.reasons
                     .iter()
@@ -1522,15 +1608,9 @@ async fn competing_workers_claim_each_step_once() {
                     std::fs::read_to_string(f.files.path().join(format!("service-{index}.log")))
                         .unwrap();
                 for line in log.lines().filter(|line| line.contains("claimed step")) {
-                    let field = |name: &str| {
-                        line.split_whitespace()
-                            .find_map(|word| word.strip_prefix(name))
-                            .unwrap()
-                            .to_owned()
-                    };
-                    let key = (field("session_id="), field("step="));
+                    let key = (log_field(line, "session_id="), log_field(line, "step="));
                     assert!(claims.insert(key), "step claimed by both workers: {line}");
-                    owners.insert(field("owner="));
+                    owners.insert(log_field(line, "owner="));
                 }
             }
             // The gateway commits terminal responses and idle together, so
@@ -2528,22 +2608,7 @@ async fn split_turn_prefix_summary_keeps_later_tool_rounds() {
         let mut found_prefix = false;
         let mut found_history = false;
         for event in &old {
-            if let Event::InferenceRequested { request_id, .. } = event {
-                let job: swarmy_llm::InferenceJob = f.store.get_inference_input(*request_id).await.unwrap().unwrap();
-                if job.summary {
-                    let Part::Text { text } = &job.request.messages[0].parts[0] else { panic!("summary prompt missing") };
-                    if job.summary_prefix {
-                        found_prefix = true;
-                        assert!(job.request.settings.max_output_tokens.unwrap() <= 8192);
-                        assert!(text.starts_with("# Conversation\n"));
-                        assert!(text.contains(swarmy_harness::TURN_PREFIX_SUMMARIZATION_PROMPT));
-                    } else {
-                        found_history = true;
-                        assert!(text.contains("Previous task"));
-                        assert!(!text.contains("What time is it?"));
-                    }
-                }
-            }
+            check_summary_request(&f, event, &mut found_prefix, &mut found_history).await;
         }
         assert!(summary_id.is_some() && found_history && found_prefix);
         let events = read_all_events(f, successor).await;
@@ -2720,41 +2785,13 @@ async fn failover_survives_worker_restart_without_second_advance() {
             // replacement starts: the kill fires synchronously after the
             // submit, so a durable request means the death already
             // happened, with a short grace for the event publish.
-            timeout(WAIT, async {
-                loop {
-                    let session = f.store.fetch_session(id).await.unwrap().unwrap();
-                    if session.state == SessionState::WaitingInference {
-                        break;
-                    }
-                    if f.store
-                        .read_events(id, 0, 64)
-                        .await
-                        .unwrap()
-                        .iter()
-                        .any(|event| matches!(event, Event::InferenceRequested { .. }))
-                    {
-                        break;
-                    }
-                    sleep(Duration::from_millis(25)).await;
-                }
-            })
-            .await
-            .unwrap();
+            wait_for_durable_request(&f, id).await;
             sleep(Duration::from_secs(3)).await;
             // The second worker recovers attempt one, records the 429 as a
             // failover to the second step, and dies with the step lease
             // still held, before it can submit attempt two.
             f.start("swarmy-worker", Some("after_advance"));
-            timeout(WAIT, async {
-                loop {
-                    if f.store.fetch_session(id).await.unwrap().unwrap().route_step == 1 {
-                        break;
-                    }
-                    sleep(Duration::from_millis(25)).await;
-                }
-            })
-            .await
-            .unwrap();
+            wait_for_route_step(&f, id, 1).await;
             // The replacement resumes after the failover: the handled
             // failure advances nothing again and parks nothing behind the
             // in-flight successor, so the turn completes on the second

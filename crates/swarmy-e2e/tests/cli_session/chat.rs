@@ -1029,28 +1029,50 @@ async fn root_chat_default_image_executes_pwd() {
         let session = fixture.store.fetch_session(id).await.unwrap().unwrap();
         assert!(fixture.store.get_by_agent(session.agent_id).await.unwrap().is_none());
         terminal.type_text("Run pwd\r");
-        timeout(Duration::from_secs(120), async {
-            loop {
-                let events = fixture.store.read_events(id, 0, 64).await.unwrap();
-                if let Some(result) = events.iter().find_map(|event| match event {
-                    Event::ToolCallCompleted { result, .. } => Some(result),
-                    _ => None,
-                }) {
-                    let ToolResult::Completed { output, .. } = result else { panic!("pwd failed: {result:?}"); };
-                    let result: swarmy_core::BashResult = serde_json::from_str(output).unwrap();
-                    assert_eq!(result.exit_code, 0);
-                    assert!(result.stdout.trim().starts_with('/'), "pwd output: {}", result.stdout);
-                    assert!(!result.timed_out);
-                    break;
-                }
-                sleep(Duration::from_millis(100)).await;
-            }
-        }).await.unwrap_or_else(|_| panic!("pwd did not finish: {}", std::fs::read_to_string(services.files.path().join("node.log")).unwrap()));
+        wait_for_pwd(&fixture, id, &services).await;
         assert!(fixture.store.get_by_agent(session.agent_id).await.unwrap().is_some());
         assert!(fixture.store.get_volume(swarmy_core::VolumeId::from_ulid(session.agent_id.as_ulid())).await.unwrap().is_some());
         terminal.type_text("\x1b");
         terminal.exit(true).await;
     }).await;
+}
+
+/// Wait for the pwd tool call to complete and check its output names a path.
+async fn wait_for_pwd(fixture: &Fixture, id: SessionId, services: &Services) {
+    timeout(Duration::from_secs(120), async {
+        loop {
+            let events = fixture.store.read_events(id, 0, 64).await.unwrap();
+            if let Some(result) = events.iter().find_map(|event| match event {
+                Event::ToolCallCompleted { result, .. } => Some(result),
+                _ => None,
+            }) {
+                check_pwd_output(result);
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "pwd did not finish: {}",
+            std::fs::read_to_string(services.files.path().join("node.log")).unwrap()
+        )
+    });
+}
+
+fn check_pwd_output(result: &ToolResult) {
+    let ToolResult::Completed { output, .. } = result else {
+        panic!("pwd failed: {result:?}")
+    };
+    let result: swarmy_core::BashResult = serde_json::from_str(output).unwrap();
+    assert_eq!(result.exit_code, 0);
+    assert!(
+        result.stdout.trim().starts_with('/'),
+        "pwd output: {}",
+        result.stdout
+    );
+    assert!(!result.timed_out);
 }
 
 async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Services, Node) {
