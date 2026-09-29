@@ -4,7 +4,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use swarmy_core::{AgentId, ExecOutput, ExecRequest, NodeId, Sandbox};
 use swarmy_store::{Store, blob::MemoryBlobStore};
-use swarmyd::{ErrorContext as _, Result, node_bail as bail, node_ensure as ensure};
+use swarmyd::{Error, Result};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
@@ -20,9 +20,7 @@ async fn process_list_with_timeout(
     epoch: u64,
     frame_timeout: Duration,
 ) -> Result<bool> {
-    let mut stream = UnixStream::connect(socket)
-        .await
-        .context("connect running swarmyd control socket")?;
+    let mut stream = UnixStream::connect(socket).await?;
     let request = swarmyd::Request::Exec {
         sandbox: Sandbox { agent_id: agent },
         request: ExecRequest {
@@ -52,24 +50,23 @@ async fn process_list_with_timeout(
                 Ok(read) => read?,
                 Err(_) => return Ok(true), // A foreground command can hold the exec lock.
             };
-        ensure!(
-            read > 0,
-            "swarmyd closed the process listing before returning a result"
-        );
+        if read == 0 {
+            return Err(Error::other(
+                "swarmyd closed the process listing before returning a result",
+            ));
+        }
         match serde_json::from_slice::<swarmyd::Response>(&line)? {
             swarmyd::Response::Output(ExecOutput::Stdout(bytes)) => {
                 output.extend(bytes);
-                ensure!(
-                    output.len() <= 5 * 1024 * 1024,
-                    "process listing exceeded 5 MiB"
-                );
+                if output.len() > 5 * 1024 * 1024 {
+                    return Err(Error::other("process listing exceeded 5 MiB"));
+                }
             }
             swarmyd::Response::Output(ExecOutput::Stderr(_)) => {}
             swarmyd::Response::Exited(exit) => {
-                ensure!(
-                    exit.exit_code == 0 && !exit.timed_out,
-                    "process listing failed for {agent}"
-                );
+                if exit.exit_code != 0 || exit.timed_out {
+                    return Err(Error::other(format!("process listing failed for {agent}")));
+                }
                 let records: Vec<serde_json::Value> = serde_json::from_slice(&output)?;
                 return Ok(records.iter().any(|record| record["status"] == "running"));
             }
@@ -80,9 +77,15 @@ async fn process_list_with_timeout(
                 return Ok(false);
             }
             swarmyd::Response::Error(message) => {
-                bail!("process listing failed for {agent}: {message}")
+                return Err(Error::other(format!(
+                    "process listing failed for {agent}: {message}"
+                )));
             }
-            other => bail!("unexpected node process listing response: {other:?}"),
+            other => {
+                return Err(Error::other(format!(
+                    "unexpected node process listing response: {other:?}"
+                )));
+            }
         }
     }
 }

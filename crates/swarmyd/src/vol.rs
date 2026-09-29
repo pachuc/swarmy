@@ -2,7 +2,7 @@ use crate::vol_command::Command;
 use std::{fmt::Write, sync::Arc};
 use swarmy_core::{ImageTag, VolumeId};
 use swarmy_store::{MAX_SCAN_LIMIT, Store};
-use swarmyd::{ErrorContext as _, Result};
+use swarmyd::{Error, Result};
 
 /// Developer volume tools, served from the node daemon: attach and snapshot
 /// need local devices and the store, neither of which the client links.
@@ -50,7 +50,10 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         Command::Snapshot { volume } => {
             let id = VolumeId::from_ulid(volume);
             let store = store().await?;
-            let record = store.get_volume(id).await?.context("volume not found")?;
+            let record = store
+                .get_volume(id)
+                .await?
+                .ok_or_else(|| Error::other("volume not found"))?;
             if record
                 .writer_lease
                 .as_ref()
@@ -76,13 +79,21 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
 async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
     match command {
         Command::Create { image } => {
-            let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
-            swarmy_volume::image::validate_label(name)?;
-            swarmy_volume::image::validate_label(tag)?;
+            let (name, tag) = image
+                .split_once(':')
+                .ok_or_else(|| Error::other("expected NAME:TAG"))?;
+            // validate_label only rejects malformed labels, so a boolean keeps
+            // the vol command free of the image error type.
+            if swarmy_volume::image::validate_label(name).is_err() {
+                return Err(Error::other(format!("invalid image name: {name}")));
+            }
+            if swarmy_volume::image::validate_label(tag).is_err() {
+                return Err(Error::other(format!("invalid image tag: {tag}")));
+            }
             let manifest = store
                 .get_image(name, &ImageTag(tag.into()))
                 .await?
-                .context("image not found")?;
+                .ok_or_else(|| Error::other("image not found"))?;
             let id = VolumeId::from_ulid(ulid::Ulid::generate());
             store.create_volume(id, manifest).await?;
             output(
@@ -119,7 +130,10 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
         }
         Command::Show { volume } => {
             let id = VolumeId::from_ulid(volume);
-            let record = store.get_volume(id).await?.context("volume not found")?;
+            let record = store
+                .get_volume(id)
+                .await?
+                .ok_or_else(|| Error::other("volume not found"))?;
 
             let mut chain = Vec::new();
             let mut text = format!(
@@ -132,7 +146,7 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
                 let header = store
                     .get_manifest(manifest)
                     .await?
-                    .context("manifest missing")?;
+                    .ok_or_else(|| Error::other("manifest missing"))?;
                 write!(
                     text,
                     "\n{manifest} size={} root_hash={}",

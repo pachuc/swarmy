@@ -293,9 +293,7 @@ async fn inventory(
     let client = swarmy_client::Client::new(&endpoint, settings.api.token.clone())?;
     let snapshot = tokio::time::timeout(Duration::from_secs(10), client.doctor())
         .await
-        .map_err(|_| {
-            crate::Error::other(format!("API at {endpoint}: request timed out"))
-        })??;
+        .map_err(|_| crate::Error::other(format!("API at {endpoint}: request timed out")))??;
     let mut images = Vec::new();
     let mut after = None;
     loop {
@@ -304,9 +302,7 @@ async fn inventory(
             client.images(after.as_deref(), 256),
         )
         .await
-        .map_err(|_| {
-            crate::Error::other(format!("API at {endpoint}: request timed out"))
-        })??;
+        .map_err(|_| crate::Error::other(format!("API at {endpoint}: request timed out")))??;
         if page.is_empty() {
             break;
         }

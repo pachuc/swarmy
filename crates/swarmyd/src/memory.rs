@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 use swarmy_core::{ManifestId, MemoryRequest, NodeId, Sandbox, VolumeId};
 use swarmy_sandbox::{ExecRequest, RuncRuntime};
 use swarmy_store::Store;
-use swarmyd::{ErrorContext as _, Result, node_ensure as ensure};
+use swarmyd::{Error, Result};
 use tokio::sync::Mutex;
 
 type CacheKey = (swarmy_core::AgentId, u64, ManifestId, u64, String, usize);
@@ -51,17 +51,15 @@ impl Memory {
     }
 
     async fn check(&self, request: &MemoryRequest) -> Result<()> {
-        let placement = self
-            .store
-            .get_by_agent(request.agent_id)
-            .await?
-            .context("computer is not placed")?;
-        ensure!(
-            placement.node_id == self.node
-                && placement.epoch == request.epoch
-                && placement.expires_at > jiff::Timestamp::now(),
-            "memory placement expired or changed"
-        );
+        let Some(placement) = self.store.get_by_agent(request.agent_id).await? else {
+            return Err(Error::other("computer is not placed"));
+        };
+        if placement.node_id != self.node
+            || placement.epoch != request.epoch
+            || placement.expires_at <= jiff::Timestamp::now()
+        {
+            return Err(Error::other("memory placement expired or changed"));
+        }
         Ok(())
     }
 
@@ -89,10 +87,9 @@ impl Memory {
             },
         )
         .await?;
-        ensure!(
-            exit.exit_code == 0 && !exit.timed_out,
-            "instruction read failed: {error}"
-        );
+        if exit.exit_code != 0 || exit.timed_out {
+            return Err(Error::other(format!("instruction read failed: {error}")));
+        }
         self.check(&request).await?;
         Ok(text)
     }
@@ -143,10 +140,9 @@ impl Memory {
             },
         )
         .await?;
-        ensure!(
-            exit.exit_code == 0 && !exit.timed_out,
-            "memory read failed: {error}"
-        );
+        if exit.exit_code != 0 || exit.timed_out {
+            return Err(Error::other(format!("memory read failed: {error}")));
+        }
         self.check(&request).await?;
         // Do not cache an observation that overlapped a write or rebuild.
         if fingerprint

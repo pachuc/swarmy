@@ -215,10 +215,12 @@ impl Ssh {
         path.to_str()
             .ok_or_else(|| crate::Error::other("image recipe path must be UTF-8"))?;
         let relative = path.strip_prefix(&self.repo)?;
-        if relative.components().any(|part| matches!(
-            part.as_os_str().to_str(),
-            Some("target" | ".dev" | ".swarmy" | ".git")
-        )) {
+        if relative.components().any(|part| {
+            matches!(
+                part.as_os_str().to_str(),
+                Some("target" | ".dev" | ".swarmy" | ".git")
+            )
+        }) {
             return Err(crate::Error::other(
                 "image recipe is excluded from the copied checkout",
             ));

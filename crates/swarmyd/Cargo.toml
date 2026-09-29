@@ -24,7 +24,6 @@ swarmy-store.workspace = true
 swarmy-api-types.workspace = true
 swarmy-volume.workspace = true
 swarmy-sandbox.workspace = true
-swarmy-image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

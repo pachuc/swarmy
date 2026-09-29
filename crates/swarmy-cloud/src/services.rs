@@ -205,10 +205,13 @@ async fn upload(node: &RemoteNode, address: &str, path: &str, bytes: &[u8]) -> R
     let Some(mut stdin) = child.stdin.take() else {
         return Err(crate::Error::other("SSH stdin missing"));
     };
-    stdin.write_all(bytes).await.map_err(|source| crate::Error::Ssh {
-        command: command.clone(),
-        source: Box::new(source),
-    })?;
+    stdin
+        .write_all(bytes)
+        .await
+        .map_err(|source| crate::Error::Ssh {
+            command: command.clone(),
+            source: Box::new(source),
+        })?;
     let status = child.wait().await.map_err(|source| crate::Error::Ssh {
         command: command.clone(),
         source: Box::new(source),

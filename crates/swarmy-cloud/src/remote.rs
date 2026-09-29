@@ -51,10 +51,7 @@ pub enum RunOutcome {
 ///
 /// Returns errors for invalid configuration, state, provisioning, and tunnel
 /// failures.
-pub async fn run(
-    command: Command,
-    json: bool,
-) -> std::result::Result<RunOutcome, crate::Error> {
+pub async fn run(command: Command, json: bool) -> std::result::Result<RunOutcome, crate::Error> {
     run_inner(command, json).await
 }
 

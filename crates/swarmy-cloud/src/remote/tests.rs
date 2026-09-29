@@ -111,9 +111,7 @@ impl Cloud for FakeCloud {
             return std::future::ready(Err(crate::Error::Aws {
                 operation: "ec2:RunInstances".into(),
                 code: Some("InvalidParameterValue".into()),
-                message: Some(
-                    "Invalid IAM Instance Profile name: fixture-profile".into(),
-                ),
+                message: Some("Invalid IAM Instance Profile name: fixture-profile".into()),
                 source: Box::new(std::io::Error::other(
                     "InvalidParameterValue: Invalid IAM Instance Profile name",
                 )),
@@ -1795,12 +1793,7 @@ async fn down_keeps_mixed_ownership_iam_pairs() {
         cloud.untagged_role.set(!untagged_profile);
         // A missing bucket must not make a partially owned IAM pair deletable.
         cloud.absent_bucket.set(true);
-        assert!(
-            down::plan(&cloud, &state, &node)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(down::plan(&cloud, &state, &node).await.unwrap().is_none());
         cloud.observations.borrow_mut().push_back(None);
         down::run(&cloud, &state, &node, Duration::ZERO, false)
             .await
@@ -1904,8 +1897,8 @@ async fn tag_requires_exact_resource_names_and_calls_cloud_only_after_all_confir
         down::tag_with_confirmation(&cloud, &state, &node, |_, _| {
             Err(crate::Error::other("no"))
         })
-            .await
-            .is_err()
+        .await
+        .is_err()
     );
     assert_eq!(cloud.tagged.borrow().len(), 2);
 }
@@ -2072,12 +2065,7 @@ async fn up_continues_when_creation_tags_are_denied_and_down_keeps_untagged_reso
     .await
     .unwrap();
     let node = state.require("cleanup").unwrap();
-    assert!(
-        down::plan(&cloud, &state, &node)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(down::plan(&cloud, &state, &node).await.unwrap().is_none());
     cloud.observations.borrow_mut().push_back(None);
     down::run(&cloud, &state, &node, Duration::ZERO, false)
         .await

@@ -323,5 +323,7 @@ async fn wait_terminated(cloud: &impl Cloud, id: &str, delay: Duration) -> Resul
             Some(_) => tokio::time::sleep(delay).await,
         }
     }
-    return Err(crate::Error::other(format!("timed out waiting for {id} to terminate")))
+    return Err(crate::Error::other(format!(
+        "timed out waiting for {id} to terminate"
+    )));
 }

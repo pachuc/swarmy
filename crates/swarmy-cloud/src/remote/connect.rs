@@ -74,9 +74,10 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
         published: false,
     };
     let mut profile = profile;
-    profile.pid = tunnel.child.id().ok_or_else(|| {
-        crate::Error::other("SSH exited before recording pid")
-    })?;
+    profile.pid = tunnel
+        .child
+        .id()
+        .ok_or_else(|| crate::Error::other("SSH exited before recording pid"))?;
     let result = timeout(Duration::from_secs(15), async {
         loop {
             if let Some(exit) = tunnel.child.try_wait()? {

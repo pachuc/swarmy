@@ -7,7 +7,7 @@ mod vol;
 mod vol_command;
 mod vol_server;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context as _, Result, ensure};
 use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
 use swarmy_core::NodeRecord;
 use swarmy_sandbox::{RuncRuntime, ScratchPolicy};
@@ -35,16 +35,21 @@ fn main() -> Result<()> {
     if vol_command {
         let _network = swarmy_store::boot();
         let runtime = tokio::runtime::Runtime::new()?;
-        return Ok(runtime.block_on(vol::run_cli())?);
+        return Ok(runtime
+            .block_on(vol::run_cli())
+            .context("swarmyd vol failed")?);
     }
     let _network = swarmy_store::boot();
     let runtime = tokio::runtime::Runtime::new()?;
     if upgrade_processes {
-        let busy = runtime.block_on(upgrade::run(&loaded, |line| eprintln!("{line}")))?;
+        let busy = runtime
+            .block_on(upgrade::run(&loaded, |line| eprintln!("{line}")))
+            .context("swarmyd upgrade check failed")?;
         println!("{}", serde_json::to_string(&busy)?);
         Ok(())
     } else {
-        runtime.block_on(run(loaded))
+        runtime.block_on(run(loaded)).context("swarmyd failed")?;
+        Ok(())
     }
 }
 

@@ -126,8 +126,8 @@ impl Aws {
             }
             for policy in policies.attached_policies() {
                 let Some(arn) = policy.policy_arn() else {
-                return Err(crate::Error::other("attached policy has no ARN"));
-            };
+                    return Err(crate::Error::other("attached policy has no ARN"));
+                };
                 {
                     self.iam
                         .detach_role_policy()
@@ -582,11 +582,7 @@ impl Cloud for Aws {
             Duration::from_secs(2),
         )
         .await?;
-        let Some(id) = output
-            .instances()
-            .first()
-            .and_then(|i| i.instance_id())
-        else {
+        let Some(id) = output.instances().first().and_then(|i| i.instance_id()) else {
             return Err(crate::Error::other("EC2 returned no instance id"));
         };
         Ok(id.into())
