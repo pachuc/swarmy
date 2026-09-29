@@ -176,7 +176,14 @@
         },
         "responses": {
           "200": {
-            "description": "Deletion marker"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDeleted"
+                }
+              }
+            }
           }
         }
       },
@@ -290,540 +297,6 @@
         }
       }
     },
-    "/v1/cli/agents": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_agents",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/CliAgent"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_create_agent",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CliAgentChoice"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliAgent"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/agents/{name}": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_agent",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliAgent"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/agents/{name}/settings": {
-      "patch": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_update_agent",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CliAgentChoice"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliAgent"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/credentials": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_credentials",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/CliCredential"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_set_credential",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CliCredentialInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliSaved"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/credentials/{provider}": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_credential",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliCredential"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/doctor": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_doctor",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DoctorSnapshot"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/images/{name}/{tag}": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_image",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliImage"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/routes": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_routes",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/CliRoute"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_set_route",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CliRouteInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliSaved"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/routes/{name}": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_route",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliRoute"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_remove_route",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliRouteDeleted"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/sessions": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_sessions",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/CliSession"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/sessions/{id}": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_session",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliSessionDetail"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/sessions/{id}/route": {
-      "patch": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_set_session_route",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetSessionRoute"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliSessionDetail"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/credentials": {
       "get": {
         "tags": [
@@ -866,6 +339,46 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/CreateCredential"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credential"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/credentials/records": {
+      "post": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "put_credential_record",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutCredentialRecord"
               }
             }
           },
@@ -963,7 +476,14 @@
         },
         "responses": {
           "200": {
-            "description": "Deletion marker"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDeleted"
+                }
+              }
+            }
           }
         }
       }
@@ -1203,6 +723,36 @@
         "responses": {
           "200": {
             "description": "Rendered API reference for this server version"
+          }
+        }
+      }
+    },
+    "/v1/doctor": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "doctor",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DoctorSnapshot"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           }
         }
       }
@@ -2681,9 +2231,20 @@
           "name",
           "description",
           "image",
-          "created_at"
+          "created_at",
+          "requirements"
         ],
         "properties": {
+          "call_status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AgentCallView"
+              }
+            ]
+          },
           "created_at": {
             "type": "string"
           },
@@ -2700,11 +2261,30 @@
               }
             ]
           },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EntryUsageView"
+            }
+          },
           "id": {
             "type": "string"
           },
           "image": {
             "$ref": "#/components/schemas/ImageRef"
+          },
+          "last_snapshot_age_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "last_snapshot_at": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "main_session_id": {
             "type": [
@@ -2721,11 +2301,36 @@
           "name": {
             "type": "string"
           },
+          "node_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "placement": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlacementView"
+              }
+            ]
+          },
           "provider": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "requirements": {
+            "$ref": "#/components/schemas/SandboxRequirements"
           },
           "route": {
             "type": [
@@ -2733,11 +2338,109 @@
               "null"
             ]
           },
+          "sandbox_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sandbox_state": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SandboxState"
+              }
+            ]
+          },
+          "scratch": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ScratchView"
+              }
+            ]
+          },
+          "session_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Session"
+            }
+          },
           "system_prompt": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "usage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UsageTotalsView"
+              }
+            ]
+          }
+        }
+      },
+      "AgentCallView": {
+        "type": "object",
+        "required": [
+          "node_id",
+          "epoch",
+          "queued_calls",
+          "observed_at",
+          "expires_at"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "holder_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "queued_calls": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AgentDeleted": {
+        "type": "object",
+        "description": "Deleting an agent reports whether the intent completed.",
+        "required": [
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean"
           }
         }
       },
@@ -2824,6 +2527,15 @@
           }
         }
       },
+      "AgentReset": {
+        "type": "string",
+        "enum": [
+          "provider",
+          "model",
+          "effort",
+          "route"
+        ]
+      },
       "ApiError": {
         "type": "object",
         "description": "`provider_text` preserves the original provider error without rewriting it.",
@@ -2886,360 +2598,6 @@
           "turn_id": {
             "type": "string"
           }
-        }
-      },
-      "CliAgent": {
-        "type": "object",
-        "required": [
-          "agent_id",
-          "name"
-        ],
-        "properties": {
-          "agent_id": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          }
-        },
-        "additionalProperties": {}
-      },
-      "CliAgentChoice": {
-        "type": "object",
-        "description": "Input for CLI agent creation or settings updates.",
-        "required": [
-          "idempotency_key"
-        ],
-        "properties": {
-          "clear_github_token": {
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
-          "description": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "effort": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "github_token": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "gpu": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "idempotency_key": {
-            "type": "string"
-          },
-          "image": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "memory": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "minimum": 0
-          },
-          "model": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "provider": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "resets": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            }
-          },
-          "route": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "system_prompt": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        }
-      },
-      "CliCredential": {
-        "type": "object",
-        "required": [
-          "provider",
-          "kind",
-          "label",
-          "status",
-          "updated_at"
-        ],
-        "properties": {
-          "created_at": {
-            "type": "string"
-          },
-          "expires_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "kind": {
-            "type": "string"
-          },
-          "label": {
-            "type": "string"
-          },
-          "last_used_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "provider": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          },
-          "updated_at": {
-            "type": "string"
-          }
-        }
-      },
-      "CliCredentialInput": {
-        "type": "object",
-        "required": [
-          "idempotency_key",
-          "provider",
-          "record"
-        ],
-        "properties": {
-          "idempotency_key": {
-            "type": "string"
-          },
-          "label": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "provider": {
-            "type": "string"
-          },
-          "record": {
-            "description": "Encrypted by the API, never returned by credential endpoints."
-          }
-        }
-      },
-      "CliImage": {
-        "type": "object",
-        "required": [
-          "name",
-          "tag",
-          "manifest_id",
-          "header",
-          "scratch"
-        ],
-        "properties": {
-          "header": {},
-          "manifest_id": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "scratch": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "tag": {
-            "type": "string"
-          }
-        }
-      },
-      "CliRoute": {
-        "type": "object",
-        "description": "CLI projection of a named inference route.",
-        "required": [
-          "name",
-          "steps",
-          "updated_at"
-        ],
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "steps": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/RouteStep"
-            }
-          },
-          "updated_at": {
-            "type": "string"
-          }
-        }
-      },
-      "CliRouteDeleted": {
-        "type": "object",
-        "description": "CLI deletion marker for a named route.",
-        "required": [
-          "deleted"
-        ],
-        "properties": {
-          "deleted": {
-            "type": "boolean"
-          }
-        }
-      },
-      "CliRouteInput": {
-        "type": "object",
-        "description": "CLI input for replacing a route's steps in order.",
-        "required": [
-          "idempotency_key",
-          "name",
-          "steps"
-        ],
-        "properties": {
-          "idempotency_key": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "steps": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/RouteStep"
-            }
-          }
-        }
-      },
-      "CliSaved": {
-        "type": "object",
-        "required": [
-          "saved"
-        ],
-        "properties": {
-          "saved": {
-            "type": "boolean"
-          }
-        }
-      },
-      "CliSession": {
-        "type": "object",
-        "description": "CLI projections retain store record fields for compatibility with existing scripts.",
-        "required": [
-          "session_id",
-          "resolved_inference",
-          "archived",
-          "main"
-        ],
-        "properties": {
-          "agent_name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "archived": {
-            "type": "boolean"
-          },
-          "main": {
-            "type": "boolean"
-          },
-          "resolved_inference": {},
-          "session_id": {
-            "type": "string"
-          }
-        },
-        "additionalProperties": {}
-      },
-      "CliSessionDetail": {
-        "type": "object",
-        "required": [
-          "session",
-          "resolved",
-          "usage",
-          "cost_dollars",
-          "scratch",
-          "requirements",
-          "placement",
-          "wait",
-          "events"
-        ],
-        "properties": {
-          "address": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "cost_dollars": {
-            "type": "string"
-          },
-          "entries": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/EntryUsageView"
-            },
-            "description": "Per-entry shares of the session totals, costliest first, read from\nthe session-entry rollups rather than completion records."
-          },
-          "events": {
-            "type": "array",
-            "items": {}
-          },
-          "placement": {},
-          "providers": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Providers involved in the session, derived from the entry names."
-          },
-          "requirements": {},
-          "resolved": {},
-          "scratch": {},
-          "session": {},
-          "usage": {},
-          "wait": {}
         }
       },
       "CloseSession": {
@@ -3356,11 +2714,35 @@
               }
             ]
           },
+          "github_token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gpu": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GpuMode"
+              }
+            ]
+          },
           "idempotency_key": {
             "type": "string"
           },
           "image": {
             "$ref": "#/components/schemas/ImageRef"
+          },
+          "memory_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
           },
           "model": {
             "type": [
@@ -3402,6 +2784,15 @@
           "secret"
         ],
         "properties": {
+          "extra": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "idempotency_key": {
             "type": "string"
           },
@@ -3550,6 +2941,12 @@
           "created_at": {
             "type": "string"
           },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "kind": {
             "$ref": "#/components/schemas/CredentialKind"
           },
@@ -3697,7 +3094,7 @@
             }
           },
           "role": {
-            "type": "string"
+            "$ref": "#/components/schemas/ServiceRole"
           },
           "version": {
             "type": "string"
@@ -3923,58 +3320,6 @@
               "data": {
                 "type": "object",
                 "required": [
-                  "turn"
-                ],
-                "properties": {
-                  "turn": {
-                    "$ref": "#/components/schemas/Turn"
-                  }
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "turn_started"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "turn"
-                ],
-                "properties": {
-                  "turn": {
-                    "$ref": "#/components/schemas/Turn"
-                  }
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "turn_finished"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
                   "turn_id",
                   "call_id",
                   "name",
@@ -4043,36 +3388,6 @@
               "data": {
                 "type": "object",
                 "required": [
-                  "turn_id",
-                  "error"
-                ],
-                "properties": {
-                  "error": {
-                    "$ref": "#/components/schemas/ApiError"
-                  },
-                  "turn_id": {
-                    "type": "string"
-                  }
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "inference_error"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
                   "session_id"
                 ],
                 "properties": {
@@ -4121,58 +3436,6 @@
                 "type": "string",
                 "enum": [
                   "token_delta"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "health"
-                ],
-                "properties": {
-                  "health": {
-                    "$ref": "#/components/schemas/ServiceHealth"
-                  }
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "service_status_changed"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "node"
-                ],
-                "properties": {
-                  "node": {
-                    "$ref": "#/components/schemas/Node"
-                  }
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "node_status_changed"
                 ]
               }
             }
@@ -4277,6 +3540,14 @@
           }
         }
       },
+      "GpuMode": {
+        "type": "string",
+        "enum": [
+          "none",
+          "shared",
+          "dedicated"
+        ]
+      },
       "HealthResponse": {
         "type": "object",
         "description": "The unauthenticated health projection. `api_version` carries the document\nversion so clients can accept any server with the same major version.",
@@ -4318,19 +3589,61 @@
       "Image": {
         "type": "object",
         "required": [
-          "id",
+          "manifest_id",
           "name",
           "tag"
         ],
         "properties": {
-          "id": {
+          "header": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ImageHeader"
+              }
+            ]
+          },
+          "manifest_id": {
             "type": "string"
           },
           "name": {
             "type": "string"
           },
+          "scratch": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "tag": {
             "type": "string"
+          }
+        }
+      },
+      "ImageHeader": {
+        "type": "object",
+        "required": [
+          "size",
+          "chunk_size",
+          "root_hash"
+        ],
+        "properties": {
+          "chunk_size": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "root_hash": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -4351,7 +3664,7 @@
       },
       "ImageUpload": {
         "type": "object",
-        "description": "A published image with its chunk statistics.",
+        "description": "A published image with its chunk statistics. The header shares the\n`ImageHeader` shape with `image show`, so the root hash reads the same\nhex string in both responses.",
         "required": [
           "name",
           "tag",
@@ -4378,7 +3691,9 @@
             "format": "int64",
             "minimum": 0
           },
-          "header": {},
+          "header": {
+            "$ref": "#/components/schemas/ImageHeader"
+          },
           "manifest_id": {
             "type": "string"
           },
@@ -4635,23 +3950,102 @@
         "type": "object",
         "required": [
           "id",
-          "provider_id",
-          "context_window"
+          "provider",
+          "context_window",
+          "key",
+          "name",
+          "limit",
+          "cost",
+          "supported_efforts",
+          "effective_api",
+          "effective_base_url",
+          "compat"
         ],
         "properties": {
+          "compat": {
+            "type": "object",
+            "description": "Provider quirk flags from the catalog; readers ignore unknown keys.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "context_window": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
           },
+          "cost": {
+            "$ref": "#/components/schemas/ModelCost"
+          },
+          "effective_api": {
+            "$ref": "#/components/schemas/ProviderApi",
+            "description": "Wire protocol the model answers on: its own override or the provider default."
+          },
+          "effective_base_url": {
+            "type": "string",
+            "description": "Base URL the model answers on: its own override or the provider default."
+          },
           "id": {
             "type": "string"
           },
-          "provider_id": {
+          "key": {
             "type": "string"
+          },
+          "limit": {
+            "$ref": "#/components/schemas/ModelLimit"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "supported_efforts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReasoningEffort"
+            }
           }
-        },
-        "additionalProperties": {}
+        }
+      },
+      "ModelCost": {
+        "type": "object",
+        "required": [
+          "input",
+          "output"
+        ],
+        "properties": {
+          "input": {
+            "type": "number",
+            "format": "double"
+          },
+          "output": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "ModelLimit": {
+        "type": "object",
+        "required": [
+          "context"
+        ],
+        "properties": {
+          "context": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "output": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
       },
       "Node": {
         "type": "object",
@@ -4720,6 +4114,23 @@
           "sandbox",
           "volume"
         ]
+      },
+      "PlacementView": {
+        "type": "object",
+        "required": [
+          "node_id",
+          "epoch"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "node_id": {
+            "type": "string"
+          }
+        }
       },
       "ProbeModel": {
         "type": "object",
@@ -4794,20 +4205,76 @@
         "required": [
           "id",
           "name",
-          "status"
+          "api",
+          "auth_kinds",
+          "env_keys",
+          "credential_env_keys"
         ],
         "properties": {
+          "api": {
+            "$ref": "#/components/schemas/ProviderApi"
+          },
+          "auth_kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "credential_env_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "env_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "id": {
             "type": "string"
           },
           "name": {
             "type": "string"
-          },
-          "status": {
-            "type": "string"
           }
-        },
-        "additionalProperties": {}
+        }
+      },
+      "ProviderApi": {
+        "type": "string",
+        "description": "Wire protocol a model answers on: its own override or the provider\ndefault. Variant names are the wire names, matching the catalog, so the\nJSON form is unchanged from the previous free-form string.",
+        "enum": [
+          "AnthropicMessages",
+          "OpenAiResponses",
+          "OpenAiCodexResponses",
+          "OpenAiCompletions",
+          "GoogleGenerativeAi",
+          "GoogleVertex",
+          "BedrockConverse",
+          "Fake"
+        ]
+      },
+      "PutCredentialRecord": {
+        "type": "object",
+        "description": "Import an OAuth or provider-specific credential without exposing its secret on reads.",
+        "required": [
+          "idempotency_key",
+          "provider",
+          "label",
+          "record"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "record": {}
+        }
       },
       "QuotaEntry": {
         "type": "object",
@@ -4844,6 +4311,25 @@
           "xhigh",
           "max"
         ]
+      },
+      "ResolvedInference": {
+        "type": "object",
+        "required": [
+          "provider",
+          "model",
+          "effort"
+        ],
+        "properties": {
+          "effort": {
+            "$ref": "#/components/schemas/ReasoningEffort"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          }
+        }
       },
       "Route": {
         "type": "object",
@@ -4902,6 +4388,48 @@
           }
         }
       },
+      "SandboxRequirements": {
+        "type": "object",
+        "required": [
+          "memory_mib",
+          "gpu"
+        ],
+        "properties": {
+          "gpu": {
+            "$ref": "#/components/schemas/GpuMode"
+          },
+          "memory_mib": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "SandboxState": {
+        "type": "string",
+        "enum": [
+          "busy",
+          "idle",
+          "unknown"
+        ]
+      },
+      "ScratchView": {
+        "type": "object",
+        "required": [
+          "node_id",
+          "bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "node_id": {
+            "type": "string"
+          }
+        }
+      },
       "ServiceHealth": {
         "type": "object",
         "required": [
@@ -4928,12 +4456,22 @@
             }
           },
           "role": {
-            "type": "string"
+            "$ref": "#/components/schemas/ServiceRole"
           },
           "version": {
             "type": "string"
           }
         }
+      },
+      "ServiceRole": {
+        "type": "string",
+        "enum": [
+          "scheduler",
+          "worker",
+          "gateway",
+          "api",
+          "node"
+        ]
       },
       "Session": {
         "type": "object",
@@ -4948,6 +4486,12 @@
         ],
         "properties": {
           "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agent_name": {
             "type": [
               "string",
               "null"
@@ -4969,6 +4513,12 @@
               }
             ]
           },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EntryUsageView"
+            }
+          },
           "head_sequence": {
             "type": "integer",
             "format": "int64",
@@ -4977,11 +4527,17 @@
           "id": {
             "type": "string"
           },
+          "interrupt_requested": {
+            "type": "boolean"
+          },
           "kind": {
             "$ref": "#/components/schemas/SessionKind"
           },
           "log_id": {
             "$ref": "#/components/schemas/LogId"
+          },
+          "main": {
+            "type": "boolean"
           },
           "model": {
             "type": [
@@ -4995,10 +4551,52 @@
               "null"
             ]
           },
+          "placement": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlacementView"
+              }
+            ]
+          },
+          "previous_session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "provider": {
             "type": [
               "string",
               "null"
+            ]
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "requirements": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SandboxRequirements"
+              }
+            ]
+          },
+          "resolved": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ResolvedInference"
+              }
             ]
           },
           "route": {
@@ -5007,8 +4605,40 @@
               "null"
             ]
           },
+          "sandbox_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scratch": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ScratchView"
+              }
+            ]
+          },
           "state": {
             "$ref": "#/components/schemas/SessionState"
+          },
+          "state_since": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UsageTotalsView"
+              }
+            ]
           },
           "waiting": {
             "oneOf": [
@@ -5391,6 +5021,9 @@
           "idempotency_key"
         ],
         "properties": {
+          "clear_github_token": {
+            "type": "boolean"
+          },
           "description": {
             "type": [
               "string",
@@ -5407,8 +5040,32 @@
               }
             ]
           },
+          "github_token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gpu": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GpuMode"
+              }
+            ]
+          },
           "idempotency_key": {
             "type": "string"
+          },
+          "memory_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
           },
           "model": {
             "type": [
@@ -5421,6 +5078,12 @@
               "string",
               "null"
             ]
+          },
+          "resets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentReset"
+            }
           },
           "route": {
             "type": [

@@ -1,3 +1,4 @@
+#![deny(unreachable_pub)]
 //! HTTP client for the versioned swarmy API. No control-plane service libraries are linked.
 pub mod api_client;
 use futures_util::{Stream, StreamExt};
@@ -117,7 +118,7 @@ impl Client {
     ///
     /// # Errors
     /// Returns an API, transport, or response decoding error.
-    pub async fn health(&self) -> Result<serde_json::Value, Error> {
+    pub async fn health(&self) -> Result<api::HealthResponse, Error> {
         self.get("health", &[]).await
     }
     /// Read live service, image, and credential health for doctor.
@@ -125,7 +126,7 @@ impl Client {
     /// # Errors
     /// Returns transport, API, or response decoding failures.
     pub async fn doctor(&self) -> Result<api::DoctorSnapshot, Error> {
-        self.get("cli/doctor", &[]).await
+        self.get("doctor", &[]).await
     }
     /// Calls the corresponding API route.
     ///
@@ -175,11 +176,13 @@ impl Client {
     ///
     /// # Errors
     /// Returns an API, transport, or response decoding error.
-    pub async fn delete_agent(&self, id: &str, key: &str) -> Result<serde_json::Value, Error> {
+    pub async fn delete_agent(&self, id: &str, key: &str) -> Result<api::AgentDeleted, Error> {
         self.send(
             Method::DELETE,
             &format!("agents/{}", segment(id)),
-            &serde_json::json!({"idempotency_key":key}),
+            &api::DeleteRequest {
+                idempotency_key: key.to_owned(),
+            },
         )
         .await
     }
@@ -473,19 +476,31 @@ impl Client {
     ) -> Result<api::Credential, Error> {
         self.send(Method::POST, "credentials", body).await
     }
-    /// Calls the corresponding API route.
+    /// Import a credential record, including OAuth refresh metadata.
     ///
     /// # Errors
-    /// Returns an API, transport, or response decoding error.
+    /// Returns transport, API, or decoding failures.
+    pub async fn put_credential_record(
+        &self,
+        body: &api::PutCredentialRecord,
+    ) -> Result<api::Credential, Error> {
+        self.send(Method::POST, "credentials/records", body).await
+    }
+    /// Delete a provider credential.
+    ///
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
     pub async fn remove_credential(
         &self,
         provider: &str,
         key: &str,
-    ) -> Result<serde_json::Value, Error> {
+    ) -> Result<api::CredentialDeleted, Error> {
         self.send(
             Method::DELETE,
             &format!("credentials/{}", segment(provider)),
-            &serde_json::json!({"idempotency_key":key}),
+            &api::DeleteRequest {
+                idempotency_key: key.to_owned(),
+            },
         )
         .await
     }
@@ -511,11 +526,13 @@ impl Client {
         provider: &str,
         label: &str,
         key: &str,
-    ) -> Result<serde_json::Value, Error> {
+    ) -> Result<api::CredentialDeleted, Error> {
         self.send(
             Method::DELETE,
             &format!("credentials/{}/{}", segment(provider), segment(label)),
-            &serde_json::json!({"idempotency_key":key}),
+            &api::DeleteRequest {
+                idempotency_key: key.to_owned(),
+            },
         )
         .await
     }
@@ -582,54 +599,10 @@ impl Client {
         }
         self.get("usage", &query).await
     }
-    /// Read a CLI compatibility projection without linking the store.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_sessions(
-        &self,
-        after: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<api::CliSession>, Error> {
-        self.get("cli/sessions", &page(after, limit)).await
-    }
-    /// Read a CLI compatibility projection.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_session(&self, id: &str) -> Result<api::CliSessionDetail, Error> {
-        self.get(&format!("cli/sessions/{}", segment(id)), &[])
-            .await
-    }
-    /// Read a CLI compatibility projection.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_agents(
-        &self,
-        after: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<api::CliAgent>, Error> {
-        self.get("cli/agents", &page(after, limit)).await
-    }
-    /// Read a CLI compatibility projection.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_agent(&self, name: &str) -> Result<api::CliAgent, Error> {
-        self.get(&format!("cli/agents/{}", segment(name)), &[])
-            .await
-    }
-    /// Read image metadata used by the CLI.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_image(&self, name: &str, tag: &str) -> Result<api::CliImage, Error> {
-        self.get(
-            &format!("cli/images/{}/{}", segment(name), segment(tag)),
-            &[],
-        )
-        .await
-    }
     /// Read full catalog model rows for CLI rendering.
     /// # Errors
     /// Returns transport, API, or decoding failures.
-    pub async fn cli_models(
+    pub async fn models_filtered(
         &self,
         q: Option<&str>,
         provider: Option<&str>,
@@ -643,107 +616,6 @@ impl Client {
             query.push(("provider", provider.into()));
         }
         self.get("models", &query).await
-    }
-    /// Read full provider rows for CLI rendering.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_providers(&self) -> Result<Vec<api::Provider>, Error> {
-        self.get("providers", &[]).await
-    }
-    /// Submit a CLI management mutation.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_create_agent(
-        &self,
-        body: &api::CliAgentChoice,
-    ) -> Result<api::CliAgent, Error> {
-        self.send(Method::POST, "cli/agents", body).await
-    }
-    /// Submit a CLI management mutation.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_update_agent(
-        &self,
-        name: &str,
-        body: &api::CliAgentChoice,
-    ) -> Result<api::CliAgent, Error> {
-        self.send(
-            Method::PATCH,
-            &format!("cli/agents/{}/settings", segment(name)),
-            body,
-        )
-        .await
-    }
-    /// Read credential metadata in the legacy CLI format.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_credentials(&self) -> Result<Vec<api::CliCredential>, Error> {
-        self.get("cli/credentials", &[]).await
-    }
-    /// Read credential metadata in the legacy CLI format.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_credential(&self, provider: &str) -> Result<api::CliCredential, Error> {
-        self.get(&format!("cli/credentials/{}", segment(provider)), &[])
-            .await
-    }
-    /// Submit an encrypted credential through the API.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_set_credential(
-        &self,
-        body: &api::CliCredentialInput,
-    ) -> Result<api::CliSaved, Error> {
-        self.send(Method::POST, "cli/credentials", body).await
-    }
-    /// List named inference routes in the legacy CLI format.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_routes(&self) -> Result<Vec<api::CliRoute>, Error> {
-        self.get("cli/routes", &[]).await
-    }
-    /// Show one named inference route in the legacy CLI format.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_route(&self, name: &str) -> Result<api::CliRoute, Error> {
-        self.get(&format!("cli/routes/{}", segment(name)), &[])
-            .await
-    }
-    /// Replace a route's steps in order through the API.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_set_route(&self, body: &api::CliRouteInput) -> Result<api::CliSaved, Error> {
-        self.send(Method::POST, "cli/routes", body).await
-    }
-    /// Remove a named inference route through the API.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_remove_route(
-        &self,
-        name: &str,
-        key: &str,
-    ) -> Result<api::CliRouteDeleted, Error> {
-        self.send(
-            Method::DELETE,
-            &format!("cli/routes/{}", segment(name)),
-            &serde_json::json!({"idempotency_key": key}),
-        )
-        .await
-    }
-    /// Assign or clear one session's route override through the API.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_set_session_route(
-        &self,
-        id: &str,
-        body: &api::SetSessionRoute,
-    ) -> Result<api::CliSessionDetail, Error> {
-        self.send(
-            Method::PATCH,
-            &format!("cli/sessions/{}/route", segment(id)),
-            body,
-        )
-        .await
     }
     /// Assign or clear one session's route override.
     /// # Errors
@@ -786,7 +658,9 @@ impl Client {
         self.send(
             Method::DELETE,
             &format!("routes/{}", segment(name)),
-            &serde_json::json!({"idempotency_key": key}),
+            &api::DeleteRequest {
+                idempotency_key: key.to_owned(),
+            },
         )
         .await
     }

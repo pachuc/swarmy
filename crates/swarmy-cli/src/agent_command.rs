@@ -33,22 +33,7 @@ pub struct InferenceArgs {
 #[derive(Subcommand)]
 pub enum Command {
     /// Create a named agent and pin its computer's image
-    Create {
-        #[arg(value_parser = agent_name)]
-        name: String,
-        #[arg(long)]
-        image: Option<String>,
-        #[arg(long, default_value = "")]
-        description: String,
-        #[command(flatten)]
-        inference: InferenceArgs,
-        /// GitHub token, stored only in `FoundationDB`
-        #[arg(long)]
-        github_token: Option<String>,
-        /// Read the GitHub token from standard input, keeping it out of process arguments
-        #[arg(long, conflicts_with = "github_token")]
-        github_token_stdin: bool,
-    },
+    Create(CreateArgs),
     /// Change inference settings or rotate the GitHub token for an agent
     Set {
         name: String,
@@ -74,6 +59,24 @@ pub enum Command {
         #[arg(long)]
         yes: bool,
     },
+}
+
+#[derive(Args)]
+pub struct CreateArgs {
+    #[arg(value_parser = agent_name)]
+    pub name: String,
+    #[arg(long)]
+    pub image: Option<String>,
+    #[arg(long, default_value = "")]
+    pub description: String,
+    #[command(flatten)]
+    pub inference: InferenceArgs,
+    /// GitHub token, stored only in `FoundationDB`
+    #[arg(long)]
+    pub github_token: Option<String>,
+    /// Read the GitHub token from standard input, keeping it out of process arguments
+    #[arg(long, conflicts_with = "github_token")]
+    pub github_token_stdin: bool,
 }
 
 fn agent_name(name: &str) -> Result<String, String> {

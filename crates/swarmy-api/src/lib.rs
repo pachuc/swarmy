@@ -1,3 +1,4 @@
+#![deny(unreachable_pub)]
 //! HTTP control plane. Public handlers use the versioned JSON contract.
 use axum::{
     Json, Router,
@@ -9,15 +10,13 @@ use axum::{
 };
 use jiff::Timestamp;
 use serde::Deserialize;
-use serde_json::{Value, json};
 use std::sync::Arc;
-mod cli;
 mod conversation;
 mod gc;
 pub mod images;
 mod models;
 mod stream;
-pub mod views;
+mod views;
 use swarmy_api_types as api;
 use swarmy_bus::Bus;
 use swarmy_config::Keyring;
@@ -151,74 +150,6 @@ fn id<T>(text: &str, wrap: impl FnOnce(Ulid) -> T) -> Result<T, (StatusCode, Jso
 fn image_ref(image: &api::ImageRef) -> String {
     format!("{}:{}", image.name, image.tag)
 }
-fn agent(record: swarmy_core::AgentRecord) -> api::Agent {
-    api::Agent {
-        id: record.agent_id.to_string(),
-        name: record.name,
-        description: record.description,
-        image: api::ImageRef {
-            name: record.image.name,
-            tag: record.image.tag.0,
-        },
-        provider: record.provider,
-        model: record.model,
-        effort: record
-            .reasoning_effort
-            .and_then(|value| serde_json::to_value(value).ok())
-            .and_then(|value| serde_json::from_value(value).ok()),
-        system_prompt: record.system_prompt,
-        created_at: record.created_at.to_string(),
-        main_session_id: record.main_session.map(|value| value.to_string()),
-        route: record.route,
-    }
-}
-fn session(record: &swarmy_core::SessionRecord) -> api::Session {
-    let named = matches!(record.kind, swarmy_core::SessionKind::Named { .. });
-    let state = serde_json::to_value(record.state)
-        .ok()
-        .and_then(|value| serde_json::from_value(value).ok())
-        .unwrap_or(api::SessionState::Idle);
-    api::Session {
-        id: record.session_id.to_string(),
-        agent_id: named.then(|| record.agent_id.to_string()),
-        kind: if named {
-            api::SessionKind::Named
-        } else {
-            api::SessionKind::Ephemeral
-        },
-        state,
-        log_id: api::LogId::Session(record.session_id.to_string()),
-        head_sequence: record.head_seq,
-        created_at: Timestamp::try_from(record.session_id.as_ulid().datetime())
-            .map(|value| value.to_string())
-            .unwrap_or_default(),
-        computer_deleted: record.computer_deleted,
-        waiting: None,
-        provider: record.inference.provider.clone(),
-        model: record.inference.model.clone(),
-        effort: record
-            .inference
-            .effort
-            .and_then(|v| serde_json::to_value(v).ok())
-            .and_then(|v| serde_json::from_value(v).ok()),
-        next_session: None,
-        route: record.route.clone(),
-    }
-}
-async fn session_with_next(
-    store: &Store,
-    record: &swarmy_core::SessionRecord,
-) -> Result<api::Session, (StatusCode, Json<api::ApiError>)> {
-    let mut result = session(record);
-    if record.state == swarmy_core::SessionState::Completed {
-        result.next_session = store
-            .next_session(record.session_id)
-            .await
-            .map_err(storage)?
-            .map(|id| id.to_string());
-    }
-    Ok(result)
-}
 async fn authorize(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -238,30 +169,7 @@ async fn authorize(
 /// Construct the router without binding a socket so integration tests can serve it in-process.
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
-        .route("/v1/cli/doctor", get(cli::doctor))
-        .route("/v1/cli/sessions", get(cli::sessions))
-        .route("/v1/cli/sessions/{id}", get(cli::session_show))
-        .route("/v1/cli/agents", get(cli::agents).post(cli::agent_create))
-        .route(
-            "/v1/cli/agents/{name}/settings",
-            axum::routing::patch(cli::agent_update),
-        )
-        .route(
-            "/v1/cli/credentials",
-            get(cli::credentials).post(cli::credential_set),
-        )
-        .route("/v1/cli/credentials/{provider}", get(cli::credential))
-        .route("/v1/cli/routes", get(cli::routes).post(cli::route_set))
-        .route(
-            "/v1/cli/routes/{name}",
-            get(cli::route_show).delete(cli::route_remove),
-        )
-        .route(
-            "/v1/cli/sessions/{id}/route",
-            axum::routing::patch(cli::session_set_route),
-        )
-        .route("/v1/cli/agents/{name}", get(cli::agent_show))
-        .route("/v1/cli/images/{name}/{tag}", get(cli::image_show))
+        .route("/v1/doctor", get(doctor))
         .route("/v1/agents", get(agents).post(create_agent))
         .route(
             "/v1/agents/{id}",
@@ -308,6 +216,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/providers", get(providers))
         .route("/v1/credentials", get(credentials).post(set_credential))
         .route(
+            "/v1/credentials/records",
+            axum::routing::post(put_credential_record),
+        )
+        .route(
             "/v1/credentials/{provider}",
             get(check_credential).delete(remove_credential),
         )
@@ -344,15 +256,12 @@ async fn health(State(state): State<AppState>) -> ApiResult<api::HealthResponse>
     let services: Vec<_> = services
         .into_iter()
         .map(|s| api::ServiceHealth {
-            role: format!("{:?}", s.heartbeat.role).to_lowercase(),
+            role: views::service_role(&s.heartbeat.role),
             instance_id: s.heartbeat.instance_id,
             version: s.heartbeat.version,
             alive: s.alive,
             last_seen: s.heartbeat.last_seen.to_string(),
-            providers: match s.heartbeat.detail {
-                swarmy_store::ServiceDetail::Providers(providers) => providers,
-                _ => Vec::new(),
-            },
+            providers: views::service_providers(&s.heartbeat.detail),
         })
         .collect();
     Ok(Json(api::HealthResponse {
@@ -364,6 +273,103 @@ async fn health(State(state): State<AppState>) -> ApiResult<api::HealthResponse>
         node_count: u64::try_from(node_count).unwrap_or(u64::MAX),
     }))
 }
+#[derive(Deserialize)]
+pub(crate) struct ModelsQuery {
+    pub q: Option<String>,
+    pub provider: Option<String>,
+    pub reasoning: Option<bool>,
+}
+
+/// One bounded API read gives doctor a consistent view of service heartbeats.
+async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnapshot> {
+    let nodes = registered_nodes(&state).await?;
+    let services = state.store.list_services().await.map_err(storage)?;
+    let services: Vec<_> = services
+        .into_iter()
+        .map(|service| api::DoctorService {
+            role: views::service_role(&service.heartbeat.role),
+            instance_id: service.heartbeat.instance_id,
+            version: service.heartbeat.version,
+            alive: service.alive,
+            providers: views::service_providers(&service.heartbeat.detail),
+            capacity: views::service_capacity(&service.heartbeat.detail),
+        })
+        .collect();
+    let mut images = Vec::new();
+    loop {
+        let after = images
+            .last()
+            .map(|image: &swarmy_core::ImageRecord| (image.name.as_str(), &image.tag));
+        let page = state
+            .store
+            .list_images(after, MAX_SCAN_LIMIT)
+            .await
+            .map_err(storage)?;
+        let done = page.len() < MAX_SCAN_LIMIT;
+        images.extend(page);
+        if done {
+            break;
+        }
+    }
+    let images: Vec<_> = images
+        .into_iter()
+        .map(|image| format!("{}:{}", image.name, image.tag.0))
+        .collect();
+    let credentials = match credential_store(&state) {
+        Ok(store) => Some(
+            store
+                .list_entries(swarmy_core::CredentialScope::Cluster)
+                .await
+                .map_err(storage)?
+                .into_iter()
+                .map(views::credential)
+                .collect::<Vec<_>>(),
+        ),
+        Err(_) => None,
+    };
+    Ok(Json(api::DoctorSnapshot {
+        services,
+        images,
+        default_image: state.default_image,
+        credentials,
+        nodes,
+    }))
+}
+
+/// Registered nodes with committed sandbox memory for the doctor snapshot.
+async fn registered_nodes(
+    state: &AppState,
+) -> Result<Vec<api::DoctorNode>, (axum::http::StatusCode, Json<api::ApiError>)> {
+    let mut nodes = Vec::new();
+    let mut after = None;
+    loop {
+        let (page, next) = state
+            .store
+            .scan_live_nodes(after, jiff::Timestamp::MIN, MAX_SCAN_LIMIT)
+            .await
+            .map_err(storage)?;
+        for record in page {
+            let committed = state
+                .store
+                .committed_memory(record.node_id)
+                .await
+                .map_err(storage)?;
+            nodes.push(api::DoctorNode {
+                node_id: record.node_id.to_string(),
+                roles: record.roles.into_iter().map(views::node_role).collect(),
+                capacity: views::node_capacity(&record.capacity),
+                last_heartbeat: record.last_heartbeat.to_string(),
+                committed_memory_bytes: committed,
+            });
+        }
+        after = next;
+        if after.is_none() {
+            break;
+        }
+    }
+    Ok(nodes)
+}
+
 #[derive(Deserialize)]
 struct Page {
     after: Option<String>,
@@ -383,16 +389,16 @@ async fn agents(
         .as_deref()
         .map(|v| id(v, AgentId::from_ulid))
         .transpose()?;
-    Ok(Json(
-        state
-            .store
-            .list_agents(after, limit(page.limit))
-            .await
-            .map_err(storage)?
-            .into_iter()
-            .map(agent)
-            .collect(),
-    ))
+    let records = state
+        .store
+        .list_agents(after, limit(page.limit))
+        .await
+        .map_err(storage)?;
+    let mut result = Vec::with_capacity(records.len());
+    for record in records {
+        result.push(views::agent(record));
+    }
+    Ok(Json(result))
 }
 async fn show_agent(
     State(state): State<AppState>,
@@ -404,9 +410,12 @@ async fn show_agent(
         state.store.get_agent_by_name(&name).await
     }
     .map_err(storage)?;
-    Ok(Json(agent(record.ok_or_else(|| {
-        error(StatusCode::NOT_FOUND, "agent_not_found")
-    })?)))
+    views::agent_value(
+        &state,
+        record.ok_or_else(|| error(StatusCode::NOT_FOUND, "agent_not_found"))?,
+    )
+    .await
+    .map(Json)
 }
 async fn replay<T: serde::Serialize + serde::de::DeserializeOwned>(
     state: &AppState,
@@ -438,17 +447,24 @@ async fn create_agent(
     State(state): State<AppState>,
     Json(body): Json<api::CreateAgent>,
 ) -> ApiResult<api::Agent> {
+    let selection = swarmy_llm::selection::normalize(
+        swarmy_core::InferenceSelection {
+            provider: body.provider,
+            model: body.model,
+            effort: body.effort.map(Into::into),
+        },
+        &state.catalog,
+    )
+    .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
+    swarmy_llm::selection::validate(&state.catalog, &selection, &state.default_selection)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
     let settings = AgentSettings {
-        provider: body.provider,
-        model: body.model,
-        reasoning_effort: body
-            .effort
-            .and_then(|v| serde_json::to_value(v).ok())
-            .and_then(|v| serde_json::from_value(v).ok()),
+        provider: selection.provider,
+        model: selection.model,
+        reasoning_effort: selection.effort,
         system_prompt: body.system_prompt,
-        // Sandbox sizing is not part of the v1 API types yet; the image default applies.
-        memory_mib: None,
-        gpu: None,
+        memory_mib: body.memory_mib,
+        gpu: body.gpu.map(Into::into),
         route: body.route,
     };
     if body.idempotency_key.is_empty() || body.idempotency_key.len() > 256 {
@@ -464,12 +480,14 @@ async fn create_agent(
             Some(CreateAgentOptions {
                 settings: Some(&settings),
                 replay_key: Some(&format!("agents:create:{}", body.idempotency_key)),
-                ..Default::default()
+                github_token: body.github_token.as_deref(),
             }),
         )
         .await
         .map_err(storage)?;
-    Ok(Json(agent(record)))
+    // Create and get build the agent through the same conversion, so a
+    // freshly created row reads back identical.
+    views::agent_value(&state, record).await.map(Json)
 }
 async fn update_agent(
     State(state): State<AppState>,
@@ -482,31 +500,58 @@ async fn update_agent(
         .await
         .map_err(storage)?
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "agent_not_found"))?;
+    let selection = swarmy_llm::selection::normalize(
+        swarmy_core::InferenceSelection {
+            provider: body.provider,
+            model: body.model,
+            effort: body.effort.map(Into::into),
+        },
+        &state.catalog,
+    )
+    .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
     let settings = AgentSettings {
-        provider: body.provider,
-        model: body.model,
-        reasoning_effort: body
-            .effort
-            .and_then(|v| serde_json::to_value(v).ok())
-            .and_then(|v| serde_json::from_value(v).ok()),
+        provider: selection.provider,
+        model: selection.model,
+        reasoning_effort: selection.effort,
         system_prompt: body.system_prompt,
-        // Sandbox sizing is not part of the v1 API types yet; the image default applies.
-        memory_mib: None,
-        gpu: None,
+        memory_mib: body.memory_mib,
+        gpu: body.gpu.map(Into::into),
         route: body.route,
     };
+    let resets: Vec<swarmy_core::InferenceField> =
+        body.resets.into_iter().map(Into::into).collect();
+    let mut merged = record.clone();
+    settings.apply_to(&mut merged, &resets);
+    swarmy_llm::selection::validate(
+        &state.catalog,
+        &swarmy_core::InferenceSelection {
+            provider: merged.provider,
+            model: merged.model,
+            effort: merged.reasoning_effort,
+        },
+        &state.default_selection,
+    )
+    .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
     let store = state.store.clone();
+    let detail = state.clone();
     replay(
         &state,
         &body.idempotency_key,
         &format!("agents:{name}:update"),
         async move {
-            Ok(Json(agent(
+            let updated = store
+                .set_agent_with_resets(record.agent_id, &settings, &resets)
+                .await
+                .map_err(storage)?;
+            if body.github_token.is_some() || body.clear_github_token {
                 store
-                    .set_agent(record.agent_id, &settings)
+                    .set_agent_github_token(record.agent_id, body.github_token.as_deref())
                     .await
-                    .map_err(storage)?,
-            )))
+                    .map_err(storage)?;
+            }
+            // Update returns the same detail shape as create and show, so the
+            // CLI renders the response without a second fetch.
+            views::agent_value(&detail, updated).await.map(Json)
         },
     )
     .await
@@ -515,7 +560,7 @@ async fn delete_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(body): Json<api::DeleteRequest>,
-) -> ApiResult<Value> {
+) -> ApiResult<api::AgentDeleted> {
     let store = state.store.clone();
     replay(
         &state,
@@ -525,7 +570,7 @@ async fn delete_agent(
             if let Some(record) = store.get_agent_by_name(&name).await.map_err(storage)? {
                 store.delete_agent(record.agent_id).await.map_err(storage)?;
             }
-            Ok(Json(json!({"deleted": true})))
+            Ok(Json(api::AgentDeleted { deleted: true }))
         },
     )
     .await
@@ -545,8 +590,12 @@ async fn sessions(
         .await
         .map_err(storage)?;
     let mut result = Vec::with_capacity(records.len());
+    let mut agents = std::collections::HashMap::new();
     for record in &records {
-        result.push(session_with_next(&state.store, record).await?);
+        // List rows stay light: no usage, placement, or scratch reads per
+        // row, so a full page costs about three store reads per session plus
+        // one cached agent fetch. Show hydrates the rest.
+        result.push(views::session_with_next(&state, record, &mut agents).await?);
     }
     Ok(Json(result))
 }
@@ -561,7 +610,13 @@ async fn show_session(
         .await
         .map_err(storage)?
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
-    Ok(Json(session_with_next(&state.store, &record).await?))
+    let mut agents = std::collections::HashMap::new();
+    let mut result = views::session_with_next(&state, &record, &mut agents).await?;
+    let agent = agents
+        .get(&record.agent_id)
+        .and_then(|entry| entry.as_ref());
+    views::populate_session_detail(&state, &mut result, &record, agent).await?;
+    Ok(Json(result))
 }
 async fn session_metrics(
     State(state): State<AppState>,
@@ -693,9 +748,11 @@ async fn images(
             .map_err(storage)?
             .into_iter()
             .map(|v| api::Image {
-                id: v.manifest_id.to_string(),
+                manifest_id: v.manifest_id.to_string(),
                 name: v.name,
                 tag: v.tag.0,
+                header: None,
+                scratch: None,
             })
             .collect(),
     ))
@@ -710,49 +767,29 @@ async fn show_image(
         .await
         .map_err(storage)?
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "image_not_found"))?;
+    let record = swarmy_core::ImageRecord {
+        name: name.clone(),
+        tag: ImageTag(tag.clone()),
+        manifest_id: manifest,
+    };
+    let header = state
+        .store
+        .get_manifest(manifest)
+        .await
+        .map_err(storage)?
+        .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "image_manifest_missing"))?;
+    let scratch = state.store.image_scratch(&record).await.map_err(storage)?;
     Ok(Json(api::Image {
-        id: manifest.to_string(),
+        manifest_id: manifest.to_string(),
         name,
         tag,
+        header: Some(views::image_header(&header)),
+        scratch: Some(scratch),
     }))
-}
-fn model(
-    provider: &swarmy_llm::catalog::ProviderInfo,
-    entry: &swarmy_llm::catalog::ModelInfo,
-) -> api::Model {
-    let mut catalog = serde_json::to_value(entry)
-        .expect("catalog model serializes")
-        .as_object()
-        .expect("catalog model is an object")
-        .clone();
-    catalog.remove("id");
-    catalog.insert(
-        "key".into(),
-        serde_json::json!(format!("{}/{}", provider.id, entry.id)),
-    );
-    catalog.insert("provider".into(), serde_json::json!(provider.id));
-    catalog.insert(
-        "effective_api".into(),
-        serde_json::json!(entry.api.unwrap_or(provider.api)),
-    );
-    catalog.insert(
-        "effective_base_url".into(),
-        serde_json::json!(entry.base_url.as_deref().unwrap_or(&provider.base_url)),
-    );
-    catalog.insert(
-        "supported_efforts".into(),
-        serde_json::json!(entry.supported_efforts()),
-    );
-    api::Model {
-        id: entry.id.clone(),
-        provider_id: provider.id.clone(),
-        context_window: entry.limit.context,
-        catalog: catalog.into_iter().collect(),
-    }
 }
 async fn models(
     State(state): State<AppState>,
-    Query(query): Query<cli::ModelsQuery>,
+    Query(query): Query<ModelsQuery>,
 ) -> ApiResult<Vec<api::Model>> {
     if let Some(provider) = &query.provider
         && state.catalog.provider(provider).is_none()
@@ -771,7 +808,7 @@ async fn models(
                             .iter()
                             .any(|e| *e != swarmy_core::ReasoningEffort::None))
             })
-            .map(|(p, m)| model(p, m))
+            .map(|(p, m)| views::model(p, m))
             .collect(),
     ))
 }
@@ -788,7 +825,7 @@ async fn search_models(
             .catalog
             .find(&search.q)
             .into_iter()
-            .map(|(p, m)| model(p, m))
+            .map(|(p, m)| views::model(p, m))
             .collect(),
     )
 }
@@ -800,7 +837,7 @@ async fn show_model(
         .catalog
         .provider(&provider)
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "model_not_found"))?;
-    Ok(Json(model(
+    Ok(Json(views::model(
         p,
         state
             .catalog
@@ -816,18 +853,13 @@ async fn providers(State(state): State<AppState>) -> Json<Vec<api::Provider>> {
             .map(|p| api::Provider {
                 id: p.id.clone(),
                 name: p.name.clone(),
-                status: "available".into(),
-                catalog: [
-                    ("api".into(), serde_json::json!(p.api)),
-                    ("auth_kinds".into(), serde_json::json!(p.auth_kinds)),
-                    ("env_keys".into(), serde_json::json!(p.env_keys)),
-                    (
-                        "credential_env_keys".into(),
-                        serde_json::json!(swarmy_llm::auth::provider_env_keys(&p.id)),
-                    ),
-                    ("credential".into(), serde_json::json!("unknown")),
-                ]
-                .into(),
+                api: views::provider_api(p.api),
+                auth_kinds: p.auth_kinds.clone(),
+                env_keys: p.env_keys.clone(),
+                credential_env_keys: swarmy_llm::auth::provider_env_keys(&p.id)
+                    .iter()
+                    .map(|key| (*key).to_owned())
+                    .collect(),
             })
             .collect(),
     )
@@ -842,25 +874,6 @@ fn credential_store(
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "keyring_unavailable"))?;
     Ok(state.store.credentials(keyring))
 }
-fn credential(value: swarmy_store::credentials::CredentialSummary) -> api::Credential {
-    api::Credential {
-        provider: value.provider,
-        kind: match value.kind.as_str() {
-            "api-key" => api::CredentialKind::ApiKey,
-            "cloud" => api::CredentialKind::Cloud,
-            _ => api::CredentialKind::Subscription,
-        },
-        label: value.label,
-        status: match value.status {
-            swarmy_core::CredentialStatus::Ready => api::CredentialStatus::Ready,
-            swarmy_core::CredentialStatus::Expired => api::CredentialStatus::Expired,
-            swarmy_core::CredentialStatus::NeedsLogin => api::CredentialStatus::NeedsLogin,
-        },
-        updated_at: value.updated_at.to_string(),
-        created_at: value.created_at.to_string(),
-        last_used_at: value.last_used_at.map(|at| at.to_string()),
-    }
-}
 async fn credentials(State(state): State<AppState>) -> ApiResult<Vec<api::Credential>> {
     Ok(Json(
         credential_store(&state)?
@@ -868,7 +881,7 @@ async fn credentials(State(state): State<AppState>) -> ApiResult<Vec<api::Creden
             .await
             .map_err(storage)?
             .into_iter()
-            .map(credential)
+            .map(views::credential)
             .collect(),
     ))
 }
@@ -883,7 +896,7 @@ async fn check_credential(
         .into_iter()
         .find(|entry| entry.provider == provider)
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "credential_not_found"))?;
-    Ok(Json(credential(summary)))
+    Ok(Json(views::credential(summary)))
 }
 async fn set_credential(
     State(state): State<AppState>,
@@ -905,7 +918,7 @@ async fn set_credential(
         },
         kind: CredentialKind::ApiKey {
             key: body.secret,
-            extra: std::collections::BTreeMap::new(),
+            extra: body.extra,
         },
         updated_at: Timestamp::now(),
     };
@@ -930,11 +943,43 @@ async fn set_credential(
                 .into_iter()
                 .find(|entry| entry.provider == body.provider && entry.label == body.label)
                 .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "credential_missing"))?;
-            Ok(Json(credential(summary)))
+            Ok(Json(views::credential(summary)))
         },
     )
     .await
 }
+async fn put_credential_record(
+    State(state): State<AppState>,
+    Json(body): Json<api::PutCredentialRecord>,
+) -> ApiResult<api::Credential> {
+    let store = credential_store(&state)?;
+    replay(
+        &state,
+        &body.idempotency_key,
+        &format!("credentials:{}:{}:record", body.provider, body.label),
+        async move {
+            store
+                .put_entry(
+                    CredentialScope::Cluster,
+                    &body.provider,
+                    &body.label,
+                    &body.record,
+                )
+                .await
+                .map_err(storage)?;
+            let summary = store
+                .list_entries(CredentialScope::Cluster)
+                .await
+                .map_err(storage)?
+                .into_iter()
+                .find(|entry| entry.provider == body.provider && entry.label == body.label)
+                .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "credential_missing"))?;
+            Ok(Json(views::credential(summary)))
+        },
+    )
+    .await
+}
+
 async fn check_credential_entry(
     State(state): State<AppState>,
     Path((provider, label)): Path<(String, String)>,
@@ -946,7 +991,7 @@ async fn check_credential_entry(
         .into_iter()
         .find(|entry| entry.provider == provider && entry.label == label)
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "credential_not_found"))?;
-    Ok(Json(credential(summary)))
+    Ok(Json(views::credential(summary)))
 }
 fn quota_view(quota: swarmy_store::EntryQuota) -> api::EntryQuotaView {
     api::EntryQuotaView {
@@ -1023,65 +1068,6 @@ async fn set_entry_quota(
     )
     .await
 }
-fn totals_view(totals: &swarmy_core::UsageTotals, completions: u64) -> api::UsageTotalsView {
-    api::UsageTotalsView {
-        input_tokens: totals.usage.input_tokens,
-        cached_input_tokens: totals.usage.cached_input_tokens,
-        cache_write_input_tokens: totals.usage.cache_write_input_tokens,
-        output_tokens: totals.usage.output_tokens,
-        reasoning_output_tokens: totals.usage.reasoning_output_tokens,
-        total_tokens: totals.usage.total_tokens,
-        cost_micros: totals.cost_micros,
-        cost_dollars: totals.dollars(),
-        completions,
-    }
-}
-
-fn usage_group_view(group: &swarmy_store::UsageGroup) -> api::UsageGroupView {
-    api::UsageGroupView {
-        start: group.start.to_string(),
-        end: group.end.to_string(),
-        totals: totals_view(&group.totals, group.completions),
-    }
-}
-
-/// Split one owner's entry totals into per-entry views, costliest first,
-/// with the distinct providers involved. Totals arrive already scoped to
-/// the owner, so the key is the entry name (`provider/label`); the
-/// provider is its leading segment.
-pub(crate) fn entry_breakdown(
-    totals: Vec<swarmy_store::DimensionTotal>,
-) -> (Vec<api::EntryUsageView>, Vec<String>) {
-    let mut entries: Vec<api::EntryUsageView> = totals
-        .into_iter()
-        .map(|total| {
-            let provider = total
-                .key
-                .split_once('/')
-                .map_or_else(|| total.key.clone(), |(provider, _)| provider.to_owned());
-            api::EntryUsageView {
-                entry: total.key,
-                provider,
-                totals: totals_view(&total.totals, total.completions),
-            }
-        })
-        .collect();
-    entries.sort_by(|left, right| {
-        right
-            .totals
-            .cost_micros
-            .cmp(&left.totals.cost_micros)
-            .then_with(|| left.entry.cmp(&right.entry))
-    });
-    let providers: Vec<String> = entries
-        .iter()
-        .map(|entry| entry.provider.clone())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    (entries, providers)
-}
-
 #[derive(Deserialize)]
 struct UsageQuery {
     by: Option<String>,
@@ -1177,8 +1163,8 @@ async fn usage(
         .into(),
         from: from.to_string(),
         to: to.to_string(),
-        groups: groups.iter().map(usage_group_view).collect(),
-        total: totals_view(&total, completions),
+        groups: groups.iter().map(views::usage_group_view).collect(),
+        total: views::totals_view(&total, completions),
     }))
 }
 
@@ -1206,7 +1192,7 @@ async fn quotas(State(state): State<AppState>) -> ApiResult<Vec<api::QuotaEntry>
         entries.push(api::QuotaEntry {
             provider: summary.provider,
             label: summary.label,
-            kind: summary.kind,
+            kind: summary.kind.as_str().to_owned(),
             quota: quota_view(quota),
         });
     }
@@ -1217,7 +1203,7 @@ async fn remove_credential_entry(
     State(state): State<AppState>,
     Path((provider, label)): Path<(String, String)>,
     Json(body): Json<api::DeleteRequest>,
-) -> ApiResult<Value> {
+) -> ApiResult<api::CredentialDeleted> {
     let store = credential_store(&state)?;
     replay(
         &state,
@@ -1228,7 +1214,7 @@ async fn remove_credential_entry(
                 .delete_entry(CredentialScope::Cluster, &provider, &label)
                 .await
                 .map_err(storage)?;
-            Ok(Json(json!({"deleted":true})))
+            Ok(Json(api::CredentialDeleted { deleted: true }))
         },
     )
     .await
@@ -1237,7 +1223,7 @@ async fn remove_credential(
     State(state): State<AppState>,
     Path(provider): Path<String>,
     Json(body): Json<api::DeleteRequest>,
-) -> ApiResult<Value> {
+) -> ApiResult<api::CredentialDeleted> {
     let store = credential_store(&state)?;
     replay(
         &state,
@@ -1256,7 +1242,7 @@ async fn remove_credential(
                     .await
                     .map_err(storage)?;
             }
-            Ok(Json(json!({"deleted": true})))
+            Ok(Json(api::CredentialDeleted { deleted: true }))
         },
     )
     .await

@@ -379,9 +379,9 @@ def current_session(config, session_id, sessions=None):
         return session_id
     if sessions is None:
         try:
-            sessions = {item["session_id"]: item
+            sessions = {item["id"]: item
                         for item in records(command(swarmy(config, "session", "ls", "--json")))
-                        if "session_id" in item}
+                        if "id" in item}
         except RuntimeError:
             return session_id
     seen = set()
@@ -399,8 +399,13 @@ def current_session(config, session_id, sessions=None):
 
 def state_for(session, events, log):
     state = session.get("state") if session else None
-    wait = next((item for item in events if item.get("state") == "waiting_for_inference"), None)
-    if state == "sleeping" and wait:
+    # Typed `session show --json` prints the Session first (with `waiting`)
+    # followed by raw event lines; the first line carries the wait reasons.
+    waiting = (session.get("waiting") if session else None) or next(
+        (item.get("waiting") for item in events if item.get("waiting")),
+        None,
+    )
+    if state == "sleeping" and waiting:
         state = "waiting_inference"
     if state is None:
         return "unknown", ""
@@ -411,7 +416,11 @@ def state_for(session, events, log):
         if outcomes and outcomes[-1].get("outcome") == "failed":
             return "failed", ""
         return "idle", ""
-    reasons = "; ".join(wait.get("reasons", [])) if wait and state == "waiting_inference" else ""
+    reasons = (
+        "; ".join((waiting or {}).get("reasons", []))
+        if waiting and state == "waiting_inference"
+        else ""
+    )
     return state, ("waiting for inference: " + reasons if reasons else "")
 
 
@@ -439,9 +448,9 @@ def status(config):
     workers = load_workers(config)
     # session ls carries the state and transition time; session show supplies
     # optional wait reasons and the assistant messages used by collect.
-    sessions = {item["session_id"]: item
+    sessions = {item["id"]: item
                 for item in records(command(swarmy(config, "session", "ls", "--json")))
-                if "session_id" in item and "state" in item}
+                if "id" in item and "state" in item}
     threshold = float(config.get("stall_minutes", 10)) * 60
     if not math.isfinite(threshold) or threshold <= 0:
         raise ValueError("stall_minutes must be positive")
@@ -456,9 +465,7 @@ def status(config):
             data = json.loads(assignment_path.read_text()) if assignment_path.exists() else {}
             run_log = state_path(config) / (suffix + ".jsonl")
             logged = records(run_log.read_text()) if run_log.exists() else []
-        # A task runs in its own side conversation; fall back to the main one
-        # for launches recorded before that change.
-        session_id = data.get("session_id") or detail.get("main_session")
+        session_id = data.get("session_id") or detail.get("main_session_id")
         session_id = current_session(config, session_id, sessions)
         events = session_events(config, session_id) if session_id else []
         session = sessions.get(session_id)
@@ -473,8 +480,9 @@ def status(config):
             state_label += "; " + reasons
         started = data.get("started_at")
         elapsed = int((datetime.now(timezone.utc) - datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds()) if started else 0
+        cost = (detail.get("usage") or {}).get("cost_dollars", "0")
         print(f"{name}\t{task_id or '-'}\t{detail.get('provider') or '-'}\t{detail.get('model') or '-'}\t"
-              f"{state_label}\t{elapsed}s\t${detail.get('cost_dollars', 0)}")
+              f"{state_label}\t{elapsed}s\t${cost}")
     day, month = fleet_cost(config)
     if day is not None and month is not None:
         print(f"cost today=${day} this_month=${month}")
@@ -604,7 +612,7 @@ def kill(task_id, config, timeout_seconds):
     deadline = time.monotonic() + timeout_seconds
     while True:
         sessions = records(command(swarmy(config, "session", "ls", "--json")))
-        by_id = {item.get("session_id"): item for item in sessions if item.get("session_id")}
+        by_id = {item.get("id"): item for item in sessions if item.get("id")}
         live = current_session(config, session_id, by_id)
         # An archived id during the wait means summarization moved the task;
         # keep waiting on the successor and interrupt it once.
@@ -614,7 +622,7 @@ def kill(task_id, config, timeout_seconds):
                 command(swarmy(config, "session", "interrupt", session_id))
             except RuntimeError:
                 pass
-        session = next((item for item in sessions if item.get("session_id") == session_id and "state" in item), None)
+        session = next((item for item in sessions if item.get("id") == session_id and "state" in item), None)
         if session and session["state"] == "idle":
             break
         if time.monotonic() >= deadline:

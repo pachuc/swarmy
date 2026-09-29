@@ -14,6 +14,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 args = sys.argv[1:]
 root = Path(os.environ['STUB_STATE'])
+# Clone the typed API sample so the fake keeps the real field names.
+# scripts/fleet/fixtures/typed_sample.json is checked by
+# crates/swarmy-api-types/tests/fleet_fixture.rs; a renamed typed field
+# fails that test instead of silently drifting here. The fixture is
+# required: a missing file fails the stub instead of falling back to
+# hand-built shapes that can drift from the types.
+_fixture_path = os.environ['FLEET_FIXTURE']
+_fixture = json.loads(Path(_fixture_path).read_text())
+_agent_base = _fixture['agent_show']
+_ls_base = _fixture['session_ls_item']
+_show_base = _fixture['session_show_item']
 with (root / 'calls').open('a') as out:
     out.write(json.dumps(args) + '\\n')
 if args[:3] == ['--json', 'task', 'show']:
@@ -40,8 +51,9 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
         print(json.dumps({'event':'session_opened', 'session_id':'01AAAA', 'agent_name': rest[2]}), flush=True)
         print(json.dumps({'event':'run_outcome', 'outcome':'completed'}), flush=True)
     elif rest[:2] == ['agent', 'show']:
-        print(json.dumps({'name': rest[2], 'main_session':'01AAAA','provider':'fake','model':'fake',
-            'cost_dollars':1.25, 'created_at':'2026-09-23T00:00:00Z'}))
+        out = dict(_agent_base)
+        out['name'] = rest[2]
+        print(json.dumps(out))
     elif rest[:3] == ['session', 'ls', '--json']:
         if (root / 'interrupted').exists():
             count = int((root / 'ls_count').read_text()) if (root / 'ls_count').exists() else 0
@@ -54,22 +66,37 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
         successor = os.environ.get('SUCCESSOR', '')
         if successor and ':' in successor:
             old, new = successor.split(':', 1)
-            print(json.dumps({'session_id':old,'state':'completed','state_since':since,'agent_name':'worker-1','next_session':new}))
-            print(json.dumps({'session_id':new,'state':state,'state_since':since,'agent_name':'worker-1'}))
+            first = dict(_ls_base)
+            first.update({'id':old,'state':'completed','state_since':since,'agent_name':'worker-1','next_session':new})
+            print(json.dumps(first))
+            second = dict(_ls_base)
+            second.update({'id':new,'state':state,'state_since':since,'agent_name':'worker-1'})
+            second.pop('next_session', None)
+            print(json.dumps(second))
         else:
-            print(json.dumps({'session_id':'01AAAA','state':state,'state_since':since,'agent_name':'worker-1'}))
+            item = dict(_ls_base)
+            item.update({'id':'01AAAA','state':state,'state_since':since,'agent_name':'worker-1'})
+            item.pop('next_session', None)
+            print(json.dumps(item))
     elif rest[:2] == ['session', 'show']:
         sid = rest[2] if len(rest) > 2 else ''
         if sid not in ('01AAAA', '01BBBB'):
-            print(json.dumps({'state':'waiting_for_inference','reasons':[]}))
+            item = dict(_show_base)
+            item.update({'id':sid,'state':'sleeping','waiting':{'wake_at':None,'reasons':[]}})
+            print(json.dumps(item))
         else:
             if not (root / 'interrupted').exists() and not os.environ.get('SUCCESSOR'):
-                print(json.dumps({'state':'waiting_for_inference','reasons':json.loads(os.environ.get('WAIT_REASONS', '["429 rate limited"]'))}))
+                waiting = {'wake_at':None,'reasons':json.loads(os.environ.get('WAIT_REASONS', '["429 rate limited"]'))}
+            else:
+                waiting = None
+            item = dict(_show_base)
+            item.update({'id':sid,'state':'sleeping','waiting':waiting})
+            print(json.dumps(item))
             if os.environ.get('SUCCESSOR') and sid == '01AAAA':
                 text = os.environ.get('OLD_MESSAGE', 'Working, no link yet')
             else:
                 text = os.environ.get('LAST_MESSAGE', 'Done https://github.com/pachuc/swarmy/pull/42')
-            print(json.dumps({'inference_completed': {'message': {'role':'assistant',
+            print(json.dumps({'inference_completed': {'seq':1, 'message': {'role':'assistant',
                 'parts':[{'text':{'text':text}}]}}}))
     elif rest[:2] == ['session', 'metrics']:
         # Fake durable per-turn records for fleet report tests. REPORT_METRICS
@@ -117,8 +144,10 @@ class FleetTests(unittest.TestCase):
         self.config = self.root / "fleet.toml"
         self.config.write_text(f'''remote = "dev"\nrepo = "pachuc/swarmy"\nprovider = "fake"\nmodel = "fake"\nworkers = 2\ngithub_token = "private-token"\nstate_dir = "{self.root / 'state'}"\n''')
         self.config.chmod(0o600)
+        fixture = Path(__file__).with_name("fixtures") / "typed_sample.json"
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
-                        STUB_STATE=str(self.root), FLEET_CONFIG=str(self.config))
+                        STUB_STATE=str(self.root), FLEET_CONFIG=str(self.config),
+                        FLEET_FIXTURE=str(fixture))
 
     def call(self, *args, env=None):
         return subprocess.run([sys.executable, str(FLEET), *args], env=env or self.env,
@@ -665,8 +694,8 @@ class FleetTests(unittest.TestCase):
         mod.__dict__["__file__"] = str(Path("scripts/fleet/fleet").resolve())
         exec(compile(source, "fleet", "exec"), mod.__dict__)
         sessions = {
-            "01AAAA": {"session_id": "01AAAA", "state": "completed", "next_session": "01BBBB"},
-            "01BBBB": {"session_id": "01BBBB", "state": "idle"},
+            "01AAAA": {"id": "01AAAA", "state": "completed", "next_session": "01BBBB"},
+            "01BBBB": {"id": "01BBBB", "state": "idle"},
         }
         self.assertEqual(mod.current_session({}, "01AAAA", sessions), "01BBBB")
         self.assertEqual(mod.current_session({}, "01BBBB", sessions), "01BBBB")

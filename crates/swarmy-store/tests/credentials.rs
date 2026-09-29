@@ -10,8 +10,8 @@ use foundationdb::{Database, tuple::Subspace};
 use jiff::Timestamp;
 use swarmy_config::Keyring;
 use swarmy_core::{
-    CredentialKind, CredentialRecord, CredentialScope, CredentialStatus, Lease, LeaseOwnerId,
-    encode,
+    CredentialEntryKind, CredentialKind, CredentialRecord, CredentialScope, CredentialStatus,
+    Lease, LeaseOwnerId, encode,
 };
 use swarmy_store::{
     CredentialKey, Store, StoreError, blob::MemoryBlobStore, credentials::CredentialStore,
@@ -354,7 +354,7 @@ async fn labelled_entries_refresh_and_remove_independently() {
     let first = f.credentials.list_entries(SCOPE).await.unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].label, "default");
-    assert_eq!(first[0].kind, "subscription");
+    assert_eq!(first[0].kind, CredentialEntryKind::Subscription);
     assert_eq!(f.credentials.list_entries(SCOPE).await.unwrap().len(), 1);
     f.credentials
         .put_entry(SCOPE, "openai", "second", &oauth("second"))
@@ -524,7 +524,7 @@ async fn default_entry_lists_once() {
     let first = f.credentials.list_entries(SCOPE).await.unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].label, "default");
-    assert_eq!(first[0].kind, "api-key");
+    assert_eq!(first[0].kind, CredentialEntryKind::ApiKey);
     let second = f.credentials.list_entries(SCOPE).await.unwrap();
     assert_eq!(second.len(), 1);
     assert_eq!(second[0].created_at, first[0].created_at);

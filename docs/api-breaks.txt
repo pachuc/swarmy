@@ -55,3 +55,56 @@ GET /v1/cli/doctor removed the optional property `legacy_credential_rows` from t
 GET /v1/sessions/{id}/events removes legacy_context_notice from notice kind values
 # 2026-09-29: Stored event rows no longer decode the unmetered completion variant or missing failure-kind and route-attribution fields. Current event discriminants after the removed completion shift by one. TokenUsage now requires six fields; five-field usage rows are rejected. Wipe the development store before deployment.
 # 2026-09-29: Turn metric envelopes use the current summary (tag 0), inference (tag 1), and tool (tag 2) variants only; older capped-metrics tags and bare detail rows are rejected.
+# 2026-09-29: Remove stream event variants that had no producer. Clients cannot receive them.
+GET /v1/events removes turn_started, turn_finished, inference_error, service_status_changed, and node_status_changed payload variants
+
+# 2026-09-29: Duplicate /v1/cli routes were internal compatibility projections. All clients now use typed /v1 resource routes; no external client depends on the removed paths.
+GET /v1/cli/agents api path removed without deprecation
+POST /v1/cli/agents api path removed without deprecation
+GET /v1/cli/agents/{name} api path removed without deprecation
+PATCH /v1/cli/agents/{name}/settings api path removed without deprecation
+GET /v1/cli/credentials api path removed without deprecation
+POST /v1/cli/credentials api path removed without deprecation
+GET /v1/cli/credentials/{provider} api path removed without deprecation
+GET /v1/cli/doctor api path removed without deprecation
+GET /v1/cli/images/{name}/{tag} api path removed without deprecation
+GET /v1/cli/routes api path removed without deprecation
+POST /v1/cli/routes api path removed without deprecation
+DELETE /v1/cli/routes/{name} api path removed without deprecation
+GET /v1/cli/routes/{name} api path removed without deprecation
+GET /v1/cli/sessions api path removed without deprecation
+GET /v1/cli/sessions/{id} api path removed without deprecation
+PATCH /v1/cli/sessions/{id}/route api path removed without deprecation
+
+# 2026-09-29: Agent and session detail projections folded into the typed resource. List and show share api::Agent and api::Session; detail-only fields are optional on the resource.
+GET /v1/agents/details api path removed without deprecation
+GET /v1/agents/{id}/detail api path removed without deprecation
+GET /v1/sessions/{id}/detail api path removed without deprecation
+
+# 2026-09-29: Model and provider catalog passthrough removed. The model response carries typed provider, effective_api, effective_base_url, and compat fields instead of the free-form catalog map.
+GET /v1/models removes catalog from response properties
+GET /v1/providers removes catalog from response properties
+# 2026-09-29: The model provider field is `provider`, matching the catalog key and the CLI table. Readers of `provider_id` switch to `provider`.
+GET /v1/models removed the required property `items/provider_id` from the response with the `200` status
+GET /v1/models/search removed the required property `items/provider_id` from the response with the `200` status
+GET /v1/models/{provider}/{model} removed the required property `provider_id` from the response with the `200` status
+
+# 2026-09-29: Provider availability and credential placeholders removed. The
+# provider list carries the typed wire protocol (`api`), auth kinds, and
+# environment keys; the old `api`/`credential` strings lived in the flattened
+# catalog map whose removal is recorded above. Availability is a doctor
+# concern and credentials are listed under /v1/credentials.
+GET /v1/providers removed the required property `items/status` from the response with the `200` status
+# 2026-09-29: One image header shape everywhere. The build response embedded
+# the stored manifest, leaking the root hash as a 32-number array, while
+# `image show` printed hex. Both now share the typed `ImageHeader` with a
+# hex root hash; the CLI is the only reader and was updated in lockstep.
+POST /v1/images/uploads changes header/root_hash from an array to a hex string
+# 2026-09-29: The image manifest id is `manifest_id` everywhere, matching the
+# build event. Readers of `id` on image show and ls switch to `manifest_id`.
+GET /v1/images removed the required property `items/id` from the response with the `200` status
+GET /v1/images/{name}/{tag} removed the required property `id` from the response with the `200` status
+
+# 2026-09-29: Session archived flag removed. Readers derive it from next_session being present; the field duplicated the successor link.
+GET /v1/sessions removes archived from response properties
+GET /v1/sessions/{id} removes archived from response properties

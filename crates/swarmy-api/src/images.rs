@@ -191,8 +191,7 @@ pub async fn upload(
         name: validated.name.clone(),
         tag: validated.tag.clone(),
         manifest_id: manifest_id.to_string(),
-        header: serde_json::to_value(&built.header)
-            .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))?,
+        header: super::views::image_header(&built.header),
         size: built.header.size,
         chunks_total: built.chunks_total,
         chunks_stored: built.chunks_stored,

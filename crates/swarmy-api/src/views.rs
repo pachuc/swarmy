@@ -1,15 +1,19 @@
-//! Convert persistence-layer metric shapes into API response shapes.
+//! Store-to-API conversions: the single module that maps persistence
+//! shapes onto the versioned JSON contract.
 //!
-//! The store owns its metric structs and returns them; this module maps them
-//! field for field onto the versioned JSON contract. The shapes stay
-//! identical so stored rows keep decoding, and the conversion stays here so
-//! the store never compiles the `OpenAPI` tooling.
+//! Handlers render typed `swarmy_api_types` structs built here, so a renamed
+//! field fails to compile at the call site. Metric shapes stay identical so
+//! stored rows keep decoding, and the conversion stays here so the store
+//! never compiles the `OpenAPI` tooling.
 
+use super::{AppState, error, storage};
+use axum::{Json, http::StatusCode};
+use jiff::Timestamp;
 use swarmy_api_types as api;
 use swarmy_store as store;
 
 #[must_use]
-pub fn into_api_stage(value: store::StageTiming) -> api::StageTiming {
+pub(crate) fn into_api_stage(value: store::StageTiming) -> api::StageTiming {
     api::StageTiming {
         stage: value.stage,
         request_id: value.request_id,
@@ -20,7 +24,7 @@ pub fn into_api_stage(value: store::StageTiming) -> api::StageTiming {
 }
 
 #[must_use]
-pub fn into_api_inference(value: store::InferenceMetric) -> api::InferenceMetric {
+pub(crate) fn into_api_inference(value: store::InferenceMetric) -> api::InferenceMetric {
     api::InferenceMetric {
         request_id: value.request_id,
         provider: value.provider,
@@ -44,7 +48,7 @@ pub fn into_api_inference(value: store::InferenceMetric) -> api::InferenceMetric
 }
 
 #[must_use]
-pub fn into_api_tool(value: store::ToolMetric) -> api::ToolMetric {
+pub(crate) fn into_api_tool(value: store::ToolMetric) -> api::ToolMetric {
     api::ToolMetric {
         request_id: value.request_id,
         name: value.name,
@@ -59,7 +63,7 @@ pub fn into_api_tool(value: store::ToolMetric) -> api::ToolMetric {
 }
 
 #[must_use]
-pub fn into_api_computer(value: &store::ComputerMetric) -> api::ComputerMetric {
+pub(crate) fn into_api_computer(value: &store::ComputerMetric) -> api::ComputerMetric {
     api::ComputerMetric {
         placement_ms: value.placement_ms,
         cold: value.cold,
@@ -75,7 +79,7 @@ pub fn into_api_computer(value: &store::ComputerMetric) -> api::ComputerMetric {
 }
 
 #[must_use]
-pub fn into_api_turn(value: store::TurnMetrics) -> api::TurnMetrics {
+pub(crate) fn into_api_turn(value: store::TurnMetrics) -> api::TurnMetrics {
     api::TurnMetrics {
         session_id: value.session_id,
         turn_id: value.turn_id,
@@ -98,7 +102,7 @@ pub fn into_api_turn(value: store::TurnMetrics) -> api::TurnMetrics {
 }
 
 #[must_use]
-pub fn into_api_latency(value: &store::LatencyPercentiles) -> api::LatencyPercentiles {
+pub(crate) fn into_api_latency(value: &store::LatencyPercentiles) -> api::LatencyPercentiles {
     api::LatencyPercentiles {
         p50_ms: value.p50_ms,
         p95_ms: value.p95_ms,
@@ -106,7 +110,7 @@ pub fn into_api_latency(value: &store::LatencyPercentiles) -> api::LatencyPercen
 }
 
 #[must_use]
-pub fn into_api_agent(value: store::AgentMetrics) -> api::AgentMetrics {
+pub(crate) fn into_api_agent(value: store::AgentMetrics) -> api::AgentMetrics {
     api::AgentMetrics {
         agent_id: value.agent_id,
         main_session_id: value.main_session_id,
@@ -127,189 +131,781 @@ pub fn into_api_agent(value: store::AgentMetrics) -> api::AgentMetrics {
     }
 }
 
+#[must_use]
+pub(crate) fn agent(record: swarmy_core::AgentRecord) -> api::Agent {
+    api::Agent {
+        id: record.agent_id.to_string(),
+        name: record.name,
+        description: record.description,
+        image: api::ImageRef {
+            name: record.image.name,
+            tag: record.image.tag.0,
+        },
+        provider: record.provider,
+        model: record.model,
+        effort: record.reasoning_effort.map(Into::into),
+        system_prompt: record.system_prompt,
+        created_at: record.created_at.to_string(),
+        main_session_id: record.main_session.map(|value| value.to_string()),
+        route: record.route,
+        requirements: requirements(record.requirements),
+        node_id: None,
+        scratch: None,
+        session_count: None,
+        usage: None,
+        entries: Vec::new(),
+        providers: Vec::new(),
+        placement: None,
+        sandbox_address: None,
+        last_snapshot_at: None,
+        last_snapshot_age_seconds: None,
+        sandbox_state: None,
+        call_status: None,
+        sessions: Vec::new(),
+    }
+}
+
+#[must_use]
+pub(crate) fn session(record: &swarmy_core::SessionRecord) -> api::Session {
+    let kind = match record.kind {
+        swarmy_core::SessionKind::Ephemeral => api::SessionKind::Ephemeral,
+        swarmy_core::SessionKind::Named { .. } => api::SessionKind::Named,
+    };
+    let state = record.state.into();
+    api::Session {
+        id: record.session_id.to_string(),
+        agent_id: matches!(kind, api::SessionKind::Named).then(|| record.agent_id.to_string()),
+        kind,
+        state,
+        log_id: api::LogId::Session(record.session_id.to_string()),
+        head_sequence: record.head_seq,
+        created_at: Timestamp::try_from(record.session_id.as_ulid().datetime())
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        computer_deleted: record.computer_deleted,
+        waiting: None,
+        provider: record.inference.provider.clone(),
+        model: record.inference.model.clone(),
+        effort: record.inference.effort.map(Into::into),
+        next_session: None,
+        route: record.route.clone(),
+        resolved: None,
+        main: false,
+        agent_name: None,
+        previous_session: None,
+        state_since: None,
+        interrupt_requested: record.interrupt_requested,
+        usage: None,
+        entries: Vec::new(),
+        providers: Vec::new(),
+        scratch: None,
+        requirements: None,
+        placement: None,
+        sandbox_address: None,
+    }
+}
+
+#[must_use]
+pub(crate) fn requirements(value: swarmy_core::SandboxRequirements) -> api::SandboxRequirements {
+    let gpu = match value.gpu {
+        swarmy_core::GpuRequirement::None => api::GpuMode::None,
+        swarmy_core::GpuRequirement::Shared => api::GpuMode::Shared,
+        swarmy_core::GpuRequirement::Dedicated => api::GpuMode::Dedicated,
+    };
+    api::SandboxRequirements {
+        memory_mib: value.memory_mib,
+        gpu,
+    }
+}
+
+/// One image header behind both the build response and `image show`, so the
+/// root hash has one wire shape (hex) everywhere. Both paths convert the
+/// stored manifest through this function instead of serializing the manifest
+/// directly, which would leak the hash as a 32-number array.
+#[must_use]
+pub(crate) fn image_header(value: &swarmy_core::ManifestHeader) -> api::ImageHeader {
+    api::ImageHeader {
+        size: value.size,
+        chunk_size: value.chunk_size,
+        root_hash: value.root_hash.to_string(),
+    }
+}
+
+#[must_use]
+pub(crate) fn scratch_view(value: &store::ScratchRecord) -> api::ScratchView {
+    api::ScratchView {
+        node_id: value.node_id.to_string(),
+        bytes: value.bytes,
+    }
+}
+
+#[must_use]
+pub(crate) fn node_capacity(value: &swarmy_core::NodeCapacity) -> api::NodeCapacity {
+    api::NodeCapacity {
+        cpu_millis: value.cpu_millis,
+        memory_bytes: value.memory_bytes,
+        disk_bytes: value.disk_bytes,
+        sandboxes: value.sandboxes,
+    }
+}
+
+#[must_use]
+pub(crate) fn service_role(value: &store::ServiceRole) -> api::ServiceRole {
+    match value {
+        store::ServiceRole::Scheduler => api::ServiceRole::Scheduler,
+        store::ServiceRole::Worker => api::ServiceRole::Worker,
+        store::ServiceRole::Gateway => api::ServiceRole::Gateway,
+        store::ServiceRole::Api => api::ServiceRole::Api,
+        store::ServiceRole::Node => api::ServiceRole::Node,
+    }
+}
+
+#[must_use]
+pub(crate) fn node_role(value: swarmy_core::NodeRole) -> api::NodeRole {
+    match value {
+        swarmy_core::NodeRole::Sandbox => api::NodeRole::Sandbox,
+        swarmy_core::NodeRole::Volume => api::NodeRole::Volume,
+    }
+}
+
+/// Provider names behind one heartbeat. Capacity heartbeats carry none, so
+/// both the health and doctor views share this instead of matching twice.
+#[must_use]
+pub(crate) fn service_providers(detail: &store::ServiceDetail) -> Vec<String> {
+    match detail {
+        store::ServiceDetail::Providers(value) => value.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// Node capacity behind one heartbeat, if the service reports any.
+#[must_use]
+pub(crate) fn service_capacity(detail: &store::ServiceDetail) -> Option<api::NodeCapacity> {
+    match detail {
+        store::ServiceDetail::Capacity(value) => Some(node_capacity(value)),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub(crate) fn credential(value: store::credentials::CredentialSummary) -> api::Credential {
+    api::Credential {
+        provider: value.provider,
+        kind: match value.kind {
+            swarmy_core::CredentialEntryKind::Subscription => api::CredentialKind::Subscription,
+            swarmy_core::CredentialEntryKind::ApiKey => api::CredentialKind::ApiKey,
+            swarmy_core::CredentialEntryKind::Cloud => api::CredentialKind::Cloud,
+        },
+        label: value.label,
+        status: match value.status {
+            swarmy_core::CredentialStatus::Ready => api::CredentialStatus::Ready,
+            swarmy_core::CredentialStatus::Expired => api::CredentialStatus::Expired,
+            swarmy_core::CredentialStatus::NeedsLogin => api::CredentialStatus::NeedsLogin,
+        },
+        updated_at: value.updated_at.to_string(),
+        created_at: value.created_at.to_string(),
+        last_used_at: value.last_used_at.map(|at| at.to_string()),
+        expires_at: value.expires_at.map(|at| at.to_string()),
+    }
+}
+
+#[must_use]
+pub(crate) fn totals_view(
+    totals: &swarmy_core::UsageTotals,
+    completions: u64,
+) -> api::UsageTotalsView {
+    api::UsageTotalsView {
+        input_tokens: totals.usage.input_tokens,
+        cached_input_tokens: totals.usage.cached_input_tokens,
+        cache_write_input_tokens: totals.usage.cache_write_input_tokens,
+        output_tokens: totals.usage.output_tokens,
+        reasoning_output_tokens: totals.usage.reasoning_output_tokens,
+        total_tokens: totals.usage.total_tokens,
+        cost_micros: totals.cost_micros,
+        cost_dollars: totals.dollars(),
+        completions,
+    }
+}
+
+#[must_use]
+pub(crate) fn usage_group_view(group: &store::UsageGroup) -> api::UsageGroupView {
+    api::UsageGroupView {
+        start: group.start.to_string(),
+        end: group.end.to_string(),
+        totals: totals_view(&group.totals, group.completions),
+    }
+}
+
+/// Split one owner's entry totals into per-entry views, costliest first,
+/// with the distinct providers involved. Totals arrive already scoped to
+/// the owner, so the key is the entry name (`provider/label`); the
+/// provider is its leading segment.
+pub(crate) fn entry_breakdown(
+    totals: Vec<store::DimensionTotal>,
+) -> (Vec<api::EntryUsageView>, Vec<String>) {
+    let mut entries: Vec<api::EntryUsageView> = totals
+        .into_iter()
+        .map(|total| {
+            let provider = total
+                .key
+                .split_once('/')
+                .map_or_else(|| total.key.clone(), |(provider, _)| provider.to_owned());
+            api::EntryUsageView {
+                entry: total.key,
+                provider,
+                totals: totals_view(&total.totals, total.completions),
+            }
+        })
+        .collect();
+    entries.sort_by(|left, right| {
+        right
+            .totals
+            .cost_micros
+            .cmp(&left.totals.cost_micros)
+            .then_with(|| left.entry.cmp(&right.entry))
+    });
+    let providers: Vec<String> = entries
+        .iter()
+        .map(|entry| entry.provider.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    (entries, providers)
+}
+
+/// One catalog wire protocol behind both `Provider.api` and
+/// `Model.effective_api`, so a new protocol fails to compile here.
+#[must_use]
+pub(crate) fn provider_api(value: swarmy_llm::catalog::Api) -> api::ProviderApi {
+    match value {
+        swarmy_llm::catalog::Api::AnthropicMessages => api::ProviderApi::AnthropicMessages,
+        swarmy_llm::catalog::Api::OpenAiResponses => api::ProviderApi::OpenAiResponses,
+        swarmy_llm::catalog::Api::OpenAiCodexResponses => api::ProviderApi::OpenAiCodexResponses,
+        swarmy_llm::catalog::Api::OpenAiCompletions => api::ProviderApi::OpenAiCompletions,
+        swarmy_llm::catalog::Api::GoogleGenerativeAi => api::ProviderApi::GoogleGenerativeAi,
+        swarmy_llm::catalog::Api::GoogleVertex => api::ProviderApi::GoogleVertex,
+        swarmy_llm::catalog::Api::BedrockConverse => api::ProviderApi::BedrockConverse,
+        swarmy_llm::catalog::Api::Fake => api::ProviderApi::Fake,
+    }
+}
+
+#[must_use]
+pub(crate) fn model(
+    provider: &swarmy_llm::catalog::ProviderInfo,
+    entry: &swarmy_llm::catalog::ModelInfo,
+) -> api::Model {
+    api::Model {
+        id: entry.id.clone(),
+        provider: provider.id.clone(),
+        context_window: entry.limit.context,
+        key: format!("{}/{}", provider.id, entry.id),
+        name: entry.name.clone(),
+        limit: api::ModelLimit {
+            context: entry.limit.context,
+            output: entry.limit.output,
+        },
+        cost: api::ModelCost {
+            input: entry.cost.input,
+            output: entry.cost.output,
+        },
+        supported_efforts: entry
+            .supported_efforts()
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        effective_api: provider_api(entry.api.unwrap_or(provider.api)),
+        effective_base_url: entry
+            .base_url
+            .clone()
+            .unwrap_or_else(|| provider.base_url.clone()),
+        compat: entry.compat.0.clone(),
+    }
+}
+
+fn resolve_with_agent(
+    record: &swarmy_core::SessionRecord,
+    agent: Option<&swarmy_core::AgentRecord>,
+    default: &swarmy_core::ResolvedSelection,
+) -> swarmy_core::ResolvedSelection {
+    let selected = agent.map_or_else(
+        || default.clone(),
+        |agent| agent.inference().resolve(default),
+    );
+    record.inference.resolve(&selected)
+}
+
+/// Cached agent rows for one session page. A missing agent is cached as
+/// `None` so an unknown id costs one store read per page, not one per row.
+pub(crate) type AgentCache =
+    std::collections::HashMap<swarmy_core::AgentId, Option<swarmy_core::AgentRecord>>;
+
+pub(crate) async fn session_with_next(
+    state: &AppState,
+    record: &swarmy_core::SessionRecord,
+    agents: &mut AgentCache,
+) -> Result<api::Session, (StatusCode, Json<api::ApiError>)> {
+    let mut result = session(record);
+    if record.state == swarmy_core::SessionState::Completed {
+        result.next_session = state
+            .store
+            .next_session(record.session_id)
+            .await
+            .map_err(storage)?
+            .map(|id| id.to_string());
+    }
+    result.state_since = state
+        .store
+        .session_state_since(record.session_id)
+        .await
+        .map_err(storage)?
+        .map(|at| at.to_string());
+    result.previous_session = state
+        .store
+        .previous_session(record.session_id)
+        .await
+        .map_err(storage)?
+        .map(|id| id.to_string());
+    let cached = match agents.entry(record.agent_id) {
+        std::collections::hash_map::Entry::Vacant(entry) => entry.insert(
+            state
+                .store
+                .get_agent(record.agent_id)
+                .await
+                .map_err(storage)?,
+        ),
+        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+    };
+    let agent = cached.as_ref();
+    if let Some(agent) = agent {
+        result.main = agent.main_session == Some(record.session_id);
+        result.agent_name = Some(agent.name.clone());
+    }
+    let resolved = resolve_with_agent(record, agent, &state.default_selection);
+    result.resolved = Some(resolved.into());
+    Ok(result)
+}
+
+pub(crate) async fn populate_session_detail(
+    state: &AppState,
+    result: &mut api::Session,
+    record: &swarmy_core::SessionRecord,
+    agent: Option<&swarmy_core::AgentRecord>,
+) -> Result<(), (StatusCode, Json<api::ApiError>)> {
+    if let Some(wait) = state
+        .store
+        .inference_wait(record.session_id)
+        .await
+        .map_err(storage)?
+    {
+        result.waiting = Some(api::WaitingReason {
+            wake_at: Some(wait.wake_at.to_string()),
+            reasons: wait.reasons,
+        });
+    }
+    let usage = state
+        .store
+        .session_usage(record.session_id)
+        .await
+        .map_err(storage)?;
+    result.usage = Some(totals_view(&usage, 0));
+    let (entries, providers) = entry_breakdown(
+        state
+            .store
+            .dimension_totals(
+                store::MeteringDimension::SessionEntry,
+                &record.session_id.to_string(),
+                None,
+            )
+            .await
+            .map_err(storage)?,
+    );
+    result.entries = entries;
+    result.providers = providers;
+    if let Some(scratch) = state
+        .store
+        .scratch(record.agent_id)
+        .await
+        .map_err(storage)?
+    {
+        result.scratch = Some(scratch_view(&scratch));
+    }
+    if let Some(agent) = agent {
+        result.requirements = Some(requirements(agent.requirements));
+    } else if let Some(image) = state
+        .store
+        .pinned_image(record.session_id)
+        .await
+        .map_err(storage)?
+    {
+        let memory_mib = state
+            .store
+            .image_memory(&image)
+            .await
+            .map_err(storage)?
+            .unwrap_or(swarmy_core::SandboxRequirements::default().memory_mib);
+        result.requirements = Some(requirements(swarmy_core::SandboxRequirements {
+            memory_mib,
+            gpu: swarmy_core::GpuRequirement::default(),
+        }));
+    } else {
+        result.requirements = Some(requirements(swarmy_core::SandboxRequirements::default()));
+    }
+    let placement = state
+        .store
+        .get_by_agent(record.agent_id)
+        .await
+        .map_err(storage)?;
+    if let Some(placement) = &placement {
+        result.sandbox_address = state
+            .store
+            .placement_address(placement)
+            .await
+            .map_err(storage)?
+            .map(|address| address.to_string());
+        result.placement = Some(api::PlacementView {
+            node_id: placement.node_id.to_string(),
+            epoch: placement.epoch,
+        });
+    }
+    Ok(())
+}
+
+/// The one agent conversion behind create, show, and update, so a freshly
+/// created or updated row reads back identical to a fetched one. The session
+/// scan hydrates the session list the detail view carries; the count comes
+/// from the scanned rows. List rows use the light `agent` conversion
+/// instead: no per-agent store reads.
+pub(crate) async fn agent_value(
+    state: &AppState,
+    record: swarmy_core::AgentRecord,
+) -> Result<api::Agent, (StatusCode, Json<api::ApiError>)> {
+    let agent_id = record.agent_id;
+    let placement = state
+        .store
+        .get_by_agent(record.agent_id)
+        .await
+        .map_err(storage)?;
+    let scratch = state
+        .store
+        .scratch(record.agent_id)
+        .await
+        .map_err(storage)?;
+    let mut view = agent(record);
+    view.node_id = placement.as_ref().map(|value| value.node_id.to_string());
+    view.scratch = scratch.as_ref().map(scratch_view);
+    let mut sessions = Vec::new();
+    let mut after = None;
+    loop {
+        let page = state
+            .store
+            .list_sessions_by_agent(agent_id, after, store::MAX_SCAN_LIMIT)
+            .await
+            .map_err(storage)?;
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().map(|session| session.session_id);
+        sessions.extend(page);
+    }
+    view.session_count = Some(sessions.len());
+    populate_agent_detail(state, &mut view, agent_id, placement, sessions).await?;
+    Ok(view)
+}
+
+async fn populate_agent_detail(
+    state: &AppState,
+    view: &mut api::Agent,
+    agent_id: swarmy_core::AgentId,
+    placement: Option<swarmy_core::PlacementRecord>,
+    sessions: Vec<swarmy_core::SessionRecord>,
+) -> Result<(), (StatusCode, Json<api::ApiError>)> {
+    let totals = state.store.agent_usage(agent_id).await.map_err(storage)?;
+    view.usage = Some(totals_view(&totals, 0));
+    let (entries, providers) = entry_breakdown(
+        state
+            .store
+            .dimension_totals(
+                store::MeteringDimension::AgentEntry,
+                &agent_id.to_string(),
+                None,
+            )
+            .await
+            .map_err(storage)?,
+    );
+    view.entries = entries;
+    view.providers = providers;
+    view.sandbox_address = match &placement {
+        Some(value) => state
+            .store
+            .placement_address(value)
+            .await
+            .map_err(storage)?
+            .map(|address| address.to_string()),
+        None => None,
+    };
+    view.placement = placement.as_ref().map(|value| api::PlacementView {
+        node_id: value.node_id.to_string(),
+        epoch: value.epoch,
+    });
+    let volume = state
+        .store
+        .get_volume(swarmy_core::VolumeId::from_ulid(agent_id.as_ulid()))
+        .await
+        .map_err(storage)?;
+    let snapshot = volume
+        .as_ref()
+        .map(|value| {
+            jiff::Timestamp::from_millisecond(
+                i64::try_from(value.head_manifest.as_ulid().timestamp_ms()).unwrap_or(i64::MAX),
+            )
+        })
+        .transpose()
+        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "snapshot_timestamp"))?;
+    view.last_snapshot_at = snapshot.map(|at| at.to_string());
+    view.last_snapshot_age_seconds =
+        snapshot.map(|at| jiff::Timestamp::now().duration_since(at).as_secs().max(0));
+    let status = state
+        .store
+        .agent_call_status(agent_id)
+        .await
+        .map_err(storage)?;
+    let busy = status
+        .as_ref()
+        .is_some_and(|status| status.holder_session_id.is_some() || status.queued_calls > 0);
+    view.sandbox_state = Some(if busy {
+        api::SandboxState::Busy
+    } else if status.is_some() {
+        api::SandboxState::Idle
+    } else {
+        api::SandboxState::Unknown
+    });
+    view.call_status = status.map(|status| api::AgentCallView {
+        node_id: status.node_id.to_string(),
+        epoch: status.epoch,
+        holder_session_id: status.holder_session_id.map(|id| id.to_string()),
+        queued_calls: status.queued_calls,
+        observed_at: status.observed_at.to_string(),
+        expires_at: status.expires_at.to_string(),
+    });
+    for record in sessions {
+        let next = state
+            .store
+            .next_session(record.session_id)
+            .await
+            .map_err(storage)?;
+        let mut item = session(&record);
+        item.next_session = next.map(|id| id.to_string());
+        item.main = view.main_session_id.as_deref() == Some(item.id.as_str());
+        view.sessions.push(item);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
-    /// Pin the full API JSON for one fully populated turn: every converted
-    /// field appears, so a dropped or renamed field fails here instead of
-    /// silently vanishing from the contract.
-    // The pinned literal must stay adjacent to the fixture it pins;
-    // splitting them into helpers would let the two drift apart unseen.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the exact-JSON pin needs its full fixture and literal inline"
-    )]
     #[test]
-    fn metric_views_serialize_every_field() {
-        let turn = store::TurnMetrics {
-            session_id: "s".into(),
-            turn_id: "t".into(),
+    fn stage_view_pins_every_field() {
+        let converted = into_api_stage(store::StageTiming {
+            stage: "appended".into(),
+            request_id: Some("req-1".into()),
+            clock_id: "boot".into(),
+            monotonic_ns: 11,
+            unix_ns: 22,
+        });
+        assert_eq!(
+            converted,
+            api::StageTiming {
+                stage: "appended".into(),
+                request_id: Some("req-1".into()),
+                clock_id: "boot".into(),
+                monotonic_ns: 11,
+                unix_ns: 22,
+            }
+        );
+    }
+
+    #[test]
+    fn inference_view_pins_literal_values() {
+        let converted = into_api_inference(store::InferenceMetric {
+            request_id: "r-7".into(),
+            provider: "fake".into(),
+            model: "scripted".into(),
+            input_tokens: 10,
+            cached_input_tokens: 1,
+            output_tokens: 4,
+            cost_micros: 1_200,
+            streamed: Some(false),
+            retries: 2,
+            ..store::InferenceMetric::default()
+        });
+        assert_eq!(converted.request_id, "r-7");
+        assert_eq!(converted.provider, "fake");
+        assert_eq!(converted.model, "scripted");
+        assert_eq!(converted.input_tokens, 10);
+        assert_eq!(converted.cached_input_tokens, 1);
+        assert_eq!(converted.output_tokens, 4);
+        assert_eq!(converted.cost_micros, 1_200);
+        assert_eq!(converted.streamed, Some(false));
+        assert_eq!(converted.retries, 2);
+        assert_eq!(converted.rate_limit_waits, 0);
+    }
+
+    #[test]
+    fn tool_view_pins_literal_values() {
+        let converted = into_api_tool(store::ToolMetric {
+            request_id: "c-3".into(),
+            name: "bash".into(),
+            dispatched_ns: Some(5),
+            started_ns: Some(6),
+            completed_ns: Some(9),
+            exit_status: Some(0),
+            output_bytes: Some(128),
+            ..store::ToolMetric::default()
+        });
+        assert_eq!(converted.request_id, "c-3");
+        assert_eq!(converted.name, "bash");
+        assert_eq!(converted.dispatched_ns, Some(5));
+        assert_eq!(converted.started_ns, Some(6));
+        assert_eq!(converted.completed_ns, Some(9));
+        assert_eq!(converted.exit_status, Some(0));
+        assert_eq!(converted.output_bytes, Some(128));
+    }
+
+    #[test]
+    fn computer_view_pins_literal_values() {
+        let converted = into_api_computer(&store::ComputerMetric {
+            placement_ms: Some(31.5),
+            cold: Some(true),
+            chunks_fetched: 7,
+            bytes_fetched: 9,
+            ..store::ComputerMetric::default()
+        });
+        assert_eq!(converted.placement_ms, Some(31.5));
+        assert_eq!(converted.cold, Some(true));
+        assert_eq!(converted.chunks_fetched, 7);
+        assert_eq!(converted.bytes_fetched, 9);
+        assert_eq!(converted.fetch_p50_ms, None);
+    }
+
+    #[test]
+    fn turn_view_keeps_counts_and_children() {
+        let converted = into_api_turn(store::TurnMetrics {
+            session_id: "s-1".into(),
+            turn_id: "t-2".into(),
             stages: vec![store::StageTiming {
                 stage: "appended".into(),
                 request_id: None,
                 clock_id: "boot".into(),
-                monotonic_ns: 1_000_000,
-                unix_ns: 1_000_000,
+                monotonic_ns: 11,
+                unix_ns: 22,
             }],
             inference: vec![store::InferenceMetric {
-                request_id: "r".into(),
+                request_id: "r-7".into(),
                 provider: "fake".into(),
                 model: "scripted".into(),
-                input_tokens: 10,
-                cached_input_tokens: 2,
-                output_tokens: 4,
-                reasoning_tokens: 1,
-                cost_micros: 8,
-                time_to_first_token_ms: Some(1.5),
-                streaming_duration_ms: Some(2.5),
-                request_duration_ms: Some(3.5),
-                streamed: Some(true),
-                output_tokens_per_second: Some(4.5),
-                retries: 1,
-                rate_limit_waits: 2,
-                gateway_waits: 3,
-                provider_failures: 4,
-                error: Some("boom".into()),
+                ..store::InferenceMetric::default()
             }],
             tools: vec![store::ToolMetric {
-                request_id: "c".into(),
+                request_id: "c-3".into(),
                 name: "bash".into(),
-                dispatched_ns: Some(1),
-                started_ns: Some(2),
-                completed_ns: Some(3),
-                exit_status: Some(0),
-                output_bytes: Some(9),
-                queue_ms: Some(0.5),
-                process_wall_ms: Some(1.5),
+                ..store::ToolMetric::default()
             }],
-            computer: Some(store::ComputerMetric {
-                placement_ms: Some(2.5),
-                cold: Some(true),
-                chunks_fetched: 7,
-                bytes_fetched: 8,
-                fetch_p50_ms: Some(3.5),
-                fetch_p95_ms: Some(4.5),
-                first_tool_chunks_fetched: Some(5),
-                first_tool_bytes_fetched: Some(6),
-                first_tool_fetch_p50_ms: Some(7.5),
-                first_tool_fetch_p95_ms: Some(8.5),
-            }),
-            append_to_first_token_ms: Some(9.5),
-            inference_duration_ms: Some(10.5),
-            append_to_idle_ms: Some(11.5),
-            error: Some("turn failed".into()),
+            computer: None,
             dropped_stages: 1,
             dropped_inference: 2,
             dropped_tools: 3,
-        };
-        assert_eq!(
-            serde_json::to_value(into_api_turn(turn)).unwrap(),
-            json!({
-                "session_id": "s",
-                "turn_id": "t",
-                "stages": [{
-                    "stage": "appended",
-                    "request_id": null,
-                    "clock_id": "boot",
-                    "monotonic_ns": 1_000_000,
-                    "unix_ns": 1_000_000,
-                }],
-                "inference": [{
-                    "request_id": "r",
-                    "provider": "fake",
-                    "model": "scripted",
-                    "input_tokens": 10,
-                    "cached_input_tokens": 2,
-                    "output_tokens": 4,
-                    "reasoning_tokens": 1,
-                    "cost_micros": 8,
-                    "time_to_first_token_ms": 1.5,
-                    "streaming_duration_ms": 2.5,
-                    "request_duration_ms": 3.5,
-                    "streamed": true,
-                    "output_tokens_per_second": 4.5,
-                    "retries": 1,
-                    "rate_limit_waits": 2,
-                    "gateway_waits": 3,
-                    "provider_failures": 4,
-                    "error": "boom",
-                }],
-                "tools": [{
-                    "request_id": "c",
-                    "name": "bash",
-                    "dispatched_ns": 1,
-                    "started_ns": 2,
-                    "completed_ns": 3,
-                    "exit_status": 0,
-                    "output_bytes": 9,
-                    "queue_ms": 0.5,
-                    "process_wall_ms": 1.5,
-                }],
-                "computer": {
-                    "placement_ms": 2.5,
-                    "cold": true,
-                    "chunks_fetched": 7,
-                    "bytes_fetched": 8,
-                    "fetch_p50_ms": 3.5,
-                    "fetch_p95_ms": 4.5,
-                    "first_tool_chunks_fetched": 5,
-                    "first_tool_bytes_fetched": 6,
-                    "first_tool_fetch_p50_ms": 7.5,
-                    "first_tool_fetch_p95_ms": 8.5,
-                },
-                "append_to_first_token_ms": 9.5,
-                "inference_duration_ms": 10.5,
-                "append_to_idle_ms": 11.5,
-                "error": "turn failed",
-                "dropped_stages": 1,
-                "dropped_inference": 2,
-                "dropped_tools": 3,
-            })
-        );
+            ..store::TurnMetrics::default()
+        });
+        assert_eq!(converted.session_id, "s-1");
+        assert_eq!(converted.turn_id, "t-2");
+        assert_eq!(converted.stages.len(), 1);
+        assert_eq!(converted.stages[0].monotonic_ns, 11);
+        assert_eq!(converted.stages[0].unix_ns, 22);
+        assert_eq!(converted.inference.len(), 1);
+        assert_eq!(converted.inference[0].provider, "fake");
+        assert_eq!(converted.tools.len(), 1);
+        assert_eq!(converted.tools[0].name, "bash");
+        assert!(converted.computer.is_none());
+        assert_eq!(converted.dropped_stages, 1);
+        assert_eq!(converted.dropped_inference, 2);
+        assert_eq!(converted.dropped_tools, 3);
     }
 
-    /// Pin the agent rollup JSON the same way: latencies keyed by stage with
-    /// both percentiles, plus every counter.
     #[test]
-    fn agent_view_serializes_every_field() {
-        let agent = store::AgentMetrics {
-            agent_id: "a".into(),
-            main_session_id: Some("s".into()),
-            turns: 7,
+    fn agent_metrics_view_pins_latency() {
+        let converted = into_api_agent(store::AgentMetrics {
+            agent_id: "a-9".into(),
+            main_session_id: Some("s-1".into()),
+            turns: 3,
             latencies: std::collections::BTreeMap::from([(
                 "append_to_idle".into(),
                 store::LatencyPercentiles {
-                    p50_ms: 1.0,
-                    p95_ms: 2.0,
+                    p50_ms: 1.5,
+                    p95_ms: 2.5,
                 },
             )]),
-            input_tokens: 10,
-            cached_input_tokens: 2,
-            output_tokens: 4,
-            reasoning_tokens: 1,
-            mean_output_tokens_per_second: Some(3.5),
-            retries: 5,
-            errors: 6,
-            cost_micros: 8,
+            input_tokens: 100,
+            cost_micros: 50,
+            ..store::AgentMetrics::default()
+        });
+        assert_eq!(converted.agent_id, "a-9");
+        assert_eq!(converted.main_session_id.as_deref(), Some("s-1"));
+        assert_eq!(converted.turns, 3);
+        assert_eq!(converted.input_tokens, 100);
+        assert_eq!(converted.cost_micros, 50);
+        let latency = converted.latencies["append_to_idle"].clone();
+        assert!((latency.p50_ms - 1.5).abs() < f64::EPSILON);
+        assert!((latency.p95_ms - 2.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn image_header_uses_one_hex_shape_on_both_paths() {
+        // `image build` and `image show` convert the stored manifest through
+        // this one function: the root hash must read as hex in both
+        // responses, never as the manifest's 32-number array.
+        let manifest = swarmy_core::ManifestHeader {
+            size: 1 << 20,
+            chunk_size: 262_144,
+            root_hash: swarmy_core::ContentHash([
+                0x3e, 0x83, 0xe1, 0xfa, 0x8c, 0x0f, 0x7c, 0x9d, 0x3e, 0x4b, 0x5a, 0x69, 0x78, 0x87,
+                0x76, 0x65, 0x54, 0x43, 0x32, 0x21, 0x10, 0x0f, 0xfe, 0xee, 0xed, 0xdc, 0xcb, 0xba,
+                0xa9, 0x98, 0x87, 0x76,
+            ]),
+        };
+        let wire = serde_json::to_value(image_header(&manifest)).expect("header serializes");
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "size": 1 << 20,
+                "chunk_size": 262_144,
+                "root_hash": "3e83e1fa8c0f7c9d3e4b5a697887766554433221100ffeeeeddccbbaa9988776",
+            })
+        );
+        // The build response embeds the same typed header `image show`
+        // carries, so the two JSON shapes compare equal.
+        let upload = api::ImageUpload {
+            name: "base".into(),
+            tag: "dev".into(),
+            manifest_id: "m".into(),
+            header: image_header(&manifest),
+            size: manifest.size,
+            chunks_total: 1,
+            chunks_stored: 1,
+            chunks_uploaded: 0,
+        };
+        let shown = api::Image {
+            manifest_id: "m".into(),
+            name: "base".into(),
+            tag: "dev".into(),
+            header: Some(image_header(&manifest)),
+            scratch: None,
         };
         assert_eq!(
-            serde_json::to_value(into_api_agent(agent)).unwrap(),
-            json!({
-                "agent_id": "a",
-                "main_session_id": "s",
-                "turns": 7,
-                "latencies": {"append_to_idle": {"p50_ms": 1.0, "p95_ms": 2.0}},
-                "input_tokens": 10,
-                "cached_input_tokens": 2,
-                "output_tokens": 4,
-                "reasoning_tokens": 1,
-                "mean_output_tokens_per_second": 3.5,
-                "retries": 5,
-                "errors": 6,
-                "cost_micros": 8,
-            })
+            serde_json::to_value(&upload.header).expect("upload header serializes"),
+            serde_json::to_value(shown.header.as_ref().expect("show carries a header"))
+                .expect("show header serializes"),
         );
     }
 }

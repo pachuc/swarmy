@@ -80,6 +80,10 @@ async fn authenticated_routes_and_create_replay() {
         effort: None,
         system_prompt: None,
         route: None,
+
+        memory_mib: None,
+        gpu: None,
+        github_token: None,
     };
     let create = || {
         client
@@ -119,7 +123,13 @@ async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
         .json()
         .await
         .unwrap();
-    assert_eq!(images[0], shown);
+    assert_eq!(images[0].manifest_id, shown.manifest_id);
+    assert_eq!(images[0].name, shown.name);
+    assert_eq!(images[0].tag, shown.tag);
+    assert!(
+        shown.header.is_some(),
+        "image detail includes the manifest header"
+    );
     let listed: Vec<Agent> = client
         .get(format!("{base}/v1/agents"))
         .bearer_auth("test-token")
@@ -129,7 +139,12 @@ async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
         .json()
         .await
         .unwrap();
-    assert_eq!(listed, vec![first.clone()]);
+    assert_eq!(listed.len(), 1);
+    // List rows are summaries; show carries the detail create returned.
+    assert_eq!(listed[0].id, first.id);
+    assert_eq!(listed[0].name, first.name);
+    assert!(listed[0].sessions.is_empty());
+    assert!(listed[0].usage.is_none());
     let shown: Agent = client
         .get(format!("{base}/v1/agents/test-agent"))
         .bearer_auth("test-token")
@@ -139,7 +154,15 @@ async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
         .json()
         .await
         .unwrap();
-    assert_eq!(&shown, first);
+    let mut created_value = serde_json::to_value(first).unwrap();
+    let mut shown_value = serde_json::to_value(shown).unwrap();
+    for value in [&mut created_value, &mut shown_value] {
+        value
+            .as_object_mut()
+            .expect("agent serializes to an object")
+            .remove("last_snapshot_age_seconds");
+    }
+    assert_eq!(created_value, shown_value);
     let providers: Vec<Provider> = client
         .get(format!("{base}/v1/providers"))
         .bearer_auth("test-token")
@@ -210,6 +233,7 @@ async fn assert_credentials(client: &reqwest::Client, base: &str) {
         kind: CredentialKind::ApiKey,
         label: "primary".into(),
         secret: secret.into(),
+        extra: std::collections::BTreeMap::default(),
     };
     let created = client
         .post(format!("{base}/v1/credentials"))
@@ -269,6 +293,9 @@ async fn assert_session(client: &reqwest::Client, base: &str, id: &str) {
         .unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, id);
+    // List rows are summaries; show hydrates usage, requirements, and placement.
+    assert!(listed[0].usage.is_none());
+    assert!(listed[0].requirements.is_none());
     let shown: Session = client
         .get(format!("{base}/v1/sessions/{id}"))
         .bearer_auth("test-token")
@@ -278,7 +305,10 @@ async fn assert_session(client: &reqwest::Client, base: &str, id: &str) {
         .json()
         .await
         .unwrap();
-    assert_eq!(shown, listed[0]);
+    assert_eq!(shown.id, listed[0].id);
+    assert_eq!(shown.state, listed[0].state);
+    assert!(shown.usage.is_some());
+    assert!(shown.requirements.is_some());
     let events: Vec<Event> = client
         .get(format!("{base}/v1/sessions/{id}/events?after=0&limit=4"))
         .bearer_auth("test-token")
@@ -398,7 +428,7 @@ async fn check_doctor(base: &str) {
     assert_eq!(doctor.default_image.as_deref(), Some("fixture:test"));
     assert_eq!(doctor.images[0], "fixture:test");
     assert!(doctor.services.iter().any(|row| {
-        row.role == "node"
+        row.role == swarmy_api_types::ServiceRole::Node
             && row
                 .capacity
                 .as_ref()
@@ -408,10 +438,10 @@ async fn check_doctor(base: &str) {
         doctor
             .services
             .iter()
-            .any(|row| row.role == "scheduler" && row.alive)
+            .any(|row| row.role == swarmy_api_types::ServiceRole::Scheduler && row.alive)
     );
     assert!(doctor.services.iter().any(|row| {
-        row.role == "gateway"
+        row.role == swarmy_api_types::ServiceRole::Gateway
             && row
                 .providers
                 .first()
@@ -434,13 +464,9 @@ fn fallback_steps() -> Vec<swarmy_api_types::RouteStep> {
     ]
 }
 
-fn route_input(
-    name: &str,
-    steps: Vec<swarmy_api_types::RouteStep>,
-) -> swarmy_api_types::CliRouteInput {
-    swarmy_api_types::CliRouteInput {
+fn route_input(steps: Vec<swarmy_api_types::RouteStep>) -> swarmy_api_types::SetRoute {
+    swarmy_api_types::SetRoute {
         idempotency_key: Ulid::generate().to_string(),
-        name: name.into(),
         steps,
     }
 }
@@ -485,26 +511,26 @@ async fn assert_route_crud(client: &swarmy_client::Client) {
     // Unknown providers fail at set time instead of wedging turns later.
     assert!(
         client
-            .cli_set_route(&route_input(
+            .set_route(
                 "bad",
-                vec![swarmy_api_types::RouteStep {
+                &route_input(vec![swarmy_api_types::RouteStep {
                     provider: "no-such-provider".into(),
                     entry: "default".into(),
                     model: None,
-                }],
-            ))
+                }],)
+            )
             .await
             .is_err()
     );
     client
-        .cli_set_route(&route_input("fallback", fallback_steps()))
+        .set_route("fallback", &route_input(fallback_steps()))
         .await
         .unwrap();
-    let listed = client.cli_routes().await.unwrap();
+    let listed = client.routes().await.unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].steps.len(), 2);
     assert_eq!(listed[0].steps[1].model.as_deref(), Some("gpt-5.5"));
-    assert_eq!(client.cli_route("fallback").await.unwrap().name, "fallback");
+    assert_eq!(client.route("fallback").await.unwrap().name, "fallback");
     assert_eq!(
         client.route("fallback").await.unwrap().steps,
         fallback_steps()
@@ -528,6 +554,10 @@ async fn assert_agent_route(client: &swarmy_client::Client) {
             effort: None,
             system_prompt: None,
             route: Some("fallback".into()),
+
+            memory_mib: None,
+            gpu: None,
+            github_token: None,
         })
         .await
         .unwrap();
@@ -543,6 +573,12 @@ async fn assert_agent_route(client: &swarmy_client::Client) {
                 effort: None,
                 system_prompt: None,
                 route: None,
+
+                memory_mib: None,
+                gpu: None,
+                resets: Vec::new(),
+                github_token: None,
+                clear_github_token: false,
             },
         )
         .await
@@ -592,8 +628,8 @@ async fn route_session(client: &swarmy_client::Client) -> swarmy_api_types::Sess
         .await
         .unwrap();
     assert_eq!(session.route.as_deref(), Some("fallback"));
-    let detail = client.cli_session(&session.id).await.unwrap();
-    assert_eq!(detail.session["route"], "fallback");
+    let detail = client.session(&session.id).await.unwrap();
+    assert_eq!(detail.route.as_deref(), Some("fallback"));
     let session = client
         .set_session_route(
             &session.id,
@@ -612,16 +648,16 @@ async fn assert_route_deletion(client: &swarmy_client::Client) {
     // Deletion reports and assigned sessions fall back afterwards.
     assert!(
         client
-            .cli_remove_route("fallback", &Ulid::generate().to_string())
+            .remove_route("fallback", &Ulid::generate().to_string())
             .await
             .is_ok()
     );
-    assert!(client.cli_route("fallback").await.is_err());
+    assert!(client.route("fallback").await.is_err());
     assert_eq!(client.routes().await.unwrap().len(), 0);
 }
 
 #[tokio::test]
-async fn inference_routes_round_trip_through_cli_and_resource_api() {
+async fn inference_routes_round_trip_through_resource_api() {
     let Some((client, task)) = route_server().await else {
         return;
     };

@@ -57,10 +57,15 @@ Samples expire after three node heartbeat intervals. This is call occupancy, not
 a health probe or execution authority.
 
 Every agent and session command supports global `--json` and `--remote NAME`.
-JSON create returns an agent record; ls emits one record per line with
-`node_id` and `session_count`; show adds `placement`, `sandbox_state`,
-`sandbox_state_reason`, `call_status`, `last_snapshot_at`, `last_snapshot_age_seconds`, and
-`sessions`. Delete and close emit `agent_deleted` and `session_closed` records.
+JSON create returns an agent record; ls emits one summary record per line
+with the identity fields only (agents omit `node_id`, `session_count`,
+`sessions`, `usage`, and placement until hydrated; sessions carry the fleet
+fields `state`, `state_since`, `agent_name`, and `next_session`); show
+hydrates the full record, adding `placement`, `sandbox_state`,
+`sandbox_state_reason`, `call_status`, `last_snapshot_at`,
+`last_snapshot_age_seconds`, `session_count`, and `sessions` for agents and
+`usage`, `requirements`, `placement`, and `waiting` for sessions. Delete and
+close emit `agent_deleted` and `session_closed` records.
 `--json` still requires confirmation for deletion unless `--yes` is supplied;
 prompts go to stderr. `call_status` is null when unknown; otherwise it includes
 `agent_id`, `node_id`, `epoch`, `holder_session_id`, `queued_calls`, `observed_at`,

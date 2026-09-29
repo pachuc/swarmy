@@ -16,6 +16,7 @@ path = "src/main.rs"
 async-trait.workspace = true
 swarmy-llm.workspace = true
 swarmy-client.workspace = true
+swarmy-api-types.workspace = true
 swarmy-config.workspace = true
 swarmy-core.workspace = true
 anyhow.workspace = true

@@ -72,14 +72,24 @@ pub enum TurnStatus {
     Failed,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionKind {
     Ephemeral,
     Named,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+impl SessionKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ephemeral => "ephemeral",
+            Self::Named => "named",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionState {
     Idle,
@@ -91,7 +101,7 @@ pub enum SessionState {
     Completed,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
     None,
@@ -101,6 +111,78 @@ pub enum ReasoningEffort {
     High,
     Xhigh,
     Max,
+}
+
+impl From<swarmy_core::SessionState> for SessionState {
+    fn from(value: swarmy_core::SessionState) -> Self {
+        match value {
+            swarmy_core::SessionState::Idle => Self::Idle,
+            swarmy_core::SessionState::Runnable => Self::Runnable,
+            swarmy_core::SessionState::Leased => Self::Leased,
+            swarmy_core::SessionState::WaitingInference => Self::WaitingInference,
+            swarmy_core::SessionState::WaitingTools => Self::WaitingTools,
+            swarmy_core::SessionState::Sleeping => Self::Sleeping,
+            swarmy_core::SessionState::Completed => Self::Completed,
+        }
+    }
+}
+
+impl From<swarmy_core::ReasoningEffort> for ReasoningEffort {
+    fn from(value: swarmy_core::ReasoningEffort) -> Self {
+        match value {
+            swarmy_core::ReasoningEffort::None => Self::None,
+            swarmy_core::ReasoningEffort::Minimal => Self::Minimal,
+            swarmy_core::ReasoningEffort::Low => Self::Low,
+            swarmy_core::ReasoningEffort::Medium => Self::Medium,
+            swarmy_core::ReasoningEffort::High => Self::High,
+            swarmy_core::ReasoningEffort::Xhigh => Self::Xhigh,
+            swarmy_core::ReasoningEffort::Max => Self::Max,
+        }
+    }
+}
+
+impl ReasoningEffort {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+impl SessionState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Runnable => "runnable",
+            Self::Leased => "leased",
+            Self::WaitingInference => "waiting_inference",
+            Self::WaitingTools => "waiting_tools",
+            Self::Sleeping => "sleeping",
+            Self::Completed => "completed",
+        }
+    }
+}
+
+impl From<ReasoningEffort> for swarmy_core::ReasoningEffort {
+    fn from(value: ReasoningEffort) -> Self {
+        match value {
+            ReasoningEffort::None => Self::None,
+            ReasoningEffort::Minimal => Self::Minimal,
+            ReasoningEffort::Low => Self::Low,
+            ReasoningEffort::Medium => Self::Medium,
+            ReasoningEffort::High => Self::High,
+            ReasoningEffort::Xhigh => Self::Xhigh,
+            ReasoningEffort::Max => Self::Max,
+        }
+    }
 }
 
 /// An ISO 8601 timestamp is used for `wake_at`; reasons are human-readable.
@@ -130,6 +212,36 @@ pub struct Agent {
     pub main_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
+    pub requirements: SandboxRequirements,
+    // Everything below hydrates on show/create/update only. List rows omit
+    // these keys instead of printing nulls, zeros, or empty arrays as if
+    // they were observed values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scratch: Option<ScratchView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageTotalsView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<EntryUsageView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_snapshot_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_snapshot_age_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_state: Option<SandboxState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_status: Option<AgentCallView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<Session>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -153,6 +265,49 @@ pub struct Session {
     pub next_session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<ResolvedInference>,
+    #[serde(default)]
+    pub main: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_since: Option<String>,
+    #[serde(default)]
+    pub interrupt_requested: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageTotalsView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<EntryUsageView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scratch: Option<ScratchView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirements: Option<SandboxRequirements>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_address: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ResolvedInference {
+    pub provider: String,
+    pub model: String,
+    pub effort: ReasoningEffort,
+}
+
+impl From<swarmy_core::ResolvedSelection> for ResolvedInference {
+    fn from(value: swarmy_core::ResolvedSelection) -> Self {
+        Self {
+            provider: value.provider,
+            model: value.model,
+            effort: value.effort.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -183,32 +338,94 @@ pub struct Message {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Image {
-    pub id: String,
+    pub manifest_id: String,
     pub name: String,
     pub tag: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<ImageHeader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scratch: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ImageHeader {
+    pub size: u64,
+    pub chunk_size: u32,
+    pub root_hash: String,
+}
+
+/// Wire protocol a model answers on: its own override or the provider
+/// default. Variant names are the wire names, matching the catalog, so the
+/// JSON form is unchanged from the previous free-form string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum ProviderApi {
+    AnthropicMessages,
+    OpenAiResponses,
+    OpenAiCodexResponses,
+    OpenAiCompletions,
+    GoogleGenerativeAi,
+    GoogleVertex,
+    BedrockConverse,
+    Fake,
+}
+
+impl ProviderApi {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AnthropicMessages => "AnthropicMessages",
+            Self::OpenAiResponses => "OpenAiResponses",
+            Self::OpenAiCodexResponses => "OpenAiCodexResponses",
+            Self::OpenAiCompletions => "OpenAiCompletions",
+            Self::GoogleGenerativeAi => "GoogleGenerativeAi",
+            Self::GoogleVertex => "GoogleVertex",
+            Self::BedrockConverse => "BedrockConverse",
+            Self::Fake => "Fake",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct Model {
     pub id: String,
-    pub provider_id: String,
+    pub provider: String,
     pub context_window: u64,
-    #[serde(flatten)]
-    #[serde(default)]
-    pub catalog: std::collections::BTreeMap<String, serde_json::Value>,
+    pub key: String,
+    pub name: String,
+    pub limit: ModelLimit,
+    pub cost: ModelCost,
+    pub supported_efforts: Vec<ReasoningEffort>,
+    /// Wire protocol the model answers on: its own override or the provider default.
+    pub effective_api: ProviderApi,
+    /// Base URL the model answers on: its own override or the provider default.
+    pub effective_base_url: String,
+    /// Provider quirk flags from the catalog; readers ignore unknown keys.
+    pub compat: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ModelLimit {
+    pub context: u64,
+    pub output: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ModelCost {
+    pub input: f64,
+    pub output: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Provider {
     pub id: String,
     pub name: String,
-    pub status: String,
-    #[serde(flatten)]
-    #[serde(default)]
-    pub catalog: std::collections::BTreeMap<String, serde_json::Value>,
+    pub api: ProviderApi,
+    pub auth_kinds: Vec<String>,
+    pub env_keys: Vec<String>,
+    pub credential_env_keys: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialKind {
     Subscription,
@@ -216,12 +433,34 @@ pub enum CredentialKind {
     Cloud,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialStatus {
     Ready,
     Expired,
     NeedsLogin,
+}
+
+impl CredentialKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Subscription => "subscription",
+            Self::ApiKey => "api_key",
+            Self::Cloud => "cloud",
+        }
+    }
+}
+
+impl CredentialStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Expired => "expired",
+            Self::NeedsLogin => "needs_login",
+        }
+    }
 }
 
 /// Credential metadata contains no secret material.
@@ -236,6 +475,8 @@ pub struct Credential {
     pub created_at: String,
     #[serde(default)]
     pub last_used_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -264,7 +505,7 @@ pub struct Node {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ServiceHealth {
-    pub role: String,
+    pub role: ServiceRole,
     pub instance_id: String,
     pub version: String,
     pub alive: bool,
@@ -309,9 +550,32 @@ pub struct DoctorNode {
     pub committed_memory_bytes: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceRole {
+    Scheduler,
+    Worker,
+    Gateway,
+    Api,
+    Node,
+}
+
+impl ServiceRole {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Scheduler => "scheduler",
+            Self::Worker => "worker",
+            Self::Gateway => "gateway",
+            Self::Api => "api",
+            Self::Node => "node",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DoctorService {
-    pub role: String,
+    pub role: ServiceRole,
     pub instance_id: String,
     pub version: String,
     pub alive: bool,
@@ -350,17 +614,66 @@ pub struct GcRun {
     pub duration_ms: u64,
 }
 
-/// A published image with its chunk statistics.
+/// A published image with its chunk statistics. The header shares the
+/// `ImageHeader` shape with `image show`, so the root hash reads the same
+/// hex string in both responses.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ImageUpload {
     pub name: String,
     pub tag: String,
     pub manifest_id: String,
-    pub header: serde_json::Value,
+    pub header: ImageHeader,
     pub size: u64,
     pub chunks_total: u64,
     pub chunks_stored: u64,
     pub chunks_uploaded: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuMode {
+    None,
+    Shared,
+    Dedicated,
+}
+impl From<GpuMode> for swarmy_core::GpuRequirement {
+    fn from(value: GpuMode) -> Self {
+        match value {
+            GpuMode::None => Self::None,
+            GpuMode::Shared => Self::Shared,
+            GpuMode::Dedicated => Self::Dedicated,
+        }
+    }
+}
+
+impl GpuMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Shared => "shared",
+            Self::Dedicated => "dedicated",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentReset {
+    Provider,
+    Model,
+    Effort,
+    Route,
+}
+impl From<AgentReset> for swarmy_core::InferenceField {
+    fn from(value: AgentReset) -> Self {
+        match value {
+            AgentReset::Provider => Self::Provider,
+            AgentReset::Model => Self::Model,
+            AgentReset::Effort => Self::Effort,
+            AgentReset::Route => Self::Route,
+        }
+    }
 }
 
 /// Every client mutation has a key that survives retries of the same intent.
@@ -376,6 +689,12 @@ pub struct CreateAgent {
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub route: Option<String>,
+    #[serde(default)]
+    pub memory_mib: Option<u64>,
+    #[serde(default)]
+    pub gpu: Option<GpuMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_token: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct UpdateAgent {
@@ -387,6 +706,16 @@ pub struct UpdateAgent {
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub route: Option<String>,
+    #[serde(default)]
+    pub memory_mib: Option<u64>,
+    #[serde(default)]
+    pub gpu: Option<GpuMode>,
+    #[serde(default)]
+    pub resets: Vec<AgentReset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_token: Option<String>,
+    #[serde(default)]
+    pub clear_github_token: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateSession {
@@ -478,12 +807,30 @@ pub struct CreateCredential {
     pub kind: CredentialKind,
     pub label: String,
     pub secret: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub extra: std::collections::BTreeMap<String, String>,
+}
+
+/// Import an OAuth or provider-specific credential without exposing its secret on reads.
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
+pub struct PutCredentialRecord {
+    pub idempotency_key: String,
+    pub provider: String,
+    pub label: String,
+    #[schema(value_type = serde_json::Value)]
+    pub record: swarmy_core::CredentialRecord,
 }
 
 /// Body for agent and credential deletions. The key scopes the replayed result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DeleteRequest {
     pub idempotency_key: String,
+}
+
+/// Deleting an agent reports whether the intent completed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AgentDeleted {
+    pub deleted: bool,
 }
 
 /// Deleting a labelled credential reports the removal without returning secrets.
@@ -722,12 +1069,6 @@ pub enum EventPayload {
     MessageAppended {
         message: Message,
     },
-    TurnStarted {
-        turn: Turn,
-    },
-    TurnFinished {
-        turn: Turn,
-    },
     ToolCall {
         turn_id: String,
         call_id: String,
@@ -739,10 +1080,6 @@ pub enum EventPayload {
         call_id: String,
         result: serde_json::Value,
     },
-    InferenceError {
-        turn_id: String,
-        error: ApiError,
-    },
     Idle {
         session_id: String,
     },
@@ -750,12 +1087,6 @@ pub enum EventPayload {
         turn_id: String,
         position: u64,
         text: String,
-    },
-    ServiceStatusChanged {
-        health: ServiceHealth,
-    },
-    NodeStatusChanged {
-        node: Node,
     },
     /// Durable session events and live timeline observations keep their
     /// stored shapes; the API carries the typed record instead of an
@@ -775,192 +1106,70 @@ pub struct ApiError {
     pub provider_text: Option<String>,
 }
 
-/// CLI projections retain store record fields for compatibility with existing scripts.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliSession {
-    pub session_id: String,
-    pub resolved_inference: serde_json::Value,
-    pub archived: bool,
-    pub main: bool,
-    pub agent_name: Option<String>,
-    #[serde(flatten)]
-    pub record: std::collections::BTreeMap<String, serde_json::Value>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliSessionDetail {
-    pub session: serde_json::Value,
-    pub resolved: serde_json::Value,
-    pub usage: serde_json::Value,
-    pub cost_dollars: String,
-    /// Per-entry shares of the session totals, costliest first, read from
-    /// the session-entry rollups rather than completion records.
-    #[serde(default)]
-    pub entries: Vec<EntryUsageView>,
-    /// Providers involved in the session, derived from the entry names.
-    #[serde(default)]
-    pub providers: Vec<String>,
-    pub scratch: serde_json::Value,
-    pub requirements: serde_json::Value,
-    pub placement: serde_json::Value,
-    pub address: Option<String>,
-    pub wait: serde_json::Value,
-    pub events: Vec<serde_json::Value>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliAgent {
-    pub agent_id: String,
-    pub name: String,
-    #[serde(flatten)]
-    pub record: std::collections::BTreeMap<String, serde_json::Value>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliImage {
-    pub name: String,
-    pub tag: String,
-    pub manifest_id: String,
-    pub header: serde_json::Value,
-    pub scratch: Vec<String>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliCredential {
-    pub provider: String,
-    pub kind: String,
-    pub label: String,
-    pub status: String,
-    pub updated_at: String,
-    #[serde(default)]
-    pub created_at: String,
-    #[serde(default)]
-    pub last_used_at: Option<String>,
-    pub expires_at: Option<String>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliSaved {
-    pub saved: bool,
-}
-/// CLI projection of a named inference route.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliRoute {
-    pub name: String,
-    pub steps: Vec<RouteStep>,
-    pub updated_at: String,
-}
-/// CLI input for replacing a route's steps in order.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliRouteInput {
-    pub idempotency_key: String,
-    pub name: String,
-    pub steps: Vec<RouteStep>,
-}
-/// CLI deletion marker for a named route.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliRouteDeleted {
-    pub deleted: bool,
-}
-/// Input for CLI agent creation or settings updates.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliAgentChoice {
-    pub idempotency_key: String,
-    pub name: Option<String>,
-    pub image: Option<String>,
-    pub description: Option<String>,
-    pub provider: Option<String>,
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    pub system_prompt: Option<String>,
-    pub memory: Option<u64>,
-    pub gpu: Option<String>,
-    pub github_token: Option<String>,
-    pub clear_github_token: Option<bool>,
-    pub resets: Option<Vec<String>>,
-    #[serde(default)]
-    pub route: Option<String>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliCredentialInput {
-    pub idempotency_key: String,
-    pub provider: String,
-    #[serde(default)]
-    pub label: Option<String>,
-    /// Encrypted by the API, never returned by credential endpoints.
-    pub record: serde_json::Value,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ScratchView {
+    pub node_id: String,
+    pub bytes: u64,
 }
 
-/// CLI compatibility routes. These signatures are mirrored by the server router.
-pub mod cli_paths {
-    use super::{
-        ApiError, CliAgent, CliAgentChoice, CliCredential, CliCredentialInput, CliImage, CliRoute,
-        CliRouteDeleted, CliRouteInput, CliSaved, CliSession, CliSessionDetail, DoctorSnapshot,
-        SetSessionRoute,
-    };
-    #[utoipa::path(get, path = "/v1/cli/doctor",
-        responses((status = 200, body = DoctorSnapshot), (status = 503, body = ApiError)))]
-    pub fn cli_doctor() {}
-    #[utoipa::path(get, path = "/v1/cli/sessions",
-        responses((status = 200, body = Vec<CliSession>), (status = 400, body = ApiError)))]
-    pub fn cli_sessions() {}
-    #[utoipa::path(get, path = "/v1/cli/sessions/{id}",
-        responses((status = 200, body = CliSessionDetail), (status = 400, body = ApiError)))]
-    pub fn cli_session() {}
-    #[utoipa::path(get, path = "/v1/cli/agents",
-        responses((status = 200, body = Vec<CliAgent>), (status = 400, body = ApiError)))]
-    pub fn cli_agents() {}
-    #[utoipa::path(post, path = "/v1/cli/agents",
-    request_body = CliAgentChoice,
-        responses((status = 200, body = CliAgent), (status = 400, body = ApiError)))]
-    pub fn cli_create_agent() {}
-    #[utoipa::path(get, path = "/v1/cli/agents/{name}",
-        responses((status = 200, body = CliAgent), (status = 400, body = ApiError)))]
-    pub fn cli_agent() {}
-    #[utoipa::path(patch, path = "/v1/cli/agents/{name}/settings",
-    request_body = CliAgentChoice,
-        responses((status = 200, body = CliAgent), (status = 400, body = ApiError)))]
-    pub fn cli_update_agent() {}
-    #[utoipa::path(get, path = "/v1/cli/images/{name}/{tag}",
-        responses((status = 200, body = CliImage), (status = 400, body = ApiError)))]
-    pub fn cli_image() {}
-    #[utoipa::path(get, path = "/v1/cli/credentials",
-        responses((status = 200, body = Vec<CliCredential>), (status = 400, body = ApiError)))]
-    pub fn cli_credentials() {}
-    #[utoipa::path(post, path = "/v1/cli/credentials",
-    request_body = CliCredentialInput,
-        responses((status = 200, body = CliSaved), (status = 400, body = ApiError)))]
-    pub fn cli_set_credential() {}
-    #[utoipa::path(get, path = "/v1/cli/credentials/{provider}",
-        responses((status = 200, body = CliCredential), (status = 400, body = ApiError)))]
-    pub fn cli_credential() {}
-    #[utoipa::path(get, path = "/v1/cli/routes",
-        responses((status = 200, body = Vec<CliRoute>), (status = 400, body = ApiError)))]
-    pub fn cli_routes() {}
-    #[utoipa::path(get, path = "/v1/cli/routes/{name}",
-        responses((status = 200, body = CliRoute), (status = 400, body = ApiError)))]
-    pub fn cli_route() {}
-    #[utoipa::path(post, path = "/v1/cli/routes",
-    request_body = CliRouteInput,
-        responses((status = 200, body = CliSaved), (status = 400, body = ApiError)))]
-    pub fn cli_set_route() {}
-    #[utoipa::path(delete, path = "/v1/cli/routes/{name}",
-        responses((status = 200, body = CliRouteDeleted), (status = 400, body = ApiError)))]
-    pub fn cli_remove_route() {}
-    #[utoipa::path(patch, path = "/v1/cli/sessions/{id}/route",
-    request_body = SetSessionRoute,
-        responses((status = 200, body = CliSessionDetail), (status = 400, body = ApiError)))]
-    pub fn cli_set_session_route() {}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SandboxRequirements {
+    pub memory_mib: u64,
+    pub gpu: GpuMode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PlacementView {
+    pub node_id: String,
+    pub epoch: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AgentCallView {
+    pub node_id: String,
+    pub epoch: u64,
+    pub holder_session_id: Option<String>,
+    pub queued_calls: u64,
+    pub observed_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxState {
+    Busy,
+    Idle,
+    Unknown,
+}
+
+impl SandboxState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Busy => "busy",
+            Self::Idle => "idle",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 /// Versioned resource routes. These signatures are mirrored by the server router.
 pub mod api_paths {
     use super::{
-        Agent, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession, CreateAgent,
-        CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
-        EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload, InterruptOutcome,
-        InterruptSession, Model, ProbeModel, ProbeResult, Provider, QuotaEntry, Route,
-        RouteDeleted, Session, SessionClosed, SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun,
-        Subscription, TurnMetrics, UpdateAgent, UsageResponse,
+        Agent, AgentDeleted, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession,
+        CreateAgent, CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
+        DoctorSnapshot, EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload,
+        InterruptOutcome, InterruptSession, Model, ProbeModel, ProbeResult, Provider,
+        PutCredentialRecord, QuotaEntry, Route, RouteDeleted, Session, SessionClosed,
+        SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun, Subscription, TurnMetrics,
+        UpdateAgent, UsageResponse,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
     pub fn health() {}
+    #[utoipa::path(get, path = "/v1/doctor",
+        responses((status = 200, body = DoctorSnapshot), (status = 503, body = ApiError)))]
+    pub fn doctor() {}
     #[utoipa::path(get, path = "/v1/openapi.json",
         responses((status = 200, description = "The OpenAPI document for this server version")))]
     pub fn openapi() {}
@@ -990,7 +1199,7 @@ pub mod api_paths {
     #[utoipa::path(delete, path = "/v1/agents/{id}",
         params(("id" = String, Path, description = "Agent id or name")),
         request_body = DeleteRequest,
-        responses((status = 200, description = "Deletion marker")))]
+        responses((status = 200, body = AgentDeleted)))]
     pub fn delete_agent() {}
     #[utoipa::path(get, path = "/v1/sessions",
         params(
@@ -1139,6 +1348,10 @@ pub mod api_paths {
         request_body = CreateCredential,
         responses((status = 200, body = Credential), (status = 400, body = ApiError)))]
     pub fn set_credential() {}
+    #[utoipa::path(post, path = "/v1/credentials/records",
+        request_body = PutCredentialRecord,
+        responses((status = 200, body = Credential), (status = 400, body = ApiError)))]
+    pub fn put_credential_record() {}
     #[utoipa::path(get, path = "/v1/credentials/{provider}",
         params(("provider" = String, Path, description = "Provider id")),
         responses((status = 200, body = Credential), (status = 404, body = ApiError)))]
@@ -1146,7 +1359,7 @@ pub mod api_paths {
     #[utoipa::path(delete, path = "/v1/credentials/{provider}",
         params(("provider" = String, Path, description = "Provider id")),
         request_body = DeleteRequest,
-        responses((status = 200, description = "Deletion marker")))]
+        responses((status = 200, body = AgentDeleted)))]
     pub fn remove_credential() {}
     #[utoipa::path(get, path = "/v1/sessions/{id}/metrics",
         params(
@@ -1218,7 +1431,7 @@ pub mod api_paths {
     info(title = "Swarmy API", version = "1.0.0", description = "Version 1 control plane. Additive-only within /v1: new routes and fields may appear, nothing is removed or retyped, and deprecations carry an x-sunset date. See docs/api.md."),
     servers((url = "/v1", description = "Version 1 control plane")),
     paths(
-        api_paths::health, api_paths::openapi, api_paths::docs,
+        api_paths::health, api_paths::doctor, api_paths::openapi, api_paths::docs,
         api_paths::list_agents, api_paths::create_agent, api_paths::show_agent,
         api_paths::update_agent, api_paths::delete_agent,
         api_paths::list_sessions, api_paths::create_session, api_paths::show_session,
@@ -1230,37 +1443,30 @@ pub mod api_paths {
         api_paths::list_models, api_paths::search_models, api_paths::show_model,
         api_paths::list_providers, api_paths::probe_model,
         api_paths::start_gc_run, api_paths::gc_run,
-        api_paths::list_credentials, api_paths::set_credential,
+        api_paths::list_credentials, api_paths::set_credential, api_paths::put_credential_record,
         api_paths::check_credential, api_paths::remove_credential,
         api_paths::check_credential_entry, api_paths::remove_credential_entry,
         api_paths::entry_quota, api_paths::set_entry_quota, api_paths::quotas,
         api_paths::usage,
         api_paths::list_routes, api_paths::set_route, api_paths::show_route,
         api_paths::delete_route, api_paths::set_session_route,
-        cli_paths::cli_doctor, cli_paths::cli_sessions, cli_paths::cli_session, cli_paths::cli_agents,
-        cli_paths::cli_create_agent, cli_paths::cli_agent, cli_paths::cli_update_agent,
-        cli_paths::cli_image, cli_paths::cli_credentials, cli_paths::cli_set_credential,
-        cli_paths::cli_credential,
-        cli_paths::cli_routes, cli_paths::cli_route, cli_paths::cli_set_route,
-        cli_paths::cli_remove_route, cli_paths::cli_set_session_route
+
     ),
     components(schemas(
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
-    WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, ImageUpload, Model,
-    Provider, ProbeModel, ProbeResult, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
+    WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, ImageUpload, Model, ProviderApi,
+    Provider, ProbeModel, ProbeResult, CredentialKind, CredentialStatus, Credential, PutCredentialRecord, NodeRole, NodeCapacity,
     Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode,
     StageTiming, InferenceMetric, ToolMetric, ComputerMetric, TurnMetrics, LatencyPercentiles,
     AgentMetrics, StartGcRun, GcRun,
-    CreateAgent, UpdateAgent, DeleteRequest,
+    CreateAgent, UpdateAgent, AgentReset, GpuMode, DeleteRequest,
     CreateSession, UpdateSession,
     CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
     InterruptStatus, InterruptOutcome, SessionClosed,
-    CreateImage, CreateCredential, CredentialDeleted, SetEntryQuota, EntryQuotaView, QuotaEntry, EntryQuotaDetail,
+    CreateImage, CreateCredential, CredentialDeleted, AgentDeleted, SetEntryQuota, EntryQuotaView, QuotaEntry, EntryQuotaDetail,
     UsageTotalsView, UsageGroupView, UsageResponse, EntryUsageView,
-    Event, EventPayload, ApiError, CliSession, CliSessionDetail,
-    CliAgent, CliImage, CliCredential, CliSaved, CliAgentChoice, CliCredentialInput,
-    Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute,
-    CliRoute, CliRouteInput, CliRouteDeleted
+    Event, EventPayload, ApiError,
+    Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute
 )))]
 pub struct ApiDocument;
 
@@ -1310,17 +1516,29 @@ mod tests {
         }
         check!(WaitingReason, {"wake_at":"2026-09-23T12:00:00Z","reasons":["provider rate limit"]});
         check!(ImageRef, {"name":"base","tag":"dev"});
-        check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s"});
-        check!(Session, {"id":"s","agent_id":"a","kind":"named","state":"sleeping","log_id":{"kind":"session","id":"s"},"head_sequence":2,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":{"wake_at":null,"reasons":["timer"]}});
-        check!(Session, {"id":"archived","agent_id":"a","kind":"named","state":"completed","log_id":{"kind":"session","id":"archived"},"head_sequence":7,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":null,"provider":"fake","model":"scripted","effort":"medium","next_session":"successor"});
+        check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s","requirements":{"memory_mib":768,"gpu":"none"}});
+        check!(Session, {"id":"s","agent_id":"a","kind":"named","state":"sleeping","log_id":{"kind":"session","id":"s"},"head_sequence":2,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":{"wake_at":null,"reasons":["timer"]},"main":false});
+        check!(Session, {"id":"archived","agent_id":"a","kind":"named","state":"completed","log_id":{"kind":"session","id":"archived"},"head_sequence":7,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":null,"main":false,"provider":"fake","model":"scripted","effort":"medium","next_session":"successor"});
         check!(Turn, {"id":"t","session_id":"s","status":"running","started_at":"2026-09-23T12:00:00Z","finished_at":null});
         for role in ["user", "assistant", "tool", "system"] {
             check!(MessageRole, role);
         }
         check!(Message, {"id":"m","session_id":"s","role":"user","text":"hello"});
-        check!(Image, {"id":"i","name":"base","tag":"dev"});
-        check!(Model, {"id":"m","provider_id":"p","context_window":100});
-        check!(Provider, {"id":"p","name":"provider","status":"available"});
+        check!(Image, {"manifest_id":"i","name":"base","tag":"dev"});
+        for api in [
+            "AnthropicMessages",
+            "OpenAiResponses",
+            "OpenAiCodexResponses",
+            "OpenAiCompletions",
+            "GoogleGenerativeAi",
+            "GoogleVertex",
+            "BedrockConverse",
+            "Fake",
+        ] {
+            check!(ProviderApi, api);
+        }
+        check!(Model, {"id":"m","provider":"p","context_window":100,"key":"p/m","name":"model","limit":{"context":100,"output":null},"cost":{"input":0.0,"output":0.0},"supported_efforts":[],"effective_api":"Fake","effective_base_url":"http://localhost:8000/v1","compat":{}});
+        check!(Provider, {"id":"p","name":"provider","api":"Fake","auth_kinds":[],"env_keys":[],"credential_env_keys":[]});
         for kind in ["subscription", "api_key", "cloud"] {
             check!(CredentialKind, kind);
         }
@@ -1366,7 +1584,7 @@ mod tests {
         check!(StartGcRun, {"idempotency_key":"k","dry_run":true});
         check!(StartGcRun, {"idempotency_key":"k","dry_run":true,"grace_seconds":1});
         check!(GcRun, {"run_id":"r","started_at":"2026-09-23T12:00:00Z","dry_run":true,"finished":true,"error":null,"manifests":1,"scanned":2,"candidates":3,"candidate_bytes":4,"deleted":5,"bytes_freed":6,"duration_ms":7});
-        check!(ImageUpload, {"name":"base","tag":"dev","manifest_id":"m","header":{},"size":8,"chunks_total":1,"chunks_stored":1,"chunks_uploaded":0});
+        check!(ImageUpload, {"name":"base","tag":"dev","manifest_id":"m","header":{"size":8,"chunk_size":1024,"root_hash":"3e83e1fa8c0f7c9d3e4b5a697887766554433221100ffeeeeddccbbaa9988776655"},"size":8,"chunks_total":1,"chunks_stored":1,"chunks_uploaded":0});
         check!(CreateCredential, {"idempotency_key":"k","provider":"openai","kind":"api_key","label":"primary","secret":"input-only"});
         check!(CredentialDeleted, {"deleted":true});
         check!(ProbeModel, {"provider":"openai","model":"gpt-5","effort":"high"});
@@ -1384,9 +1602,6 @@ mod tests {
     #[test]
     fn event_json_contract() {
         let message = serde_json::json!({"id":"m","session_id":"s","role":"user","text":"hi"});
-        let turn = serde_json::json!({"id":"t","session_id":"s","status":"running","started_at":"2026-09-23T12:00:00Z","finished_at":null});
-        let node = serde_json::json!({"id":"n","roles":["sandbox"],"capacity":{"cpu_millis":1000,"memory_bytes":4096,"disk_bytes":8192,"sandboxes":2},"alive":true,"last_seen":"2026-09-23T12:00:00Z"});
-        let health = serde_json::json!({"role":"gateway","instance_id":"g1","version":"0.1.0","alive":true,"last_seen":"2026-09-23T12:00:00Z"});
         // A durable session-log entry and a live timeline observation both
         // arrive under the `store_record` tag; older clients decode the
         // record as a value, so the tag and field name never change.
@@ -1394,15 +1609,10 @@ mod tests {
         let observation = serde_json::json!({"session_id":"01J00000000000000000000000","turn_id":"01J00000000000000000000001","stage":"submitted","request_id":null,"clock_id":"boot","monotonic_ns":1,"unix_ns":1});
         let payloads = [
             serde_json::json!({"type":"message_appended","data":{"message":message}}),
-            serde_json::json!({"type":"turn_started","data":{"turn":turn}}),
-            serde_json::json!({"type":"turn_finished","data":{"turn":turn}}),
             serde_json::json!({"type":"tool_call","data":{"turn_id":"t","call_id":"c","name":"bash","arguments":{"command":"ls"}}}),
             serde_json::json!({"type":"tool_result","data":{"turn_id":"t","call_id":"c","result":{"output":"ok"}}}),
-            serde_json::json!({"type":"inference_error","data":{"turn_id":"t","error":{"code":"provider_error","message":"failed","provider_text":"original"}}}),
             serde_json::json!({"type":"idle","data":{"session_id":"s"}}),
             serde_json::json!({"type":"token_delta","data":{"turn_id":"t","position":0,"text":"a"}}),
-            serde_json::json!({"type":"service_status_changed","data":{"health":health}}),
-            serde_json::json!({"type":"node_status_changed","data":{"node":node}}),
             serde_json::json!({"type":"store_record","data":{"record":stored}}),
             serde_json::json!({"type":"store_record","data":{"record":observation}}),
         ];

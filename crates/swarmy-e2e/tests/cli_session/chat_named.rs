@@ -107,9 +107,7 @@ async fn root_named_chats_share_a_background_process_and_delete() {
                 "inspect": {"steps": 2, "tool_steps": [0], "bash_command": "kill -0 $(cat /background.pid) && echo shared-process-alive", "final_answer": "Inspected background process"}
             }
         }"#).await;
-        let created = fixture.output(&["agent", "create", "tommy", "--json"]).await;
-        assert!(created.status.success(), "{}", String::from_utf8_lossy(&created.stderr));
-        let agent: swarmy_core::AgentRecord = serde_json::from_slice(&created.stdout).unwrap();
+        let agent = create_tommy(&fixture).await;
         let mut first = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
         first
             .ready(Diagnostics {
@@ -186,6 +184,27 @@ async fn root_named_chats_share_a_background_process_and_delete() {
     }).await;
 }
 
+/// Create `tommy` through the CLI, assert the typed agent output, and return
+/// the store record the terminal harness needs.
+async fn create_tommy(fixture: &Fixture) -> swarmy_core::AgentRecord {
+    let created = fixture
+        .output(&["agent", "create", "tommy", "--json"])
+        .await;
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let shown: swarmy_api_types::Agent = serde_json::from_slice(&created.stdout).unwrap();
+    assert_eq!(shown.name, "tommy");
+    fixture
+        .store
+        .get_agent_by_name("tommy")
+        .await
+        .unwrap()
+        .unwrap()
+}
+
 async fn bash_result(fixture: &Fixture, id: SessionId, services: &Services) -> String {
     timeout(Duration::from_secs(120), async {
         loop {
@@ -250,7 +269,7 @@ async fn agent_delete_confirms_and_cancels_in_a_terminal() {
             );
             let screen = terminal.parser.screen().contents();
             if deleted {
-                assert!(screen.contains("agent_deleted"));
+                assert!(screen.contains("\"name\":\"tommy\""));
             } else {
                 assert!(screen.contains("deletion cancelled"));
             }
@@ -316,8 +335,8 @@ async fn open_chat_follows_a_summarized_main_with_a_notice() {
         let listing = fixture.output(&["session", "list", "--json"]).await;
         assert!(listing.status.success());
         let listing = String::from_utf8(listing.stdout).unwrap();
-        let archived: serde_json::Value = listing.lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()).find(|value| value["session_id"] == old.to_string()).unwrap();
-        assert_eq!(archived["archived"], true);
+        let archived: serde_json::Value = listing.lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()).find(|value| value["id"] == old.to_string()).unwrap();
+        assert!(archived.get("archived").is_none());
         assert_eq!(archived["next_session"], new.to_string());
         assert!(fixture.output(&["session", "show", &old.to_string(), "--json"]).await.status.success());
         chat.type_text("\x1b");

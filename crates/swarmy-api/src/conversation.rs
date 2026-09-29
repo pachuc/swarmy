@@ -1,5 +1,6 @@
 //! Conversation mutations preserve the store-first, nudge-second client path.
-use super::{ApiResult, AppState, error, id, replay, session_with_next, storage};
+use super::views::session_with_next;
+use super::{ApiResult, AppState, error, id, replay, storage};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -86,7 +87,7 @@ fn check_key(key: &str) -> Result<(), (StatusCode, Json<api::ApiError>)> {
 // Parse effort with the core FromStr implementation so an invalid effort has
 // the same error text as the CLI instead of an extractor-generated 422.
 #[derive(Deserialize)]
-pub struct CreateSessionBody {
+pub(crate) struct CreateSessionBody {
     idempotency_key: String,
     agent_id: Option<String>,
     #[serde(default)]
@@ -112,7 +113,7 @@ fn selection(
     })
 }
 
-pub async fn create(
+pub(crate) async fn create(
     State(state): State<AppState>,
     Json(body): Json<CreateSessionBody>,
 ) -> ApiResult<api::Session> {
@@ -140,6 +141,7 @@ pub async fn create(
     let default_image = state.default_image.clone();
     let store = state.store.clone();
     let replay_key = body.idempotency_key.clone();
+    let response_state = state.clone();
     replay(&state, &replay_key, "sessions:create", async move {
         let agent = if let Some(text) = &body.agent_id {
             let record = if let Ok(id) = text.parse::<Ulid>() {
@@ -202,20 +204,21 @@ pub async fn create(
             .await
             .map_err(storage)?
             .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
-        Ok(Json(session_with_next(&store, &record).await?))
+        Ok(Json(session_with_next(&response_state, &record, &mut std::collections::HashMap::new()).await?))
     })
     .await
 }
 
 /// Assign or clear one session's route override without touching its agent.
 /// The override applies to the next attempt; the attempt chain restarts.
-pub async fn set_route(
+pub(crate) async fn set_route(
     State(state): State<AppState>,
     Path(text): Path<String>,
     Json(body): Json<api::SetSessionRoute>,
 ) -> ApiResult<api::Session> {
     let session_id = id(&text, SessionId::from_ulid)?;
     let store = state.store.clone();
+    let response_state = state.clone();
     replay(
         &state,
         &body.idempotency_key,
@@ -230,7 +233,14 @@ pub async fn set_route(
                 .await
                 .map_err(storage)?
                 .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
-            Ok(Json(session_with_next(&store, &record).await?))
+            Ok(Json(
+                session_with_next(
+                    &response_state,
+                    &record,
+                    &mut std::collections::HashMap::new(),
+                )
+                .await?,
+            ))
         },
     )
     .await
@@ -238,7 +248,7 @@ pub async fn set_route(
 
 /// The expected head is the client's idle observation. The store checks it and
 /// the idle state in the same transaction as the append and replay marker.
-pub async fn append(
+pub(crate) async fn append(
     State(state): State<AppState>,
     Path(text): Path<String>,
     Json(body): Json<api::AppendMessage>,
@@ -304,7 +314,7 @@ pub async fn append(
     }))
 }
 
-pub async fn interrupt(
+pub(crate) async fn interrupt(
     State(state): State<AppState>,
     Path(text): Path<String>,
     Json(body): Json<api::InterruptSession>,
@@ -350,7 +360,7 @@ pub async fn interrupt(
     .await
 }
 
-pub async fn close(
+pub(crate) async fn close(
     State(state): State<AppState>,
     Path(text): Path<String>,
     Json(body): Json<api::CloseSession>,
@@ -373,12 +383,12 @@ pub async fn close(
 }
 
 #[derive(Deserialize)]
-pub struct WaitQuery {
+pub(crate) struct WaitQuery {
     after: Option<u64>,
     timeout_ms: Option<u64>,
 }
 
-pub async fn wait_idle(
+pub(crate) async fn wait_idle(
     State(state): State<AppState>,
     Path(text): Path<String>,
     Query(query): Query<WaitQuery>,
@@ -409,7 +419,9 @@ pub async fn wait_idle(
             || (record.state == SessionState::Idle
                 && query.after.is_none_or(|after| record.head_seq > after))
         {
-            return Ok(Json(session_with_next(&state.store, &record).await?));
+            return Ok(Json(
+                session_with_next(&state, &record, &mut std::collections::HashMap::new()).await?,
+            ));
         }
         loop {
             tokio::select! {

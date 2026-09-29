@@ -33,8 +33,9 @@ pub fn connect() -> Result<(Client, String)> {
 
 /// Include the endpoint in an API failure.
 #[must_use]
-pub fn api_error(error: &crate::Error, endpoint: &str) -> anyhow::Error {
-    anyhow::anyhow!("API at {endpoint}: {error}")
+pub fn api_error(error: crate::Error, endpoint: &str) -> anyhow::Error {
+    let message = format!("API at {endpoint}: {error}");
+    anyhow::Error::new(error).context(message)
 }
 
 /// Apply the standard API request timeout.
@@ -61,7 +62,7 @@ pub async fn call_with_timeout<T>(
     tokio::time::timeout(timeout, future)
         .await
         .map_err(|_| anyhow::anyhow!("API at {endpoint}: request timed out"))?
-        .map_err(|error| api_error(&error, endpoint))
+        .map_err(|error| api_error(error, endpoint))
 }
 
 /// Upload a file with a timeout proportional to its size on disk.

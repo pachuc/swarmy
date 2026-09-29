@@ -93,46 +93,41 @@ async fn assert_resource_projections(
     agent: &swarmy_core::AgentRecord,
     session: swarmy_core::SessionId,
 ) {
-    let rows: Vec<serde_json::Value> = client
-        .cli_agents(None, 10)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|row| serde_json::to_value(row).unwrap())
-        .collect();
-    assert_eq!(rows[0]["agent_id"], agent.agent_id.to_string());
-    assert_eq!(rows[0]["session_count"], 1);
-    let detailed = serde_json::to_value(client.cli_agent("fixture-agent").await.unwrap()).unwrap();
-    assert_eq!(detailed["name"], agent.name);
-    assert_eq!(detailed["sessions"][0]["session_id"], session.to_string());
-    let rows: Vec<serde_json::Value> = client
-        .cli_sessions(None, 10)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|row| serde_json::to_value(row).unwrap())
-        .collect();
+    let rows = client.agents(None, 10).await.unwrap();
+    assert_eq!(rows[0].id, agent.agent_id.to_string());
+    // List rows are summaries: no session scan, usage, or placement reads.
+    assert!(rows[0].sessions.is_empty());
+    assert!(rows[0].usage.is_none());
+    assert!(rows[0].placement.is_none());
+    let detailed = client.agent("fixture-agent").await.unwrap();
+    assert_eq!(detailed.name, agent.name);
+    assert_eq!(detailed.sessions.len(), 1);
+    assert_eq!(detailed.sessions[0].id, session.to_string());
+    assert!(detailed.usage.is_some());
+    let rows = client.sessions(None, 10).await.unwrap();
     let stored = store.fetch_session(session).await.unwrap().unwrap();
-    assert_eq!(rows[0]["session_id"], session.to_string());
+    assert_eq!(rows[0].id, session.to_string());
+    assert_eq!(rows[0].state, stored.state.into());
+    // Session list rows carry the fleet fields but no detail hydration.
+    assert!(rows[0].state_since.is_some());
+    assert!(rows[0].usage.is_none());
+    assert!(rows[0].requirements.is_none());
+    let detail = client.session(&session.to_string()).await.unwrap();
+    assert_eq!(detail.id, session.to_string());
+    assert!(detail.usage.is_some());
+    assert!(detail.requirements.is_some());
     assert_eq!(
-        rows[0]["state"],
-        serde_json::to_value(stored.state).unwrap()
-    );
-    let detail =
-        serde_json::to_value(client.cli_session(&session.to_string()).await.unwrap()).unwrap();
-    assert_eq!(detail["session"]["session_id"], session.to_string());
-    assert_eq!(
-        client.cli_image("fixture", "test").await.unwrap().name,
+        client.image("fixture", "test").await.unwrap().name,
         "fixture"
     );
     assert!(
         !client
-            .cli_models(None, None, false)
+            .models_filtered(None, None, false)
             .await
             .unwrap()
             .is_empty()
     );
-    assert!(!client.cli_providers().await.unwrap().is_empty());
+    assert!(!client.providers().await.unwrap().is_empty());
 }
 
 async fn assert_credential_entries(client: &swarmy_client::Client) {
@@ -144,14 +139,22 @@ async fn assert_credential_entries(client: &swarmy_client::Client) {
         },
         updated_at: jiff::Timestamp::now(),
     };
-    client.cli_set_credential(&serde_json::from_value(serde_json::json!({"idempotency_key":"credential","provider":"test-provider","record":record})).unwrap()).await.unwrap();
-    let summaries = client.cli_credentials().await.unwrap();
+    client
+        .put_credential_record(&swarmy_api_types::PutCredentialRecord {
+            idempotency_key: "credential".into(),
+            provider: "test-provider".into(),
+            label: "default".into(),
+            record,
+        })
+        .await
+        .unwrap();
+    let summaries = client.credentials().await.unwrap();
     assert_eq!(summaries[0].provider, "test-provider");
-    assert_eq!(summaries[0].kind, "api-key");
+    assert_eq!(summaries[0].kind, swarmy_api_types::CredentialKind::ApiKey);
     assert_eq!(summaries[0].label, "default");
     assert_eq!(
-        client.cli_credential("test-provider").await.unwrap().status,
-        "ready"
+        client.credential("test-provider").await.unwrap().status,
+        swarmy_api_types::CredentialStatus::Ready
     );
     let cloud = client
         .set_credential(&swarmy_api_types::CreateCredential {
@@ -160,6 +163,7 @@ async fn assert_credential_entries(client: &swarmy_client::Client) {
             kind: swarmy_api_types::CredentialKind::Cloud,
             label: "backup".into(),
             secret: "synthetic-cloud-secret".into(),
+            extra: std::collections::BTreeMap::default(),
         })
         .await
         .unwrap();
@@ -172,18 +176,18 @@ async fn assert_credential_entries(client: &swarmy_client::Client) {
             .unwrap(),
         cloud
     );
-    let listed = client.cli_credentials().await.unwrap();
+    let listed = client.credentials().await.unwrap();
     assert_eq!(listed.len(), 2);
     assert!(
         listed
             .iter()
-            .any(|row| row.label == "backup" && row.kind == "cloud")
+            .any(|row| row.label == "backup" && row.kind == swarmy_api_types::CredentialKind::Cloud)
     );
     client
         .remove_credential_entry("test-provider", "backup", "remove-backup")
         .await
         .unwrap();
-    assert_eq!(client.cli_credentials().await.unwrap().len(), 1);
+    assert_eq!(client.credentials().await.unwrap().len(), 1);
 }
 #[tokio::test]
 async fn stopped_api_reports_endpoint_quickly() {
@@ -191,7 +195,7 @@ async fn stopped_api_reports_endpoint_quickly() {
         return;
     };
     server.abort();
-    let result = tokio::time::timeout(Duration::from_secs(2), client.cli_agents(None, 10)).await;
+    let result = tokio::time::timeout(Duration::from_secs(2), client.agents(None, 10)).await;
     assert!(result.is_ok());
     assert!(result.unwrap().is_err());
 }
@@ -201,40 +205,86 @@ async fn agent_management_uses_api_and_preserves_requirements() {
     let Some((client, store, server)) = fixture().await else {
         return;
     };
-    let created = serde_json::to_value(client.cli_create_agent(&serde_json::from_value(serde_json::json!({
-        "idempotency_key":"create", "name":"worker", "image":"fixture:test", "description":"test",
-        "provider":"fake", "model":"scripted", "memory":2048, "gpu":"shared", "github_token":"synthetic-github-token"
-    })).unwrap()).await.unwrap()).unwrap();
-    assert_eq!(created["name"], "worker");
-    assert!(!created.to_string().contains("synthetic-github-token"));
-    let id =
-        swarmy_core::AgentId::from_ulid(created["agent_id"].as_str().unwrap().parse().unwrap());
+    let create = swarmy_api_types::CreateAgent {
+        idempotency_key: "create".into(),
+        name: "worker".into(),
+        description: "test".into(),
+        image: swarmy_api_types::ImageRef {
+            name: "fixture".into(),
+            tag: "test".into(),
+        },
+        provider: Some("fake".into()),
+        model: Some("scripted".into()),
+        effort: None,
+        system_prompt: None,
+        route: None,
+        memory_mib: Some(2048),
+        gpu: Some(swarmy_api_types::GpuMode::Shared),
+        github_token: Some("synthetic-github-token".into()),
+    };
+    let created = client.create_agent(&create).await.unwrap();
+    assert_eq!(created.name, "worker");
+    // Create and show share the detail conversion, so the rows match apart
+    // from the snapshot age, which is computed from the current time.
+    let shown = client.agent("worker").await.unwrap();
+    let mut created_value = serde_json::to_value(&created).unwrap();
+    let mut shown_value = serde_json::to_value(shown).unwrap();
+    for value in [&mut created_value, &mut shown_value] {
+        value
+            .as_object_mut()
+            .expect("agent serializes to an object")
+            .remove("last_snapshot_age_seconds");
+    }
+    assert_eq!(created_value, shown_value);
+    assert!(
+        !serde_json::to_string(&created)
+            .unwrap()
+            .contains("synthetic-github-token")
+    );
+    let id = swarmy_core::AgentId::from_ulid(created.id.parse().unwrap());
     assert_eq!(
         store.agent_github_token(id).await.unwrap().as_deref(),
         Some("synthetic-github-token")
     );
-    assert_eq!(created["requirements"]["memory_mib"], 2048);
-    let replayed = serde_json::to_value(client.cli_create_agent(&serde_json::from_value(serde_json::json!({
-        "idempotency_key":"create", "name":"worker", "image":"fixture:test", "description":"test",
-        "provider":"fake", "model":"scripted", "memory":2048, "gpu":"shared", "github_token":"synthetic-github-token"
-    })).unwrap()).await.unwrap()).unwrap();
-    assert_eq!(replayed["agent_id"], created["agent_id"]);
-    let updated = serde_json::to_value(client
-        .cli_update_agent(
+    assert_eq!(
+        client
+            .agent("worker")
+            .await
+            .unwrap()
+            .requirements
+            .memory_mib,
+        2048
+    );
+    let replayed = client.create_agent(&create).await.unwrap();
+    assert_eq!(replayed.id, created.id);
+    client
+        .update_agent(
             "worker",
-            &serde_json::from_value(serde_json::json!({
-                "idempotency_key":"update","memory":1024,"gpu":"none","resets":["provider","model"]
-            })).unwrap(),
+            &swarmy_api_types::UpdateAgent {
+                idempotency_key: "update".into(),
+                description: None,
+                provider: None,
+                model: None,
+                effort: None,
+                system_prompt: None,
+                route: None,
+                memory_mib: Some(1024),
+                gpu: Some(swarmy_api_types::GpuMode::None),
+                resets: vec![
+                    swarmy_api_types::AgentReset::Provider,
+                    swarmy_api_types::AgentReset::Model,
+                ],
+                github_token: None,
+                clear_github_token: false,
+            },
         )
         .await
-        .unwrap()).unwrap();
-    assert_eq!(updated["requirements"]["memory_mib"], 1024);
-    assert!(updated["provider"].is_null());
-    assert!(updated["model"].is_null());
-    assert_eq!(
-        client.cli_agent("worker").await.unwrap().agent_id,
-        created["agent_id"]
-    );
+        .unwrap();
+    let updated = client.agent("worker").await.unwrap();
+    assert_eq!(updated.requirements.memory_mib, 1024);
+    assert!(updated.provider.is_none());
+    assert!(updated.model.is_none());
+    assert_eq!(updated.id, created.id);
     client.delete_agent("worker", "delete").await.unwrap();
     assert!(store.get_agent_by_name("worker").await.unwrap().is_none());
     server.abort();
@@ -255,12 +305,24 @@ async fn agent_update_rejects_invalid_merged_model() {
         )
         .await
         .unwrap();
-    let request = serde_json::from_value(serde_json::json!({
-        "idempotency_key":"invalid-model", "model":"bogus"
-    }))
-    .unwrap();
     let error = client
-        .cli_update_agent("selection-test", &request)
+        .update_agent(
+            "selection-test",
+            &swarmy_api_types::UpdateAgent {
+                idempotency_key: "invalid-model".into(),
+                description: None,
+                provider: None,
+                model: Some("bogus".into()),
+                effort: None,
+                system_prompt: None,
+                route: None,
+                memory_mib: None,
+                gpu: None,
+                resets: Vec::new(),
+                github_token: None,
+                clear_github_token: false,
+            },
+        )
         .await
         .unwrap_err();
     assert!(error.to_string().contains("invalid_selection"), "{error}");

@@ -4313,6 +4313,7 @@ dependencies = [
  "crossterm",
  "jiff",
  "serde_json",
+ "swarmy-api-types",
  "swarmy-client",
  "swarmy-config",
  "swarmy-core",

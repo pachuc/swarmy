@@ -56,14 +56,15 @@ async fn recent(client: &Client) -> Result<Vec<(String, String)>> {
                 let api::EventPayload::StoreRecord { record } = event.payload else {
                     return None;
                 };
-                let record = serde_json::to_value(&record).ok()?;
-                record
-                    .get("message_appended")?
-                    .get("message")?
-                    .get("parts")?
-                    .as_array()?
-                    .iter()
-                    .find_map(|p| p.get("text")?.get("text")?.as_str().map(str::to_owned))
+                let api::RecordBody::Event(swarmy_core::Event::MessageAppended { message, .. }) =
+                    record
+                else {
+                    return None;
+                };
+                message.parts.into_iter().find_map(|part| match part {
+                    swarmy_core::Part::Text { text } => Some(text),
+                    _ => None,
+                })
             })
             .unwrap_or_default();
         result.push((session.id, text));
@@ -280,33 +281,23 @@ async fn send_or_queue(
     }
 }
 
-/// Whether a send failure is the transient busy-session race that may be
-/// retried on the next idle state. Any 409 conflict on an append is a lost
-/// race with another writer (scheduler or sweep touch, head move, or a
-/// just-archived session): the API reports the common cases as
-/// `session_not_idle` or `stale_head`, and the local idle guard reports
-/// `session is not idle`. `api_client::call` wraps the client error in a
-/// string, so match the wrapped text as well as the typed error. Other
-/// statuses (deleted session, auth, storage, timeouts, transport) stay
-/// permanent errors.
+/// Requeue only an idle guard or an API append conflict known to be transient.
 fn is_busy_send_error(error: &anyhow::Error) -> bool {
-    if let Some(client) = error.downcast_ref::<swarmy_client::Error>() {
-        return is_busy_client_error(client);
-    }
-    let text = format!("{error:#}");
-    text.contains("session_not_idle")
-        || text.contains("stale_head")
-        || text.contains("session is not idle")
-        || text.contains("409 Conflict")
+    error
+        .downcast_ref::<super::client_conversation::SessionNotIdle>()
+        .is_some()
+        || error
+            .downcast_ref::<swarmy_client::Error>()
+            .is_some_and(is_busy_client_error)
 }
 
 fn is_busy_client_error(error: &swarmy_client::Error) -> bool {
-    match error {
-        swarmy_client::Error::Api { status, .. } | swarmy_client::Error::Status { status, .. } => {
-            status.as_u16() == 409
-        }
-        _ => false,
-    }
+    matches!(
+        error,
+        swarmy_client::Error::Api { status, body }
+            if status.as_u16() == 409
+                && (body.code == "session_not_idle" || body.code == "stale_head")
+    )
 }
 
 /// Send the queued line now that the session is idle again. A send that still
@@ -365,7 +356,7 @@ impl View {
                     .as_ref()
                     .map_or_else(|| "default".into(), |v| v.reasoning_effort.clone())
             },
-            |v| format!("{v:?}").to_lowercase(),
+            |v| v.as_str().to_owned(),
         );
         Self {
             entries: predecessor_notice(conversation),
@@ -376,7 +367,7 @@ impl View {
             tools: HashMap::new(),
             ready: false,
             queued: None,
-            state: format!("{:?}", conversation.session.state),
+            state: conversation.session.state.as_str().to_owned(),
             selection: format!("{provider}/{model} {effort}"),
         }
     }
@@ -450,114 +441,98 @@ impl View {
                 let api::EventPayload::StoreRecord { record } = event.payload else {
                     return;
                 };
-                let Ok(record) = serde_json::to_value(&record) else {
+                let api::RecordBody::Event(record) = record else {
                     return;
                 };
-                if let Some(state) = record
-                    .get("state_changed")
-                    .and_then(|s| s.get("to"))
-                    .and_then(serde_json::Value::as_str)
-                {
-                    self.state = format!("{}{}", state[..1].to_uppercase(), &state[1..]);
-                    self.ready = state == "idle";
-                    if self.ready {
-                        self.partial.clear();
+                match record {
+                    swarmy_core::Event::StateChanged { to, .. } => {
+                        api::SessionState::from(to)
+                            .as_str()
+                            .clone_into(&mut self.state);
+                        self.ready = to == swarmy_core::SessionState::Idle;
+                        if self.ready {
+                            self.partial.clear();
+                        }
                     }
-                }
-                if let Some(error) = record
-                    .get("inference_failed")
-                    .and_then(|v| v.get("error"))
-                    .and_then(serde_json::Value::as_str)
-                {
-                    self.entries.push(format!("Error: {error}"));
-                }
-                if let Some(call) = record
-                    .get("tool_call_requested")
-                    .and_then(|v| v.get("call"))
-                {
-                    let id = call
-                        .get("call_id")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("unknown")
-                        .to_owned();
-                    if !self.tools.contains_key(&id) {
-                        self.tools.insert(id.clone(), self.entries.len());
-                        self.entries.push(format!(
-                            "Tool: {} [{id}] {} (running)",
-                            call.get("tool")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("tool"),
-                            call.get("arguments").unwrap_or(&serde_json::Value::Null)
-                        ));
+                    swarmy_core::Event::InferenceFailed { error, .. } => {
+                        self.entries.push(format!("Error: {error}"));
                     }
-                }
-                if let Some(completed) = record.get("tool_call_completed") {
-                    if let Some(id) = completed.get("call_id").and_then(serde_json::Value::as_str)
-                        && let Some(index) = self.tools.get(id).copied()
-                    {
-                        self.entries[index] = self.entries[index].replace("(running)", "(done)");
+                    swarmy_core::Event::ToolCallRequested { call, .. } => {
+                        let id = call.call_id.0;
+                        if !self.tools.contains_key(&id) {
+                            self.tools.insert(id.clone(), self.entries.len());
+                            self.entries.push(format!(
+                                "Tool: {} [{id}] {} (running)",
+                                call.tool, call.arguments
+                            ));
+                        }
                     }
-                    if let Some(output) = completed
-                        .get("result")
-                        .and_then(|v| v.get("completed"))
-                        .and_then(|v| v.get("output"))
-                        .and_then(serde_json::Value::as_str)
-                    {
-                        self.entries.push(format!("  Result: {output}"));
+                    swarmy_core::Event::ToolCallCompleted {
+                        call_id, result, ..
+                    } => {
+                        if let Some(index) = self.tools.get(&call_id.0).copied() {
+                            self.entries[index] =
+                                self.entries[index].replace("(running)", "(done)");
+                        }
+                        if let swarmy_core::ToolResult::Completed { output, .. } = result {
+                            self.entries.push(format!("  Result: {output}"));
+                        }
                     }
-                }
-                if let Some(message) = record.get("message_queued").and_then(|v| v.get("message"))
-                    && let api::LogId::Session(session_id) = &event.log_id
-                {
-                    self.message(message, session_id, true);
-                }
-                if let Some(message) = record
-                    .get("inference_completed")
-                    .or_else(|| record.get("message_appended"))
-                    .and_then(|v| v.get("message"))
-                    && let api::LogId::Session(session_id) = &event.log_id
-                {
-                    self.message(message, session_id, false);
+                    swarmy_core::Event::MessageQueued { message, .. } => {
+                        if let api::LogId::Session(session_id) = &event.log_id {
+                            self.message(&message, session_id, true);
+                        }
+                    }
+                    swarmy_core::Event::MessageAppended { message, .. } => {
+                        if let api::LogId::Session(session_id) = &event.log_id {
+                            self.message(&message, session_id, false);
+                        }
+                    }
+                    swarmy_core::Event::InferenceCompleted { completion, .. } => {
+                        if let api::LogId::Session(session_id) = &event.log_id {
+                            self.message(&completion.message, session_id, false);
+                        }
+                    }
+                    _ => {}
                 }
             }
             ConversationItem::Stream(StreamItem::TokenDelta { .. }) => {}
         }
     }
-    fn message(&mut self, message: &serde_json::Value, session_id: &str, queued: bool) {
-        let Some(id) = message.get("id").and_then(serde_json::Value::as_str) else {
-            return;
-        };
-        let role = message.get("role").and_then(serde_json::Value::as_str);
+    fn message(&mut self, message: &swarmy_core::Message, session_id: &str, queued: bool) {
+        let id = message.id.to_string();
         let text = message
-            .get("parts")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|part| {
-                part.get("text")
-                    .or_else(|| part.get("notice"))
-                    .and_then(|v| v.get("text"))
-                    .and_then(serde_json::Value::as_str)
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                swarmy_core::Part::Text { text } | swarmy_core::Part::Notice { text, .. } => {
+                    Some(text.as_str())
+                }
+                _ => None,
             })
             .collect::<String>();
-        match role {
-            Some("user") if self.users.insert(id.into()) => {
-                self.entries.push(format!(
-                    "You{}: {text}",
-                    if queued { " (queued)" } else { "" }
-                ));
+        match message.role {
+            swarmy_core::MessageRole::User => {
+                if self.users.insert(id) {
+                    self.entries.push(format!(
+                        "You{}: {text}",
+                        if queued { " (queued)" } else { "" }
+                    ));
+                }
             }
-            Some("system") if self.systems.insert(id.into()) => {
-                self.entries
-                    .push(format!("System [session {session_id}]: {text}"));
+            swarmy_core::MessageRole::System => {
+                if self.systems.insert(id) {
+                    self.entries
+                        .push(format!("System [session {session_id}]: {text}"));
+                }
             }
-            Some("assistant") if self.assistants.insert(id.into()) => {
+            swarmy_core::MessageRole::Assistant if self.assistants.insert(id) => {
                 self.partial.clear();
                 if !text.is_empty() {
                     self.entries.push(format!("Agent: {text}"));
                 }
             }
-            _ => {}
+            swarmy_core::MessageRole::Assistant | swarmy_core::MessageRole::Tool => {}
         }
     }
 }
@@ -584,10 +559,13 @@ mod tests {
     #[test]
     fn delivered_queued_input_has_a_transcript_marker_once() {
         let mut view = view_busy();
-        let message = serde_json::json!({
-            "id": "queued-id", "role": "user",
-            "parts": [{"text": {"text": "push when ready"}}]
-        });
+        let message = swarmy_core::Message {
+            id: swarmy_core::MessageId::from_ulid(ulid::Ulid::generate()),
+            role: swarmy_core::MessageRole::User,
+            parts: vec![swarmy_core::Part::Text {
+                text: "push when ready".into(),
+            }],
+        };
         view.message(&message, "session", true);
         view.message(&message, "session", false);
         assert_eq!(view.entries, ["You (queued): push when ready"]);
@@ -716,24 +694,27 @@ mod tests {
             reqwest::StatusCode::CONFLICT,
             "stale_head"
         )));
-        // Any other 409 on a send is also a lost append race (for example a
-        // conflict code the API added for a newly archived session), so it
-        // requeues too. No 409 from an append is permanent: deletions report
-        // 404, auth 401, and storage 500.
-        assert!(is_busy_send_error(&api_error(
+        assert!(!is_busy_send_error(&api_error(
             reqwest::StatusCode::CONFLICT,
             "main_session_close"
         )));
-        assert!(is_busy_send_error(&anyhow::anyhow!(
-            "API at http://example: API returned 409 Conflict: stale head"
-        )));
-        // The local idle guard reports the same race without a status code.
-        assert!(is_busy_send_error(&anyhow::anyhow!("session is not idle")));
-        // The retry path wraps the client error in a string; the code text
-        // must still count as busy.
-        assert!(is_busy_send_error(&anyhow::anyhow!(
-            "API at http://example: session_not_idle"
-        )));
+        assert!(is_busy_send_error(
+            &crate::client_conversation::SessionNotIdle.into()
+        ));
+        // The API wrapper retains the typed source through context.
+        let wrapped = swarmy_client::api_client::api_error(
+            swarmy_client::Error::Api {
+                status: reqwest::StatusCode::CONFLICT,
+                body: swarmy_api_types::ApiError {
+                    code: "stale_head".into(),
+                    message: "stale head".into(),
+                    provider_text: None,
+                },
+            },
+            "test endpoint",
+        );
+        assert!(is_busy_send_error(&wrapped));
+        assert!(!is_busy_send_error(&anyhow::anyhow!("409 Conflict")));
         // Permanent failures propagate so the client exits with the message
         // instead of waiting forever on `input locked (queued)`.
         assert!(!is_busy_send_error(&api_error(
