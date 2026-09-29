@@ -572,111 +572,137 @@ fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
         agent.main_session_id.as_deref().unwrap_or("-"),
     );
     if detail {
-        ignore_best_effort(
-            write!(
-                text,
-                "\nnode={} scratch_node={} scratch_bytes={}",
-                agent.node_id.as_deref().unwrap_or("-"),
-                agent
-                    .scratch
-                    .as_ref()
-                    .map_or("-", |scratch| scratch.node_id.as_str()),
-                agent.scratch.as_ref().map_or(0, |scratch| scratch.bytes),
-            ),
-            "append node description line",
-        );
+        push_placement_line(&mut text, agent);
         text.push_str(&settings_text(agent));
-        if let Some(usage) = &agent.usage {
-            ignore_best_effort(
-                write!(
-                    text,
-                    "\nUsage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
-                    usage.input_tokens,
-                    usage.cached_input_tokens,
-                    usage.cache_write_input_tokens,
-                    usage.output_tokens,
-                    usage.reasoning_output_tokens,
-                    usage.total_tokens,
-                    usage.cost_dollars
-                ),
-                "append usage line",
-            );
-        }
-        for entry in &agent.entries {
-            ignore_best_effort(
-                write!(
-                    text,
-                    "\nentry {} cost=${} input={} output={} total={} completions={}",
-                    entry.entry,
-                    entry.totals.cost_dollars,
-                    entry.totals.input_tokens,
-                    entry.totals.output_tokens,
-                    entry.totals.total_tokens,
-                    entry.totals.completions
-                ),
-                "append entry cost line",
-            );
-        }
-        ignore_best_effort(
-            write!(text, "\nproviders={}", agent.providers.join(",")),
-            "append agent description line",
-        );
-        ignore_best_effort(
-            write!(
-                text,
-                "\ndescription={}\nplacement_epoch={}\nsandbox_address={}\nsandbox_state={}\nlast_snapshot={} age_seconds={}",
-                agent.description,
-                agent
-                    .placement
-                    .as_ref()
-                    .map_or_else(|| "-".into(), |placement| placement.epoch.to_string()),
-                agent.sandbox_address.as_deref().unwrap_or("-"),
-                agent.sandbox_state.map_or("-", |state| state.as_str()),
-                agent.last_snapshot_at.as_deref().unwrap_or("-"),
-                agent
-                    .last_snapshot_age_seconds
-                    .map_or_else(|| "-".into(), |v| v.to_string())
-            ),
-            "append agent description line",
-        );
-        if let Some(status) = &agent.call_status {
-            ignore_best_effort(
-                write!(
-                    text,
-                    "\ncall_holder={} queued_calls={} observed_at={} expires_at={} node={} epoch={}",
-                    status.holder_session_id.as_deref().unwrap_or("-"),
-                    status.queued_calls,
-                    status.observed_at,
-                    status.expires_at,
-                    status.node_id,
-                    status.epoch
-                ),
-                "append call status line",
-            );
-        }
-        for session in &agent.sessions {
-            ignore_best_effort(
-                write!(
-                    text,
-                    "\nsession={} state={} computer_deleted={} main={} archived={}",
-                    session.id,
-                    session.state.as_str(),
-                    session.computer_deleted,
-                    agent.main_session_id.as_deref() == Some(session.id.as_str()),
-                    session.next_session.is_some()
-                ),
-                "append session line",
-            );
-        }
-        if let Some(count) = agent.session_count {
-            ignore_best_effort(
-                write!(text, "\nsessions={count}"),
-                "append agent description line",
-            );
-        }
+        push_usage_lines(&mut text, agent);
+        push_identity_lines(&mut text, agent);
+        push_call_lines(&mut text, agent);
+        push_session_lines(&mut text, agent);
     }
     text
 }
+
+/// Append the node and scratch line of `agent show`.
+fn push_placement_line(text: &mut String, agent: &swarmy_api_types::Agent) {
+    ignore_best_effort(
+        write!(
+            text,
+            "\nnode={} scratch_node={} scratch_bytes={}",
+            agent.node_id.as_deref().unwrap_or("-"),
+            agent
+                .scratch
+                .as_ref()
+                .map_or("-", |scratch| scratch.node_id.as_str()),
+            agent.scratch.as_ref().map_or(0, |scratch| scratch.bytes),
+        ),
+        "append node description line",
+    );
+}
+
+/// Append the usage summary and per-entry cost lines of `agent show`.
+fn push_usage_lines(text: &mut String, agent: &swarmy_api_types::Agent) {
+    if let Some(usage) = &agent.usage {
+        ignore_best_effort(
+            write!(
+                text,
+                "\nUsage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
+                usage.input_tokens,
+                usage.cached_input_tokens,
+                usage.cache_write_input_tokens,
+                usage.output_tokens,
+                usage.reasoning_output_tokens,
+                usage.total_tokens,
+                usage.cost_dollars
+            ),
+            "append usage line",
+        );
+    }
+    for entry in &agent.entries {
+        ignore_best_effort(
+            write!(
+                text,
+                "\nentry {} cost=${} input={} output={} total={} completions={}",
+                entry.entry,
+                entry.totals.cost_dollars,
+                entry.totals.input_tokens,
+                entry.totals.output_tokens,
+                entry.totals.total_tokens,
+                entry.totals.completions
+            ),
+            "append entry cost line",
+        );
+    }
+}
+
+/// Append the providers and description block of `agent show`.
+fn push_identity_lines(text: &mut String, agent: &swarmy_api_types::Agent) {
+    ignore_best_effort(
+        write!(text, "\nproviders={}", agent.providers.join(",")),
+        "append agent description line",
+    );
+    ignore_best_effort(
+        write!(
+            text,
+            "\ndescription={}\nplacement_epoch={}\nsandbox_address={}\nsandbox_state={}\nlast_snapshot={} age_seconds={}",
+            agent.description,
+            agent
+                .placement
+                .as_ref()
+                .map_or_else(|| "-".into(), |placement| placement.epoch.to_string()),
+            agent.sandbox_address.as_deref().unwrap_or("-"),
+            agent.sandbox_state.map_or("-", |state| state.as_str()),
+            agent.last_snapshot_at.as_deref().unwrap_or("-"),
+            agent
+                .last_snapshot_age_seconds
+                .map_or_else(|| "-".into(), |v| v.to_string())
+        ),
+        "append agent description line",
+    );
+}
+
+/// Append the call-holder line of `agent show` when a call holds the agent.
+fn push_call_lines(text: &mut String, agent: &swarmy_api_types::Agent) {
+    if let Some(status) = &agent.call_status {
+        ignore_best_effort(
+            write!(
+                text,
+                "\ncall_holder={} queued_calls={} observed_at={} expires_at={} node={} epoch={}",
+                status.holder_session_id.as_deref().unwrap_or("-"),
+                status.queued_calls,
+                status.observed_at,
+                status.expires_at,
+                status.node_id,
+                status.epoch
+            ),
+            "append call status line",
+        );
+    }
+}
+
+/// Append the session rows and count of `agent show`.
+fn push_session_lines(text: &mut String, agent: &swarmy_api_types::Agent) {
+    for session in &agent.sessions {
+        ignore_best_effort(
+            write!(
+                text,
+                "\nsession={} state={} computer_deleted={} main={} archived={}",
+                session.id,
+                session.state.as_str(),
+                session.computer_deleted,
+                agent.main_session_id.as_deref() == Some(session.id.as_str()),
+                session.next_session.is_some()
+            ),
+            "append session line",
+        );
+    }
+    if let Some(count) = agent.session_count {
+        ignore_best_effort(
+            write!(text, "\nsessions={count}"),
+            "append agent description line",
+        );
+    }
+}
+
 async fn update_agent(
     client: &Client,
     endpoint: &str,
