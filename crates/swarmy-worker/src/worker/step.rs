@@ -1,6 +1,6 @@
 use super::inference::warn_on_route_fallback;
 use super::{
-    Action, Arc, Bus, Context, DISPLAY_CACHE_SIZE, Event, FailoverAction, HeldLease, KillPoint,
+    Action, Arc, Bus, Context, Event, FailoverAction, HeldLease, KillPoint,
     LiveFeed, MAX_SCAN_LIMIT, MessageId, RequestId, Result, SNAPSHOT_CACHE_SIZE, SandboxArguments,
     SessionId, SessionRecord, SessionState, Snapshot, SnapshotRef, StoreError, Timestamp,
     ToolCallRecord, TurnStage, Ulid, Worker, decode, encode,
