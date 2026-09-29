@@ -106,7 +106,7 @@ impl Gateway {
         ticks.tick().await;
         info!(concurrency, "gateway ready");
         loop {
-            worker.reap().await?;
+            worker.reap()?;
             let delivery = tokio::select! {
                 _ = ticks.tick() => {
                     if let Err(error) = refresh(self, &mut messages, &mut subscriptions).await {
@@ -143,7 +143,7 @@ impl DispatchWorker {
         }
     }
 
-    async fn reap(&mut self) -> Result<()> {
+    fn reap(&mut self) -> Result<()> {
         while let Some(result) = self.tasks.try_join_next() {
             result?;
         }

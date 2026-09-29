@@ -35,7 +35,16 @@ async fn run(config: config::Config, settings: swarmy_config::Settings) -> Resul
         expire_stale: false,
     });
     tracing::info!(owner = %worker.owner, "worker ready");
-    supervise(&services.store, &worker, health, &mut consumers, receive).await
+    // The supervised loops hold their buffers and subscriptions inline; keep
+    // the combined future off the parent's stack.
+    Box::pin(supervise(
+        &services.store,
+        &worker,
+        health,
+        &mut consumers,
+        receive,
+    ))
+    .await
 }
 
 /// Open connections shared by every worker loop: the store, the object
