@@ -47,7 +47,7 @@ POST /v1/sessions/{id}/messages accepts queue=true without interrupting a busy t
 # - Session V1 headers no longer decode or migrate. The session kind, plan, inference, interrupt, route, route-step, image, idle, and state-since side-row key families are removed.
 # - Capped turn metric V1 envelopes and bare rows no longer decode or migrate. Bare inference and tool detail rows are not accepted; only the current summary and detail envelopes remain.
 # - Pre-current agent postcard layouts (without main session, settings, provider, requirements, or route) no longer decode.
-# - Pre-index raw usage pruning markers and unindexed usage records are no longer maintained. Older four-field usage rows and truncated trailing usage rows no longer decode.
+# - Pre-index raw usage pruning markers and unindexed usage records are no longer maintained. Older five-field TokenUsage rows and truncated current rows no longer decode.
 # - Volumes without retained snapshot rows no longer import a parent chain; missing metadata reports corruption. Placements require hosting metadata, and idle sessions require an idle timestamp.
 # - Gateway advertisements without a reason no longer decode. Legacy context notice kinds no longer decode.
 # - Deprecated flat remote AWS settings and slash-separated S3 bucket/prefix settings are rejected. Saved remote state requires launch_attempted instead of defaulting it.
