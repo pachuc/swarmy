@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, ensure};
+use crate::Result;
 use swarmy_config::{RemoteNode, RemotePorts, RemoteSettings};
 
 use super::{Cloud, Host, MachineSpec, ObjectBucket, key_name, state::State, wait_running};
@@ -34,7 +34,7 @@ pub async fn run(
             );
             return Ok(());
         }
-        return Err(crate::Error::AlreadyExists(name.to_owned()).into());
+        return Err(crate::Error::AlreadyExists(name.to_owned()));
     }
     validate(settings, name)?;
     let started = Instant::now();
@@ -98,11 +98,16 @@ pub async fn run(
         } else {
             cloud_out!("Skipping image build (--no-image)");
         }
-        Ok::<_, anyhow::Error>(address)
+        Ok::<_, crate::Error>(address)
     }
     .await;
-    let address = result
-        .with_context(|| format!("remote up failed; cleanup with swarmy remote down {name}"))?;
+    let address = match result {
+        Ok(address) => address,
+        Err(error) => {
+            cloud_err!("remote up failed; cleanup with swarmy remote down {name}");
+            return Err(error);
+        }
+    };
     cloud_out!(
         "Remote node {name} ready in {:.1}s",
         started.elapsed().as_secs_f64()
@@ -149,39 +154,47 @@ async fn provision(
 }
 
 fn validate(settings: &RemoteSettings, name: &str) -> Result<()> {
-    ensure!(
+    crate::Error::ensure(
         !settings.region.is_empty(),
-        "configure remote.region in config.toml before running swarmy remote up"
-    );
+        "configure remote.region in config.toml before running swarmy remote up",
+    )?;
     for (field, value) in [
         ("subnet", &settings.aws.subnet),
         ("security_group", &settings.aws.security_group),
     ] {
-        ensure!(
-            value.as_deref().is_some_and(|value| !value.is_empty()),
-            "remote.aws.{field} is not configured; set [remote.aws] {field} in config.toml before running swarmy remote up"
-        );
+        if value.as_deref().is_none_or(str::is_empty) {
+            return Err(crate::Error::other(format!(
+                "remote.aws.{field} is not configured; set [remote.aws] {field} in config.toml before running swarmy remote up"
+            )));
+        }
     }
-    ensure!(
-        settings.disk_gb > 0
+    crate::Error::ensure(
+        settings.disk_gb != 0
             && !settings.managed_by_tag.is_empty()
             && !settings.aws.instance_type.is_empty(),
-        "remote disk_gb must be positive and aws.instance_type and managed_by_tag must not be empty"
-    );
+        "remote disk_gb must be positive and aws.instance_type and managed_by_tag must not be empty",
+    )?;
     if let Some(bucket) = &settings.bucket {
-        ensure!(
+        crate::Error::ensure(
             name.len() <= 57,
-            "bucket-backed remote name must be at most 57 characters to fit the IAM role name"
-        );
-        ensure!(
-            (3..=63).contains(&bucket.len())
-                && bucket
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-                && !bucket.starts_with('-')
-                && !bucket.ends_with('-'),
-            "remote.bucket must be a 3-63 character lowercase DNS name without dots (HTTPS virtual-hosted S3 requires this)"
-        );
+            "bucket-backed remote name must be at most 57 characters to fit the IAM role name",
+        )?;
+        crate::Error::ensure(
+            valid_bucket_name(bucket),
+            "remote.bucket must be a 3-63 character lowercase DNS name without dots (HTTPS virtual-hosted S3 requires this)",
+        )?;
     }
     Ok(())
+}
+
+/// S3 bucket names are lowercase DNS labels; HTTPS virtual-hosted requests
+/// fail otherwise, so reject them before creating cloud resources.
+fn valid_bucket_name(bucket: &str) -> bool {
+    fn dns(byte: u8) -> bool {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+    }
+    (3..=63).contains(&bucket.len())
+        && bucket.bytes().all(dns)
+        && !bucket.starts_with('-')
+        && !bucket.ends_with('-')
 }

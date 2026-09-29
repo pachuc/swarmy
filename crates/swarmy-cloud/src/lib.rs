@@ -12,9 +12,8 @@
 static OUTPUT: std::sync::OnceLock<fn(&str, bool)> = std::sync::OnceLock::new();
 
 /// Install the CLI's output handler before starting provisioning.
-/// Returns false if a handler was already installed.
-pub fn set_output_sink(sink: fn(&str, bool)) -> bool {
-    OUTPUT.set(sink).is_ok()
+pub fn set_output_sink(sink: fn(&str, bool)) {
+    let _ = OUTPUT.set(sink);
 }
 
 fn emit(message: &str, stderr: bool) {
@@ -41,9 +40,16 @@ pub use command::{Command, select};
 mod remote;
 mod services;
 #[cfg(feature = "remote")]
-pub use remote::{Aws, ServiceOptions, for_settings, run};
+pub use remote::{Aws, DeletionPlan, RunOutcome, ServiceOptions, for_settings, run};
 
 /// Failures returned to clients of the remote provisioning entry point.
+///
+/// Only failures callers act on have their own variant: missing permissions
+/// (retried or reported with the operation name), AWS failures (reported
+/// with the operation, code, and message from the SDK metadata), missing or
+/// duplicate state, SSH failures (reported with the attempted command), and
+/// control-plane client failures. Everything else is an arbitrary cause kept
+/// as its source for the binary to render with its source chain.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("unknown cloud provider '{0}': only 'aws' is supported")]
@@ -52,21 +58,157 @@ pub enum Error {
     NotFound(String),
     #[error("remote node {0} already exists; run swarmy remote down {0} first")]
     AlreadyExists(String),
+    #[error("missing permission for {operation}")]
+    MissingPermission {
+        operation: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    #[error("{operation}: {code}: {message}")]
+    Aws {
+        operation: String,
+        code: String,
+        message: String,
+    },
+    #[error("ssh {command} failed")]
+    Ssh {
+        /// Names the attempted operation, such as "provision remote node".
+        command: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    #[error("ssh {command} failed with {status}")]
+    SshStatus {
+        /// Names the attempted operation, such as "provision remote node".
+        command: String,
+        status: std::process::ExitStatus,
+    },
+    #[error("SSH is unreachable at both instance addresses")]
+    SshUnavailable,
+    #[error("API at {endpoint}")]
+    Client {
+        endpoint: String,
+        #[source]
+        source: swarmy_client::Error,
+    },
     #[error(transparent)]
-    Operation(anyhow::Error),
+    Other(Box<dyn std::error::Error + Send + Sync>),
 }
 
-impl From<anyhow::Error> for Error {
-    fn from(error: anyhow::Error) -> Self {
-        // Preserve a typed failure through the private provisioning helpers,
-        // which still attach contextual information to transport errors.
-        error.downcast::<Self>().unwrap_or_else(Self::Operation)
+/// Render an error with its source chain, as anyhow's `{:#}` would. A
+/// variant with `#[source]` must not also print the source in its message;
+/// the chain here supplies the causes.
+#[cfg(feature = "remote")]
+pub(crate) fn render(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = error.to_string();
+    let mut next = error.source();
+    while let Some(source) = next {
+        out.push_str(": ");
+        out.push_str(&source.to_string());
+        next = source.source();
+    }
+    out
+}
+
+/// A site message paired with its cause. `Display` shows the message so
+/// logs read the same with or without the chain; `render` appends the cause.
+#[derive(Debug)]
+struct WithCause {
+    message: String,
+    source: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl std::fmt::Display for WithCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
     }
 }
 
+impl std::error::Error for WithCause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+impl Error {
+    /// An arbitrary failure with no structured cause to preserve.
+    pub(crate) fn other(message: impl Into<String>) -> Self {
+        Self::Other(Box::new(std::io::Error::other(message.into())))
+    }
+
+    /// A site message keeping its cause, as anyhow's `.context()` did.
+    pub(crate) fn context(
+        source: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::Other(Box::new(WithCause {
+            message: message.into(),
+            source: source.into(),
+        }))
+    }
+
+    /// Fail with `message` unless `condition` holds.
+    pub(crate) fn ensure(condition: bool, message: impl Into<String>) -> Result<()> {
+        if condition {
+            Ok(())
+        } else {
+            Err(Self::other(message))
+        }
+    }
+
+    /// A `map_err` closure tagging a spawn or I/O failure with the attempted operation.
+    pub(crate) fn ssh<E>(command: &str) -> impl FnOnce(E) -> Self
+    where
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        let command = command.to_owned();
+        move |source| Self::Ssh {
+            command,
+            source: source.into(),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    fn permission(&self) -> Option<&str> {
+        match self {
+            Self::MissingPermission { operation, .. } => Some(operation),
+            _ => None,
+        }
+    }
+}
+
+macro_rules! other_from {
+    ($($t:ty),* $(,)?) => {
+        $(impl From<$t> for Error {
+            fn from(error: $t) -> Self {
+                Self::Other(Box::new(error))
+            }
+        })*
+    };
+}
+
+other_from!(
+    std::io::Error,
+    serde_json::Error,
+    toml::de::Error,
+    std::string::FromUtf8Error,
+    std::num::TryFromIntError,
+    swarmy_config::Error,
+    ulid::DecodeError,
+    jiff::Error,
+    tempfile::PersistError,
+    std::path::StripPrefixError,
+    std::net::AddrParseError,
+    tokio::time::error::Elapsed,
+);
+
+#[cfg(feature = "remote")]
+other_from!(aws_sdk_s3::error::BuildError,);
+
+pub type Result<T> = std::result::Result<T, Error>;
+
 use std::future::Future;
 
-use anyhow::Result;
 use swarmy_config::{RemoteNode, RemoteSettings};
 
 /// Provider-neutral description of one machine to create.

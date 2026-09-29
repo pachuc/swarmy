@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, ensure};
+use crate::Result;
 use swarmy_config::{RemoteNode, validate_remote_name};
 
 /// The `remote` directory under the state directory: node records, keys, and the lock.
@@ -29,7 +29,7 @@ impl State {
             .write(true)
             .mode(0o600)
             .open(self.directory.join(".lock"))?;
-        fs2::FileExt::try_lock_exclusive(&file).context("another remote command is running")?;
+        fs2::FileExt::try_lock_exclusive(&file)?;
         Ok(file)
     }
 
@@ -42,10 +42,10 @@ impl State {
         match fs::read(self.path(name, "json")?) {
             Ok(bytes) => {
                 let node: RemoteNode = serde_json::from_slice(&bytes)?;
-                ensure!(
+                crate::Error::ensure(
                     node.name == name,
-                    "remote state name does not match its filename"
-                );
+                    "remote state name does not match its filename",
+                )?;
                 Ok(Some(node))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -55,7 +55,7 @@ impl State {
 
     pub fn require(&self, name: &str) -> Result<RemoteNode> {
         self.read(name)?
-            .ok_or_else(|| crate::Error::NotFound(name.to_owned()).into())
+            .ok_or_else(|| crate::Error::NotFound(name.to_owned()))
     }
 
     /// Only remote records are inspected; tunnel profiles also use JSON here.
@@ -71,8 +71,7 @@ impl State {
             {
                 continue;
             }
-            let other: RemoteNode = serde_json::from_slice(&fs::read(&path)?)
-                .with_context(|| format!("reading remote state {}", path.display()))?;
+            let other: RemoteNode = serde_json::from_slice(&fs::read(&path)?)?;
             if other.name != owner && matches(&other) {
                 return Ok(true);
             }
@@ -112,10 +111,10 @@ impl State {
 
     pub fn remove_key(&self, node: &RemoteNode) -> Result<()> {
         // Only remove generated files inside our directory, even if state was edited.
-        ensure!(
+        crate::Error::ensure(
             node.key_path.parent() == Some(self.directory.as_path()),
-            "key is outside the remote state directory"
-        );
+            "key is outside the remote state directory",
+        )?;
         for path in [
             node.key_path.clone(),
             node.key_path.with_extension("pub"),
@@ -135,7 +134,10 @@ impl State {
 /// Replace a file atomically; the temporary file is private to this user.
 pub fn write(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
-    let mut file = tempfile::NamedTempFile::new_in(path.parent().context("path has no parent")?)?;
+    let Some(parent) = path.parent() else {
+        return Err(crate::Error::other("path has no parent"));
+    };
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
     file.write_all(bytes)?;
     file.as_file().sync_all()?;
     file.persist(path)?;

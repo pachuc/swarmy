@@ -1,5 +1,5 @@
 use super::ssh;
-use anyhow::Result;
+use crate::Result;
 use serde::Serialize;
 use std::{future::Future, path::Path, time::Duration};
 use swarmy_config::{RemoteNode, RemoteProfile, RemoteServices, Settings};
@@ -255,7 +255,7 @@ where
             }
         }
         Ok(Err(error)) => {
-            let error = format!("API unavailable: {error:#}");
+            let error = format!("API unavailable: {}", crate::render(&error));
             status.registration_error = Some(error.clone());
             status.image_error = Some(error);
         }
@@ -269,6 +269,13 @@ where
 
 /// Read node registrations, images, and services through the control-plane
 /// API reached over the remote tunnel. The client opens no database.
+fn client_error(endpoint: &str, source: swarmy_client::Error) -> crate::Error {
+    crate::Error::Client {
+        endpoint: endpoint.to_owned(),
+        source,
+    }
+}
+
 async fn inventory(
     base: &Settings,
     name: &str,
@@ -285,15 +292,18 @@ async fn inventory(
         .url
         .clone()
         .unwrap_or_else(|| format!("http://{}", settings.api.listen));
-    anyhow::ensure!(
+    crate::Error::ensure(
         !settings.api.token.is_empty(),
-        "no [api] token configured for remote {name}"
-    );
-    let client = swarmy_client::Client::new(&endpoint, settings.api.token.clone())?;
+        format!("no [api] token configured for remote {name}"),
+    )?;
+    let client = swarmy_client::Client::new(&endpoint, settings.api.token.clone())
+        .map_err(|source| client_error(&endpoint, source))?;
     let snapshot = tokio::time::timeout(Duration::from_secs(10), client.doctor())
         .await
-        .map_err(|_| anyhow::anyhow!("API at {endpoint}: request timed out"))?
-        .map_err(|error| anyhow::anyhow!("API at {endpoint}: {error}"))?;
+        .map_err(|source| {
+            crate::Error::context(source, format!("API at {endpoint}: request timed out"))
+        })?
+        .map_err(|source| client_error(&endpoint, source))?;
     let mut images = Vec::new();
     let mut after = None;
     loop {
@@ -302,8 +312,10 @@ async fn inventory(
             client.images(after.as_deref(), 256),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("API at {endpoint}: request timed out"))?
-        .map_err(|error| anyhow::anyhow!("API at {endpoint}: {error}"))?;
+        .map_err(|source| {
+            crate::Error::context(source, format!("API at {endpoint}: request timed out"))
+        })?
+        .map_err(|source| client_error(&endpoint, source))?;
         if page.is_empty() {
             break;
         }
@@ -311,8 +323,8 @@ async fn inventory(
             let manifest = image
                 .id
                 .parse::<ulid::Ulid>()
-                .map(swarmy_core::ManifestId::from_ulid)
-                .map_err(|_| anyhow::anyhow!("invalid manifest id"))?;
+                .map_err(|source| crate::Error::context(source, "invalid manifest id"))
+                .map(swarmy_core::ManifestId::from_ulid)?;
             after = Some(format!("{}:{}", image.name, image.tag));
             images.push(ImageRecord {
                 name: image.name,
@@ -326,12 +338,12 @@ async fn inventory(
         let node_id = node
             .node_id
             .parse::<ulid::Ulid>()
-            .map(swarmy_core::NodeId::from_ulid)
-            .map_err(|_| anyhow::anyhow!("invalid node id"))?;
+            .map_err(|source| crate::Error::context(source, "invalid node id"))
+            .map(swarmy_core::NodeId::from_ulid)?;
         let last_heartbeat: jiff::Timestamp = node
             .last_heartbeat
             .parse()
-            .map_err(|_| anyhow::anyhow!("invalid heartbeat"))?;
+            .map_err(|source| crate::Error::context(source, "invalid heartbeat"))?;
         records.push((
             NodeRecord {
                 node_id,
@@ -479,7 +491,7 @@ mod tests {
         assert!(down.image_error.unwrap().contains("disconnected"));
         assert!(down.instance_state.starts_with("unknown"));
         let failed = inspect(&node, true, true, || async {
-            anyhow::bail!("fake failure")
+            Err(crate::Error::other("fake failure"))
         })
         .await;
         assert!(failed.image_error.unwrap().contains("fake failure"));

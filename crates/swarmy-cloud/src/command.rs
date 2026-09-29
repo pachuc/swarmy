@@ -1,6 +1,6 @@
 use clap::Subcommand;
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum Command {
     /// Launch, copy this checkout, and provision a remote node
     Up {
@@ -85,7 +85,7 @@ pub enum Command {
 /// # Errors
 ///
 /// Rejects invalid remote names and reports failures to re-exec the process.
-pub fn select(name: Option<&str>) -> anyhow::Result<()> {
+pub fn select(name: Option<&str>) -> crate::Result<()> {
     if let Some(name) = name {
         swarmy_config::validate_remote_name(name)?;
         if std::env::var("SWARMY_REMOTE").as_deref() != Ok(name) {

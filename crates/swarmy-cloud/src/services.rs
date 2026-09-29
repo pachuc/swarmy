@@ -4,7 +4,7 @@ use std::{
     process::Stdio,
 };
 
-use anyhow::{Context, Result, ensure};
+use crate::Result;
 use swarmy_config::{RemoteNode, RemoteServices, Settings};
 use tokio::io::AsyncWriteExt;
 
@@ -52,30 +52,29 @@ impl<'a> Options<'a> {
         recipe: Option<&'a Path>,
         keyring: Option<PathBuf>,
     ) -> Result<Self> {
-        ensure!(
+        crate::Error::ensure(
             !copy || settings.remote.services == RemoteServices::Node,
-            "--copy-credential requires --services node (or remote.services = 'node')"
-        );
+            "--copy-credential requires --services node (or remote.services = 'node')",
+        )?;
         if let Some(path) = &keyring {
-            swarmy_config::Keyring::read(path)
-                .context("load cluster keyring before copying credentials")?;
+            swarmy_config::Keyring::read(path)?;
         }
         let credential = if copy {
             let path = PathBuf::from(&settings.credential_file);
-            ensure!(
+            crate::Error::ensure(
                 path.is_file(),
-                "configure credential_file before using --copy-credential"
-            );
+                "configure credential_file before using --copy-credential",
+            )?;
             Some(path)
         } else {
             None
         };
-        if settings.remote.services == RemoteServices::Node {
-            ensure!(
-                settings.provider == "fake" || credential.is_some(),
-                "node gateway requires --copy-credential for ChatGPT; this explicitly acknowledges the credential leaves the laptop"
-            );
-        }
+        crate::Error::ensure(
+            settings.remote.services != RemoteServices::Node
+                || settings.provider == "fake"
+                || credential.is_some(),
+            "node gateway requires --copy-credential for ChatGPT; this explicitly acknowledges the credential leaves the laptop",
+        )?;
         // Copy only service options. Local paths, cloud secrets, endpoints, and
         // the selected tunnel profile must never become node configuration.
         let mut remote = Settings {
@@ -108,7 +107,7 @@ impl<'a> Options<'a> {
                     Ok(script) => script,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
                         br#"{"request_based":{"steps":1,"tool_steps":[],"final_answer":"Hello from swarmy!"}}"#.to_vec(),
-                    Err(error) => return Err(error).context("read fake provider script for node gateway"),
+                    Err(error) => return Err(error.into()),
                 })
         } else {
             None
@@ -167,8 +166,14 @@ pub async fn install(node: &RemoteNode, address: &str, options: &Options<'_>) ->
         .arg(address)
         .arg("cd swarmy && bash scripts/remote-services.sh")
         .status()
-        .await?;
-    ensure!(status.success(), "start node services failed with {status}");
+        .await
+        .map_err(crate::Error::ssh("start node services"))?;
+    if !status.success() {
+        return Err(crate::Error::SshStatus {
+            command: "start node services".to_owned(),
+            status,
+        });
+    }
     Ok(())
 }
 
@@ -178,21 +183,24 @@ async fn upload(node: &RemoteNode, address: &str, path: &str, bytes: &[u8]) -> R
     let script = format!(
         "umask 077; (test -d $(dirname {path}) || install -d -o ubuntu -g ubuntu -m 700 $(dirname {path})) && cat > {path}.tmp && chown ubuntu:ubuntu {path}.tmp && chmod 600 {path}.tmp && mv {path}.tmp {path}"
     );
+    let command = "copy node service file".to_owned();
     let mut child = super::ssh::command(node)?
         .arg(address)
         .arg(format!("sudo -n sh -c {}", shell_words::quote(&script)))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .spawn()?;
-    child
-        .stdin
-        .take()
-        .context("SSH stdin missing")?
+        .spawn()
+        .map_err(crate::Error::ssh(&command))?;
+    let Some(mut stdin) = child.stdin.take() else {
+        return Err(crate::Error::other("SSH stdin missing"));
+    };
+    stdin
         .write_all(bytes)
-        .await?;
-    ensure!(
-        child.wait().await?.success(),
-        "copy node service file failed"
-    );
+        .await
+        .map_err(crate::Error::ssh(&command))?;
+    let status = child.wait().await.map_err(crate::Error::ssh(&command))?;
+    if !status.success() {
+        return Err(crate::Error::SshStatus { command, status });
+    }
     Ok(())
 }
