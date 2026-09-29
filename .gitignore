@@ -5,3 +5,4 @@
 .swarmy/
 
 __pycache__/
+validation.log
