@@ -78,7 +78,7 @@ pub(crate) fn sanitize_tool_id(id: &str, prefix: &str, max_len: usize) -> String
     let hash = blake3::hash(id.as_bytes()).to_hex();
     format!(
         "{prefix}{}",
-        &hash[..if prefix.is_empty() { 64 } else { 32 }]
+        &hash[..max_len.saturating_sub(prefix.len()).min(64)]
     )
 }
 
@@ -194,7 +194,12 @@ mod sanitizer_tests {
         let invalid = "a.b";
         let anthropic = sanitize_tool_id(invalid, "toolu_", 64);
         assert!(anthropic.starts_with("toolu_"));
-        assert_eq!(anthropic.len(), 38);
+        assert_eq!(anthropic.len(), 64);
+        assert!(
+            anthropic
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        );
         assert_eq!(sanitize_tool_id(invalid, "", 64).len(), 64);
         assert_eq!(anthropic, sanitize_tool_id(invalid, "toolu_", 64));
         assert_ne!(anthropic, sanitize_tool_id("a/b", "toolu_", 64));

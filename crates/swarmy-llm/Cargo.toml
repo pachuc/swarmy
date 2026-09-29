@@ -44,6 +44,7 @@ tracing.workspace = true
 ulid.workspace = true
 
 [dev-dependencies]
+swarmy-llm = { path = ".", default-features = false, features = ["fake"] }
 rsa.workspace = true
 tempfile.workspace = true
 ulid.workspace = true

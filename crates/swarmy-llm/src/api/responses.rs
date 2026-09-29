@@ -379,15 +379,11 @@ fn build_input(request: &Request, context: &RequestContext<'_>) -> Result<Vec<Va
     for message in &request.messages {
         for part in &message.parts {
             if let Part::Reasoning { text, metadata } = part {
-                let saved = metadata
-                    .get("openai_responses")
-                    .or_else(|| metadata.get("chatgpt"));
+                let saved = metadata.get("openai_responses");
                 if let Some(saved) = saved {
                     let item = saved.get("item").unwrap_or(saved);
-                    let same = context.is_none_or(|ctx| {
-                        saved["provider"] == ctx.provider
-                            && saved["model"] == request.settings.model
-                    });
+                    let same = saved["provider"] == context.provider
+                        && saved["model"] == request.settings.model;
                     if same && item["type"] == "reasoning" {
                         input.push(item.clone());
                         continue;
@@ -450,28 +446,24 @@ fn build_request(request: &Request, context: &RequestContext<'_>) -> Result<Valu
             .expect("request is an object")
             .remove("instructions");
     }
-    let effort = match context {
-    None => request.settings.reasoning_effort,
-    Some(ctx) => ctx.model.filter(|model| model.reasoning.is_some()).and_then(|model| {
+    let effort = context.model.filter(|model| model.reasoning.is_some()).and_then(|model| {
         let (effort, _) = model.clamp_effort(request.settings.reasoning_effort.unwrap_or(ReasoningEffort::Medium));
         let explicit_none = matches!(&model.reasoning, Some(ReasoningOptions::Effort(efforts)) if efforts.contains(&ReasoningEffort::None));
         (effort != ReasoningEffort::None || explicit_none).then_some(effort)
-    }),
-};
+    });
     if let Some(effort) = effort {
         value["reasoning"] = json!({"effort": effort, "summary": "auto"});
     }
-    if {
-        request.settings.model.starts_with("gpt-5")
-            || context.model.is_some_and(|model| {
-                // Azure deployment ids can differ from the catalog's model name.
-                model.name.starts_with("GPT-5")
-                    || model
-                        .family
-                        .as_deref()
-                        .is_some_and(|family| family.starts_with("gpt-5"))
-            })
-    } {
+    if request.settings.model.starts_with("gpt-5")
+        || context.model.is_some_and(|model| {
+            // Azure deployment ids can differ from the catalog's model name.
+            model.name.starts_with("GPT-5")
+                || model
+                    .family
+                    .as_deref()
+                    .is_some_and(|family| family.starts_with("gpt-5"))
+        })
+    {
         value["text"] = json!({"verbosity": "low"});
     }
     // The ChatGPT Codex backend rejects `max_output_tokens` with a 400, so
@@ -574,16 +566,14 @@ impl ResponsesStream {
 
     fn item_parts(&self, item: &Value) -> Result<Vec<Part>, Error> {
         let mut parts = item_parts(item)?;
-        {
-            let (provider, model) = &self.context;
-            for part in &mut parts {
-                if let Part::Reasoning { metadata, .. } = part {
-                    metadata.clear();
-                    metadata.insert(
-                        "openai_responses".into(),
-                        json!({"provider": provider, "model": model, "item": item}),
-                    );
-                }
+        let (provider, model) = &self.context;
+        for part in &mut parts {
+            if let Part::Reasoning { metadata, .. } = part {
+                metadata.clear();
+                metadata.insert(
+                    "openai_responses".into(),
+                    json!({"provider": provider, "model": model, "item": item}),
+                );
             }
         }
         Ok(parts)
@@ -850,7 +840,7 @@ fn item_parts(item: &Value) -> Result<Vec<Part>, Error> {
                         .join("\n")
                 })
                 .unwrap_or_default(),
-            metadata: BTreeMap::from([("chatgpt".into(), item.clone())]),
+            metadata: BTreeMap::new(),
         }],
         kind => return Err(Error::Protocol(format!("unsupported output item {kind}"))),
     })

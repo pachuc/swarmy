@@ -436,6 +436,62 @@ impl Error {
 mod job_tests {
     use super::*;
 
+    #[test]
+    fn provider_error_classes_cover_gateway_decisions() {
+        use reqwest::StatusCode;
+        use std::time::Duration;
+        let limited = Error::ProviderResponse {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "slow down".into(),
+            retry_after: Some(Duration::from_secs(2)),
+            reason: ProviderFailureReason::Other,
+        };
+        assert_eq!(
+            limited.classify(),
+            ErrorClass {
+                retryable: true,
+                retry_after: Some(Duration::from_secs(2)),
+                rate_limited: true,
+                permanent: false,
+            }
+        );
+        let quota = Error::ProviderResponse {
+            status: StatusCode::FORBIDDEN,
+            message: "usage_limit_reached".into(),
+            retry_after: None,
+            reason: ProviderFailureReason::Quota,
+        };
+        assert!(quota.classify().retryable);
+        assert!(!quota.classify().permanent);
+        for status in [
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::CONFLICT,
+            StatusCode::BAD_GATEWAY,
+        ] {
+            let class = Error::Status(status).classify();
+            assert!(class.retryable);
+            assert!(!class.rate_limited);
+        }
+        for error in [
+            Error::Authentication("auth".into()),
+            Error::BadRequest("bad".into()),
+            Error::MalformedStream("stream".into()),
+            Error::UnknownModel {
+                provider: "p".into(),
+                model: "m".into(),
+            },
+        ] {
+            let class = error.classify();
+            assert!(class.permanent);
+            assert!(!class.retryable);
+        }
+        assert!(
+            !Error::ContextOverflow("too long".into())
+                .classify()
+                .permanent
+        );
+    }
+
     #[tokio::test]
     async fn catalog_dispatch_requires_credentials_and_rejects_unimplemented_protocols() {
         let catalog = catalog::Catalog::get();

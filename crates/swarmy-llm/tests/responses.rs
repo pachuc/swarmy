@@ -247,25 +247,6 @@ async fn reasoning_replay_requires_the_same_provider_and_model() {
         response(azure.as_ref(), replay.clone()).await;
         assert!(!body(&server).await.to_string().contains("opaque-reasoning"));
     }
-    if let Part::Reasoning { metadata, .. } = &mut replay.messages[1].parts[0] {
-        let saved = metadata.remove("openai_responses").unwrap();
-        metadata.insert("chatgpt".into(), saved);
-    }
-    response(original.as_ref(), replay.clone()).await;
-    assert_eq!(
-        body(&server).await["input"][2]["encrypted_content"],
-        "opaque-reasoning"
-    );
-    // Historical records did not include a model, so their signatures cannot be verified.
-    if let Part::Reasoning { metadata, .. } = &mut replay.messages[1].parts[0] {
-        let saved = metadata.remove("chatgpt").unwrap();
-        metadata.insert("chatgpt".into(), saved["item"].clone());
-    }
-    response(original.as_ref(), replay).await;
-    assert_eq!(
-        body(&server).await["input"][2]["content"][0]["text"],
-        "Think first."
-    );
 }
 
 #[tokio::test]

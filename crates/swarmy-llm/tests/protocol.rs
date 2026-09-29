@@ -60,8 +60,8 @@ fn reasoning() -> Part {
     Part::Reasoning {
         text: "Think first.".into(),
         metadata: BTreeMap::from([(
-            "chatgpt".into(),
-            json!({"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "Think first."}], "encrypted_content": "opaque-reasoning"}),
+            "openai_responses".into(),
+            json!({"provider": "fixture", "model": "fixture-model", "item": {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "Think first."}], "encrypted_content": "opaque-reasoning"}}),
         )]),
     }
 }
@@ -104,17 +104,10 @@ fn shared_request_matches_responses_fixture() {
     request.settings.max_output_tokens = Some(100);
     request.settings.temperature = Some(0.5);
     let body = request_json(&request).unwrap();
-    assert_eq!(body["model"], "fixture-model");
-    assert_eq!(body["input"][0]["role"], "developer");
-    assert_eq!(body["input"][1]["content"][0]["text"], "Hello");
-    assert!(
-        body["input"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item["type"] == "function_call_output")
+    assert_eq!(
+        body,
+        serde_json::from_str::<Value>(include_str!("fixtures/responses-request.json")).unwrap()
     );
-    assert_eq!(body["tools"][0]["name"], "get_time");
 }
 
 #[test]
@@ -151,7 +144,7 @@ fn rebuild_notice_preserves_call_result_order_with_developer_role() {
 }
 
 fn parse(fixture: &str, chunk_size: usize) -> Vec<Delta> {
-    let mut parser = SseParser::default();
+    let mut parser = SseParser::with_context("fixture", "fixture-model");
     let mut deltas = vec![];
     for chunk in fixture.as_bytes().chunks(chunk_size) {
         deltas.extend(parser.push(chunk).unwrap());
@@ -242,21 +235,37 @@ fn sse_fixtures_preserve_text_calls_reasoning_and_usage_at_every_chunk_boundary(
 
 #[test]
 fn sse_errors_truncation_and_malformed_calls_fail() {
-    let mut parser = SseParser::default();
+    let mut parser = SseParser::with_context("fixture", "fixture-model");
     let error = parser
         .push(include_bytes!("fixtures/error.sse"))
         .unwrap_err();
     assert!(error.to_string().contains("quota_exceeded"));
     assert!(
-        SseParser::default()
+        SseParser::with_context("fixture", "fixture-model")
             .push(b"data: {\"type\":\"error\",\"message\":\"failed\"}\n\n")
             .is_err()
     );
-    assert!(SseParser::default().push(b"data: [DONE]\n\n").is_err());
-    assert!(SseParser::default().finish().is_err());
-    assert!(SseParser::default().push(b"data: invalid\n\n").is_err());
+    assert!(
+        SseParser::with_context("fixture", "fixture-model")
+            .push(b"data: [DONE]\n\n")
+            .is_err()
+    );
+    assert!(
+        SseParser::with_context("fixture", "fixture-model")
+            .finish()
+            .is_err()
+    );
+    assert!(
+        SseParser::with_context("fixture", "fixture-model")
+            .push(b"data: invalid\n\n")
+            .is_err()
+    );
     let bad = include_str!("fixtures/function.sse").replace("\\\"UTC\\\"}", "oops");
-    assert!(SseParser::default().push(bad.as_bytes()).is_err());
+    assert!(
+        SseParser::with_context("fixture", "fixture-model")
+            .push(bad.as_bytes())
+            .is_err()
+    );
 }
 
 #[test]
