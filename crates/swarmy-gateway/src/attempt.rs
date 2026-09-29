@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use anyhow::Result;
+use crate::Result;
 use futures::StreamExt;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, LiveFeed};
@@ -300,7 +300,9 @@ impl Gateway {
             base.saturating_add(Duration::from_millis(jitter))
                 .min(self.max_backoff)
         });
-        let until = Timestamp::now().checked_add(delay)?;
+        let until = Timestamp::now()
+            .checked_add(delay)
+            .ok_or(crate::Error::TimeOutOfRange)?;
         if !blocked {
             // Name the entry in the stored reason so waiting sessions show
             // which key is limited; the unlabeled record keeps the raw error.

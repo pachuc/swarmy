@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, bail, ensure};
+use crate::{Error, Result};
 use swarmy_api_types as api;
 use swarmy_client::{Client, EventStream, StreamItem};
 
@@ -48,11 +48,10 @@ pub struct Conversation {
 }
 
 fn image_ref(text: &str) -> Result<api::ImageRef> {
-    let (name, tag) = text.split_once(':').context("image must be NAME:TAG")?;
-    ensure!(
-        !name.is_empty() && !tag.is_empty(),
-        "image must be NAME:TAG"
-    );
+    let (name, tag) = text
+        .split_once(':')
+        .filter(|(name, tag)| !name.is_empty() && !tag.is_empty())
+        .ok_or_else(|| Error::Message("image must be NAME:TAG".into()))?;
     Ok(api::ImageRef {
         name: name.into(),
         tag: tag.into(),
@@ -88,12 +87,14 @@ async fn create_session(
                 .map(|image| format!("{}:{}", image.name, image.tag))
                 .collect::<Vec<_>>()
                 .join(", ");
-            anyhow::bail!(
-                "image {} not found; registered images: {known}",
-                image
-                    .as_ref()
-                    .map_or_else(|| "default".into(), |i| format!("{}:{}", i.name, i.tag))
-            );
+            return Err(Error::Message(
+                format!(
+                    "image {} not found; registered images: {known}",
+                    image
+                        .as_ref()
+                        .map_or_else(|| "default".into(), |i| format!("{}:{}", i.name, i.tag))
+                ),
+            ));
         }
         other => Ok(other?),
     }
@@ -166,18 +167,6 @@ async fn apply_session_route(
     Ok(session)
 }
 
-/// A local idle guard failed before the append reached the API.
-#[derive(Debug)]
-pub struct SessionNotIdle;
-
-impl std::fmt::Display for SessionNotIdle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("session is not idle")
-    }
-}
-
-impl std::error::Error for SessionNotIdle {}
-
 impl Conversation {
     /// Open or resume a conversation.
     ///
@@ -192,15 +181,19 @@ impl Conversation {
         selection: swarmy_core::InferenceSelection,
         route: Option<String>,
     ) -> Result<Self> {
-        ensure!(!new || agent.is_some(), "--new requires --agent");
-        ensure!(
-            id.is_none() || (image.is_none() && agent.is_none() && !new),
-            "session id cannot be combined with --image, --agent, or --new"
-        );
-        ensure!(
-            agent.is_none() || image.is_none(),
-            "--agent cannot be combined with --image"
-        );
+        if new && agent.is_none() {
+            return Err(Error::Message("--new requires --agent".into()));
+        }
+        if id.is_some() && (image.is_some() || agent.is_some() || new) {
+            return Err(Error::Message(
+                "session id cannot be combined with --image, --agent, or --new".into(),
+            ));
+        }
+        if agent.is_some() && image.is_some() {
+            return Err(Error::Message(
+                "--agent cannot be combined with --image".into(),
+            ));
+        }
         let provider = selection.provider.clone();
         let agent_record = if let Some(name) = &agent {
             Some(client.agent(name).await?)
@@ -298,13 +291,15 @@ impl Conversation {
     /// # Errors
     /// Returns API and transport errors or an invalid message error.
     pub async fn send_with_queue(&mut self, text: String, queue: bool) -> Result<String> {
-        ensure!(!text.trim().is_empty(), "message is empty");
+        if text.trim().is_empty() {
+            return Err(Error::Message("message is empty".into()));
+        }
         self.last_text.clear();
         self.tool_count = 0;
         self.tool_result = None;
         self.pending.clear();
         if !queue && self.session.state != api::SessionState::Idle {
-            return Err(SessionNotIdle.into());
+            return Err(Error::NotIdle);
         }
         let mut body = api::AppendMessage {
             idempotency_key: ulid::Ulid::generate().to_string(),
@@ -321,7 +316,7 @@ impl Conversation {
                 self.session =
                     crate::api_client::call(&self.endpoint, self.client.session(&self.id)).await?;
                 if !queue && self.session.state != api::SessionState::Idle {
-                    return Err(SessionNotIdle.into());
+                    return Err(Error::NotIdle);
                 }
                 body.expected_head = self.session.head_sequence;
                 crate::api_client::call(&self.endpoint, self.client.append_message(&self.id, &body))
@@ -564,9 +559,7 @@ impl Conversation {
             let next = async {
                 if run && !progress.started {
                     let remaining = deadline.saturating_duration_since(Instant::now());
-                    Ok(tokio::time::timeout(remaining, self.next())
-                        .await
-                        .context("worker did not pick up session within 30 seconds")??)
+                    Ok(tokio::time::timeout(remaining, self.next()).await??)
                 } else {
                     self.next().await
                 }
@@ -577,7 +570,7 @@ impl Conversation {
             };
             let Some(item) = item else {
                 self.interrupt().await?;
-                bail!("interrupted");
+                return Err(Error::Message("interrupted".into()));
             };
             match item {
                 ConversationItem::Stream(StreamItem::TokenDelta {
@@ -645,7 +638,9 @@ impl Conversation {
                 swarmy_core::SessionState::Leased | swarmy_core::SessionState::WaitingInference => {
                     progress.started = true;
                 }
-                swarmy_core::SessionState::Completed => bail!("session completed"),
+                swarmy_core::SessionState::Completed => {
+                    return Err(Error::Message("session completed".into()));
+                }
                 swarmy_core::SessionState::Idle => {
                     return self.finish_idle(sequence, json, quiet, run, progress);
                 }
@@ -707,7 +702,7 @@ impl Conversation {
         }
         if let Some(outcome) = turn_outcome(progress, run) {
             progress.error.take();
-            bail!("{outcome}");
+            return Err(Error::Message(outcome));
         }
         Ok(true)
     }

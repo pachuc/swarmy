@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use crate::Result;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, LiveFeed};
 use swarmy_core::{CredentialEntryKind, Event, Message, MessageId, MessageRole};
@@ -422,7 +422,7 @@ impl Gateway {
             seq: completion
                 .expected_head
                 .checked_add(2)
-                .context("sequence overflow")?,
+                .ok_or(crate::Error::Internal("sequence overflow"))?,
             object_key: format!("blobs/{}", blake3::hash(&bytes).to_hex()),
         };
         self.blobs.put(&snapshot.object_key, bytes.into()).await?;

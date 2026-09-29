@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
-use anyhow::{Result, bail};
+use crate::{Error, Result};
 use futures::StreamExt;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, WorkMessage, WorkQueue};
@@ -118,7 +118,7 @@ impl Gateway {
                 () = swarmy_config::shutdown_signal() => break,
             };
             let Some(delivery) = delivery else {
-                bail!("work stream ended");
+                return Err(Error::Internal("work stream ended"));
             };
             let message = match delivery {
                 Ok(message) => message,
@@ -145,7 +145,9 @@ const ADVERTISEMENT_TTL: Duration = Duration::from_secs(90);
 
 async fn advertise(store: &Store, served: &[String]) -> Result<()> {
     let record = GatewayProvider {
-        expires_at: Timestamp::now().checked_add(ADVERTISEMENT_TTL)?,
+        expires_at: Timestamp::now()
+            .checked_add(ADVERTISEMENT_TTL)
+            .ok_or(Error::TimeOutOfRange)?,
         reason: "credentials resolved".into(),
     };
     let entries = match swarmy_config::Keyring::load() {
@@ -275,7 +277,9 @@ impl Gateway {
         };
         loop {
             let now = Timestamp::now();
-            claim.expires_at = now.checked_add(self.ack_wait)?;
+            claim.expires_at = now
+                .checked_add(self.ack_wait)
+                .ok_or(Error::TimeOutOfRange)?;
             if self.store.start_inference(&claim, now).await? {
                 break;
             }
@@ -295,10 +299,11 @@ impl Gateway {
             warn!(request_id = %job.request_id, "terminating job with no stored request");
             return Ok(message.terminate().await?);
         };
-        anyhow::ensure!(
-            request.settings == job.selection,
-            "stored inference selection differs from delivery"
-        );
+        if request.settings != job.selection {
+            return Err(Error::Internal(
+                "stored inference selection differs from delivery",
+            ));
+        }
         let stored = InferenceJob {
             summary: job.summary,
             summary_prefix: job.summary_prefix,
@@ -323,10 +328,15 @@ impl Gateway {
                 _ = heartbeat.tick() => {
                     message.extend_deadline().await?;
                     let now = Timestamp::now();
-                    let renewal = InferenceClaim { expires_at: now.checked_add(self.ack_wait)?, ..claim.clone() };
+                    let renewal = InferenceClaim {
+                        expires_at: now
+                            .checked_add(self.ack_wait)
+                            .ok_or(Error::TimeOutOfRange)?,
+                        ..claim.clone()
+                    };
                     if !self.store.start_inference(&renewal, now).await? {
                         if self.completed(job.request_id).await? { return Ok(message.acknowledge().await?); }
-                        bail!("inference claim was replaced");
+                        return Err(Error::Internal("inference claim was replaced"));
                     }
                 }
             }

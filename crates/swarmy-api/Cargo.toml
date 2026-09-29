@@ -19,8 +19,8 @@ bedrock = ["swarmy-llm/bedrock"]
 gemini = ["swarmy-llm/gemini"]
 
 [dependencies]
-anyhow.workspace = true
 async-trait.workspace = true
+thiserror.workspace = true
 axum.workspace = true
 swarmy-api-types.workspace = true
 swarmy-store.workspace = true

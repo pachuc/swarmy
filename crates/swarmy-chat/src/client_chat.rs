@@ -3,7 +3,7 @@
 use crate::client_conversation::Conversation;
 use crate::client_conversation::ConversationItem;
 use crate::input::Input;
-use anyhow::{Context, Result, ensure};
+use crate::{Error, Result};
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
@@ -92,7 +92,10 @@ async fn picker(
                 &mut selection,
             );
         })?;
-        if let Event::Key(key) = keys.next().await.context("terminal input closed")??
+        let Some(key) = keys.next().await else {
+            return Err(Error::InputClosed);
+        };
+        if let Event::Key(key) = key?
             && key.kind != KeyEventKind::Release
         {
             if quit(key) {
@@ -124,10 +127,11 @@ pub async fn run(
     selection: InferenceSelection,
     route: Option<String>,
 ) -> Result<()> {
-    ensure!(
-        io::stdin().is_terminal() && io::stdout().is_terminal(),
-        "chat requires an interactive terminal"
-    );
+    if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
+        return Err(Error::Message(
+            "chat requires an interactive terminal".into(),
+        ));
+    }
     let (mut terminal, _restore) = terminal()?;
     let mut keys = EventStream::new();
     let choice = if id.is_none()
@@ -200,7 +204,10 @@ pub async fn run(
                 flush_queued(&mut view, &mut conversation).await?;
             }
             key = keys.next() => {
-                if let Event::Key(key) = key.context("terminal input closed")??
+                let Some(key) = key else {
+                    return Err(Error::InputClosed);
+                };
+                if let Event::Key(key) = key?
                     && key.kind != KeyEventKind::Release {
                     if quit(key) {
                         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) { conversation.interrupt().await?; }
@@ -282,21 +289,19 @@ async fn send_or_queue(
 }
 
 /// Requeue only an idle guard or an API append conflict known to be transient.
-fn is_busy_send_error(error: &anyhow::Error) -> bool {
-    error
-        .downcast_ref::<super::client_conversation::SessionNotIdle>()
-        .is_some()
-        || error
-            .downcast_ref::<swarmy_client::Error>()
-            .is_some_and(is_busy_client_error)
+fn is_busy_send_error(error: &Error) -> bool {
+    match error {
+        Error::NotIdle => true,
+        Error::Client(client) => is_busy_client_error(client),
+        _ => false,
+    }
 }
 
 fn is_busy_client_error(error: &swarmy_client::Error) -> bool {
     matches!(
-        error,
-        swarmy_client::Error::Api { status, body }
-            if status.as_u16() == 409
-                && (body.code == "session_not_idle" || body.code == "stale_head")
+        error.api_code(),
+        Some((status, code))
+            if status.as_u16() == 409 && (code == "session_not_idle" || code == "stale_head")
     )
 }
 
@@ -670,7 +675,7 @@ mod tests {
         assert!(input.text.is_empty());
     }
 
-    fn api_error(status: reqwest::StatusCode, code: &str) -> anyhow::Error {
+    fn api_error(status: reqwest::StatusCode, code: &str) -> swarmy_client::Error {
         swarmy_client::Error::Api {
             status,
             body: swarmy_api_types::ApiError {
@@ -679,30 +684,31 @@ mod tests {
                 provider_text: None,
             },
         }
-        .into()
+    }
+
+    fn chat_error(error: swarmy_client::Error) -> Error {
+        Error::Client(error)
     }
 
     #[test]
     fn only_busy_race_requeues_and_permanent_errors_propagate() {
         // Typed busy races requeue: the session flipped after the ready
         // render, or the head moved between the render and the append.
-        assert!(is_busy_send_error(&api_error(
+        assert!(is_busy_send_error(&chat_error(api_error(
             reqwest::StatusCode::CONFLICT,
             "session_not_idle"
-        )));
-        assert!(is_busy_send_error(&api_error(
+        ))));
+        assert!(is_busy_send_error(&chat_error(api_error(
             reqwest::StatusCode::CONFLICT,
             "stale_head"
-        )));
-        assert!(!is_busy_send_error(&api_error(
+        ))));
+        assert!(!is_busy_send_error(&chat_error(api_error(
             reqwest::StatusCode::CONFLICT,
             "main_session_close"
-        )));
-        assert!(is_busy_send_error(
-            &crate::client_conversation::SessionNotIdle.into()
-        ));
-        // The API wrapper retains the typed source through context.
-        let wrapped = swarmy_client::api_client::api_error(
+        ))));
+        assert!(is_busy_send_error(&Error::NotIdle));
+        // The API wrapper retains the typed source through its endpoint context.
+        let wrapped = chat_error(swarmy_client::api_client::api_error(
             swarmy_client::Error::Api {
                 status: reqwest::StatusCode::CONFLICT,
                 body: swarmy_api_types::ApiError {
@@ -712,21 +718,23 @@ mod tests {
                 },
             },
             "test endpoint",
-        );
+        ));
         assert!(is_busy_send_error(&wrapped));
-        assert!(!is_busy_send_error(&anyhow::anyhow!("409 Conflict")));
+        assert!(!is_busy_send_error(&Error::Message("409 Conflict".into())));
         // Permanent failures propagate so the client exits with the message
         // instead of waiting forever on `input locked (queued)`.
-        assert!(!is_busy_send_error(&api_error(
+        assert!(!is_busy_send_error(&chat_error(api_error(
             reqwest::StatusCode::NOT_FOUND,
             "session_not_found"
-        )));
-        assert!(!is_busy_send_error(&api_error(
+        ))));
+        assert!(!is_busy_send_error(&chat_error(api_error(
             reqwest::StatusCode::UNAUTHORIZED,
             "unauthorized"
-        )));
-        assert!(!is_busy_send_error(&anyhow::anyhow!(
-            "API at http://example: request timed out"
+        ))));
+        assert!(!is_busy_send_error(&chat_error(
+            swarmy_client::Error::Timeout {
+                endpoint: "http://example".into(),
+            }
         )));
     }
 }

@@ -28,6 +28,44 @@ pub enum Error {
     Url(#[from] url::ParseError),
     #[error("unexpected response status {status}: {body}")]
     Status { status: StatusCode, body: String },
+    #[error("API configuration error: {0}")]
+    Config(#[from] swarmy_config::Error),
+    #[error("no [api] token configured; run swarmy dev up")]
+    MissingToken,
+    #[error("invalid API endpoint {endpoint}: {source}")]
+    InvalidEndpoint {
+        endpoint: String,
+        #[source]
+        source: url::ParseError,
+    },
+    #[error("API at {endpoint}: {source}")]
+    Endpoint {
+        endpoint: String,
+        #[source]
+        source: Box<Error>,
+    },
+    #[error("API at {endpoint}: request timed out")]
+    Timeout { endpoint: String },
+    #[error("reading upload size for {path}: {source}")]
+    UploadSize {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+impl Error {
+    /// The server rejection code when this failure (or its wrapped cause)
+    /// is an API error response. The chat UI requeues transient append
+    /// races instead of dropping keystrokes.
+    #[must_use]
+    pub fn api_code(&self) -> Option<(StatusCode, &str)> {
+        match self {
+            Error::Api { status, body } => Some((*status, body.code.as_str())),
+            Error::Endpoint { source, .. } => source.api_code(),
+            _ => None,
+        }
+    }
 }
 
 /// A locally built image streamed to the control plane for publication.

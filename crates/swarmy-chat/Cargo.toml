@@ -17,8 +17,8 @@ swarmy-client.workspace = true
 swarmy-api-types.workspace = true
 swarmy-core.workspace = true
 swarmy-config.workspace = true
-anyhow.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 ulid.workspace = true
 ratatui = { workspace = true, optional = true }
