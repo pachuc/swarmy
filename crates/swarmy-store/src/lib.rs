@@ -10,6 +10,13 @@
 mod agents;
 pub use agents::{AgentSessionOptions, CreateAgentOptions};
 mod api_idempotency;
+mod errors;
+pub use errors::{DomainError, FenceError, Result, StorageError, StoreError};
+mod session;
+pub(crate) use session::{
+    SESSION_CHUNK_MARKER, SESSION_MAX_BYTES, SESSION_RECORD_VERSION, StoredSession,
+    StoredSessionCurrent,
+};
 pub mod blob;
 mod computers;
 pub mod credentials;
@@ -85,200 +92,12 @@ use swarmy_core::{
 #[cfg(any(test, feature = "test-support"))]
 use swarmy_core::{InflightRecord, SnapshotRef};
 
-use blob::{BlobError, BlobStore};
+use blob::BlobStore;
 
 pub const INLINE_LIMIT: usize = 80 * 1024;
 /// Keep reads and mutations below `FoundationDB`'s transaction byte limit.
 const MAX_BATCH_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_SCAN_LIMIT: usize = 64;
-
-#[derive(Debug, thiserror::Error)]
-pub enum StorageError {
-    #[error("keyring cannot decrypt credential")]
-    Keyring,
-    #[error(transparent)]
-    FoundationDb(#[from] foundationdb::FdbError),
-    #[error(transparent)]
-    Binding(#[from] FdbBindingError),
-    #[error(transparent)]
-    Encoding(#[from] EncodingError),
-    #[error(transparent)]
-    Blob(#[from] BlobError),
-    #[error("memory capacity overflow")]
-    MemoryCapacityOverflow,
-    #[error("sequence number overflow")]
-    SequenceOverflow,
-    #[error("metadata or batch exceeds the storage budget")]
-    TooLarge,
-    #[error("stored key or blob is corrupt")]
-    Corrupt,
-    #[error("commit outcome is unknown; read durable state before retrying")]
-    CommitUnknown,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum FenceError {
-    #[error("volume head changed since this writer opened it")]
-    VolumeHeadMismatch,
-    #[error("expected head {expected}, found {actual}")]
-    StaleSequence { expected: u64, actual: u64 },
-    #[error("inflight mismatch")]
-    InflightMismatch,
-    #[error("placement agent mismatch")]
-    PlacementAgentMismatch,
-    #[error("session agent mismatch")]
-    SessionAgentMismatch,
-    #[error("tool claim mismatch")]
-    ToolClaimMismatch,
-    #[error("tool job mismatch")]
-    ToolJobMismatch,
-    #[error("lease is absent, expired, or no longer matches")]
-    LeaseMismatch,
-    #[error("placement lease or epoch no longer matches")]
-    PlacementMismatch,
-    #[error("placed tool claim no longer matches")]
-    PlacedToolClaimMismatch,
-    #[error("gc run lease no longer matches")]
-    GcLeaseMismatch,
-    #[error("credential refresh claim no longer matches")]
-    CredentialRefreshMismatch,
-    #[error("volume writer lease no longer matches")]
-    VolumeLeaseMismatch,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum DomainError {
-    #[error("credential does not exist")]
-    CredentialMissing,
-    #[error("route does not exist")]
-    RouteMissing,
-    #[error("invalid route: {0}")]
-    InvalidRoute(String),
-    #[error("credential refresh failed")]
-    CredentialRefresh,
-    #[error("GitHub token must contain 1-4096 printable ASCII characters without whitespace")]
-    InvalidGithubToken,
-    #[error("agent does not exist")]
-    AgentMissing,
-    #[error("agent id or name already exists")]
-    AgentExists,
-    #[error("agent name must be nonempty and contain no control characters")]
-    InvalidAgentName,
-    #[error("named agent has a pinned image")]
-    NamedAgentImage,
-    #[error("an ephemeral session requires an image")]
-    SessionImageRequired,
-    #[error("this session's computer has been deleted; create a new session to run tools")]
-    ComputerDeleted,
-    #[error("cannot close an agent main session")]
-    MainSessionClose,
-    #[error("main session must be an open session belonging to the agent")]
-    InvalidMainSession,
-    #[error("node does not exist")]
-    NodeMissing,
-    #[error("node has no computer capacity available: {detail}")]
-    NodeAtCapacity { detail: String },
-    #[error("sandbox requirements can only change after the current placement is evicted")]
-    ActiveSandboxRequirements,
-    #[error("placement already exists")]
-    PlacementExists,
-    #[error("volume does not exist")]
-    VolumeMissing,
-    #[error("volume already exists")]
-    VolumeExists,
-    #[error("image {image:?} is not registered; registered images: {registered}")]
-    ImageMissing { image: String, registered: String },
-    #[error("expected image NAME:TAG")]
-    InvalidImage,
-    #[error("manifest does not exist")]
-    ManifestMissing,
-    #[error("manifest id already refers to a different header")]
-    ManifestExists,
-    #[error("invalid manifest dimensions")]
-    InvalidManifest,
-    #[error("session does not exist")]
-    SessionMissing,
-    #[error("session already exists")]
-    SessionExists,
-    #[error("session is idle or completed; there is nothing to interrupt")]
-    NothingToInterrupt,
-    #[error("session interruption was requested before the turn ended")]
-    InterruptPending,
-    #[error("empty tool jobs")]
-    EmptyToolJobs,
-    #[error("invalid inference completion")]
-    InvalidInferenceCompletion,
-    #[error("invalid inference request")]
-    InvalidInferenceRequest,
-    #[error("invalid memory requirement")]
-    InvalidMemoryRequirement,
-    #[error("invalid message role")]
-    InvalidMessageRole,
-    #[error("invalid partition")]
-    InvalidPartition,
-    #[error("invalid retention")]
-    InvalidRetention,
-    #[error("invalid session record")]
-    InvalidSessionRecord,
-    #[error("invalid snapshot")]
-    InvalidSnapshot,
-    #[error("invalid tool call")]
-    InvalidToolCall,
-    #[error("invalid transition")]
-    InvalidTransition,
-    #[error("missing inference wait")]
-    MissingInferenceWait,
-    #[error("missing inflight")]
-    MissingInflight,
-    #[error("missing tool request")]
-    MissingToolRequest,
-    #[error("node not sandbox")]
-    NodeNotSandbox,
-    #[error("session computer exists")]
-    SessionComputerExists,
-    #[error("session not idle")]
-    SessionNotIdle,
-    #[error("queued input arrived before the turn could finish")]
-    QueuedInputPending,
-    #[error("unexpected session state")]
-    UnexpectedSessionState,
-    #[error("lease TTL must be greater than zero")]
-    InvalidLeaseTtl,
-    #[error("scan limit must be between 1 and 64")]
-    InvalidLimit,
-}
-#[derive(Debug, thiserror::Error)]
-pub enum StoreError {
-    #[error(transparent)]
-    Storage(#[from] StorageError),
-    #[error(transparent)]
-    Fence(#[from] FenceError),
-    #[error(transparent)]
-    Domain(#[from] DomainError),
-}
-
-impl From<foundationdb::FdbError> for StoreError {
-    fn from(error: foundationdb::FdbError) -> Self {
-        StorageError::from(error).into()
-    }
-}
-impl From<FdbBindingError> for StoreError {
-    fn from(error: FdbBindingError) -> Self {
-        StorageError::from(error).into()
-    }
-}
-impl From<EncodingError> for StoreError {
-    fn from(error: EncodingError) -> Self {
-        StorageError::from(error).into()
-    }
-}
-impl From<BlobError> for StoreError {
-    fn from(error: BlobError) -> Self {
-        StorageError::from(error).into()
-    }
-}
-
-pub type Result<T> = std::result::Result<T, StoreError>;
 
 /// Start the `FoundationDB` network once per process.
 ///
@@ -298,95 +117,6 @@ pub fn boot() -> foundationdb::api::NetworkAutoStop {
 enum StoredValue {
     Inline(Vec<u8>),
     Blob(String),
-}
-
-const SESSION_RECORD_VERSION: u8 = 2;
-// Postcard encodes a session id with a 26-byte prefix, so this marker cannot
-// collide with an inline session record. Oversized records need bounded chunks.
-const SESSION_CHUNK_MARKER: u8 = 0xff;
-const SESSION_MAX_BYTES: usize = 10 * INLINE_LIMIT;
-
-/// The current format owns all session-local metadata. Postcard fields are
-/// positional; changes require a new fixed-byte fixture and a one-way break.
-#[derive(Serialize, Deserialize)]
-struct StoredSessionCurrent {
-    session_id: SessionId,
-    agent_id: swarmy_core::AgentId,
-    state: SessionState,
-    head_seq: u64,
-    snapshot_seq: Option<u64>,
-    kind: swarmy_core::SessionKind,
-    computer_deleted: bool,
-    plan: Vec<swarmy_core::PlanStep>,
-    inference: swarmy_core::InferenceSelection,
-    interrupt_requested: bool,
-    route: Option<String>,
-    route_step: u32,
-    image: Option<swarmy_core::ImageRecord>,
-    idle_since: Option<jiff::Timestamp>,
-    state_since: Option<jiff::Timestamp>,
-}
-
-// Working copy shared by the state machine.
-struct StoredSession {
-    session_id: SessionId,
-    agent_id: swarmy_core::AgentId,
-    state: SessionState,
-    head_seq: u64,
-    snapshot_seq: Option<u64>,
-    kind: swarmy_core::SessionKind,
-    computer_deleted: bool,
-    plan: Vec<swarmy_core::PlanStep>,
-    inference: swarmy_core::InferenceSelection,
-    interrupt_requested: bool,
-    route: Option<String>,
-    route_step: u32,
-    image: Option<swarmy_core::ImageRecord>,
-    idle_since: Option<jiff::Timestamp>,
-    state_since: Option<jiff::Timestamp>,
-}
-
-impl From<StoredSessionCurrent> for StoredSession {
-    fn from(v: StoredSessionCurrent) -> Self {
-        Self {
-            session_id: v.session_id,
-            agent_id: v.agent_id,
-            state: v.state,
-            head_seq: v.head_seq,
-            snapshot_seq: v.snapshot_seq,
-            kind: v.kind,
-            computer_deleted: v.computer_deleted,
-            plan: v.plan,
-            inference: v.inference,
-            interrupt_requested: v.interrupt_requested,
-            route: v.route,
-            route_step: v.route_step,
-            image: v.image,
-            idle_since: v.idle_since,
-            state_since: v.state_since,
-        }
-    }
-}
-impl From<&StoredSession> for StoredSessionCurrent {
-    fn from(v: &StoredSession) -> Self {
-        Self {
-            session_id: v.session_id,
-            agent_id: v.agent_id,
-            state: v.state,
-            head_seq: v.head_seq,
-            snapshot_seq: v.snapshot_seq,
-            kind: v.kind,
-            computer_deleted: v.computer_deleted,
-            plan: v.plan.clone(),
-            inference: v.inference.clone(),
-            interrupt_requested: v.interrupt_requested,
-            route: v.route.clone(),
-            route_step: v.route_step,
-            image: v.image.clone(),
-            idle_since: v.idle_since,
-            state_since: v.state_since,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -1185,80 +915,6 @@ pub(crate) async fn scan_all(
         begin = next.unwrap_or_else(|| end.clone());
     }
     Ok(out)
-}
-
-#[cfg(test)]
-mod stored_format_tests {
-    use super::*;
-
-    #[test]
-    fn fixed_versioned_session_bytes() {
-        let id = SessionId::from_ulid(ulid::Ulid::from(0_u128));
-        let agent = swarmy_core::AgentId::from_ulid(ulid::Ulid::from(0_u128));
-        let v2 = StoredSessionCurrent {
-            session_id: id,
-            agent_id: agent,
-            state: SessionState::Idle,
-            head_seq: 0,
-            snapshot_seq: None,
-            kind: swarmy_core::SessionKind::Ephemeral,
-            computer_deleted: false,
-            plan: Vec::new(),
-            inference: swarmy_core::InferenceSelection::default(),
-            interrupt_requested: false,
-            route: None,
-            route_step: 0,
-            image: None,
-            idle_since: None,
-            state_since: None,
-        };
-        let mut bytes = vec![SESSION_RECORD_VERSION];
-        bytes.extend(postcard::to_allocvec(&v2).unwrap());
-        let mut v2_bytes = vec![SESSION_RECORD_VERSION, 26];
-        v2_bytes.extend([b'0'; 26]);
-        v2_bytes.push(26);
-        v2_bytes.extend([b'0'; 26]);
-        v2_bytes.extend([0, 0, 0]);
-        v2_bytes.extend([0; 12]); // Kind through state-since are empty defaults.
-        assert_eq!(bytes, v2_bytes);
-        let decoded: StoredSessionCurrent = postcard::from_bytes(&bytes[1..]).unwrap();
-        assert_eq!(decoded.session_id, id);
-        assert_eq!(decoded.route_step, 0);
-    }
-
-    #[test]
-    fn fixed_nondefault_v2_session_bytes() {
-        let id = SessionId::from_ulid(ulid::Ulid::from(0_u128));
-        let v2 = StoredSessionCurrent {
-            session_id: id,
-            agent_id: swarmy_core::AgentId::from_ulid(ulid::Ulid::from(0_u128)),
-            state: SessionState::Runnable,
-            head_seq: 0,
-            snapshot_seq: None,
-            kind: swarmy_core::SessionKind::Ephemeral,
-            computer_deleted: false,
-            plan: Vec::new(),
-            inference: swarmy_core::InferenceSelection::default(),
-            interrupt_requested: true,
-            route: None,
-            route_step: 3,
-            image: None,
-            idle_since: None,
-            state_since: None,
-        };
-        let mut expected = vec![SESSION_RECORD_VERSION, 26];
-        expected.extend([b'0'; 26]);
-        expected.push(26);
-        expected.extend([b'0'; 26]);
-        expected.extend([1, 0, 0]); // Runnable, empty log and snapshot.
-        expected.extend([0, 0, 0, 0, 0, 0, 1, 0, 3, 0, 0, 0]);
-        let mut actual = vec![SESSION_RECORD_VERSION];
-        actual.extend(postcard::to_allocvec(&v2).unwrap());
-        assert_eq!(actual, expected);
-        let decoded: StoredSessionCurrent = postcard::from_bytes(&expected[1..]).unwrap();
-        assert!(decoded.interrupt_requested);
-        assert_eq!(decoded.route_step, 3);
-    }
 }
 
 mod usage;
