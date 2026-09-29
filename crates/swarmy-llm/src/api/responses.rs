@@ -381,7 +381,7 @@ fn build_input(request: &Request, context: &RequestContext<'_>) -> Result<Vec<Va
             if let Part::Reasoning { text, metadata } = part {
                 let saved = metadata.get("openai_responses");
                 if let Some(saved) = saved {
-                    let item = saved;
+                    let item = &saved["item"];
                     let same = saved["provider"] == context.provider
                         && saved["model"] == request.settings.model;
                     if same && item["type"] == "reasoning" {
