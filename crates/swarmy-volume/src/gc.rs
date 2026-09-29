@@ -378,6 +378,7 @@ impl References {
 mod tests {
     use super::*;
 
+    // Tested directly because a full sweep needs a store and object storage.
     #[test]
     fn saturated_filter_never_forgets_a_reference() {
         let mut filter = References::new(8).unwrap();
@@ -389,6 +390,7 @@ mod tests {
         }
     }
 
+    // Tested directly because a full sweep needs a store and object storage.
     #[test]
     fn only_canonical_chunk_keys_are_candidates() {
         let hash = ContentHash([123; 32]);

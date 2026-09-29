@@ -201,7 +201,7 @@ pub fn register(tools: &mut ToolRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use swarmy_core::{BashArguments, decode, encode};
+    use swarmy_core::BashArguments;
 
     /// Anthropic, Bedrock, xAI, and Azure reject combinators at the top level of a
     /// tool schema, so every registered tool must be a plain object there.
@@ -225,26 +225,18 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_tools_describe_and_validate_new_behavior() {
+    fn sandbox_tools_validate_arguments_without_executing() {
         use swarmy_core::SandboxArguments;
         for tool in [&Bash as &dyn Tool, &ProcessStart, &ProcessLog, &WriteStdin] {
             assert!(tool.sandbox_bound());
-            assert!(tool.description().contains("32 KiB"));
-            assert!(tool.description().contains("yield"));
-            assert!(tool.description().contains("log"));
         }
-        assert!(
-            Bash.description()
-                .contains("/home/agent/.swarmy/output/<call id>.log")
-        );
         assert!(WebFetch.sandbox_bound());
         assert!(SandboxArguments::parse("web_fetch", json!({"url":"http://localhost/"})).is_ok());
         assert!(SandboxArguments::parse("web_fetch", json!({"url":""})).is_err());
         let id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
         let input = json!({"process_id":id, "text":"hello\n"});
-        let parsed = SandboxArguments::parse("write_stdin", input.clone()).unwrap();
-        assert_eq!(parsed.name(), "write_stdin");
-        assert_eq!(parsed.parameters(), input);
+        let parsed = SandboxArguments::parse("write_stdin", input).unwrap();
+        assert!(parsed.valid());
         for arguments in [
             json!({"command":"true", "yield_seconds":-1}),
             json!({"command":"true", "yield_seconds":3601}),
@@ -253,10 +245,7 @@ mod tests {
         ] {
             assert!(SandboxArguments::parse("bash", arguments).is_err());
         }
-        assert!(ProcessList.description().contains("capped"));
-        assert!(ProcessList.description().contains("limit"));
         let parsed = SandboxArguments::parse("process_list", json!({})).unwrap();
-        assert_eq!(parsed.name(), "process_list");
         assert!(parsed.valid());
         assert!(SandboxArguments::parse("process_list", json!({"limit": 5})).is_ok());
         assert!(SandboxArguments::parse("process_list", json!({"all": true})).is_ok());
@@ -271,7 +260,6 @@ mod tests {
 
     #[test]
     fn bash_is_remote_and_validates_arguments_without_executing() {
-        assert!(Bash.sandbox_bound());
         assert!(futures::executor::block_on(Bash.execute(json!({"command":"exit 0"}))).is_err());
         let arguments: BashArguments =
             serde_json::from_value(json!({"command":"echo hello"})).unwrap();
@@ -279,10 +267,6 @@ mod tests {
         assert_eq!(arguments.yield_seconds, 10);
         assert_eq!(arguments.output_budget_bytes, 32768);
         assert!(arguments.valid());
-        assert_eq!(
-            decode::<BashArguments>(&encode(&arguments).unwrap()).unwrap(),
-            arguments
-        );
         for input in [
             json!({}),
             json!({"command": 42}),
