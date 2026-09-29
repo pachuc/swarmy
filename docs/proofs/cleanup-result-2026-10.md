@@ -1,12 +1,24 @@
 # Cleanup result, 2026-10
 
-The historical baseline is [September 2026](cleanup-baseline-2026-09.md) at `b2d944f`. This measurement uses `350ec17` (the task branch also contains an empty WIP commit). No other fleet worker was compiling against this shared target during the measurements. The baseline likewise says nothing else used its shared target.
+The historical baseline is [September 2026](cleanup-baseline-2026-09.md) at
+`b2d944f`. This controlled comparison measures that exact commit against
+`8568a73`, independently of later changes to master.
 
-## Machine and method
+## Method
 
-- Fleet sandbox: `nproc` = 32; `free -g` = 123 GiB total, 0 GiB swap; cgroup `memory.max` = 25769803776 (24 GiB). Baseline: 16 vCPUs, 61 GiB host RAM, 8 GiB cgroup. **This is not the same machine shape.** All timings use `CARGO_BUILD_JOBS=1` to match the baseline, but the different CPU and memory make elapsed-time comparisons directional, not controlled speedups.
-- Pinned Rust toolchain, `CARGO_TARGET_DIR=/home/agent/.cargo-target`. `cargo clean` fails with `Device or resource busy` on the mounted target, so the target contents are deleted and emptiness checked, as in the baseline. `date +%s` measures elapsed seconds. Each timing is run twice; the lower is reported. Per-binary builds run sequentially after a clean. The dev stack is running for tests and clippy.
-- The test build uses `--no-run` to separate compilation from execution; the test execution can fail on privileged suites in this sandbox. Results and exit codes are reported below without presenting failed runs as green.
+On 2026-09-28 to 2026-09-29, both commits were measured in the same sandbox,
+interleaved baseline/master/baseline/master for each matrix item, with two
+repetitions per commit. At the start, `nproc` was 32, `free -g` reported
+123 GiB total RAM and 0 GiB swap, and cgroup `memory.max` was 25769803776
+bytes (24 GiB). Both detached worktrees and their separate
+`CARGO_TARGET_DIR` directories were on the same scratch disk. Only one
+build ran at a time, with `CARGO_BUILD_JOBS=1` and the pinned Rust toolchain.
+Before each cold sequence, the target contents were deleted and verified
+empty (`cargo clean` cannot remove the mounted shared target). The dev stack
+was running with `.dev/env` sourced for test builds and clippy. Elapsed time
+uses `date +%s`, as in the baseline; commands and exit codes are in the
+[raw TSV](cleanup-like-for-like-2026-10.tsv). The earlier table compared
+different machines; it was replaced on 2026-09-29.
 
 ## Repository metrics
 
@@ -148,70 +160,41 @@ This follows the baseline file set; new top-ten files are listed in the current 
 
 ## Timings (seconds)
 
-| Command / condition | Before | After | Change |
+Each cell gives the **lower** of two runs, followed by both runs in order.
+`b2d944f` and `8568a73` are the exact revisions measured. All 44 timed
+commands exited 0. The matrix used these commands without substitutions:
+
+- From an empty target: `cargo build --workspace --locked`, its unchanged
+  rerun, then the same command after `touch crates/swarmy-core/src/lib.rs`.
+- From an empty target: `cargo build --locked -p swarmy-cli`, then
+  `-p swarmy-gateway`, then `-p swarmyd`, sequentially.
+- From an empty target: `cargo test --workspace --locked --no-run`, its
+  unchanged rerun, then `cargo clippy --workspace --all-targets --locked -- -D warnings`,
+  its unchanged rerun, and clippy after the core touch. The *first clippy
+  after a test build* is the comparable baseline definition, not an
+  unchanged rerun of clippy.
+
+| Command / condition | Baseline `b2d944f` (lower; runs 1, 2) | Master `8568a73` (lower; runs 1, 2) | Change in lower |
 | --- | ---: | ---: | ---: |
-| `cargo build --workspace --locked`, cold | 1603 | 968 | -39.6% |
-| `cargo build --workspace --locked`, unchanged rerun | 0 | 0 | n/a (zero baseline) |
-| `cargo build --workspace --locked`, after core touch | 71 | 72 | +1.4% |
-| `cargo build --locked -p swarmy-cli`, first after clean | 1290 | 467 | -63.8% |
-| `cargo build --locked -p swarmy-gateway`, next | 498 | 531 | +6.6% |
-| `cargo build --locked -p swarmyd`, next | 26 | 148 | +469.2% |
-| `cargo test --workspace --locked --no-run`, cold | 1806 | 1150 | -36.3% |
-| `cargo test --workspace --locked --no-run`, unchanged rerun | 1 | 0 | -100.0% |
-| `cargo test --workspace --locked`, execution only | 3 (failed) | 5 (failed, rc 101) | +66.7% |
-| `cargo test --workspace --locked`, after core touch | not measured | 228 (failed, rc 101) | n/a |
-| `cargo clippy --workspace --all-targets --locked -- -D warnings`, cold | not measured | 567 | n/a |
-| `cargo clippy --workspace --all-targets --locked -- -D warnings`, unchanged rerun | 414 | 0 | -100.0% |
-| `cargo clippy --workspace --all-targets --locked -- -D warnings`, after core touch | 53 | 57 | +7.5% |
-| `cargo test --workspace --locked` all-in, cold | not measured | not measured separately | n/a |
-| `cargo test --workspace --locked` all-in, unchanged rerun | not measured | not measured separately | n/a |
-| `cargo test --workspace --locked` all-in, after core touch | not measured | not measured separately | n/a |
+| Workspace build, cold | 1558 (1581, 1558) | 974 (974, 975) | -37.5% |
+| Workspace build, unchanged | 0 (0, 1) | 0 (0, 0) | n/a (zero baseline) |
+| Workspace build, core touch | 68 (68, 68) | 74 (74, 74) | +8.8% |
+| CLI build, first after clean | 1251 (1258, 1251) | 466 (467, 466) | -62.7% |
+| Gateway build, after CLI | 494 (497, 494) | 530 (531, 530) | +7.3% |
+| `swarmyd` build, after gateway | 24 (24, 24) | 148 (148, 149) | +516.7% |
+| Test build (`--no-run`), cold | 1741 (1743, 1741) | 1150 (1150, 1151) | -33.9% |
+| Test build (`--no-run`), unchanged | 0 (0, 1) | 0 (0, 0) | n/a (zero baseline) |
+| First clippy after test build | 384 (384, 385) | 265 (265, 265) | -31.0% |
+| Clippy, unchanged rerun | 0 (0, 1) | 0 (0, 1) | n/a (zero baseline) |
+| Clippy, core touch | 52 (52, 52) | 57 (57, 57) | +9.6% |
 
-Two runs per measured row (seconds, exit code):
-
-```text
-section	run	seconds	rc
-build-cold	1	971	0
-build-warm	1	0	0
-build-touch	1	73	0
-build-cold	2	968	0
-build-warm	2	0	0
-build-touch	2	72	0
-cli	1	467	0
-gateway	1	531	0
-swarmyd	1	148	0
-cli	2	467	0
-gateway	2	532	0
-swarmyd	2	148	0
-test-build-cold	1	1150	0
-test-build-warm	1	1	0
-test-exec	1	5	101
-test-touch	1	228	101
-test-build-cold	2	1151	0
-test-build-warm	2	0	0
-test-exec	2	5	101
-test-touch	2	229	101
-clippy-cold	1	568	0
-clippy-warm	1	0	0
-clippy-touch	1	58	0
-clippy-cold	2	567	0
-clippy-warm	2	0	0
-clippy-touch	2	57	0
-```
-
-The baseline did not time cold clippy, core-touch tests, or a full all-in test separately. The cold `--no-run` build plus the immediately following execution gives a comparable split. The baseline's 414 s "cached clippy" was actually its *first clippy invocation after a test build*, whereas the 0 s row above is an unchanged rerun of clippy itself. Those are different caches and **the -100% figure must not be interpreted as an improvement**. A separate paired measurement below reproduces the baseline ordering. The execution-only runs still fail, but at a different point: 3 of 5 `swarmy-api` `cli_auth` tests pass and 2 fail because `swarmy-auth` was not installed in the sandbox. The helper was installed after the timing matrix for subsequent validation. The historical run failed all 5 on its target-triple heuristic. Exit codes are kept with the timings rather than implying a successful suite.
-
-### Baseline-order clippy check
-
-Both repetitions started with an empty target, ran `cargo test --workspace --locked --no-run`, then ran clippy, an unchanged clippy rerun, and clippy after touching `crates/swarmy-core/src/lib.rs`. This duplicates the baseline's *first clippy after a test build* definition, which the earlier cold-clippy row does not.
-
-| Measure | Before (s) | After (s) | Change |
-| --- | ---: | ---: | ---: |
-| First clippy after test build | 414 | 265 (runs: 266, 265) | -36.0% |
-| Unchanged clippy rerun | not measured | 0 (runs: 1, 0) | n/a |
-| Clippy after core touch | 53 | 56 (runs: 56, 57) | +5.7% |
-
-All six clippy executions exited 0. The preceding test builds took 1153 and 1152 s. These numbers still compare different CPU/cgroup shapes.
+The baseline's original clippy table labeled its first post-test-build
+invocation as "cached" (414 s); it did not measure a clippy rerun. This
+comparison reproduces the actual command order on both revisions. Test
+*execution* and cold clippy without a preceding test build were not part of
+this like-for-like matrix; their earlier, differently defined results are
+not used to claim a speedup. The September baseline document remains an
+unaltered historical record.
 
 ### API fake first-token latency
 
@@ -250,8 +233,8 @@ The historical 1474 s mean used `updatedAt - createdAt`, which **includes queue 
 - PR #172 split remote-only dependencies away from ordinary builds; PR #179 extracted cloud provisioning and PR #177 removed the AWS credential chain from the store. The normal CLI build avoids the AWS SDK, while the opt-in remote path still needs it. This is the principal expected cold-build reduction; `aws-*` lockfile entries move only slightly because optional remote dependencies remain in the lockfile.
 - PR #173 retired dead paths; PR #174 split the model catalog and feature-gated cloud providers; PR #175 extracted process-spawning tests into e2e. PR #193 removed duplicate tests and parallelized CI. Changes in per-crate test counts mostly reflect relocation and deduplication rather than a broad deletion of coverage.
 - PR #193 is the direct cause of the shorter six-job CI wall time. The sum of job durations is the better indicator of total work; mixing pre-split and post-split runs in the last-ten mean hides the full parallelization effect. The six post-split runs average 437 s created-to-updated and 1403 s summed job time; the four earlier runs average 1484 s and 1485 s respectively. Most of the wall-time drop is concurrent scheduling, not a 70% drop in total compute.
-- PR #194 changed compaction behavior and PR #196 added worker kill points, neither primarily targets build time. The ongoing size of the store and worker crates and remote-feature AWS dependencies remain. The sequential gateway and `swarmyd` builds got slower (+6.6% and +469.2%); unlike the CLI, they benefit less from the newly slimmer CLI build that precedes them, and the new crate split changes what must compile for each binary. An unchanged cached build is already near zero and cannot fall meaningfully.
-- The baseline `cli_auth` execution failed because its helper interpreted the hyphenated target directory as a target triple. That failure is not a compilation regression; execution status is reported explicitly. CPU/memory shape and CI runner changes also prevent attributing all wall-time differences solely to code cleanup.
+- PR #194 changed compaction behavior and PR #196 added worker kill points, neither primarily targets build time. The ongoing size of the store and worker crates and remote-feature AWS dependencies remain. The sequential gateway and `swarmyd` builds got slower (+7.3% and +516.7%); unlike the CLI, they benefit less from the newly slimmer CLI build that precedes them, and the new crate split changes what must compile for each binary. An unchanged cached build is already near zero and cannot fall meaningfully.
+- The baseline `cli_auth` execution failed because its helper interpreted the hyphenated target directory as a target triple. That failure is not a compilation regression; execution status is reported explicitly. The controlled build comparison removes the earlier machine-shape confounder, but CI runner and workload changes still prevent attributing all CI wall-time differences solely to code cleanup.
 
 ## Appendix: current metrics output
 
