@@ -35,9 +35,10 @@ fn main() -> Result<()> {
     if vol_command {
         let _network = swarmy_store::boot();
         let runtime = tokio::runtime::Runtime::new()?;
-        return Ok(runtime
+        runtime
             .block_on(vol::run_cli())
-            .context("swarmyd vol failed")?);
+            .context("swarmyd vol failed")?;
+        return Ok(());
     }
     let _network = swarmy_store::boot();
     let runtime = tokio::runtime::Runtime::new()?;

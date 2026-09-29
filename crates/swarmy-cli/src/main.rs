@@ -366,7 +366,7 @@ async fn remote(command: swarmy_cloud::Command, json: bool) -> anyhow::Result<()
             let Some((node, keep_bucket)) = down else {
                 anyhow::bail!("remote down confirmation expired; rerun the command");
             };
-            confirm_deletion(&plan, json).await?;
+            confirm_deletion(&plan, json)?;
             Box::pin(swarmy_cloud::run(
                 swarmy_cloud::Command::Down {
                     name: node,
@@ -401,7 +401,7 @@ fn remote_name(command: &swarmy_cloud::Command) -> &'static str {
 /// Print what `remote down` would delete and prompt, then rerun confirmed.
 /// The rerun cannot need confirmation again: it passes `--yes`.
 #[cfg(feature = "remote")]
-async fn confirm_deletion(plan: &swarmy_cloud::DeletionPlan, json: bool) -> anyhow::Result<()> {
+fn confirm_deletion(plan: &swarmy_cloud::DeletionPlan, json: bool) -> anyhow::Result<()> {
     use std::io::{IsTerminal, Write};
     if json {
         anyhow::bail!("remote down --json requires --yes to delete owned resources");

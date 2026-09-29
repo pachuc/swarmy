@@ -163,7 +163,7 @@ fn validate(settings: &RemoteSettings, name: &str) -> Result<()> {
         ("subnet", &settings.aws.subnet),
         ("security_group", &settings.aws.security_group),
     ] {
-        if !value.as_deref().is_some_and(|value| !value.is_empty()) {
+        if value.as_deref().is_none_or(str::is_empty) {
             return Err(crate::Error::other(format!(
                 "remote.aws.{field} is not configured; set [remote.aws] {field} in config.toml before running swarmy remote up"
             )));

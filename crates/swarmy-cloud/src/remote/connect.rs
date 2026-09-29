@@ -9,7 +9,7 @@ use std::{
     process::Stdio,
     time::{Duration, Instant},
 };
-use swarmy_config::{RemotePorts, RemoteProfile, remote_path};
+use swarmy_config::{RemoteNode, RemotePorts, RemoteProfile, remote_path};
 use tokio::{
     process::Child,
     time::{sleep, timeout},
@@ -91,40 +91,7 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
             }
             sleep(Duration::from_millis(50)).await;
         }
-        // Use the forwarding connection for this session too. OpenSSH enables
-        // TCP_NODELAY on its server transport when a session is opened; a bare
-        // -N connection otherwise adds delayed-ACK stalls to small store replies.
-        let command = "initialize SSH forwarding session".to_owned();
-        let output = ssh::command(&node)?
-            .arg("-S")
-            .arg(&profile.socket_path)
-            .arg(&address)
-            .arg(if node.launch_settings.is_some() {
-                "cat swarmy/.dev/fdb.cluster"
-            } else {
-                "true"
-            })
-            .output()
-            .await
-            .map_err(|source| crate::Error::Ssh {
-                command: command.clone(),
-                source: Box::new(source),
-            })?;
-        if !output.status.success() {
-            return Err(crate::Error::SshStatus {
-                command,
-                status: output.status,
-            });
-        }
-        let cluster = if node.launch_settings.is_some() {
-            rewrite_address(&String::from_utf8(output.stdout)?, ports.fdb)?
-        } else {
-            // Old single-node remotes used this fixed cluster identity and loopback listener.
-            format!("dev:dev@127.0.0.1:{}\n", ports.fdb)
-        };
-        state::write(&profile.fdb_cluster_file, cluster.as_bytes())?;
-        profile.api_token = read_remote_api_token(&node, &profile, &address).await?;
-        state::write(&path, &serde_json::to_vec_pretty(&profile)?)?;
+        forward_session(&node, &mut profile, &address, ports, &path).await?;
         Ok::<_, crate::Error>(())
     })
     .await
@@ -199,6 +166,51 @@ async fn read_remote_api_token(
     }
     Ok(Some(token.to_owned()))
 }
+/// Open one session over the forwarding connection and record the cluster
+/// and API token. `OpenSSH` enables `TCP_NODELAY` on its server transport when
+/// a session is opened; a bare -N connection otherwise adds delayed-ACK
+/// stalls to small store replies.
+async fn forward_session(
+    node: &RemoteNode,
+    profile: &mut RemoteProfile,
+    address: &str,
+    ports: RemotePorts,
+    path: &Path,
+) -> Result<()> {
+    let command = "initialize SSH forwarding session".to_owned();
+    let output = ssh::command(node)?
+        .arg("-S")
+        .arg(&profile.socket_path)
+        .arg(address)
+        .arg(if node.launch_settings.is_some() {
+            "cat swarmy/.dev/fdb.cluster"
+        } else {
+            "true"
+        })
+        .output()
+        .await
+        .map_err(|source| crate::Error::Ssh {
+            command: command.clone(),
+            source: Box::new(source),
+        })?;
+    if !output.status.success() {
+        return Err(crate::Error::SshStatus {
+            command,
+            status: output.status,
+        });
+    }
+    let cluster = if node.launch_settings.is_some() {
+        rewrite_address(&String::from_utf8(output.stdout)?, ports.fdb)?
+    } else {
+        // Old single-node remotes used this fixed cluster identity and loopback listener.
+        format!("dev:dev@127.0.0.1:{}\n", ports.fdb)
+    };
+    state::write(&profile.fdb_cluster_file, cluster.as_bytes())?;
+    profile.api_token = read_remote_api_token(node, profile, address).await?;
+    state::write(path, &serde_json::to_vec_pretty(profile)?)?;
+    Ok(())
+}
+
 fn remote_api(node: &swarmy_config::RemoteNode) -> bool {
     node.launch_settings
         .as_ref()

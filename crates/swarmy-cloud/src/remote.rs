@@ -96,13 +96,13 @@ async fn run_inner(command: Command, json: bool) -> Result<RunOutcome> {
             let mut cloud_settings = node.cloud_settings();
             cloud_settings.region.clone_from(&node.region);
             let cloud = for_settings(&cloud_settings).await?;
-            if !keep_bucket && !yes {
-                if let Some(plan) = down::plan(&cloud, &state, &node)
+            if !keep_bucket
+                && !yes
+                && let Some(plan) = down::plan(&cloud, &state, &node)
                     .await
                     .map_err(down::actionable_error)?
-                {
-                    return Ok(RunOutcome::NeedsConfirmation(plan));
-                }
+            {
+                return Ok(RunOutcome::NeedsConfirmation(plan));
             }
             down::run(&cloud, &state, &node, Duration::from_secs(5), keep_bucket)
                 .await
@@ -247,9 +247,9 @@ async fn guard(name: &str, task: impl Future<Output = Result<()>>) -> Result<()>
         result = Box::pin(task) => result,
         result = tokio::signal::ctrl_c() => {
             result?;
-            return Err(crate::Error::other(format!(
+            Err(crate::Error::other(format!(
                 "interrupted; run swarmy remote down {name} to clean up"
-            )));
+            )))
         }
     }
 }
