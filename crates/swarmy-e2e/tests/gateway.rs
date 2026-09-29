@@ -225,7 +225,10 @@ impl Fixture {
         let session_id = SessionId::from_ulid(Ulid::generate());
         let now = Timestamp::now();
         let settings = swarmy_config::Settings {
-            default_image: Some(image_fixture::image(&self.store).await.into()),
+            selection: swarmy_config::SelectionSettings {
+                default_image: Some(image_fixture::image(&self.store).await.into()),
+                ..Default::default()
+            },
             ..Default::default()
         };
         self.store

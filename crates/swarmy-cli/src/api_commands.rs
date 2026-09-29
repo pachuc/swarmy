@@ -849,7 +849,11 @@ async fn agent(
             body["name"] = json!(name);
             body["description"] = json!(description);
             body["image"] = json!(
-                image.or_else(|| swarmy_config::Settings::load().ok()?.settings.default_image)
+                image.or_else(|| swarmy_config::Settings::load()
+                    .ok()?
+                    .settings
+                    .selection
+                    .default_image)
             );
             body["github_token"] = json!(token);
             body["idempotency_key"] = json!(Ulid::generate().to_string());

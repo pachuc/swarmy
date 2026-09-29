@@ -1032,15 +1032,11 @@ async fn root_chat_default_image_executes_pwd() {
 
 async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Services, Node) {
     let settings = swarmy_config::Settings::load().unwrap().settings;
+    let directory = settings.store_directory_path().unwrap();
+    let cluster = settings.fdb_cluster_file.to_string_lossy().into_owned();
     let images = Store::open(
-        Some(&settings.fdb_cluster_file),
-        Some(
-            &settings
-                .store_directory
-                .split('/')
-                .map(str::to_owned)
-                .collect::<Vec<_>>(),
-        ),
+        Some(&cluster),
+        Some(&directory),
         Arc::new(MemoryBlobStore::default()),
     )
     .await

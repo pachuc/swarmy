@@ -34,10 +34,10 @@ impl Node {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join(".swarmy")).unwrap();
         let id = NodeId::from_ulid(ulid::Ulid::generate());
-        settings.node_id = Some(id);
-        settings.node_heartbeat_interval_ms = 100;
-        settings.node_capacity.cpu_millis = 4000;
-        settings.node_capacity.memory_bytes = 15 * 1024 * 1024 * 1024;
+        settings.node.id = Some(id);
+        settings.node.heartbeat_interval = Duration::from_millis(100);
+        settings.node.capacity.cpu_millis = 4000;
+        settings.node.capacity.memory_bytes = 15 * 1024 * 1024 * 1024;
         std::fs::write(
             root.path().join(".swarmy/config.toml"),
             settings.to_toml().unwrap(),
@@ -285,13 +285,10 @@ async fn read(reader: &mut BufReader<UnixStream>) -> Response {
 }
 
 async fn store(settings: &swarmy_config::Settings) -> Store {
-    let directory: Vec<_> = settings
-        .store_directory
-        .split('/')
-        .map(str::to_owned)
-        .collect();
+    let directory = settings.store_directory_path().unwrap();
+    let cluster = settings.fdb_cluster_file.to_string_lossy().into_owned();
     Store::open(
-        Some(&settings.fdb_cluster_file),
+        Some(&cluster),
         Some(&directory),
         // The node reads large tool payloads in a separate process.
         Arc::new(ObjectBlobStore::new(
@@ -896,8 +893,8 @@ async fn root_dev_stack_uses_sandbox_loopback() {
 
 async fn registration(node: &Node, store: &Store) {
     let first = store.get_node(node.id).await.unwrap().unwrap();
-    assert_eq!(first.roles, node.settings.node_roles);
-    assert_eq!(first.capacity, node.settings.node_capacity);
+    assert_eq!(first.roles, node.settings.node.roles);
+    assert_eq!(first.capacity, node.settings.node.capacity);
     tokio::time::sleep(Duration::from_millis(300)).await;
     let second = store.get_node(node.id).await.unwrap().unwrap();
     assert!(second.last_heartbeat > first.last_heartbeat);

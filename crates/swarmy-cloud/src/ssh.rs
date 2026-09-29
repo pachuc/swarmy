@@ -214,7 +214,7 @@ impl Ssh {
         let mut transport = vec!["ssh".to_owned()];
         transport.extend(arguments(node)?);
         let settings = swarmy_config::Settings::load_base()?.settings;
-        let credential = Path::new(&settings.credential_file);
+        let credential = &settings.selection.credential_file;
         let mut copy = Command::new("rsync");
         for relative in credential_excludes(&self.repo, credential)
             .into_iter()

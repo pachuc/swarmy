@@ -428,19 +428,17 @@ mod agent_settings;
 
 #[test]
 fn summarization_threshold_uses_catalog_model_and_explicit_overrides() {
-    let mut config = config(
-        String::new(),
-        String::new(),
-        "context_fixture",
-        Arc::default(),
-    );
+    let mut config = config(String::new(), "context_fixture", Arc::default());
     config.catalog = swarmy_config::Settings {
-        models: vec![swarmy_config::CustomModel {
-            provider: "fake".into(),
-            id: "small-context".into(),
-            context_window: Some(1000),
+        selection: swarmy_config::SelectionSettings {
+            models: vec![swarmy_config::CustomModel {
+                provider: "fake".into(),
+                id: "small-context".into(),
+                context_window: Some(1000),
+                ..Default::default()
+            }],
             ..Default::default()
-        }],
+        },
         ..Default::default()
     }
     .catalog()
@@ -468,23 +466,26 @@ fn summarization_threshold_uses_catalog_model_and_explicit_overrides() {
 
 #[test]
 fn side_threshold_prefers_model_provider_and_has_no_unknown_default() {
-    let mut config = config(String::new(), String::new(), "side_fixture", Arc::default());
+    let mut config = config(String::new(), "side_fixture", Arc::default());
     config.catalog = swarmy_config::Settings {
-        models: vec![
-            swarmy_config::CustomModel {
-                provider: "fake".into(),
-                id: "small-context".into(),
-                context_window: Some(1000),
-                summarize_at: Some(600),
-                ..Default::default()
-            },
-            swarmy_config::CustomModel {
-                provider: "fake".into(),
-                id: "window-only".into(),
-                context_window: Some(1000),
-                ..Default::default()
-            },
-        ],
+        selection: swarmy_config::SelectionSettings {
+            models: vec![
+                swarmy_config::CustomModel {
+                    provider: "fake".into(),
+                    id: "small-context".into(),
+                    context_window: Some(1000),
+                    summarize_at: Some(600),
+                    ..Default::default()
+                },
+                swarmy_config::CustomModel {
+                    provider: "fake".into(),
+                    id: "window-only".into(),
+                    context_window: Some(1000),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
         ..Default::default()
     }
     .catalog()

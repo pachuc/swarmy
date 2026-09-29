@@ -191,13 +191,14 @@ pub(super) async fn start(
     lease_seconds: u64,
 ) -> (Node, Bus) {
     let mut settings = settings;
-    settings.sandbox_idle_seconds = std::num::NonZeroU64::new(2).unwrap();
-    settings.placement_lease_seconds = std::num::NonZeroU64::new(lease_seconds).unwrap();
-    settings.bus_prefix = format!("persistent-{}", ulid::Ulid::generate());
+    settings.sandbox.idle = Duration::from_secs(2);
+    settings.placement_lease = Duration::from_secs(lease_seconds);
+    settings.bus.prefix = format!("persistent-{}", ulid::Ulid::generate());
+    let prefix = settings.bus.prefix.clone();
     let bus = Bus::connect(
-        &settings.nats_url,
+        &settings.bus.nats_url,
         Config {
-            prefix: Some(SubjectToken::new(&settings.bus_prefix).unwrap()),
+            prefix: Some(SubjectToken::new(&prefix).unwrap()),
             ..Config::default()
         },
     )

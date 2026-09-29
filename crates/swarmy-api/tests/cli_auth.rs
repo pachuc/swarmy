@@ -40,14 +40,17 @@ impl Fixture {
         listener.set_nonblocking(true).unwrap();
         fs::create_dir(dir.path().join(".swarmy")).unwrap();
         let settings = swarmy_config::Settings {
-            fdb_cluster_file: cluster.clone(),
+            fdb_cluster_file: cluster.clone().into(),
             api: swarmy_config::ApiSettings {
                 url: Some(endpoint),
                 token: "auth-test-token".into(),
                 ..Default::default()
             },
             store_directory: format!("auth-test-{}", ulid::Ulid::generate()),
-            credential_file: dir.path().join("auth.json").to_string_lossy().into_owned(),
+            selection: swarmy_config::SelectionSettings {
+                credential_file: dir.path().join("auth.json"),
+                ..Default::default()
+            },
             ..Default::default()
         };
         fs::write(

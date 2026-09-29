@@ -339,7 +339,7 @@ fn start_snapshots(
     policy: swarmy_config::VolumeSnapshots,
 ) -> crate::SnapshotLoop {
     crate::SnapshotLoop::spawn(
-        Duration::from_secs(policy.period_seconds.get()),
+        policy.period,
         move || {
             let operations = operations.clone();
             let writer = writer.clone();

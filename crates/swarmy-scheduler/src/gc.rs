@@ -1,5 +1,5 @@
 //! Each scheduler attempts collection on a timer; the store lease elects a runner.
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use object_store::ObjectStore;
 use swarmy_config::{GarbageCollection, Metering};

@@ -3,8 +3,6 @@ mod ephemeral;
 mod gc;
 mod scheduler;
 
-use std::sync::Arc;
-
 use jiff::Timestamp;
 use swarmy_bus::{Bus, SubjectToken};
 use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store};

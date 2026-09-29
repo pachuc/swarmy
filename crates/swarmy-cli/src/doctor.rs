@@ -110,7 +110,7 @@ pub async fn run(json: bool) -> anyhow::Result<bool> {
     let providers = if let Ok(loaded) = &loaded {
         checks.extend(remote_checks(loaded).await);
         checks.push(s3_line(&loaded.settings).await);
-        if let Some(path) = Path::new(&loaded.settings.credential_file).to_str() {
+        if let Some(path) = loaded.settings.selection.credential_file.to_str() {
             let result = if Path::new(path).is_file() {
                 Check::new("credential file", Ok(format!("{path} present")), "")
             } else {
@@ -306,7 +306,7 @@ async fn s3_line(settings: &Settings) -> Check {
 }
 
 async fn s3_check(settings: &Settings) -> (Result<String, String>, &'static str) {
-    let address = url::Url::parse(&settings.s3_endpoint).ok().and_then(|url| {
+    let address = url::Url::parse(&settings.s3.endpoint).ok().and_then(|url| {
         url.host_str()
             .map(|host| format!("{host}:{}", url.port_or_known_default().unwrap_or(8333)))
     });
