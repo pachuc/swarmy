@@ -20,11 +20,11 @@ pub(crate) async fn doctor(State(state): State<AppState>) -> ApiResult<api::Doct
         .into_iter()
         .map(|service| {
             let role = match service.heartbeat.role {
-                ServiceRole::Scheduler => "scheduler",
-                ServiceRole::Worker => "worker",
-                ServiceRole::Gateway => "gateway",
-                ServiceRole::Api => "api",
-                ServiceRole::Node => "node",
+                ServiceRole::Scheduler => api::ServiceRole::Scheduler,
+                ServiceRole::Worker => api::ServiceRole::Worker,
+                ServiceRole::Gateway => api::ServiceRole::Gateway,
+                ServiceRole::Api => api::ServiceRole::Api,
+                ServiceRole::Node => api::ServiceRole::Node,
             };
             let providers = match &service.heartbeat.detail {
                 ServiceDetail::Providers(value) => value.clone(),
@@ -35,7 +35,7 @@ pub(crate) async fn doctor(State(state): State<AppState>) -> ApiResult<api::Doct
                 _ => None,
             };
             api::DoctorService {
-                role: role.into(),
+                role,
                 instance_id: service.heartbeat.instance_id,
                 version: service.heartbeat.version,
                 alive: service.alive,

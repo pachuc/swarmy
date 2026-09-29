@@ -56,14 +56,13 @@ async fn recent(client: &Client) -> Result<Vec<(String, String)>> {
                 let api::EventPayload::StoreRecord { record } = event.payload else {
                     return None;
                 };
-                let record = serde_json::to_value(&record).ok()?;
-                record
-                    .get("message_appended")?
-                    .get("message")?
-                    .get("parts")?
-                    .as_array()?
-                    .iter()
-                    .find_map(|p| p.get("text")?.get("text")?.as_str().map(str::to_owned))
+                let swarmy_core::Event::MessageAppended { message, .. } = record else {
+                    return None;
+                };
+                message.parts.into_iter().find_map(|part| match part {
+                    swarmy_core::Part::Text { text } => Some(text),
+                    _ => None,
+                })
             })
             .unwrap_or_default();
         result.push((session.id, text));
@@ -295,7 +294,6 @@ fn is_busy_client_error(error: &swarmy_client::Error) -> bool {
         error,
         swarmy_client::Error::Api { status, body }
             if status.as_u16() == 409
-                && matches!(body.code.as_str(), "session_not_idle" | "stale_head")
     )
 }
 

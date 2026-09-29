@@ -209,27 +209,11 @@ pub(crate) async fn resolve_selection(
         .get_agent(record.agent_id)
         .await
         .map_err(storage)?;
-    let mut selected = state.default_selection.clone();
-    if let Some(agent) = agent {
-        if let Some(provider) = agent.provider {
-            selected.provider = provider;
-        }
-        if let Some(model) = agent.model {
-            selected.model = model;
-        }
-        if let Some(effort) = agent.reasoning_effort {
-            selected.effort = effort;
-        }
-    }
-    if let Some(provider) = &record.inference.provider {
-        selected.provider.clone_from(provider);
-    }
-    if let Some(model) = &record.inference.model {
-        selected.model.clone_from(model);
-    }
-    if let Some(effort) = record.inference.effort {
-        selected.effort = effort;
-    }
+    let selected = agent.map_or_else(
+        || state.default_selection.clone(),
+        |agent| agent.inference().resolve(&state.default_selection),
+    );
+    let selected = record.inference.resolve(&selected);
     Ok(selected)
 }
 
@@ -247,7 +231,12 @@ async fn session_with_next(
             .map(|id| id.to_string());
     }
     result.archived = result.next_session.is_some();
-    result.state_since = state.store.session_state_since(record.session_id).await.map_err(storage)?.map(|at| at.to_string());
+    result.state_since = state
+        .store
+        .session_state_since(record.session_id)
+        .await
+        .map_err(storage)?
+        .map(|at| at.to_string());
     result.previous_session = state
         .store
         .previous_session(record.session_id)
@@ -920,11 +909,8 @@ async fn providers(State(state): State<AppState>) -> Json<Vec<api::Provider>> {
                 credential: "unknown".into(),
                 auth_kinds: p.auth_kinds.clone(),
                 env_keys: p.env_keys.clone(),
-                catalog: [(
-                    "credential_env_keys".into(),
-                    serde_json::json!(swarmy_llm::auth::provider_env_keys(&p.id)),
-                )]
-                .into(),
+                credential_env_keys: swarmy_llm::auth::provider_env_keys(&p.id),
+                catalog: Default::default(),
             })
             .collect(),
     )

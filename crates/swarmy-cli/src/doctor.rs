@@ -409,17 +409,21 @@ fn gateway_providers(snapshot: &Snapshot) -> Vec<String> {
     snapshot
         .services
         .iter()
-        .filter(|s| s.role == "gateway" && s.alive)
+        .filter(|s| s.role == swarmy_api_types::ServiceRole::Gateway && s.alive)
         .flat_map(|s| s.providers.iter().cloned())
         .collect()
 }
 
 fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
-    for role in ["scheduler", "worker", "gateway"] {
+    for (role, kind) in [
+        ("scheduler", swarmy_api_types::ServiceRole::Scheduler),
+        ("worker", swarmy_api_types::ServiceRole::Worker),
+        ("gateway", swarmy_api_types::ServiceRole::Gateway),
+    ] {
         let live: Vec<_> = snapshot
             .services
             .iter()
-            .filter(|s| s.role == role && s.alive)
+            .filter(|s| s.role == kind && s.alive)
             .collect();
         let result = if live.is_empty() {
             Err(format!("no live {role} heartbeat"))
@@ -440,7 +444,11 @@ fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
         .services
         .iter()
         .rev()
-        .filter(|s| s.role == "node" && s.alive && seen.insert(s.instance_id.as_str()))
+        .filter(|s| {
+            s.role == swarmy_api_types::ServiceRole::Node
+                && s.alive
+                && seen.insert(s.instance_id.as_str())
+        })
         .collect();
     let slots: u32 = nodes
         .iter()

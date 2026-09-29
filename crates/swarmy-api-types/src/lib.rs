@@ -296,6 +296,7 @@ pub struct Provider {
     pub credential: String,
     pub auth_kinds: Vec<String>,
     pub env_keys: Vec<String>,
+    pub credential_env_keys: Vec<String>,
     #[serde(flatten)]
     #[serde(default)]
     pub catalog: std::collections::BTreeMap<String, serde_json::Value>,
@@ -404,9 +405,34 @@ pub struct DoctorNode {
     pub committed_memory_bytes: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    ToSchema,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceRole {
+    Scheduler,
+    Worker,
+    Gateway,
+    Api,
+    Node,
+}
+
 pub struct DoctorService {
-    pub role: String,
+    pub role: ServiceRole,
     pub instance_id: String,
     pub version: String,
     pub alive: bool,

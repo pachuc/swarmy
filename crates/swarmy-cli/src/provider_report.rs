@@ -78,12 +78,5 @@ fn ambient(provider: &str) -> bool {
 
 /// Environment keys advertised by the control plane for a provider.
 pub fn credential_env_keys(provider: &swarmy_api_types::Provider) -> Vec<String> {
-    provider
-        .catalog
-        .get("credential_env_keys")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|key| key.as_str().map(str::to_owned))
-        .collect()
+    provider.credential_env_keys.clone()
 }

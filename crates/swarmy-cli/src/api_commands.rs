@@ -290,7 +290,10 @@ async fn session(
                     } else {
                         "named"
                     };
-                    let state = format!("{:?}", row.state);
+                    let state = serde_json::to_value(&row.state)?
+                        .as_str()
+                        .context("session state is a string")?
+                        .to_owned();
                     print(
                         &row,
                         &format!(
@@ -429,8 +432,10 @@ async fn show_session(
     print(
         &value,
         &format!(
-            "Session {id}: {:?}, interrupt_requested={} provider={}{} model={}{} effort={}{} route={} scratch_node={} scratch_bytes={} sandbox_memory_mib={} sandbox_gpu={:?} sandbox_address={}",
-            record.state,
+            "Session {id}: {}, interrupt_requested={} provider={}{} model={}{} effort={}{} route={} scratch_node={} scratch_bytes={} sandbox_memory_mib={} sandbox_gpu={:?} sandbox_address={}",
+            serde_json::to_value(&record.state)?
+                .as_str()
+                .context("session state is a string")?,
             record.interrupt_requested,
             selection.provider,
             inherited(record.inference.provider.is_some()),
@@ -711,9 +716,12 @@ fn agent_text(agent: &swarmy_api_types::AgentView, detail: bool) -> String {
         for session in &agent.sessions {
             let _ = write!(
                 text,
-                "\nsession={} state={:?} computer_deleted={} main={} archived={}",
+                "\nsession={} state={} computer_deleted={} main={} archived={}",
                 session.record.session_id,
-                session.record.state,
+                serde_json::to_value(&session.record.state)
+                    .expect("state serializes")
+                    .as_str()
+                    .expect("state is a string"),
                 session.record.computer_deleted,
                 record.main_session == Some(session.record.session_id),
                 session.archived
