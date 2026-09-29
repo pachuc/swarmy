@@ -1,6 +1,7 @@
+use std::time::Duration;
+
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::time::Duration;
 use swarmy_core::{
     Event, IdempotencyRecord, IdempotencyState, InflightRecord, LeaseOwnerId, RequestId, SessionId,
     SessionState,
@@ -185,7 +186,7 @@ impl Store {
             let attempts = read::<InferenceRetry>(&trx, &retry_key)
                 .await?
                 .map_or(1, |retry| retry.attempts.saturating_add(1));
-            let delay = Duration::from_millis(100) * 2_u32.pow(attempts.saturating_sub(1).min(5));
+            let delay = swarmy_core::backoff(Duration::from_millis(100), attempts, 5);
             let next_at = now
                 .checked_add(delay)
                 .map_err(|_| StoreError::Storage(crate::StorageError::SequenceOverflow))?;

@@ -118,12 +118,10 @@ pub struct TurnMetrics {
     /// reads have a place for the remainder (unused for stages).
     #[serde(default)]
     pub dropped_stages: u64,
-    /// Remainder of the `inference` array omitted by `inference_limit`, plus
-    /// rows dropped by the legacy capped layout when the turn was migrated.
+    /// Remainder of the `inference` array omitted by `inference_limit`.
     #[serde(default)]
     pub dropped_inference: u64,
-    /// Remainder of the `tools` array omitted by `tools_limit`, plus rows
-    /// dropped by the legacy capped layout when the turn was migrated.
+    /// Remainder of the `tools` array omitted by `tools_limit`.
     #[serde(default)]
     pub dropped_tools: u64,
 }

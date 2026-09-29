@@ -177,14 +177,6 @@ impl Store {
         .await
     }
 
-    /// Whether a successor has pending input that should wake it.
-    /// # Errors
-    /// Returns storage failures.
-    pub async fn has_queued(&self, id: SessionId) -> Result<bool> {
-        self.transaction(|trx| async move { self.has_queued_in(&trx, id).await })
-            .await
-    }
-
     pub(crate) async fn has_queued_in(
         &self,
         trx: &foundationdb::Transaction,

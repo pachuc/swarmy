@@ -264,8 +264,12 @@ async fn failed_append_leaves_no_receipt_and_next_tick_retries() {
         .pack(&("session", id.as_ulid().to_bytes().as_slice()));
     let trx = test.db.create_trx().unwrap();
     let original = trx.get(&key, false).await.unwrap().unwrap();
-    let header = (id, agent, SessionState::Idle, u64::MAX, None::<u64>);
-    trx.set(&key, &encode(&header).unwrap());
+    // The current V2 record starts with the version byte, two fixed-length
+    // postcard ULIDs, then the state and varint head sequence.
+    let mut header = original.to_vec();
+    assert!(header[56] < 128);
+    header.splice(56..57, postcard::to_allocvec(&u64::MAX).unwrap());
+    trx.set(&key, &header);
     trx.commit().await.unwrap();
     assert!(matches!(
         store

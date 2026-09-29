@@ -30,8 +30,8 @@ impl Drop for Fixture {
 }
 impl Fixture {
     async fn new() -> Option<Self> {
-        let cluster = std::env::var("SWARMY_FDB_CLUSTER_FILE").ok()?;
-        let nats = std::env::var("SWARMY_NATS_URL").ok()?;
+        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
+        let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
         NETWORK.get_or_init(swarmy_store::boot);
         let path = vec!["conversation-api-test".into(), Ulid::generate().to_string()];
         let store = Store::open(
@@ -589,40 +589,42 @@ async fn emit_observed_turn(
         let event = swarmy_bus::Bus::turn_event(session, turn, stage, Some(request));
         f.bus.record_turn(&event).await;
         f.store
-            .record_turn_metric(session, turn, swarmy_store::MetricPatch::Stage(event))
+            .record_turn_metrics(session, turn, vec![swarmy_store::MetricPatch::Stage(event)])
             .await
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
     f.store
-        .record_turn_metric(
+        .record_turn_metrics(
             session,
             turn,
-            swarmy_store::MetricPatch::Inference(swarmy_store::InferenceMetric {
-                request_id: request.to_string(),
-                provider: "fake".into(),
-                model: "scripted".into(),
-                input_tokens: 12,
-                cached_input_tokens: 3,
-                output_tokens: 4,
-                reasoning_tokens: 1,
-                ..Default::default()
-            }),
+            vec![swarmy_store::MetricPatch::Inference(
+                swarmy_store::InferenceMetric {
+                    request_id: request.to_string(),
+                    provider: "fake".into(),
+                    model: "scripted".into(),
+                    input_tokens: 12,
+                    cached_input_tokens: 3,
+                    output_tokens: 4,
+                    reasoning_tokens: 1,
+                    ..Default::default()
+                },
+            )],
         )
         .await
         .unwrap();
     f.store
-        .record_turn_metric(
+        .record_turn_metrics(
             session,
             turn,
-            swarmy_store::MetricPatch::Tool(swarmy_store::ToolMetric {
+            vec![swarmy_store::MetricPatch::Tool(swarmy_store::ToolMetric {
                 request_id: request.to_string(),
                 name: "bash".into(),
                 exit_status: Some(0),
                 output_bytes: Some(42),
                 process_wall_ms: Some(0.5),
                 ..Default::default()
-            }),
+            })],
         )
         .await
         .unwrap();

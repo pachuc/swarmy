@@ -71,8 +71,7 @@ A provider can hold multiple labelled entries. `auth set --provider P --label L`
 adds or replaces one entry; without `--label`, set, login, and import replace
 the provider's `default` entry so a rotation takes over serving. `auth rm
 PROVIDER LABEL` removes only that entry; `auth check PROVIDER --label LABEL`
-checks one, while `auth check` checks all. Old single-provider records are
-migrated to label `default` on first read. A session's route selects its
+checks one, while `auth check` checks all. A session's route selects its
 entries in order (see Routes and failover below); without a route the oldest
 ready entry for a provider handles turns, falling back to the oldest
 entry when none is ready. Entry kinds are `api-key`,

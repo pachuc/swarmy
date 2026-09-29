@@ -492,21 +492,6 @@ fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
     } else {
         Check::new("gateway providers", Ok(gateway_providers.join(", ")), "")
     });
-    // Boot migrates retired single-record credential rows to entries; the
-    // count states how many rows remain. A nonzero count means those rows
-    // failed to decrypt with the service keyring.
-    checks.push(if snapshot.legacy_credential_rows == 0 {
-        Check::new("legacy credentials", Ok("none".into()), "")
-    } else {
-        Check::warn(
-            "legacy credentials",
-            format!(
-                "{} retired single-record credential rows remain",
-                snapshot.legacy_credential_rows
-            ),
-            "Install the cluster keyring on the service host and restart it; entries migrate at boot.",
-        )
-    });
 }
 
 fn snapshot_checks(

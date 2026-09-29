@@ -1078,6 +1078,53 @@ def benchmark(args):
     return result.returncode
 
 
+def set_config_defaults(values):
+    """Rewrite top-level keys of fleet.toml in place, keeping every other line.
+
+    tomllib only reads, and the file holds the GitHub token, so this edits
+    the matching lines rather than re-serialising the whole file."""
+    lines = CONFIG.read_text().splitlines()
+    for key, value in values.items():
+        line = f"{key} = {json.dumps(value)}"
+        index = next((i for i, text in enumerate(lines) if re.match(rf"\s*{key}\s*=", text)), None)
+        if index is None:
+            # Top-level keys must precede any [table] header.
+            header = next((i for i, text in enumerate(lines) if text.lstrip().startswith("[")), len(lines))
+            lines.insert(header, line)
+        else:
+            lines[index] = line
+    fd = os.open(CONFIG, os.O_WRONLY | os.O_TRUNC)
+    with os.fdopen(fd, "w") as file:
+        file.write("\n".join(lines) + "\n")
+
+
+def switch(args, config):
+    """Point workers at another provider and model in one step.
+
+    A running session would change model at its next step and carry the old
+    model's transcript over, which breaks some models, so busy workers are
+    skipped unless asked for; relaunch their tasks instead."""
+    workers = load_workers(config)
+    names = args.workers or sorted(workers)
+    unknown = [name for name in names if name not in workers]
+    if unknown:
+        raise RuntimeError(f"unknown workers: {', '.join(unknown)}")
+    effort = ["--effort", args.effort] if args.effort else []
+    for name in names:
+        if workers[name] is not None and not args.include_busy:
+            print(f"{name}: skipped, busy with {workers[name]} (pass --include-busy, or relaunch the task after switching)")
+            continue
+        command(swarmy(config, "agent", "set", name, "--provider", args.provider, "--model", args.model,
+                       *effort, "--route", args.route))
+        meta = worker_meta(config, name)
+        meta.update(provider=args.provider, model=args.model)
+        save(worker_meta_path(config, name), meta)
+        print(f"{name}: {args.provider}/{args.model}" + (f" effort={args.effort}" if args.effort else "") + f" route={args.route}")
+    if args.default:
+        set_config_defaults({"provider": args.provider, "model": args.model, **({"effort": args.effort} if args.effort else {})})
+        print(f"fleet defaults: {args.provider}/{args.model}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
@@ -1101,6 +1148,14 @@ def main():
     kill_parser.add_argument("task_id")
     kill_parser.add_argument("--timeout-seconds", type=float, help="seconds to wait for Idle (default: config kill_timeout_seconds or 60)")
     sub.add_parser("reset", help="delete an idle worker and its disk; the next launch recreates it").add_argument("worker")
+    switch_parser = sub.add_parser("switch", help="point workers at another provider and model (all idle workers by default)")
+    switch_parser.add_argument("workers", nargs="*", help="worker names; default is every worker")
+    switch_parser.add_argument("--provider", required=True)
+    switch_parser.add_argument("--model", required=True)
+    switch_parser.add_argument("--effort")
+    switch_parser.add_argument("--route", default="default", help="failover route name; default clears the agent's route")
+    switch_parser.add_argument("--default", action="store_true", help="also make this the fleet.toml default for new workers")
+    switch_parser.add_argument("--include-busy", action="store_true", help="also switch workers that are running a task")
     bench = sub.add_parser("benchmark", help="run one isolated benchmark prompt on a remote (use --remote local on a control node)")
     bench.add_argument("--remote", default="local")
     bench.add_argument("--provider", required=True)
@@ -1141,6 +1196,8 @@ def main():
             if not math.isfinite(seconds) or seconds <= 0:
                 raise ValueError("kill timeout must be positive")
             kill(args.task_id, config, seconds)
+        elif args.action == "switch":
+            switch(args, config)
         else:
             reset(args.worker, config)
     except (RuntimeError, OSError, ValueError, KeyError, json.JSONDecodeError) as error:

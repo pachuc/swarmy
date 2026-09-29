@@ -22,7 +22,6 @@ gemini = ["swarmy-llm/gemini"]
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
-tower.workspace = true
 swarmy-api-types.workspace = true
 swarmy-store.workspace = true
 swarmy-core.workspace = true
@@ -32,7 +31,7 @@ swarmy-image.workspace = true
 swarmy-volume.workspace = true
 object_store.workspace = true
 tempfile.workspace = true
-swarmy-llm.workspace = true
+swarmy-llm = { workspace = true, features = ["fake"] }
 swarmy-version.workspace = true
 jiff.workspace = true
 serde.workspace = true
@@ -49,6 +48,7 @@ futures.workspace = true
 async-stream.workspace = true
 
 [dev-dependencies]
+swarmy-core = { workspace = true, features = ["test-support"] }
 swarmy-store = { workspace = true, features = ["test-support"] }
 
 swarmy-client.workspace = true

@@ -1,8 +1,7 @@
-//! Provider advertisements and the legacy session inference key.
+//! Provider availability advertisements.
 use crate::{Result, Store, read, write};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use swarmy_core::SessionId;
 
 /// Gateway tasks refresh this record every 30 seconds with a future expiry.
 /// A skipped provider is recorded with an already expired advertisement so the
@@ -10,16 +9,11 @@ use swarmy_core::SessionId;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GatewayProvider {
     pub expires_at: Timestamp,
-    /// Discovery outcome of the last writing gateway; empty for legacy records.
-    #[serde(default, with = "swarmy_core::trailing")]
+    /// Discovery outcome of the last writing gateway.
     pub reason: String,
 }
 
 impl Store {
-    pub(crate) fn session_inference_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_inference(id)
-    }
-
     /// Advertise provider availability; expired advertisements are ignored.
     /// # Errors
     /// Returns database or encoding errors.
@@ -59,6 +53,7 @@ impl Store {
 
     /// # Errors
     /// Returns database or encoding errors.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn gateway_entry(
         &self,
         provider: &str,

@@ -36,7 +36,7 @@ if sys.argv[1] == 'doctor':
 if sys.argv[1:4] == ['models', 'probe', 'openai/custom']:
     print('provider rejected ' + os.environ['OPENAI_API_KEY'] + ' https://fixture/?key=stored-secret', file=sys.stderr)
     sys.exit(1)
-if sys.argv[1:4] == ['run', '--provider', 'openai']:
+if sys.argv[1] == 'run' and sys.argv[sys.argv.index('--provider') + 1] == 'openai':
     print('Error: routed fixture rejection', file=sys.stderr)
     sys.exit(1)  # run exits non-zero when the turn ends without a reply.
 print('ready')

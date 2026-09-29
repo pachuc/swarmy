@@ -489,6 +489,7 @@ async fn context_overflow_and_other_client_errors_do_not_retry() {
         (400, "prompt is too long: 300000 tokens", true),
         (413, "request_too_large", true),
         (401, "invalid key", false),
+        (400, "invalid request", false),
     ] {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -503,7 +504,16 @@ async fn context_overflow_and_other_client_errors_do_not_retry() {
             assert!(matches!(error, Error::ContextOverflow(_)));
         } else {
             // The provider's own text is kept for non-retryable failures.
-            assert!(matches!(&error, Error::Protocol(message) if message.contains("invalid key")));
+            assert!(
+                matches!((&error, status),
+                    (Error::Authentication(message), 401) if message.contains("invalid key")
+                ) || matches!((&error, status),
+                    (Error::BadRequest(message), 400) if message.contains("invalid request")
+                )
+            );
+            let class = error.classify();
+            assert!(class.permanent);
+            assert!(!class.retryable);
         }
     }
 }
@@ -558,15 +568,6 @@ async fn truncated_and_error_streams_fail_without_retry() {
     }
 }
 
-#[test]
-fn usage_from_older_json_defaults_cache_writes_to_zero() {
-    let usage: TokenUsage =
-        serde_json::from_value(json!({"input_tokens": 10, "cached_input_tokens": 2,
-        "output_tokens": 3, "reasoning_output_tokens": 0, "total_tokens": 13}))
-        .unwrap();
-    assert_eq!(usage.cache_write_input_tokens, 0);
-}
-
 #[tokio::test]
 async fn retry_policy_honors_server_delay_and_backoff_cap() {
     let policy = RetryPolicy {
@@ -578,8 +579,10 @@ async fn retry_policy_honors_server_delay_and_backoff_cap() {
     let start = tokio::time::Instant::now();
     let result = with_retry(&policy, || async {
         if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-            Err(Error::Retryable {
+            Err(Error::ProviderResponse {
                 status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+                message: "limited".into(),
+                reason: swarmy_llm::ProviderFailureReason::Quota,
                 retry_after: Some(Duration::from_secs(10)),
             })
         } else {

@@ -74,9 +74,6 @@ pub enum Part {
 #[serde(rename_all = "snake_case")]
 pub enum NoticeKind {
     EffortClamped,
-    /// Legacy notice discriminant retained for old logs; never emitted.
-    #[serde(rename = "legacy_context_notice")]
-    LegacyContextNotice,
 }
 
 /// Tool success and failure remain distinct when replayed into a model prompt.

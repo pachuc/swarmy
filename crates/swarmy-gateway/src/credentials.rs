@@ -199,12 +199,11 @@ impl AuthStore for ClusterCredentials {
                         .ok_or(StoreError::Domain(
                             swarmy_store::DomainError::CredentialRefresh,
                         ))?;
-                    let mut record = CredentialRecord {
+                    let record = CredentialRecord {
                         bookkeeping: current.bookkeeping.clone(),
                         kind,
                         updated_at: jiff::Timestamp::now(),
                     };
-                    record.migrate_bookkeeping();
                     Ok(record)
                 },
             )
@@ -237,10 +236,7 @@ mod tests {
 
     fn test_store() -> Option<Store> {
         static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
-            eprintln!("skipping gateway auth integration: SWARMY_FDB_CLUSTER_FILE unset");
-            return None;
-        };
+        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
         NETWORK.get_or_init(swarmy_store::boot);
         Some(Store::with_subspace(
             Arc::new(Database::new(Some(&cluster)).unwrap()),

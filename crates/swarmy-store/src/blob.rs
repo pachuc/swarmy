@@ -103,29 +103,20 @@ impl BlobStore for ObjectBlobStore {
 mod tests {
     use super::*;
     use futures::TryStreamExt;
-    use std::fmt::Write as _;
 
     #[tokio::test]
     async fn s3_namespace_lists_relative_keys_and_keeps_siblings() {
-        if std::env::var_os("SWARMY_S3_ENDPOINT").is_none() {
-            eprintln!("skipping S3 namespace test: SWARMY_S3_ENDPOINT is unset");
+        if swarmy_core::test_support::stack_env_os("SWARMY_S3_ENDPOINT").is_none() {
             return;
         }
         let mut settings = swarmy_config::Settings::load().unwrap().settings;
-        // Exercise legacy compatibility even when the test runner selects an
-        // explicit namespace. Keep the fixture beneath that namespace.
-        if !settings.s3_prefix.as_str().is_empty() {
-            write!(settings.s3_bucket, "/{}", settings.s3_prefix.as_str()).unwrap();
-            settings.s3_prefix = swarmy_config::ObjectPrefix::default();
-        }
-        write!(
-            settings.s3_bucket,
-            "/prefix-test-{}",
-            ulid::Ulid::generate()
-        )
-        .unwrap();
+        settings.s3_prefix = format!("prefix-test-{}", ulid::Ulid::generate())
+            .parse()
+            .unwrap();
         let root = ObjectBlobStore::from_settings(&settings).unwrap();
-        settings.s3_bucket.push_str("/inside");
+        settings.s3_prefix = format!("{}/inside", settings.s3_prefix.as_str())
+            .parse()
+            .unwrap();
         let scoped = ObjectBlobStore::from_settings(&settings).unwrap();
         let payload = Bytes::from_static(b"prefix regression");
         let outside = root.put("outside", payload.clone()).await;

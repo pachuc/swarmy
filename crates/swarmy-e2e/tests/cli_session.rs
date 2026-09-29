@@ -224,13 +224,10 @@ impl Fixture {
 
 async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
     static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-    let (Ok(cluster), Ok(url)) = (
-        std::env::var("SWARMY_FDB_CLUSTER_FILE"),
-        std::env::var("SWARMY_NATS_URL"),
+    let (Some(cluster), Some(url)) = (
+        swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
+        swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
     ) else {
-        eprintln!(
-            "skipping CLI integration test: SWARMY_FDB_CLUSTER_FILE or SWARMY_NATS_URL is unset"
-        );
         return;
     };
     NETWORK.get_or_init(swarmy_store::boot);
@@ -1099,10 +1096,10 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
         let event = swarmy_bus::Bus::turn_event(session, turn, stage, Some(request));
         timeout(
             WAIT,
-            fixture.store.record_turn_metric(
+            fixture.store.record_turn_metrics(
                 session,
                 turn,
-                swarmy_store::MetricPatch::Stage(event),
+                vec![swarmy_store::MetricPatch::Stage(event)],
             ),
         )
         .await
@@ -1112,17 +1109,19 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
     }
     timeout(
         WAIT,
-        fixture.store.record_turn_metric(
+        fixture.store.record_turn_metrics(
             session,
             turn,
-            swarmy_store::MetricPatch::Inference(swarmy_store::InferenceMetric {
-                request_id: request.to_string(),
-                provider: "fake".into(),
-                model: "scripted".into(),
-                input_tokens: 8,
-                output_tokens: 4,
-                ..Default::default()
-            }),
+            vec![swarmy_store::MetricPatch::Inference(
+                swarmy_store::InferenceMetric {
+                    request_id: request.to_string(),
+                    provider: "fake".into(),
+                    model: "scripted".into(),
+                    input_tokens: 8,
+                    output_tokens: 4,
+                    ..Default::default()
+                },
+            )],
         ),
     )
     .await

@@ -21,10 +21,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Option<Self> {
         static NETWORK: OnceLock<NetworkAutoStop> = OnceLock::new();
-        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
-            eprintln!("skipping snapshot integration test: SWARMY_FDB_CLUSTER_FILE is unset");
-            return None;
-        };
+        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
         NETWORK.get_or_init(swarmy_store::boot);
         let name = format!("swarmy-snapshot-test-{}", Ulid::generate());
         let db = Arc::new(Database::new(Some(&cluster)).unwrap());
@@ -229,21 +226,6 @@ async fn retention_is_atomic_ordered_idempotent_and_does_not_prune_clones() {
     for &id in &published {
         assert!(test.store.get_manifest(id).await.unwrap().is_some());
     }
-    // Simulate a volume written before per-volume retention was introduced.
-    test.db
-        .run(|trx, _| {
-            let root = &test.root;
-            async move {
-                trx.clear(&root.pack(&("volume_snapshots", id.as_ulid().to_bytes().as_slice())));
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        test.store.volume_snapshots(id).await.unwrap(),
-        published.iter().rev().take(10).copied().collect::<Vec<_>>()
-    );
     let previous = *published.last().unwrap();
     let next = manifest_id();
     test.store

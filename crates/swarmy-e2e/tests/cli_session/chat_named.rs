@@ -97,8 +97,7 @@ async fn root_named_chats_share_a_background_process_and_delete() {
         eprintln!("skipping root named chat test: run the built test with sudo");
         return;
     }
-    let Ok(image) = std::env::var("SWARMY_TEST_IMAGE") else {
-        eprintln!("skipping root named chat test: SWARMY_TEST_IMAGE is unset");
+    let Some(image) = swarmy_core::test_support::optional_env("SWARMY_TEST_IMAGE") else {
         return;
     };
     run(|fixture| async move {
@@ -338,8 +337,7 @@ async fn root_memory_written_by_tools_is_in_the_next_turn_and_capped() {
         eprintln!("skipping root memory test: run the built test with sudo");
         return;
     }
-    let Ok(image) = std::env::var("SWARMY_TEST_IMAGE") else {
-        eprintln!("skipping root memory test: SWARMY_TEST_IMAGE is unset");
+    let Some(image) = swarmy_core::test_support::optional_env("SWARMY_TEST_IMAGE") else {
         return;
     };
     run(|fixture| async move {

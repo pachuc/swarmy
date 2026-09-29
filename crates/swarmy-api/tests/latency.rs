@@ -29,10 +29,19 @@ struct BenchFixture {
 
 #[tokio::test]
 async fn api_first_fake_token_stays_within_five_ms_of_direct_append() {
-    let Ok(image) = std::env::var("SWARMY_TEST_IMAGE") else {
+    let Some(image) = swarmy_core::test_support::optional_env("SWARMY_TEST_IMAGE") else {
         return;
     };
-    if std::env::var("SWARMY_API_FAKE_BENCH").as_deref() != Ok("1") {
+    let Some(_) = swarmy_core::test_support::opt_in_env(
+        "SWARMY_API_FAKE_BENCH",
+        "set SWARMY_API_FAKE_BENCH=1 to run the opt-in API fake benchmark",
+    ) else {
+        return;
+    };
+    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_none() {
+        return;
+    }
+    if swarmy_core::test_support::stack_env("SWARMY_NATS_URL").is_none() {
         return;
     }
     let fixture = setup(&image).await;
@@ -313,9 +322,15 @@ async fn assert_first_token_metrics(fixture: &BenchFixture, session: SessionId, 
 /// image, like the other fixture tests.
 #[tokio::test]
 async fn fake_turn_records_first_token_metrics() {
-    let Ok(image) = std::env::var("SWARMY_TEST_IMAGE") else {
+    let Some(image) = swarmy_core::test_support::optional_env("SWARMY_TEST_IMAGE") else {
         return;
     };
+    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_none() {
+        return;
+    }
+    if swarmy_core::test_support::stack_env("SWARMY_NATS_URL").is_none() {
+        return;
+    }
     let fixture = setup(&image).await;
     let agent = fixture
         .store

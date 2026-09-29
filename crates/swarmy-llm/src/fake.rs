@@ -24,20 +24,12 @@ pub struct FakeFailure {
 impl FakeFailure {
     #[must_use]
     pub fn error(&self) -> Error {
-        if self
-            .message
-            .to_ascii_lowercase()
-            .contains("context overflow")
-        {
-            return Error::ContextOverflow(self.message.clone());
-        }
-        Error::ProviderResponse {
-            reason: crate::classify_provider_failure(&self.message),
-            status: reqwest::StatusCode::from_u16(self.status)
+        crate::error::classify_http_failure(
+            reqwest::StatusCode::from_u16(self.status)
                 .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
-            message: self.message.clone(),
-            retry_after: self.retry_after_seconds.map(Duration::from_secs),
-        }
+            &self.message,
+            self.retry_after_seconds.map(Duration::from_secs),
+        )
     }
 }
 

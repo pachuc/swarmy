@@ -250,7 +250,7 @@ impl Store {
     /// Remove quota rows alongside credential deletion.
     /// # Errors
     /// Returns storage errors.
-    pub async fn clear_entry_quota(&self, provider: &str, label: &str) -> Result<()> {
+    pub(crate) async fn clear_entry_quota(&self, provider: &str, label: &str) -> Result<()> {
         let observed = self.observed_key(provider, label);
         let config = self.config_key(provider, label);
         self.transaction(|trx| {

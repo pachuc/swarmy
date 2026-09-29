@@ -12,7 +12,7 @@ use crate::{
     ClientAuth, Delta, Error, Provider, ProviderStream, ReasoningEffort, Request, Response,
     StopReason, TokenUsage,
     catalog::{ModelInfo, ProviderInfo, ReasoningOptions},
-    retry::{RetryPolicy, retryable, with_retry},
+    retry::{RetryPolicy, with_retry},
 };
 
 #[derive(Clone)]
@@ -84,22 +84,11 @@ impl CompletionsProvider {
         }
         let retry_after = crate::retry::retry_after_header(response.headers());
         let body = response.text().await?;
-        let error = serde_json::from_str::<Value>(&body).map_or_else(
-            |_| crate::error::message_error(body.clone()),
-            |value| error_from_json(&value),
-        );
-        if matches!(error, Error::ContextOverflow(_)) {
-            return Err(error);
-        }
-        if retryable(status) {
-            return Err(Error::ProviderResponse {
-                status,
-                reason: crate::classify_provider_failure(&body),
-                message: body,
-                retry_after,
-            });
-        }
-        Err(error)
+        Err(crate::error::classify_http_failure(
+            status,
+            &body,
+            retry_after,
+        ))
     }
 }
 
@@ -113,7 +102,7 @@ impl Provider for CompletionsProvider {
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.starts_with("application/json"))
             {
-                Err(error_from_json(&response.json::<Value>().await?))?;
+                Err(crate::error::stream_error(&response.json::<Value>().await?))?;
             } else {
                 let quota = crate::quota::openai_remaining(response.headers());
                 let resets = crate::quota::openai_resets(response.headers());
@@ -345,21 +334,6 @@ fn cache_messages(messages: &mut [Value]) {
     }
 }
 
-/// Classify the shared context-overflow phrases before deciding to retry.
-fn error_from_json(value: &Value) -> Error {
-    let error = value.get("error").unwrap_or(value);
-    let message = error["message"]
-        .as_str()
-        .or_else(|| error.as_str())
-        .unwrap_or("provider returned an error");
-    let code = error["code"].as_str().unwrap_or_default();
-    crate::error::message_error(if code.is_empty() {
-        message.into()
-    } else {
-        format!("{code}: {message}")
-    })
-}
-
 #[derive(Default)]
 struct ToolCall {
     id: String,
@@ -441,7 +415,7 @@ impl CompletionsStream {
             }
             Frame::Raw(data) => {
                 if let Ok(value) = serde_json::from_slice::<Value>(&data) {
-                    return Err(error_from_json(&value));
+                    return Err(crate::error::stream_error(&value));
                 }
             }
         }
@@ -455,14 +429,16 @@ impl CompletionsStream {
             return Ok(());
         }
         if let Ok(value) = serde_json::from_slice::<Value>(self.framing.pending_line()) {
-            return Err(error_from_json(&value));
+            return Err(crate::error::stream_error(&value));
         }
-        Err(Error::Protocol("stream closed before completion".into()))
+        Err(Error::MalformedStream(
+            "stream closed before completion".into(),
+        ))
     }
 
     fn event(&mut self, event: &Value, deltas: &mut Vec<Delta>) -> Result<(), Error> {
         if event.get("error").is_some_and(|error| !error.is_null()) {
-            return Err(error_from_json(event));
+            return Err(crate::error::stream_error(event));
         }
         if let Some(usage) = event.get("usage").filter(|usage| usage.is_object()) {
             self.usage = TokenUsage {
@@ -485,7 +461,7 @@ impl CompletionsStream {
             return Ok(());
         };
         if choice.get("error").is_some_and(|error| !error.is_null()) {
-            return Err(error_from_json(choice));
+            return Err(crate::error::stream_error(choice));
         }
         if let Some(reason) = choice["finish_reason"].as_str() {
             self.stop_reason = Some(match reason {
@@ -595,7 +571,7 @@ impl CompletionsStream {
         let stop_reason = self
             .stop_reason
             .clone()
-            .ok_or_else(|| Error::Protocol("stream ended without finish_reason".into()))?;
+            .ok_or_else(|| Error::MalformedStream("stream ended without finish_reason".into()))?;
         let mut parts = Vec::new();
         for output in &self.output {
             parts.push(match output {
@@ -610,7 +586,7 @@ impl CompletionsStream {
                 },
                 Output::Tool(tool) => {
                     if tool.id.is_empty() || tool.name.is_empty() {
-                        return Err(Error::Protocol("incomplete tool call".into()));
+                        return Err(Error::MalformedStream("incomplete tool call".into()));
                     }
                     Part::ToolCall {
                         call_id: ToolCallId(tool.id.clone()),

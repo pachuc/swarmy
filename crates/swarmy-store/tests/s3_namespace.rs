@@ -67,7 +67,7 @@ async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore)
     let head = objects.head(&paths[0]).await.unwrap();
     assert_eq!(head.location, paths[0]);
     assert_eq!(head.size, 6);
-    check_listings_and_legacy(settings, &*objects, &paths).await;
+    check_listings(settings, &*objects, &paths).await;
 
     // S3 last-modified has second precision and the collector truncates its cutoff.
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -117,7 +117,7 @@ async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore)
     ));
 }
 
-async fn check_listings_and_legacy(settings: &Settings, objects: &dyn ObjectStore, paths: &[Path]) {
+async fn check_listings(settings: &Settings, objects: &dyn ObjectStore, paths: &[Path]) {
     let mut listed: Vec<_> = objects
         .list(Some(&Path::from("chunks/01")))
         .map_ok(|meta| meta.location)
@@ -145,43 +145,21 @@ async fn check_listings_and_legacy(settings: &Settings, objects: &dyn ObjectStor
                 .all(|meta| meta.location.as_ref().starts_with("chunks/")
                     || meta.location.as_ref().starts_with("manifests/"))
         );
-        let mut legacy = settings.clone();
-        legacy.s3_bucket = format!("{}/{}", settings.s3_bucket, settings.s3_prefix.as_str());
-        legacy.s3_prefix = swarmy_config::ObjectPrefix::default();
-        let legacy = swarmy_store::objects::from_settings(&legacy).unwrap();
-        assert_eq!(legacy.head(&paths[0]).await.unwrap().location, paths[0]);
-        legacy
-            .put(&Path::from("legacy"), b"old".to_vec().into())
-            .await
-            .unwrap();
-        assert_eq!(
-            objects
-                .get(&Path::from("legacy"))
-                .await
-                .unwrap()
-                .bytes()
-                .await
-                .unwrap(),
-            "old"
-        );
-        objects.delete(&Path::from("legacy")).await.unwrap();
     }
 }
 
 #[tokio::test]
 async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
-    for name in [
-        "SWARMY_S3_ENDPOINT",
-        "SWARMY_FDB_CLUSTER_FILE",
-        "SWARMY_S3_TEST_BUCKET",
-    ] {
-        if std::env::var_os(name).is_none() {
-            eprintln!("skipping S3 acceptance test: {name} is unset");
+    for name in ["SWARMY_S3_ENDPOINT", "SWARMY_FDB_CLUSTER_FILE"] {
+        if swarmy_core::test_support::stack_env_os(name).is_none() {
             return;
         }
     }
+    let Some(bucket) = swarmy_core::test_support::optional_env("SWARMY_S3_TEST_BUCKET") else {
+        return;
+    };
     let mut settings = Settings::load().unwrap().settings;
-    settings.s3_bucket = std::env::var("SWARMY_S3_TEST_BUCKET").unwrap();
+    settings.s3_bucket = bucket;
     settings.s3_prefix = swarmy_config::ObjectPrefix::default();
     assert!(
         !settings.s3_bucket.contains('/'),

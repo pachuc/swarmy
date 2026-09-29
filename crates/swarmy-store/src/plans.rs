@@ -4,10 +4,6 @@ use swarmy_core::{
 };
 
 impl Store {
-    pub(crate) fn session_plan_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_plan(id)
-    }
-
     /// Replace a session plan and append its tool result in one leased transaction.
     /// The head fence prevents a retried completion from overwriting a newer plan.
     /// Invalid arguments produce an error result without changing the plan.

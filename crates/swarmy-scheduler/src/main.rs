@@ -43,36 +43,6 @@ async fn main() -> anyhow::Result<()> {
     let objects = blobs.object_store();
     let _network = swarmy_store::boot();
     let store = Store::open(Some(&cluster), Some(&directory), blobs).await?;
-    // One-shot boot migration of retired single-record credential rows.
-    // Boot never fails on this; the remainder is reported by `swarmy doctor`.
-    match swarmy_config::Keyring::load() {
-        Ok(keyring) => match store.migrate_legacy_credentials(&keyring).await {
-            Ok(outcome) if outcome.written == 0 && outcome.cleared == 0 => {}
-            Ok(outcome) => {
-                tracing::info!(
-                    written = outcome.written,
-                    cleared = outcome.cleared,
-                    "migrated retired single-record credential rows to entries"
-                );
-            }
-            Err(error) => {
-                tracing::warn!(%error, "legacy credential migration failed; continuing without it");
-            }
-        },
-        Err(error) => {
-            tracing::warn!(%error, "keyring unavailable; skipping legacy credential migration");
-        }
-    }
-    match store.migrate_legacy_sessions().await {
-        Ok(result) => tracing::info!(
-            migrated = result.migrated,
-            skipped = result.skipped,
-            "session V1 migration finished"
-        ),
-        Err(error) => {
-            tracing::warn!(%error, "session migration incomplete; continuing with legacy reads");
-        }
-    }
     let bus = Bus::connect(&url, bus_config).await?;
     // Workers create consumers for their routes; the scheduler only needs streams.
     bus.setup(&[]).await?;
