@@ -18,7 +18,6 @@ swarmy-bus.workspace = true
 ulid.workspace = true
 # Binary edge only (main.rs); the library above uses boxed std errors.
 anyhow.workspace = true
-thiserror.workspace = true
 swarmy-core.workspace = true
 swarmy-config.workspace = true
 swarmy-store.workspace = true

@@ -4593,7 +4593,6 @@ dependencies = [
  "swarmy-version",
  "swarmy-volume",
  "tempfile",
- "thiserror 2.0.20",
  "tokio",
  "tracing",
  "tracing-subscriber",
