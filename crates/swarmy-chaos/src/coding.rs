@@ -58,7 +58,7 @@ fn tool(index: usize, name: &str, input: &Value) -> Value {
 }
 
 fn script(remote: &str, work: &str) -> Vec<Value> {
-    let ready = Path::new(remote).parent().unwrap().join("remote-ready");
+    let ready = Path::new(remote).parent().expect("the harness always passes a repository path below a work directory, so it has a parent").join("remote-ready");
     let commands = [
         format!(
             "until test -f {}; do sleep 0.1; done; git clone {remote} {work} && cd {work} && git switch -c {BRANCH} && git config user.name 'Swarmy Test' && git config user.email test@example.invalid",
@@ -114,7 +114,7 @@ fn script(remote: &str, work: &str) -> Vec<Value> {
     let readme = tool(10, "read", &json!({"path":format!("{work}/README.md")}));
     responses[1]["parts"]
         .as_array_mut()
-        .unwrap()
+        .expect("tool() always builds a parts array, so the second response has one to extend")
         .push(readme["parts"][0].clone());
     responses
 }

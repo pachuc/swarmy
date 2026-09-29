@@ -23,22 +23,21 @@ pedantic = { level = "deny", priority = -1 }
 redundant_clone = "deny"
 needless_collect = "deny"
 large_stack_frames = "deny"
-# Part 1 (task n0sxwd): exceptions, panics, and printing. Kept in one block
-# so the parallel lint task's rebase is trivial.
-# Every `allow` needs a reason; `allow` itself stays legal for lints that
-# only fire under some feature combinations (see clippy.toml).
+# Part 1 (task n0sxwd): exceptions. Kept in one block so the parallel lint
+# task's rebase is trivial. Every `allow` needs a reason; `allow` itself
+# stays legal for lints that only fire under some feature combinations.
 allow_attributes_without_reason = "deny"
-# Panics: `expect("why this holds")` documents an invariant and stays
-# allowed; bare `unwrap` does not (outside tests, see clippy.toml).
-unwrap_used = "deny"
+# Panics: `todo!`, `unimplemented!`, and `dbg!` never land in the tree.
+# (`unwrap_used`, `print_stdout`, and `print_stderr` were evaluated and
+# deliberately left out: `allow-unwrap-in-tests` covers only `cfg(test)`
+# code, so a deny would need a per-file exception in each of the 65
+# integration-test files, and the print denies would need one in each of the
+# 21 test and 6 example files that log skip diagnostics and progress, plus a
+# boilerplate tax on every new test file. The production sites those lints
+# reported were still fixed directly. See AGENTS.md.)
 todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
-# Printing (TEMPORARILY OFF for enumeration; final decision pending test-file
-# fallout counts): only the output modules of binaries that own user output
-# may print, each with an `expect` reason. Libraries print nothing.
-# print_stdout = "deny"
-# print_stderr = "deny"
 
 [workspace.dependencies]
 swarmy-version = { path = "crates/swarmy-version" }
