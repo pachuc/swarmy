@@ -714,6 +714,23 @@ pub fn init_tracing() {
         .init();
 }
 
+/// Wait for a process shutdown signal: SIGINT (Ctrl-C) or SIGTERM.
+/// Systemd and the node launchers stop services with SIGTERM, so waiting
+/// only for Ctrl-C would skip the metric flush on every real shutdown.
+/// Callers await this instead of `tokio::signal::ctrl_c` directly.
+/// This lives beside the service bootstrap because every service binary
+/// needs it, not because the store owns process signals.
+/// # Panics
+/// Panics if the SIGTERM handler cannot be installed.
+pub async fn shutdown_signal() {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("SIGTERM handler must install");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = terminate.recv() => {},
+    }
+}
+
 impl Settings {
     /// Select the image for a new session, giving an explicit flag precedence.
     /// # Errors

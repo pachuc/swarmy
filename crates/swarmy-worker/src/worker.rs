@@ -4,9 +4,9 @@ use anyhow::{Context, Result, ensure};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, LiveFeed, SubjectToken, WorkMessage, WorkQueue};
 use swarmy_core::{
-    Event, InflightRecord, Lease, LeaseOwnerId, MessageId, Nudge, RequestId, SandboxArguments,
-    SessionId, SessionRecord, SessionState, SnapshotRef, ToolCallRecord, ToolJob, TurnStage,
-    decode, encode,
+    AgentId, Event, InflightRecord, Lease, LeaseOwnerId, MessageId, Nudge, RequestId,
+    SandboxArguments, SessionId, SessionRecord, SessionState, SnapshotRef, ToolCallRecord, ToolJob,
+    TurnStage, decode, encode,
 };
 use swarmy_harness::{Action, Snapshot, execution_result};
 use swarmy_llm::{InferenceJob, InferenceJobRef};
@@ -89,6 +89,39 @@ fn route_selection<'a>(
     }
 }
 
+/// Chaos kill points crash the worker at fixed step boundaries. The config
+/// carries the selected point as a string so chaos runs can set it without
+/// rebuilding; the enum keeps every call site and the matching check in one
+/// place instead of scattering string literals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KillPoint {
+    AfterClaim,
+    BeforeRelease,
+    AfterRequestEvent,
+    AfterRelease,
+    AfterAdvance,
+}
+
+impl KillPoint {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::AfterClaim => "after_claim",
+            Self::BeforeRelease => "before_release",
+            Self::AfterRequestEvent => "after_request_event",
+            Self::AfterRelease => "after_release",
+            Self::AfterAdvance => "after_advance",
+        }
+    }
+}
+
+/// Snapshots cached by content-addressed key alongside the claim that uses
+/// them. Display flags cached by the agent and image pair that determines
+/// them. Both caches clear instead of evicting entries because a worker
+/// handles few distinct keys and a full clear keeps the bound with no
+/// per-entry bookkeeping.
+const SNAPSHOT_CACHE_SIZE: usize = 16;
+const DISPLAY_CACHE_SIZE: usize = 64;
+
 pub struct Worker {
     store: Store,
     bus: Bus,
@@ -96,7 +129,7 @@ pub struct Worker {
     config: Config,
     placements: crate::placement::Cache,
     snapshots: Mutex<HashMap<String, Snapshot>>,
-    display_by_session: Mutex<HashMap<SessionId, bool>>,
+    display_by_image: Mutex<HashMap<(AgentId, String), bool>>,
     pub owner: LeaseOwnerId,
 }
 
@@ -109,19 +142,21 @@ impl Worker {
             config,
             placements: crate::placement::Cache::default(),
             snapshots: Mutex::default(),
-            display_by_session: Mutex::default(),
+            display_by_image: Mutex::default(),
             owner: LeaseOwnerId::from_ulid(Ulid::generate()),
         }
     }
 
-    fn kill(&self, point: &str) {
+    fn kill(&self, point: KillPoint) {
         // Production leaves kill_point unset; the chaos harness opts in at runtime.
-        if self.config.kill_point.as_deref() == Some(point) {
-            tracing::warn!(point, "instrumented worker kill");
-            let _ = rustix::process::kill_process(
+        if self.config.kill_point.as_deref() == Some(point.as_str()) {
+            tracing::warn!(point = point.as_str(), "instrumented worker kill");
+            if let Err(error) = rustix::process::kill_process(
                 rustix::process::getpid(),
                 rustix::process::Signal::KILL,
-            );
+            ) {
+                tracing::warn!(%error, "chaos kill signal failed; aborting instead");
+            }
             std::process::abort();
         }
     }
@@ -152,7 +187,7 @@ impl Worker {
             self.bus.record_turn(&event).await;
             self.store.observe_turn_stage(event);
         }
-        self.kill("after_claim");
+        self.kill(KillPoint::AfterClaim);
         let mut ctx = step::StepContext {
             session: session.clone(),
             lease: Arc::new(HeldLease::new(lease)),

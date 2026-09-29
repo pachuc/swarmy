@@ -149,7 +149,7 @@ async fn run(config: config::Config) -> Result<()> {
             }
             delivery = messages.next(), if !subscriptions.is_empty() => delivery,
             // Break out to flush queued turn metrics below.
-            () = swarmy_store::shutdown_signal() => break,
+            () = swarmy_config::shutdown_signal() => break,
         };
         let Some(delivery) = delivery else {
             bail!("work stream ended");
@@ -193,7 +193,10 @@ async fn advertise(store: &Store, served: &[String]) -> Result<()> {
                 .list_entries(swarmy_core::CredentialScope::Cluster)
                 .await?
         }
-        Err(_) => Vec::new(),
+        Err(error) => {
+            warn!(%error, "keyring unavailable; advertising no credential entries");
+            Vec::new()
+        }
     };
     for provider in served {
         store.put_gateway_provider(provider, &record).await?;

@@ -2,8 +2,8 @@ use super::inference::warn_on_route_fallback;
 use super::{
     Action, Arc, Bus, Context, Event, FailoverAction, HeldLease, LiveFeed, MAX_SCAN_LIMIT,
     MessageId, RequestId, Result, SandboxArguments, SessionId, SessionRecord, SessionState,
-    Snapshot, SnapshotRef, StoreError, Timestamp, ToolCallRecord, TurnStage, Ulid, Worker, decode,
-    encode,
+    KillPoint, Snapshot, SnapshotRef, StoreError, Timestamp, ToolCallRecord, TurnStage, Ulid, Worker, decode,
+    encode, DISPLAY_CACHE_SIZE, SNAPSHOT_CACHE_SIZE,
 };
 use swarmy_llm::InferenceJob;
 
@@ -114,7 +114,7 @@ impl Worker {
         // avoiding repeat downloads for the claim, dispatch, and fold of a turn.
         if bytes.len() <= 1024 * 1024 {
             let mut cache = self.snapshots.lock().await;
-            if cache.len() >= 16 {
+            if cache.len() >= SNAPSHOT_CACHE_SIZE {
                 cache.clear();
             }
             cache.insert(key.to_owned(), snapshot.clone());
@@ -515,7 +515,7 @@ impl Worker {
             FailoverAction::AdvanceTo(step) => {
                 warn_on_route_fallback(session, outcome.route.as_deref(), &outcome.skipped);
                 session.route_step = step;
-                self.kill("after_advance");
+                self.kill(KillPoint::AfterAdvance);
                 Ok(false)
             }
             FailoverAction::Park => {
@@ -585,18 +585,32 @@ impl Worker {
     }
 
     pub(crate) async fn session_display(&self, session: &SessionRecord) -> Result<bool> {
-        let mut cache = self.display_by_session.lock().await;
-        if let Some(display) = cache.get(&session.session_id) {
-            return Ok(*display);
-        }
-        let display = if let Some(agent) = self.store.get_agent(session.agent_id).await? {
-            self.store.image_display(&agent.image).await?
-        } else {
-            false
+        // The display flag varies only by agent image, so key the bounded
+        // cache by that pair instead of by session. The database reads run
+        // without the lock held so concurrent steps do not block on them.
+        let Some(agent) = self.store.get_agent(session.agent_id).await? else {
+            return Ok(false);
         };
-        // Session images do not change during a worker lifetime. A worker restart
-        // drops this cache; restart workers after changing an agent's image.
-        cache.insert(session.session_id, display);
+        // ImageRecord has no Hash impl, so flatten the identity that
+        // `image_display` reads (name, tag, manifest) into one string.
+        let image_key = format!(
+            "{}:{}:{}",
+            agent.image.name, agent.image.tag.0, agent.image.manifest_id
+        );
+        {
+            let cache = self.display_by_image.lock().await;
+            if let Some(display) = cache.get(&(session.agent_id, image_key.clone())) {
+                return Ok(*display);
+            }
+        }
+        let display = self.store.image_display(&agent.image).await?;
+        {
+            let mut cache = self.display_by_image.lock().await;
+            if cache.len() >= DISPLAY_CACHE_SIZE {
+                cache.clear();
+            }
+            cache.insert((session.agent_id, image_key), display);
+        }
         Ok(display)
     }
 
@@ -759,7 +773,7 @@ impl Worker {
                 seq: head,
             };
             self.blobs.put(&reference.object_key, bytes.into()).await?;
-            self.kill("before_release");
+            self.kill(KillPoint::BeforeRelease);
             let result = {
                 let mut token = lease.lock().await;
                 let result = self

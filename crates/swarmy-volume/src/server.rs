@@ -235,10 +235,12 @@ pub async fn attach(
     .await;
     // Setup errors must not strand a lease. The running server releases its
     // renewed token itself, so this fallback can only release the initial grant.
-    if result.is_err() {
-        let _ = store
+    if result.is_err()
+        && let Err(error) = store
             .release_writer_lease(id, &lease, Timestamp::now())
-            .await;
+            .await
+    {
+        tracing::warn!(%error, "writer lease release after setup failure failed");
     }
     result
 }
@@ -427,7 +429,9 @@ async fn handle(
                 .detach()
                 .await;
             detached?;
-            let _ = writer.release().await;
+            if let Err(error) = writer.release().await {
+                tracing::warn!(%error, "writer lease release after discard failed");
+            }
             return Ok((None, true, None));
         }
         let manifest = if request.detach {

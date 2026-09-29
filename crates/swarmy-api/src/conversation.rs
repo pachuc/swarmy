@@ -343,9 +343,12 @@ pub(crate) async fn interrupt(
                     .map_err(storage)?
                     .pop()
                 {
-                    let _ = bus
+                    if let Err(error) = bus
                         .publish_live(LiveFeed::SessionEvents(session_id), &event)
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(%error, "interrupt event publication failed; client will catch up");
+                    }
                 }
             }
             Ok(Json(api::InterruptOutcome {
@@ -429,7 +432,10 @@ pub(crate) async fn wait_idle(
                 _ = fallback.tick() => break,
                 event = live.next(), if live_open => match event {
                     Some(Ok(swarmy_core::Event::StateChanged { to: SessionState::Idle | SessionState::Completed, .. })) => break,
-                    Some(Ok(_) | Err(_)) => {},
+                    Some(Ok(_)) => {},
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "live feed decode failed; falling back to polling");
+                    }
                     None => live_open = false,
                 },
             }

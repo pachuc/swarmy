@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
         () = health => Ok(()),
         () = gc::run(&store, objects, settings.gc, settings.metering) => Ok(()),
         () = ephemeral::run(&store, settings.scheduler.ephemeral_retention_secs) => Ok(()),
-        () = swarmy_store::shutdown_signal() => Ok(()),
+        () = swarmy_config::shutdown_signal() => Ok(()),
     };
     // Drain queued turn metrics before exit so shutdown keeps every write.
     // The flush runs on every path, including a scheduler error, so a

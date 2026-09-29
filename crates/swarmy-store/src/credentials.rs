@@ -534,7 +534,8 @@ impl CredentialStore {
         let refreshed = tokio::time::timeout(remaining, f(current.clone())).await;
         let (mut replacement, failed) = match refreshed {
             Ok(Ok(record)) => (record, false),
-            Ok(Err(_)) => {
+            Ok(Err(error)) => {
+                tracing::warn!(provider, label, %error, "credential refresh failed; marking entry needs-login");
                 let mut record = current.clone();
                 record.bookkeeping.needs_login = true;
                 (record, true)

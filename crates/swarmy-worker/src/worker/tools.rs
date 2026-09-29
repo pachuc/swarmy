@@ -1,7 +1,7 @@
 use super::step::pending_tools;
 use super::{
     Bus, Context, Event, HeldLease, MAX_SCAN_LIMIT, MessageId, RequestId, Result, SandboxArguments,
-    SessionId, SessionRecord, StoreError, ToolCallRecord, ToolJob, TurnStage, WorkQueue, Worker,
+    KillPoint, SessionId, SessionRecord, StoreError, ToolCallRecord, ToolJob, TurnStage, WorkQueue, Worker,
     execution_result, runnable_partition,
 };
 
@@ -219,7 +219,7 @@ impl Worker {
             };
             token.release();
             drop(token);
-            self.kill("after_release");
+            self.kill(KillPoint::AfterRelease);
             self.publish_events(session.session_id, &events).await?;
             return self
                 .publish_tools(session.session_id, &placement, jobs, turn)
