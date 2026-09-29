@@ -524,12 +524,7 @@ impl AnthropicStream {
     fn event(&mut self, event: &Value, deltas: &mut Vec<Delta>) -> Result<(), Error> {
         let kind = string(event, "type")?;
         if kind == "error" {
-            let body = event["error"].to_string();
-            return Err(if crate::error::is_context_overflow(&body) {
-                Error::ContextOverflow(body)
-            } else {
-                Error::Protocol(body)
-            });
+            return Err(crate::error::stream_error(&event["error"]));
         }
         if kind == "ping" {
             return Ok(());

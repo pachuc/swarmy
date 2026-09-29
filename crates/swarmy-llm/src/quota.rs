@@ -151,28 +151,6 @@ pub(crate) fn anthropic_resets(headers: &reqwest::header::HeaderMap) -> BTreeMap
 }
 
 #[cfg(test)]
-/// Remaining requests, matching headers whose name mentions requests.
-#[must_use]
-pub(crate) fn requests_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
-    remaining
-        .iter()
-        .filter(|(name, _)| name.contains("request"))
-        .map(|(_, value)| *value)
-        .min()
-}
-
-#[cfg(test)]
-/// Remaining tokens, matching headers whose name mentions tokens.
-#[must_use]
-pub(crate) fn tokens_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
-    remaining
-        .iter()
-        .filter(|(name, _)| name.contains("token"))
-        .map(|(_, value)| *value)
-        .min()
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -187,8 +165,6 @@ mod tests {
         let remaining = remaining_with(&headers, "x-ratelimit-remaining-");
         assert_eq!(remaining.len(), 2);
         assert_eq!(remaining["x-ratelimit-remaining-requests"], 99);
-        assert_eq!(requests_remaining(&remaining), Some(99));
-        assert_eq!(tokens_remaining(&remaining), Some(12_000));
     }
 
     #[test]
@@ -213,11 +189,6 @@ mod tests {
         assert_eq!(parse_reset_seconds("500ms"), Some(1));
         assert_eq!(parse_reset_seconds("2m"), Some(120));
         assert_eq!(parse_reset_seconds("bogus"), None);
-        let resets: BTreeMap<String, u64> = BTreeMap::from([
-            ("x-ratelimit-reset-requests".into(), 60_u64),
-            ("x-ratelimit-reset-tokens".into(), 300_u64),
-        ]);
-        assert_eq!(resets.values().copied().min(), Some(60));
     }
 
     #[test]

@@ -398,11 +398,7 @@ struct StreamState {
 impl StreamState {
     fn event(&mut self, event: &Value) -> Result<Vec<Delta>, Error> {
         if let Some(error) = event.get("error") {
-            return Err(if crate::error::is_context_overflow(&error.to_string()) {
-                Error::ContextOverflow("Gemini input token count exceeds the maximum".into())
-            } else {
-                Error::Protocol("Gemini stream returned a provider error".into())
-            });
+            return Err(crate::error::stream_error(error));
         }
         if let Some(usage) = event.get("usageMetadata") {
             let count = |key: &str| usage[key].as_u64().unwrap_or_default();

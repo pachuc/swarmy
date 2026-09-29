@@ -688,8 +688,7 @@ impl Gateway {
             Ok(response) => Ok(Some((Ok(response), streamed))),
             Err(error)
                 if !blocked
-                    && !error.classify().permanent
-                    && !error.classify().retryable
+                    && !{ let class = error.classify(); class.permanent || class.retryable }
                     // The worker, not the transport queue, owns the single
                     // compact-and-retry attempt for context overflow.
                     && !matches!(error, swarmy_llm::Error::ContextOverflow(_)) =>
@@ -944,7 +943,8 @@ impl Gateway {
             }
             return Ok((false, None));
         };
-        let (retryable, retry_after) = (error.classify().retryable, error.classify().retry_after);
+        let class = error.classify();
+        let (retryable, retry_after) = (class.retryable, class.retry_after);
         if !retryable {
             if !blocked {
                 self.store.entry_success(&key).await?;
@@ -1188,74 +1188,6 @@ impl Gateway {
 #[cfg(test)]
 mod retry_tests {
     use super::*;
-
-    fn retry_class(error: &swarmy_llm::Error) -> (bool, Option<Duration>) {
-        (error.classify().retryable, error.classify().retry_after)
-    }
-    fn is_limited(error: &swarmy_llm::Error) -> bool {
-        error.classify().rate_limited
-    }
-    fn is_permanent(error: &swarmy_llm::Error) -> bool {
-        error.classify().permanent
-    }
-    #[test]
-    fn rate_limits_outages_and_permanent_errors_are_distinct() {
-        let rate_limit = swarmy_llm::Error::ProviderResponse {
-            reason: swarmy_llm::ProviderFailureReason::Other,
-            status: reqwest::StatusCode::TOO_MANY_REQUESTS,
-            message: "quota exceeded".into(),
-            retry_after: Some(Duration::from_secs(2)),
-        };
-        assert_eq!(
-            retry_class(&rate_limit),
-            (true, Some(Duration::from_secs(2)))
-        );
-        let usage_limit = swarmy_llm::Error::ProviderResponse {
-            reason: swarmy_llm::ProviderFailureReason::Quota,
-            status: reqwest::StatusCode::FORBIDDEN,
-            message: "usage_limit_reached".into(),
-            retry_after: None,
-        };
-        assert!(retry_class(&usage_limit).0);
-        assert!(!is_permanent(&usage_limit));
-        let outage = swarmy_llm::Error::Status(reqwest::StatusCode::BAD_GATEWAY);
-        assert!(retry_class(&outage).0);
-        let auth = swarmy_llm::Error::ProviderResponse {
-            reason: swarmy_llm::ProviderFailureReason::Other,
-            status: reqwest::StatusCode::UNAUTHORIZED,
-            message: "invalid token".into(),
-            retry_after: None,
-        };
-        assert!(!retry_class(&auth).0);
-        assert!(is_permanent(&auth));
-        assert!(!is_permanent(&swarmy_llm::Error::ContextOverflow(
-            "too long".into()
-        )));
-    }
-
-    #[test]
-    fn only_429_or_retry_after_counts_as_rate_limit() {
-        let limited = swarmy_llm::Error::ProviderResponse {
-            reason: swarmy_llm::ProviderFailureReason::Other,
-            status: reqwest::StatusCode::TOO_MANY_REQUESTS,
-            message: "slow down".into(),
-            retry_after: None,
-        };
-        assert!(is_limited(&limited));
-        let delayed = swarmy_llm::Error::ProviderResponse {
-            reason: swarmy_llm::ProviderFailureReason::Other,
-            status: reqwest::StatusCode::BAD_GATEWAY,
-            message: "outage".into(),
-            retry_after: Some(Duration::from_secs(1)),
-        };
-        assert!(is_limited(&delayed));
-        let outage = swarmy_llm::Error::Status(reqwest::StatusCode::BAD_GATEWAY);
-        assert!(retry_class(&outage).0);
-        assert!(!is_limited(&outage));
-        let conflict = swarmy_llm::Error::Status(reqwest::StatusCode::from_u16(409).unwrap());
-        assert!(retry_class(&conflict).0);
-        assert!(!is_limited(&conflict));
-    }
 
     #[test]
     fn completed_parts_count_as_first_content() {

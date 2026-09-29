@@ -30,19 +30,35 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, Error>>,
 {
-    let mut delay = policy.initial_delay.min(policy.max_delay);
     let mut attempt = 1;
     loop {
         let result = f().await;
         let retry_after = match &result {
-            Err(error) if error.classify().retryable => error.classify().retry_after,
+            Err(error) => {
+                let class = error.classify();
+                if !class.retryable {
+                    return result;
+                }
+                class.retry_after
+            }
             _ => return result,
         };
         if attempt >= policy.max_attempts.max(1) {
             return result;
         }
-        tokio::time::sleep(retry_after.unwrap_or(delay).min(policy.max_delay)).await;
-        delay = delay.saturating_mul(2).min(policy.max_delay);
+        tokio::time::sleep(
+            retry_after
+                .unwrap_or_else(|| {
+                    swarmy_core::backoff(attempt)
+                        .saturating_mul(
+                            u32::try_from(policy.initial_delay.as_millis() / 100)
+                                .unwrap_or(u32::MAX),
+                        )
+                        .min(policy.max_delay)
+                })
+                .min(policy.max_delay),
+        )
+        .await;
         attempt += 1;
     }
 }

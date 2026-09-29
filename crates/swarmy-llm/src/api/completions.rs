@@ -102,7 +102,7 @@ impl Provider for CompletionsProvider {
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.starts_with("application/json"))
             {
-                Err(error_from_json(&response.json::<Value>().await?))?;
+                Err(crate::error::stream_error(&response.json::<Value>().await?))?;
             } else {
                 let quota = crate::quota::openai_remaining(response.headers());
                 let resets = crate::quota::openai_resets(response.headers());
@@ -334,21 +334,6 @@ fn cache_messages(messages: &mut [Value]) {
     }
 }
 
-/// Classify the shared context-overflow phrases before deciding to retry.
-fn error_from_json(value: &Value) -> Error {
-    let error = value.get("error").unwrap_or(value);
-    let message = error["message"]
-        .as_str()
-        .or_else(|| error.as_str())
-        .unwrap_or("provider returned an error");
-    let code = error["code"].as_str().unwrap_or_default();
-    crate::error::message_error(if code.is_empty() {
-        message.into()
-    } else {
-        format!("{code}: {message}")
-    })
-}
-
 #[derive(Default)]
 struct ToolCall {
     id: String,
@@ -430,7 +415,7 @@ impl CompletionsStream {
             }
             Frame::Raw(data) => {
                 if let Ok(value) = serde_json::from_slice::<Value>(&data) {
-                    return Err(error_from_json(&value));
+                    return Err(crate::error::stream_error(&value));
                 }
             }
         }
@@ -444,7 +429,7 @@ impl CompletionsStream {
             return Ok(());
         }
         if let Ok(value) = serde_json::from_slice::<Value>(self.framing.pending_line()) {
-            return Err(error_from_json(&value));
+            return Err(crate::error::stream_error(&value));
         }
         Err(Error::MalformedStream(
             "stream closed before completion".into(),
@@ -453,7 +438,7 @@ impl CompletionsStream {
 
     fn event(&mut self, event: &Value, deltas: &mut Vec<Delta>) -> Result<(), Error> {
         if event.get("error").is_some_and(|error| !error.is_null()) {
-            return Err(error_from_json(event));
+            return Err(crate::error::stream_error(event));
         }
         if let Some(usage) = event.get("usage").filter(|usage| usage.is_object()) {
             self.usage = TokenUsage {
@@ -476,7 +461,7 @@ impl CompletionsStream {
             return Ok(());
         };
         if choice.get("error").is_some_and(|error| !error.is_null()) {
-            return Err(error_from_json(choice));
+            return Err(crate::error::stream_error(choice));
         }
         if let Some(reason) = choice["finish_reason"].as_str() {
             self.stop_reason = Some(match reason {

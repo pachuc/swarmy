@@ -27,16 +27,22 @@ pub(crate) fn message_error(message: String) -> Error {
     }
 }
 
-pub(crate) fn response_event_error(value: &Value) -> Error {
-    let message = format!(
-        "provider error ({}): {}",
-        value["code"]
-            .as_str()
-            .or_else(|| value["type"].as_str())
-            .unwrap_or("unknown"),
-        value["message"].as_str().unwrap_or("request failed")
-    );
-    message_error(message)
+/// Map streamed provider error objects, including envelopes and bare errors.
+pub(crate) fn stream_error(value: &Value) -> Error {
+    let error = value.get("error").unwrap_or(value);
+    let message = error["message"]
+        .as_str()
+        .or_else(|| error.as_str())
+        .unwrap_or("provider returned an error");
+    let code = error["code"]
+        .as_str()
+        .or_else(|| error["type"].as_str())
+        .unwrap_or_default();
+    message_error(if code.is_empty() {
+        message.into()
+    } else {
+        format!("{code}: {message}")
+    })
 }
 
 /// Vendor error codes and phrases used for context-window failures.
@@ -95,4 +101,15 @@ pub(crate) fn classify_http_failure(
         };
     }
     provider_error(status, body)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn context_overflow_classification() {
+        assert!(super::is_context_overflow(
+            "maximum context length exceeded"
+        ));
+        assert!(!super::is_context_overflow("rate limit: too many tokens"));
+    }
 }

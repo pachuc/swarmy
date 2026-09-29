@@ -356,11 +356,6 @@ pub enum Error {
         retry_after: Option<std::time::Duration>,
         reason: ProviderFailureReason,
     },
-    #[error("HTTP request failed with retryable status {status}")]
-    Retryable {
-        status: reqwest::StatusCode,
-        retry_after: Option<std::time::Duration>,
-    },
     #[error("authentication failed: {0}")]
     Authentication(String),
     #[error("bad request: {0}")]
@@ -398,10 +393,6 @@ impl Error {
     #[must_use]
     pub fn classify(&self) -> ErrorClass {
         let (status, retry_after, quota) = match self {
-            Self::Retryable {
-                status,
-                retry_after,
-            } => (Some(*status), *retry_after, false),
             Self::ProviderResponse {
                 status,
                 retry_after,
@@ -428,6 +419,9 @@ impl Error {
                     | Self::Unsupported(_)
                     | Self::Credentials(_)
                     | Self::NeedsLogin(_)
+                    | Self::Authentication(_)
+                    | Self::BadRequest(_)
+                    | Self::MalformedStream(_)
             ) || status.is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)));
         ErrorClass {
             retryable,
