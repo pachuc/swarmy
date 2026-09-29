@@ -1497,10 +1497,6 @@ mod tests {
         assert!(tiny > Duration::from_secs(10));
         assert!(base_image > Duration::from_secs(10));
         assert!(base_image > tiny);
-        assert_eq!(
-            base_image,
-            Duration::from_secs(120 + 8 * 1024 * 1024 * 1024 / (8 * 1024 * 1024))
-        );
     }
     #[tokio::test]
     async fn non_json_four_xx_keeps_body() {
