@@ -1182,8 +1182,8 @@ async fn assert_default_output(fixture: &Fixture) {
             .await,
     ))
     .unwrap();
-    for field in ["system_prompt", "model", "reasoning_effort"] {
-        assert!(shown[field].is_null());
+    for field in ["system_prompt", "model", "effort"] {
+        assert!(shown[field].is_null(), "{field} should be absent: {shown}");
     }
 }
 
@@ -1235,7 +1235,7 @@ async fn provider_selection_and_explicit_resets_are_durable() {
                 .await,
         );
         let agent = read().await;
-        assert!(agent.provider.is_none() && agent.reasoning_effort.is_none());
+        assert!(agent.provider.is_none() && agent.effort.is_none());
     })
     .await;
 }
