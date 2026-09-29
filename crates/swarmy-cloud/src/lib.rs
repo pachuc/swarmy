@@ -7,6 +7,34 @@
 //! and IAM. [`Host`] covers the SSH half of provisioning and stays
 //! provider-independent. See `docs/cloud-substrate.md` for the contract a
 //! second provider must implement.
+// The CLI owns presentation. Provisioning reports lines through this process-level
+// sink because work may continue on different Tokio threads during an upgrade.
+static OUTPUT: std::sync::OnceLock<fn(&str, bool)> = std::sync::OnceLock::new();
+
+/// Install the CLI's output handler before starting provisioning.
+/// Returns false if a handler was already installed.
+pub fn set_output_sink(sink: fn(&str, bool)) -> bool {
+    OUTPUT.set(sink).is_ok()
+}
+
+fn emit(message: String, stderr: bool) {
+    if let Some(sink) = OUTPUT.get() {
+        sink(&message, stderr);
+    } else if stderr {
+        tracing::warn!("{message}");
+    } else {
+        tracing::info!("{message}");
+    }
+}
+
+macro_rules! cloud_out {
+    ($($arg:tt)*) => { $crate::emit(format!($($arg)*), false) };
+}
+macro_rules! cloud_err {
+    ($($arg:tt)*) => { $crate::emit(format!($($arg)*), true) };
+}
+pub(crate) use {cloud_err, cloud_out};
+
 mod command;
 pub mod ssh;
 pub use command::{Command, select};

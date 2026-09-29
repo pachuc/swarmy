@@ -1,6 +1,10 @@
 //! Remote provisioning, compiled only with the remote feature.
-use super::{Cloud, Command, Host, Machine, RemoteNode, RemoteSettings, Result, services, ssh};
+use super::{
+    Cloud, Command, Host, Machine, MachineSpec, ObjectBucket, Ownership, RemoteNode,
+    RemoteSettings, Result, services, ssh,
+};
 use anyhow::bail;
+use state::State;
 use std::{future::Future, path::PathBuf, time::Duration};
 use swarmy_config::Settings;
 
@@ -79,7 +83,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         } => {
             let _lock = state.lock()?;
             let Some(node) = state.read(&name)? else {
-                println!("No remote node named {name}");
+                cloud_out!("No remote node named {name}");
                 return Ok(());
             };
             let mut cloud_settings = node.cloud_settings();

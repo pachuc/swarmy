@@ -816,7 +816,10 @@ impl RuncRuntime {
 impl RuncRuntime {
     // Creation keeps attachment cleanup and journal publication in one fenced path.
     #[allow(clippy::too_many_lines)]
-    async fn create(&self, spec: SandboxSpec, disk: BlockDevice) -> Result<Sandbox> {
+    /// Create a sandbox on the supplied disk.
+    /// # Errors
+    /// Returns attachment, mount, or container startup errors.
+    pub async fn create(&self, spec: SandboxSpec, disk: BlockDevice) -> Result<Sandbox> {
         let total = fs2::total_space(&self.scratch_root)?;
         if total > 0
             && fs2::available_space(&self.scratch_root)?
@@ -925,7 +928,10 @@ impl RuncRuntime {
         Ok(Sandbox { agent_id: id })
     }
 
-    async fn exec(
+    /// Execute a command and stream its output through a bounded channel.
+    /// # Errors
+    /// Returns process or output transport errors.
+    pub async fn exec(
         &self,
         sb: &Sandbox,
         request: ExecRequest,
@@ -1000,16 +1006,26 @@ impl RuncRuntime {
         }
     }
 
-    async fn pause(&self, sb: &Sandbox) -> Result<PauseHandle> {
+    /// Pause a sandbox.
+    /// # Errors
+    /// Returns stop, unmount, or flush errors.
+    pub async fn pause(&self, sb: &Sandbox) -> Result<PauseHandle> {
         self.remove(sb.agent_id, true).await
     }
-    async fn resume(&self, handle: PauseHandle) -> Result<Sandbox> {
+    /// Resume a sandbox.
+    /// # Errors
+    /// Returns the same errors as a cold create.
+    pub async fn resume(&self, handle: PauseHandle) -> Result<Sandbox> {
         self.create(handle.spec, handle.disk).await
     }
-    async fn destroy(&self, sb: Sandbox) -> Result<()> {
+    /// Destroy a sandbox.
+    /// # Errors
+    /// Returns stop, unmount, detach, or flush errors.
+    pub async fn destroy(&self, sb: Sandbox) -> Result<()> {
         self.remove(sb.agent_id, true).await.map(|_| ())
     }
-    fn capabilities(&self) -> RuntimeCaps {
+    /// Capabilities supported by this runtime.
+    pub fn capabilities(&self) -> RuntimeCaps {
         RuntimeCaps {
             memory_pause: false,
             kvm: false,

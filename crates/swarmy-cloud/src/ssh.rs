@@ -351,7 +351,7 @@ impl Ssh {
         primary: Option<&RemoteNode>,
     ) -> Result<String> {
         let address = wait_ssh(node).await?;
-        println!("Copying repository checkout");
+        cloud_out!("Copying repository checkout");
         self.copy_checkout(node, &address).await?;
         let service_ip: std::net::Ipv4Addr = primary
             .unwrap_or(node)
@@ -384,7 +384,7 @@ impl Ssh {
         } else {
             "stack"
         };
-        println!("Provisioning node and building release binaries (this takes several minutes)");
+        cloud_out!("Provisioning node and building release binaries (this takes several minutes)");
         checked(
             base(node)?.arg(&address).arg(provisioning_command(
                 mode,
@@ -572,9 +572,10 @@ async fn wait_ssh(node: &RemoteNode) -> Result<String> {
     for address in [&node.public_ip, &node.private_ip] {
         let _: std::net::IpAddr = address.parse().context("invalid instance IP")?;
     }
-    println!(
+    cloud_out!(
         "Waiting for SSH at {} or {}",
-        node.public_ip, node.private_ip
+        node.public_ip,
+        node.private_ip
     );
     for _ in 0..90 {
         // Same-VPC launchers may reach only the private IP under group-based rules.
@@ -726,7 +727,7 @@ mod tests {
             .output()
             .is_err()
         {
-            eprintln!("skipping fleet rsync copy: rsync is not installed");
+            cloud_err!("skipping fleet rsync copy: rsync is not installed");
             return;
         }
         let dir = tempfile::tempdir().unwrap();
