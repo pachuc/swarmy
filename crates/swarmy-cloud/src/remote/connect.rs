@@ -131,12 +131,14 @@ async fn read_remote_api_token(
     if !remote_api(node) {
         return Ok(None);
     }
+    swarmy_config::validate_service_user(node.service_user())?;
+    let config = format!("{}/.swarmy/config.toml", node.service_repo());
     let command = "read remote API configuration".to_owned();
     let output = ssh::command(node)?
         .arg("-S")
         .arg(&profile.socket_path)
         .arg(address)
-        .arg("cat swarmy/.swarmy/config.toml")
+        .arg(format!("cat {}", shell_words::quote(&config)))
         .output()
         .await
         .map_err(crate::Error::ssh(&command))?;
@@ -170,15 +172,18 @@ async fn forward_session(
     path: &Path,
 ) -> Result<()> {
     let command = "initialize SSH forwarding session".to_owned();
+    let cluster_arg = if node.launch_settings.is_some() {
+        swarmy_config::validate_service_user(node.service_user())?;
+        let cluster = format!("{}/.dev/fdb.cluster", node.service_repo());
+        format!("cat {}", shell_words::quote(&cluster))
+    } else {
+        "true".into()
+    };
     let output = ssh::command(node)?
         .arg("-S")
         .arg(&profile.socket_path)
         .arg(address)
-        .arg(if node.launch_settings.is_some() {
-            "cat swarmy/.dev/fdb.cluster"
-        } else {
-            "true"
-        })
+        .arg(cluster_arg)
         .output()
         .await
         .map_err(crate::Error::ssh(&command))?;

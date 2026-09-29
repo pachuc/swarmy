@@ -1,21 +1,43 @@
 #!/usr/bin/env bash
-# Provision the Ubuntu checkout copied by swarmy remote up. Safe to rerun.
+# Provision the checkout copied to the service user's home. Safe to rerun.
+# Arguments: MODE SERVICE_ADDRESS [BUCKET] [BUCKET_REGION] [SANDBOXES]
+#   [SERVICE_USER] [LOCAL_STORAGE]. SERVICE_USER owns the checkout and the
+#   units (default swarmy); LOCAL_STORAGE is a block device to format and
+#   mount at /mnt/swarmy-local, dir:/path for an existing directory, or
+#   empty to pick an unused disk automatically (sandbox nodes only).
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
-repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-[[ $repo_dir == /home/ubuntu/swarmy ]] || { echo 'Expected checkout at /home/ubuntu/swarmy' >&2; exit 1; }
-cd "$repo_dir"
 mode=${1:-stack}
 service_address=${2:-127.0.0.1}
 bucket=${3:-}
 bucket_region=${4:-}
 sandboxes=$(parse_sandbox_count "${5-64}")
+service_user=${6:-swarmy}
+local_storage=${7:-}
+validate_service_user "$service_user"
+ensure_service_user "$service_user"
+# Privileged setup runs as any sudoer, but the build and the units belong to
+# the service user; re-enter as that user so files land owned correctly.
+if [[ $(id -un) != "$service_user" ]]; then
+    exec sudo -u "$service_user" bash "$0" "$@"
+fi
+service_home=$(service_home_for "$service_user")
+service_repo=$(service_repo_for "$service_user")
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+[[ $repo_dir == "$service_repo" ]] || { echo "Expected checkout at $service_repo" >&2; exit 1; }
+cd "$repo_dir"
+# A root bootstrap copy leaves the tree owned by root; builds run as the
+# service user, so fix ownership once instead of failing halfway.
+if [[ $(stat -c %U "$repo_dir") != "$service_user" ]]; then
+    sudo chown -R "$service_user:$service_user" "$repo_dir"
+fi
 if [[ -n $bucket ]] && [[ ! $bucket =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ || ! $bucket_region =~ ^[a-z0-9-]+$ ]]; then
     echo 'Invalid bucket name or region: use a 3-63 character lowercase DNS name without dots and a region.' >&2
     exit 1
 fi
 [[ $mode == stack || $mode == node ]] || { echo 'Expected stack or node mode' >&2; exit 1; }
 [[ $service_address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+storage=$(parse_local_storage "$local_storage")
 stack_dependency=''
 if [[ $mode == stack ]]; then
     stack_dependency='swarmy-stack.service'
@@ -26,30 +48,33 @@ else
     dependency_kind=Wants
 fi
 export DEBIAN_FRONTEND=noninteractive
-sudo cloud-init status --wait
+# Dedicated servers boot stock Ubuntu without cloud-init; only cloud images wait.
+wait_for_cloud_init
 sudo apt-get update
 sudo -E apt-get install -y build-essential pkg-config libssl-dev clang libclang-dev curl rsync \
     runc passt iproute2 util-linux e2fsprogs debootstrap
 printf 'nbd\nublk_drv\n' | sudo tee /etc/modules-load.d/swarmy.conf >/dev/null
-# Some Ubuntu AWS kernels include these modules in the base package.
+# Some Ubuntu kernels ship these drivers outside the base package.
 if ! sudo modprobe nbd nbds_max=64 || ! sudo modprobe ublk_drv; then
     sudo -E apt-get install -y "linux-modules-extra-$(uname -r)"
     sudo modprobe nbd nbds_max=64
     sudo modprobe ublk_drv
 fi
 
-# Only sandbox nodes need instance-store NVMe. Never choose an EBS disk.
+# Sandbox scratch lives on local storage; control-only nodes keep everything
+# on the root disk. A device is formatted once and mounted by label, while an
+# existing directory (already partitioned server disks) is used directly.
 local_mount=/mnt/swarmy-local
-if (( sandboxes > 0 )); then
-    local_device=''
-    for device in /sys/block/nvme*n1; do
-        [[ -r $device/device/model ]] || continue
-        if [[ $(<"$device/device/model") == *'Amazon EC2 NVMe Instance Storage'* ]]; then
-            local_device="/dev/${device##*/}"
-            break
-        fi
-    done
-    [[ -n $local_device ]] || { echo 'An instance with local NVMe storage is required (default: m6id.xlarge)' >&2; exit 1; }
+storage_is_mount=false
+if [[ $storage == auto ]]; then
+    if (( sandboxes > 0 )); then
+        storage="device $(discover_unused_disk)"
+    fi
+fi
+if [[ $storage == device\ * ]]; then
+    local_device=${storage#device }
+    [[ -b $local_device ]] || { echo "Local storage device not found: $local_device" >&2; exit 1; }
+    [[ $(parent_disk_of "$local_device") != "$(parent_disk_of "$(findmnt -n -o SOURCE /)")" ]] || { echo "Refusing to use the root disk $local_device for local storage" >&2; exit 1; }
     sudo mkdir -p "$local_mount"
     if ! sudo blkid "$local_device" >/dev/null 2>&1; then
         # Refuse a disk with partitions or mounts even if it has no filesystem signature.
@@ -57,7 +82,7 @@ if (( sandboxes > 0 )); then
         [[ -z $(lsblk -nr -o MOUNTPOINTS "$local_device" | tr -d '[:space:]') ]]
         sudo mkfs.ext4 -L swarmy-local "$local_device"
     fi
-    [[ $(sudo blkid -s LABEL -o value "$local_device") == swarmy-local ]] || { echo 'Refusing to reuse an unrecognized instance-store filesystem' >&2; exit 1; }
+    [[ $(sudo blkid -s LABEL -o value "$local_device") == swarmy-local ]] || { echo 'Refusing to reuse an unrecognized local storage filesystem' >&2; exit 1; }
     if ! mountpoint -q "$local_mount"; then
         sudo mount "$local_device" "$local_mount"
     fi
@@ -65,18 +90,29 @@ if (( sandboxes > 0 )); then
     if ! grep -q '^LABEL=swarmy-local ' /etc/fstab; then
         printf 'LABEL=swarmy-local /mnt/swarmy-local ext4 defaults,nofail 0 2\n' | sudo tee -a /etc/fstab >/dev/null
     fi
+    storage_is_mount=true
     sudo mkdir -p "$local_mount/volumes"
-    sudo chown ubuntu:ubuntu "$local_mount/volumes"
+    sudo chown "$service_user:$service_user" "$local_mount/volumes"
+    mkdir -p .swarmy
+    if [[ ! -e .swarmy/volumes && ! -L .swarmy/volumes ]]; then
+        ln -s "$local_mount/volumes" .swarmy/volumes
+    fi
+    [[ $(readlink -f .swarmy/volumes) == "$local_mount/volumes" ]]
+elif [[ $storage == dir\ * ]]; then
+    local_mount=${storage#dir }
+    sudo mkdir -p "$local_mount/volumes"
+    sudo chown "$service_user:$service_user" "$local_mount/volumes"
     mkdir -p .swarmy
     if [[ ! -e .swarmy/volumes && ! -L .swarmy/volumes ]]; then
         ln -s "$local_mount/volumes" .swarmy/volumes
     fi
     [[ $(readlink -f .swarmy/volumes) == "$local_mount/volumes" ]]
 else
-    # With no mount, the volume server and scratch directories use the EBS root.
+    # With no mount, the volume server and scratch directories use the root disk.
+    (( sandboxes == 0 )) || { echo 'Local storage is required for sandbox nodes' >&2; exit 1; }
     mkdir -p .swarmy/volumes
 fi
-# Keep node identity, backing data, and configuration on the EBS root disk.
+# Keep node identity, backing data, and configuration on the root disk.
 [[ -e .swarmy/config.toml ]] || touch .swarmy/config.toml
 
 if ! command -v rustup >/dev/null && [[ ! -x $HOME/.cargo/bin/rustup ]]; then
@@ -96,7 +132,7 @@ fi
 mem_available_kib=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)
 mem_total_kib=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
 if (( mem_available_kib < 6 * 1024 * 1024 )); then
-    printf 'Release build needs at least 6 GiB available memory; this instance has %s MiB total and %s MiB available. Use at least an 8 GiB control node (m6i.large), or free memory before provisioning.\n' \
+    printf 'Release build needs at least 6 GiB available memory; this machine has %s MiB total and %s MiB available. Use at least an 8 GiB machine, or free memory before provisioning.\n' \
         "$((mem_total_kib / 1024))" "$((mem_available_kib / 1024))" >&2
     exit 1
 fi
@@ -124,11 +160,11 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-User=ubuntu
+User=$service_user
 WorkingDirectory=$repo_dir
-Environment=HOME=/home/ubuntu
+Environment=HOME=$service_home
 EnvironmentFile=/etc/swarmy/node.env
-Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin
+Environment=PATH=$service_home/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin
 # systemd owns these processes, so stale state from an interrupted boot is safe to clear.
 ExecStartPre=/usr/bin/rm -f $repo_dir/.dev/fdb.pid $repo_dir/.dev/nats.pid $repo_dir/.dev/seaweed.pid
 ExecStartPre=-/usr/bin/rmdir $repo_dir/.dev/lock
@@ -142,8 +178,8 @@ WantedBy=multi-user.target
 UNIT
 else
 [[ -s .swarmy/tunnel-key && -s .swarmy/tunnel-known-hosts ]] || { echo 'Missing add-node tunnel identity' >&2; exit 1; }
-sudo install -o ubuntu -g ubuntu -m 0600 .swarmy/tunnel-key /etc/swarmy/tunnel-key
-sudo install -o ubuntu -g ubuntu -m 0600 .swarmy/tunnel-known-hosts /etc/swarmy/tunnel-known-hosts
+sudo install -o "$service_user" -g "$service_user" -m 0600 .swarmy/tunnel-key /etc/swarmy/tunnel-key
+sudo install -o "$service_user" -g "$service_user" -m 0600 .swarmy/tunnel-known-hosts /etc/swarmy/tunnel-known-hosts
 s3_forward=''
 if [[ -z $bucket ]]; then s3_forward=' -L 127.0.0.1:8333:127.0.0.1:8333'; fi
 sudo tee /etc/systemd/system/swarmy-tunnel.service >/dev/null <<UNIT
@@ -154,8 +190,8 @@ Wants=network-online.target
 
 [Service]
 Type=exec
-User=ubuntu
-ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i /etc/swarmy/tunnel-key -L 127.0.0.1:4500:127.0.0.1:4500 -L 127.0.0.1:4222:127.0.0.1:4222$s3_forward ubuntu@$service_address
+User=$service_user
+ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i /etc/swarmy/tunnel-key -L 127.0.0.1:4500:127.0.0.1:4500 -L 127.0.0.1:4222:127.0.0.1:4222$s3_forward $service_user@$service_address
 ExecStartPost=/bin/bash -c 'for attempt in {1..30}; do if (echo > /dev/tcp/127.0.0.1/4500) 2>/dev/null; then exit 0; fi; sleep 1; done; exit 1'
 Restart=always
 RestartSec=5
@@ -166,7 +202,7 @@ WantedBy=multi-user.target
 UNIT
 fi
 mount_requirement=''
-if (( sandboxes > 0 )); then mount_requirement="RequiresMountsFor=$local_mount"; fi
+if [[ $storage_is_mount == true ]]; then mount_requirement="RequiresMountsFor=$local_mount"; fi
 sudo tee /etc/systemd/system/swarmyd.service >/dev/null <<UNIT
 [Unit]
 Description=Swarmy node agent

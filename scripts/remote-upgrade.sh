@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Run over SSH after the checkout has been copied. Never modify node.env or units.
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-upgrade-lib.sh"
 upgrade_args "$@" || exit 2
 mode=$1
 services=$2
 drain_timeout=$3
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-[[ $repo_dir == /home/ubuntu/swarmy ]] || { echo 'Expected checkout at /home/ubuntu/swarmy' >&2; exit 1; }
+[[ $repo_dir == "$(service_home_for "$(id -un)")/swarmy" ]] || { echo "Expected checkout at $(service_home_for "$(id -un)")/swarmy" >&2; exit 1; }
 cd "$repo_dir"
 started=$SECONDS
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
@@ -71,7 +72,7 @@ if unit_needs_restart swarmyd.service /usr/local/bin/swarmyd; then
     else
         deadline=$((SECONDS + drain_timeout))
         while true; do
-            busy=$(sudo -n sh -c 'cd /home/ubuntu/swarmy && set -a && . /etc/swarmy/node.env && set +a && exec /home/ubuntu/swarmy/target/release/swarmyd --upgrade-processes')
+            busy=$(sudo -n sh -c "cd $repo_dir && set -a && . /etc/swarmy/node.env && set +a && exec $repo_dir/target/release/swarmyd --upgrade-processes")
             [[ $busy == '[]' ]] && break
             echo "Waiting for running sandbox commands: $busy" >&2
             if (( SECONDS >= deadline )); then

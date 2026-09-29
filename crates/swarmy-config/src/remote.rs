@@ -61,6 +61,14 @@ pub struct RemoteSettings {
     pub disk_gb: u32,
     pub managed_by_tag: String,
     pub profile: Option<String>,
+    /// Login that owns the checkout and runs the node units. Plain servers
+    /// use `swarmy`; EC2 configurations keep `ubuntu` by setting it.
+    pub service_user: String,
+    /// Local disk for sandbox data: a block device to format and mount at
+    /// `/mnt/swarmy-local` (for example `/dev/nvme1n1`), `dir:/path` for an
+    /// existing directory to use directly, or empty to pick an unused disk
+    /// automatically (sandbox nodes) or use none (control-only nodes).
+    pub local_storage: String,
     pub aws: AwsSettings,
 }
 
@@ -74,6 +82,8 @@ impl Default for RemoteSettings {
             disk_gb: 100,
             managed_by_tag: "swarmy".into(),
             profile: None,
+            service_user: default_service_user(),
+            local_storage: String::new(),
             aws: AwsSettings::default(),
         }
     }
@@ -89,6 +99,8 @@ struct RemoteSettingsHelper {
     disk_gb: u32,
     managed_by_tag: String,
     profile: Option<String>,
+    service_user: String,
+    local_storage: String,
     aws: AwsHelper,
 }
 
@@ -102,6 +114,8 @@ impl Default for RemoteSettingsHelper {
             disk_gb: 100,
             managed_by_tag: "swarmy".into(),
             profile: None,
+            service_user: default_service_user(),
+            local_storage: String::new(),
             aws: AwsHelper::default(),
         }
     }
@@ -123,6 +137,11 @@ impl<'de> Deserialize<'de> for RemoteSettings {
         D: serde::Deserializer<'de>,
     {
         let helper = RemoteSettingsHelper::deserialize(deserializer)?;
+        let service_user = if helper.service_user.is_empty() {
+            default_service_user()
+        } else {
+            helper.service_user
+        };
         Ok(Self {
             provider: helper.provider,
             services: helper.services,
@@ -131,6 +150,8 @@ impl<'de> Deserialize<'de> for RemoteSettings {
             disk_gb: helper.disk_gb,
             managed_by_tag: helper.managed_by_tag,
             profile: helper.profile,
+            service_user,
+            local_storage: helper.local_storage,
             aws: AwsSettings {
                 subnet: helper.aws.subnet,
                 security_group: helper.aws.security_group,
@@ -213,6 +234,38 @@ impl RemoteNode {
         self.launch_settings.as_ref()?.bucket.as_deref()
     }
 
+    /// Login that owns the checkout and runs the node units. Saved launch
+    /// settings win; records written before the setting existed fall back
+    /// to the SSH login, which matched the service user on those nodes.
+    #[must_use]
+    pub fn service_user(&self) -> &str {
+        match &self.launch_settings {
+            Some(settings) if !settings.service_user.is_empty() => &settings.service_user,
+            _ => &self.ssh_user,
+        }
+    }
+
+    /// Local disk setting for sandbox data; see `RemoteSettings::local_storage`.
+    #[must_use]
+    pub fn local_storage(&self) -> &str {
+        match &self.launch_settings {
+            Some(settings) => settings.local_storage.as_str(),
+            None => "",
+        }
+    }
+
+    /// Home directory of the service user.
+    #[must_use]
+    pub fn service_home(&self) -> String {
+        service_home_for(self.service_user())
+    }
+
+    /// Checkout holding the provisioning scripts on the node.
+    #[must_use]
+    pub fn service_repo(&self) -> String {
+        format!("{}/swarmy", self.service_home())
+    }
+
     /// Settings selecting the cloud provider for this remote. Records saved
     /// before launch settings existed fall back to defaults in the node's
     /// region, so teardown never depends on a later configuration edit.
@@ -235,6 +288,40 @@ pub const fn default_sandboxes() -> u32 {
 
 fn ssh_user() -> String {
     "ubuntu".into()
+}
+
+fn default_service_user() -> String {
+    "swarmy".into()
+}
+
+/// Home directory for a service login: `/root` for root, `/home/{user}` otherwise.
+#[must_use]
+pub fn service_home_for(user: &str) -> String {
+    if user == "root" {
+        "/root".into()
+    } else {
+        format!("/home/{user}")
+    }
+}
+
+/// Validate service logins before using them in paths or shell output.
+///
+/// # Errors
+///
+/// Rejects empty names and shell metacharacters.
+pub fn validate_service_user(user: &str) -> Result<(), Error> {
+    if !user.is_empty()
+        && user.len() <= 64
+        && user
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        Ok(())
+    } else {
+        Err(Error::Remote(
+            "service user must contain 1-64 letters, digits, hyphens, or underscores",
+        ))
+    }
 }
 
 /// Local endpoints and ownership information for one SSH control master.
