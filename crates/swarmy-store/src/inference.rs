@@ -3,8 +3,8 @@ use std::time::Duration;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use swarmy_core::{
-    Event, IdempotencyRecord, IdempotencyState, InflightRecord, LeaseOwnerId, RequestId, SessionId,
-    SessionState,
+    CredentialEntryKind, Event, IdempotencyRecord, IdempotencyState, InflightRecord, LeaseOwnerId,
+    RequestId, SessionId, SessionState,
 };
 
 use crate::{Result, Store, StoreError, read, write};
@@ -34,7 +34,7 @@ pub struct InferenceCompletion {
     pub event: Event,
     pub now: Timestamp,
     pub entry: Option<String>,
-    pub entry_kind: Option<String>,
+    pub entry_kind: Option<CredentialEntryKind>,
     pub quota_remaining: std::collections::BTreeMap<String, u64>,
     pub quota_resets: std::collections::BTreeMap<String, u64>,
 }
@@ -418,7 +418,7 @@ impl Store {
                 model,
                 recorded_at: now,
                 entry: completion.entry.as_deref(),
-                entry_kind: completion.entry_kind.as_deref(),
+                entry_kind: completion.entry_kind,
                 route: route.clone(),
                 route_step: *route_step,
             },

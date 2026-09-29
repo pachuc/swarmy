@@ -365,7 +365,7 @@ async fn terminal_inference_commits_response_snapshot_and_idle_under_its_claim()
         event: completion.event.clone(),
         now: completion.now,
         entry: completion.entry.clone(),
-        entry_kind: completion.entry_kind.clone(),
+        entry_kind: completion.entry_kind,
         quota_remaining: completion.quota_remaining.clone(),
         quota_resets: completion.quota_resets.clone(),
     };

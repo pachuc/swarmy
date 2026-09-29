@@ -1,7 +1,7 @@
 use super::{
-    Context, Event, HeldLease, InferenceJob, InferenceJobRef, InflightRecord, LeaseOwnerId,
-    MAX_SCAN_LIMIT, MessageId, RequestId, Result, SessionId, SessionRecord, SessionState,
-    SubjectToken, SubmitInferenceOptions, Timestamp, Ulid, WorkQueue, Worker, Write,
+    Context, Event, HeldLease, InferenceJob, InferenceJobRef, InflightRecord, KillPoint,
+    LeaseOwnerId, MAX_SCAN_LIMIT, MessageId, RequestId, Result, SessionId, SessionRecord,
+    SessionState, SubjectToken, SubmitInferenceOptions, Timestamp, Ulid, WorkQueue, Worker, Write,
 };
 
 pub(super) enum StepFailure<'a> {
@@ -338,7 +338,7 @@ impl Worker {
             summary_recovery: compaction.is_some_and(|(_, recovery)| recovery),
             request,
         };
-        self.kill("before_release");
+        self.kill(KillPoint::BeforeRelease);
         let event = {
             let mut token = lease.lock().await;
             let event = self
@@ -368,8 +368,8 @@ impl Worker {
         self.publish_events(id, &preceding).await?;
         self.publish_events(id, std::slice::from_ref(&event))
             .await?;
-        self.kill("after_request_event");
-        self.kill("after_release");
+        self.kill(KillPoint::AfterRequestEvent);
+        self.kill(KillPoint::AfterRelease);
         if self.fail_unserved(&job).await? {
             return Ok(());
         }
@@ -393,10 +393,10 @@ impl Worker {
                 )
                 .await?;
         }
-        self.kill("before_release");
+        self.kill(KillPoint::BeforeRelease);
         self.transition(job.session_id, lease, SessionState::WaitingInference)
             .await?;
-        self.kill("after_release");
+        self.kill(KillPoint::AfterRelease);
         if self.fail_unserved(job).await? {
             return Ok(());
         }

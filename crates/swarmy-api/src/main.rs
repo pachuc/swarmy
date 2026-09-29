@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
-use jiff::Timestamp;
 use swarmy_api::{AppState, router};
 use swarmy_bus::Bus;
 use swarmy_config::Settings;
-use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store};
+use swarmy_store::{ServiceDetail, ServiceRole, Store};
 
 fn main() -> Result<()> {
     swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-api")?;
@@ -11,6 +10,7 @@ fn main() -> Result<()> {
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(run())
 }
+
 async fn run() -> Result<()> {
     let settings = Settings::load()?.settings;
     let token = std::env::var("SWARMY_API_TOKEN").unwrap_or(settings.api.token.clone());
@@ -18,28 +18,28 @@ async fn run() -> Result<()> {
     let opened = Store::open_store(&settings).await?;
     let store = opened.store;
     let objects = opened.blobs.object_store();
-    let keyring = swarmy_config::Keyring::load().ok();
+    let keyring = match swarmy_config::Keyring::load() {
+        Ok(keyring) => Some(keyring),
+        Err(error) => {
+            tracing::warn!(%error, "keyring unavailable; doctor omits credentials");
+            None
+        }
+    };
     let bus = Bus::connect(&settings.bus.nats_url, settings.bus.bus_config()?).await?;
     let heartbeat_store = store.clone();
-    let started = Timestamp::now();
+    let started = jiff::Timestamp::now();
     let instance_id = ulid::Ulid::generate().to_string();
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
-        loop {
-            tick.tick().await;
-            let record = ServiceHeartbeat {
-                role: ServiceRole::Api,
-                instance_id: instance_id.clone(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                host: std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into()),
-                started_at: started,
-                last_seen: Timestamp::now(),
-                detail: ServiceDetail::None,
-            };
-            if let Err(error) = heartbeat_store.put_service_heartbeat(&record).await {
-                tracing::warn!(%error, "api health heartbeat failed");
-            }
-        }
+        heartbeat_store
+            .heartbeat_loop(
+                ServiceRole::Api,
+                instance_id,
+                env!("CARGO_PKG_VERSION").into(),
+                started,
+                ServiceDetail::None,
+                false,
+            )
+            .await;
     });
     let mut state = AppState::new(store, bus, token, settings.catalog()?, objects);
     state.credential_keyring = keyring;

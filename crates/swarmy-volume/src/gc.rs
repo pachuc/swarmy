@@ -160,7 +160,9 @@ pub async fn complete(
             // follower polls `finished` on the run record; record the failure
             // without the lease so it stops instead of waiting out its
             // deadline while the lease expires underneath the sweep.
-            let _ = store.fail_gc_run(run.owner, &run).await;
+            if let Err(error) = store.fail_gc_run(run.owner, &run).await {
+                tracing::warn!(%error, "gc failure record lost after lease expiry");
+            }
             result?;
             Err(record_error.into())
         }

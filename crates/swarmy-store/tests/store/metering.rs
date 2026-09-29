@@ -1,10 +1,11 @@
 use super::*;
+use swarmy_core::CredentialEntryKind;
 
 struct CompletionInput<'a> {
     provider: &'a str,
     model: &'a str,
     entry: &'a str,
-    kind: &'a str,
+    kind: CredentialEntryKind,
     usage: swarmy_core::TokenUsage,
     cost: u64,
     now: Timestamp,
@@ -16,7 +17,7 @@ fn input<'a>(
     provider: &'a str,
     model: &'a str,
     entry: &'a str,
-    kind: &'a str,
+    kind: CredentialEntryKind,
     usage: swarmy_core::TokenUsage,
     cost: u64,
     now: Timestamp,
@@ -121,7 +122,7 @@ async fn complete_with(store: &Store, id: SessionId, input: &CompletionInput<'_>
         ),
         now: input.now,
         entry: Some(input.entry.into()),
-        entry_kind: Some(input.kind.into()),
+        entry_kind: Some(input.kind),
         quota_remaining: input.quota_remaining.clone(),
         quota_resets: input.quota_resets.clone(),
     };
@@ -180,7 +181,7 @@ async fn completion_updates_every_dimension_bucket_for_its_hour() {
             "openai",
             "gpt-5",
             "primary",
-            "api-key",
+            CredentialEntryKind::ApiKey,
             tokens.clone(),
             cost,
             now,
@@ -195,7 +196,7 @@ async fn completion_updates_every_dimension_bucket_for_its_hour() {
     assert_eq!(record.provider, "openai");
     assert_eq!(record.entry.as_deref(), Some("primary"));
     assert_eq!(record.model, "gpt-5");
-    assert_eq!(record.entry_kind.as_deref(), Some("api-key"));
+    assert_eq!(record.entry_kind, Some(CredentialEntryKind::ApiKey));
     assert_eq!(record.session, Some(id));
     assert_eq!(record.agent, Some(session.agent_id));
     let hour = swarmy_store::metering::hour_floor(now.as_second());
@@ -255,7 +256,7 @@ async fn bucket_sums_match_session_totals_and_failed_commits_leave_nothing() {
             "openai",
             "gpt-5",
             "primary",
-            "api-key",
+            CredentialEntryKind::ApiKey,
             first.clone(),
             first_cost,
             base,
@@ -269,7 +270,7 @@ async fn bucket_sums_match_session_totals_and_failed_commits_leave_nothing() {
             "openai",
             "gpt-5",
             "primary",
-            "api-key",
+            CredentialEntryKind::ApiKey,
             second.clone(),
             second_cost,
             base,
@@ -299,7 +300,7 @@ async fn bucket_sums_match_session_totals_and_failed_commits_leave_nothing() {
         event: completion_event(request, "openai", "gpt-5", &usage, cost),
         now: base,
         entry: Some("primary".into()),
-        entry_kind: Some("api-key".into()),
+        entry_kind: Some(CredentialEntryKind::ApiKey),
         quota_remaining: std::collections::BTreeMap::new(),
         quota_resets: std::collections::BTreeMap::new(),
     };
@@ -330,7 +331,7 @@ async fn observed_quota_reports_remaining_and_configured_uses_rollups() {
         "openai",
         "gpt-5",
         "primary",
-        "api-key",
+        CredentialEntryKind::ApiKey,
         tokens.clone(),
         cost,
         now,
@@ -351,7 +352,7 @@ async fn observed_quota_reports_remaining_and_configured_uses_rollups() {
             "openai",
             "gpt-5",
             "primary",
-            "api-key",
+            CredentialEntryKind::ApiKey,
             tokens.clone(),
             cost,
             now,
@@ -415,7 +416,7 @@ async fn seed_two_entries(test: &TestStore) -> BreakdownSeed {
                 provider,
                 "gpt-5",
                 entry,
-                "api-key",
+                CredentialEntryKind::ApiKey,
                 tokens.clone(),
                 cost,
                 base,
@@ -497,7 +498,7 @@ async fn owner_day_totals_ignore_rows_outside_their_range() {
                 "openai",
                 "gpt-5",
                 entry,
-                "api-key",
+                CredentialEntryKind::ApiKey,
                 tokens.clone(),
                 cost,
                 day,
@@ -514,7 +515,7 @@ async fn owner_day_totals_ignore_rows_outside_their_range() {
                 "openai",
                 "gpt-5",
                 "primary",
-                "api-key",
+                CredentialEntryKind::ApiKey,
                 tokens.clone(),
                 cost,
                 at,
@@ -527,7 +528,15 @@ async fn owner_day_totals_ignore_rows_outside_their_range() {
     complete_with(
         store,
         other,
-        &input("xai", "grok", "aux", "api-key", tokens.clone(), 9_000, day),
+        &input(
+            "xai",
+            "grok",
+            "aux",
+            CredentialEntryKind::ApiKey,
+            tokens.clone(),
+            9_000,
+            day,
+        ),
     )
     .await;
     // Bulk history outside the range: thirty other-owner days must not move
@@ -537,7 +546,15 @@ async fn owner_day_totals_ignore_rows_outside_their_range() {
         complete_with(
             store,
             other,
-            &input("xai", "grok", "aux", "api-key", tokens.clone(), 9_000, at),
+            &input(
+                "xai",
+                "grok",
+                "aux",
+                CredentialEntryKind::ApiKey,
+                tokens.clone(),
+                9_000,
+                at,
+            ),
         )
         .await;
     }
@@ -663,7 +680,7 @@ async fn pruning_removes_raw_records_but_keeps_rollups() {
             "openai",
             "gpt-5",
             "primary",
-            "api-key",
+            CredentialEntryKind::ApiKey,
             tokens.clone(),
             cost,
             old,
@@ -677,7 +694,7 @@ async fn pruning_removes_raw_records_but_keeps_rollups() {
             "openai",
             "gpt-5",
             "primary",
-            "api-key",
+            CredentialEntryKind::ApiKey,
             tokens.clone(),
             cost,
             fresh,
@@ -706,7 +723,7 @@ async fn complete_many(store: &Store, id: SessionId, now: Timestamp, count: usiz
                 "openai",
                 "gpt-5",
                 "primary",
-                "api-key",
+                CredentialEntryKind::ApiKey,
                 tokens.clone(),
                 cost,
                 now,
@@ -765,7 +782,7 @@ async fn pruning_before_a_cutoff_hour_removes_whole_earlier_hours() {
             "openai",
             "gpt-5",
             "primary",
-            "api-key",
+            CredentialEntryKind::ApiKey,
             tokens.clone(),
             cost,
             base,
@@ -779,7 +796,7 @@ async fn pruning_before_a_cutoff_hour_removes_whole_earlier_hours() {
             "openai",
             "gpt-5",
             "primary",
-            "api-key",
+            CredentialEntryKind::ApiKey,
             tokens.clone(),
             cost,
             second,
@@ -795,7 +812,7 @@ async fn pruning_before_a_cutoff_hour_removes_whole_earlier_hours() {
             "openai",
             "gpt-5",
             "primary",
-            "api-key",
+            CredentialEntryKind::ApiKey,
             tokens.clone(),
             cost,
             late,
