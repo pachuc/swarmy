@@ -37,7 +37,6 @@ blake3.workspace = true
 swarmy-store.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 ulid.workspace = true
 
 [dev-dependencies]

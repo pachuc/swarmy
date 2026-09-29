@@ -34,10 +34,10 @@ impl Node {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join(".swarmy")).unwrap();
         let id = NodeId::from_ulid(ulid::Ulid::generate());
-        settings.node_id = Some(id);
-        settings.node_heartbeat_interval_ms = 100;
-        settings.node_capacity.cpu_millis = 4000;
-        settings.node_capacity.memory_bytes = 15 * 1024 * 1024 * 1024;
+        settings.node.id = Some(id);
+        settings.node.heartbeat_interval_ms = Duration::from_millis(100);
+        settings.node.capacity.cpu_millis = 4000;
+        settings.node.capacity.memory_bytes = 15 * 1024 * 1024 * 1024;
         std::fs::write(
             root.path().join(".swarmy/config.toml"),
             settings.to_toml().unwrap(),
@@ -285,13 +285,9 @@ async fn read(reader: &mut BufReader<UnixStream>) -> Response {
 }
 
 async fn store(settings: &swarmy_config::Settings) -> Store {
-    let directory: Vec<_> = settings
-        .store_directory
-        .split('/')
-        .map(str::to_owned)
-        .collect();
+    let directory = settings.store_directory_path().unwrap();
     Store::open(
-        Some(&settings.fdb_cluster_file),
+        Some(settings.store.cluster_file.as_path()),
         Some(&directory),
         // The node reads large tool payloads in a separate process.
         Arc::new(ObjectBlobStore::new(
@@ -352,7 +348,7 @@ async fn root_node_scratch_is_local_persistent_and_removed_on_delete() {
     let mut settings = swarmy_config::Settings::load().unwrap().settings;
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
-    settings.store_directory = format!("swarmy-scratch-test-{}", ulid::Ulid::generate());
+    settings.store.directory = format!("swarmy-scratch-test-{}", ulid::Ulid::generate());
     let store = store(&settings).await;
     store
         .put_manifest(base, &images.get_manifest(base).await.unwrap().unwrap())
@@ -729,7 +725,7 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
     let mut settings = swarmy_config::Settings::load().unwrap().settings;
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
-    settings.store_directory = format!("swarmy-node-test-{}", ulid::Ulid::generate());
+    settings.store.directory = format!("swarmy-node-test-{}", ulid::Ulid::generate());
     let store = store(&settings).await;
     store
         .put_manifest(base, &images.get_manifest(base).await.unwrap().unwrap())
@@ -895,8 +891,8 @@ async fn root_dev_stack_uses_sandbox_loopback() {
 
 async fn registration(node: &Node, store: &Store) {
     let first = store.get_node(node.id).await.unwrap().unwrap();
-    assert_eq!(first.roles, node.settings.node_roles);
-    assert_eq!(first.capacity, node.settings.node_capacity);
+    assert_eq!(first.roles, node.settings.node.roles);
+    assert_eq!(first.capacity, node.settings.node.capacity);
     tokio::time::sleep(Duration::from_millis(300)).await;
     let second = store.get_node(node.id).await.unwrap().unwrap();
     assert!(second.last_heartbeat > first.last_heartbeat);
@@ -1136,7 +1132,7 @@ async fn root_deleted_computer_stops_call_destroys_sandbox_and_detaches_device()
     let mut settings = swarmy_config::Settings::load().unwrap().settings;
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
-    settings.store_directory = format!("swarmy-deletion-test-{}", ulid::Ulid::generate());
+    settings.store.directory = format!("swarmy-deletion-test-{}", ulid::Ulid::generate());
     let store = store(&settings).await;
     store
         .put_manifest(base, &images.get_manifest(base).await.unwrap().unwrap())
@@ -1166,7 +1162,7 @@ async fn root_named_agent_calls_serialize_and_report_occupancy() {
     let mut settings = swarmy_config::Settings::load().unwrap().settings;
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
-    settings.store_directory = format!("swarmy-shared-calls-test-{}", ulid::Ulid::generate());
+    settings.store.directory = format!("swarmy-shared-calls-test-{}", ulid::Ulid::generate());
     let store = store(&settings).await;
     store
         .put_manifest(base, &images.get_manifest(base).await.unwrap().unwrap())
@@ -1200,7 +1196,7 @@ async fn root_bash_yield_spill_stdin_and_web_fetch() {
     let mut settings = swarmy_config::Settings::load().unwrap().settings;
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
-    settings.store_directory = format!("swarmy-yield-test-{}", ulid::Ulid::generate());
+    settings.store.directory = format!("swarmy-yield-test-{}", ulid::Ulid::generate());
     let store = store(&settings).await;
     store
         .put_manifest(base, &images.get_manifest(base).await.unwrap().unwrap())
@@ -1231,7 +1227,7 @@ async fn root_file_tools_run_on_agent_disk() {
     let mut settings = swarmy_config::Settings::load().unwrap().settings;
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
-    settings.store_directory = format!("swarmy-file-tools-test-{}", ulid::Ulid::generate());
+    settings.store.directory = format!("swarmy-file-tools-test-{}", ulid::Ulid::generate());
     let store = store(&settings).await;
     store
         .put_manifest(base, &images.get_manifest(base).await.unwrap().unwrap())

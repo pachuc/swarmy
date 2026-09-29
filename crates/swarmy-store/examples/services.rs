@@ -4,7 +4,12 @@ use swarmy_store::{Store, blob::MemoryBlobStore};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _network = swarmy_store::boot();
     let cluster = std::env::var("SWARMY_FDB_CLUSTER_FILE")?;
-    let store = Store::open(Some(&cluster), None, Arc::new(MemoryBlobStore::default())).await?;
+    let store = Store::open(
+        Some(std::path::Path::new(&cluster)),
+        None,
+        Arc::new(MemoryBlobStore::default()),
+    )
+    .await?;
     for service in store.list_services().await? {
         println!(
             "{:?} {} {} alive={}",

@@ -85,7 +85,7 @@ All ChatGPT workers and the codex-daytona lanes share one subscription's
 usage limit. When it trips, the gateway opens that entry's breaker, the
 affected workers park without a lease, and `fleet status` shows the reason.
 They continue when the limit clears; a turn gives up only after
-`[inference] max_wait_seconds` (default one hour). OpenRouter workers are
+`[inference] max_wait_secs` (default one hour). OpenRouter workers are
 unaffected. To stop waiting instead, `fleet kill TASK`.
 
 To move the fleet to another model, for example when a subscription's

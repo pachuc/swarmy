@@ -40,7 +40,7 @@ impl Fixture {
         let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
         NETWORK.get_or_init(swarmy_store::boot);
         let store = Store::open(
-            Some(&cluster),
+            Some(std::path::Path::new(&cluster)),
             Some(&["ops-test".into(), Ulid::generate().to_string()]),
             Arc::new(MemoryBlobStore::default()),
         )

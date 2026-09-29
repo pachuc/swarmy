@@ -1,8 +1,8 @@
 //! Uses a dedicated empty bucket because the empty-prefix collector owns the
 //! whole bucket. Set `SWARMY_S3_TEST_BUCKET` in addition to the usual S3/FDB env.
-use std::{num::NonZeroU64, panic::AssertUnwindSafe, sync::Arc, time::Duration};
+use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
 
-use foundationdb::{Database, tuple::Subspace};
+use foundationdb::tuple::Subspace;
 use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 use object_store::{ObjectStore, path::Path};
 use swarmy_config::{GarbageCollection, Settings};
@@ -72,7 +72,7 @@ async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore)
     // S3 last-modified has second precision and the collector truncates its cutoff.
     tokio::time::sleep(Duration::from_secs(3)).await;
     let policy = GarbageCollection {
-        grace_seconds: NonZeroU64::new(1).unwrap(),
+        grace_secs: Duration::from_secs(1),
         ..GarbageCollection::default()
     };
     let dry = collect(store, objects.clone(), policy, true).await.unwrap();
@@ -139,7 +139,7 @@ async fn check_listings(settings: &Settings, objects: &dyn ObjectStore, paths: &
         .unwrap();
     assert!(delimited.common_prefixes.contains(&Path::from("chunks/01")));
     let all: Vec<_> = objects.list(None).try_collect().await.unwrap();
-    if !settings.s3_prefix.as_str().is_empty() {
+    if !settings.s3.prefix.as_str().is_empty() {
         assert!(
             all.iter()
                 .all(|meta| meta.location.as_ref().starts_with("chunks/")
@@ -159,10 +159,10 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
         return;
     };
     let mut settings = Settings::load().unwrap().settings;
-    settings.s3_bucket = bucket;
-    settings.s3_prefix = swarmy_config::ObjectPrefix::default();
+    settings.s3.bucket = bucket;
+    settings.s3.prefix = swarmy_config::ObjectPrefix::default();
     assert!(
-        !settings.s3_bucket.contains('/'),
+        !settings.s3.bucket.contains('/'),
         "test bucket must be a physical bucket"
     );
     let raw = swarmy_store::objects::from_settings(&settings).unwrap();
@@ -171,11 +171,11 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
         "SWARMY_S3_TEST_BUCKET must be empty and dedicated to this test"
     );
     let _network = swarmy_store::boot();
-    let db = Arc::new(Database::new(Some(&settings.fdb_cluster_file)).unwrap());
+    let db = Arc::new(swarmy_store::database(&settings.store.cluster_file).unwrap());
     for prefix in ["", "runs/nested"] {
-        settings.s3_prefix = prefix.parse().unwrap();
+        settings.s3.prefix = prefix.parse().unwrap();
         let mut sibling_settings = settings.clone();
-        sibling_settings.s3_prefix = "runs/nested-sibling".parse().unwrap();
+        sibling_settings.s3.prefix = "runs/nested-sibling".parse().unwrap();
         let sibling = swarmy_store::objects::from_settings(&sibling_settings).unwrap();
         let root = Subspace::all().subspace(&(format!("s3-test-{}", ulid::Ulid::generate()),));
         let store = Store::with_subspace(

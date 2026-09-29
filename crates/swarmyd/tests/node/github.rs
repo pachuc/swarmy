@@ -104,7 +104,7 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
     let mut settings = swarmy_config::Settings::load().unwrap().settings;
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
-    settings.store_directory = format!("swarmy-github-test-{}", ulid::Ulid::generate());
+    settings.store.directory = format!("swarmy-github-test-{}", ulid::Ulid::generate());
     let store = store(&settings).await;
     store
         .put_manifest(base, &images.get_manifest(base).await.unwrap().unwrap())
