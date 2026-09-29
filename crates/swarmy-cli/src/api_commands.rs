@@ -74,6 +74,13 @@ pub async fn cost_command(args: cost_command::Args, json: bool) -> Result<()> {
 
 /// Run one image read through the API. Builds run locally in `crate::image`.
 pub async fn image_command(command: image_command::Command, json: bool) -> Result<()> {
+    // Validate the reference before connecting so argument errors report
+    // without needing API configuration.
+    if let image_command::Command::Show { image } = &command {
+        let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
+        validate_label(name)?;
+        validate_label(tag)?;
+    }
     let (client, endpoint) = swarmy_client::api_client::connect()?;
     image(&client, &endpoint, command, json).await
 }
@@ -547,9 +554,8 @@ async fn image(
             }
         }
         image_command::Command::Show { image } => {
+            // The reference was validated before connecting.
             let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
-            validate_label(name)?;
-            validate_label(tag)?;
             let value = client.image(name, tag).await.map_err(|error| {
                 if matches!(&error, swarmy_client::Error::Api { body, .. } if body.code == "image_not_found") {
                     anyhow::anyhow!("image not found")

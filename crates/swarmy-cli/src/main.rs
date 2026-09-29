@@ -233,7 +233,7 @@ async fn connect_client() -> anyhow::Result<(swarmy_client::Client, String)> {
 }
 
 /// Map a chat-library failure into the binary's error type.
-fn chat_error(error: swarmy_chat::client_conversation::Error) -> anyhow::Error {
+fn chat_error(error: &swarmy_chat::client_conversation::Error) -> anyhow::Error {
     anyhow::anyhow!(error.to_string())
 }
 
@@ -276,7 +276,7 @@ async fn run_chat(
     let (client, endpoint) = connect_client().await?;
     client_conversation::wait_healthy(&client, &endpoint, selection.provider.as_deref())
         .await
-        .map_err(chat_error)?;
+        .map_err(|error| chat_error(&error))?;
     if json {
         client_commands::chat(client, session_id, image, agent, new, selection, true).await
     } else {
@@ -292,7 +292,7 @@ async fn run_chat(
                 selection.route,
             )
             .await
-            .map_err(chat_error)?;
+            .map_err(|error| chat_error(&error))?;
             Ok(())
         }
         #[cfg(not(feature = "chat"))]
