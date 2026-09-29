@@ -1196,7 +1196,7 @@ async fn quotas(State(state): State<AppState>) -> ApiResult<Vec<api::QuotaEntry>
         entries.push(api::QuotaEntry {
             provider: summary.provider,
             label: summary.label,
-            kind: summary.kind,
+            kind: summary.kind.as_str().to_owned(),
             quota: quota_view(quota),
         });
     }

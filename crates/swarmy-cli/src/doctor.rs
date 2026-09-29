@@ -555,7 +555,7 @@ fn snapshot_checks(
             {
                 row.credential = "store".into();
                 row.store = "present".into();
-                row.status = status;
+                status.clone_into(&mut row.status);
             }
         }
     } else {
