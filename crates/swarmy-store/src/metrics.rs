@@ -134,7 +134,7 @@ pub struct TurnMetrics {
     #[serde(default)]
     pub dropped_stages: u64,
     /// Remainder of the `inference` array omitted by `inference_limit`, plus
-    /// rows dropped by the legacy capped layout when the turn was migrated.
+    /// rows omitted from a paged response.
     #[serde(default)]
     pub dropped_inference: u64,
     /// Remainder of the `tools` array omitted by `tools_limit`, plus rows
@@ -300,9 +300,8 @@ struct StoredTurnSummaryV2 {
     throughput_sum: f64,
     #[serde(default)]
     throughput_count: u64,
-    /// Rows the legacy capped layout dropped before migration. Native `V2`
-    /// turns always store zero here; migrated turns keep their original
-    /// counters so old baseline sessions do not read as complete.
+    /// Paging counters. New turns store zero until a response is paginated.
+    ///     /// counters so old baseline sessions do not read as complete.
     #[serde(default)]
     dropped_stages: u64,
     #[serde(default)]
@@ -365,29 +364,6 @@ impl StoredInferenceMetricV2 {
             error: self.error,
         }
     }
-
-    fn from_public(value: &InferenceMetric) -> Self {
-        Self {
-            request_id: value.request_id.clone(),
-            provider: value.provider.clone(),
-            model: value.model.clone(),
-            input_tokens: value.input_tokens,
-            cached_input_tokens: value.cached_input_tokens,
-            output_tokens: value.output_tokens,
-            reasoning_tokens: value.reasoning_tokens,
-            cost_micros: value.cost_micros,
-            time_to_first_token_ms: value.time_to_first_token_ms,
-            streaming_duration_ms: value.streaming_duration_ms,
-            request_duration_ms: value.request_duration_ms,
-            streamed: value.streamed,
-            output_tokens_per_second: value.output_tokens_per_second,
-            retries: value.retries,
-            rate_limit_waits: value.rate_limit_waits,
-            gateway_waits: value.gateway_waits,
-            provider_failures: value.provider_failures,
-            error: value.error.clone(),
-        }
-    }
 }
 
 /// Frozen tool fields for one `V2` tool row. Mirrors [`ToolMetric`] at the
@@ -419,20 +395,6 @@ impl StoredToolMetricV2 {
             output_bytes: self.output_bytes,
             queue_ms: self.queue_ms,
             process_wall_ms: self.process_wall_ms,
-        }
-    }
-
-    fn from_public(value: &ToolMetric) -> Self {
-        Self {
-            request_id: value.request_id.clone(),
-            name: value.name.clone(),
-            dispatched_ns: value.dispatched_ns,
-            started_ns: value.started_ns,
-            completed_ns: value.completed_ns,
-            exit_status: value.exit_status,
-            output_bytes: value.output_bytes,
-            queue_ms: value.queue_ms,
-            process_wall_ms: value.process_wall_ms,
         }
     }
 }
@@ -1031,8 +993,7 @@ fn sort_tool_rows(rows: &mut [StoredToolMetricV2]) {
 
 /// Assemble one public turn record from a summary plus its detail rows.
 /// Paging truncates the chronologically sorted arrays and reports the
-/// remainder plus any legacy dropped counters in `dropped_*`; a complete
-/// read reports only the legacy remainder (zero for native `V2` turns).
+/// remainder in `dropped_*`; a complete read reports zero.
 fn assemble_turn(
     summary: &StoredTurnSummaryV2,
     mut inference_rows: Vec<StoredTurnInferenceV2>,
@@ -1431,7 +1392,7 @@ impl Store {
 
     /// Read a page of turns with paging on the per-turn arrays. Very long
     /// turns truncate their chronologically sorted `inference` and `tools`
-    /// arrays to the given limits and report the remainder plus any legacy
+    /// arrays to the given limits and report the remainder.
     /// dropped rows in the `dropped_*` counters; an absent limit returns the
     /// complete arrays.
     /// # Errors
@@ -1627,13 +1588,13 @@ mod tests {
 
     /// Checked-in `V2` summary bytes. Generated with
     /// `swarmy_core::encode(&StoredTurnMetrics::V2Summary(fixture_summary()))`;
-    /// decoding them pins the unbounded layout the way the `V1` fixtures pin
+    /// decoding them pins the unbounded layout.
     /// the capped record.
-    const V2_SUMMARY_HEX: &str = "010101730174000180897a00000180b6dc050000000000000000000000000000000000000000000000000000000000";
+    const V2_SUMMARY_HEX: &str = "010001730174000180897a00000180b6dc050000000000000000000000000000000000000000000000000000000000";
     /// Checked-in `V2` inference-row bytes for a single-chunk request.
-    const V2_INFERENCE_HEX: &str = "010201720466616b6508736372697074656400000400000000000100000000000000018092f401000180ade204";
+    const V2_INFERENCE_HEX: &str = "010101720466616b6508736372697074656400000400000000000100000000000000018092f401000180ade204";
     /// Checked-in `V2` tool-row bytes.
-    const V2_TOOL_HEX: &str = "01030163046261736800000000000000";
+    const V2_TOOL_HEX: &str = "01020163046261736800000000000000";
 
     fn fixture_summary() -> StoredTurnSummaryV2 {
         StoredTurnSummaryV2 {
@@ -1770,8 +1731,6 @@ mod tests {
             },
             inference: BTreeMap::new(),
             tools: BTreeMap::new(),
-            migrated_inference: BTreeMap::new(),
-            migrated_tools: BTreeMap::new(),
         };
         let event =
             |stage: TurnStage, request: Option<swarmy_core::RequestId>, ns: i128| TurnEvent {
@@ -1918,15 +1877,11 @@ mod tests {
             summary: StoredTurnSummaryV2::default(),
             inference: BTreeMap::new(),
             tools: BTreeMap::new(),
-            migrated_inference: BTreeMap::new(),
-            migrated_tools: BTreeMap::new(),
         };
         let mut sequential = TurnWrite {
             summary: StoredTurnSummaryV2::default(),
             inference: BTreeMap::new(),
             tools: BTreeMap::new(),
-            migrated_inference: BTreeMap::new(),
-            migrated_tools: BTreeMap::new(),
         };
         let mut writes = 0;
         for (index, name) in ["a", "b", "c"].iter().enumerate() {

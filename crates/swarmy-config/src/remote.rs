@@ -26,10 +26,7 @@ impl std::str::FromStr for RemoteServices {
     }
 }
 
-/// EC2-only settings. The deprecated flat `[remote]` keys (`subnet`,
-/// `security_group`, `instance_type`, `image`, `iam_role`) still parse and
-/// fill these when the sub-table leaves them unset; the sub-table wins when
-/// both are set.
+/// EC2-only settings.
 #[derive(Clone, Debug, Serialize)]
 pub struct AwsSettings {
     pub subnet: Option<String>,
@@ -93,11 +90,6 @@ struct RemoteSettingsHelper {
     managed_by_tag: String,
     profile: Option<String>,
     aws: AwsHelper,
-    subnet: Option<String>,
-    security_group: Option<String>,
-    instance_type: Option<String>,
-    image: Option<String>,
-    iam_role: Option<String>,
 }
 
 impl Default for RemoteSettingsHelper {
@@ -111,11 +103,6 @@ impl Default for RemoteSettingsHelper {
             managed_by_tag: "swarmy".into(),
             profile: None,
             aws: AwsHelper::default(),
-            subnet: None,
-            security_group: None,
-            instance_type: None,
-            image: None,
-            iam_role: None,
         }
     }
 }
@@ -145,15 +132,14 @@ impl<'de> Deserialize<'de> for RemoteSettings {
             managed_by_tag: helper.managed_by_tag,
             profile: helper.profile,
             aws: AwsSettings {
-                subnet: helper.aws.subnet.or(helper.subnet),
-                security_group: helper.aws.security_group.or(helper.security_group),
+                subnet: helper.aws.subnet,
+                security_group: helper.aws.security_group,
                 instance_type: helper
                     .aws
                     .instance_type
-                    .or(helper.instance_type)
                     .unwrap_or_else(|| "m6id.xlarge".into()),
-                image: helper.aws.image.or(helper.image),
-                iam_role: helper.aws.iam_role.or(helper.iam_role),
+                image: helper.aws.image,
+                iam_role: helper.aws.iam_role,
             },
         })
     }
@@ -198,9 +184,7 @@ pub struct RemoteNode {
     pub name: String,
     pub region: String,
     pub instance_id: String,
-    /// New records mark whether EC2 launch could have happened before its id was saved.
-    /// Older records remain recoverable through their launch token.
-    #[serde(default = "legacy_launch_attempted")]
+    /// Whether EC2 launch could have happened before its id was saved.
     pub launch_attempted: bool,
     pub public_ip: String,
     pub private_ip: String,
@@ -247,10 +231,6 @@ impl RemoteNode {
 #[must_use]
 pub const fn default_sandboxes() -> u32 {
     64
-}
-
-fn legacy_launch_attempted() -> bool {
-    true
 }
 
 fn ssh_user() -> String {
@@ -355,9 +335,18 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    fn load_with_remote(
+        cwd: &Path,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<crate::Loaded, Error> {
+        let mut loaded = Settings::load_base_from(cwd, environment)?;
+        loaded.settings.apply_remote()?;
+        Ok(loaded)
+    }
+
     #[test]
     fn defaults_and_overrides() {
-        let settings: Settings = toml::from_str("[remote]\nsubnet = 'subnet-test'\nsecurity_group = 'sg-test'\nmanaged_by_tag = 'codex-launcher'").unwrap();
+        let settings: Settings = toml::from_str("[remote]\nmanaged_by_tag = 'codex-launcher'\n[remote.aws]\nsubnet = 'subnet-test'\nsecurity_group = 'sg-test'").unwrap();
         assert_eq!(settings.remote.aws.subnet.as_deref(), Some("subnet-test"));
         assert_eq!(
             settings.remote.aws.security_group.as_deref(),
@@ -380,18 +369,8 @@ mod tests {
     }
 
     #[test]
-    fn aws_sub_table_and_flat_keys_merge() {
-        let settings: Settings = toml::from_str(
-            "[remote]\nprovider = 'aws'\ninstance_type = 'm6i.large'\nimage = 'ami-flat'\n[remote.aws]\nsubnet = 'subnet-nested'\ninstance_type = 'm6id.4xlarge'\n",
-        )
-        .unwrap();
-        // The sub-table wins when both spellings are present.
-        assert_eq!(settings.remote.aws.instance_type, "m6id.4xlarge");
-        assert_eq!(settings.remote.aws.subnet.as_deref(), Some("subnet-nested"));
-        // Flat keys still fill fields the sub-table leaves unset.
-        assert_eq!(settings.remote.aws.image.as_deref(), Some("ami-flat"));
-        assert!(settings.remote.aws.security_group.is_none());
-
+    fn aws_sub_table_rejects_flat_keys() {
+        assert!(toml::from_str::<Settings>("[remote]\nsubnet = 'old'").is_err());
         let nested: Settings = toml::from_str(
             "[remote.aws]\nsubnet = 'subnet-only'\nsecurity_group = 'sg-only'\nimage = 'ami-nested'\niam_role = 'custom-role'\n",
         )
@@ -403,7 +382,7 @@ mod tests {
         assert_eq!(nested.remote.aws.image.as_deref(), Some("ami-nested"));
         assert_eq!(nested.remote.aws.iam_role.as_deref(), Some("custom-role"));
 
-        // Unknown keys are still rejected in both spellings.
+        // Unknown keys are rejected in either table.
         assert!(toml::from_str::<Settings>("[remote]\nsubnet_typo = 'x'").is_err());
         assert!(toml::from_str::<Settings>("[remote.aws]\nsubnet_typo = 'x'").is_err());
     }
@@ -531,7 +510,7 @@ mod tests {
             ("SWARMY_NATS_URL".into(), "nats://wrong:4222".into()),
             ("SWARMY_S3_BUCKET".into(), "custom".into()),
         ]);
-        let loaded = Settings::load_from(&root.path().join("nested"), &env).unwrap();
+        let loaded = load_with_remote(&root.path().join("nested"), &env).unwrap();
         assert_eq!(
             loaded.settings.default_image.as_deref(),
             Some("base-ubuntu:test")
@@ -565,12 +544,12 @@ mod tests {
             serde_json::to_vec(&invalid).unwrap(),
         )
         .unwrap();
-        assert!(Settings::load_from(root.path(), &env).is_err());
+        assert!(load_with_remote(root.path(), &env).is_err());
 
         let mut env = env;
         env.insert("SWARMY_REMOTE".into(), "missing".into());
-        assert!(Settings::load_from(root.path(), &env).is_err());
+        assert!(load_with_remote(root.path(), &env).is_err());
         env.insert("SWARMY_REMOTE".into(), "../test".into());
-        assert!(Settings::load_from(root.path(), &env).is_err());
+        assert!(load_with_remote(root.path(), &env).is_err());
     }
 }

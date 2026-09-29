@@ -54,7 +54,7 @@ impl CredentialKey {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Breaker {
+pub(crate) struct Breaker {
     pub open_until: Timestamp,
     pub failures: u32,
     pub probe_until: Option<Timestamp>,

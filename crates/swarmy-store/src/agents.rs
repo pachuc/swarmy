@@ -1,4 +1,4 @@
-//! Named identities and session creation. Legacy session rows are read during migration.
+//! Named identities and session creation.
 use crate::{Result, Store, StoreError, StoredSession, check_limit, read, scan, write};
 use foundationdb::Transaction;
 use jiff::Timestamp;
@@ -848,236 +848,25 @@ fn side_messages(
     messages
 }
 
-/// Postcard structs have no field count, so Serde defaults alone cannot read an
-/// old record. Only accept the legacy schema when it consumes the entire value,
-/// so existing agents acquire no main session or inference overrides on upgrade.
-// Legacy postcard layouts require explicit decoding rather than serde defaults.
-#[allow(clippy::too_many_lines)]
+/// Decode the current agent record without accepting retired postcard layouts.
 pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
-    #[derive(serde::Deserialize)]
-    struct LegacyAgent {
-        agent_id: AgentId,
-        name: String,
-        image: ImageRecord,
-        description: String,
-        created_at: Timestamp,
-    }
-
-    // Records written after the main-session pointer landed but before the
-    // per-agent settings did carry six fields.
-    #[derive(serde::Deserialize)]
-    struct MainSessionAgent {
-        agent_id: AgentId,
-        name: String,
-        image: ImageRecord,
-        description: String,
-        created_at: Timestamp,
-        main_session: Option<SessionId>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct SettingsAgent {
-        agent_id: AgentId,
-        name: String,
-        image: ImageRecord,
-        description: String,
-        created_at: Timestamp,
-        main_session: Option<SessionId>,
-        system_prompt: Option<String>,
-        model: Option<String>,
-        reasoning_effort: Option<swarmy_core::ReasoningEffort>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct ProviderAgent {
-        agent_id: AgentId,
-        name: String,
-        image: ImageRecord,
-        description: String,
-        created_at: Timestamp,
-        main_session: Option<SessionId>,
-        system_prompt: Option<String>,
-        model: Option<String>,
-        reasoning_effort: Option<swarmy_core::ReasoningEffort>,
-        provider: Option<String>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct RoutelessAgent {
-        agent_id: AgentId,
-        name: String,
-        image: ImageRecord,
-        description: String,
-        created_at: Timestamp,
-        main_session: Option<SessionId>,
-        system_prompt: Option<String>,
-        model: Option<String>,
-        reasoning_effort: Option<swarmy_core::ReasoningEffort>,
-        provider: Option<String>,
-        requirements: swarmy_core::SandboxRequirements,
-    }
-
-    match decode(bytes) {
-        Ok(agent) => Ok(agent),
-        Err(error) => {
-            if let Ok(old) = decode::<RoutelessAgent>(bytes) {
-                return Ok(AgentRecord {
-                    agent_id: old.agent_id,
-                    name: old.name,
-                    image: old.image,
-                    description: old.description,
-                    created_at: old.created_at,
-                    main_session: old.main_session,
-                    system_prompt: old.system_prompt,
-                    model: old.model,
-                    reasoning_effort: old.reasoning_effort,
-                    provider: old.provider,
-                    route: None,
-                    requirements: old.requirements,
-                });
-            }
-            if let Ok(old) = decode::<ProviderAgent>(bytes) {
-                return Ok(AgentRecord {
-                    agent_id: old.agent_id,
-                    name: old.name,
-                    image: old.image,
-                    description: old.description,
-                    created_at: old.created_at,
-                    main_session: old.main_session,
-                    system_prompt: old.system_prompt,
-                    model: old.model,
-                    reasoning_effort: old.reasoning_effort,
-                    provider: old.provider,
-                    route: None,
-                    requirements: swarmy_core::SandboxRequirements::default(),
-                });
-            }
-            if let Ok(old) = decode::<SettingsAgent>(bytes) {
-                return Ok(AgentRecord {
-                    agent_id: old.agent_id,
-                    name: old.name,
-                    image: old.image,
-                    description: old.description,
-                    created_at: old.created_at,
-                    main_session: old.main_session,
-                    system_prompt: old.system_prompt,
-                    model: old.model,
-                    reasoning_effort: old.reasoning_effort,
-                    provider: None,
-                    route: None,
-                    requirements: swarmy_core::SandboxRequirements::default(),
-                });
-            }
-            if let Ok(old) = decode::<MainSessionAgent>(bytes) {
-                return Ok(AgentRecord {
-                    agent_id: old.agent_id,
-                    name: old.name,
-                    image: old.image,
-                    description: old.description,
-                    created_at: old.created_at,
-                    main_session: old.main_session,
-                    system_prompt: None,
-                    model: None,
-                    reasoning_effort: None,
-                    provider: None,
-                    route: None,
-                    requirements: swarmy_core::SandboxRequirements::default(),
-                });
-            }
-            match decode::<LegacyAgent>(bytes) {
-                Ok(old) => Ok(AgentRecord {
-                    agent_id: old.agent_id,
-                    name: old.name,
-                    image: old.image,
-                    description: old.description,
-                    created_at: old.created_at,
-                    main_session: None,
-                    system_prompt: None,
-                    model: None,
-                    reasoning_effort: None,
-                    provider: None,
-                    route: None,
-                    requirements: swarmy_core::SandboxRequirements::default(),
-                }),
-                Err(_) => Err(error.into()),
-            }
-        }
-    }
+    Ok(decode(bytes)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use swarmy_core::{ManifestId, ReasoningEffort, encode};
+    use swarmy_core::{ManifestId, encode};
 
     #[test]
-    fn main_session_only_records_decode_with_default_settings() {
-        let session = swarmy_core::SessionId::from_ulid(ulid::Ulid::generate());
-        let bytes = encode(&(
-            AgentId::from_ulid(ulid::Ulid::generate()),
-            "six".to_owned(),
-            ImageRecord {
-                name: "base".into(),
-                tag: swarmy_core::ImageTag("test".into()),
-                manifest_id: ManifestId::from_ulid(ulid::Ulid::generate()),
-            },
-            String::new(),
-            Timestamp::now(),
-            Some(session),
-        ))
-        .unwrap();
-        let record = decode_agent(&bytes).unwrap();
-        assert_eq!(record.name, "six");
-        assert_eq!(record.main_session, Some(session));
-        assert!(record.system_prompt.is_none() && record.model.is_none());
-        assert!(record.reasoning_effort.is_none());
-    }
-
-    #[test]
-    fn settings_records_decode_without_provider() {
+    fn current_agent_record_round_trips() {
         let record = AgentRecord {
-            agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
-            name: "old".into(),
+            agent_id: AgentId::from_ulid(ulid::Ulid::from(0_u128)),
+            name: "current".into(),
             image: ImageRecord {
                 name: "base".into(),
                 tag: ImageTag("test".into()),
-                manifest_id: ManifestId::from_ulid(ulid::Ulid::generate()),
-            },
-            description: String::new(),
-            created_at: Timestamp::UNIX_EPOCH,
-            main_session: None,
-            system_prompt: Some("prompt".into()),
-            model: Some("gpt-5.5".into()),
-            reasoning_effort: Some(ReasoningEffort::Max),
-            provider: None,
-            route: None,
-            requirements: swarmy_core::SandboxRequirements::default(),
-        };
-        let bytes = encode(&(
-            record.agent_id,
-            &record.name,
-            &record.image,
-            &record.description,
-            record.created_at,
-            record.main_session,
-            &record.system_prompt,
-            &record.model,
-            record.reasoning_effort,
-        ))
-        .unwrap();
-        assert_eq!(decode_agent(&bytes).unwrap(), record);
-        assert_eq!(decode_agent(&encode(&record).unwrap()).unwrap(), record);
-    }
-
-    #[test]
-    fn routeless_records_decode_without_a_route() {
-        let record = AgentRecord {
-            agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
-            name: "routed".into(),
-            image: ImageRecord {
-                name: "base".into(),
-                tag: ImageTag("test".into()),
-                manifest_id: ManifestId::from_ulid(ulid::Ulid::generate()),
+                manifest_id: ManifestId::from_ulid(ulid::Ulid::from(0_u128)),
             },
             description: String::new(),
             created_at: Timestamp::UNIX_EPOCH,
@@ -1085,57 +874,12 @@ mod tests {
             system_prompt: None,
             model: None,
             reasoning_effort: None,
-            provider: Some("openai".into()),
-            route: Some("fallback".into()),
+            provider: None,
+            route: None,
             requirements: swarmy_core::SandboxRequirements::default(),
         };
-        // The previous schema carried every field but the route.
-        let bytes = encode(&(
-            record.agent_id,
-            &record.name,
-            &record.image,
-            &record.description,
-            record.created_at,
-            record.main_session,
-            &record.system_prompt,
-            &record.model,
-            record.reasoning_effort,
-            &record.provider,
-            &record.requirements,
-        ))
-        .unwrap();
-        let decoded = decode_agent(&bytes).unwrap();
-        assert_eq!(decoded.route, None);
-        assert_eq!(decoded.provider, record.provider);
-        assert_eq!(decode_agent(&encode(&record).unwrap()).unwrap(), record);
-    }
-
-    #[test]
-    fn malformed_extended_agent_is_not_treated_as_a_legacy_record() {
-        let record = AgentRecord {
-            agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
-            name: "test".into(),
-            image: ImageRecord {
-                name: "base".into(),
-                tag: ImageTag("test".into()),
-                manifest_id: ManifestId::from_ulid(ulid::Ulid::generate()),
-            },
-            description: String::new(),
-            created_at: Timestamp::UNIX_EPOCH,
-            main_session: Some(SessionId::from_ulid(ulid::Ulid::generate())),
-            system_prompt: Some("prompt".into()),
-            model: Some("model".into()),
-            reasoning_effort: Some(ReasoningEffort::High),
-            provider: Some("openai".into()),
-            route: Some("fallback".into()),
-            requirements: swarmy_core::SandboxRequirements::default(),
-        };
-        let mut bytes = encode(&record).unwrap();
+        let bytes = encode(&record).unwrap();
         assert_eq!(decode_agent(&bytes).unwrap(), record);
-        bytes.pop();
-        assert!(decode_agent(&bytes).is_err());
-        let mut bytes = encode(&record).unwrap();
-        bytes.push(0);
-        assert!(decode_agent(&bytes).is_err());
+        assert_eq!(encode(&decode_agent(&bytes).unwrap()).unwrap(), bytes);
     }
 }

@@ -1,4 +1,5 @@
 //! `FoundationDB` key layout and atomic session operations.
+#![deny(unreachable_pub)]
 //!
 //! Call `boot` once at process startup and retain its guard until every store and
 //! runtime using `FoundationDB` has stopped. The default directory is `swarmy`.

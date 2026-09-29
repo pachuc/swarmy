@@ -11,6 +11,7 @@ use jiff::Timestamp;
 use swarmy_config::Keyring;
 use swarmy_core::{
     CredentialKind, CredentialRecord, CredentialScope, CredentialStatus, Lease, LeaseOwnerId,
+    encode,
 };
 use swarmy_store::{
     CredentialKey, Store, StoreError, blob::MemoryBlobStore, credentials::CredentialStore,
