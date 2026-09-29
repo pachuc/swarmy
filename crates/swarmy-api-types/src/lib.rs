@@ -103,6 +103,48 @@ pub enum ReasoningEffort {
     Max,
 }
 
+impl From<swarmy_core::SessionState> for SessionState {
+    fn from(value: swarmy_core::SessionState) -> Self {
+        match value {
+            swarmy_core::SessionState::Idle => Self::Idle,
+            swarmy_core::SessionState::Runnable => Self::Runnable,
+            swarmy_core::SessionState::Leased => Self::Leased,
+            swarmy_core::SessionState::WaitingInference => Self::WaitingInference,
+            swarmy_core::SessionState::WaitingTools => Self::WaitingTools,
+            swarmy_core::SessionState::Sleeping => Self::Sleeping,
+            swarmy_core::SessionState::Completed => Self::Completed,
+        }
+    }
+}
+
+impl From<swarmy_core::ReasoningEffort> for ReasoningEffort {
+    fn from(value: swarmy_core::ReasoningEffort) -> Self {
+        match value {
+            swarmy_core::ReasoningEffort::None => Self::None,
+            swarmy_core::ReasoningEffort::Minimal => Self::Minimal,
+            swarmy_core::ReasoningEffort::Low => Self::Low,
+            swarmy_core::ReasoningEffort::Medium => Self::Medium,
+            swarmy_core::ReasoningEffort::High => Self::High,
+            swarmy_core::ReasoningEffort::Xhigh => Self::Xhigh,
+            swarmy_core::ReasoningEffort::Max => Self::Max,
+        }
+    }
+}
+
+impl From<ReasoningEffort> for swarmy_core::ReasoningEffort {
+    fn from(value: ReasoningEffort) -> Self {
+        match value {
+            ReasoningEffort::None => Self::None,
+            ReasoningEffort::Minimal => Self::Minimal,
+            ReasoningEffort::Low => Self::Low,
+            ReasoningEffort::Medium => Self::Medium,
+            ReasoningEffort::High => Self::High,
+            ReasoningEffort::Xhigh => Self::Xhigh,
+            ReasoningEffort::Max => Self::Max,
+        }
+    }
+}
+
 /// An ISO 8601 timestamp is used for `wake_at`; reasons are human-readable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct WaitingReason {
@@ -722,12 +764,6 @@ pub enum EventPayload {
     MessageAppended {
         message: Message,
     },
-    TurnStarted {
-        turn: Turn,
-    },
-    TurnFinished {
-        turn: Turn,
-    },
     ToolCall {
         turn_id: String,
         call_id: String,
@@ -739,10 +775,6 @@ pub enum EventPayload {
         call_id: String,
         result: serde_json::Value,
     },
-    InferenceError {
-        turn_id: String,
-        error: ApiError,
-    },
     Idle {
         session_id: String,
     },
@@ -750,12 +782,6 @@ pub enum EventPayload {
         turn_id: String,
         position: u64,
         text: String,
-    },
-    ServiceStatusChanged {
-        health: ServiceHealth,
-    },
-    NodeStatusChanged {
-        node: Node,
     },
     /// Durable session events and live timeline observations keep their
     /// stored shapes; the API carries the typed record instead of an

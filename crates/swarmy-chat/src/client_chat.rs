@@ -282,22 +282,11 @@ async fn send_or_queue(
 
 /// Whether a send failure is the transient busy-session race that may be
 /// retried on the next idle state. Any 409 conflict on an append is a lost
-/// race with another writer (scheduler or sweep touch, head move, or a
-/// just-archived session): the API reports the common cases as
-/// `session_not_idle` or `stale_head`, and the local idle guard reports
-/// `session is not idle`. `api_client::call` wraps the client error in a
-/// string, so match the wrapped text as well as the typed error. Other
-/// statuses (deleted session, auth, storage, timeouts, transport) stay
-/// permanent errors.
+/// A conflicting append means the ready snapshot became stale before send.
 fn is_busy_send_error(error: &anyhow::Error) -> bool {
-    if let Some(client) = error.downcast_ref::<swarmy_client::Error>() {
-        return is_busy_client_error(client);
-    }
-    let text = format!("{error:#}");
-    text.contains("session_not_idle")
-        || text.contains("stale_head")
-        || text.contains("session is not idle")
-        || text.contains("409 Conflict")
+    error
+        .downcast_ref::<swarmy_client::Error>()
+        .is_some_and(is_busy_client_error)
 }
 
 fn is_busy_client_error(error: &swarmy_client::Error) -> bool {
@@ -724,16 +713,20 @@ mod tests {
             reqwest::StatusCode::CONFLICT,
             "main_session_close"
         )));
-        assert!(is_busy_send_error(&anyhow::anyhow!(
-            "API at http://example: API returned 409 Conflict: stale head"
-        )));
-        // The local idle guard reports the same race without a status code.
-        assert!(is_busy_send_error(&anyhow::anyhow!("session is not idle")));
-        // The retry path wraps the client error in a string; the code text
-        // must still count as busy.
-        assert!(is_busy_send_error(&anyhow::anyhow!(
-            "API at http://example: session_not_idle"
-        )));
+        // The API wrapper retains the typed source through context.
+        let wrapped = swarmy_client::api_client::api_error(
+            swarmy_client::Error::Api {
+                status: reqwest::StatusCode::CONFLICT,
+                body: swarmy_api_types::ApiError {
+                    code: "stale_head".into(),
+                    message: "stale head".into(),
+                    provider_text: None,
+                },
+            },
+            "test endpoint",
+        );
+        assert!(is_busy_send_error(&wrapped));
+        assert!(!is_busy_send_error(&anyhow::anyhow!("409 Conflict")));
         // Permanent failures propagate so the client exits with the message
         // instead of waiting forever on `input locked (queued)`.
         assert!(!is_busy_send_error(&api_error(

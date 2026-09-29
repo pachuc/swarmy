@@ -162,10 +162,7 @@ fn agent(record: swarmy_core::AgentRecord) -> api::Agent {
         },
         provider: record.provider,
         model: record.model,
-        effort: record
-            .reasoning_effort
-            .and_then(|value| serde_json::to_value(value).ok())
-            .and_then(|value| serde_json::from_value(value).ok()),
+        effort: record.reasoning_effort.map(Into::into),
         system_prompt: record.system_prompt,
         created_at: record.created_at.to_string(),
         main_session_id: record.main_session.map(|value| value.to_string()),
@@ -174,10 +171,7 @@ fn agent(record: swarmy_core::AgentRecord) -> api::Agent {
 }
 fn session(record: &swarmy_core::SessionRecord) -> api::Session {
     let named = matches!(record.kind, swarmy_core::SessionKind::Named { .. });
-    let state = serde_json::to_value(record.state)
-        .ok()
-        .and_then(|value| serde_json::from_value(value).ok())
-        .unwrap_or(api::SessionState::Idle);
+    let state = record.state.into();
     api::Session {
         id: record.session_id.to_string(),
         agent_id: named.then(|| record.agent_id.to_string()),
@@ -196,11 +190,7 @@ fn session(record: &swarmy_core::SessionRecord) -> api::Session {
         waiting: None,
         provider: record.inference.provider.clone(),
         model: record.inference.model.clone(),
-        effort: record
-            .inference
-            .effort
-            .and_then(|v| serde_json::to_value(v).ok())
-            .and_then(|v| serde_json::from_value(v).ok()),
+        effort: record.inference.effort.map(Into::into),
         next_session: None,
         route: record.route.clone(),
     }
@@ -441,10 +431,7 @@ async fn create_agent(
     let settings = AgentSettings {
         provider: body.provider,
         model: body.model,
-        reasoning_effort: body
-            .effort
-            .and_then(|v| serde_json::to_value(v).ok())
-            .and_then(|v| serde_json::from_value(v).ok()),
+        reasoning_effort: body.effort.map(Into::into),
         system_prompt: body.system_prompt,
         // Sandbox sizing is not part of the v1 API types yet; the image default applies.
         memory_mib: None,
@@ -485,10 +472,7 @@ async fn update_agent(
     let settings = AgentSettings {
         provider: body.provider,
         model: body.model,
-        reasoning_effort: body
-            .effort
-            .and_then(|v| serde_json::to_value(v).ok())
-            .and_then(|v| serde_json::from_value(v).ok()),
+        reasoning_effort: body.effort.map(Into::into),
         system_prompt: body.system_prompt,
         // Sandbox sizing is not part of the v1 API types yet; the image default applies.
         memory_mib: None,
