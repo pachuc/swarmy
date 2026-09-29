@@ -91,6 +91,17 @@ impl SseParser {
 mod tests {
     use super::*;
 
+    /// Feed one chunk byte by byte, collecting the data frames it completes.
+    fn feed_chunk(parser: &mut SseParser, chunk: &[u8]) -> Vec<serde_json::Value> {
+        let mut events = Vec::new();
+        for &byte in chunk {
+            if let Some(Frame::Data(data)) = parser.push_byte(byte).unwrap() {
+                events.push(serde_json::from_slice(&data).unwrap());
+            }
+        }
+        events
+    }
+
     #[test]
     fn response_fixtures_have_stable_frames_at_every_chunk_size() {
         for (fixture, count) in [
@@ -103,12 +114,7 @@ mod tests {
                 let mut parser = SseParser::default();
                 let mut events = Vec::new();
                 for chunk in fixture.as_bytes().chunks(width) {
-                    for &byte in chunk {
-                        if let Some(Frame::Data(data)) = parser.push_byte(byte).unwrap() {
-                            events
-                                .push(serde_json::from_slice::<serde_json::Value>(&data).unwrap());
-                        }
-                    }
+                    events.extend(feed_chunk(&mut parser, chunk));
                 }
                 assert_eq!(events.len(), count);
             }
