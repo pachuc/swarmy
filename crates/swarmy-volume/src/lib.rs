@@ -20,7 +20,7 @@ use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use object_store::{ObjectStore, PutMode, path::Path};
-use swarmy_core::{CHUNK_SIZE, ContentHash, EncodingError, ignore_best_effort};
+use swarmy_core::{CHUNK_SIZE, ContentHash, EncodingError};
 
 pub use manifest::{BLOCKS_PER_LEAF, Manifest, ManifestBuilder};
 
@@ -82,8 +82,13 @@ impl ChunkStore {
     }
 
     pub(crate) fn protect_uploads(&self, metadata: swarmy_store::Store) {
-        // An attachment binds once, before its uploader starts. Clones share it.
-        ignore_best_effort(self.metadata.set(metadata), "cache volume metadata");
+        // An attachment binds once, before its uploader starts. Clones share
+        // the first store; a repeat bind drops the newcomer. `Store` has no
+        // `Debug` impl, so this names the benign outcome instead of routing
+        // through the best-effort helper.
+        if self.metadata.set(metadata).is_err() {
+            tracing::debug!("volume metadata already bound; keeping the first store");
+        }
     }
 
     async fn protect_reuse(&self, hash: ContentHash) -> Result<()> {
