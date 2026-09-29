@@ -75,8 +75,8 @@ impl Fixture {
             .route_snapshot(
                 agent,
                 swarmy_store::RouteSelection {
-                    session_route: session_route,
-                    session_provider: session_provider,
+                    session_route,
+                    session_provider,
                     default_route: None,
                     default_provider: "fake",
                     now: Timestamp::now(),
@@ -527,7 +527,7 @@ async fn failover(
                 session_provider: Some("openai"),
                 default_route: None,
                 default_provider: "openai",
-                now: now,
+                now,
             },
             Duration::from_secs(3600),
         )
@@ -686,7 +686,7 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
                     session_provider: Some("openai"),
                     default_route: None,
                     default_provider: "openai",
-                    now: now
+                    now
                 },
                 Duration::from_secs(3600)
             )
@@ -897,7 +897,7 @@ async fn failover_and_park_cost_one_transaction_each() {
                 session_provider: Some("openai"),
                 default_route: None,
                 default_provider: "openai",
-                now: now,
+                now,
             },
             Duration::from_secs(3600),
         )
@@ -933,7 +933,7 @@ async fn failover_and_park_cost_one_transaction_each() {
                 session_provider: Some("openai"),
                 default_route: None,
                 default_provider: "openai",
-                now: now,
+                now,
             },
             Duration::from_secs(3600),
         )
@@ -984,7 +984,7 @@ async fn cached_scheduler_pick_matches_transactional_snapshot() {
                 session_provider: session.inference.provider.as_deref(),
                 default_route: None,
                 default_provider: "openai",
-                now: now,
+                now,
             },
         )
         .await

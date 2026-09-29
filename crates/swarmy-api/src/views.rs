@@ -190,7 +190,8 @@ mod tests {
             p95_ms: 2.0,
         };
         let api_latency = into_api_latency(&latency);
-        assert_eq!(api_latency.p50_ms, latency.p50_ms);
+        assert!((api_latency.p50_ms - latency.p50_ms).abs() < f64::EPSILON);
+        assert!((api_latency.p95_ms - latency.p95_ms).abs() < f64::EPSILON);
         let agent = store::AgentMetrics {
             agent_id: "a".into(),
             latencies: std::collections::BTreeMap::from([("append_to_idle".into(), latency)]),

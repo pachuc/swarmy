@@ -19,10 +19,6 @@ impl Store {
             .timer_due(timer.due_at, timer.agent_id, timer.timer_id)
     }
 
-    /// The session whose worker set the timer. Timers stay agent-scoped so a
-    /// summarized or closed origin cannot strand a note, but delivery prefers
-    /// this idle session over the main conversation.
-
     fn save_timer(&self, trx: &Transaction, timer: &TimerRecord) -> Result<()> {
         write(
             trx,
