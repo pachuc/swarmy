@@ -6,7 +6,7 @@
     "remote_az": "us-east-1a",
     "remote_private_ip": "<private-ip>",
     "root_volumes": [
-      "vol-0e36191684728716d"
+      "vol-<redacted>"
     ],
     "launcher_type": "m6i.xlarge",
     "launcher_private_ip": "<private-ip>",

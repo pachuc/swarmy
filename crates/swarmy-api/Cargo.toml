@@ -13,7 +13,7 @@ workspace = true
 # the same cloud features as the gateway and the CLI. A standalone build
 # without a feature refuses those probes with a clear error.
 [features]
-default = ["azure", "bedrock", "gemini"]
+default = []
 azure = ["swarmy-llm/azure"]
 bedrock = ["swarmy-llm/bedrock"]
 gemini = ["swarmy-llm/gemini"]
@@ -22,7 +22,6 @@ gemini = ["swarmy-llm/gemini"]
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
-tower.workspace = true
 swarmy-api-types.workspace = true
 swarmy-store.workspace = true
 swarmy-core.workspace = true

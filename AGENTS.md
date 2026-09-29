@@ -351,7 +351,7 @@ keep its own disk in order. The rules, which the task prompt repeats:
   `<swarm-bucket>`, and `i-<redacted>`, and name machines by their role
   (`dev2-3`, "the suite node"). Public identifiers that are not ours, such as
   a stock Ubuntu image id, are fine. Before pushing, check the diff with
-  `git diff origin/master | grep -nE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b|[0-9]{12}|\bi-0[0-9a-f]{8,}'`
+  `git diff origin/master | grep -nE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b|[0-9]{12}|\bi-0[0-9a-f]{8,}|vol-[0-9a-f]'`
   and remove any real value it finds (loopback and documentation addresses
   such as `127.0.0.1` are fine).
 

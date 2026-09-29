@@ -32,11 +32,8 @@ required-features = ["remote"]
 # The client talks to the control plane API only. It links no database,
 # message bus, or object store library, so it builds without libfdb_c.
 [dependencies]
-async-trait.workspace = true
 swarmy-version.workspace = true
 swarmy-cloud.workspace = true
-shell-words.workspace = true
-futures-util.workspace = true
 url.workspace = true
 toml.workspace = true
 serde.workspace = true
@@ -55,7 +52,6 @@ swarmy-image.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 jiff.workspace = true
 ulid.workspace = true
 tracing-subscriber.workspace = true
@@ -63,4 +59,3 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 # Unit tests in the chat client construct typed API errors; the binary itself
 # talks HTTP only through swarmy-client.
-reqwest.workspace = true
