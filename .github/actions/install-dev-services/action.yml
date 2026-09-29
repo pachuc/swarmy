@@ -2,13 +2,13 @@ name: Install development services
 description: Install pinned FoundationDB, NATS and SeaweedFS binaries
 inputs:
   mode:
-    description: Start or stop the development services
+    description: Install, start, or stop the development services
     required: true
     default: start
 runs:
   using: composite
   steps:
-    - if: inputs.mode == 'start'
+    - if: inputs.mode == 'start' || inputs.mode == 'install'
       shell: bash
       env:
         FDB_VERSION: 7.3.79

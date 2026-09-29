@@ -120,9 +120,12 @@ jobs:
         run: scripts/check-openapi-compat.sh origin/master
   script-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-dev-services
+        with:
+          mode: install
       - run: scripts/test-scripts.sh
   dependency-policy:
     runs-on: ubuntu-latest
