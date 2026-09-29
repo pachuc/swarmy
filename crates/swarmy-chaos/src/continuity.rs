@@ -130,6 +130,15 @@ async fn settled(
 }
 
 pub(crate) async fn exercise(f: &mut Fixture) -> Result<()> {
+    let (agent, first) = remember_fact(f).await?;
+    push_scratch_tail(f, agent, first).await?;
+    let (main, timer) = summarize_and_link(f, agent, first).await?;
+    f.sessions.push(main);
+    recall_after_restart(f, agent, main, &timer).await
+}
+
+/// Create the agent, save the fact to memory, install tree, and checkpoint.
+async fn remember_fact(f: &mut Fixture) -> Result<(AgentId, SessionId)> {
     let agent = f
         .store
         .create_agent(
@@ -151,16 +160,28 @@ pub(crate) async fn exercise(f: &mut Fixture) -> Result<()> {
     ]).await?;
     let head = send(f, first, &format!("Remember this fact in your memory files: {FACT} Install the tree tool and checkpoint your disk.")).await?;
     settled(f, agent, first, head, false).await?;
+    Ok((agent, first))
+}
 
-    // Pi retains a 20k-token tail on main sessions too. Put the remembered
-    // fact before that tail so this test still proves disk-memory recall.
+/// Push a scratch note larger than the kept tail past the fact, so the later
+/// cut splits it. Pi retains a 20k-token tail on main sessions too; the fact
+/// sits before that tail so this still proves disk-memory recall.
+async fn push_scratch_tail(f: &mut Fixture, agent: AgentId, first: SessionId) -> Result<()> {
     script(f, vec![answer(&"x".repeat(100_000), 0)]).await?;
     let head = send(f, first, "Write a long scratch note, then wait.").await?;
     settled(f, agent, first, head, false).await?;
+    Ok(())
+}
 
-    // Deliberately omit the fact from the Markdown summary. The scratch-note
-    // turn is larger than the kept tail, so the cut splits it and, as in Pi,
-    // the worker asks for a history summary and then a turn-prefix summary.
+/// Summarize onto a new main session and check the linkage: one pending
+/// timer with the right note, a next-session link, and no fact leak. The
+/// summary deliberately omits the fact; the cut splits the scratch turn so
+/// the worker asks for a history summary and then a turn-prefix summary.
+async fn summarize_and_link(
+    f: &mut Fixture,
+    agent: AgentId,
+    first: SessionId,
+) -> Result<(SessionId, TimerRecord)> {
     let summary = "## Goal\nRemember the user's fact\n\n## Progress\n- Memory saved and tree installed\n\n## Next Steps\n- Read memory files for the user's fact";
     let prefix = "## Original Request\nWrite a long scratch note, then wait.\n\n## Early Progress\n- Scratch note written";
     script(
@@ -180,10 +201,9 @@ pub(crate) async fn exercise(f: &mut Fixture) -> Result<()> {
     )
     .await?;
     let main = settled(f, agent, first, head, true).await?;
-    f.sessions.push(main);
     let timers = f.store.list_timers(agent).await?;
     ensure!(timers.len() == 1, "expected one pending timer");
-    let timer: &TimerRecord = &timers[0];
+    let timer: TimerRecord = timers[0].clone();
     ensure!(timer.note == NOTE, "wrong timer note");
     ensure!(
         f.store.next_session(first).await? == Some(main),
@@ -195,8 +215,19 @@ pub(crate) async fn exercise(f: &mut Fixture) -> Result<()> {
         "summary leaked the fact"
     );
     tracing::info!(%first, %main, timer_id = %timer.timer_id, due_at = %timer.due_at, "continuity summarized; fact absent from new transcript");
+    Ok((main, timer))
+}
 
+/// Restart every service, then prove recall from memory files and delivery
+/// of the pending timer on the new main session.
+async fn recall_after_restart(
+    f: &mut Fixture,
+    agent: AgentId,
+    main: SessionId,
+    timer: &TimerRecord,
+) -> Result<()> {
     restart_all(f, agent).await?;
+    let timers = f.store.list_timers(agent).await?;
     ensure!(
         f.store.list_timers(agent).await? == timers,
         "pending timer changed across restart"
