@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Provision the checkout copied to the service user's home. Safe to rerun.
-# Arguments: MODE SERVICE_ADDRESS [BUCKET] [BUCKET_REGION] [SANDBOXES]
-#   [SERVICE_USER] [LOCAL_STORAGE]. SERVICE_USER owns the checkout and the
+# Arguments: MODE SERVICE_ADDRESS [BUCKET] [BUCKET_REGION] [BUCKET_ENDPOINT]
+#   [BUCKET_PREFIX] [SANDBOXES] [SERVICE_USER] [LOCAL_STORAGE]. SERVICE_USER owns the checkout and the
 #   units (default swarmy); LOCAL_STORAGE is a block device to format and
 #   mount at /mnt/swarmy-local or dir:/path for an existing directory.
 #   Sandbox nodes require it; control-only nodes use the root disk.
@@ -11,9 +11,11 @@ mode=${1:-stack}
 service_address=${2:-127.0.0.1}
 bucket=${3:-}
 bucket_region=${4:-}
-sandboxes=$(parse_sandbox_count "${5-64}")
-service_user=${6:-swarmy}
-local_storage=${7:-}
+bucket_endpoint=${5:-}
+bucket_prefix=${6:-}
+sandboxes=$(parse_sandbox_count "${7-64}")
+service_user=${8:-swarmy}
+local_storage=${9:-}
 validate_service_user "$service_user"
 ensure_service_user "$service_user"
 # Privileged setup runs as any sudoer, but the build and the units belong to
@@ -33,6 +35,10 @@ if [[ $(stat -c %U "$repo_dir") != "$service_user" ]]; then
 fi
 if [[ -n $bucket ]] && [[ ! $bucket =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ || ! $bucket_region =~ ^[a-z0-9-]+$ ]]; then
     echo 'Invalid bucket name or region: use a 3-63 character lowercase DNS name without dots and a region.' >&2
+    exit 1
+fi
+if [[ -n $bucket_endpoint ]] && [[ -z $bucket ]]; then
+    echo 'A bucket endpoint without a bucket is not a remote object store.' >&2
     exit 1
 fi
 [[ $mode == stack || $mode == node ]] || { echo 'Expected stack or node mode' >&2; exit 1; }
@@ -133,7 +139,19 @@ fi
 printf 'Release build took %s seconds\n' "$((SECONDS - build_started))"
 sudo install -d -m 0755 /etc/swarmy
 sudo install -m 0600 /dev/null /etc/swarmy/node.env
-node_environment "$repo_dir" "$sandboxes" "$local_mount" "$bucket" "$bucket_region" | sudo tee /etc/swarmy/node.env >/dev/null
+node_environment "$repo_dir" "$sandboxes" "$local_mount" "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix" | sudo tee /etc/swarmy/node.env >/dev/null
+# Static S3 keys arrive over SSH stdin in /etc/swarmy/s3-keys.env, never on a
+# command line. Append them to the 0600 node environment without printing them.
+if [[ -f /etc/swarmy/s3-keys.env ]]; then
+    (
+        set -a
+        # shellcheck disable=SC1091
+        source /etc/swarmy/s3-keys.env
+        set +a
+        export SWARMY_S3_ACCESS_KEY SWARMY_S3_SECRET_KEY
+        sudo -E bash -c 'source "$0/scripts/remote-s3-env.sh"; swarmy_remote_s3_keys /etc/swarmy/node.env' "$repo_dir"
+    )
+fi
 if [[ $mode == stack ]]; then
 sudo tee /etc/systemd/system/swarmy-stack.service >/dev/null <<UNIT
 [Unit]
