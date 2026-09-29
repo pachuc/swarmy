@@ -274,22 +274,11 @@ async fn breaker_grants_one_probe_and_wait_wakes_without_a_lease() {
 }
 
 #[tokio::test]
-async fn leased_park_dedupes_repeated_failures_and_extends_on_new_sequences() {
+async fn leased_park_rejects_stale_leases_and_dedupes_the_same_sequence() {
     let Some(test) = TestStore::memory() else {
         return;
     };
     let id = test.create().await;
-    fn failure(
-        seq: u64,
-        reason: &'static str,
-        wake: i64,
-    ) -> swarmy_store::InferenceFailureWait<'static> {
-        swarmy_store::InferenceFailureWait {
-            seq,
-            reason,
-            wake_at: timestamp(wake),
-        }
-    }
     // Parking through the leased path releases the worker lease and sleeps
     // until the route retry time, recording one attempt for the failure.
     let lease = test
@@ -361,14 +350,16 @@ async fn leased_park_dedupes_repeated_failures_and_extends_on_new_sequences() {
     let wait = test.store.inference_wait(id).await.unwrap().unwrap();
     assert_eq!(wait.attempts, 1);
     assert_eq!(wait.reasons, ["openai/primary: quota reached"]);
-    // The next failure sequence extends the same wait with its own attempt.
-    assert!(
-        test.store
-            .wake_inference_wait(id, timestamp(200))
-            .await
-            .unwrap()
-    );
-    let third = test
+    test.cleanup().await;
+}
+
+#[tokio::test]
+async fn leased_park_extends_the_wait_on_a_new_sequence() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let lease = test
         .store
         .claim_lease(id, owner(), timestamp(10_000))
         .await
@@ -377,9 +368,34 @@ async fn leased_park_dedupes_repeated_failures_and_extends_on_new_sequences() {
         test.store
             .park_inference(
                 id,
-                &third,
+                &lease,
+                &failure(1, "openai/primary: quota reached", 160),
+                timestamp(100),
+                std::time::Duration::from_secs(3600)
+            )
+            .await
+            .unwrap()
+    );
+    // The next failure sequence extends the same wait with its own attempt
+    // and reason instead of replacing it.
+    assert!(
+        test.store
+            .wake_inference_wait(id, timestamp(160))
+            .await
+            .unwrap()
+    );
+    let second = test
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    assert!(
+        test.store
+            .park_inference(
+                id,
+                &second,
                 &failure(2, "openai/backup: quota reached", 300),
-                timestamp(210),
+                timestamp(170),
                 std::time::Duration::from_secs(3600)
             )
             .await
@@ -479,6 +495,17 @@ fn timestamp(second: i64) -> Timestamp {
 }
 fn owner() -> LeaseOwnerId {
     LeaseOwnerId::from_ulid(Ulid::generate())
+}
+fn failure(
+    seq: u64,
+    reason: &'static str,
+    wake: i64,
+) -> swarmy_store::InferenceFailureWait<'static> {
+    swarmy_store::InferenceFailureWait {
+        seq,
+        reason,
+        wake_at: timestamp(wake),
+    }
 }
 fn session() -> SessionRecord {
     SessionRecord {
