@@ -19,7 +19,7 @@ fn cli(root: &Path, args: &[&str]) -> Output {
 
 fn fixture(root: &Path) {
     std::fs::create_dir_all(root.join(".swarmy/remote")).unwrap();
-    std::fs::write(root.join(".swarmy/remote/test.json"), r#"{"name":"test","region":"local","instance_id":"i-test","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/a key","created_at":"now"}"#).unwrap();
+    std::fs::write(root.join(".swarmy/remote/test.json"), r#"{"name":"test","region":"local","instance_id":"i-test","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/a key","launch_attempted":true,"created_at":"now"}"#).unwrap();
 }
 
 #[test]
@@ -85,8 +85,9 @@ fn disconnected_status_uses_fake_state_without_opening_a_store() {
     let mut child = node.clone();
     child["name"] = "test-2".into();
     child["instance_id"] = "i-second".into();
-    node["launch_settings"] = serde_json::json!({"instance_type":"m6i.large","disk_gb":40});
-    child["launch_settings"] = serde_json::json!({"instance_type":"m6id.4xlarge","disk_gb":100});
+    node["launch_settings"] = serde_json::json!({"aws":{"instance_type":"m6i.large"},"disk_gb":40});
+    child["launch_settings"] =
+        serde_json::json!({"aws":{"instance_type":"m6id.4xlarge"},"disk_gb":100});
     node["nodes"] = serde_json::json!([child]);
     std::fs::write(path, serde_json::to_vec(&node).unwrap()).unwrap();
     let output = cli(root.path(), &["remote", "status", "--json"]);
