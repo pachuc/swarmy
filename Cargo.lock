@@ -4215,7 +4215,6 @@ dependencies = [
  "swarmy-version",
  "tempfile",
  "tokio",
- "toml",
  "tracing-subscriber",
  "ulid",
  "unicode-width",
