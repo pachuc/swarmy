@@ -3,14 +3,14 @@ use serde_json::{Value, json};
 
 /// Tool result representation used by the receiving protocol.
 #[derive(Clone, Copy)]
-pub enum ToolWire {
+pub(crate) enum ToolWire {
     Anthropic,
     Completions,
     Responses,
 }
 
 /// Repair missing and displaced tool results before submitting a request.
-pub fn repair_tool_results(messages: &mut Vec<Value>, wire: ToolWire) {
+pub(crate) fn repair_tool_results(messages: &mut Vec<Value>, wire: ToolWire) {
     match wire {
         ToolWire::Anthropic => repair_anthropic(messages),
         ToolWire::Completions => *messages = repair_completions(std::mem::take(messages)),

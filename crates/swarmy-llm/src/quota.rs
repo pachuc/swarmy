@@ -37,7 +37,7 @@ fn lowered(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, String> {
 /// `6m0s`, `1m30s`, `2h0m0s`), and `RFC 3339` timestamps (seconds from now,
 /// saturating to zero when in the past).
 #[must_use]
-pub fn parse_reset_seconds(value: &str) -> Option<u64> {
+pub(crate) fn parse_reset_seconds(value: &str) -> Option<u64> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
@@ -122,19 +122,19 @@ fn resets_with(headers: &BTreeMap<String, String>, prefix: &str) -> BTreeMap<Str
 
 /// `OpenAI` `x-ratelimit-remaining-*` values as `(header, remaining)`.
 #[must_use]
-pub fn openai_remaining(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, u64> {
+pub(crate) fn openai_remaining(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, u64> {
     remaining_with(&lowered(headers), "x-ratelimit-remaining-")
 }
 
 /// `OpenAI` `x-ratelimit-reset-*` windows in seconds until reset.
 #[must_use]
-pub fn openai_resets(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, u64> {
+pub(crate) fn openai_resets(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, u64> {
     resets_with(&lowered(headers), "x-ratelimit-reset-")
 }
 
 /// Anthropic `anthropic-ratelimit-*` remaining values.
 #[must_use]
-pub fn anthropic_remaining(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, u64> {
+pub(crate) fn anthropic_remaining(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, u64> {
     let all = remaining_with(&lowered(headers), "anthropic-ratelimit-");
     all.into_iter()
         .filter(|(name, _)| name.contains("remaining"))
@@ -143,7 +143,7 @@ pub fn anthropic_remaining(headers: &reqwest::header::HeaderMap) -> BTreeMap<Str
 
 /// Anthropic `anthropic-ratelimit-*-reset` windows in seconds until reset.
 #[must_use]
-pub fn anthropic_resets(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, u64> {
+pub(crate) fn anthropic_resets(headers: &reqwest::header::HeaderMap) -> BTreeMap<String, u64> {
     let all = resets_with(&lowered(headers), "anthropic-ratelimit-");
     all.into_iter()
         .filter(|(name, _)| name.contains("reset"))
@@ -152,7 +152,7 @@ pub fn anthropic_resets(headers: &reqwest::header::HeaderMap) -> BTreeMap<String
 
 /// Remaining requests, matching headers whose name mentions requests.
 #[must_use]
-pub fn requests_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
+pub(crate) fn requests_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
     remaining
         .iter()
         .filter(|(name, _)| name.contains("request"))
@@ -162,7 +162,7 @@ pub fn requests_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
 
 /// Remaining tokens, matching headers whose name mentions tokens.
 #[must_use]
-pub fn tokens_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
+pub(crate) fn tokens_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
     remaining
         .iter()
         .filter(|(name, _)| name.contains("token"))

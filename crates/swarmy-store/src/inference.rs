@@ -1,6 +1,5 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::time::Duration;
 use swarmy_core::{
     Event, IdempotencyRecord, IdempotencyState, InflightRecord, LeaseOwnerId, RequestId, SessionId,
     SessionState,

@@ -1,4 +1,5 @@
 //! Shared inference contracts and provider wire clients.
+#![deny(unreachable_pub)]
 
 pub mod api;
 pub mod auth;

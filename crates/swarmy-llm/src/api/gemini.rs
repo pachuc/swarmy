@@ -12,7 +12,7 @@ use crate::{
     ClientAuth, Delta, Error, Provider, ProviderStream, ReasoningEffort, Request, Response,
     StopReason, TokenUsage,
     catalog::{Api, ModelInfo, ProviderInfo},
-    retry::{RetryPolicy, retryable, with_retry},
+    retry::{RetryPolicy, with_retry},
 };
 
 #[derive(Clone)]

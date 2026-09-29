@@ -5,7 +5,7 @@ use serde_json::Value;
 
 /// Extract the provider explanation while retaining a useful fallback for non-JSON bodies.
 #[must_use]
-pub fn provider_error(status: StatusCode, body: &str) -> Error {
+pub(crate) fn provider_error(status: StatusCode, body: &str) -> Error {
     let message = serde_json::from_str::<Value>(body)
         .ok()
         .and_then(|value| value["error"]["message"].as_str().map(str::to_owned))

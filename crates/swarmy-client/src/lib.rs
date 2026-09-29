@@ -800,7 +800,7 @@ impl Client {
             response: None,
             buffer: Vec::new(),
             connection_id: None,
-            delay: swarmy_core::backoff(1),
+            retry_attempt: 1,
             retry_floor: Duration::ZERO,
             updating: None,
         }
@@ -864,7 +864,7 @@ pub struct EventStream {
     response: Option<ByteStream>,
     buffer: Vec<u8>,
     connection_id: Option<String>,
-    delay: Duration,
+    retry_attempt: u32,
     retry_floor: Duration,
     updating: Option<PendingUpdate>,
 }
@@ -1080,7 +1080,7 @@ impl EventStream {
                             continue 'receive;
                         }
                         cursor.sequence = event.sequence;
-                        self.delay = swarmy_core::backoff(1);
+                        self.retry_attempt = 1;
                         return Ok(StreamItem::Event(event));
                     }
                 }
@@ -1104,14 +1104,13 @@ impl EventStream {
         self.backoff().await;
     }
     async fn backoff(&mut self) {
-        let base = self.delay.max(self.retry_floor);
+        let base = swarmy_core::backoff(self.retry_attempt)
+            .min(Duration::from_secs(5))
+            .max(self.retry_floor);
         let jitter =
             Duration::from_millis(rand::random_range(0..=base.as_millis().min(1000) as u64));
         tokio::time::sleep(base + jitter).await;
-        self.delay = swarmy_core::backoff(
-            (self.delay.as_millis().ilog2().saturating_sub(6) as u32 + 2).min(6),
-        )
-        .min(Duration::from_secs(5));
+        self.retry_attempt = self.retry_attempt.saturating_add(1);
     }
 }
 fn retryable(error: &Error) -> bool {

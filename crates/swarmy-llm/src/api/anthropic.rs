@@ -12,7 +12,7 @@ use crate::{
     BearerSource, ClientAuth, Delta, Error, Provider, ProviderStream, ReasoningEffort, Request,
     Response, StopReason, TokenUsage,
     catalog::{ModelInfo, ProviderInfo},
-    retry::{RetryPolicy, retryable, with_retry},
+    retry::{RetryPolicy, with_retry},
 };
 
 const BETAS: &str = "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14";

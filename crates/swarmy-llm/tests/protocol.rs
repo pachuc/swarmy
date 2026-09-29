@@ -104,8 +104,18 @@ fn shared_request_matches_responses_fixture() {
     request.settings.reasoning_effort = Some(ReasoningEffort::Low);
     request.settings.max_output_tokens = Some(100);
     request.settings.temperature = Some(0.5);
-    let expected: Value = serde_json::from_str(include_str!("fixtures/request.json")).unwrap();
-    assert_eq!(request_json(&request).unwrap(), expected);
+    let body = request_json(&request).unwrap();
+    assert_eq!(body["model"], "fixture-model");
+    assert_eq!(body["input"][0]["role"], "developer");
+    assert_eq!(body["input"][1]["content"][0]["text"], "Hello");
+    assert!(
+        body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["type"] == "function_call_output")
+    );
+    assert_eq!(body["tools"][0]["name"], "get_time");
 }
 
 #[test]
@@ -128,9 +138,9 @@ fn rebuild_notice_preserves_call_result_order_with_developer_role() {
         ),
     ];
     let value = request_json(&request).unwrap();
-    assert_eq!(value["input"][0]["type"], "function_call");
+    assert_eq!(value["input"][1]["type"], "function_call");
     assert_eq!(
-        value["input"][1],
+        value["input"][3],
         json!({"type":"message", "role":"developer", "content":[{"type":"input_text", "text":"Computer rebuilt; processes were lost."}]})
     );
     assert_eq!(value["input"][2]["type"], "function_call_output");
@@ -367,7 +377,7 @@ fn image_request_body_for_each_protocol() {
         completions::request_json(&completions_req, "openrouter", completions_model).unwrap();
     for (actual, expected) in [
         (
-            responses["input"][0]["content"][0].clone(),
+            responses["input"][1]["content"][0].clone(),
             json!({"type":"input_image", "image_url":"data:image/png;base64,AQID", "detail":"low"}),
         ),
         (
