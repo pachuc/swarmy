@@ -64,19 +64,6 @@ pub enum DevService {
     Supervisor,
 }
 
-impl DevService {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Scheduler => "scheduler",
-            Self::Worker => "worker",
-            Self::Gateway => "gateway",
-            Self::Api => "api",
-            Self::Supervisor => "supervisor",
-        }
-    }
-}
-
 struct Layout {
     config: PathBuf,
     root: PathBuf,
@@ -135,27 +122,29 @@ impl Layout {
 }
 
 pub async fn run(command: Command, json: bool) -> Result<()> {
+    // The supervisor is spawned without flags by `dev up`, so it runs
+    // before the JSON rejection below.
+    if let Command::Supervise { state, binaries } = command {
+        return supervise(&state, &binaries).await;
+    }
+    // `dev` manages local processes with human-readable progress lines,
+    // so it has no JSON rendering. Reject `--json` explicitly instead of
+    // silently printing text.
+    if json {
+        bail!("--json is not supported for dev commands; run without it for human-readable output");
+    }
+    let layout = Layout::discover()?;
     match command {
-        // The supervisor is spawned without flags by `dev up`, so it runs
-        // before the JSON rejection below.
+        // Also handled before the JSON rejection above; repeated here so the
+        // match owns every variant without an impossible arm.
         Command::Supervise { state, binaries } => supervise(&state, &binaries).await,
-        // `dev` manages local processes with human-readable progress lines,
-        // so it has no JSON rendering. Reject `--json` explicitly instead of
-        // silently printing text.
-        Command::Up { .. } | Command::Down | Command::Status | Command::Logs { .. } if json => {
-            bail!(
-                "--json is not supported for dev commands; run without it for human-readable output"
-            )
-        }
         Command::Up {
             allow_version_mismatch,
         } => {
-            let layout = Layout::discover()?;
             let _lock = layout.lock()?;
             up(&layout, allow_version_mismatch).await
         }
         Command::Down => {
-            let layout = Layout::discover()?;
             let _lock = layout.lock()?;
             stop_services(&layout.state).await?;
             let remote = layout.state.join("remote").exists()
@@ -168,9 +157,13 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             }
             Ok(())
         }
-        Command::Status => status(&Layout::discover()?).await,
+        Command::Status => status(&layout).await,
         Command::Logs { service } => {
-            logs(&Layout::discover()?.state, service.map(DevService::as_str)).await
+            logs(
+                &layout.state,
+                service.map(crate::cost_command::value_name).as_deref(),
+            )
+            .await
         }
     }
 }

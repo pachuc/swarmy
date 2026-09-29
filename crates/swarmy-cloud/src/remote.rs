@@ -42,8 +42,13 @@ pub async fn for_settings(settings: &RemoteSettings) -> std::result::Result<Aws,
 /// `confirmed: bool` instead of rebuilding state from a saved command.
 pub enum RunOutcome {
     Completed,
-    NeedsConfirmation { plan: DeletionPlan },
-    NeedsTagConfirmation { targets: Vec<(String, String)> },
+    NeedsConfirmation {
+        plan: DeletionPlan,
+    },
+    NeedsTagConfirmation {
+        node: String,
+        targets: Vec<(String, String)>,
+    },
 }
 
 /// Run the `swarmy remote` subcommand.
@@ -108,7 +113,10 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
             let node = state.require(&name)?;
             let targets = down::adoption_targets(&state, &node)?;
             if !confirmed {
-                return Ok(RunOutcome::NeedsTagConfirmation { targets });
+                return Ok(RunOutcome::NeedsTagConfirmation {
+                    node: name,
+                    targets,
+                });
             }
             let mut settings = node.cloud_settings();
             settings.region.clone_from(&node.region);

@@ -72,24 +72,120 @@ pub async fn cost_command(args: cost_command::Args, json: bool) -> Result<()> {
     cost(&client, &endpoint, args, json).await
 }
 
-/// Run one image read through the API. Builds run locally in `crate::image`.
+/// Run one image command. Builds run locally in `crate::image` without a
+/// prior connection; reads go through the API.
 pub async fn image_command(command: image_command::Command, json: bool) -> Result<()> {
-    // Validate the reference before connecting so argument errors report
-    // without needing API configuration.
-    if let image_command::Command::Show { image } = &command {
-        let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
-        validate_label(name)?;
-        validate_label(tag)?;
+    match command {
+        image_command::Command::Build {
+            recipe,
+            tag,
+            name,
+            output,
+        } => crate::image::build(recipe, tag, name, output, json).await,
+        command => {
+            // Validate the reference before connecting so argument errors report
+            // without needing API configuration.
+            if let image_command::Command::Show { image } = &command {
+                let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
+                validate_label(name)?;
+                validate_label(tag)?;
+            }
+            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            image(&client, &endpoint, command, json).await
+        }
     }
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
-    image(&client, &endpoint, command, json).await
 }
 
-/// Run one credential API command. Logins and imports run through the
-/// `swarmy-auth` helper instead.
-pub async fn auth_command(command: auth_command::Command, json: bool) -> Result<()> {
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
-    auth(&client, &endpoint, command, json).await
+/// Run one credential command. Logins and imports run through the
+/// `swarmy-auth` helper without connecting; everything else goes through the
+/// control-plane API.
+pub async fn auth_command(
+    command: auth_command::Command,
+    auth_file: Option<std::path::PathBuf>,
+    json: bool,
+) -> Result<()> {
+    match command {
+        auth_command::Command::Login {
+            provider,
+            label,
+            resource,
+            scope,
+        } => login_via_helper(auth_file, json, provider, label, resource, scope),
+        auth_command::Command::Import { file, label } => {
+            import_via_helper(auth_file, json, file, label)
+        }
+        command => {
+            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            auth(&client, &endpoint, command, auth_file, json).await
+        }
+    }
+}
+
+/// `login` and `import` shell out to the `swarmy-auth` helper so terminal
+/// OAuth flows stay out of this binary; every other auth command goes through
+/// the control-plane API in the dispatch above.
+fn auth_helper(auth_file: Option<std::path::PathBuf>, json: bool) -> Result<std::process::Command> {
+    let sibling = std::env::current_exe()?.with_file_name("swarmy-auth");
+    let helper = if sibling.is_file() {
+        sibling.into_os_string()
+    } else {
+        "swarmy-auth".into()
+    };
+    let mut process = std::process::Command::new(helper);
+    if json {
+        process.arg("--json");
+    }
+    if let Some(file) = auth_file {
+        process.arg("--auth-file").arg(file);
+    }
+    Ok(process)
+}
+
+fn run_helper(mut process: std::process::Command) -> Result<()> {
+    let status = process.status().map_err(|error| {
+        anyhow::anyhow!("swarmy-auth helper unavailable; run make install-client or cargo install --path crates/swarmy-devtools: {error}")
+    })?;
+    anyhow::ensure!(status.success(), "swarmy-auth failed: {status}");
+    Ok(())
+}
+
+fn login_via_helper(
+    auth_file: Option<std::path::PathBuf>,
+    json: bool,
+    provider: String,
+    label: Option<String>,
+    resource: Option<String>,
+    scope: Option<String>,
+) -> Result<()> {
+    let mut helper = auth_helper(auth_file, json)?;
+    helper.arg("login").arg(provider);
+    if let Some(label) = label {
+        helper.arg("--label").arg(label);
+    }
+    if let Some(resource) = resource {
+        helper.arg("--resource").arg(resource);
+    }
+    if let Some(scope) = scope {
+        helper.arg("--scope").arg(scope);
+    }
+    run_helper(helper)
+}
+
+fn import_via_helper(
+    auth_file: Option<std::path::PathBuf>,
+    json: bool,
+    file: Option<std::path::PathBuf>,
+    label: Option<String>,
+) -> Result<()> {
+    let mut helper = auth_helper(auth_file, json)?;
+    helper.arg("import");
+    if let Some(file) = file {
+        helper.arg("--file").arg(file);
+    }
+    if let Some(label) = label {
+        helper.arg("--label").arg(label);
+    }
+    run_helper(helper)
 }
 /// Parse a `--since` or `--until` bound, defaulting to `default` when the
 /// flag is absent. The client resolves relative spans and calendar words
@@ -144,9 +240,9 @@ async fn cost_series(
         .filter_map(|(dimension, value)| value.map(|value| (*dimension, value)))
         .collect();
     match (args.by, present.as_slice()) {
-        (Some(by), []) => Ok((by.as_str().into(), None)),
-        (Some(by), [(dimension, value)]) if *dimension == by.as_str() => Ok((
-            by.as_str().into(),
+        (Some(by), []) => Ok((cost_command::value_name(by), None)),
+        (Some(by), [(dimension, value)]) if *dimension == cost_command::value_name(by) => Ok((
+            cost_command::value_name(by),
             Some(cost_key(client, endpoint, dimension, value).await?),
         )),
         (Some(_), _) => anyhow::bail!(
@@ -252,7 +348,7 @@ async fn cost(client: &Client, endpoint: &str, args: cost_command::Args, json: b
             key.as_deref(),
             &since.to_string(),
             &until.to_string(),
-            args.group.as_str(),
+            &cost_command::value_name(args.group),
         ),
     )
     .await?;
@@ -581,8 +677,15 @@ async fn image(
                 json,
             );
         }
-        image_command::Command::Build { .. } => {
-            anyhow::bail!("image build runs locally, not through the API");
+        image_command::Command::Build {
+            recipe,
+            tag,
+            name,
+            output,
+        } => {
+            // Also handled before connecting above; repeated here so the
+            // match owns every variant without an impossible arm.
+            crate::image::build(recipe, tag, name, output, json).await?;
         }
     }
     Ok(())
@@ -1217,6 +1320,7 @@ async fn auth(
     client: &Client,
     endpoint: &str,
     command: auth_command::Command,
+    auth_file: Option<std::path::PathBuf>,
     json: bool,
 ) -> Result<()> {
     match command {
@@ -1287,8 +1391,20 @@ async fn auth(
             )
             .await?;
         }
-        auth_command::Command::Login { .. } | auth_command::Command::Import { .. } => {
-            anyhow::bail!("login and import run through the swarmy-auth helper");
+        auth_command::Command::Login {
+            provider,
+            label,
+            resource,
+            scope,
+        } => {
+            // Also handled without connecting above; repeated here so the
+            // match owns every variant without an impossible arm.
+            login_via_helper(auth_file, json, provider, label, resource, scope)?;
+        }
+        auth_command::Command::Import { file, label } => {
+            // Also handled without connecting above; repeated here so the
+            // match owns every variant without an impossible arm.
+            import_via_helper(auth_file, json, file, label)?;
         }
     }
     Ok(())
@@ -1356,7 +1472,7 @@ async fn quota(
                 Some(entry),
                 &start.to_string(),
                 &end.to_string(),
-                group.as_str(),
+                &cost_command::value_name(group),
             ),
         )
         .await?;

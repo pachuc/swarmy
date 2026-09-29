@@ -28,6 +28,8 @@ pub enum Error {
     Url(#[from] url::ParseError),
     #[error("unexpected response status {status}: {body}")]
     Status { status: StatusCode, body: String },
+    #[error("request timed out")]
+    Timeout,
 }
 
 /// A locally built image streamed to the control plane for publication.
@@ -63,6 +65,25 @@ const UPLOAD_BYTES_PER_SEC: u64 = 8 * 1024 * 1024;
 #[must_use]
 pub fn upload_timeout(size_bytes: u64) -> Duration {
     Duration::from_secs(UPLOAD_BASE_SECS + size_bytes / UPLOAD_BYTES_PER_SEC)
+}
+
+/// Standard timeout for one control-plane request. The CLI and the chat
+/// library share it through [`timed_call`] instead of hard-coding seconds.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Run one API future with the standard timeout, keeping the typed error.
+/// [`api_client::call`](crate::api_client::call) wraps this with the endpoint
+/// context the binary prints; the chat library maps [`Error::Timeout`] to its
+/// own endpoint-carrying timeout error.
+///
+/// # Errors
+/// Fails if the request times out or the API rejects it.
+pub async fn timed_call<T>(
+    future: impl std::future::Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    tokio::time::timeout(REQUEST_TIMEOUT, future)
+        .await
+        .map_err(|_| Error::Timeout)?
 }
 
 impl Client {

@@ -20,16 +20,17 @@ pub enum Command {
 }
 
 pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
-    // Probes use the control plane credential resolver, not laptop credentials.
+    // Probes resolve credentials through the control plane, not laptop
+    // configuration, so they return before connecting.
     if let Command::Probe(args) = command {
         return crate::models_probe::run(args, json).await;
     }
     let (client, endpoint) = swarmy_client::api_client::connect()?;
-    // The probe variant returns above, so this match owns every listing command.
+    // The probe variant returns above, so its arm below only keeps the match
+    // total; every listing arm connects through the client above.
     match command {
-        Command::Probe(_) => {
-            anyhow::bail!("models probe takes no listing connection");
-        }
+        // Handled before connecting; repeated here so every variant is owned.
+        Command::Probe(args) => crate::models_probe::run(args, json).await,
         Command::Ls {
             provider,
             reasoning,

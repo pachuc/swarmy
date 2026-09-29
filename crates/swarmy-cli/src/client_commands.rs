@@ -5,44 +5,71 @@ use swarmy_api_types as api;
 use swarmy_chat::client_conversation::{Conversation, ConversationItem, OutputMode, TurnOutput};
 use swarmy_client::Client;
 
-// The arguments mirror the `run` CLI flags plus the client and output mode,
-// so eight parameters is inherent to the dispatch shape.
-#[allow(clippy::too_many_arguments)]
-pub async fn run(
-    client: Client,
-    prompt: String,
-    image: Option<String>,
-    agent: Option<String>,
-    new: bool,
-    session: Option<ulid::Ulid>,
-    queue: bool,
-    selection: SelectionArgs,
-    json: bool,
-) -> Result<()> {
-    let route = selection.route.clone();
+/// Flags for `swarmy run`, sharing one struct from parsing to execution so
+/// the dispatch passes three arguments instead of nine.
+#[derive(clap::Args)]
+pub struct RunArgs {
+    pub prompt: String,
+    #[arg(long)]
+    pub image: Option<String>,
+    /// Resume the main session on a named agent (name or agent id)
+    #[arg(long, conflicts_with = "image")]
+    pub agent: Option<String>,
+    /// Create a side conversation on the named agent
+    #[arg(long, requires = "agent")]
+    pub new: bool,
+    /// Continue an existing session by id instead of an agent's main one
+    #[arg(long, conflicts_with_all = ["agent", "image", "new"])]
+    pub session: Option<ulid::Ulid>,
+    /// Deliver after the current tool call without interrupting the turn.
+    #[arg(long, requires = "session")]
+    pub queue: bool,
+    #[command(flatten)]
+    pub selection: SelectionArgs,
+}
+
+/// Flags for `swarmy chat`, sharing one struct from parsing to execution.
+#[derive(clap::Args)]
+pub struct ChatArgs {
+    #[arg(conflicts_with_all = ["provider", "model", "effort"])]
+    pub session_id: Option<ulid::Ulid>,
+    /// Base image in NAME:TAG form; otherwise use `default_image`.
+    #[arg(long, conflicts_with = "session_id")]
+    pub image: Option<String>,
+    /// Resume the main session on a named agent (name or agent id)
+    #[arg(long, conflicts_with_all = ["image", "session_id"])]
+    pub agent: Option<String>,
+    /// Create a side conversation on the named agent
+    #[arg(long, requires = "agent")]
+    pub new: bool,
+    #[command(flatten)]
+    pub selection: SelectionArgs,
+}
+
+pub async fn run(client: Client, endpoint: String, args: RunArgs, json: bool) -> Result<()> {
+    let route = args.selection.route.clone();
     let mut conversation = Conversation::open(
         client,
-        session.map(|id| id.to_string()),
-        image,
-        agent,
-        new,
-        selection.into(),
+        endpoint,
+        args.session.map(|id| id.to_string()),
+        args.image,
+        args.agent,
+        args.new,
+        args.selection.into(),
         route,
     )
     .await?;
     announce(&conversation, json);
     report_followed(&conversation, json);
     let busy = conversation.session.state != api::SessionState::Idle;
-    conversation.send_with_queue(prompt, queue).await?;
-    if queue && busy {
+    conversation
+        .send_with_queue(args.prompt, args.queue)
+        .await?;
+    if args.queue && busy {
         if json {
-            println!(
-                "{}",
-                serde_json::to_string(&MessageQueued {
-                    event: "message_queued",
-                    session_id: &conversation.id,
-                })?
-            );
+            print_event(Event::MessageQueued {
+                session_id: &conversation.id,
+            });
         } else {
             eprintln!("Message queued for next step boundary.");
         }
@@ -58,22 +85,14 @@ pub async fn run(
         .await;
     if json {
         match &result {
-            Ok(()) => println!(
-                "{}",
-                serde_json::to_string(&RunOutcome {
-                    event: "run_outcome",
-                    outcome: "completed",
-                    reason: None,
-                })?
-            ),
-            Err(error) => println!(
-                "{}",
-                serde_json::to_string(&RunOutcome {
-                    event: "run_outcome",
-                    outcome: "failed",
-                    reason: Some(&error.to_string()),
-                })?
-            ),
+            Ok(()) => print_event(Event::RunOutcome {
+                outcome: "completed",
+                reason: None,
+            }),
+            Err(error) => print_event(Event::RunOutcome {
+                outcome: "failed",
+                reason: Some(&error.to_string()),
+            }),
         }
     }
     Ok(result?)
@@ -81,19 +100,17 @@ pub async fn run(
 
 fn announce(conversation: &Conversation, json: bool) {
     if json {
-        println!(
-            "{}",
-            serde_json::to_string(&SessionAnnounce {
-                event: if conversation.created {
-                    "session_created"
-                } else {
-                    "session_opened"
-                },
+        print_event(if conversation.created {
+            Event::SessionCreated {
                 session_id: &conversation.id,
                 agent_name: &conversation.agent_name,
-            })
-            .expect("announcement serializes")
-        );
+            }
+        } else {
+            Event::SessionOpened {
+                session_id: &conversation.id,
+                agent_name: &conversation.agent_name,
+            }
+        });
     } else {
         eprintln!("Session {}", conversation.id);
     }
@@ -111,15 +128,10 @@ fn report_followed(conversation: &Conversation, json: bool) {
 
 fn print_summary(json: bool, previous_session_id: &str, session_id: &str) {
     if json {
-        println!(
-            "{}",
-            serde_json::to_string(&SessionSummarized {
-                event: "session_summarized",
-                previous_session_id,
-                session_id,
-            })
-            .expect("summary serializes")
-        );
+        print_event(Event::SessionSummarized {
+            previous_session_id,
+            session_id,
+        });
     } else {
         eprintln!(
             "Conversation summarized. Session {previous_session_id} archived; continuing in {session_id}."
@@ -133,19 +145,14 @@ fn print_turn_output(output: TurnOutput, json: bool) {
     match output {
         TurnOutput::TokenText(text) => {
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(&ModelDelta {
-                        event: "model_delta",
-                        delta: ModelDeltaInner {
-                            text: ModelDeltaText {
-                                output_index: 0,
-                                text: &text,
-                            },
+                print_event(Event::ModelDelta {
+                    delta: ModelDeltaInner {
+                        text: ModelDeltaText {
+                            output_index: 0,
+                            text: &text,
                         },
-                    })
-                    .expect("delta serializes")
-                );
+                    },
+                });
             } else {
                 print!("{text}");
                 std::io::stdout().flush().expect("stdout flushes");
@@ -175,28 +182,16 @@ fn print_turn_output(output: TurnOutput, json: bool) {
         }
         TurnOutput::AssistantMessage(text) => {
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(&AssistantMessage {
-                        event: "assistant_message",
-                        text: &text,
-                    })
-                    .expect("assistant message serializes")
-                );
+                print_event(Event::AssistantMessage { text: &text });
             } else {
                 print!("{text}");
                 std::io::stdout().flush().expect("stdout flushes");
             }
         }
         TurnOutput::SessionIdle { session_id } => {
-            println!(
-                "{}",
-                serde_json::to_string(&SessionIdle {
-                    event: "session_idle",
-                    session_id: &session_id,
-                })
-                .expect("idle marker serializes")
-            );
+            print_event(Event::SessionIdle {
+                session_id: &session_id,
+            });
         }
         TurnOutput::Summarized {
             previous_session_id,
@@ -207,43 +202,78 @@ fn print_turn_output(output: TurnOutput, json: bool) {
     }
 }
 
-/// One `session_created` or `session_opened` line the fleet driver reads.
+/// One machine-readable JSON line on stdout. A single tagged enum replaces
+/// the earlier per-event structs so every line shares one shape and one
+/// print helper; the serialized form is unchanged, including the `Text`
+/// discriminant the fleet driver and the `cli_session` suite read.
 #[derive(serde::Serialize)]
-struct SessionAnnounce<'a> {
-    event: &'a str,
-    session_id: &'a str,
-    agent_name: &'a Option<String>,
+#[serde(tag = "event", rename_all = "snake_case")]
+pub(crate) enum Event<'a> {
+    SessionCreated {
+        session_id: &'a str,
+        agent_name: &'a Option<String>,
+    },
+    SessionOpened {
+        session_id: &'a str,
+        agent_name: &'a Option<String>,
+    },
+    MessageQueued {
+        session_id: &'a str,
+    },
+    RunOutcome {
+        outcome: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<&'a str>,
+    },
+    SessionSummarized {
+        previous_session_id: &'a str,
+        session_id: &'a str,
+    },
+    ModelDelta {
+        delta: ModelDeltaInner<'a>,
+    },
+    SessionIdle {
+        session_id: &'a str,
+    },
+    AssistantMessage {
+        text: &'a str,
+    },
+    ImageBuilt {
+        name: &'a str,
+        tag: &'a str,
+        manifest_id: &'a str,
+        header: &'a swarmy_api_types::ImageHeader,
+        size: u64,
+        chunks_total: u64,
+        chunks_stored: u64,
+        chunks_uploaded: u64,
+    },
 }
 
-/// One `message_queued` line for a queued delivery.
-#[derive(serde::Serialize)]
-struct MessageQueued<'a> {
-    event: &'static str,
-    session_id: &'a str,
+impl<'a> Event<'a> {
+    /// The typed `image_built` line for an upload response.
+    #[must_use]
+    pub(crate) fn image_built(uploaded: &'a swarmy_api_types::ImageUpload) -> Self {
+        Self::ImageBuilt {
+            name: &uploaded.name,
+            tag: &uploaded.tag,
+            manifest_id: &uploaded.manifest_id,
+            header: &uploaded.header,
+            size: uploaded.size,
+            chunks_total: uploaded.chunks_total,
+            chunks_stored: uploaded.chunks_stored,
+            chunks_uploaded: uploaded.chunks_uploaded,
+        }
+    }
 }
 
-/// The terminal `run_outcome` line the fleet driver reads.
-#[derive(serde::Serialize)]
-struct RunOutcome<'a> {
-    event: &'static str,
-    outcome: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<&'a str>,
-}
-
-/// One `session_summarized` line for a successor switch.
-#[derive(serde::Serialize)]
-struct SessionSummarized<'a> {
-    event: &'static str,
-    previous_session_id: &'a str,
-    session_id: &'a str,
-}
-
-/// One `model_delta` line wrapping raw streamed text.
-#[derive(serde::Serialize)]
-struct ModelDelta<'a> {
-    event: &'static str,
-    delta: ModelDeltaInner<'a>,
+/// Print one event line. Serialization of these shapes cannot fail, so the
+/// helper owns the `expect` instead of repeating it at every call site.
+pub(crate) fn print_event(event: Event) {
+    println!(
+        "{}",
+        serde_json::to_string(&event).expect("event serializes")
+    );
 }
 
 /// The `delta` wrapper keeps the `Text` discriminant name the fleet reads.
@@ -260,71 +290,17 @@ struct ModelDeltaText<'a> {
     text: &'a str,
 }
 
-/// The `session_idle` marker that ends a JSON turn.
-#[derive(serde::Serialize)]
-struct SessionIdle<'a> {
-    event: &'static str,
-    session_id: &'a str,
-}
-
-/// One `assistant_message` line with the turn's reply text.
-#[derive(serde::Serialize)]
-struct AssistantMessage<'a> {
-    event: &'static str,
-    text: &'a str,
-}
-
-/// The `image_built` line for a registered build. Lives here so the image
-/// command shares the CLI's typed event lines.
-#[derive(serde::Serialize)]
-pub struct ImageBuilt<'a> {
-    event: &'static str,
-    name: &'a str,
-    tag: &'a str,
-    manifest_id: &'a str,
-    header: &'a swarmy_api_types::ImageHeader,
-    size: u64,
-    chunks_total: u64,
-    chunks_stored: u64,
-    chunks_uploaded: u64,
-}
-
-impl<'a> ImageBuilt<'a> {
-    /// The typed `image_built` line for an upload response.
-    #[must_use]
-    pub fn from_upload(uploaded: &'a swarmy_api_types::ImageUpload) -> Self {
-        Self {
-            event: "image_built",
-            name: &uploaded.name,
-            tag: &uploaded.tag,
-            manifest_id: &uploaded.manifest_id,
-            header: &uploaded.header,
-            size: uploaded.size,
-            chunks_total: uploaded.chunks_total,
-            chunks_stored: uploaded.chunks_stored,
-            chunks_uploaded: uploaded.chunks_uploaded,
-        }
-    }
-}
-
-pub async fn chat(
-    client: Client,
-    id: Option<ulid::Ulid>,
-    image: Option<String>,
-    agent: Option<String>,
-    new: bool,
-    selection: SelectionArgs,
-    json: bool,
-) -> Result<()> {
+pub async fn chat(client: Client, endpoint: String, args: ChatArgs, json: bool) -> Result<()> {
     use tokio::io::AsyncBufReadExt;
-    let route = selection.route.clone();
+    let route = args.selection.route.clone();
     let mut conversation = Conversation::open(
         client,
-        id.map(|id| id.to_string()),
-        image,
-        agent,
-        new,
-        selection.into(),
+        endpoint,
+        args.session_id.map(|id| id.to_string()),
+        args.image,
+        args.agent,
+        args.new,
+        args.selection.into(),
         route,
     )
     .await?;
@@ -332,7 +308,9 @@ pub async fn chat(
     // Do not accept input while a worker or scheduler is missing. Recheck without
     // consuming stdin, so a user can type a prompt while the stack recovers.
     conversation
-        .wait_healthy(conversation.provider.as_deref())
+        .wait_healthy(conversation.provider.as_deref(), &mut |message| {
+            eprintln!("{message}");
+        })
         .await?;
     let mode = if json {
         OutputMode::JsonChat
@@ -354,7 +332,9 @@ pub async fn chat(
             line = lines.next_line() => {
                 let Some(prompt) = line? else { break };
                 if prompt.trim().is_empty() { continue; }
-                conversation.wait_healthy(conversation.provider.as_deref()).await?;
+                conversation.wait_healthy(conversation.provider.as_deref(), &mut |message| {
+                    eprintln!("{message}");
+                }).await?;
                 conversation.send(prompt).await?;
                 conversation.until_idle(mode, &mut |output| print_turn_output(output, json)).await?;
             }

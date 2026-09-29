@@ -85,39 +85,13 @@ enum Command {
     Version,
     /// Start a conversation and stream its output until idle
     Run {
-        prompt: String,
-        #[arg(long)]
-        image: Option<String>,
-        /// Resume the main session on a named agent (name or agent id)
-        #[arg(long, conflicts_with = "image")]
-        agent: Option<String>,
-        /// Create a side conversation on the named agent
-        #[arg(long, requires = "agent")]
-        new: bool,
-        /// Continue an existing session by id instead of an agent's main one
-        #[arg(long, conflicts_with_all = ["agent", "image", "new"])]
-        session: Option<ulid::Ulid>,
-        /// Deliver after the current tool call without interrupting the turn.
-        #[arg(long, requires = "session")]
-        queue: bool,
         #[command(flatten)]
-        selection: selection_command::SelectionArgs,
+        args: client_commands::RunArgs,
     },
     /// Open a terminal conversation, or resume a session
     Chat {
-        #[arg(conflicts_with_all = ["provider", "model", "effort"])]
-        session_id: Option<ulid::Ulid>,
-        /// Base image in NAME:TAG form; otherwise use `default_image`.
-        #[arg(long, conflicts_with = "session_id")]
-        image: Option<String>,
-        /// Resume the main session on a named agent (name or agent id)
-        #[arg(long, conflicts_with_all = ["image", "session_id"])]
-        agent: Option<String>,
-        /// Create a side conversation on the named agent
-        #[arg(long, requires = "agent")]
-        new: bool,
         #[command(flatten)]
-        selection: selection_command::SelectionArgs,
+        args: client_commands::ChatArgs,
     },
     /// Inspect stored sessions
     Session {
@@ -168,46 +142,19 @@ fn main() -> anyhow::Result<()> {
     let json = cli.json;
     match cli.command {
         Command::Dev { command } => runtime.block_on(dev::run(command, json)),
-        Command::Auth { command, auth_file } => match command {
-            auth_command::Command::Login { .. } | auth_command::Command::Import { .. } => {
-                run_auth_tool(command, auth_file, json)
-            }
-            command => runtime.block_on(api_commands::auth_command(command, json)),
-        },
+        Command::Auth { command, auth_file } => {
+            runtime.block_on(api_commands::auth_command(command, auth_file, json))
+        }
         Command::Session { command } => {
             runtime.block_on(api_commands::session_command(command, json))
         }
         Command::Agent { command } => runtime.block_on(api_commands::agent_command(command, json)),
         Command::Cost { args } => runtime.block_on(api_commands::cost_command(args, json)),
-        Command::Image { command } => match command {
-            image_command::Command::Build {
-                recipe,
-                tag,
-                name,
-                output,
-            } => runtime.block_on(image::build(recipe, tag, name, output, json)),
-            command => runtime.block_on(api_commands::image_command(command, json)),
-        },
+        Command::Image { command } => runtime.block_on(api_commands::image_command(command, json)),
         Command::Models { command } => runtime.block_on(models::run(command, json)),
         Command::Bench { command } => runtime.block_on(run_bench(command, json)),
-        Command::Run {
-            prompt,
-            image,
-            agent,
-            new,
-            session,
-            queue,
-            selection,
-        } => runtime.block_on(run_prompt(
-            prompt, image, agent, new, session, queue, selection, json,
-        )),
-        Command::Chat {
-            session_id,
-            image,
-            agent,
-            new,
-            selection,
-        } => runtime.block_on(run_chat(session_id, image, agent, new, selection, json)),
+        Command::Run { args } => runtime.block_on(run_prompt(args, json)),
+        Command::Chat { args } => runtime.block_on(run_chat(args, json)),
         #[cfg(feature = "remote")]
         Command::Remote { command } => runtime.block_on(remote(command, json)),
         #[cfg(not(feature = "remote"))]
@@ -232,67 +179,42 @@ async fn connect_client() -> anyhow::Result<(swarmy_client::Client, String)> {
     Ok((client, endpoint))
 }
 
-/// Map a chat-library failure into the binary's error type.
-fn chat_error(error: &swarmy_chat::client_conversation::Error) -> anyhow::Error {
-    anyhow::anyhow!(error.to_string())
-}
-
 async fn run_bench(command: bench_command::Command, json: bool) -> anyhow::Result<()> {
-    let (client, _) = connect_client().await?;
-    client_bench::run(client, command, json).await
-}
-
-// The arguments mirror the `run` CLI flags, so eight parameters is inherent
-// to the dispatch shape.
-#[allow(clippy::too_many_arguments)]
-async fn run_prompt(
-    prompt: String,
-    image: Option<String>,
-    agent: Option<String>,
-    new: bool,
-    session: Option<ulid::Ulid>,
-    queue: bool,
-    selection: selection_command::SelectionArgs,
-    json: bool,
-) -> anyhow::Result<()> {
-    let (client, _) = connect_client().await?;
-    client_commands::run(
-        client, prompt, image, agent, new, session, queue, selection, json,
-    )
-    .await
-}
-
-// The arguments mirror the `chat` CLI flags, so six parameters is inherent
-// to the dispatch shape.
-#[allow(clippy::too_many_arguments)]
-async fn run_chat(
-    session_id: Option<ulid::Ulid>,
-    image: Option<String>,
-    agent: Option<String>,
-    new: bool,
-    selection: selection_command::SelectionArgs,
-    json: bool,
-) -> anyhow::Result<()> {
     let (client, endpoint) = connect_client().await?;
-    client_conversation::wait_healthy(&client, &endpoint, selection.provider.as_deref())
-        .await
-        .map_err(|error| chat_error(&error))?;
+    client_bench::run(client, endpoint, command, json).await
+}
+
+async fn run_prompt(args: client_commands::RunArgs, json: bool) -> anyhow::Result<()> {
+    let (client, endpoint) = connect_client().await?;
+    client_commands::run(client, endpoint, args, json).await
+}
+
+async fn run_chat(args: client_commands::ChatArgs, json: bool) -> anyhow::Result<()> {
+    let (client, endpoint) = connect_client().await?;
+    client_conversation::wait_healthy(
+        &client,
+        &endpoint,
+        args.selection.provider.as_deref(),
+        &mut |message| eprintln!("{message}"),
+    )
+    .await?;
     if json {
-        client_commands::chat(client, session_id, image, agent, new, selection, true).await
+        client_commands::chat(client, endpoint, args, json).await
     } else {
         #[cfg(feature = "chat")]
         {
             swarmy_chat::client_chat::run(
                 client,
-                session_id,
-                image,
-                agent,
-                new,
-                selection.clone().into(),
-                selection.route,
+                endpoint,
+                args.session_id,
+                args.image,
+                args.agent,
+                args.new,
+                args.selection.clone().into(),
+                args.selection.route,
+                &mut |message| eprintln!("{message}"),
             )
-            .await
-            .map_err(|error| chat_error(&error))?;
+            .await?;
             Ok(())
         }
         #[cfg(not(feature = "chat"))]
@@ -308,70 +230,6 @@ async fn run_doctor(json: bool) -> anyhow::Result<()> {
     if !doctor::run(json).await? {
         std::process::exit(1);
     }
-    Ok(())
-}
-
-// `login` and `import` shell out to the `swarmy-auth` helper so terminal
-// OAuth flows stay out of this binary; every other auth command goes through
-// the control-plane API in the dispatch above.
-fn run_auth_tool(
-    command: auth_command::Command,
-    file: Option<PathBuf>,
-    json: bool,
-) -> anyhow::Result<()> {
-    let sibling = std::env::current_exe()?.with_file_name("swarmy-auth");
-    let helper = if sibling.is_file() {
-        sibling.into_os_string()
-    } else {
-        "swarmy-auth".into()
-    };
-    let mut process = std::process::Command::new(helper);
-    if json {
-        process.arg("--json");
-    }
-    if let Some(file) = file {
-        process.arg("--auth-file").arg(file);
-    }
-    match command {
-        auth_command::Command::Import { file, label } => {
-            process.arg("import");
-            if let Some(file) = file {
-                process.arg("--file").arg(file);
-            }
-            if let Some(label) = label {
-                process.arg("--label").arg(label);
-            }
-        }
-        auth_command::Command::Login {
-            provider,
-            label,
-            resource,
-            scope,
-        } => {
-            process.arg("login").arg(provider);
-            if let Some(label) = label {
-                process.arg("--label").arg(label);
-            }
-            if let Some(resource) = resource {
-                process.arg("--resource").arg(resource);
-            }
-            if let Some(scope) = scope {
-                process.arg("--scope").arg(scope);
-            }
-        }
-        auth_command::Command::Set { .. }
-        | auth_command::Command::Ls
-        | auth_command::Command::Rm { .. }
-        | auth_command::Command::Check { .. }
-        | auth_command::Command::Routes { .. }
-        | auth_command::Command::Quota { .. } => {
-            anyhow::bail!("credential reads and writes run through the API, not the helper");
-        }
-    }
-    let status = process.status().map_err(|error| {
-        anyhow::anyhow!("swarmy-auth helper unavailable; run make install-client or cargo install --path crates/swarmy-devtools: {error}")
-    })?;
-    anyhow::ensure!(status.success(), "swarmy-auth failed: {status}");
     Ok(())
 }
 
@@ -394,11 +252,7 @@ async fn remote(command: swarmy_cloud::Command, json: bool) -> anyhow::Result<()
             run_once(retry, json, true, name, advises).await?;
             Ok(())
         }
-        swarmy_cloud::RunOutcome::NeedsTagConfirmation { targets } => {
-            let node = match &retry {
-                swarmy_cloud::Command::Tag { name: node } => node.clone(),
-                _ => anyhow::bail!("tag confirmation reruns remote tag"),
-            };
+        swarmy_cloud::RunOutcome::NeedsTagConfirmation { node, targets } => {
             confirm_tag(&targets, &node)?;
             run_once(retry, json, true, name, advises).await?;
             Ok(())

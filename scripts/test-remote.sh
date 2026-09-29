@@ -119,7 +119,7 @@ for attempt in {1..100}; do
     sleep .1
 done
 grep -q 'node registered and ready' swarmyd.log
-"$cli" remote status --json > status.json
+"$cli" remote ls --json > status.json
 python3 - <<'PYTHON'
 import json
 status = json.load(open('status.json'))[0]

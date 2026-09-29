@@ -124,12 +124,14 @@ async fn picker(
 /// Returns an error if terminal setup, the API, or the event stream fails.
 pub async fn run(
     client: Client,
+    endpoint: String,
     id: Option<ulid::Ulid>,
     image: Option<String>,
     agent: Option<String>,
     new: bool,
     selection: InferenceSelection,
     route: Option<String>,
+    on_problem: &mut impl FnMut(&str),
 ) -> Result<()> {
     if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
         return Err(terminal_error("chat requires an interactive terminal"));
@@ -149,13 +151,22 @@ pub async fn run(
     } else {
         id.map(|value| value.to_string())
     };
-    let mut conversation =
-        Conversation::open(client.clone(), choice, image, agent, new, selection, route).await?;
+    let mut conversation = Conversation::open(
+        client.clone(),
+        endpoint,
+        choice,
+        image,
+        agent,
+        new,
+        selection,
+        route,
+    )
+    .await?;
     // Health warnings belong on the ordinary terminal, not behind the alternate screen.
     disable_raw_mode().map_err(terminal_error)?;
     execute!(io::stdout(), LeaveAlternateScreen).map_err(terminal_error)?;
     conversation
-        .wait_healthy(conversation.provider.as_deref())
+        .wait_healthy(conversation.provider.as_deref(), on_problem)
         .await?;
     enable_raw_mode().map_err(terminal_error)?;
     execute!(io::stdout(), EnterAlternateScreen).map_err(terminal_error)?;
@@ -295,7 +306,7 @@ async fn send_or_queue(
 /// Requeue only an idle guard or an API append conflict known to be transient.
 fn is_busy_send_error(error: &Error) -> bool {
     match error {
-        Error::SessionNotIdle(_) => true,
+        Error::SessionNotIdle => true,
         Error::Client(client) => is_busy_client_error(client),
         _ => false,
     }
@@ -707,10 +718,7 @@ mod tests {
             reqwest::StatusCode::CONFLICT,
             "main_session_close"
         )));
-        assert!(is_busy_send_error(&Error::SessionNotIdle(
-            crate::client_conversation::SessionNotIdle
-        )));
-        assert!(!is_busy_send_error(&Error::Terminal("409 Conflict".into())));
+        assert!(is_busy_send_error(&Error::SessionNotIdle));
         // Permanent failures propagate so the client exits with the message
         // instead of waiting forever on `input locked (queued)`.
         assert!(!is_busy_send_error(&api_error(

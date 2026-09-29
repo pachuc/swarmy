@@ -64,7 +64,7 @@ fn turn_event(
     }
 }
 
-pub async fn run(client: Client, command: Command, json: bool) -> Result<()> {
+pub async fn run(client: Client, endpoint: String, command: Command, json: bool) -> Result<()> {
     let Command::Turn {
         turns,
         image,
@@ -75,6 +75,7 @@ pub async fn run(client: Client, command: Command, json: bool) -> Result<()> {
     for shape in ["no_tool", "bash"] {
         let mut conversation = Conversation::open(
             client.clone(),
+            endpoint.clone(),
             None,
             Some(image.clone()),
             None,
@@ -157,7 +158,9 @@ async fn measure(
     let mut client_elapsed = Duration::ZERO;
     let mut silent = |_: swarmy_chat::client_conversation::TurnOutput| {};
     {
-        let done = conversation.until_idle(OutputMode::Silent, &mut silent);
+        // Text mode with an emitter that does nothing: the turn still
+        // requires a reply, but nothing renders during measurement.
+        let done = conversation.until_idle(OutputMode::TextRun, &mut silent);
         tokio::pin!(done);
         loop {
             tokio::select! {

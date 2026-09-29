@@ -25,9 +25,12 @@ pub enum Error {
     EmptyMessage,
     /// The session was busy and the caller did not ask to queue.
     #[error("session is not idle")]
-    SessionNotIdle(#[from] SessionNotIdle),
+    SessionNotIdle,
     /// The worker did not pick up the session before the pickup deadline.
-    #[error("worker did not pick up session within 30 seconds")]
+    #[error(
+        "worker did not pick up session within {} seconds",
+        PICKUP_DEADLINE.as_secs()
+    )]
     PickupTimeout,
     /// The operator interrupted the turn.
     #[error("interrupted")]
@@ -41,39 +44,24 @@ pub enum Error {
     /// The API did not answer before the client timeout.
     #[error("API at {endpoint}: request timed out")]
     ApiTimeout { endpoint: String },
-    /// Local configuration or endpoint resolution failed.
+    /// A control-plane request failed. The message renders the inner error,
+    /// and the source chain keeps its type for `downcast_ref` checks.
     #[error("{0}")]
-    Config(String),
-    /// A control-plane request failed.
-    #[error(transparent)]
     Client(#[from] swarmy_client::Error),
     /// Terminal setup or input failed (interactive chat only).
     #[error("terminal error: {0}")]
     Terminal(String),
     /// A turn payload did not serialize.
-    #[error(transparent)]
+    #[error("{0}")]
     Json(#[from] serde_json::Error),
     /// A terminal or pipe write failed.
-    #[error(transparent)]
+    #[error("{0}")]
     Io(#[from] std::io::Error),
 }
 
-/// A local idle guard failed before the append reached the API.
-#[derive(Debug)]
-pub struct SessionNotIdle;
-
-impl std::fmt::Display for SessionNotIdle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("session is not idle")
-    }
-}
-
-impl std::error::Error for SessionNotIdle {}
-
 /// How one turn's progress is reported. One variant replaces the old
 /// `until_idle(json, run, quiet)` booleans: the shape selects JSON or text
-/// rendering, the `Run` suffix requires an assistant reply, and `Silent`
-/// emits nothing for benchmarks.
+/// rendering, and the `Run` suffix requires an assistant reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
     /// Human-readable streaming text; the turn fails without a reply.
@@ -84,8 +72,6 @@ pub enum OutputMode {
     JsonRun,
     /// Machine-readable JSON lines for an interactive session.
     JsonChat,
-    /// No output; the turn still fails without a reply.
-    Silent,
 }
 
 impl OutputMode {
@@ -95,16 +81,10 @@ impl OutputMode {
         matches!(self, Self::JsonRun | Self::JsonChat)
     }
 
-    /// Whether the turn emits nothing.
-    #[must_use]
-    pub fn is_silent(self) -> bool {
-        matches!(self, Self::Silent)
-    }
-
     /// Whether an idle turn without an assistant reply fails.
     #[must_use]
     pub fn requires_reply(self) -> bool {
-        matches!(self, Self::TextRun | Self::JsonRun | Self::Silent)
+        matches!(self, Self::TextRun | Self::JsonRun)
     }
 }
 
@@ -145,35 +125,21 @@ pub enum TurnOutput {
 /// the session as unpicked. Covers scheduler, worker, and gateway startup.
 const PICKUP_DEADLINE: Duration = Duration::from_secs(30);
 
-/// One API call with the standard client timeout, preserving the typed
-/// client error for the caller.
+/// One API call with the standard client timeout. The duration lives in
+/// `swarmy-client` next to the CLI's own call; this wrapper only attaches the
+/// endpoint the binary resolved so timeouts name it.
 async fn call<T>(
     endpoint: &str,
     future: impl std::future::Future<Output = Result<T, swarmy_client::Error>>,
 ) -> Result<T, Error> {
-    tokio::time::timeout(Duration::from_secs(10), future)
+    swarmy_client::timed_call(future)
         .await
-        .map_err(|_| Error::ApiTimeout {
-            endpoint: endpoint.to_owned(),
-        })?
-        .map_err(Error::Client)
-}
-
-/// The configured API endpoint, without the anyhow wrapper the binary client uses.
-fn api_endpoint() -> Result<String> {
-    let settings = swarmy_config::Settings::load()
-        .map_err(|error| Error::Config(error.to_string()))?
-        .settings;
-    if settings.api.token.is_empty() {
-        return Err(Error::Config(
-            "no [api] token configured; run swarmy dev up".into(),
-        ));
-    }
-    Ok(settings
-        .api
-        .url
-        .clone()
-        .unwrap_or_else(|| format!("http://{}", settings.api.listen)))
+        .map_err(|error| match error {
+            swarmy_client::Error::Timeout => Error::ApiTimeout {
+                endpoint: endpoint.to_owned(),
+            },
+            error => Error::Client(error),
+        })
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -274,12 +240,18 @@ async fn create_session(
     }
 }
 
-/// Wait until required services report healthy. Progress is logged, never
-/// printed, so terminal renderers keep control of the screen.
+/// Wait until required services report healthy. Progress reports go to the
+/// caller's `on_problem` callback (the CLI prints them to stderr) instead of
+/// the tracing log, so `run` and `chat` do not wait silently.
 ///
 /// # Errors
 /// Returns an error if the API call or event stream fails.
-pub async fn wait_healthy(client: &Client, endpoint: &str, provider: Option<&str>) -> Result<()> {
+pub async fn wait_healthy(
+    client: &Client,
+    endpoint: &str,
+    provider: Option<&str>,
+    on_problem: &mut impl FnMut(&str),
+) -> Result<()> {
     let mut last = String::new();
     loop {
         let health = call(endpoint, client.health()).await?;
@@ -293,7 +265,7 @@ pub async fn wait_healthy(client: &Client, endpoint: &str, provider: Option<&str
             provider.map_or(String::new(), |p| format!(" ({p})"))
         );
         if message != last {
-            tracing::info!("{message}");
+            on_problem(&message);
             last = message;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -344,12 +316,14 @@ async fn apply_session_route(
 }
 
 impl Conversation {
-    /// Open or resume a conversation.
+    /// Open or resume a conversation. The endpoint comes from the binary's
+    /// connection, which already resolved and health-checked it.
     ///
     /// # Errors
     /// Returns an error if the API call or event stream fails.
     pub async fn open(
         client: Client,
+        endpoint: String,
         id: Option<String>,
         image: Option<String>,
         agent: Option<String>,
@@ -428,7 +402,6 @@ impl Conversation {
             .clone()
             .or(provider)
             .or_else(|| agent_record.as_ref().and_then(|a| a.provider.clone()));
-        let endpoint = api_endpoint()?;
         session = apply_session_route(&client, &endpoint, session, route.as_deref()).await?;
         let head = session.head_sequence;
         Ok(Self {
@@ -475,7 +448,7 @@ impl Conversation {
         self.tool_result = None;
         self.pending.clear();
         if !queue && self.session.state != api::SessionState::Idle {
-            return Err(SessionNotIdle.into());
+            return Err(Error::SessionNotIdle);
         }
         let mut body = api::AppendMessage {
             idempotency_key: ulid::Ulid::generate().to_string(),
@@ -491,7 +464,7 @@ impl Conversation {
             }) if status.as_u16() == 409 && error.code == "stale_head" => {
                 self.session = call(&self.endpoint, self.client.session(&self.id)).await?;
                 if !queue && self.session.state != api::SessionState::Idle {
-                    return Err(SessionNotIdle.into());
+                    return Err(Error::SessionNotIdle);
                 }
                 body.expected_head = self.session.head_sequence;
                 call(&self.endpoint, self.client.append_message(&self.id, &body)).await?
@@ -714,12 +687,17 @@ impl Conversation {
         self.pending.push_back(item);
     }
 
-    /// Wait until the selected provider is healthy.
+    /// Wait until the selected provider is healthy, reporting progress
+    /// through the caller's callback (see [`wait_healthy`]).
     ///
     /// # Errors
     /// Returns an error if the API call or event stream fails.
-    pub async fn wait_healthy(&self, provider: Option<&str>) -> Result<()> {
-        wait_healthy(&self.client, &self.endpoint, provider).await
+    pub async fn wait_healthy(
+        &self,
+        provider: Option<&str>,
+        on_problem: &mut impl FnMut(&str),
+    ) -> Result<()> {
+        wait_healthy(&self.client, &self.endpoint, provider, on_problem).await
     }
 
     /// Drive the stream until the session is idle, handing each renderable
@@ -734,11 +712,6 @@ impl Conversation {
         emit: &mut impl FnMut(TurnOutput),
     ) -> Result<()> {
         let mut progress = TurnProgress::default();
-        let mut emit = |output: TurnOutput| {
-            if !mode.is_silent() {
-                emit(output);
-            }
-        };
         let deadline = Instant::now() + PICKUP_DEADLINE;
         loop {
             let next = async {
@@ -770,7 +743,7 @@ impl Conversation {
                 ConversationItem::Stream(StreamItem::Event(event)) => {
                     let sequence = event.sequence;
                     if let api::EventPayload::StoreRecord { record } = event.payload
-                        && self.record_event(&record, sequence, mode, &mut progress, &mut emit)?
+                        && self.record_event(&record, sequence, mode, &mut progress, &mut *emit)?
                     {
                         return Ok(());
                     }
@@ -896,9 +869,6 @@ impl Conversation {
         self.last_text.clone_from(&text);
         if let Some(sender) = &self.observer {
             let _ = sender.send(swarmy_core::TurnStage::FinalTextRendered);
-        }
-        if mode.is_silent() {
-            return;
         }
         if mode.is_json() {
             emit(TurnOutput::AssistantMessage(text));
@@ -1051,6 +1021,15 @@ mod tests {
         assert!(image_ref("ubuntu:dev").is_ok());
         assert!(image_ref("ubuntu").is_err());
         assert!(image_ref(":dev").is_err());
+    }
+
+    #[test]
+    fn wrapped_client_error_keeps_its_typed_source() {
+        let inner = swarmy_client::Error::Timeout;
+        let error = Error::Client(inner);
+        let source = std::error::Error::source(&error).expect("client error has a source");
+        assert!(source.downcast_ref::<swarmy_client::Error>().is_some());
+        assert_eq!(error.to_string(), "request timed out");
     }
 
     #[test]

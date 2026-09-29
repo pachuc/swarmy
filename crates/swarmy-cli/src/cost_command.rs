@@ -49,20 +49,6 @@ pub enum CostDimension {
     Model,
 }
 
-impl CostDimension {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Session => "session",
-            Self::Agent => "agent",
-            Self::Provider => "provider",
-            Self::Entry => "entry",
-            Self::Kind => "kind",
-            Self::Model => "model",
-        }
-    }
-}
-
 /// Calendar grouping for usage rows, parsed once by clap.
 #[derive(Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum UsageGroup {
@@ -73,22 +59,14 @@ pub enum UsageGroup {
     Year,
 }
 
-impl UsageGroup {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Day => "day",
-            Self::Week => "week",
-            Self::Month => "month",
-            Self::Year => "year",
-        }
-    }
-}
-
-impl std::fmt::Display for UsageGroup {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
-    }
+/// The clap name for a value-enum flag. One helper replaces the hand-written
+/// `as_str` methods each flag enum used to carry.
+#[must_use]
+pub fn value_name(value: impl clap::ValueEnum) -> String {
+    value
+        .to_possible_value()
+        .map(|possible| possible.get_name().to_owned())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
