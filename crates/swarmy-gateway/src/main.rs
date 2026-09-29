@@ -688,7 +688,10 @@ impl Gateway {
             Ok(response) => Ok(Some((Ok(response), streamed))),
             Err(error)
                 if !blocked
-                    && !{ let class = error.classify(); class.permanent || class.retryable }
+                    && {
+                        let class = error.classify();
+                        !class.permanent && !class.retryable
+                    }
                     // The worker, not the transport queue, owns the single
                     // compact-and-retry attempt for context overflow.
                     && !matches!(error, swarmy_llm::Error::ContextOverflow(_)) =>

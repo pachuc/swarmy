@@ -86,6 +86,17 @@ pub(crate) fn classify_http_failure(
     if status == StatusCode::PAYLOAD_TOO_LARGE || is_context_overflow(body) {
         return Error::ContextOverflow(body.to_owned());
     }
+    // Subscription usage limits can be reported as 403, not only 429.
+    if status == StatusCode::FORBIDDEN
+        && crate::classify_provider_failure(body) == crate::ProviderFailureReason::Quota
+    {
+        return Error::ProviderResponse {
+            status,
+            reason: crate::ProviderFailureReason::Quota,
+            message: body.to_owned(),
+            retry_after,
+        };
+    }
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
         return Error::Authentication(body.to_owned());
     }
@@ -111,5 +122,17 @@ mod tests {
             "maximum context length exceeded"
         ));
         assert!(!super::is_context_overflow("rate limit: too many tokens"));
+    }
+    #[test]
+    fn forbidden_usage_limit_is_retryable_but_bad_credentials_are_not() {
+        let quota = super::classify_http_failure(
+            reqwest::StatusCode::FORBIDDEN,
+            "usage_limit_reached",
+            None,
+        );
+        assert!(quota.classify().retryable);
+        let auth =
+            super::classify_http_failure(reqwest::StatusCode::FORBIDDEN, "invalid key", None);
+        assert!(auth.classify().permanent);
     }
 }
