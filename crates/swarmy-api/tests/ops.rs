@@ -154,7 +154,7 @@ async fn upload_registers_image_and_rejects_bad_requests() {
         .unwrap();
     assert_eq!(repeated.manifest_id, uploaded.manifest_id);
     let shown = fixture.client.image("ops", "test").await.unwrap();
-    assert_eq!(shown.id, uploaded.manifest_id);
+    assert_eq!(shown.manifest_id, uploaded.manifest_id);
     // Invalid labels and empty bodies fail before any registration.
     let bad = fixture
         .client

@@ -55,7 +55,7 @@ async fn server_probe(
                 body.message
             );
         }
-        swarmy_client::api_client::api_error(&error, endpoint)
+        swarmy_client::api_client::api_error(error, endpoint)
     })?;
     let dollars = {
         let units = answer.cost_micros / 100 + u64::from(answer.cost_micros % 100 >= 50);
@@ -73,7 +73,7 @@ async fn server_probe(
             "Cost: ${} ({} micros; catalog estimate)\nEffort used: {}\nElapsed: {:.3}s",
             dollars,
             answer.cost_micros,
-            serde_json::to_value(&answer.effort)
+            serde_json::to_value(answer.effort)
                 .ok()
                 .and_then(|value| value.as_str().map(str::to_owned))
                 .unwrap_or_else(|| "unknown".into()),

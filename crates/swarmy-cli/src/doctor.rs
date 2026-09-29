@@ -359,9 +359,9 @@ async fn api_checks(
             return Vec::new();
         }
     };
-    let version = health["version"].as_str().unwrap_or("unknown");
-    let commit = health["git_commit"].as_str().unwrap_or("unknown");
-    let api_version = health["api_version"].as_str().unwrap_or("");
+    let version = health.version.as_str();
+    let commit = health.git_commit.as_str();
+    let api_version = health.api_version.as_str();
     // Servers older than the documented contract carry no api_version; those
     // still need an exact binary match. Newer servers only need the same major
     // API version, so minor releases do not break existing clients.
@@ -389,7 +389,7 @@ async fn api_checks(
         .map_err(|error| format!("{error:#}"));
     match snapshot {
         Ok(snapshot) => {
-            let providers = swarmy_client::api_client::call(&endpoint, client.cli_providers())
+            let providers = swarmy_client::api_client::call(&endpoint, client.providers())
                 .await
                 .ok();
             snapshot_checks(checks, snapshot, &loaded.settings, providers.as_deref())
@@ -409,17 +409,21 @@ fn gateway_providers(snapshot: &Snapshot) -> Vec<String> {
     snapshot
         .services
         .iter()
-        .filter(|s| s.role == "gateway" && s.alive)
+        .filter(|s| s.role == swarmy_api_types::ServiceRole::Gateway && s.alive)
         .flat_map(|s| s.providers.iter().cloned())
         .collect()
 }
 
 fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
-    for role in ["scheduler", "worker", "gateway"] {
+    for (role, kind) in [
+        ("scheduler", swarmy_api_types::ServiceRole::Scheduler),
+        ("worker", swarmy_api_types::ServiceRole::Worker),
+        ("gateway", swarmy_api_types::ServiceRole::Gateway),
+    ] {
         let live: Vec<_> = snapshot
             .services
             .iter()
-            .filter(|s| s.role == role && s.alive)
+            .filter(|s| s.role == kind && s.alive)
             .collect();
         let result = if live.is_empty() {
             Err(format!("no live {role} heartbeat"))
@@ -440,7 +444,11 @@ fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
         .services
         .iter()
         .rev()
-        .filter(|s| s.role == "node" && s.alive && seen.insert(s.instance_id.as_str()))
+        .filter(|s| {
+            s.role == swarmy_api_types::ServiceRole::Node
+                && s.alive
+                && seen.insert(s.instance_id.as_str())
+        })
         .collect();
     let slots: u32 = nodes
         .iter()
@@ -529,7 +537,7 @@ fn snapshot_checks(
     if let Some(credentials) = snapshot.credentials {
         for credential in credentials {
             let name = format!("credential {}", credential.provider);
-            let status = format!("{:?}", credential.status).to_lowercase();
+            let status = credential.status.as_str();
             checks.push(
                 if credential.status == swarmy_api_types::CredentialStatus::Ready {
                     Check::new(&name, Ok(format!("present; {status}")), "")
@@ -547,7 +555,7 @@ fn snapshot_checks(
             {
                 row.credential = "store".into();
                 row.store = "present".into();
-                row.status = status;
+                status.clone_into(&mut row.status);
             }
         }
     } else {

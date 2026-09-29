@@ -248,7 +248,8 @@ context_window = 42
         .find(|row| row["id"] == "private")
         .unwrap();
     assert_eq!(private["api"], "OpenAiCompletions");
-    assert_eq!(private["credential"], "unknown");
+    assert!(private.get("credential").is_none());
+    assert!(private.get("status").is_none());
 }
 
 #[test]

@@ -58,7 +58,37 @@ pub enum CredentialStatus {
     NeedsLogin,
 }
 
+/// The coarse credential family shown in listings. OAuth entries are
+/// subscriptions; API keys are cloud entries when the bookkeeping says so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CredentialEntryKind {
+    Subscription,
+    ApiKey,
+    Cloud,
+}
+
+impl CredentialEntryKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Subscription => "subscription",
+            Self::ApiKey => "api-key",
+            Self::Cloud => "cloud",
+        }
+    }
+}
+
 impl CredentialRecord {
+    #[must_use]
+    pub const fn entry_kind(&self) -> CredentialEntryKind {
+        match self.kind {
+            CredentialKind::OAuth { .. } => CredentialEntryKind::Subscription,
+            CredentialKind::ApiKey { .. } if self.bookkeeping.cloud => CredentialEntryKind::Cloud,
+            CredentialKind::ApiKey { .. } => CredentialEntryKind::ApiKey,
+        }
+    }
+
     #[must_use]
     pub fn status(&self, now: Timestamp) -> CredentialStatus {
         match &self.kind {

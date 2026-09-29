@@ -363,8 +363,7 @@ async fn agent_and_session_show_name_entries_and_cost_per_entry() {
         let shown = fixture.output(&["agent", "show", "coster", "--json"]).await;
         assert!(shown.status.success());
         let agent: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
-        let agent_id: swarmy_core::AgentId =
-            serde_json::from_value(agent["agent_id"].clone()).unwrap();
+        let agent_id: swarmy_core::AgentId = serde_json::from_value(agent["id"].clone()).unwrap();
         let first = session_for(&fixture, Some(agent_id)).await;
         let second = session_for(&fixture, Some(agent_id)).await;
         complete(
@@ -413,11 +412,10 @@ async fn agent_and_session_show_name_entries_and_cost_per_entry() {
         let shown = fixture
             .output(&["session", "show", &first.to_string(), "--json"])
             .await;
-        let mut lines = String::from_utf8(shown.stdout).unwrap();
-        lines = lines.lines().nth(1).unwrap().into();
-        let usage: serde_json::Value = serde_json::from_str(&lines).unwrap();
-        let entries: Vec<swarmy_api_types::EntryUsageView> =
-            serde_json::from_value(usage["entries"].clone()).unwrap();
+        let shown = String::from_utf8(shown.stdout).unwrap();
+        let record: swarmy_api_types::Session =
+            serde_json::from_str(shown.lines().next().unwrap()).unwrap();
+        let entries = record.entries;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].provider, "openai");
         // The agent filter answers the weekly cost question for one agent.

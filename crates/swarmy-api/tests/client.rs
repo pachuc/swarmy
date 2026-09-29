@@ -146,6 +146,10 @@ async fn assert_agent_routes(client: &Client) {
             effort: None,
             system_prompt: None,
             route: None,
+
+            memory_mib: None,
+            gpu: None,
+            github_token: None,
         })
         .await
         .unwrap();
@@ -163,6 +167,12 @@ async fn assert_agent_routes(client: &Client) {
                     effort: None,
                     route: None,
                     system_prompt: None,
+
+                    memory_mib: None,
+                    gpu: None,
+                    resets: Vec::new(),
+                    github_token: None,
+                    clear_github_token: false,
                 }
             )
             .await
@@ -184,30 +194,26 @@ async fn assert_agent_routes(client: &Client) {
         .await
         .unwrap();
     assert!(named.agent_id.is_some());
-    assert_eq!(
+    assert!(
         client
             .delete_agent("fixture-agent", "delete")
             .await
-            .unwrap()["deleted"],
-        true
+            .unwrap()
+            .deleted
     );
 }
 
 async fn assert_service_discovery(client: &Client) {
     let health = client.health().await.unwrap();
-    assert!(health.get("version").is_some());
-    assert!(health.get("api_version").is_some());
+    assert!(!health.version.is_empty());
+    assert!(!health.api_version.is_empty());
     assert!(client.openapi().await.unwrap().get("openapi").is_some());
 }
 
 async fn assert_catalog_and_credentials(client: &Client) {
     let first = &client.models().await.unwrap()[0];
     assert_eq!(
-        client
-            .model(&first.provider_id, &first.id)
-            .await
-            .unwrap()
-            .id,
+        client.model(&first.provider, &first.id).await.unwrap().id,
         first.id
     );
     assert!(!client.search_models("gpt").await.unwrap().is_empty());
@@ -219,6 +225,7 @@ async fn assert_catalog_and_credentials(client: &Client) {
                 kind: api::CredentialKind::ApiKey,
                 label: "test".into(),
                 secret: "secret".into(),
+                extra: std::collections::BTreeMap::default(),
             })
             .await
             .unwrap();
@@ -227,12 +234,12 @@ async fn assert_catalog_and_credentials(client: &Client) {
             created
         );
         assert!(!client.credentials().await.unwrap().is_empty());
-        assert_eq!(
+        assert!(
             client
                 .remove_credential("fixture-provider", "delete-credential")
                 .await
-                .unwrap()["deleted"],
-            true
+                .unwrap()
+                .deleted
         );
     }
 }

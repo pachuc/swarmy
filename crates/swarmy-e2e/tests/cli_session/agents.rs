@@ -115,7 +115,7 @@ async fn create_agents(fixture: &Fixture) -> AgentRecord {
             .status
             .success()
     );
-    let created: AgentRecord = serde_json::from_str(&success(
+    let created: swarmy_api_types::Agent = serde_json::from_str(&success(
         fixture
             .output(&[
                 "agent",
@@ -139,33 +139,31 @@ async fn inspect_agents(
     second: SessionId,
 ) {
     let text = success(fixture.output(&["agent", "ls"]).await);
-    assert!(
-        text.contains("tommy")
-            && text.contains("sessions=2")
-            && text.contains("node=-")
-            && text.contains("created=")
-    );
+    assert!(text.contains("tommy") && text.contains("created="));
     let listed = success(fixture.output(&["agent", "ls", "--json"]).await);
     let rows: Vec<serde_json::Value> = listed
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0]["session_count"], 2);
-    assert!(rows[0]["node_id"].is_null());
+    // List rows omit detail keys instead of printing placeholders.
+    assert!(rows[0].get("session_count").is_none());
+    assert!(rows[0].get("sessions").is_none());
+    assert!(rows[0].get("node_id").is_none());
     let text = success(fixture.output(&["agent", "show", "tommy"]).await);
     for expected in [
         "Build things",
         &format!("main_session={first}"),
-        &format!("session={first} state=Idle computer_deleted=false main=true"),
-        &format!("session={second} state=Idle computer_deleted=false main=false"),
+        &format!("session={first} state=idle computer_deleted=false main=true"),
+        &format!("session={second} state=idle computer_deleted=false main=false"),
+        "sessions=2",
         "placement_epoch=-",
         "sandbox_state=unknown",
         "last_snapshot=-",
         "age_seconds=-",
         &first.to_string(),
         &second.to_string(),
-        "state=Idle",
+        "state=idle",
     ] {
         assert!(text.contains(expected), "missing {expected}: {text}");
     }
@@ -175,19 +173,19 @@ async fn inspect_agents(
             .await,
     ))
     .unwrap();
-    assert_eq!(shown["main_session"], first.to_string());
+    assert_eq!(shown["main_session_id"], first.to_string());
     assert_eq!(shown["sessions"].as_array().unwrap().len(), 2);
     assert_eq!(shown["sessions"][0]["state"], "idle");
     assert!(shown["last_snapshot_at"].is_null());
     // The expected projection is assembled from the fixture's store records, not the API.
     let expected_agent = serde_json::json!({
-        "agent_id": agent.agent_id, "name": agent.name, "description": agent.description,
-        "main_session": first, "session_count": 2, "sandbox_state": "unknown",
+        "id": agent.agent_id, "name": agent.name, "description": agent.description,
+        "main_session_id": first, "session_count": 2, "sandbox_state": "unknown",
         "last_snapshot_at": null, "node_id": null,
     });
     let actual_agent = serde_json::json!({
-        "agent_id": shown["agent_id"], "name": shown["name"],
-        "description": shown["description"], "main_session": shown["main_session"],
+        "id": shown["id"], "name": shown["name"],
+        "description": shown["description"], "main_session_id": shown["main_session_id"],
         "session_count": shown["session_count"], "sandbox_state": shown["sandbox_state"],
         "last_snapshot_at": shown["last_snapshot_at"], "node_id": shown["node_id"],
     });
@@ -211,25 +209,22 @@ async fn inspect_agents(
     assert_eq!(rows[0]["main"], true);
     let stored_session = fixture.store.fetch_session(first).await.unwrap().unwrap();
     let expected_session = serde_json::json!({
-        "session_id": first, "state": stored_session.state,
-        "head_seq": stored_session.head_seq, "agent_name": "tommy",
-        "main": true, "archived": false,
-        "resolved_inference": {"provider": "fake", "model": "scripted", "effort": "medium"},
+        "id": first, "state": stored_session.state,
+        "head_sequence": stored_session.head_seq, "agent_name": "tommy",
+        "main": true,
+        "resolved": {"provider": "fake", "model": "scripted", "effort": "medium"},
     });
     let actual_session = serde_json::json!({
-        "session_id": rows[0]["session_id"], "state": rows[0]["state"],
-        "head_seq": rows[0]["head_seq"], "agent_name": rows[0]["agent_name"],
-        "main": rows[0]["main"], "archived": rows[0]["archived"],
-        "resolved_inference": rows[0]["resolved_inference"],
+        "id": rows[0]["id"], "state": rows[0]["state"],
+        "head_sequence": rows[0]["head_sequence"], "agent_name": rows[0]["agent_name"],
+        "main": rows[0]["main"],
+        "resolved": rows[0]["resolved"],
     });
     assert_eq!(actual_session, expected_session);
 
     assert_eq!(rows[1]["main"], false);
     assert_eq!(rows[2]["main"], false);
-    assert_eq!(
-        rows[0]["kind"]["named"]["agent_id"],
-        agent.agent_id.to_string()
-    );
+    assert_eq!(rows[0]["kind"], "named");
 }
 
 async fn close_and_delete(
@@ -258,7 +253,7 @@ async fn close_and_delete(
         fixture.output(&["session", "close", &id, "--json"]).await,
     ))
     .unwrap();
-    assert_eq!(closed["event"], "session_closed");
+    assert_eq!(closed["closed"], true);
     let record = fixture
         .store
         .fetch_session(ephemeral)
@@ -288,7 +283,7 @@ async fn close_and_delete(
             .await,
     ))
     .unwrap();
-    assert_eq!(deleted["event"], "agent_deleted");
+    assert_eq!(deleted["name"], "second");
     let retained = fixture.store.fetch_session(first).await.unwrap().unwrap();
     assert!(retained.computer_deleted);
     assert_eq!(
@@ -408,7 +403,7 @@ async fn json_chat_reads_prompts_and_retains_named_sessions_on_eof() {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(rows[0]["agent_name"], "tommy");
-        assert!(rows.iter().any(|row| row["event"] == "session_event"));
+        assert!(rows.iter().any(|row| row.get("state_changed").is_some()));
         let records = fixture
             .store
             .list_sessions_by_agent(agent.agent_id, None, 64)
@@ -563,7 +558,10 @@ async fn agent_listing_and_session_counts_cross_store_pages() {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(rows.len(), 66);
-        assert_eq!(rows[0]["session_count"], 66);
+        // List rows omit detail keys, so one page of 66 agents costs one
+        // scan, not 66 session scans.
+        assert!(rows[0].get("session_count").is_none());
+        assert!(rows[0].get("sessions").is_none());
         assert_eq!(rows.last().unwrap()["name"], "agent-65");
         let shown: serde_json::Value = serde_json::from_str(&success(
             fixture
@@ -571,6 +569,7 @@ async fn agent_listing_and_session_counts_cross_store_pages() {
                 .await,
         ))
         .unwrap();
+        assert_eq!(shown["session_count"], 66);
         assert_eq!(shown["sessions"].as_array().unwrap().len(), 66);
     })
     .await;
@@ -744,7 +743,17 @@ async fn check_call_status(fixture: &Fixture, placement: &swarmy_core::Placement
         ))
         .unwrap();
         assert_eq!(shown["sandbox_state"], expected);
-        assert_eq!(shown["call_status"], serde_json::to_value(&status).unwrap());
+        assert_eq!(
+            shown["call_status"],
+            serde_json::json!({
+                "node_id": status.node_id.to_string(),
+                "epoch": status.epoch,
+                "holder_session_id": status.holder_session_id.map(|id| id.to_string()),
+                "queued_calls": status.queued_calls,
+                "observed_at": status.observed_at.to_string(),
+                "expires_at": status.expires_at.to_string(),
+            })
+        );
         let text = success(fixture.output(&["agent", "show", "placed"]).await);
         for field in [
             format!("sandbox_state={expected}"),
@@ -783,10 +792,7 @@ async fn assert_unknown_call_status(fixture: &Fixture) {
     .unwrap();
     assert_eq!(shown["sandbox_state"], "unknown");
     assert!(shown["call_status"].is_null());
-    assert_eq!(
-        shown["sandbox_state_reason"],
-        "no current node call observation"
-    );
+    assert!(shown["sandbox_state_reason"].is_null());
 }
 
 #[tokio::test]
@@ -1062,10 +1068,10 @@ fn assert_output(
     effort: ReasoningEffort,
 ) {
     if json {
-        let agent: AgentRecord = serde_json::from_str(text).unwrap();
+        let agent: swarmy_api_types::Agent = serde_json::from_str(text).unwrap();
         assert_eq!(agent.system_prompt.as_deref(), Some(prompt));
         assert_eq!(agent.model.as_deref(), Some(model));
-        assert_eq!(agent.reasoning_effort, Some(effort));
+        assert_eq!(agent.effort, Some(effort.into()));
     } else {
         assert!(text.contains(&format!("{verb} agent")));
         for expected in [
@@ -1100,12 +1106,19 @@ async fn assert_show(
 #[tokio::test]
 async fn invalid_agent_settings_do_not_change_records() {
     run(|fixture| async move {
-        let agent: AgentRecord = serde_json::from_str(&success(
+        assert!(
             fixture
                 .output(&["agent", "create", "original", "--json"])
-                .await,
-        ))
-        .unwrap();
+                .await
+                .status
+                .success()
+        );
+        let agent = fixture
+            .store
+            .get_agent_by_name("original")
+            .await
+            .unwrap()
+            .unwrap();
         let directory = tempfile::tempdir().unwrap();
         let missing = directory.path().join("missing.txt");
         let invalid_utf8 = directory.path().join("invalid.txt");
@@ -1165,17 +1178,13 @@ async fn invalid_agent_settings_do_not_change_records() {
 }
 
 async fn assert_default_output(fixture: &Fixture) {
-    let created: AgentRecord = serde_json::from_str(&success(
+    let created: swarmy_api_types::Agent = serde_json::from_str(&success(
         fixture
             .output(&["agent", "create", "defaults", "--json"])
             .await,
     ))
     .unwrap();
-    assert!(
-        created.system_prompt.is_none()
-            && created.model.is_none()
-            && created.reasoning_effort.is_none()
-    );
+    assert!(created.system_prompt.is_none() && created.model.is_none() && created.effort.is_none());
     let text = success(fixture.output(&["agent", "show", "defaults"]).await);
     for field in ["system_prompt", "model", "reasoning_effort"] {
         assert!(text.contains(&format!("{field}=(stack default)")));
@@ -1186,8 +1195,8 @@ async fn assert_default_output(fixture: &Fixture) {
             .await,
     ))
     .unwrap();
-    for field in ["system_prompt", "model", "reasoning_effort"] {
-        assert!(shown[field].is_null());
+    for field in ["system_prompt", "model", "effort"] {
+        assert!(shown[field].is_null(), "{field} should be absent: {shown}");
     }
 }
 
@@ -1210,7 +1219,7 @@ async fn provider_selection_and_explicit_resets_are_durable() {
                 .await,
         );
         let read = || async {
-            serde_json::from_str::<AgentRecord>(&success(
+            serde_json::from_str::<swarmy_api_types::Agent>(&success(
                 fixture.output(&["agent", "show", "tommy", "--json"]).await,
             ))
             .unwrap()
@@ -1218,7 +1227,7 @@ async fn provider_selection_and_explicit_resets_are_durable() {
         let agent = read().await;
         assert_eq!(agent.provider.as_deref(), Some("openrouter"));
         assert_eq!(agent.model.as_deref(), Some("anthropic/claude-sonnet-4.6"));
-        assert_eq!(agent.reasoning_effort, Some(ReasoningEffort::Max));
+        assert_eq!(agent.effort, Some(ReasoningEffort::Max.into()));
         success(
             fixture
                 .output(&["agent", "set", "tommy", "--model", "default"])
@@ -1239,7 +1248,7 @@ async fn provider_selection_and_explicit_resets_are_durable() {
                 .await,
         );
         let agent = read().await;
-        assert!(agent.provider.is_none() && agent.reasoning_effort.is_none());
+        assert!(agent.provider.is_none() && agent.effort.is_none());
     })
     .await;
 }

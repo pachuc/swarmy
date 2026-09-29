@@ -10,8 +10,8 @@ use rand::TryRngCore;
 use serde::{Deserialize, Serialize};
 use swarmy_config::Keyring;
 use swarmy_core::{
-    CredentialKind, CredentialRecord, CredentialScope, CredentialStatus, Lease, LeaseOwnerId,
-    decode, encode,
+    CredentialEntryKind, CredentialKind, CredentialRecord, CredentialScope, CredentialStatus,
+    Lease, LeaseOwnerId, decode, encode,
 };
 
 #[cfg(any(test, feature = "test-support"))]
@@ -23,7 +23,7 @@ use foundationdb::RetryableTransaction;
 #[derive(Debug, Serialize)]
 pub struct CredentialSummary {
     pub provider: String,
-    pub kind: String,
+    pub kind: CredentialEntryKind,
     pub label: String,
     pub status: CredentialStatus,
     pub updated_at: Timestamp,
@@ -37,7 +37,7 @@ impl CredentialSummary {
     pub fn new(provider: String, record: &CredentialRecord, now: Timestamp) -> Self {
         Self {
             provider,
-            kind: entry_kind(record),
+            kind: record.entry_kind(),
             label: "default".into(),
             status: record.status(now),
             updated_at: record.updated_at,
@@ -53,15 +53,6 @@ impl CredentialSummary {
 
 fn entry_identity(provider: &str, label: &str) -> String {
     format!("{provider}\0{label}")
-}
-
-fn entry_kind(record: &CredentialRecord) -> String {
-    match &record.kind {
-        CredentialKind::OAuth { .. } => "subscription",
-        CredentialKind::ApiKey { .. } if record.bookkeeping.cloud => "cloud",
-        CredentialKind::ApiKey { .. } => "api-key",
-    }
-    .into()
 }
 
 #[derive(Serialize, Deserialize)]
