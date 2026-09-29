@@ -225,3 +225,42 @@ async fn write_object(store: &dyn ObjectStore, object: &ManifestObject) -> Resul
     }
     Ok(hash)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_objects_have_fixed_bytes() {
+        // Manifests are content-addressed objects in object storage: the bytes
+        // decide every hash. A silent encoding change would rename every
+        // manifest, so pin the leaf and root encodings.
+        let leaf = ManifestObject::Leaf(vec![ContentHash([7; 32]), ContentHash::ZERO]);
+        let bytes = encode(&leaf).unwrap();
+        assert_eq!(
+            bytes,
+            [
+                1, 0, 2, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+                7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ]
+        );
+        let root = ManifestObject::Root(vec![ContentHash([9; 32])]);
+        let root_bytes = encode(&root).unwrap();
+        assert_eq!(
+            root_bytes,
+            [
+                1, 1, 1, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+                9, 9, 9, 9, 9, 9, 9
+            ]
+        );
+        assert!(matches!(
+            decode::<ManifestObject>(&bytes).unwrap(),
+            ManifestObject::Leaf(_)
+        ));
+        assert!(matches!(
+            decode::<ManifestObject>(&root_bytes).unwrap(),
+            ManifestObject::Root(_)
+        ));
+    }
+}

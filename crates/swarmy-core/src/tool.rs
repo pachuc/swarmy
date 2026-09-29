@@ -383,3 +383,50 @@ pub fn cap_tool_output(tool: &str, call_id: &str, output: String) -> String {
         format!("\n[... {dropped} bytes elided from {tool} output; full output at {spill} ...]\n");
     format!("{}{marker}{}", &output[..head_len], &output[tail_start..])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn small_output_passes_through_unchanged() {
+        let output = "hello".to_owned();
+        assert_eq!(
+            cap_tool_output("grep", "call_small", output.clone()),
+            output
+        );
+    }
+
+    #[test]
+    fn huge_output_is_capped_with_spill_marker() {
+        let tool = "process_list";
+        let call_id = "call_01HUGE";
+        let head = "HEAD-MARKER-";
+        let tail = "-TAIL-MARKER";
+        let mut original = String::with_capacity(1024 * 1024);
+        original.push_str(head);
+        original.push_str(&"x".repeat(1024 * 1024 - head.len() - tail.len()));
+        original.push_str(tail);
+        assert_eq!(original.len(), 1024 * 1024);
+        // The worker applies this ceiling before persisting a
+        // `ToolCallCompleted` event; the marker must name the tool, the
+        // dropped byte count, and the spill path holding the full output.
+        let capped = cap_tool_output(tool, call_id, original.clone());
+        let spill = tool_spill_path(call_id);
+        let dropped = original.len() - MAX_TOOL_OUTPUT_BYTES;
+        assert!(capped.len() <= MAX_TOOL_OUTPUT_BYTES + 512);
+        assert!(capped.contains(tool));
+        assert!(capped.contains(&dropped.to_string()));
+        assert!(capped.contains(&spill));
+        assert!(spill.starts_with("/home/agent/.swarmy/output/"));
+        assert!(capped.starts_with(head));
+        assert!(capped.ends_with(tail));
+        let keep = MAX_TOOL_OUTPUT_BYTES;
+        let head_len = keep.div_ceil(2);
+        assert_eq!(&capped[..head_len], &original[..head_len]);
+        assert_eq!(
+            &capped[capped.len() - keep / 2..],
+            &original[original.len() - keep / 2..]
+        );
+    }
+}
