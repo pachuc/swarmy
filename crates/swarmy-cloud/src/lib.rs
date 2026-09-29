@@ -16,14 +16,17 @@ pub fn set_output_sink(sink: fn(&str, bool)) {
     let _ = OUTPUT.set(sink);
 }
 
+#[cfg(feature = "remote")]
 static PROMPT: std::sync::OnceLock<fn(&str) -> std::io::Result<String>> =
     std::sync::OnceLock::new();
 
+#[cfg(feature = "remote")]
 /// Install the CLI's interactive prompt handler.
 pub fn set_prompt_sink(sink: fn(&str) -> std::io::Result<String>) {
     let _ = PROMPT.set(sink);
 }
 
+#[cfg(feature = "remote")]
 fn prompt(message: &str) -> std::io::Result<String> {
     PROMPT
         .get()
@@ -119,6 +122,7 @@ pub enum Error {
 }
 
 impl Error {
+    #[cfg(feature = "remote")]
     fn permission(&self) -> Option<&str> {
         match self {
             Self::MissingPermission { operation, .. } => Some(operation),

@@ -153,6 +153,7 @@ fn main() -> anyhow::Result<()> {
             println!("{message}");
         }
     });
+    #[cfg(feature = "remote")]
     swarmy_cloud::set_prompt_sink(|message| {
         use std::io::Write;
         print!("{message}");
