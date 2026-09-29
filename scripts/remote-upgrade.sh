@@ -8,7 +8,12 @@ mode=$1
 services=$2
 drain_timeout=$3
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-[[ $repo_dir == "$(service_home_for "$(id -un)")/swarmy" ]] || { echo "Expected checkout at $(service_home_for "$(id -un)")/swarmy" >&2; exit 1; }
+# Builds run as the checkout owner; a bootstrap login re-enters as that user.
+repo_owner=$(stat -c %U "$repo_dir")
+if [[ $(id -un) != "$repo_owner" ]]; then
+    exec sudo -u "$repo_owner" bash "$0" "$@"
+fi
+[[ $repo_dir == "$(service_home_for "$repo_owner")/swarmy" ]] || { echo "Expected checkout at $(service_home_for "$repo_owner")/swarmy" >&2; exit 1; }
 cd "$repo_dir"
 started=$SECONDS
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"

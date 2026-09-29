@@ -55,6 +55,7 @@ ensure_service_user() {
     if ! id "$user" >/dev/null 2>&1; then
         sudo useradd -m -s /bin/bash "$user"
     fi
+    sudo mkdir -p /etc/sudoers.d
     printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$user" | sudo tee "/etc/sudoers.d/90-swarmy-$user" >/dev/null
     sudo chmod 0440 "/etc/sudoers.d/90-swarmy-$user"
 }
