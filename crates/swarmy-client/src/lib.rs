@@ -1104,7 +1104,8 @@ impl EventStream {
         self.backoff().await;
     }
     async fn backoff(&mut self) {
-        let base = swarmy_core::backoff(self.retry_attempt).max(self.retry_floor);
+        let base = swarmy_core::backoff(Duration::from_millis(100), self.retry_attempt, 5)
+            .max(self.retry_floor);
         let jitter =
             Duration::from_millis(rand::random_range(0..=base.as_millis().min(1000) as u64));
         tokio::time::sleep(base + jitter).await;

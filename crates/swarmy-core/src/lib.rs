@@ -101,8 +101,8 @@ pub struct LiveTokenDelta {
 
 /// Bounded retry delay shared by durable inference and reconnect loops.
 #[must_use]
-pub fn backoff(attempt: u32) -> std::time::Duration {
-    std::time::Duration::from_millis(100) * (1_u32 << attempt.saturating_sub(1).min(5))
+pub fn backoff(base: std::time::Duration, attempt: u32, max_doublings: u32) -> std::time::Duration {
+    base.saturating_mul(1_u32 << attempt.saturating_sub(1).min(max_doublings.min(31)))
 }
 
 #[cfg(test)]
@@ -112,9 +112,21 @@ mod backoff_tests {
 
     #[test]
     fn starts_at_one_hundred_millis_and_caps_at_three_point_two_seconds() {
-        assert_eq!(backoff(0), Duration::from_millis(100));
-        assert_eq!(backoff(1), Duration::from_millis(100));
-        assert_eq!(backoff(3), Duration::from_millis(400));
-        assert_eq!(backoff(u32::MAX), Duration::from_millis(3_200));
+        assert_eq!(
+            backoff(Duration::from_millis(100), 0, 5),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            backoff(Duration::from_millis(100), 1, 5),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            backoff(Duration::from_millis(100), 3, 5),
+            Duration::from_millis(400)
+        );
+        assert_eq!(
+            backoff(Duration::from_millis(100), u32::MAX, 5),
+            Duration::from_millis(3_200)
+        );
     }
 }

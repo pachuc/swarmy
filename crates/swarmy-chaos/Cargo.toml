@@ -26,10 +26,12 @@ rand_chacha.workspace = true
 serde_json.workspace = true
 swarmy-bus.workspace = true
 swarmy-core.workspace = true
-swarmy-llm = { workspace = true, features = ["fake"] }
 swarmy-store.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 ulid.workspace = true
+
+[dev-dependencies]
+swarmy-llm = { workspace = true, features = ["fake"] }

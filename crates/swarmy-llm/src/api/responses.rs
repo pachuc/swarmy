@@ -381,7 +381,7 @@ fn build_input(request: &Request, context: &RequestContext<'_>) -> Result<Vec<Va
             if let Part::Reasoning { text, metadata } = part {
                 let saved = metadata.get("openai_responses");
                 if let Some(saved) = saved {
-                    let item = saved.get("item").unwrap_or(saved);
+                    let item = saved;
                     let same = saved["provider"] == context.provider
                         && saved["model"] == request.settings.model;
                     if same && item["type"] == "reasoning" {
@@ -542,7 +542,6 @@ fn normalize_calls(input: &mut Vec<Value>) {
 
 /// Incremental SSE parser, including CRLF, multiline data, comments, and UTF-8
 /// split across arbitrary network chunks. Unknown event types are ignored.
-#[derive(Default)]
 pub struct ResponsesStream {
     framing: SseParser,
     output: BTreeMap<usize, Vec<Part>>,

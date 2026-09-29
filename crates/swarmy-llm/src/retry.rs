@@ -48,12 +48,7 @@ where
         }
         tokio::time::sleep(
             retry_after
-                .unwrap_or_else(|| {
-                    policy.initial_delay.saturating_mul(
-                        u32::try_from(swarmy_core::backoff(attempt).as_millis() / 100)
-                            .unwrap_or(u32::MAX),
-                    )
-                })
+                .unwrap_or_else(|| swarmy_core::backoff(policy.initial_delay, attempt, 5))
                 .min(policy.max_delay),
         )
         .await;

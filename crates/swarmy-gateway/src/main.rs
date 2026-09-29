@@ -706,7 +706,7 @@ impl Gateway {
                     warn!(%error, attempts, request_id = %job.request_id, "provider retries exhausted");
                     return Ok(Some((Err(error), streamed)));
                 }
-                let delay = swarmy_core::backoff(attempts);
+                let delay = swarmy_core::backoff(Duration::from_millis(100), attempts, 5);
                 // Store the next deadline based on the durable attempt count.
                 warn!(%error, attempts, request_id = %job.request_id, "provider failed; retrying");
                 self.observe_wait(job, turn, swarmy_store::WaitKind::Retry);
@@ -739,17 +739,17 @@ impl Gateway {
         entry: Option<String>,
         entry_kind: Option<String>,
     ) -> Result<()> {
-        let (retryable, retry_at) = self
+        let (class, retry_at) = self
             .record_breaker(provider, entry.as_deref(), job, &result, blocked)
             .await?;
         if let Err(error) = &result {
-            let kind = if error.classify().rate_limited {
+            let kind = if class.is_some_and(|class| class.rate_limited) {
                 swarmy_store::WaitKind::RateLimit
             } else {
                 swarmy_store::WaitKind::ProviderFailure
             };
             self.observe_wait(job, turn, kind);
-            if retryable {
+            if class.is_some_and(|class| class.retryable) {
                 self.observe_wait(job, turn, swarmy_store::WaitKind::Retry);
             }
         }
@@ -760,7 +760,7 @@ impl Gateway {
             effort_used,
             effort_requested,
             effort_clamped,
-            retryable,
+            retryable: class.is_some_and(|class| class.retryable),
             retry_at,
             result: &result,
             entry: entry.clone(),
@@ -938,13 +938,13 @@ impl Gateway {
         job: &InferenceJob,
         result: &std::result::Result<Response, swarmy_llm::Error>,
         blocked: bool,
-    ) -> Result<(bool, Option<Timestamp>)> {
+    ) -> Result<(Option<swarmy_llm::ErrorClass>, Option<Timestamp>)> {
         let key = CredentialKey::for_label(provider, entry.map(str::to_owned));
         let Some(error) = result.as_ref().err() else {
             if !blocked {
                 self.store.entry_success(&key).await?;
             }
-            return Ok((false, None));
+            return Ok((None, None));
         };
         let class = error.classify();
         let (retryable, retry_after) = (class.retryable, class.retry_after);
@@ -952,12 +952,12 @@ impl Gateway {
             if !blocked {
                 self.store.entry_success(&key).await?;
             }
-            return Ok((false, None));
+            return Ok((Some(class), None));
         }
         let failures = self.store.entry_failures(&key).await?;
         let delay = retry_after.unwrap_or_else(|| {
-            let exponent = failures.min(8);
-            let base = Duration::from_secs(1_u64 << exponent).min(self.max_backoff);
+            let base = swarmy_core::backoff(Duration::from_secs(1), failures.saturating_add(1), 8)
+                .min(self.max_backoff);
             let jitter = u64::from(job.request_id.as_bytes()[0]) * 1000 / 255;
             base.saturating_add(Duration::from_millis(jitter))
                 .min(self.max_backoff)
@@ -972,7 +972,7 @@ impl Gateway {
             );
             self.store.entry_failure(&key, until, &reason).await?;
         }
-        Ok((true, Some(until)))
+        Ok((Some(class), Some(until)))
     }
 
     // The loop retries inside this transaction: a stale head adopts the actual

@@ -422,7 +422,7 @@ impl Error {
                     | Self::Authentication(_)
                     | Self::BadRequest(_)
                     | Self::MalformedStream(_)
-            ) || status.is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)));
+            ));
         ErrorClass {
             retryable,
             retry_after,
