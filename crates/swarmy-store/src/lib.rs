@@ -126,6 +126,9 @@ enum StoredValue {
     Blob(String),
 }
 
+/// Receiver for the metrics queue, held until the drain task starts.
+type MetricsReceiver = tokio::sync::mpsc::Receiver<crate::metrics::MetricMsg>;
+
 #[derive(Clone)]
 pub struct Store {
     db: Arc<Database>,
@@ -142,7 +145,7 @@ pub struct Store {
     /// Receiver held until the drain task starts. `open` starts the drain
     /// immediately; `with_subspace` may run without a runtime, in which case
     /// the first observation or flush starts it lazily.
-    metrics_rx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Receiver<crate::metrics::MetricMsg>>>>,
+    metrics_rx: Arc<std::sync::Mutex<Option<MetricsReceiver>>>,
     /// Drain task handle, retained so every `Store` does not leak a task:
     /// the drain owns only a [`crate::metrics::MetricsWriter`], never a
     /// `Store`, so dropping all stores closes the channel and ends the task.
