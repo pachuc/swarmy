@@ -86,6 +86,8 @@ check:
 	$(CARGO) test --locked -p swarmy-cloud --features remote
 	$(CARGO) test --locked -p swarmy-cli --features remote -- --skip dev_up_run_recover_reconfigure_and_down
 	scripts/check-openapi-compat.sh origin/master
+	# The dev-stack port test starts isolated services on fixed ports.
+	scripts/dev-stack.sh stop
 	scripts/test-scripts.sh
 
 uninstall:
