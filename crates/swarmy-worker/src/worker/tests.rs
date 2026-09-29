@@ -349,21 +349,23 @@ mod side_tail_tests {
         let events = vec![Event::InferenceCompleted {
             seq: 1,
             request_id,
-            message: text(MessageRole::Assistant, "working"),
-            provider: "fake".into(),
-            model: "base".into(),
-            effort_used: None,
-            usage: TokenUsage {
-                input_tokens: 10,
-                output_tokens: 3,
-                ..Default::default()
+            completion: swarmy_core::InferenceCompletion {
+                message: text(MessageRole::Assistant, "working"),
+                provider: "fake".into(),
+                model: "base".into(),
+                effort_used: None,
+                usage: TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 3,
+                    ..Default::default()
+                },
+                cost_micros: 0,
+                effort_requested: None,
+                effort_clamped: false,
+                entry: None,
+                route: None,
+                route_step: None,
             },
-            cost_micros: 0,
-            effort_requested: None,
-            effort_clamped: false,
-            entry: None,
-            route: None,
-            route_step: None,
         }];
         let Some((provider, model, input)) = last_side_usage(&events) else {
             panic!("expected usage from the held events");

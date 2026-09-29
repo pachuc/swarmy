@@ -529,22 +529,20 @@ impl Gateway {
     ) {
         let Some(turn) = turn else { return };
         let patch = match event {
-            Event::InferenceCompleted {
-                usage, cost_micros, ..
-            } => Some(swarmy_store::MetricPatch::Inference(
-                swarmy_store::InferenceMetric {
+            Event::InferenceCompleted { completion, .. } => Some(
+                swarmy_store::MetricPatch::Inference(swarmy_store::InferenceMetric {
                     request_id: job.request_id.to_string(),
                     provider: provider.to_owned(),
                     model: job.request.settings.model.clone(),
-                    input_tokens: usage.input_tokens,
-                    cached_input_tokens: usage.cached_input_tokens,
-                    output_tokens: usage.output_tokens,
-                    reasoning_tokens: usage.reasoning_output_tokens,
-                    cost_micros: *cost_micros,
+                    input_tokens: completion.usage.input_tokens,
+                    cached_input_tokens: completion.usage.cached_input_tokens,
+                    output_tokens: completion.usage.output_tokens,
+                    reasoning_tokens: completion.usage.reasoning_output_tokens,
+                    cost_micros: completion.cost_micros,
                     streamed,
                     ..Default::default()
-                },
-            )),
+                }),
+            ),
             Event::InferenceFailed {
                 error,
                 retryable: false,
@@ -797,24 +795,26 @@ impl Gateway {
     fn terminal_event(input: &TerminalInput<'_>) -> Event {
         match input.result {
             Ok(response) => Event::InferenceCompleted {
-                provider: input.provider.to_owned(),
-                model: input.job.request.settings.model.clone(),
-                effort_used: input.effort_used,
-                usage: response.usage.clone(),
-                cost_micros: input
-                    .model
-                    .map_or(0, |model| cost_micros(&model.cost, &response.usage)),
-                effort_requested: input.effort_requested,
-                effort_clamped: input.effort_clamped,
                 seq: 0,
                 request_id: input.job.request_id,
-                entry: input.entry.clone(),
-                route: input.route.clone(),
-                route_step: input.route_step,
-                message: Message {
-                    id: MessageId::from_ulid(Ulid::generate()),
-                    role: MessageRole::Assistant,
-                    parts: response.parts.clone(),
+                completion: swarmy_core::InferenceCompletion {
+                    message: Message {
+                        id: MessageId::from_ulid(Ulid::generate()),
+                        role: MessageRole::Assistant,
+                        parts: response.parts.clone(),
+                    },
+                    provider: input.provider.to_owned(),
+                    model: input.job.request.settings.model.clone(),
+                    effort_used: input.effort_used,
+                    usage: response.usage.clone(),
+                    cost_micros: input
+                        .model
+                        .map_or(0, |model| cost_micros(&model.cost, &response.usage)),
+                    effort_requested: input.effort_requested,
+                    effort_clamped: input.effort_clamped,
+                    entry: input.entry.clone(),
+                    route: input.route.clone(),
+                    route_step: input.route_step,
                 },
             },
             Err(error) => Event::InferenceFailed {
@@ -1076,11 +1076,11 @@ impl Gateway {
                 job.provider.as_str()
             };
             let input = match &completion.event {
-                Event::InferenceCompleted { usage, .. } => usage.input_tokens,
+                Event::InferenceCompleted { completion, .. } => completion.usage.input_tokens,
                 Event::InferenceFailed { .. } => return Ok(None),
                 _ => 0,
             };
-            if matches!(&completion.event, Event::InferenceCompleted { usage, .. } if usage.output_tokens < self.providers.catalog.model(provider, &job.request.settings.model).and_then(|model| model.limit.output).unwrap_or(0) && matches!(result, Ok(response) if response.stop_reason == swarmy_llm::StopReason::MaxOutputTokens))
+            if matches!(&completion.event, Event::InferenceCompleted { completion, .. } if completion.usage.output_tokens < self.providers.catalog.model(provider, &job.request.settings.model).and_then(|model| model.limit.output).unwrap_or(0) && matches!(result, Ok(response) if response.stop_reason == swarmy_llm::StopReason::MaxOutputTokens))
             {
                 return Ok(None);
             }
@@ -1093,10 +1093,14 @@ impl Gateway {
         if completion.expected_head != job.step {
             return Ok(None);
         }
-        let Event::InferenceCompleted { message, .. } = &completion.event else {
+        let Event::InferenceCompleted {
+            completion: fields, ..
+        } = &completion.event
+        else {
             return Ok(None);
         };
-        if message
+        if fields
+            .message
             .parts
             .iter()
             .any(|part| matches!(part, swarmy_core::Part::ToolCall { .. }))

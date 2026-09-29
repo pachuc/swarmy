@@ -675,16 +675,16 @@ impl Worker {
                 .await?
                 && job.summary
             {
-                if let Event::InferenceCompleted { message, .. } = event {
-                    summary_replies.push(message.id);
+                if let Event::InferenceCompleted { completion, .. } = event {
+                    summary_replies.push(completion.message.id);
                 }
                 if job.summary_recovery
                     && let Some(id) = prior_completion
                 {
                     recovery_replies.push(id);
                 }
-            } else if let Event::InferenceCompleted { message, .. } = event {
-                prior_completion = Some(message.id);
+            } else if let Event::InferenceCompleted { completion, .. } = event {
+                prior_completion = Some(completion.message.id);
             } else {
                 prior_completion = None;
             }

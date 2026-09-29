@@ -107,22 +107,24 @@ fn partial_batch(id: SessionId) -> Vec<Event> {
         .collect();
     vec![
         Event::InferenceCompleted {
-            provider: String::new(),
-            model: String::new(),
-            effort_used: None,
-            usage: swarmy_core::TokenUsage::default(),
-            cost_micros: 0,
-            effort_requested: None,
-            effort_clamped: false,
-            entry: None,
-            route: None,
-            route_step: None,
             seq: 0,
             request_id: RequestId::for_step(id, 1),
-            message: Message {
-                id: MessageId::from_ulid(Ulid::generate()),
-                role: MessageRole::Assistant,
-                parts,
+            completion: swarmy_core::InferenceCompletion {
+                message: Message {
+                    id: MessageId::from_ulid(Ulid::generate()),
+                    role: MessageRole::Assistant,
+                    parts,
+                },
+                provider: String::new(),
+                model: String::new(),
+                effort_used: None,
+                usage: swarmy_core::TokenUsage::default(),
+                cost_micros: 0,
+                effort_requested: None,
+                effort_clamped: false,
+                entry: None,
+                route: None,
+                route_step: None,
             },
         },
         Event::ToolCallRequested {

@@ -1,7 +1,7 @@
 //! Encode current postcard events; JSON keeps the public completion name.
 use super::{
-    Event, FailureKind, Message, RequestId, SessionState, SnapshotRef, ToolCallId, ToolCallRecord,
-    ToolResult,
+    Event, FailureKind, InferenceCompletion, Message, RequestId, SessionState, SnapshotRef,
+    ToolCallId, ToolCallRecord, ToolResult,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -21,27 +21,10 @@ enum HumanEvent {
     InferenceCompleted {
         seq: u64,
         request_id: RequestId,
-        message: Message,
-        #[serde(default)]
-        provider: String,
-        #[serde(default)]
-        model: String,
-        #[serde(default)]
-        effort_used: Option<crate::ReasoningEffort>,
-        #[serde(default)]
-        usage: crate::TokenUsage,
-        #[serde(default)]
-        cost_micros: u64,
-        #[serde(default)]
-        effort_requested: Option<crate::ReasoningEffort>,
-        #[serde(default)]
-        effort_clamped: bool,
-        #[serde(default)]
-        entry: Option<String>,
-        #[serde(default)]
-        route: Option<String>,
-        #[serde(default)]
-        route_step: Option<u32>,
+        /// Flattened so the JSON shape stays flat: one object with the
+        /// sequence, the request id, and every completion field.
+        #[serde(flatten)]
+        completion: InferenceCompletion,
     },
     ToolCallRequested {
         seq: u64,
@@ -124,20 +107,10 @@ enum BinaryEvent {
     InferenceCompleted {
         seq: u64,
         request_id: RequestId,
-        message: Message,
-        provider: String,
-        model: String,
-        effort_used: Option<crate::ReasoningEffort>,
-        usage: crate::TokenUsage,
-        cost_micros: u64,
-        effort_requested: Option<crate::ReasoningEffort>,
-        effort_clamped: bool,
-        /// Auth entry that served the turn.
-        entry: Option<String>,
-        /// Named route that selected the entry, if any.
-        route: Option<String>,
-        /// Index into the resolved route, so metering names the exact step.
-        route_step: Option<u32>,
+        /// Nested structs encode inline in postcard, so the stored bytes
+        /// keep the sequence, the request id, and every completion field
+        /// in order with no extra framing.
+        completion: InferenceCompletion,
     },
     RetryableInferenceFailed {
         seq: u64,
@@ -172,43 +145,6 @@ impl<'de> Deserialize<'de> for Event {
         }
     }
 }
-/// The 13 completion fields shared by the public event, the binary row, and
-/// the two conversions below. One struct keeps the field list in one place.
-struct CompletionFields {
-    seq: u64,
-    request_id: RequestId,
-    message: Message,
-    provider: String,
-    model: String,
-    effort_used: Option<crate::ReasoningEffort>,
-    usage: crate::TokenUsage,
-    cost_micros: u64,
-    effort_requested: Option<crate::ReasoningEffort>,
-    effort_clamped: bool,
-    entry: Option<String>,
-    route: Option<String>,
-    route_step: Option<u32>,
-}
-
-/// Encode a completion with route attribution.
-fn completion_to_binary(fields: CompletionFields) -> BinaryEvent {
-    BinaryEvent::InferenceCompleted {
-        seq: fields.seq,
-        request_id: fields.request_id,
-        message: fields.message,
-        provider: fields.provider,
-        model: fields.model,
-        effort_used: fields.effort_used,
-        usage: fields.usage,
-        cost_micros: fields.cost_micros,
-        effort_requested: fields.effort_requested,
-        effort_clamped: fields.effort_clamped,
-        entry: fields.entry,
-        route: fields.route,
-        route_step: fields.route_step,
-    }
-}
-
 /// Decode a failure, retryable or not.
 fn failed_completion(
     seq: u64,
@@ -225,25 +161,6 @@ fn failed_completion(
         retryable,
         retry_at,
         failure_kind,
-    }
-}
-
-/// Decode a metered completion with route attribution.
-fn metered_completion(fields: CompletionFields) -> Event {
-    Event::InferenceCompleted {
-        seq: fields.seq,
-        request_id: fields.request_id,
-        message: fields.message,
-        provider: fields.provider,
-        model: fields.model,
-        effort_used: fields.effort_used,
-        usage: fields.usage,
-        cost_micros: fields.cost_micros,
-        effort_requested: fields.effort_requested,
-        effort_clamped: fields.effort_clamped,
-        entry: fields.entry,
-        route: fields.route,
-        route_step: fields.route_step,
     }
 }
 
@@ -272,32 +189,12 @@ impl From<Event> for BinaryEvent {
             Event::InferenceCompleted {
                 seq,
                 request_id,
-                message,
-                provider,
-                model,
-                effort_used,
-                usage,
-                cost_micros,
-                effort_requested,
-                effort_clamped,
-                entry,
-                route,
-                route_step,
-            } => completion_to_binary(CompletionFields {
+                completion,
+            } => Self::InferenceCompleted {
                 seq,
                 request_id,
-                message,
-                provider,
-                model,
-                effort_used,
-                usage,
-                cost_micros,
-                effort_requested,
-                effort_clamped,
-                entry,
-                route,
-                route_step,
-            }),
+                completion,
+            },
             Event::ToolCallRequested {
                 seq,
                 request_id,
@@ -418,32 +315,12 @@ impl From<BinaryEvent> for Event {
             BinaryEvent::InferenceCompleted {
                 seq,
                 request_id,
-                message,
-                provider,
-                model,
-                effort_used,
-                usage,
-                cost_micros,
-                effort_requested,
-                effort_clamped,
-                entry,
-                route,
-                route_step,
-            } => metered_completion(CompletionFields {
+                completion,
+            } => Self::InferenceCompleted {
                 seq,
                 request_id,
-                message,
-                provider,
-                model,
-                effort_used,
-                usage,
-                cost_micros,
-                effort_requested,
-                effort_clamped,
-                entry,
-                route,
-                route_step,
-            }),
+                completion,
+            },
         }
     }
 }
@@ -461,17 +338,19 @@ mod tests {
         let plain = Event::InferenceCompleted {
             seq: 5,
             request_id,
-            message: crate::message::tests::message(),
-            provider: "openai".into(),
-            model: "gpt-5.5".into(),
-            effort_used: None,
-            usage: crate::TokenUsage::default(),
-            cost_micros: 7,
-            effort_requested: None,
-            effort_clamped: false,
-            entry: None,
-            route: None,
-            route_step: None,
+            completion: InferenceCompletion {
+                message: crate::message::tests::message(),
+                provider: "openai".into(),
+                model: "gpt-5.5".into(),
+                effort_used: None,
+                usage: crate::TokenUsage::default(),
+                cost_micros: 7,
+                effort_requested: None,
+                effort_clamped: false,
+                entry: None,
+                route: None,
+                route_step: None,
+            },
         };
         // Attributed and plain completions share the completion discriminant.
         assert_eq!(usize::from(crate::encode(&plain).unwrap()[1]), 7);
@@ -482,33 +361,18 @@ mod tests {
         let Event::InferenceCompleted {
             seq,
             request_id,
-            message,
-            provider,
-            model,
-            effort_used,
-            usage,
-            cost_micros,
-            effort_requested,
-            effort_clamped,
-            ..
+            mut completion,
         } = plain.clone()
         else {
             unreachable!("plain completion");
         };
+        completion.entry = Some("backup".into());
+        completion.route = Some("fallback".into());
+        completion.route_step = Some(1);
         let routed = Event::InferenceCompleted {
             seq,
             request_id,
-            message,
-            provider,
-            model,
-            effort_used,
-            usage,
-            cost_micros,
-            effort_requested,
-            effort_clamped,
-            entry: Some("backup".into()),
-            route: Some("fallback".into()),
-            route_step: Some(1),
+            completion,
         };
         let bytes = crate::encode(&routed).unwrap();
         assert_eq!(usize::from(bytes[1]), 7);

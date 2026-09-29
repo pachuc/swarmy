@@ -215,9 +215,9 @@ impl Store {
         response: &T,
         snapshot: &swarmy_core::SnapshotRef,
     ) -> Result<bool> {
-        if !matches!(&completion.event, Event::InferenceCompleted { message, .. }
-            if message.role == swarmy_core::MessageRole::Assistant
-                && !message.parts.iter().any(|part| matches!(part, swarmy_core::Part::ToolCall { .. })))
+        if !matches!(&completion.event, Event::InferenceCompleted { completion, .. }
+            if completion.message.role == swarmy_core::MessageRole::Assistant
+                && !completion.message.parts.iter().any(|part| matches!(part, swarmy_core::Part::ToolCall { .. })))
             || completion.expected_head.checked_add(2) != Some(snapshot.seq)
             || RequestId::for_step(completion.claim.session_id, completion.expected_head)
                 != completion.claim.request_id
@@ -394,6 +394,12 @@ impl Store {
         now: Timestamp,
     ) -> Result<()> {
         let Event::InferenceCompleted {
+            completion: fields, ..
+        } = &completion.event
+        else {
+            return Ok(());
+        };
+        let swarmy_core::InferenceCompletion {
             usage,
             cost_micros,
             provider,
@@ -401,10 +407,7 @@ impl Store {
             route,
             route_step,
             ..
-        } = &completion.event
-        else {
-            return Ok(());
-        };
+        } = fields;
         self.record_usage(
             trx,
             session_id,
