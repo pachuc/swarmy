@@ -25,7 +25,6 @@ impl std::fmt::Display for CredentialScope {
 pub struct CredentialRecord {
     pub kind: CredentialKind,
     pub updated_at: Timestamp,
-    #[serde(default, with = "crate::trailing")]
     pub bookkeeping: CredentialBookkeeping,
 }
 
@@ -35,33 +34,6 @@ pub struct CredentialBookkeeping {
     pub cloud: bool,
     pub azure_cli: bool,
     pub label: Option<String>,
-}
-
-impl CredentialRecord {
-    /// Move legacy flags to typed fields without discarding provider metadata.
-    pub fn migrate_bookkeeping(&mut self) -> bool {
-        let extra = match &mut self.kind {
-            CredentialKind::ApiKey { extra, .. } | CredentialKind::OAuth { extra, .. } => extra,
-        };
-        let mut changed = false;
-        if let Some(value) = extra.remove("needs_login") {
-            self.bookkeeping.needs_login |= value == "true";
-            changed = true;
-        }
-        if let Some(value) = extra.remove("auth_kind") {
-            self.bookkeeping.cloud |= value == "cloud";
-            changed = true;
-        }
-        if let Some(value) = extra.remove("token_source") {
-            self.bookkeeping.azure_cli |= value == "azure_cli";
-            changed = true;
-        }
-        if let Some(value) = extra.remove("label") {
-            self.bookkeeping.label.get_or_insert(value);
-            changed = true;
-        }
-        changed
-    }
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,23 +103,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn old_layout_bookkeeping_migrates() {
-        // Frozen version-one API-key record with three legacy string flags.
-        const BYTES: &[u8] = &[
-            1, 0, 3, 107, 101, 121, 3, 9, 97, 117, 116, 104, 95, 107, 105, 110, 100, 5, 99, 108,
-            111, 117, 100, 5, 108, 97, 98, 101, 108, 4, 119, 111, 114, 107, 11, 110, 101, 101, 100,
-            115, 95, 108, 111, 103, 105, 110, 4, 116, 114, 117, 101, 20, 49, 57, 55, 48, 45, 48,
-            49, 45, 48, 49, 84, 48, 48, 58, 49, 54, 58, 52, 48, 90,
-        ];
-        let mut record: CredentialRecord = crate::decode(BYTES).unwrap();
-        assert!(record.migrate_bookkeeping());
-        assert!(record.bookkeeping.needs_login && record.bookkeeping.cloud);
-        assert_eq!(record.bookkeeping.label.as_deref(), Some("work"));
-        let CredentialKind::ApiKey { extra, .. } = &record.kind else {
-            unreachable!()
+    fn credential_record_has_fixed_bytes() {
+        let record = CredentialRecord {
+            kind: CredentialKind::ApiKey {
+                key: "k".into(),
+                extra: BTreeMap::new(),
+            },
+            updated_at: Timestamp::UNIX_EPOCH,
+            bookkeeping: CredentialBookkeeping::default(),
         };
-        assert!(extra.is_empty());
-        assert!(!record.migrate_bookkeeping());
+        let bytes = crate::encode(&record).unwrap();
+        assert_eq!(
+            bytes,
+            [
+                1, 0, 1, 107, 0, 20, 49, 57, 55, 48, 45, 48, 49, 45, 48, 49, 84, 48, 48, 58, 48,
+                48, 58, 48, 48, 90, 0, 0, 0, 0
+            ]
+        );
+        assert!(crate::decode::<CredentialRecord>(&bytes).unwrap() == record);
     }
 
     #[test]

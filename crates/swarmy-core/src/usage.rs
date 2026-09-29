@@ -8,7 +8,6 @@ pub struct TokenUsage {
     pub output_tokens: u64,
     pub reasoning_output_tokens: u64,
     pub total_tokens: u64,
-    #[serde(default, with = "crate::trailing")]
     pub cache_write_input_tokens: u64,
 }
 
@@ -52,28 +51,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_usage_decodes_and_truncated_new_usage_is_rejected() {
-        #[derive(Serialize)]
-        struct LegacyUsage {
-            input: u64,
-            cached: u64,
-            output: u64,
-            reasoning: u64,
-            total: u64,
-        }
-        let bytes = crate::encode(&LegacyUsage {
-            input: 10,
-            cached: 2,
-            output: 5,
-            reasoning: 1,
-            total: 15,
-        })
-        .unwrap();
-        let usage: TokenUsage = crate::decode(&bytes).unwrap();
-        assert_eq!(usage.input_tokens, 10);
-        assert_eq!(usage.cache_write_input_tokens, 0);
-        let mut bytes = crate::encode(&usage).unwrap();
-        bytes.pop();
-        assert!(crate::decode::<TokenUsage>(&bytes).is_err());
+    fn token_usage_has_fixed_bytes() {
+        let usage = TokenUsage {
+            input_tokens: 1,
+            cached_input_tokens: 2,
+            output_tokens: 3,
+            reasoning_output_tokens: 4,
+            total_tokens: 5,
+            cache_write_input_tokens: 6,
+        };
+        assert_eq!(crate::encode(&usage).unwrap(), [1, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(
+            crate::decode::<TokenUsage>(&[1, 1, 2, 3, 4, 5, 6]).unwrap(),
+            usage
+        );
+        assert!(crate::decode::<TokenUsage>(&[1, 1, 2, 3, 4, 5]).is_err());
     }
 }

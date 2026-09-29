@@ -28,34 +28,7 @@ async fn run() -> Result<()> {
     let blobs = Arc::new(ObjectBlobStore::from_env()?);
     let objects = blobs.object_store();
     let store = Store::open(Some(&settings.fdb_cluster_file), Some(&directory), blobs).await?;
-    // One-shot boot migration of retired single-record credential rows.
-    // Boot never fails on this: undecryptable rows stay for a later boot
-    // with the right keyring, and `swarmy doctor` reports the remainder.
-    // The keyring is loaded once so the migration and the credential routes
-    // below decrypt with the same key; loading separately could leave rows
-    // unmigrated while warning on every boot.
-    let keyring = match swarmy_config::Keyring::load() {
-        Ok(keyring) => Some(keyring),
-        Err(error) => {
-            tracing::warn!(%error, "keyring unavailable; skipping legacy credential migration");
-            None
-        }
-    };
-    if let Some(keyring) = &keyring {
-        match store.migrate_legacy_credentials(keyring).await {
-            Ok(outcome) if outcome.written == 0 && outcome.cleared == 0 => {}
-            Ok(outcome) => {
-                tracing::info!(
-                    written = outcome.written,
-                    cleared = outcome.cleared,
-                    "migrated retired single-record credential rows to entries"
-                );
-            }
-            Err(error) => {
-                tracing::warn!(%error, "legacy credential migration failed; continuing without it");
-            }
-        }
-    }
+    let keyring = swarmy_config::Keyring::load().ok();
     let bus = Bus::connect(
         &settings.nats_url,
         Config {

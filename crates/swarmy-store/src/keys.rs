@@ -2,8 +2,11 @@ use foundationdb::{Transaction, tuple::Subspace};
 use jiff::Timestamp;
 use swarmy_core::{
     AgentId, CredentialScope, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, RequestId,
-    RunnableEntry, SessionId, SessionState, TimerId, VolumeId,
+    RunnableEntry, SessionId, TimerId, VolumeId,
 };
+
+#[cfg(any(test, feature = "test-support"))]
+use swarmy_core::SessionState;
 
 use crate::{Result, Store, StoreError, read, scan, write};
 
@@ -55,10 +58,6 @@ impl Store {
 
     pub(crate) fn session_key(&self, id: SessionId) -> Vec<u8> {
         crate::keys::Keys::new(&self.root).session(id)
-    }
-
-    pub(crate) fn session_state_since_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_state_since(id)
     }
 
     /// The last durable state transition, if it happened after this field was introduced.
@@ -124,6 +123,7 @@ impl Store {
     /// Insert or reschedule a Runnable session, replacing its previous index entry.
     /// # Errors
     /// Rejects missing or non-Runnable sessions and transaction failures.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn insert_runnable(&self, entry: &RunnableEntry) -> Result<()> {
         self.transaction(|trx| async move {
             if self.session(&trx, entry.session_id).await?.state != SessionState::Runnable {
@@ -196,18 +196,7 @@ impl Store {
     pub(crate) fn computer_deleted_key(&self, id: swarmy_core::AgentId) -> Vec<u8> {
         crate::keys::Keys::new(&self.root).computer_deleted(id)
     }
-    pub(crate) fn session_kind_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_kind(id)
-    }
-    pub(crate) fn session_route_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_route(id)
-    }
-    pub(crate) fn session_route_step_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_route_step(id)
-    }
-    pub(crate) fn session_idle_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_idle(id)
-    }
+
     pub(crate) fn session_agent_key(&self, agent: swarmy_core::AgentId, id: SessionId) -> Vec<u8> {
         crate::keys::Keys::new(&self.root).session_by_agent(agent, id)
     }
@@ -228,10 +217,8 @@ const COMPUTER_DELETED: &str = "computer_deleted";
 const COMPUTER_MEMORY: &str = "computer_memory";
 const COMPUTER_NOTICE: &str = "computer_notice";
 const COMPUTER_NOTICE_DELIVERED: &str = "computer_notice_delivered";
-const CREDENTIAL: &str = "credential";
 const CREDENTIAL_ENTRY: &str = "credential_entry";
 const CREDENTIAL_ENTRY_LEASE: &str = "credential_entry_lease";
-const CREDENTIAL_LEASE: &str = "credential_lease";
 const ENTRY_QUOTA_CONFIG: &str = "entry_quota_config";
 const ENTRY_QUOTA_OBSERVED: &str = "entry_quota_observed";
 const EVENT: &str = "event";
@@ -255,16 +242,11 @@ const INFERENCE_RESULT: &str = "inference_result";
 const INFERENCE_WAIT: &str = "inference_wait";
 const INFERENCE_WAIT_DUE: &str = "inference_wait_due";
 const INFLIGHT: &str = "inflight";
-/// Legacy session side row, read and cleared during V1 hydration.
-const INTERRUPT_REQUESTED: &str = "interrupt_requested";
 const LEASE: &str = "lease";
 const LEASE_BY_EXPIRY: &str = "lease_by_expiry";
 const MANIFEST: &str = "manifest";
 const MANIFEST_PARENT: &str = "manifest_parent";
 const METERING_HOUR: &str = "metering_hour";
-const METERING_LEGACY_PRUNED: &str = "metering_legacy_pruned";
-const METERING_PRUNE_CURSOR: &str = "metering_prune_cursor";
-const METERING_UPGRADE_AT: &str = "metering_upgrade_at";
 const NODE: &str = "node";
 const PLACED_TOOL_CLAIM: &str = "placed_tool_claim";
 const PLACEMENT: &str = "placement";
@@ -283,26 +265,10 @@ const SESSION: &str = "session";
 const SESSION_BY_AGENT: &str = "session_by_agent";
 const SESSION_CHAIN: &str = "session_chain";
 const SESSION_CHUNK: &str = "session_chunk";
-/// Legacy session side row, read and cleared during V1 hydration.
-const SESSION_IDLE: &str = "session_idle";
-/// Legacy session side row, read and cleared during V1 hydration.
-const SESSION_IMAGE: &str = "session_image";
-/// Legacy session side row, read and cleared during V1 hydration.
-const SESSION_INFERENCE: &str = "session_inference";
-/// Legacy session side row, read and cleared during V1 hydration.
-const SESSION_KIND: &str = "session_kind";
-/// Legacy session side row, read and cleared during V1 hydration.
-const SESSION_PLAN: &str = "session_plan";
-/// Legacy session side row, read and cleared during V1 hydration.
-const SESSION_ROUTE: &str = "session_route";
-/// Legacy session side row, read and cleared during V1 hydration.
-const SESSION_ROUTE_STEP: &str = "session_route_step";
 /// Queued input lives outside the session key family so session scans stay valid.
 const QUEUED_MESSAGE: &str = "queued_message";
 const QUEUED_COUNTER: &str = "queued_counter";
 const QUEUED_REPLAY: &str = "queued_replay";
-/// Legacy session side row, read and cleared during V1 hydration.
-const SESSION_STATE_SINCE: &str = "session_state_since";
 const SESSION_TOOLS: &str = "session_tools";
 const SNAPSHOT: &str = "snapshot";
 const TIMER: &str = "timer";
@@ -404,12 +370,7 @@ impl<'a> Keys<'a> {
     pub(crate) fn computer_notice_delivered_space(&self) -> Subspace {
         self.root.subspace(&(COMPUTER_NOTICE_DELIVERED,))
     }
-    pub(crate) fn credential(&self, scope: CredentialScope, provider: &str) -> Vec<u8> {
-        self.credential_space().pack(&(scope.to_string(), provider))
-    }
-    pub(crate) fn credential_space(&self) -> Subspace {
-        self.root.subspace(&(CREDENTIAL,))
-    }
+
     pub(crate) fn credential_entry(
         &self,
         scope: CredentialScope,
@@ -434,13 +395,7 @@ impl<'a> Keys<'a> {
     pub(crate) fn credential_entry_lease_space(&self) -> Subspace {
         self.root.subspace(&(CREDENTIAL_ENTRY_LEASE,))
     }
-    pub(crate) fn credential_lease(&self, scope: CredentialScope, provider: &str) -> Vec<u8> {
-        self.credential_lease_space()
-            .pack(&(scope.to_string(), provider))
-    }
-    pub(crate) fn credential_lease_space(&self) -> Subspace {
-        self.root.subspace(&(CREDENTIAL_LEASE,))
-    }
+
     pub(crate) fn entry_quota_config(&self, provider: &str, label: &str) -> Vec<u8> {
         self.entry_quota_config_space().pack(&(provider, label))
     }
@@ -584,13 +539,7 @@ impl<'a> Keys<'a> {
     pub(crate) fn inflight_space(&self) -> Subspace {
         self.root.subspace(&(INFLIGHT,))
     }
-    pub(crate) fn interrupt_requested(&self, id: SessionId) -> Vec<u8> {
-        self.interrupt_requested_space()
-            .pack(&(id.as_ulid().to_bytes().as_slice(),))
-    }
-    pub(crate) fn interrupt_requested_space(&self) -> Subspace {
-        self.root.subspace(&(INTERRUPT_REQUESTED,))
-    }
+
     pub(crate) fn lease(&self, id: SessionId) -> Vec<u8> {
         self.lease_space()
             .pack(&(id.as_ulid().to_bytes().as_slice(),))
@@ -657,24 +606,7 @@ impl<'a> Keys<'a> {
     pub(crate) fn metering_hour_space_root(&self) -> Subspace {
         self.root.subspace(&(METERING_HOUR,))
     }
-    pub(crate) fn metering_legacy_pruned(&self) -> Vec<u8> {
-        self.metering_legacy_pruned_space().pack(&())
-    }
-    pub(crate) fn metering_legacy_pruned_space(&self) -> Subspace {
-        self.root.subspace(&(METERING_LEGACY_PRUNED,))
-    }
-    pub(crate) fn metering_prune_cursor(&self) -> Vec<u8> {
-        self.metering_prune_cursor_space().pack(&())
-    }
-    pub(crate) fn metering_prune_cursor_space(&self) -> Subspace {
-        self.root.subspace(&(METERING_PRUNE_CURSOR,))
-    }
-    pub(crate) fn metering_upgrade_at(&self) -> Vec<u8> {
-        self.metering_upgrade_at_space().pack(&())
-    }
-    pub(crate) fn metering_upgrade_at_space(&self) -> Subspace {
-        self.root.subspace(&(METERING_UPGRADE_AT,))
-    }
+
     pub(crate) fn node(&self, id: NodeId) -> Vec<u8> {
         self.node_space()
             .pack(&(id.as_ulid().to_bytes().as_slice(),))
@@ -792,62 +724,7 @@ impl<'a> Keys<'a> {
     pub(crate) fn session_chunk_space_root(&self) -> Subspace {
         self.root.subspace(&(SESSION_CHUNK,))
     }
-    pub(crate) fn session_idle(&self, id: SessionId) -> Vec<u8> {
-        self.session_idle_space()
-            .pack(&(id.as_ulid().to_bytes().as_slice(),))
-    }
-    pub(crate) fn session_idle_space(&self) -> Subspace {
-        self.root.subspace(&(SESSION_IDLE,))
-    }
-    pub(crate) fn session_image(&self, id: SessionId) -> Vec<u8> {
-        self.session_image_space()
-            .pack(&(id.as_ulid().to_bytes().as_slice(),))
-    }
-    pub(crate) fn session_image_space(&self) -> Subspace {
-        self.root.subspace(&(SESSION_IMAGE,))
-    }
-    pub(crate) fn session_inference(&self, id: SessionId) -> Vec<u8> {
-        self.session_inference_space()
-            .pack(&(id.as_ulid().to_bytes().as_slice(),))
-    }
-    pub(crate) fn session_inference_space(&self) -> Subspace {
-        self.root.subspace(&(SESSION_INFERENCE,))
-    }
-    pub(crate) fn session_kind(&self, id: SessionId) -> Vec<u8> {
-        self.session_kind_space()
-            .pack(&(id.as_ulid().to_bytes().as_slice(),))
-    }
-    pub(crate) fn session_kind_space(&self) -> Subspace {
-        self.root.subspace(&(SESSION_KIND,))
-    }
-    pub(crate) fn session_plan(&self, id: SessionId) -> Vec<u8> {
-        self.session_plan_space()
-            .pack(&(id.as_ulid().to_bytes().as_slice(),))
-    }
-    pub(crate) fn session_plan_space(&self) -> Subspace {
-        self.root.subspace(&(SESSION_PLAN,))
-    }
-    pub(crate) fn session_route(&self, id: SessionId) -> Vec<u8> {
-        self.session_route_space()
-            .pack(&(id.as_ulid().to_bytes().as_slice(),))
-    }
-    pub(crate) fn session_route_space(&self) -> Subspace {
-        self.root.subspace(&(SESSION_ROUTE,))
-    }
-    pub(crate) fn session_route_step(&self, id: SessionId) -> Vec<u8> {
-        self.session_route_step_space()
-            .pack(&(id.as_ulid().to_bytes().as_slice(),))
-    }
-    pub(crate) fn session_route_step_space(&self) -> Subspace {
-        self.root.subspace(&(SESSION_ROUTE_STEP,))
-    }
-    pub(crate) fn session_state_since(&self, id: SessionId) -> Vec<u8> {
-        self.session_state_since_space()
-            .pack(&(id.as_ulid().to_bytes().as_slice(),))
-    }
-    pub(crate) fn session_state_since_space(&self) -> Subspace {
-        self.root.subspace(&(SESSION_STATE_SINCE,))
-    }
+
     pub(crate) fn session_tools(&self, session: SessionId, request: RequestId) -> Vec<u8> {
         self.session_tools_space_root().pack(&(
             session.as_ulid().to_bytes().as_slice(),
@@ -1238,20 +1115,12 @@ mod registry_tests {
                 keys.computer_notice_delivered(sessionid, 4),
             ),
             (
-                "credential",
-                keys.credential(CredentialScope::Cluster, "provider"),
-            ),
-            (
                 "credential_entry",
                 keys.credential_entry(CredentialScope::Cluster, "provider", "label"),
             ),
             (
                 "credential_entry_lease",
                 keys.credential_entry_lease(CredentialScope::Cluster, "provider", "label"),
-            ),
-            (
-                "credential_lease",
-                keys.credential_lease(CredentialScope::Cluster, "provider"),
             ),
             (
                 "entry_quota_config",
@@ -1294,7 +1163,6 @@ mod registry_tests {
             ("inference_wait", keys.inference_wait(sessionid)),
             ("inference_wait_due", keys.inference_wait_due(at, sessionid)),
             ("inflight", keys.inflight(requestid)),
-            ("interrupt_requested", keys.interrupt_requested(sessionid)),
             ("lease", keys.lease(sessionid)),
             ("lease_by_expiry", keys.lease_by_expiry(at, sessionid)),
             ("manifest", keys.manifest(manifestid)),
@@ -1303,9 +1171,6 @@ mod registry_tests {
                 "metering_hour",
                 keys.metering_hour_single("dimension", 3600, "key", "field"),
             ),
-            ("metering_legacy_pruned", keys.metering_legacy_pruned()),
-            ("metering_prune_cursor", keys.metering_prune_cursor()),
-            ("metering_upgrade_at", keys.metering_upgrade_at()),
             ("node", keys.node(nodeid)),
             ("placed_tool_claim", keys.placed_tool_claim(requestid)),
             ("placement", keys.placement(agentid)),
@@ -1330,17 +1195,9 @@ mod registry_tests {
             ),
             ("session_chain", keys.session_chain("direction", sessionid)),
             ("session_chunk", keys.session_chunk(sessionid, 9)),
-            ("session_idle", keys.session_idle(sessionid)),
-            ("session_image", keys.session_image(sessionid)),
-            ("session_inference", keys.session_inference(sessionid)),
-            ("session_kind", keys.session_kind(sessionid)),
-            ("session_plan", keys.session_plan(sessionid)),
-            ("session_route", keys.session_route(sessionid)),
-            ("session_route_step", keys.session_route_step(sessionid)),
             ("queued_message", keys.queued_message(sessionid, 5)),
             ("queued_counter", keys.queued_counter(sessionid)),
             ("queued_replay", keys.queued_replay("value")),
-            ("session_state_since", keys.session_state_since(sessionid)),
             ("session_tools", keys.session_tools(sessionid, requestid)),
             ("snapshot", keys.snapshot(sessionid, 5)),
             ("timer", keys.timer(agentid, timerid)),

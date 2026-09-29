@@ -526,7 +526,7 @@ impl Store {
     /// one call instead of one scan per session.
     /// # Errors
     /// Returns database or decoding errors.
-    pub async fn route_pools(
+    pub(crate) async fn route_pools(
         &self,
         providers: &[String],
         now: Timestamp,
@@ -549,7 +549,7 @@ impl Store {
     /// scheduler fills its per-tick cache with one call per distinct step.
     /// # Errors
     /// Returns database or decoding errors.
-    pub async fn breaker_states(
+    pub(crate) async fn breaker_states(
         &self,
         steps: &[(String, Option<String>)],
         now: Timestamp,
@@ -578,7 +578,7 @@ impl Store {
     /// nothing usable expands to nothing and the caller falls back to the
     /// implicit route.
     #[must_use]
-    pub fn expand_chain(
+    pub(crate) fn expand_chain(
         record: Option<&RouteRecord>,
         pools: &HashMap<String, Vec<PoolEntry>>,
         fallback_provider: &str,
@@ -923,7 +923,7 @@ impl Store {
     /// itself carries, so the minimum of the two wakes the session as soon
     /// as any step could serve it.
     #[must_use]
-    pub fn earliest_retry(steps: &[RouteStepStatus], fallback: Timestamp) -> Timestamp {
+    pub(crate) fn earliest_retry(steps: &[RouteStepStatus], fallback: Timestamp) -> Timestamp {
         steps
             .iter()
             .filter_map(|step| step.open_until)

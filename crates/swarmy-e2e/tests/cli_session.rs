@@ -1099,10 +1099,10 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
         let event = swarmy_bus::Bus::turn_event(session, turn, stage, Some(request));
         timeout(
             WAIT,
-            fixture.store.record_turn_metric(
+            fixture.store.record_turn_metrics(
                 session,
                 turn,
-                swarmy_store::MetricPatch::Stage(event),
+                vec![swarmy_store::MetricPatch::Stage(event)],
             ),
         )
         .await
@@ -1112,17 +1112,19 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
     }
     timeout(
         WAIT,
-        fixture.store.record_turn_metric(
+        fixture.store.record_turn_metrics(
             session,
             turn,
-            swarmy_store::MetricPatch::Inference(swarmy_store::InferenceMetric {
-                request_id: request.to_string(),
-                provider: "fake".into(),
-                model: "scripted".into(),
-                input_tokens: 8,
-                output_tokens: 4,
-                ..Default::default()
-            }),
+            vec![swarmy_store::MetricPatch::Inference(
+                swarmy_store::InferenceMetric {
+                    request_id: request.to_string(),
+                    provider: "fake".into(),
+                    model: "scripted".into(),
+                    input_tokens: 8,
+                    output_tokens: 4,
+                    ..Default::default()
+                },
+            )],
         ),
     )
     .await

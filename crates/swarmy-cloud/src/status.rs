@@ -373,7 +373,7 @@ mod tests {
     use super::*;
     #[test]
     fn control_nodes_report_profile_token_presence_and_others_opt_out() {
-        let mut node: RemoteNode = serde_json::from_str(r#"{"name":"test","region":"local","instance_id":"i-test","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"key","created_at":"now"}"#).unwrap();
+        let mut node: RemoteNode = serde_json::from_str(r#"{"name":"test","region":"local","instance_id":"i-test","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"key","launch_attempted":true,"created_at":"now"}"#).unwrap();
         // Without saved launch settings the node predates service roles.
         assert_eq!(api_token_status(&node, None), "not-applicable");
         node.launch_settings = Some(swarmy_config::RemoteSettings {
@@ -409,7 +409,7 @@ mod tests {
     }
     #[tokio::test]
     async fn api_backed_status_reports_live_stale_absent_and_unavailable() {
-        let node: RemoteNode = serde_json::from_str(r#"{"name":"test","region":"local","instance_id":"i-test","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"key","created_at":"now"}"#).unwrap();
+        let node: RemoteNode = serde_json::from_str(r#"{"name":"test","region":"local","instance_id":"i-test","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"key","launch_attempted":true,"created_at":"now"}"#).unwrap();
         let record = |seconds| {
             (
                 swarmy_core::NodeRecord {

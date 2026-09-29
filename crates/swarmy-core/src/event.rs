@@ -142,7 +142,7 @@ pub fn interrupted_event(seq: u64, request_id: crate::RequestId) -> Event {
 pub(crate) mod tests {
     use super::*;
     use crate::{
-        SessionId, decode, encode,
+        SessionId, encode,
         encoding::tests::assert_round_trip,
         message::tests::{message, tool_call, tool_result},
     };
@@ -226,26 +226,16 @@ pub(crate) mod tests {
             let json = serde_json::to_value(&event).unwrap();
             assert_eq!(json.as_object().unwrap().len(), 1);
             assert_eq!(json[tag]["seq"], event.seq());
-            // Freeze existing discriminants so adding a variant cannot silently
-            // change the interpretation of old stored events.
+            // Freeze current discriminants so adding a variant changes the fixture.
             assert_eq!(
                 usize::from(encode(&event).unwrap()[1]),
-                if index == 2 { 8 } else { index }
+                match index.cmp(&2) {
+                    std::cmp::Ordering::Less => index,
+                    std::cmp::Ordering::Equal => 7,
+                    std::cmp::Ordering::Greater => index - 1,
+                }
             );
         }
-    }
-
-    #[test]
-    fn version_one_event_fixture_remains_readable() {
-        // Version 1, StateChanged tag 5, seq 42, Leased tag 2, Idle tag 0.
-        let bytes = [1, 5, 42, 2, 0];
-        let event = Event::StateChanged {
-            seq: 42,
-            from: SessionState::Leased,
-            to: SessionState::Idle,
-        };
-        assert_eq!(decode::<Event>(&bytes).unwrap(), event);
-        assert_eq!(encode(&event).unwrap(), bytes);
     }
 
     #[test]

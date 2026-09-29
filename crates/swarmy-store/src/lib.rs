@@ -1,10 +1,11 @@
 //! `FoundationDB` key layout and atomic session operations.
+#![deny(unreachable_pub)]
 //!
 //! Call `boot` once at process startup and retain its guard until every store and
 //! runtime using `FoundationDB` has stopped. The default directory is `swarmy`.
 //! Event, snapshot, and request payloads above 80 KiB are uploaded before transactions start;
 //! failed transactions can leave unreferenced, content-addressed blobs for later GC.
-//! Session records use a per-record version; legacy side rows are migrated. Scans are bounded and callers paginate by their last result. A commit with an unknown outcome is reported without replaying it.
+//! Session records use a per-record version. Scans are bounded and callers paginate by their last result. A commit with an unknown outcome is reported without replaying it.
 
 mod agents;
 pub use agents::{AgentSessionOptions, CreateAgentOptions};
@@ -77,9 +78,12 @@ use foundationdb::{
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use swarmy_core::{
-    AgentRecord, EncodingError, Event, IdempotencyRecord, InflightRecord, RequestId, SessionId,
-    SessionRecord, SessionState, SnapshotRef, decode, encode,
+    AgentRecord, EncodingError, Event, IdempotencyRecord, RequestId, SessionId, SessionRecord,
+    SessionState, decode, encode,
 };
+
+#[cfg(any(test, feature = "test-support"))]
+use swarmy_core::{InflightRecord, SnapshotRef};
 
 use blob::{BlobError, BlobStore};
 
@@ -298,31 +302,14 @@ enum StoredValue {
 
 const SESSION_RECORD_VERSION: u8 = 2;
 // Postcard encodes a session id with a 26-byte prefix, so this marker cannot
-// collide with an inline V2 record. Oversized V1 side rows need bounded chunks.
+// collide with an inline session record. Oversized records need bounded chunks.
 const SESSION_CHUNK_MARKER: u8 = 0xff;
 const SESSION_MAX_BYTES: usize = 10 * INLINE_LIMIT;
 
-/// Counts from one bounded-page boot migration.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SessionMigration {
-    pub migrated: usize,
-    pub skipped: usize,
-}
-
-// Frozen version-one header. Do not add fields here.
+/// The current format owns all session-local metadata. Postcard fields are
+/// positional; changes require a new fixed-byte fixture and a one-way break.
 #[derive(Serialize, Deserialize)]
-struct StoredSessionV1 {
-    session_id: SessionId,
-    agent_id: swarmy_core::AgentId,
-    state: SessionState,
-    head_seq: u64,
-    snapshot_seq: Option<u64>,
-}
-
-/// Version two owns all session-local metadata. Add future fields only with
-/// `swarmy_core::trailing`; never change the shape of existing fields.
-#[derive(Serialize, Deserialize)]
-struct StoredSessionV2 {
+struct StoredSessionCurrent {
     session_id: SessionId,
     agent_id: swarmy_core::AgentId,
     state: SessionState,
@@ -340,7 +327,7 @@ struct StoredSessionV2 {
     state_since: Option<jiff::Timestamp>,
 }
 
-// Working copy shared by the state machine; V1 and V2 have different wire layouts.
+// Working copy shared by the state machine.
 struct StoredSession {
     session_id: SessionId,
     agent_id: swarmy_core::AgentId,
@@ -359,8 +346,8 @@ struct StoredSession {
     state_since: Option<jiff::Timestamp>,
 }
 
-impl From<StoredSessionV2> for StoredSession {
-    fn from(v: StoredSessionV2) -> Self {
+impl From<StoredSessionCurrent> for StoredSession {
+    fn from(v: StoredSessionCurrent) -> Self {
         Self {
             session_id: v.session_id,
             agent_id: v.agent_id,
@@ -380,7 +367,7 @@ impl From<StoredSessionV2> for StoredSession {
         }
     }
 }
-impl From<&StoredSession> for StoredSessionV2 {
+impl From<&StoredSession> for StoredSessionCurrent {
     fn from(v: &StoredSession) -> Self {
         Self {
             session_id: v.session_id,
@@ -466,6 +453,7 @@ impl Store {
 
     /// Use a deterministic clock for lease and expiry tests.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_clock(
         mut self,
         clock: impl Fn() -> jiff::Timestamp + Send + Sync + 'static,
@@ -568,124 +556,43 @@ impl Store {
         }
     }
 
-    async fn hydrate_legacy_session(
-        &self,
-        trx: &Transaction,
-        header: StoredSessionV1,
-    ) -> Result<StoredSession> {
-        let id = header.session_id;
-        let (
-            kind,
-            computer_deleted,
-            plan,
-            inference,
-            interrupt_requested,
-            route,
-            route_step,
-            image,
-            idle_since,
-            state_since,
-        ) = futures::try_join!(
-            async {
-                Ok::<_, StoreError>(
-                    read(trx, &self.session_kind_key(id))
-                        .await?
-                        .unwrap_or_default(),
-                )
-            },
-            self.computer_deleted(trx, header.agent_id),
-            async {
-                Ok::<_, StoreError>(
-                    read(trx, &self.session_plan_key(id))
-                        .await?
-                        .unwrap_or_default(),
-                )
-            },
-            async {
-                Ok::<_, StoreError>(
-                    read(trx, &self.session_inference_key(id))
-                        .await?
-                        .unwrap_or_default(),
-                )
-            },
-            async {
-                Ok::<_, StoreError>(read(trx, &self.interrupt_key(id)).await?.unwrap_or(false))
-            },
-            async {
-                Ok::<_, StoreError>(
-                    read::<Option<String>>(trx, &self.session_route_key(id))
-                        .await?
-                        .flatten(),
-                )
-            },
-            async {
-                Ok::<_, StoreError>(
-                    read(trx, &self.session_route_step_key(id))
-                        .await?
-                        .unwrap_or(0),
-                )
-            },
-            async { read(trx, &self.session_image_key(id)).await },
-            async { read(trx, &self.session_idle_key(id)).await },
-            async { read(trx, &self.session_state_since_key(id)).await },
-        )?;
-        Ok(StoredSession {
-            session_id: id,
-            agent_id: header.agent_id,
-            state: header.state,
-            head_seq: header.head_seq,
-            snapshot_seq: header.snapshot_seq,
-            kind,
-            computer_deleted,
-            plan,
-            inference,
-            interrupt_requested,
-            route,
-            route_step,
-            image,
-            idle_since,
-            state_since,
-        })
-    }
-
     fn session_chunk_key(&self, id: SessionId, index: u16) -> Vec<u8> {
         crate::keys::Keys::new(&self.root).session_chunk(id, index)
     }
 
     async fn decode_session_in(&self, trx: &Transaction, bytes: &[u8]) -> Result<StoredSession> {
-        if bytes.first() == Some(&SESSION_RECORD_VERSION) {
-            let payload = if bytes.get(1) == Some(&SESSION_CHUNK_MARKER) {
-                if bytes.len() != 20 {
-                    return Err(StoreError::Storage(crate::StorageError::Corrupt));
-                }
-                let id = keys::session_id(bytes[2..18].to_vec())?;
-                let count = u16::from_be_bytes([bytes[18], bytes[19]]);
-                if count == 0 || usize::from(count) > SESSION_MAX_BYTES.div_ceil(INLINE_LIMIT) {
-                    return Err(StoreError::Storage(crate::StorageError::Corrupt));
-                }
-                let mut payload = Vec::new();
-                for index in 0..count {
-                    let chunk = trx
-                        .get(&self.session_chunk_key(id, index), false)
-                        .await?
-                        .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
-                    payload.extend_from_slice(&chunk);
-                }
-                payload
-            } else {
-                bytes[1..].to_vec()
-            };
-            let v: StoredSessionV2 =
-                postcard::from_bytes(&payload).map_err(EncodingError::Payload)?;
-            let mut session: StoredSession = v.into();
-            // The agent tombstone is authoritative for every named side session.
-            // Deleting a computer cannot atomically rewrite an unbounded set
-            // of conversations, so keep this one shared fence until queried.
-            session.computer_deleted |= self.computer_deleted(trx, session.agent_id).await?;
-            Ok(session)
-        } else {
-            self.hydrate_legacy_session(trx, decode(bytes)?).await
+        if bytes.first() != Some(&SESSION_RECORD_VERSION) {
+            return Err(StoreError::Storage(crate::StorageError::Corrupt));
         }
+        let payload = if bytes.get(1) == Some(&SESSION_CHUNK_MARKER) {
+            if bytes.len() != 20 {
+                return Err(StoreError::Storage(crate::StorageError::Corrupt));
+            }
+            let id = keys::session_id(bytes[2..18].to_vec())?;
+            let count = u16::from_be_bytes([bytes[18], bytes[19]]);
+            if count == 0 || usize::from(count) > SESSION_MAX_BYTES.div_ceil(INLINE_LIMIT) {
+                return Err(StoreError::Storage(crate::StorageError::Corrupt));
+            }
+            let mut payload = Vec::new();
+            for index in 0..count {
+                let chunk = trx
+                    .get(&self.session_chunk_key(id, index), false)
+                    .await?
+                    .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
+                payload.extend_from_slice(&chunk);
+            }
+            payload
+        } else {
+            bytes[1..].to_vec()
+        };
+        let v: StoredSessionCurrent =
+            postcard::from_bytes(&payload).map_err(EncodingError::Payload)?;
+        let mut session: StoredSession = v.into();
+        // The agent tombstone is authoritative for every named side session.
+        // Deleting a computer cannot atomically rewrite an unbounded set
+        // of conversations, so keep this one shared fence until queried.
+        session.computer_deleted |= self.computer_deleted(trx, session.agent_id).await?;
+        Ok(session)
     }
 
     pub(crate) async fn fetch_session_in(
@@ -727,12 +634,10 @@ impl Store {
         self.decode_session_in(trx, &bytes).await
     }
 
-    // Clear legacy rows with the V2 write, never leaving side data that can
-    // override a newer version if an old process or maintenance job retries.
     pub(crate) fn write_session(&self, trx: &Transaction, session: &StoredSession) -> Result<()> {
         let mut bytes = vec![SESSION_RECORD_VERSION];
         bytes.extend(
-            postcard::to_allocvec(&StoredSessionV2::from(session))
+            postcard::to_allocvec(&StoredSessionCurrent::from(session))
                 .map_err(EncodingError::Payload)?,
         );
         if bytes.len() > SESSION_MAX_BYTES {
@@ -762,92 +667,7 @@ impl Store {
             bytes.extend(count.to_be_bytes());
         }
         trx.set(&self.session_key(session.session_id), &bytes);
-        let id = session.session_id;
-        for key in [
-            self.session_kind_key(id),
-            self.session_plan_key(id),
-            self.session_inference_key(id),
-            self.interrupt_key(id),
-            self.session_route_key(id),
-            self.session_route_step_key(id),
-            self.session_image_key(id),
-            self.session_idle_key(id),
-            self.session_state_since_key(id),
-        ] {
-            trx.clear(&key);
-        }
         Ok(())
-    }
-
-    /// Rewrite remaining V1 sessions in bounded scan pages. Concurrent writers
-    /// are safe: each rewrite reads the header in its committing transaction.
-    /// # Errors
-    /// Returns scan and transaction errors; malformed individual rows are skipped.
-    pub async fn migrate_legacy_sessions(&self) -> Result<SessionMigration> {
-        let mut after = None;
-        let mut outcome = SessionMigration::default();
-        loop {
-            let page: Vec<(SessionId, bool)> = self
-                .transaction(|trx| async move {
-                    let (mut begin, end) =
-                        crate::keys::Keys::new(&self.root).session_space().range();
-                    if let Some(id) = after {
-                        begin = self.session_key(id);
-                        begin.push(0);
-                    }
-                    let mut ids = Vec::new();
-                    for (key, value) in scan(&trx, (begin, end), MAX_SCAN_LIMIT).await? {
-                        let (_, bytes): (String, Vec<u8>) = self
-                            .root
-                            .unpack(&key)
-                            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-                        ids.push((
-                            keys::session_id(bytes)?,
-                            value.first() != Some(&SESSION_RECORD_VERSION),
-                        ));
-                    }
-                    Ok(ids)
-                })
-                .await?;
-            if page.is_empty() {
-                break;
-            }
-            after = page.last().map(|(id, _)| *id);
-            for (id, legacy) in page {
-                if !legacy {
-                    continue;
-                }
-                let result = self
-                    .transaction(|trx| async move {
-                        let Some(value) = trx.get(&self.session_key(id), false).await? else {
-                            return Ok(false);
-                        };
-                        if value.first() == Some(&SESSION_RECORD_VERSION) {
-                            return Ok(false);
-                        }
-                        let session = self.hydrate_legacy_session(&trx, decode(&value)?).await?;
-                        self.write_session(&trx, &session)?;
-                        Ok(true)
-                    })
-                    .await;
-                match result {
-                    Ok(true) => outcome.migrated += 1,
-                    Ok(false) => {}
-                    Err(
-                        error @ StoreError::Storage(
-                            crate::StorageError::Encoding(_)
-                            | crate::StorageError::TooLarge
-                            | crate::StorageError::Corrupt,
-                        ),
-                    ) => {
-                        tracing::warn!(%id, %error, "skipping invalid legacy session");
-                        outcome.skipped += 1;
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-        Ok(outcome)
     }
 
     /// Create an empty session and pin its registered image in the same transaction.
@@ -1174,6 +994,7 @@ impl Store {
     /// Store a snapshot pointer in both the snapshot index and session record.
     /// # Errors
     /// Rejects snapshots ahead of the log or older than the current snapshot.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn write_snapshot(&self, id: SessionId, snapshot: &SnapshotRef) -> Result<()> {
         let value = self.prepare(snapshot).await?;
         self.transaction(|trx| {
@@ -1209,15 +1030,7 @@ impl Store {
 
     /// # Errors
     /// Returns storage or blob upload errors.
-    /// Test-only entry point, also available with the `test-support` feature.
     #[cfg(any(test, feature = "test-support"))]
-    pub async fn put_idempotency(&self, id: RequestId, record: &IdempotencyRecord) -> Result<()> {
-        self.put_payload(crate::keys::Keys::new(&self.root).idem(id), record)
-            .await
-    }
-
-    /// # Errors
-    /// Returns storage or blob upload errors.
     pub async fn put_inflight(&self, id: RequestId, record: &InflightRecord) -> Result<()> {
         self.put_payload(crate::keys::Keys::new(&self.root).inflight(id), record)
             .await
@@ -1225,19 +1038,10 @@ impl Store {
 
     /// # Errors
     /// Returns storage, blob, or decoding errors.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn get_inflight(&self, id: RequestId) -> Result<Option<InflightRecord>> {
         self.get_payload(crate::keys::Keys::new(&self.root).inflight(id))
             .await
-    }
-
-    /// # Errors
-    /// Returns transaction errors.
-    pub async fn clear_inflight(&self, id: RequestId) -> Result<()> {
-        self.transaction(|trx| async move {
-            trx.clear(&crate::keys::Keys::new(&self.root).inflight(id));
-            Ok(())
-        })
-        .await
     }
 
     async fn put_payload<T: Serialize>(&self, key: Vec<u8>, value: &T) -> Result<()> {
@@ -1309,27 +1113,14 @@ async fn scan(
 }
 
 #[cfg(test)]
-mod compatibility_tests {
+mod stored_format_tests {
     use super::*;
 
     #[test]
     fn fixed_versioned_session_bytes() {
         let id = SessionId::from_ulid(ulid::Ulid::from(0_u128));
         let agent = swarmy_core::AgentId::from_ulid(ulid::Ulid::from(0_u128));
-        let v1 = StoredSessionV1 {
-            session_id: id,
-            agent_id: agent,
-            state: SessionState::Idle,
-            head_seq: 0,
-            snapshot_seq: None,
-        };
-        let mut v1_bytes = vec![1, 26];
-        v1_bytes.extend([b'0'; 26]);
-        v1_bytes.push(26);
-        v1_bytes.extend([b'0'; 26]);
-        v1_bytes.extend([0, 0, 0]); // Idle, empty head, no snapshot.
-        assert_eq!(encode(&v1).unwrap(), v1_bytes);
-        let v2 = StoredSessionV2 {
+        let v2 = StoredSessionCurrent {
             session_id: id,
             agent_id: agent,
             state: SessionState::Idle,
@@ -1348,11 +1139,14 @@ mod compatibility_tests {
         };
         let mut bytes = vec![SESSION_RECORD_VERSION];
         bytes.extend(postcard::to_allocvec(&v2).unwrap());
-        let mut v2_bytes = v1_bytes;
-        v2_bytes[0] = 2;
+        let mut v2_bytes = vec![SESSION_RECORD_VERSION, 26];
+        v2_bytes.extend([b'0'; 26]);
+        v2_bytes.push(26);
+        v2_bytes.extend([b'0'; 26]);
+        v2_bytes.extend([0, 0, 0]);
         v2_bytes.extend([0; 12]); // Kind through state-since are empty defaults.
         assert_eq!(bytes, v2_bytes);
-        let decoded: StoredSessionV2 = postcard::from_bytes(&bytes[1..]).unwrap();
+        let decoded: StoredSessionCurrent = postcard::from_bytes(&bytes[1..]).unwrap();
         assert_eq!(decoded.session_id, id);
         assert_eq!(decoded.route_step, 0);
     }
@@ -1360,7 +1154,7 @@ mod compatibility_tests {
     #[test]
     fn fixed_nondefault_v2_session_bytes() {
         let id = SessionId::from_ulid(ulid::Ulid::from(0_u128));
-        let v2 = StoredSessionV2 {
+        let v2 = StoredSessionCurrent {
             session_id: id,
             agent_id: swarmy_core::AgentId::from_ulid(ulid::Ulid::from(0_u128)),
             state: SessionState::Runnable,
@@ -1386,24 +1180,9 @@ mod compatibility_tests {
         let mut actual = vec![SESSION_RECORD_VERSION];
         actual.extend(postcard::to_allocvec(&v2).unwrap());
         assert_eq!(actual, expected);
-        let decoded: StoredSessionV2 = postcard::from_bytes(&expected[1..]).unwrap();
+        let decoded: StoredSessionCurrent = postcard::from_bytes(&expected[1..]).unwrap();
         assert!(decoded.interrupt_requested);
         assert_eq!(decoded.route_step, 3);
-    }
-
-    #[test]
-    fn legacy_session_header_is_still_readable_and_writes_the_same_bytes() {
-        // A tuple encodes the original five postcard fields without adding metadata.
-        let id = SessionId::from_ulid(ulid::Ulid::from_parts(1, 2));
-        let agent = swarmy_core::AgentId::from_ulid(ulid::Ulid::from_parts(1, 3));
-        let original = encode(&(id, agent, SessionState::Idle, 42_u64, Some(20_u64))).unwrap();
-        let header: StoredSessionV1 = decode(&original).unwrap();
-        assert_eq!(header.session_id, id);
-        assert_eq!(header.agent_id, agent);
-        assert_eq!(header.state, SessionState::Idle);
-        assert_eq!(header.head_seq, 42);
-        assert_eq!(header.snapshot_seq, Some(20));
-        assert_eq!(encode(&header).unwrap(), original);
     }
 }
 

@@ -81,7 +81,7 @@ impl Store {
         .await
     }
 
-    /// Read the failure estimate for this epoch. Legacy placements have no estimate.
+    /// Read the failure estimate for this epoch.
     /// # Errors
     /// Rejects replaced placements and storage failures.
     pub async fn placement_failure_estimate(
@@ -419,11 +419,7 @@ impl Store {
             let mut hosting = self
                 .read_placement_hosting(&trx, &current)
                 .await?
-                // A legacy holder may already have a resident computer.
-                .unwrap_or(PlacementHosting {
-                    claimed: Some(now),
-                    ..Default::default()
-                });
+                .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
             hosting.last_renewed = Some(now);
             write(
                 &trx,
@@ -458,7 +454,7 @@ impl Store {
         .await
     }
 
-    /// Replace the observed epoch only after expiry. Only claimed or legacy placements
+    /// Replace the observed epoch only after expiry. Only claimed placements
     /// record Failure; an expired unclaimed grant records Unstarted.
     /// Competing takeovers conflict on the placement and only one can commit.
     /// # Errors
@@ -483,14 +479,14 @@ impl Store {
             // the crashed placement against the same node's capacity.
             trx.clear(&self.placement_node_key(current.node_id, current.agent_id));
             self.reserve_computer(&trx, node, current.agent_id).await?;
-            let hosting = self.read_placement_hosting(&trx, &current).await?;
-            // Missing metadata predates claim tracking, so do not assume that
-            // an existing resident computer was never started.
-            let lost_computer = hosting.as_ref().is_none_or(|h| h.claimed.is_some());
-            let estimated_failure_at = hosting.and_then(|h| {
-                h.claimed
-                    .map(|claimed| h.last_renewed.unwrap_or(claimed).max(claimed))
-            });
+            let hosting = self
+                .read_placement_hosting(&trx, &current)
+                .await?
+                .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
+            let lost_computer = hosting.claimed.is_some();
+            let estimated_failure_at = hosting
+                .claimed
+                .map(|claimed| hosting.last_renewed.unwrap_or(claimed).max(claimed));
             let record = PlacementRecord {
                 node_id: node,
                 epoch: current

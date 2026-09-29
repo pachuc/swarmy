@@ -389,7 +389,7 @@ mod tests {
         let mut node: swarmy_config::RemoteNode = serde_json::from_value(serde_json::json!({
             "name": "test", "region": "test", "instance_id": "i-test",
             "public_ip": "203.0.113.1", "private_ip": "10.0.0.1",
-            "key_path": "key", "created_at": "now"
+            "key_path": "key", "launch_attempted":true,"created_at": "now"
         }))
         .unwrap();
         let profile = RemoteProfile {
@@ -453,7 +453,7 @@ mod tests {
         let mut node: swarmy_config::RemoteNode = serde_json::from_value(serde_json::json!({
             "name": "test", "region": "us-east-1", "instance_id": "i-test",
             "public_ip": "203.0.113.1", "private_ip": "10.0.0.1",
-            "key_path": "key", "created_at": "now"
+            "key_path": "key", "launch_attempted":true,"created_at": "now"
         }))
         .unwrap();
         node.launch_settings = Some(swarmy_config::RemoteSettings {

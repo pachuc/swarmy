@@ -4,30 +4,20 @@ use swarmy_core::{AgentId, RequestId, SessionId, TokenUsage, UsageTotals};
 use crate::{Result, Store, read};
 
 /// Per-completion attribution; totals remain available under their existing keys.
-///
-/// New trailing fields keep old records readable: a missing presence byte
-/// decodes to its default, while a truncated new value is still rejected.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UsageRecord {
     pub provider: String,
     pub entry: Option<String>,
     pub usage: TokenUsage,
     pub cost_micros: u64,
-    #[serde(default, with = "swarmy_core::trailing")]
     pub session: Option<SessionId>,
-    #[serde(default, with = "swarmy_core::trailing")]
     pub agent: Option<AgentId>,
-    #[serde(default, with = "swarmy_core::trailing")]
     pub model: String,
-    #[serde(default, with = "swarmy_core::trailing")]
     pub entry_kind: Option<String>,
-    #[serde(default, with = "swarmy_core::trailing")]
     pub recorded_at: Option<jiff::Timestamp>,
     /// Route that selected the entry, when a named route resolved it.
-    #[serde(default, with = "swarmy_core::trailing")]
     pub route: Option<String>,
     /// Index into the resolved route, so metering names the exact step.
-    #[serde(default, with = "swarmy_core::trailing")]
     pub route_step: Option<u32>,
 }
 
@@ -237,4 +227,33 @@ struct BucketInput<'a> {
     kind: Option<&'a str>,
     usage: &'a TokenUsage,
     cost: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_record_has_fixed_bytes() {
+        let record = UsageRecord {
+            provider: "p".into(),
+            entry: None,
+            usage: TokenUsage::default(),
+            cost_micros: 0,
+            session: None,
+            agent: None,
+            model: "m".into(),
+            entry_kind: None,
+            recorded_at: None,
+            route: None,
+            route_step: None,
+        };
+        let bytes = swarmy_core::encode(&record).unwrap();
+        assert_eq!(
+            bytes,
+            [1, 1, 112, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 109, 0, 0, 0, 0]
+        );
+        let decoded: UsageRecord = swarmy_core::decode(&bytes).unwrap();
+        assert_eq!(decoded.provider, "p");
+    }
 }

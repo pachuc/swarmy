@@ -67,7 +67,7 @@ async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore)
     let head = objects.head(&paths[0]).await.unwrap();
     assert_eq!(head.location, paths[0]);
     assert_eq!(head.size, 6);
-    check_listings_and_legacy(settings, &*objects, &paths).await;
+    check_listings(settings, &*objects, &paths).await;
 
     // S3 last-modified has second precision and the collector truncates its cutoff.
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -117,7 +117,7 @@ async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore)
     ));
 }
 
-async fn check_listings_and_legacy(settings: &Settings, objects: &dyn ObjectStore, paths: &[Path]) {
+async fn check_listings(settings: &Settings, objects: &dyn ObjectStore, paths: &[Path]) {
     let mut listed: Vec<_> = objects
         .list(Some(&Path::from("chunks/01")))
         .map_ok(|meta| meta.location)
@@ -145,26 +145,6 @@ async fn check_listings_and_legacy(settings: &Settings, objects: &dyn ObjectStor
                 .all(|meta| meta.location.as_ref().starts_with("chunks/")
                     || meta.location.as_ref().starts_with("manifests/"))
         );
-        let mut legacy = settings.clone();
-        legacy.s3_bucket = format!("{}/{}", settings.s3_bucket, settings.s3_prefix.as_str());
-        legacy.s3_prefix = swarmy_config::ObjectPrefix::default();
-        let legacy = swarmy_store::objects::from_settings(&legacy).unwrap();
-        assert_eq!(legacy.head(&paths[0]).await.unwrap().location, paths[0]);
-        legacy
-            .put(&Path::from("legacy"), b"old".to_vec().into())
-            .await
-            .unwrap();
-        assert_eq!(
-            objects
-                .get(&Path::from("legacy"))
-                .await
-                .unwrap()
-                .bytes()
-                .await
-                .unwrap(),
-            "old"
-        );
-        objects.delete(&Path::from("legacy")).await.unwrap();
     }
 }
 

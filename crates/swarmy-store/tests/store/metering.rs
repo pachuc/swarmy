@@ -644,31 +644,6 @@ async fn aggregate_series_sums_single_key_views() {
     test.cleanup().await;
 }
 
-#[test]
-fn legacy_four_field_usage_records_decode() {
-    let bytes = swarmy_core::encode(&LegacyUsage {
-        provider: "openai".into(),
-        entry: Some("primary".into()),
-        usage: swarmy_core::TokenUsage::default(),
-        cost_micros: 7,
-    })
-    .unwrap();
-    let record: swarmy_store::UsageRecord = swarmy_core::decode(&bytes).unwrap();
-    assert_eq!(record.provider, "openai");
-    assert_eq!(record.entry.as_deref(), Some("primary"));
-    assert_eq!(record.cost_micros, 7);
-    assert_eq!(record.session, None);
-    assert_eq!(record.recorded_at, None);
-}
-
-#[derive(serde::Serialize)]
-struct LegacyUsage {
-    provider: String,
-    entry: Option<String>,
-    usage: swarmy_core::TokenUsage,
-    cost_micros: u64,
-}
-
 #[tokio::test]
 async fn pruning_removes_raw_records_but_keeps_rollups() {
     let Some(test) = TestStore::memory() else {

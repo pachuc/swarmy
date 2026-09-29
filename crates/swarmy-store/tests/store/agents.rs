@@ -2,32 +2,6 @@ use super::*;
 use swarmy_core::{AgentRecord, AgentSettings, ReasoningEffort, SessionKind};
 use swarmy_store::{AgentSessionOptions, CreateAgentOptions};
 
-// Restore the frozen V1 header so clearing a side row exercises legacy hydration.
-async fn restore_v1_header(test: &TestStore, session: &SessionRecord) {
-    let key = test.root.pack(&(
-        "session",
-        session.session_id.as_ulid().to_bytes().as_slice(),
-    ));
-    let bytes = encode(&(
-        session.session_id,
-        session.agent_id,
-        session.state,
-        session.head_seq,
-        None::<u64>,
-    ))
-    .unwrap();
-    test.db
-        .run(|trx, _| {
-            let (key, bytes) = (&key, &bytes);
-            async move {
-                trx.set(key, bytes);
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-}
-
 #[tokio::test]
 async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
     let Some(test) = TestStore::memory() else {
@@ -189,7 +163,7 @@ async fn assert_named_session_pin(
 }
 
 #[tokio::test]
-async fn ephemeral_creation_closure_and_legacy_headers() {
+async fn ephemeral_creation_and_closure() {
     let Some(test) = TestStore::memory() else {
         return;
     };
@@ -223,25 +197,6 @@ async fn ephemeral_creation_closure_and_legacy_headers() {
             .await
             .unwrap(),
         vec![session.clone()]
-    );
-    restore_v1_header(&test, &session).await;
-    // Simulate an old writer with no kind row and the unchanged session header.
-    let key = test
-        .root
-        .pack(&("session_kind", id.as_ulid().to_bytes().as_slice()));
-    test.db
-        .run(|trx, _| {
-            let key = &key;
-            async move {
-                trx.clear(key);
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        store.fetch_session(id).await.unwrap().unwrap().kind,
-        SessionKind::Ephemeral
     );
     store.close_session(id, timestamp(1)).await.unwrap();
     store.close_session(id, timestamp(2)).await.unwrap();
@@ -487,101 +442,6 @@ async fn concurrent_settings_and_rejected_updates(
 }
 
 #[tokio::test]
-async fn legacy_agent_records_default_inference_settings_and_can_be_updated() {
-    let Some(test) = TestStore::memory() else {
-        return;
-    };
-    let store = &test.store;
-    let image = image_fixture::image(store).await;
-    let mut expected = store
-        .create_agent("legacy", image, "old record", timestamp(0), None)
-        .await
-        .unwrap();
-    // This tuple has exactly the five fields of the original Postcard record.
-    let legacy = encode(&(
-        expected.agent_id,
-        &expected.name,
-        &expected.image,
-        &expected.description,
-        expected.created_at,
-    ))
-    .unwrap();
-    let key = test
-        .root
-        .pack(&("agent", expected.agent_id.as_ulid().to_bytes().as_slice()));
-    test.db
-        .run(|trx, _| {
-            let key = &key;
-            let legacy = &legacy;
-            async move {
-                trx.set(key, legacy);
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-    assert!(expected.main_session.is_none());
-    assert!(expected.system_prompt.is_none());
-    assert!(expected.model.is_none());
-    assert!(expected.reasoning_effort.is_none());
-    assert_eq!(
-        store.get_agent(expected.agent_id).await.unwrap(),
-        Some(expected.clone())
-    );
-    assert_eq!(
-        store.get_agent_by_name("legacy").await.unwrap(),
-        Some(expected.clone())
-    );
-    assert_eq!(
-        store.list_agents(None, 64).await.unwrap(),
-        [expected.clone()]
-    );
-    assert!(
-        store
-            .live_manifests()
-            .await
-            .unwrap()
-            .contains(&expected.image.manifest_id)
-    );
-    store
-        .create_agent_session(
-            SessionId::from_ulid(Ulid::generate()),
-            Some(expected.agent_id),
-            timestamp(1),
-            None,
-        )
-        .await
-        .unwrap();
-    let mut json = serde_json::to_value(&expected).unwrap();
-    for field in ["main_session", "system_prompt", "model", "reasoning_effort"] {
-        json.as_object_mut().unwrap().remove(field);
-    }
-    assert_eq!(
-        serde_json::from_value::<AgentRecord>(json).unwrap(),
-        expected
-    );
-    expected.model = Some("updated".into());
-    assert_eq!(
-        store
-            .set_agent(
-                expected.agent_id,
-                &AgentSettings {
-                    model: expected.model.clone(),
-                    ..Default::default()
-                }
-            )
-            .await
-            .unwrap(),
-        expected
-    );
-    assert_eq!(
-        store.get_agent(expected.agent_id).await.unwrap(),
-        Some(expected)
-    );
-    test.cleanup().await;
-}
-
-#[tokio::test]
 async fn main_session_creation_replacement_and_close_are_atomic() {
     let Some(test) = TestStore::memory() else {
         return;
@@ -677,76 +537,6 @@ async fn main_session_creation_replacement_and_close_are_atomic() {
             .unwrap(),
         (side.session_id, false)
     );
-    test.cleanup().await;
-}
-
-#[tokio::test]
-async fn legacy_agents_acquire_a_main_session_without_losing_their_image() {
-    let Some(test) = TestStore::memory() else {
-        return;
-    };
-    let store = &test.store;
-    let image = image_fixture::image(store).await;
-    let agent = store
-        .create_agent("legacy", image, "description", timestamp(0), None)
-        .await
-        .unwrap();
-    // Tuples have the same postcard representation as the old five-field record.
-    let bytes = swarmy_core::encode(&(
-        agent.agent_id,
-        &agent.name,
-        &agent.image,
-        &agent.description,
-        agent.created_at,
-    ))
-    .unwrap();
-    let key = test
-        .root
-        .pack(&("agent", agent.agent_id.as_ulid().to_bytes().as_slice()));
-    test.db
-        .run(|trx, _| {
-            let (key, bytes) = (&key, &bytes);
-            async move {
-                trx.set(key, bytes);
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        store.get_agent(agent.agent_id).await.unwrap(),
-        Some(agent.clone())
-    );
-    assert_eq!(
-        store.get_agent_by_name("legacy").await.unwrap(),
-        Some(agent.clone())
-    );
-    assert_eq!(
-        store.list_agents(None, 64).await.unwrap(),
-        vec![agent.clone()]
-    );
-    assert!(
-        store
-            .live_manifests()
-            .await
-            .unwrap()
-            .contains(&agent.image.manifest_id)
-    );
-    let (main, created) = store
-        .open_main_session(agent.agent_id, timestamp(1))
-        .await
-        .unwrap();
-    assert!(created);
-    assert_eq!(
-        store
-            .get_agent(agent.agent_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .main_session,
-        Some(main)
-    );
-    store.delete_agent(agent.agent_id).await.unwrap();
     test.cleanup().await;
 }
 
@@ -858,32 +648,6 @@ async fn gateway_advertisements_expire() {
         "credentials resolved"
     );
     assert!(!store.gateway_serves("anthropic").await.unwrap());
-    test.cleanup().await;
-}
-
-#[tokio::test]
-async fn legacy_session_without_selection_row_inherits_defaults() {
-    let Some(test) = TestStore::memory() else {
-        return;
-    };
-    let id = test.create().await;
-    let session = test.store.fetch_session(id).await.unwrap().unwrap();
-    restore_v1_header(&test, &session).await;
-    let key = test
-        .root
-        .pack(&("session_inference", id.as_ulid().to_bytes().as_slice()));
-    test.db
-        .run(|trx, _| {
-            let key = &key;
-            async move {
-                trx.clear(key);
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-    let record = test.store.fetch_session(id).await.unwrap().unwrap();
-    assert_eq!(record.inference, swarmy_core::InferenceSelection::default());
     test.cleanup().await;
 }
 

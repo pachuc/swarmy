@@ -59,9 +59,9 @@ impl Store {
                     .as_ref()
                     .ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?
                     .manifest_id;
-                write(
+                self.write_new_volume(
                     &trx,
-                    &self.volume_key(id),
+                    id,
                     &VolumeRecord {
                         head_manifest: manifest,
                         writer_lease: None,

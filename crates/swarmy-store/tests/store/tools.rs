@@ -135,6 +135,53 @@ fn node() -> NodeRecord {
 }
 
 #[tokio::test]
+async fn agent_volume_starts_snapshot_history_and_can_publish() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let (session, image, node, _, placement) = setup(store).await;
+    let volume = store.agent_volume(session, &placement).await.unwrap();
+    assert_eq!(store.volume_snapshots(volume).await.unwrap(), vec![image]);
+    assert_eq!(
+        store.volume_live_manifests(volume).await.unwrap(),
+        vec![image]
+    );
+    let lease = store
+        .acquire_writer_lease(
+            volume,
+            LeaseOwnerId::from_ulid(node.node_id.as_ulid()),
+            Timestamp::now(),
+            Timestamp::now()
+                .checked_add(Duration::from_secs(30))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let next = ManifestId::from_ulid(Ulid::generate());
+    let header = store.get_manifest(image).await.unwrap().unwrap();
+    store
+        .advance_volume_retained(
+            volume,
+            &lease,
+            image,
+            next,
+            &header,
+            std::num::NonZeroUsize::new(10).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store.volume_snapshots(volume).await.unwrap(),
+        vec![next, image]
+    );
+    assert_eq!(
+        store.volume_live_manifests(volume).await.unwrap(),
+        vec![next, image]
+    );
+}
+
+#[tokio::test]
 async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
     let Some(test) = TestStore::memory() else {
         return;
@@ -350,7 +397,9 @@ async fn tool_requests_and_dispatch_commit_together_with_both_fences() {
         );
     }
     assert!(matches!(
-        store.release_lease(id, &lease, Timestamp::now()).await,
+        store
+            .set_state(id, SessionState::Runnable, Some(&lease), Timestamp::now())
+            .await,
         Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     test.cleanup().await;

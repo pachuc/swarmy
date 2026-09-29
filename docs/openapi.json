@@ -3733,12 +3733,6 @@
               "type": "string"
             }
           },
-          "legacy_credential_rows": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Retired single-record credential rows still stored. Boot migrates\nthem to entries; any remainder failed to decrypt. Older servers omit\nthis; clients must treat a missing count as unknown, not zero.",
-            "minimum": 0
-          },
           "nodes": {
             "type": "array",
             "items": {
@@ -5326,7 +5320,7 @@
           "dropped_inference": {
             "type": "integer",
             "format": "int64",
-            "description": "Remainder of the `inference` array omitted by `inference_limit`, plus\nrows dropped by the legacy capped layout when the turn was migrated.",
+            "description": "Remainder of the `inference` array omitted by `inference_limit`.",
             "minimum": 0
           },
           "dropped_stages": {
@@ -5338,7 +5332,7 @@
           "dropped_tools": {
             "type": "integer",
             "format": "int64",
-            "description": "Remainder of the `tools` array omitted by `tools_limit`, plus rows\ndropped by the legacy capped layout when the turn was migrated.",
+            "description": "Remainder of the `tools` array omitted by `tools_limit`.",
             "minimum": 0
           },
           "error": {
