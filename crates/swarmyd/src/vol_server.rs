@@ -14,18 +14,12 @@ async fn config() -> Result<ServerConfig> {
     })
 }
 
-pub async fn control(
-    id: VolumeId,
-    mount: Option<PathBuf>,
-    detach: bool,
-    json: bool,
-    emit: fn(&str) -> std::io::Result<()>,
-) -> Result<()> {
+pub async fn control(id: VolumeId, mount: Option<PathBuf>, detach: bool, json: bool) -> Result<()> {
     let flushed = server::control_flush(&config().await?, id, mount, detach).await?;
     let mut value = serde_json::to_value(&flushed)?;
     value["volume_id"] = serde_json::to_value(id)?;
     value["detached"] = serde_json::json!(detach);
-    crate::vol::output(&value, &flushed.manifest_id.to_string(), json, emit)?;
+    crate::vol::output(&value, &flushed.manifest_id.to_string(), json)?;
     Ok(())
 }
 
@@ -34,7 +28,6 @@ pub async fn attach(
     path: Option<PathBuf>,
     background: bool,
     json: bool,
-    emit: fn(&str) -> std::io::Result<()>,
 ) -> Result<()> {
     anyhow::ensure!(
         rustix::process::geteuid().is_root(),
@@ -53,7 +46,6 @@ pub async fn attach(
                 &serde_json::json!({"volume_id": id, "node_id": node, "device": path}),
                 &path.display().to_string(),
                 json,
-                emit,
             )
             .map_err(|error| server::Error::Message(error.to_string()))
         },
@@ -65,17 +57,11 @@ pub async fn attach(
     Ok(())
 }
 
-pub async fn flush(
-    id: VolumeId,
-    mount: Option<PathBuf>,
-    freeze: bool,
-    json: bool,
-    emit: fn(&str) -> std::io::Result<()>,
-) -> Result<()> {
+pub async fn flush(id: VolumeId, mount: Option<PathBuf>, freeze: bool, json: bool) -> Result<()> {
     let flushed =
         server::control_flush_with_freeze(&config().await?, id, mount, false, freeze).await?;
     let mut value = serde_json::to_value(&flushed)?;
     value["volume_id"] = serde_json::to_value(id)?;
-    crate::vol::output(&value, &flushed.manifest_id.to_string(), json, emit)?;
+    crate::vol::output(&value, &flushed.manifest_id.to_string(), json)?;
     Ok(())
 }

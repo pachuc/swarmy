@@ -52,20 +52,6 @@ pub enum Error {
     NotFound(String),
     #[error("remote node {0} already exists; run swarmy remote down {0} first")]
     AlreadyExists(String),
-    #[error("missing permission {permission}: {source}")]
-    Permission {
-        permission: String,
-        #[source]
-        source: anyhow::Error,
-    },
-    #[error("SSH failed: {0}")]
-    Ssh(#[source] anyhow::Error),
-    #[error("AWS {operation} failed: {source}")]
-    Aws {
-        operation: &'static str,
-        #[source]
-        source: anyhow::Error,
-    },
     #[error(transparent)]
     Operation(anyhow::Error),
 }
