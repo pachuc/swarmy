@@ -68,12 +68,46 @@ fn recipes_reject_typos_and_invalid_dimensions() {
         assert!(Recipe::load(&path).is_err());
     }
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../images/base-ubuntu");
-    // The checked-in recipes must keep loading; their contents are not the contract.
-    let _ = Recipe::load(&base).unwrap();
+    // The checked-in recipes must keep loading; image names come from the
+    // directory name, so each recipe's name must match its directory.
+    let (_, _, name) = Recipe::load(&base).unwrap();
+    assert_eq!(
+        name, "base-ubuntu",
+        "image name comes from the recipe directory"
+    );
     let desktop = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../images/base-desktop");
-    let _ = Recipe::load(&desktop).unwrap();
+    let (desktop_recipe, _, name) = Recipe::load(&desktop).unwrap();
+    assert_eq!(
+        name, "base-desktop",
+        "image name comes from the recipe directory"
+    );
+    assert!(
+        desktop_recipe.sandbox.display,
+        "desktop sessions need sandbox.display"
+    );
     let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../images/swarmy-dev");
-    let _ = Recipe::load(&dev).unwrap();
+    let (recipe, _, name) = Recipe::load(&dev).unwrap();
+    assert_eq!(
+        name, "swarmy-dev",
+        "image name comes from the recipe directory"
+    );
+    assert!(
+        recipe
+            .sandbox
+            .scratch
+            .contains(&"/home/agent/.cargo-target".to_string()),
+        "worker builds spill onto the agent disk without the cargo-target scratch mount"
+    );
+    assert!(
+        matches!(
+            recipe.source,
+            Source::Debootstrap {
+                source_commit: Some(_),
+                ..
+            }
+        ),
+        "swarmy-dev rebuilds must pin their debootstrap source commit"
+    );
 }
 
 #[test]
