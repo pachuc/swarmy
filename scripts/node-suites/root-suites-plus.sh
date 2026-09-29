@@ -27,5 +27,25 @@ for suite in "swarmy-cli --test image" "swarmyd --test vol" "swarmy-volume --tes
   bash "$here/nbd-orphans.sh"
   sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked --no-default-features -p "$1" "$2" "$3" -- --test-threads=1 2>&1 | tail -4
 done
+# Tests that run nowhere without their image variable set. Each skips cleanly
+# when its variable is absent, so wire each up here with base-ubuntu:dev, the
+# image built by root-suites.sh above. None duplicates a test that already
+# runs: the node dev-stack acceptance clones the checkout inside a sandbox,
+# the bench-turn test checks the staged turn pipeline, and the root chats
+# cover default-image execution, shared background processes, and capped
+# memory input.
+echo "== swarmyd --test node root_dev_stack_uses_sandbox_loopback"
+bash "$here/nbd-orphans.sh"
+sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev SWARMY_TEST_DEV_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked -p swarmyd --test node -- root_dev_stack_uses_sandbox_loopback --test-threads=1 2>&1 | tail -4
+echo "== swarmy-cli --test turn"
+bash "$here/nbd-orphans.sh"
+sudo -E env SWARMY_BENCH_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked -p swarmy-cli --test turn -- --test-threads=1 2>&1 | tail -4
+# The no-default build above leaves headless client binaries, which the chat
+# tests refuse; rebuild the default-feature services before running them.
+CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-cli -p swarmyd -p swarmy-scheduler -p swarmy-worker -p swarmy-gateway -p swarmy-api >> ~/suite-build-plus.log 2>&1 \
+  || { tail -20 ~/suite-build-plus.log; echo "chat suite build failed"; exit 1; }
+echo "== swarmy-e2e --test cli_session root chats"
+bash "$here/nbd-orphans.sh"
+sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked -p swarmy-e2e --test cli_session -- root_chat_default_image_executes_pwd root_named_chats_share_a_background_process_and_delete root_memory_written_by_tools_is_in_the_next_turn_and_capped --test-threads=1 2>&1 | tail -6
 scripts/dev-stack.sh stop >/dev/null 2>&1 || true
 echo "PLUS_DONE"
