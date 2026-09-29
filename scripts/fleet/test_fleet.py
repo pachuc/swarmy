@@ -302,6 +302,37 @@ class FleetTests(unittest.TestCase):
         self.assertIn("worker-2", chosen.stdout)
         self.assertEqual(len(self.creates()), 2)
 
+    def test_switch_moves_idle_workers_skips_busy_and_updates_defaults(self):
+        self.assertEqual(self.call("launch", "AAAAA1").returncode, 0)
+        self.assertEqual(self.call("launch", "AAAAA2").returncode, 0)
+        self.assertEqual(self.call("release", "AAAAA1", "--force").returncode, 0)
+        switched = self.call("switch", "--provider", "openrouter", "--model", "meta/m", "--effort", "high", "--default")
+        self.assertEqual(switched.returncode, 0, switched.stderr)
+        sets = [call[2:] for call in self.calls() if call[2:4] == ["agent", "set"]]
+        # worker-1 is idle and switches with the route cleared; worker-2 is
+        # still running AAAAA2 and must not change model mid-task.
+        self.assertEqual(sets, [["agent", "set", "worker-1", "--provider", "openrouter", "--model", "meta/m",
+                                 "--effort", "high", "--route", "default"]])
+        self.assertIn("worker-2: skipped", switched.stdout)
+        meta = json.loads((self.root / "state" / "worker-1.meta.json").read_text())
+        self.assertEqual((meta["provider"], meta["model"]), ("openrouter", "meta/m"))
+        config = self.config.read_text()
+        self.assertIn('provider = "openrouter"', config)
+        self.assertIn('model = "meta/m"', config)
+        self.assertIn('effort = "high"', config)
+        self.assertIn('github_token = "private-token"', config)
+        # A later launch asking for the new model reuses the switched worker.
+        relaunch = self.call("launch", "AAAAA3")
+        self.assertEqual(relaunch.returncode, 0, relaunch.stderr)
+        self.assertIn("worker-1", relaunch.stdout)
+        self.assertNotIn("not the requested", relaunch.stderr)
+
+    def test_switch_rejects_unknown_worker(self):
+        self.assertEqual(self.call("launch", "AAAAA1").returncode, 0)
+        result = self.call("switch", "worker-9", "--provider", "p", "--model", "m")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unknown workers: worker-9", result.stderr)
+
     def test_relaunch_of_in_progress_task_skips_start(self):
         env = dict(self.env, TASK_STATUS="in_progress")
         result = self.call("launch", "EWR2HD", env=env)

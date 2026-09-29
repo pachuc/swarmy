@@ -88,6 +88,16 @@ They continue when the limit clears; a turn gives up only after
 `[inference] max_wait_seconds` (default one hour). OpenRouter workers are
 unaffected. To stop waiting instead, `fleet kill TASK`.
 
+To move the fleet to another model, for example when a subscription's
+weekly limit will not clear for days, run `fleet switch --provider P --model
+M [--effort E] [--default] [WORKER...]`. It sets each named worker (every
+worker by default) to that provider and model with its failover route
+cleared, records the change so `fleet launch` picks matching workers, and
+with `--default` makes it the `fleet.toml` default for new workers. Busy
+workers are skipped: a session that changes model mid-task carries the old
+model's transcript over, which some models handle badly. Kill or finish
+their tasks, switch, and relaunch the tasks on fresh sessions.
+
 ## Operator handoff
 
 The method an operator session follows day to day (review loop, merge criteria, root suites on the node, steering workers, rebuilding the laptop CLI) is in [fleet-operator-handoff.md](fleet-operator-handoff.md). The node-side suite scripts are kept in `scripts/node-suites/`.
