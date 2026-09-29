@@ -120,6 +120,29 @@ pub fn boot() -> foundationdb::api::NetworkAutoStop {
     unsafe { foundationdb::boot() }
 }
 
+/// Wait for a process shutdown signal: SIGINT (Ctrl-C) or SIGTERM.
+/// Systemd and the node launchers stop services with SIGTERM, so waiting
+/// only for Ctrl-C would skip the metric flush on every real shutdown.
+/// Callers await this instead of `tokio::signal::ctrl_c` directly.
+/// # Panics
+/// Panics if the SIGTERM handler cannot be installed.
+pub async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("SIGTERM handler must install");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 enum StoredValue {
     Inline(Vec<u8>),

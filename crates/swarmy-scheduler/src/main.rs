@@ -72,16 +72,18 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     };
-    tokio::select! {
-        result = scheduler.run() => result?,
-        () = health => {},
-        () = gc::run(&store, objects, settings.gc, settings.metering) => {},
-        () = ephemeral::run(&store, settings.ephemeral_retention_seconds) => {},
-        result = tokio::signal::ctrl_c() => result?,
-    }
+    let outcome = tokio::select! {
+        result = scheduler.run() => result,
+        () = health => Ok(()),
+        () = gc::run(&store, objects, settings.gc, settings.metering) => Ok(()),
+        () = ephemeral::run(&store, settings.ephemeral_retention_seconds) => Ok(()),
+        () = swarmy_store::shutdown_signal() => Ok(()),
+    };
     // Drain queued turn metrics before exit so shutdown keeps every write.
+    // The flush runs on every path, including a scheduler error, so a
+    // failing run still keeps the metrics it queued.
     if let Err(error) = store.flush_turn_metrics().await {
         tracing::warn!(%error, "scheduler metric flush failed");
     }
-    Ok(())
+    outcome
 }

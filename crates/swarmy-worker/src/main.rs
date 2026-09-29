@@ -92,7 +92,7 @@ async fn run(config: config::Config) -> Result<()> {
         () = health => bail!("health loop ended"),
         () = worker.recovery_loop() => bail!("recovery loop ended"),
         _ = consumers.join_next() => bail!("runnable consumer ended"),
-        result = tokio::signal::ctrl_c() => Ok(result?),
+        () = swarmy_store::shutdown_signal() => Ok(()),
     };
     // Drain queued turn metrics before exit so shutdown keeps every write.
     if let Err(error) = heartbeat_store.flush_turn_metrics().await {

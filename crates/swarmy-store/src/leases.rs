@@ -3,8 +3,8 @@ use jiff::Timestamp;
 use swarmy_core::{Lease, LeaseOwnerId, RunnableEntry, SessionId, SessionState, can_transition};
 
 use crate::{
-    Result, Store, StoreError, StoredSession, check_limit, keys::session_id, read, scan, scan_all,
-    write,
+    MAX_SCAN_LIMIT, Result, Store, StoreError, StoredSession, check_limit, keys::session_id, read,
+    scan, write,
 };
 
 impl Store {
@@ -106,9 +106,12 @@ impl Store {
                 let space = self.keys().event_space(id);
                 let begin =
                     crate::next_cursor(&self.keys().event(id, session.snapshot_seq.unwrap_or(0)));
+                // One bounded page inside the claim transaction: the claim
+                // must stay a small write, and the worker reads later pages
+                // with `read_events` up to the returned session head.
                 let (snapshot, values) = futures::try_join!(
                     self.snapshot_for_session_in(&trx, &session),
-                    scan_all(&trx, (begin, space.range().1)),
+                    scan(&trx, (begin, space.range().1), MAX_SCAN_LIMIT),
                 )?;
                 Ok((lease, session, snapshot, turn, values))
             })

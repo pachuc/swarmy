@@ -99,12 +99,7 @@ fn main() -> Result<()> {
         .init();
     let config = config::Config::from_env()?;
     let _network = swarmy_store::boot();
-    tokio::runtime::Runtime::new()?.block_on(async {
-        tokio::select! {
-            result = run(config) => result,
-            result = tokio::signal::ctrl_c() => Ok(result?),
-        }
-    })
+    tokio::runtime::Runtime::new()?.block_on(run(config))
 }
 
 async fn run(config: config::Config) -> Result<()> {
@@ -159,9 +154,8 @@ async fn run(config: config::Config) -> Result<()> {
                 continue;
             }
             delivery = messages.next(), if !subscriptions.is_empty() => delivery,
-            // Break out to flush queued turn metrics below; the outer
-            // `ctrl_c` select in `main` stays as a backup while flushing.
-            _ = tokio::signal::ctrl_c() => break,
+            // Break out to flush queued turn metrics below.
+            () = swarmy_store::shutdown_signal() => break,
         };
         let Some(delivery) = delivery else {
             bail!("work stream ended");

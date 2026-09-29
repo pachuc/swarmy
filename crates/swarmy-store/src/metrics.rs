@@ -332,7 +332,14 @@ impl crate::Store {
             patches,
         };
         if let Err(error) = self.metrics_tx.try_send(MetricMsg::Job(job)) {
-            tracing::warn!(%error, %session, %turn, "turn metric queue full; dropping");
+            match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    tracing::warn!(%session, %turn, "turn metric queue full; dropping");
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    tracing::warn!(%session, %turn, "turn metric drain closed; dropping");
+                }
+            }
         }
     }
 
@@ -341,7 +348,8 @@ impl crate::Store {
     /// write to be visible await this before reading. Jobs dropped while
     /// the queue was full are not recovered by this call.
     /// # Errors
-    /// Returns storage failures from the drain task.
+    /// Returns a storage error when the flush handshake itself fails; the
+    /// drain task only logs per-turn write failures.
     pub async fn flush_turn_metrics(&self) -> Result<()> {
         self.ensure_metrics_drain();
         let (ack, rx) = tokio::sync::oneshot::channel();
