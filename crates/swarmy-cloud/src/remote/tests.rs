@@ -14,6 +14,19 @@ use super::{
     state::State, up, wait_running,
 };
 
+/// The CLI's tag flow: list targets, confirm every exact name, then apply.
+async fn tag_confirmed(
+    cloud: &FakeCloud,
+    state: &State,
+    node: &swarmy_config::RemoteNode,
+    mut confirm: impl FnMut(&str, &str) -> Result<()>,
+) -> Result<()> {
+    for (kind, name) in down::adoption_targets(state, node)? {
+        confirm(&kind, &name)?;
+    }
+    down::apply_tag(cloud, node).await
+}
+
 fn denied(operation: &str) -> crate::Error {
     crate::Error::MissingPermission {
         operation: operation.to_owned(),
@@ -1872,7 +1885,7 @@ async fn tag_requires_exact_resource_names_and_calls_cloud_only_after_all_confir
     .unwrap();
     let node = state.require("cleanup").unwrap();
     let mut prompted = Vec::new();
-    down::tag_with_confirmation(&cloud, &state, &node, |kind, name| {
+    tag_confirmed(&cloud, &state, &node, |kind, name| {
         prompted.push((kind.to_owned(), name.to_owned()));
         Ok(())
     })
@@ -1891,7 +1904,7 @@ async fn tag_requires_exact_resource_names_and_calls_cloud_only_after_all_confir
         ["bucket test-bucket", "role and profile swarmy-cleanup"]
     );
     assert!(
-        down::tag_with_confirmation(&cloud, &state, &node, |_, _| {
+        tag_confirmed(&cloud, &state, &node, |_, _| {
             Err(crate::Error::other("no"))
         })
         .await
@@ -1979,7 +1992,7 @@ async fn tag_refuses_cloud_resources_owned_by_another_remote() {
     let node = state.require("cleanup").unwrap();
     cloud.foreign_bucket.set(true);
     assert!(
-        down::tag_with_confirmation(&cloud, &state, &node, |_, _| Ok(()))
+        tag_confirmed(&cloud, &state, &node, |_, _| Ok(()))
             .await
             .is_err()
     );
@@ -1987,7 +2000,7 @@ async fn tag_refuses_cloud_resources_owned_by_another_remote() {
     cloud.foreign_bucket.set(false);
     cloud.foreign_role.set(true);
     assert!(
-        down::tag_with_confirmation(&cloud, &state, &node, |_, _| Ok(()))
+        tag_confirmed(&cloud, &state, &node, |_, _| Ok(()))
             .await
             .is_err()
     );

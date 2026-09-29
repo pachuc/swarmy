@@ -13,14 +13,14 @@ use tokio::{process::Command, time::timeout};
 /// learned while provisioning lives next to the key so later commands verify it.
 fn arguments(node: &RemoteNode) -> Result<Vec<String>> {
     // SSH passes remote commands to a shell; the user and destination must be data only.
-    if node.ssh_user.is_empty()
-        || !node
-            .ssh_user
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        return Err(crate::Error::other("invalid ssh_user"));
-    }
+    crate::Error::ensure(
+        !node.ssh_user.is_empty()
+            && node
+                .ssh_user
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+        "invalid ssh_user",
+    )?;
     Ok(vec![
         "-o".into(),
         "BatchMode=yes".into(),
@@ -63,12 +63,10 @@ fn base(node: &RemoteNode) -> Result<Command> {
 ///
 /// Rejects node records whose public address is not an IP address.
 pub fn command(node: &RemoteNode) -> Result<Command> {
-    let _: std::net::IpAddr = node.public_ip.parse().map_err(|_| {
-        crate::Error::other(format!(
-            "public_ip must be an IP address: {}",
-            node.public_ip
-        ))
-    })?;
+    let _: std::net::IpAddr = node
+        .public_ip
+        .parse()
+        .map_err(|source| crate::Error::context(source, "public_ip must be an IP address"))?;
     base(node)
 }
 
@@ -81,7 +79,7 @@ pub async fn reachable_address(node: &RemoteNode) -> Result<String> {
     for address in [&node.public_ip, &node.private_ip] {
         let _: std::net::IpAddr = address
             .parse()
-            .map_err(|_| crate::Error::other(format!("invalid instance IP: {address}")))?;
+            .map_err(|source| crate::Error::context(source, "invalid instance IP"))?;
         let result = timeout(
             Duration::from_secs(7),
             base(node)?.arg(address).arg("true").output(),
@@ -117,7 +115,6 @@ pub fn command_line(node: &RemoteNode, address: &str) -> Result<String> {
 ///
 /// Reports a missing control socket and commands that time out after five seconds.
 pub async fn control(profile: &RemoteProfile, action: &str) -> Result<std::process::Output> {
-    let command = format!("ssh -O {action} localhost");
     let output = timeout(
         Duration::from_secs(5),
         Command::new("ssh")
@@ -129,14 +126,8 @@ pub async fn control(profile: &RemoteProfile, action: &str) -> Result<std::proce
             .output(),
     )
     .await
-    .map_err(|source| crate::Error::Ssh {
-        command: command.clone(),
-        source: Box::new(source),
-    })?
-    .map_err(|source| crate::Error::Ssh {
-        command,
-        source: Box::new(source),
-    })?;
+    .map_err(|source| crate::Error::context(source, "SSH control request timed out"))?
+    .map_err(crate::Error::ssh(&format!("control {action}")))?;
     Ok(output)
 }
 
@@ -152,29 +143,17 @@ async fn checked(command: &mut Command, action: &str) -> Result<()> {
         .stdin(Stdio::null())
         .status()
         .await
-        .map_err(|source| crate::Error::Ssh {
-            command: action.to_owned(),
-            source: Box::new(source),
-        })?;
+        .map_err(crate::Error::ssh(action))?;
     if !status.success() {
-        return Err(crate::Error::SshStatus {
-            command: action.to_owned(),
-            status,
-        });
+        return Err(crate::Error::ssh_status(action.to_owned(), status));
     }
     Ok(())
 }
 
 async fn run_output(command: &mut Command, action: &str) -> Result<std::process::Output> {
-    let output = command.output().await.map_err(|source| crate::Error::Ssh {
-        command: action.to_owned(),
-        source: Box::new(source),
-    })?;
+    let output = command.output().await.map_err(crate::Error::ssh(action))?;
     if !output.status.success() {
-        return Err(crate::Error::SshStatus {
-            command: action.to_owned(),
-            status: output.status,
-        });
+        return Err(crate::Error::ssh_status(action.to_owned(), output.status));
     }
     Ok(output)
 }
@@ -208,15 +187,13 @@ impl Ssh {
     /// Reports when the current directory is not inside a swarmy checkout.
     pub fn discover() -> Result<Self> {
         let cwd = std::env::current_dir()?;
-        let Some(repo) = cwd
+        let repo = cwd
             .ancestors()
             .find(|p| p.join("scripts/remote-provision.sh").is_file())
-        else {
-            return Err(crate::Error::other(
-                "run remote provisioning from a swarmy repository checkout",
-            ));
-        };
-        let repo = repo.to_owned();
+            .ok_or_else(|| {
+                crate::Error::other("run remote provisioning from a swarmy repository checkout")
+            })?
+            .to_owned();
         Ok(Self { repo })
     }
 
@@ -226,31 +203,28 @@ impl Ssh {
     ///
     /// Reports recipes outside the checkout and directories without `recipe.toml`.
     pub fn image_recipe(&self, path: &Path) -> Result<PathBuf> {
-        let joined = self.repo.join(path);
-        let path = joined.canonicalize().map_err(|_| {
-            crate::Error::other(format!(
-                "resolve image recipe directory: {}",
-                joined.display()
-            ))
-        })?;
-        if !(path.is_dir() && path.join("recipe.toml").is_file()) {
-            return Err(crate::Error::other(
-                "image recipe must be a directory containing recipe.toml",
-            ));
-        }
+        let path =
+            self.repo.join(path).canonicalize().map_err(|source| {
+                crate::Error::context(source, "resolve image recipe directory")
+            })?;
+        crate::Error::ensure(
+            path.is_dir() && path.join("recipe.toml").is_file(),
+            "image recipe must be a directory containing recipe.toml",
+        )?;
         path.to_str()
             .ok_or_else(|| crate::Error::other("image recipe path must be UTF-8"))?;
-        let relative = path.strip_prefix(&self.repo)?;
-        if relative.components().any(|part| {
-            matches!(
-                part.as_os_str().to_str(),
-                Some("target" | ".dev" | ".swarmy" | ".git")
-            )
-        }) {
-            return Err(crate::Error::other(
-                "image recipe must be inside the copied checkout",
-            ));
-        }
+        let relative = path.strip_prefix(&self.repo).map_err(|source| {
+            crate::Error::context(source, "image recipe must be inside the copied checkout")
+        })?;
+        crate::Error::ensure(
+            !relative.components().any(|part| {
+                matches!(
+                    part.as_os_str().to_str(),
+                    Some("target" | ".dev" | ".swarmy" | ".git")
+                )
+            }),
+            "image recipe is excluded from the copied checkout",
+        )?;
         Ok(relative.to_owned())
     }
 
@@ -302,9 +276,10 @@ impl Ssh {
             .arg(&self.repo)
             .args(["status", "--porcelain", "--untracked-files=all"])
             .output()?;
-        if !output.status.success() {
-            return Err(crate::Error::other("cannot inspect checkout git status"));
-        }
+        crate::Error::ensure(
+            output.status.success(),
+            "cannot inspect checkout git status",
+        )?;
         Ok(String::from_utf8_lossy(&output.stdout)
             .lines()
             .filter(|line| !is_python_cache(line))
@@ -374,7 +349,7 @@ impl Ssh {
         remote.arg(address).arg(script).stderr(Stdio::inherit());
         let output = run_output(&mut remote, "remote upgrade").await?;
         serde_json::from_slice(&output.stdout)
-            .map_err(|_| crate::Error::other("parse remote upgrade summary"))
+            .map_err(|source| crate::Error::context(source, "parse remote upgrade summary"))
     }
 
     /// Copy the checkout and run the provisioning script; returns the reachable address.
@@ -390,7 +365,14 @@ impl Ssh {
         let address = wait_ssh(node).await?;
         cloud_out!("Copying repository checkout");
         self.copy_checkout(node, &address).await?;
-        let service_ip: std::net::Ipv4Addr = primary.unwrap_or(node).private_ip.parse()?;
+        let service_ip: std::net::Ipv4Addr =
+            primary
+                .unwrap_or(node)
+                .private_ip
+                .parse()
+                .map_err(|source| {
+                    crate::Error::context(source, "private_ip must be an IPv4 address")
+                })?;
         let mode = if let Some(primary) = primary {
             let source = wait_ssh(primary).await?;
             let cluster = run_output(
@@ -552,14 +534,14 @@ async fn install_tunnel(
 
 fn tunnel_authorization(key: &str) -> Result<String> {
     let fields: Vec<_> = key.split_whitespace().collect();
-    if fields.len() < 2
-        || fields[0] != "ssh-ed25519"
-        || !fields[1]
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"+/=".contains(&byte))
-    {
-        return Err(crate::Error::other("invalid joining node public key"));
-    }
+    crate::Error::ensure(
+        fields.len() >= 2
+            && fields[0] == "ssh-ed25519"
+            && fields[1]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"+/=".contains(&byte)),
+        "invalid joining node public key",
+    )?;
     // Limit destination access, and disable shell, agent, X11, and PTY sessions.
     Ok(format!(
         "restrict,port-forwarding,command=\"/bin/false\",permitopen=\"127.0.0.1:4500\",permitopen=\"127.0.0.1:4222\",permitopen=\"127.0.0.1:8333\" ssh-ed25519 {}",
@@ -607,7 +589,7 @@ async fn wait_ssh(node: &RemoteNode) -> Result<String> {
     for address in [&node.public_ip, &node.private_ip] {
         let _: std::net::IpAddr = address
             .parse()
-            .map_err(|_| crate::Error::other(format!("invalid instance IP: {address}")))?;
+            .map_err(|source| crate::Error::context(source, "invalid instance IP"))?;
     }
     cloud_out!(
         "Waiting for SSH at {} or {}",
@@ -624,19 +606,16 @@ async fn wait_ssh(node: &RemoteNode) -> Result<String> {
                 .stderr(Stdio::null())
                 .status()
                 .await
-                .map_err(|source| crate::Error::Ssh {
-                    command: "wait for SSH".to_owned(),
-                    source: Box::new(source),
-                })?;
+                .map_err(crate::Error::ssh("wait for SSH"))?;
             if status.success() {
                 return Ok(address.clone());
             }
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
-    Err(crate::Error::SshUnavailable {
-        command: "wait for SSH".to_owned(),
-    })
+    Err(crate::Error::other(
+        "timed out waiting for SSH on both instance addresses",
+    ))
 }
 
 #[cfg(test)]

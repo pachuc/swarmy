@@ -340,55 +340,53 @@ fn run_auth_tool(
 /// confirmation wording and prompts.
 #[cfg(feature = "remote")]
 async fn remote(command: swarmy_cloud::Command, json: bool) -> anyhow::Result<()> {
-    use anyhow::Context as _;
     let name = remote_name(&command);
-    let outcome = Box::pin(swarmy_cloud::run(command, json, false))
+    let advises = matches!(
+        &command,
+        swarmy_cloud::Command::Down { .. } | swarmy_cloud::Command::Tag { .. }
+    );
+    let retry = command.clone();
+    let outcome = run_once(command, json, false, name, advises).await?;
+    match outcome {
+        swarmy_cloud::RunOutcome::Completed => Ok(()),
+        swarmy_cloud::RunOutcome::NeedsConfirmation { plan } => {
+            confirm_deletion(&plan, json)?;
+            run_once(retry, json, true, name, advises).await?;
+            Ok(())
+        }
+        swarmy_cloud::RunOutcome::NeedsTagConfirmation { targets } => {
+            let swarmy_cloud::Command::Tag { name: node } = &retry else {
+                unreachable!("tag confirmation reruns remote tag");
+            };
+            confirm_tag(&targets, node)?;
+            run_once(retry, json, true, name, advises).await?;
+            Ok(())
+        }
+    }
+}
+
+/// One `swarmy remote` attempt: the library error plus the command context.
+/// Permission advice prints only for `down` and `tag`, on every attempt.
+#[cfg(feature = "remote")]
+async fn run_once(
+    command: swarmy_cloud::Command,
+    json: bool,
+    confirmed: bool,
+    name: &'static str,
+    advises: bool,
+) -> anyhow::Result<swarmy_cloud::RunOutcome> {
+    use anyhow::Context as _;
+    Box::pin(swarmy_cloud::run(command, json, confirmed))
         .await
         .map_err(|error| {
-            if matches!(
-                error,
-                swarmy_cloud::Error::MissingPermission { .. }
-            ) {
+            if advises && matches!(error, swarmy_cloud::Error::MissingPermission { .. }) {
                 eprintln!(
                     "AWS denied the named permission; nothing was deleted by this operation. Grant it and retry; local remote state is retained"
                 );
             }
             error
         })
-        .with_context(|| format!("swarmy remote {name} failed"))?;
-    match outcome {
-        swarmy_cloud::RunOutcome::Completed => Ok(()),
-        swarmy_cloud::RunOutcome::NeedsConfirmation {
-            plan,
-            name,
-            keep_bucket,
-        } => {
-            confirm_deletion(&plan, json)?;
-            Box::pin(swarmy_cloud::run(
-                swarmy_cloud::Command::Down {
-                    name: name.clone(),
-                    keep_bucket,
-                    yes: true,
-                },
-                json,
-                true,
-            ))
-            .await
-            .with_context(|| format!("swarmy remote {name} failed"))?;
-            Ok(())
-        }
-        swarmy_cloud::RunOutcome::NeedsTagConfirmation { targets, name } => {
-            confirm_tag(&targets, &name)?;
-            Box::pin(swarmy_cloud::run(
-                swarmy_cloud::Command::Tag { name: name.clone() },
-                json,
-                true,
-            ))
-            .await
-            .with_context(|| format!("swarmy remote {name} failed"))?;
-            Ok(())
-        }
-    }
+        .with_context(|| format!("swarmy remote {name} failed"))
 }
 
 /// The subcommand name for edge error context.

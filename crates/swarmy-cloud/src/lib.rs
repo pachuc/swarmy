@@ -83,9 +83,9 @@ pub enum Error {
         command: String,
         status: std::process::ExitStatus,
     },
-    #[error("ssh {command} failed")]
+    #[error("SSH is unreachable at both instance addresses ({command})")]
     SshUnavailable {
-        /// Names the attempted operation, such as "wait for SSH".
+        /// The probe attempted, such as "ssh 192.0.2.1 true or ssh 10.0.0.1 true".
         command: String,
     },
     #[error("API at {endpoint}")]
@@ -103,23 +103,96 @@ pub enum Error {
 /// the chain here supplies the causes.
 #[cfg(feature = "remote")]
 pub(crate) fn render(error: &Error) -> String {
-    let mut out = error.to_string();
-    let mut next = std::error::Error::source(error);
-    while let Some(source) = next {
-        let text = source.to_string();
-        if text != out && !out.ends_with(text.as_str()) {
-            out.push_str(": ");
-            out.push_str(&text);
+    match error {
+        // Transparent: the outer message is the cause's message.
+        Error::Other(source) => render_source(source.as_ref()),
+        _ => {
+            let mut out = error.to_string();
+            let mut next = std::error::Error::source(error);
+            while let Some(source) = next {
+                out.push_str(": ");
+                out.push_str(&source.to_string());
+                next = source.source();
+            }
+            out
         }
+    }
+}
+
+/// Render an arbitrary cause with its source chain.
+#[cfg(feature = "remote")]
+pub(crate) fn render_source(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = error.to_string();
+    let mut next = error.source();
+    while let Some(source) = next {
+        out.push_str(": ");
+        out.push_str(&source.to_string());
         next = source.source();
     }
     out
+}
+
+/// A site message paired with its cause. `Display` shows the message so
+/// logs read the same with or without the chain; `render` appends the cause.
+#[derive(Debug)]
+struct WithCause {
+    message: String,
+    source: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl std::fmt::Display for WithCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for WithCause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
 }
 
 impl Error {
     /// An arbitrary failure with no structured cause to preserve.
     pub(crate) fn other(message: impl Into<String>) -> Self {
         Self::Other(Box::new(std::io::Error::other(message.into())))
+    }
+
+    /// A site message keeping its cause, as anyhow's `.context()` did.
+    pub(crate) fn context(
+        source: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::Other(Box::new(WithCause {
+            message: message.into(),
+            source: source.into(),
+        }))
+    }
+
+    /// Fail with `message` unless `condition` holds.
+    pub(crate) fn ensure(condition: bool, message: impl Into<String>) -> Result<()> {
+        if condition {
+            Ok(())
+        } else {
+            Err(Self::other(message))
+        }
+    }
+
+    /// A `map_err` closure tagging a spawn or I/O failure with the attempted operation.
+    pub(crate) fn ssh<E>(command: &str) -> impl FnOnce(E) -> Self
+    where
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        let command = command.to_owned();
+        move |source| Self::Ssh {
+            command,
+            source: source.into(),
+        }
+    }
+
+    /// An SSH command that ran and exited nonzero.
+    pub(crate) fn ssh_status(command: String, status: std::process::ExitStatus) -> Self {
+        Self::SshStatus { command, status }
     }
 
     #[cfg(feature = "remote")]

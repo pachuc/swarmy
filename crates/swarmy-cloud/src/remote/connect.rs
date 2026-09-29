@@ -67,10 +67,9 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
     command.kill_on_drop(false);
     drop(reservations);
     let mut tunnel = StartingTunnel {
-        child: command.spawn().map_err(|source| crate::Error::Ssh {
-            command: "start SSH tunnel".to_owned(),
-            source: Box::new(source),
-        })?,
+        child: command
+            .spawn()
+            .map_err(crate::Error::ssh("start SSH tunnel"))?,
         published: false,
     };
     let mut profile = profile;
@@ -95,10 +94,7 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
         Ok::<_, crate::Error>(())
     })
     .await
-    .map_err(|source| crate::Error::Ssh {
-        command: "start SSH tunnel".to_owned(),
-        source: Box::new(source),
-    })
+    .map_err(|source| crate::Error::context(source, "SSH tunnel startup timed out"))
     .and_then(std::convert::identity);
     if let Err(error) = result {
         let _ = tunnel.child.kill().await;
@@ -143,15 +139,9 @@ async fn read_remote_api_token(
         .arg("cat swarmy/.swarmy/config.toml")
         .output()
         .await
-        .map_err(|source| crate::Error::Ssh {
-            command: command.clone(),
-            source: Box::new(source),
-        })?;
+        .map_err(crate::Error::ssh(&command))?;
     if !output.status.success() {
-        return Err(crate::Error::SshStatus {
-            command,
-            status: output.status,
-        });
+        return Err(crate::Error::ssh_status(command, output.status));
     }
     let remote: toml::Value = toml::from_str(&String::from_utf8(output.stdout)?)?;
     let token = remote
@@ -189,15 +179,9 @@ async fn forward_session(
         })
         .output()
         .await
-        .map_err(|source| crate::Error::Ssh {
-            command: command.clone(),
-            source: Box::new(source),
-        })?;
+        .map_err(crate::Error::ssh(&command))?;
     if !output.status.success() {
-        return Err(crate::Error::SshStatus {
-            command,
-            status: output.status,
-        });
+        return Err(crate::Error::ssh_status(command, output.status));
     }
     let cluster = if node.launch_settings.is_some() {
         rewrite_address(&String::from_utf8(output.stdout)?, ports.fdb)?
@@ -291,9 +275,7 @@ fn tunnel_command(
         .chain((profile.s3_bucket.is_none()).then_some((ports.s3, node.ports.s3)))
         .chain(remote_api(node).then_some((api_port, 8742)))
     {
-        if remote == 0 {
-            return Err(crate::Error::other("remote ports must be nonzero"));
-        }
+        crate::Error::ensure(remote != 0, "remote ports must be nonzero")?;
         command
             .arg("-L")
             .arg(format!("127.0.0.1:{local}:127.0.0.1:{remote}"));

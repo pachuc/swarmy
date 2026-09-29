@@ -301,7 +301,9 @@ async fn inventory(
         .map_err(|source| client_error(&endpoint, source))?;
     let snapshot = tokio::time::timeout(Duration::from_secs(10), client.doctor())
         .await
-        .map_err(|_| crate::Error::other(format!("API at {endpoint}: request timed out")))?
+        .map_err(|source| {
+            crate::Error::context(source, format!("API at {endpoint}: request timed out"))
+        })?
         .map_err(|source| client_error(&endpoint, source))?;
     let mut images = Vec::new();
     let mut after = None;
@@ -311,7 +313,9 @@ async fn inventory(
             client.images(after.as_deref(), 256),
         )
         .await
-        .map_err(|_| crate::Error::other(format!("API at {endpoint}: request timed out")))?
+        .map_err(|source| {
+            crate::Error::context(source, format!("API at {endpoint}: request timed out"))
+        })?
         .map_err(|source| client_error(&endpoint, source))?;
         if page.is_empty() {
             break;
@@ -320,6 +324,7 @@ async fn inventory(
             let manifest = image
                 .id
                 .parse::<ulid::Ulid>()
+                .map_err(|source| crate::Error::context(source, "invalid manifest id"))
                 .map(swarmy_core::ManifestId::from_ulid)?;
             after = Some(format!("{}:{}", image.name, image.tag));
             images.push(ImageRecord {
@@ -334,8 +339,12 @@ async fn inventory(
         let node_id = node
             .node_id
             .parse::<ulid::Ulid>()
+            .map_err(|source| crate::Error::context(source, "invalid node id"))
             .map(swarmy_core::NodeId::from_ulid)?;
-        let last_heartbeat: jiff::Timestamp = node.last_heartbeat.parse()?;
+        let last_heartbeat: jiff::Timestamp = node
+            .last_heartbeat
+            .parse()
+            .map_err(|source| crate::Error::context(source, "invalid heartbeat"))?;
         records.push((
             NodeRecord {
                 node_id,

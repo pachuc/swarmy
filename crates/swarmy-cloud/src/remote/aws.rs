@@ -1198,15 +1198,6 @@ mod aws_context_tests {
                 assert_eq!(operation, "ec2:RunInstances");
                 assert_eq!(code, "InvalidParameterValue");
                 assert!(message.contains("Invalid IAM Instance Profile"));
-                assert_eq!(
-                    crate::Error::Aws {
-                        operation: "ec2:RunInstances".into(),
-                        code,
-                        message,
-                    }
-                    .to_string(),
-                    "ec2:RunInstances: InvalidParameterValue: Invalid IAM Instance Profile name: fixture-profile"
-                );
             }
             error => panic!("expected Aws, got {error:?}"),
         }

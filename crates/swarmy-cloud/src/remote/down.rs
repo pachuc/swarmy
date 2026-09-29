@@ -13,9 +13,14 @@ struct Report {
 
 impl Report {
     fn failed(&mut self, resource: &str, permission: &str, error: &crate::Error) {
+        let detail = match error {
+            crate::Error::MissingPermission { operation, source } => {
+                format!("{operation}: {}", crate::render_source(source.as_ref()))
+            }
+            _ => crate::render(error),
+        };
         self.failures.push(format!(
-            "Skipped {resource}: requires {permission}; {}",
-            crate::render(error)
+            "Skipped {resource}: requires {permission}; {detail}"
         ));
     }
 
@@ -126,21 +131,6 @@ pub async fn apply_tag(cloud: &impl Cloud, node: &RemoteNode) -> Result<()> {
     Ok(())
 }
 
-/// Test hook for the CLI confirmation flow: run the same targets and apply
-/// step the CLI performs with its prompts.
-#[cfg(test)]
-pub(crate) async fn tag_with_confirmation(
-    cloud: &impl Cloud,
-    state: &State,
-    node: &RemoteNode,
-    mut confirm_name: impl FnMut(&str, &str) -> Result<()>,
-) -> Result<()> {
-    for (kind, name) in adoption_targets(state, node)? {
-        confirm_name(&kind, &name)?;
-    }
-    apply_tag(cloud, node).await
-}
-
 pub async fn run(
     cloud: &impl Cloud,
     state: &State,
@@ -175,9 +165,9 @@ pub async fn run(
     }
     report.print();
     if !report.live.is_empty() {
+        let live = report.live.join(", ");
         return Err(crate::Error::other(format!(
-            "instances {} may still exist; local state retained for retry",
-            report.live.join(", ")
+            "instances {live} may still exist; local state retained for retry"
         )));
     }
     cleanup_bucket_and_role(cloud, state, node, keep_bucket).await?;

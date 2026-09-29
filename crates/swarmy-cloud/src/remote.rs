@@ -38,19 +38,12 @@ pub async fn for_settings(settings: &RemoteSettings) -> std::result::Result<Aws,
 }
 
 /// What a `swarmy remote` invocation did. Confirmation variants carry what
-/// the CLI must prompt for; the rerun passes `confirmed: bool` instead of
-/// rebuilding state from a saved command.
+/// the CLI must prompt for; the rerun passes the original command with
+/// `confirmed: bool` instead of rebuilding state from a saved command.
 pub enum RunOutcome {
     Completed,
-    NeedsConfirmation {
-        plan: DeletionPlan,
-        name: String,
-        keep_bucket: bool,
-    },
-    NeedsTagConfirmation {
-        targets: Vec<(String, String)>,
-        name: String,
-    },
+    NeedsConfirmation { plan: DeletionPlan },
+    NeedsTagConfirmation { targets: Vec<(String, String)> },
 }
 
 /// Run the `swarmy remote` subcommand.
@@ -59,15 +52,7 @@ pub enum RunOutcome {
 ///
 /// Returns errors for invalid configuration, state, provisioning, and tunnel
 /// failures.
-pub async fn run(
-    command: Command,
-    json: bool,
-    confirmed: bool,
-) -> std::result::Result<RunOutcome, crate::Error> {
-    run_inner(command, json, confirmed).await
-}
-
-async fn run_inner(command: Command, json: bool, confirmed: bool) -> Result<RunOutcome> {
+pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOutcome> {
     // The base settings are enough here: provisioning does not use the selected tunnel profile.
     let loaded = Settings::load_base()?;
     let state_dir = PathBuf::from(&loaded.settings.state_dir);
@@ -113,11 +98,7 @@ async fn run_inner(command: Command, json: bool, confirmed: bool) -> Result<RunO
                 && !confirmed
                 && let Some(plan) = down::plan(&cloud, &state, &node).await?
             {
-                return Ok(RunOutcome::NeedsConfirmation {
-                    plan,
-                    name,
-                    keep_bucket,
-                });
+                return Ok(RunOutcome::NeedsConfirmation { plan });
             }
             down::run(&cloud, &state, &node, Duration::from_secs(5), keep_bucket).await?;
             Ok(RunOutcome::Completed)
@@ -125,9 +106,9 @@ async fn run_inner(command: Command, json: bool, confirmed: bool) -> Result<RunO
         Command::Tag { name } => {
             let _lock = state.lock()?;
             let node = state.require(&name)?;
+            let targets = down::adoption_targets(&state, &node)?;
             if !confirmed {
-                let targets = down::adoption_targets(&state, &node)?;
-                return Ok(RunOutcome::NeedsTagConfirmation { targets, name });
+                return Ok(RunOutcome::NeedsTagConfirmation { targets });
             }
             let mut settings = node.cloud_settings();
             settings.region.clone_from(&node.region);
@@ -283,12 +264,11 @@ impl NodeShape {
         if let Some(disk_gb) = self.disk_gb {
             settings.disk_gb = disk_gb;
         }
-        if settings.aws.instance_type.is_empty() {
-            return Err(crate::Error::other("instance type must not be empty"));
-        }
-        if settings.disk_gb == 0 {
-            return Err(crate::Error::other("root disk size must be positive"));
-        }
+        crate::Error::ensure(
+            !settings.aws.instance_type.is_empty(),
+            "instance type must not be empty",
+        )?;
+        crate::Error::ensure(settings.disk_gb != 0, "root disk size must be positive")?;
         Ok(())
     }
 }

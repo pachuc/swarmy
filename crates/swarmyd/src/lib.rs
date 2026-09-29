@@ -35,50 +35,44 @@ pub enum Response {
     Error(String),
 }
 
-/// Failures in node hosting and volume operations.
+/// Failures in node hosting and volume operations: any cause, boxed.
 ///
-/// Only failures callers branch on have their own variant; everything else
-/// is an arbitrary cause kept as its source in `Other` for the daemon entry
-/// point to render with its source chain.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(transparent)]
-    Other(Box<dyn std::error::Error + Send + Sync>),
+/// Callers do not branch on node errors; the daemon entry point renders the
+/// chain with anyhow. Message-only failures use [`other`]; failures keeping
+/// a cause use [`context`], as anyhow's `.context()` did.
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// A site message paired with its cause. `Display` shows the message so logs
+/// read the same with or without the chain; the chain carries the cause.
+#[derive(Debug)]
+struct WithCause {
+    message: String,
+    source: Error,
 }
 
-impl Error {
-    /// An arbitrary failure with no structured cause to preserve.
-    pub fn other(message: impl Into<String>) -> Self {
-        Self::Other(Box::new(std::io::Error::other(message.into())))
+impl std::fmt::Display for WithCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
     }
 }
 
-macro_rules! other_from {
-    ($($t:ty),* $(,)?) => {
-        $(impl From<$t> for Error {
-            fn from(error: $t) -> Self {
-                Self::Other(Box::new(error))
-            }
-        })*
-    };
+impl std::error::Error for WithCause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
 }
 
-other_from!(
-    base64::DecodeError,
-    tokio::time::error::Elapsed,
-    tokio::task::JoinError,
-    std::fmt::Error,
-    swarmy_store::StoreError,
-    swarmy_bus::Error,
-    swarmy_sandbox::Error,
-    swarmy_volume::VolumeError,
-    swarmy_config::Error,
-    swarmy_store::blob::BlobError,
-    swarmy_volume::server::Error,
-    swarmy_image::ImageError,
-    jiff::Error,
-    std::io::Error,
-    serde_json::Error,
-);
+/// An arbitrary failure with no structured cause to preserve.
+pub fn other(message: impl Into<String>) -> Error {
+    std::io::Error::other(message.into()).into()
+}
 
-pub type Result<T> = std::result::Result<T, Error>;
+/// A site message keeping its cause, as anyhow's `.context()` did.
+pub fn context(source: impl Into<Error>, message: impl Into<String>) -> Error {
+    Box::new(WithCause {
+        message: message.into(),
+        source: source.into(),
+    })
+}

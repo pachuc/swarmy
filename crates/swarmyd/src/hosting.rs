@@ -9,7 +9,7 @@ use swarmy_core::{
 };
 use swarmy_sandbox::RuncRuntime;
 use swarmy_store::Store;
-use swarmyd::{Error, Result};
+use swarmyd::{Error, Result, context, other};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
 struct Call {
@@ -177,7 +177,7 @@ impl Hosting {
         let (calls, activity) = {
             let mut entries = self.entries.lock().await;
             if *self.shutdown.borrow() {
-                return Err(Error::other("node is shutting down"));
+                return Err(other("node is shutting down"));
             }
             entries.retain(|_, entry| !entry.task.is_finished());
             // Drop samples for agents with no hosting entry so the map
@@ -214,10 +214,10 @@ impl Hosting {
                 activity,
             })
             .await
-            .map_err(|_| Error::other("agent stopped serving; placement lease lost"))?;
+            .map_err(|source| context(source, "agent stopped serving; placement lease lost"))?;
         response
             .await
-            .map_err(|_| Error::other("agent stopped serving; placement lease lost"))?
+            .map_err(|source| context(source, "agent stopped serving; placement lease lost"))?
     }
 
     async fn placement(&self, agent: AgentId, job: &ToolJob) -> Result<PlacementRecord> {
@@ -226,20 +226,20 @@ impl Hosting {
         let placement = match self.store.get_by_agent(agent).await? {
             None => {
                 if dispatched.is_some() {
-                    return Err(Error::other("dispatch placement was released"));
+                    return Err(other("dispatch placement was released"));
                 }
                 self.store.place(agent, self.node, expiry).await?
             }
             Some(old) if old.expires_at <= jiff::Timestamp::now() => {
                 if dispatched.is_some() {
-                    return Err(Error::other(
+                    return Err(other(
                         "dispatch placement expired; worker must recover the call",
                     ));
                 }
                 self.store.take_over(&old, self.node, expiry).await?
             }
             Some(old) if old.node_id != self.node => {
-                return Err(Error::other(format!(
+                return Err(other(format!(
                     "agent is placed on another node {} at epoch {}",
                     old.node_id, old.epoch
                 )));
@@ -249,10 +249,10 @@ impl Hosting {
                     .as_ref()
                     .is_some_and(|expected| expected.epoch != old.epoch)
                 {
-                    return Err(Error::other("dispatch placement epoch changed"));
+                    return Err(other("dispatch placement epoch changed"));
                 }
                 if self.previous.lock().await.get(&agent) == Some(&old.epoch) {
-                    return Err(Error::other(format!(
+                    return Err(other(format!(
                         "placement epoch {} stopped; waiting for lease expiry before rebuilding",
                         old.epoch
                     )));
@@ -352,7 +352,7 @@ impl Hosting {
         let mut shutdown = self.shutdown.subscribe();
         let serving = async {
             if *shutdown.borrow() {
-                return Err(Error::other("node is shutting down"));
+                return Err(other("node is shutting down"));
             }
             self.boot_computer(agent, &placement, &first, placement_started)
                 .await?;
@@ -424,7 +424,7 @@ impl Hosting {
     async fn execute(&self, placement: &PlacementRecord, call: Call) -> Result<()> {
         let mut shutdown = self.shutdown.subscribe();
         if *shutdown.borrow() {
-            return Err(Error::other("node is shutting down"));
+            return Err(other("node is shutting down"));
         }
         // Only the first completion per turn carries the computer re-sample;
         // later tools skip the volume stat read entirely. One entry per
@@ -446,7 +446,7 @@ impl Hosting {
                 turn,
                 needs_sample,
             ) => result,
-            _ = shutdown.changed() => Err(Error::other("node is shutting down")),
+            _ = shutdown.changed() => Err(other("node is shutting down")),
         };
         if needs_sample
             && let Some(turn) = turn
@@ -460,7 +460,7 @@ impl Hosting {
         let failed = result.is_err();
         let _ = call.reply.send(result);
         if failed {
-            return Err(Error::other("tool execution interrupted; stopping agent"));
+            return Err(other("tool execution interrupted; stopping agent"));
         }
         Ok(())
     }
@@ -478,7 +478,7 @@ impl Hosting {
             let renewal = async {
                 tokio::time::sleep(self.lease.min(remaining) / 3).await;
                 let Some(current) = self.store.get_by_agent(placement.agent_id).await? else {
-                    return Err(Error::other("placement missing during renewal"));
+                    return Err(other("placement missing during renewal"));
                 };
                 // A worker or a changed grant can leave more time than the
                 // node requests. Preserve it and the store's strict increase.
@@ -491,9 +491,9 @@ impl Hosting {
             match tokio::time::timeout(budget, renewal).await {
                 Ok(Ok(current)) => placement = current,
                 Ok(Err(error)) => {
-                    return Error::other(format!("placement lease renewal failed: {error}"));
+                    return context(error, "placement lease renewal failed");
                 }
-                Err(_) => return Error::other("placement lease expired during renewal"),
+                Err(_) => return other("placement lease expired during renewal"),
             }
         }
     }

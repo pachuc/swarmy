@@ -166,21 +166,17 @@ pub async fn install(node: &RemoteNode, address: &str, options: &Options<'_>) ->
         )
         .await?;
     }
-    let command = "start node services".to_owned();
     let status = super::ssh::command(node)?
         .arg(address)
         .arg("cd swarmy && bash scripts/remote-services.sh")
         .status()
         .await
-        .map_err(|source| crate::Error::Ssh {
-            command: command.clone(),
-            source: Box::new(source),
-        })?;
+        .map_err(crate::Error::ssh("start node services"))?;
     if !status.success() {
-        return Err(crate::Error::SshStatus {
-            command: "start node services".to_owned(),
+        return Err(crate::Error::ssh_status(
+            "start node services".to_owned(),
             status,
-        });
+        ));
     }
     Ok(())
 }
@@ -198,26 +194,17 @@ async fn upload(node: &RemoteNode, address: &str, path: &str, bytes: &[u8]) -> R
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()
-        .map_err(|source| crate::Error::Ssh {
-            command: command.clone(),
-            source: Box::new(source),
-        })?;
+        .map_err(crate::Error::ssh(&command))?;
     let Some(mut stdin) = child.stdin.take() else {
         return Err(crate::Error::other("SSH stdin missing"));
     };
     stdin
         .write_all(bytes)
         .await
-        .map_err(|source| crate::Error::Ssh {
-            command: command.clone(),
-            source: Box::new(source),
-        })?;
-    let status = child.wait().await.map_err(|source| crate::Error::Ssh {
-        command: command.clone(),
-        source: Box::new(source),
-    })?;
+        .map_err(crate::Error::ssh(&command))?;
+    let status = child.wait().await.map_err(crate::Error::ssh(&command))?;
     if !status.success() {
-        return Err(crate::Error::SshStatus { command, status });
+        return Err(crate::Error::ssh_status(command, status));
     }
     Ok(())
 }
