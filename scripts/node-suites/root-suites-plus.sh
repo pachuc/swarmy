@@ -27,6 +27,7 @@ for suite in "swarmy-cli --test image" "swarmyd --test vol" "swarmy-volume --tes
   bash "$here/nbd-orphans.sh"
   sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked --no-default-features -p "$1" "$2" "$3" -- --test-threads=1 2>&1 | tail -4
 done
+
 # Tests that run nowhere without their image variable set. Each skips cleanly
 # when its variable is absent, so wire each up here with base-ubuntu:dev, the
 # image built by root-suites.sh above. None duplicates a test that already

@@ -398,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn huge_output_is_capped_with_spill_marker() {
+    fn huge_sandbox_result_is_capped_with_spill_marker() {
         let tool = "process_list";
         let call_id = "call_01HUGE";
         let head = "HEAD-MARKER-";
