@@ -24,9 +24,9 @@ async fn main() -> anyhow::Result<()> {
         ack_wait: settings.bus.ack_wait,
         max_deliver: settings.bus.max_deliver_i64(),
     };
+    let _network = swarmy_store::boot();
     let (store, blobs) = Store::open_store(&settings).await?;
     let objects = blobs.object_store();
-    let _network = swarmy_store::boot();
     let bus = Bus::connect(&url, bus_config).await?;
     // Workers create consumers for their routes; the scheduler only needs streams.
     bus.setup(&[]).await?;

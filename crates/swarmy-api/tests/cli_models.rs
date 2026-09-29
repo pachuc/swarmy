@@ -192,17 +192,17 @@ fn search_and_lookup_errors_are_clear() {
 fn commands_share_configured_catalog_and_filters() {
     let Some(fixture) = Fixture::new(
         r#"
-[custom_providers.private]
+[selection.custom_providers.private]
 api = "OpenAiCompletions"
 base_url = "http://localhost:8000/v1"
-[[models]]
+[[selection.models]]
 provider = "private"
 id = "team/reasoner"
 reasoning = ["low", "high"]
-[[models]]
+[[selection.models]]
 provider = "private"
 id = "ordinary"
-[[models]]
+[[selection.models]]
 provider = "openai"
 id = "gpt-5.5"
 context_window = 42
@@ -273,7 +273,7 @@ fn terminal_tables_fit_eighty_columns() {
 #[test]
 fn probe_streams_fake_and_completes_tool_round_trip() {
     let Some(fixture) = Fixture::new(
-        "model = 'scripted'\n[fake]\nscript = 'script.json'\ncall_log = 'calls.jsonl'",
+        "[selection]\nmodel = 'scripted'\n[fake]\nscript = 'script.json'\ncall_log = 'calls.jsonl'",
     ) else {
         return;
     };
