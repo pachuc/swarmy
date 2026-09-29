@@ -358,6 +358,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/providers", get(providers))
         .route("/v1/credentials", get(credentials).post(set_credential))
         .route(
+            "/v1/credentials/records",
+            axum::routing::post(put_credential_record),
+        )
+        .route(
             "/v1/credentials/{provider}",
             get(check_credential).delete(remove_credential),
         )
@@ -1011,6 +1015,38 @@ async fn set_credential(
     )
     .await
 }
+async fn put_credential_record(
+    State(state): State<AppState>,
+    Json(body): Json<api::PutCredentialRecord>,
+) -> ApiResult<api::Credential> {
+    let store = credential_store(&state)?;
+    replay(
+        &state,
+        &body.idempotency_key,
+        &format!("credentials:{}:{}:record", body.provider, body.label),
+        async move {
+            store
+                .put_entry(
+                    CredentialScope::Cluster,
+                    &body.provider,
+                    &body.label,
+                    &body.record,
+                )
+                .await
+                .map_err(storage)?;
+            let summary = store
+                .list_entries(CredentialScope::Cluster)
+                .await
+                .map_err(storage)?
+                .into_iter()
+                .find(|entry| entry.provider == body.provider && entry.label == body.label)
+                .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "credential_missing"))?;
+            Ok(Json(credential(summary)))
+        },
+    )
+    .await
+}
+
 async fn check_credential_entry(
     State(state): State<AppState>,
     Path((provider, label)): Path<(String, String)>,

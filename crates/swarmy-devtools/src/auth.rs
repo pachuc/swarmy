@@ -59,11 +59,14 @@ async fn submit(
     label: Option<&str>,
     record: &CredentialRecord,
 ) -> Result<()> {
-    let body = serde_json::json!({"idempotency_key": ulid::Ulid::generate().to_string(),
-        "provider":provider,"label":label,"record":record});
     swarmy_client::api_client::call(
         endpoint,
-        client.cli_set_credential(&serde_json::from_value(body)?),
+        client.put_credential_record(&swarmy_api_types::PutCredentialRecord {
+            idempotency_key: ulid::Ulid::generate().to_string(),
+            provider: provider.to_owned(),
+            label: label.unwrap_or("default").to_owned(),
+            record: record.clone(),
+        }),
     )
     .await?;
     Ok(())

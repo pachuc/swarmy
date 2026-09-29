@@ -478,6 +478,15 @@ impl Client {
     ///
     /// # Errors
     /// Returns an API, transport, or response decoding error.
+    /// Import a credential record, including OAuth refresh metadata.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn put_credential_record(
+        &self,
+        body: &api::PutCredentialRecord,
+    ) -> Result<api::Credential, Error> {
+        self.send(Method::POST, "credentials/records", body).await
+    }
     pub async fn remove_credential(
         &self,
         provider: &str,

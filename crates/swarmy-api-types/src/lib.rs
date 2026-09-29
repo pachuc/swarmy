@@ -197,14 +197,18 @@ pub struct Session {
     pub route: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved: Option<ResolvedInference>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub archived: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub main: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_session: Option<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -327,6 +331,7 @@ pub struct Credential {
     pub created_at: String,
     #[serde(default)]
     pub last_used_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
 }
 
@@ -572,6 +577,16 @@ pub struct CreateCredential {
     pub secret: String,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub extra: std::collections::BTreeMap<String, String>,
+}
+
+/// Import an OAuth or provider-specific credential without exposing its secret on reads.
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
+pub struct PutCredentialRecord {
+    pub idempotency_key: String,
+    pub provider: String,
+    pub label: String,
+    #[schema(value_type = serde_json::Value)]
+    pub record: swarmy_core::CredentialRecord,
 }
 
 /// Body for agent and credential deletions. The key scopes the replayed result.
@@ -1038,9 +1053,9 @@ pub mod api_paths {
         Agent, AgentDeleted, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession,
         CreateAgent, CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
         EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload, InterruptOutcome,
-        InterruptSession, Model, ProbeModel, ProbeResult, Provider, QuotaEntry, Route,
-        RouteDeleted, Session, SessionClosed, SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun,
-        Subscription, TurnMetrics, UpdateAgent, UsageResponse,
+        InterruptSession, Model, ProbeModel, ProbeResult, Provider, PutCredentialRecord,
+        QuotaEntry, Route, RouteDeleted, Session, SessionClosed, SetEntryQuota, SetRoute,
+        SetSessionRoute, StartGcRun, Subscription, TurnMetrics, UpdateAgent, UsageResponse,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
@@ -1223,6 +1238,10 @@ pub mod api_paths {
         request_body = CreateCredential,
         responses((status = 200, body = Credential), (status = 400, body = ApiError)))]
     pub fn set_credential() {}
+    #[utoipa::path(post, path = "/v1/credentials/records",
+        request_body = PutCredentialRecord,
+        responses((status = 200, body = Credential), (status = 400, body = ApiError)))]
+    pub fn put_credential_record() {}
     #[utoipa::path(get, path = "/v1/credentials/{provider}",
         params(("provider" = String, Path, description = "Provider id")),
         responses((status = 200, body = Credential), (status = 404, body = ApiError)))]
@@ -1314,7 +1333,7 @@ pub mod api_paths {
         api_paths::list_models, api_paths::search_models, api_paths::show_model,
         api_paths::list_providers, api_paths::probe_model,
         api_paths::start_gc_run, api_paths::gc_run,
-        api_paths::list_credentials, api_paths::set_credential,
+        api_paths::list_credentials, api_paths::set_credential, api_paths::put_credential_record,
         api_paths::check_credential, api_paths::remove_credential,
         api_paths::check_credential_entry, api_paths::remove_credential_entry,
         api_paths::entry_quota, api_paths::set_entry_quota, api_paths::quotas,
@@ -1331,7 +1350,7 @@ pub mod api_paths {
     components(schemas(
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
     WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, ImageUpload, Model,
-    Provider, ProbeModel, ProbeResult, CredentialKind, CredentialStatus, Credential, NodeRole, NodeCapacity,
+    Provider, ProbeModel, ProbeResult, CredentialKind, CredentialStatus, Credential, PutCredentialRecord, NodeRole, NodeCapacity,
     Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode,
     StageTiming, InferenceMetric, ToolMetric, ComputerMetric, TurnMetrics, LatencyPercentiles,
     AgentMetrics, StartGcRun, GcRun,
@@ -1403,8 +1422,8 @@ mod tests {
         }
         check!(Message, {"id":"m","session_id":"s","role":"user","text":"hello"});
         check!(Image, {"id":"i","name":"base","tag":"dev"});
-        check!(Model, {"id":"m","provider_id":"p","context_window":100});
-        check!(Provider, {"id":"p","name":"provider","status":"available"});
+        check!(Model, {"id":"m","provider_id":"p","context_window":100,"key":"p/m","name":"model","limit":{"context":100,"output":null},"cost":{"input":0.0,"output":0.0},"supported_efforts":[]});
+        check!(Provider, {"id":"p","name":"provider","status":"available","api":"Fake","credential":"unknown","auth_kinds":[],"env_keys":[]});
         for kind in ["subscription", "api_key", "cloud"] {
             check!(CredentialKind, kind);
         }
