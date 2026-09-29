@@ -4,9 +4,8 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
 use swarmy_bus::Bus;
-use swarmy_gateway::{config, dispatch::Gateway, providers::Providers};
+use swarmy_gateway::{Result, config, dispatch::Gateway, providers::Providers};
 use swarmy_store::Store;
 
 // Boot before the runtime so the network guard outlives all database tasks.

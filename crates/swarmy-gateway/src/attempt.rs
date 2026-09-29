@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use anyhow::Result;
+use crate::Result;
 use futures::StreamExt;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, LiveFeed};
@@ -98,7 +98,7 @@ impl Gateway {
         job: &InferenceJob,
         effort: Option<swarmy_core::ReasoningEffort>,
         turn: Option<MessageId>,
-    ) -> Result<(Response, Option<bool>), swarmy_llm::Error> {
+    ) -> std::result::Result<(Response, Option<bool>), swarmy_llm::Error> {
         let mut request = job.request.clone();
         request.settings.reasoning_effort = effort;
         request.no_cache = job.summary;

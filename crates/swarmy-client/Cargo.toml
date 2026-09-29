@@ -12,7 +12,6 @@ workspace = true
 swarmy-api-types.workspace = true
 swarmy-config.workspace = true
 swarmy-core.workspace = true
-anyhow.workspace = true
 reqwest.workspace = true
 url.workspace = true
 bytes.workspace = true
