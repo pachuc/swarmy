@@ -1171,9 +1171,7 @@ async fn assert_default_output(fixture: &Fixture) {
             .await,
     ))
     .unwrap();
-    assert!(
-        created.system_prompt.is_none() && created.model.is_none() && created.effort.is_none()
-    );
+    assert!(created.system_prompt.is_none() && created.model.is_none() && created.effort.is_none());
     let text = success(fixture.output(&["agent", "show", "defaults"]).await);
     for field in ["system_prompt", "model", "reasoning_effort"] {
         assert!(text.contains(&format!("{field}=(stack default)")));
