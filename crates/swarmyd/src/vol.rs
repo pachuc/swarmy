@@ -82,14 +82,9 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
             let (name, tag) = image
                 .split_once(':')
                 .ok_or_else(|| Error::other("expected NAME:TAG"))?;
-            // validate_label only rejects malformed labels, so a boolean keeps
-            // the vol command free of the image error type.
-            if swarmy_volume::image::validate_label(name).is_err() {
-                return Err(Error::other(format!("invalid image name: {name}")));
-            }
-            if swarmy_volume::image::validate_label(tag).is_err() {
-                return Err(Error::other(format!("invalid image tag: {tag}")));
-            }
+            // validate_label carries the reason; its source is preserved.
+            swarmy_volume::image::validate_label(name)?;
+            swarmy_volume::image::validate_label(tag)?;
             let manifest = store
                 .get_image(name, &ImageTag(tag.into()))
                 .await?

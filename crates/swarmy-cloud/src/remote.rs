@@ -37,12 +37,20 @@ pub async fn for_settings(settings: &RemoteSettings) -> std::result::Result<Aws,
     Ok(Aws::new(&settings.region).await)
 }
 
-/// What a `swarmy remote` invocation did. `NeedsConfirmation` carries what
-/// `remote down` would delete; the CLI prints the wording and prompts, then
-/// reruns with confirmation.
+/// What a `swarmy remote` invocation did. Confirmation variants carry what
+/// the CLI must prompt for; the rerun passes `confirmed: bool` instead of
+/// rebuilding state from a saved command.
 pub enum RunOutcome {
     Completed,
-    NeedsConfirmation(DeletionPlan),
+    NeedsConfirmation {
+        plan: DeletionPlan,
+        name: String,
+        keep_bucket: bool,
+    },
+    NeedsTagConfirmation {
+        targets: Vec<(String, String)>,
+        name: String,
+    },
 }
 
 /// Run the `swarmy remote` subcommand.
@@ -51,11 +59,15 @@ pub enum RunOutcome {
 ///
 /// Returns errors for invalid configuration, state, provisioning, and tunnel
 /// failures.
-pub async fn run(command: Command, json: bool) -> std::result::Result<RunOutcome, crate::Error> {
-    run_inner(command, json).await
+pub async fn run(
+    command: Command,
+    json: bool,
+    confirmed: bool,
+) -> std::result::Result<RunOutcome, crate::Error> {
+    run_inner(command, json, confirmed).await
 }
 
-async fn run_inner(command: Command, json: bool) -> Result<RunOutcome> {
+async fn run_inner(command: Command, json: bool, confirmed: bool) -> Result<RunOutcome> {
     // The base settings are enough here: provisioning does not use the selected tunnel profile.
     let loaded = Settings::load_base()?;
     let state_dir = PathBuf::from(&loaded.settings.state_dir);
@@ -98,25 +110,28 @@ async fn run_inner(command: Command, json: bool) -> Result<RunOutcome> {
             let cloud = for_settings(&cloud_settings).await?;
             if !keep_bucket
                 && !yes
-                && let Some(plan) = down::plan(&cloud, &state, &node)
-                    .await
-                    .map_err(down::actionable_error)?
+                && !confirmed
+                && let Some(plan) = down::plan(&cloud, &state, &node).await?
             {
-                return Ok(RunOutcome::NeedsConfirmation(plan));
+                return Ok(RunOutcome::NeedsConfirmation {
+                    plan,
+                    name,
+                    keep_bucket,
+                });
             }
-            down::run(&cloud, &state, &node, Duration::from_secs(5), keep_bucket)
-                .await
-                .map_err(down::actionable_error)?;
+            down::run(&cloud, &state, &node, Duration::from_secs(5), keep_bucket).await?;
             Ok(RunOutcome::Completed)
         }
         Command::Tag { name } => {
             let _lock = state.lock()?;
             let node = state.require(&name)?;
+            if !confirmed {
+                let targets = down::adoption_targets(&state, &node)?;
+                return Ok(RunOutcome::NeedsTagConfirmation { targets, name });
+            }
             let mut settings = node.cloud_settings();
             settings.region.clone_from(&node.region);
-            down::tag(&for_settings(&settings).await?, &state, &node)
-                .await
-                .map_err(down::actionable_error)?;
+            down::apply_tag(&for_settings(&settings).await?, &node).await?;
             Ok(RunOutcome::Completed)
         }
         Command::Connect { name } => {
@@ -320,9 +335,8 @@ fn profile_not_propagated(error: &crate::Error) -> bool {
         error,
         crate::Error::Aws {
             operation,
-            code: Some(code),
-            message: Some(message),
-            ..
+            code,
+            message,
         } if operation == "ec2:RunInstances"
             && code == "InvalidParameterValue"
             && message.contains("Invalid IAM Instance Profile")

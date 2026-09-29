@@ -110,11 +110,8 @@ impl Cloud for FakeCloud {
         if self.fail_profile_launch_once.replace(false) {
             return std::future::ready(Err(crate::Error::Aws {
                 operation: "ec2:RunInstances".into(),
-                code: Some("InvalidParameterValue".into()),
-                message: Some("Invalid IAM Instance Profile name: fixture-profile".into()),
-                source: Box::new(std::io::Error::other(
-                    "InvalidParameterValue: Invalid IAM Instance Profile name",
-                )),
+                code: "InvalidParameterValue".into(),
+                message: "Invalid IAM Instance Profile name: fixture-profile".into(),
             }));
         }
         std::future::ready(Ok(self
@@ -2022,21 +2019,17 @@ async fn denied_ownership_and_version_reads_retain_state_and_explain_permission(
     .unwrap();
     let node = state.require("cleanup").unwrap();
     cloud.deny_tag_read.set(true);
-    let error = down::plan(&cloud, &state, &node)
-        .await
-        .map_err(down::actionable_error)
-        .unwrap_err();
-    assert!(format!("{error:#}").contains("s3:GetBucketTagging"));
-    assert!(format!("{error:#}").contains("missing permission"));
+    let error = down::plan(&cloud, &state, &node).await.unwrap_err();
+    assert!(crate::render(&error).contains("s3:GetBucketTagging"));
+    assert!(crate::render(&error).contains("missing permission"));
     assert!(state.read("cleanup").unwrap().is_some());
     cloud.deny_tag_read.set(false);
     cloud.deny_version_list.set(true);
     cloud.observations.borrow_mut().push_back(None);
     let error = down::run(&cloud, &state, &node, Duration::ZERO, false)
         .await
-        .map_err(down::actionable_error)
         .unwrap_err();
-    assert!(format!("{error:#}").contains("s3:ListBucketVersions"));
+    assert!(crate::render(&error).contains("s3:ListBucketVersions"));
     assert!(state.read("cleanup").unwrap().is_some());
 }
 

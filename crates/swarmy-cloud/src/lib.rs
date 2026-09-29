@@ -16,25 +16,6 @@ pub fn set_output_sink(sink: fn(&str, bool)) {
     let _ = OUTPUT.set(sink);
 }
 
-#[cfg(feature = "remote")]
-static PROMPT: std::sync::OnceLock<fn(&str) -> std::io::Result<String>> =
-    std::sync::OnceLock::new();
-
-#[cfg(feature = "remote")]
-/// Install the CLI's interactive prompt handler.
-pub fn set_prompt_sink(sink: fn(&str) -> std::io::Result<String>) {
-    let _ = PROMPT.set(sink);
-}
-
-#[cfg(feature = "remote")]
-fn prompt(message: &str) -> std::io::Result<String> {
-    PROMPT
-        .get()
-        .ok_or_else(|| std::io::Error::other("interactive prompt handler not installed"))?(
-        message
-    )
-}
-
 fn emit(message: &str, stderr: bool) {
     if let Some(sink) = OUTPUT.get() {
         sink(message, stderr);
@@ -64,11 +45,11 @@ pub use remote::{Aws, DeletionPlan, RunOutcome, ServiceOptions, for_settings, ru
 /// Failures returned to clients of the remote provisioning entry point.
 ///
 /// Only failures callers act on have their own variant: missing permissions
-/// (retried or reported with the operation name), AWS failures (reported with
-/// the operation, code, and message from the SDK metadata), missing or
+/// (retried or reported with the operation name), AWS failures (reported
+/// with the operation, code, and message from the SDK metadata), missing or
 /// duplicate state, SSH failures (reported with the attempted command), and
 /// control-plane client failures. Everything else is an arbitrary cause kept
-/// as its source for the binary to render with `{:#}`.
+/// as its source for the binary to render with its source chain.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("unknown cloud provider '{0}': only 'aws' is supported")]
@@ -83,29 +64,56 @@ pub enum Error {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
-    #[error("{operation}: {code:?} {message:?}")]
+    #[error("{operation}: {code}: {message}")]
     Aws {
         operation: String,
-        code: Option<String>,
-        message: Option<String>,
-        #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
+        code: String,
+        message: String,
     },
     #[error("ssh {command} failed")]
     Ssh {
+        /// Names the attempted operation, such as "provision remote node".
         command: String,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
     #[error("ssh {command} failed with {status}")]
     SshStatus {
+        /// Names the attempted operation, such as "provision remote node".
         command: String,
         status: std::process::ExitStatus,
     },
-    #[error(transparent)]
-    Client(#[from] swarmy_client::Error),
+    #[error("ssh {command} failed")]
+    SshUnavailable {
+        /// Names the attempted operation, such as "wait for SSH".
+        command: String,
+    },
+    #[error("API at {endpoint}")]
+    Client {
+        endpoint: String,
+        #[source]
+        source: swarmy_client::Error,
+    },
     #[error(transparent)]
     Other(Box<dyn std::error::Error + Send + Sync>),
+}
+
+/// Render an error with its source chain, as anyhow's `{:#}` would. A
+/// variant with `#[source]` must not also print the source in its message;
+/// the chain here supplies the causes.
+#[cfg(feature = "remote")]
+pub(crate) fn render(error: &Error) -> String {
+    let mut out = error.to_string();
+    let mut next = std::error::Error::source(error);
+    while let Some(source) = next {
+        let text = source.to_string();
+        if text != out && !out.ends_with(text.as_str()) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        next = source.source();
+    }
+    out
 }
 
 impl Error {

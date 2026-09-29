@@ -1,20 +1,9 @@
-use std::{io::IsTerminal, time::Duration};
+use std::time::Duration;
 
 use crate::Result;
 use swarmy_config::RemoteNode;
 
 use super::{Cloud, Ownership, key_name, state::State};
-
-/// Explain a denied teardown permission without wrapping the typed error.
-/// The CLI prints the same advice when it reports the failure.
-pub(crate) fn actionable_error(error: crate::Error) -> crate::Error {
-    if error.permission().is_some() {
-        cloud_err!(
-            "AWS denied the named permission; nothing was deleted by this operation. Grant it and retry; local remote state is retained"
-        );
-    }
-    error
-}
 
 #[derive(Default)]
 struct Report {
@@ -25,7 +14,8 @@ struct Report {
 impl Report {
     fn failed(&mut self, resource: &str, permission: &str, error: &crate::Error) {
         self.failures.push(format!(
-            "Skipped {resource}: requires {permission}; {error:#}"
+            "Skipped {resource}: requires {permission}; {}",
+            crate::render(error)
         ));
     }
 
@@ -87,30 +77,9 @@ pub async fn plan(
     }))
 }
 
-/// Adoption is deliberately interactive and requires typing every exact resource name.
-pub async fn tag(cloud: &impl Cloud, state: &State, node: &RemoteNode) -> Result<()> {
-    tag_with_confirmation(cloud, state, node, |kind, name| {
-        if !std::io::stdin().is_terminal() {
-            return Err(crate::Error::other("remote tag requires a terminal"));
-        }
-        let answer = crate::prompt(&format!(
-            "Type the exact {kind} name {name} to adopt it for remote {}: ",
-            node.name
-        ))?;
-        if answer.trim() != name {
-            return Err(crate::Error::other("remote tag cancelled"));
-        }
-        Ok(())
-    })
-    .await
-}
-
-pub(crate) async fn tag_with_confirmation(
-    cloud: &impl Cloud,
-    state: &State,
-    node: &RemoteNode,
-    mut confirm_name: impl FnMut(&str, &str) -> Result<()>,
-) -> Result<()> {
+/// Adoption targets `remote tag` would adopt. The CLI prints the wording
+/// and prompts for each exact name; the library only reports the plan.
+pub fn adoption_targets(state: &State, node: &RemoteNode) -> Result<Vec<(String, String)>> {
     let bucket = node
         .bucket()
         .ok_or_else(|| crate::Error::other("remote has no bucket"))?;
@@ -128,13 +97,26 @@ pub(crate) async fn tag_with_confirmation(
             "role is also recorded by another remote",
         ));
     }
-    for (kind, name) in [
+    Ok([
         ("bucket", bucket),
         ("role", role.as_str()),
         ("instance profile", role.as_str()),
-    ] {
-        confirm_name(kind, name)?;
-    }
+    ]
+    .into_iter()
+    .map(|(kind, name)| (kind.to_owned(), name.to_owned()))
+    .collect())
+}
+
+/// Adopt the bucket, role, and instance profile after the CLI confirmed
+/// every exact resource name. Confirmation lives in the CLI; this applies.
+pub async fn apply_tag(cloud: &impl Cloud, node: &RemoteNode) -> Result<()> {
+    let bucket = node
+        .bucket()
+        .ok_or_else(|| crate::Error::other("remote has no bucket"))?;
+    let role = node
+        .cloud_settings()
+        .instance_profile(&node.name)
+        .ok_or_else(|| crate::Error::other("bucket has no node role"))?;
     cloud.tag_bucket(bucket, &node.name).await?;
     cloud.tag_node_role(&role, &node.name).await?;
     cloud_out!(
@@ -142,6 +124,21 @@ pub(crate) async fn tag_with_confirmation(
         node.name
     );
     Ok(())
+}
+
+/// Test hook for the CLI confirmation flow: run the same targets and apply
+/// step the CLI performs with its prompts.
+#[cfg(test)]
+pub(crate) async fn tag_with_confirmation(
+    cloud: &impl Cloud,
+    state: &State,
+    node: &RemoteNode,
+    mut confirm_name: impl FnMut(&str, &str) -> Result<()>,
+) -> Result<()> {
+    for (kind, name) in adoption_targets(state, node)? {
+        confirm_name(&kind, &name)?;
+    }
+    apply_tag(cloud, node).await
 }
 
 pub async fn run(

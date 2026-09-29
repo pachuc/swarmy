@@ -153,15 +153,6 @@ fn main() -> anyhow::Result<()> {
             println!("{message}");
         }
     });
-    #[cfg(feature = "remote")]
-    swarmy_cloud::set_prompt_sink(|message| {
-        use std::io::Write;
-        print!("{message}");
-        std::io::stdout().flush()?;
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        Ok(answer)
-    });
     swarmy_cloud::select(cli.remote.as_deref())?;
     // Background service logs must not overwrite the full-screen transcript.
     let writer = if matches!(cli.command, Command::Chat { .. }) {
@@ -345,35 +336,53 @@ fn run_auth_tool(
 }
 
 /// Run a `swarmy remote` subcommand. The library reports what `remote down`
-/// would delete; only the CLI prints the confirmation wording and prompts.
+/// would delete and what `remote tag` would adopt; only the CLI prints the
+/// confirmation wording and prompts.
 #[cfg(feature = "remote")]
 async fn remote(command: swarmy_cloud::Command, json: bool) -> anyhow::Result<()> {
     use anyhow::Context as _;
     let name = remote_name(&command);
-    // Keep the deletion target before the command moves into the first run.
-    let down = match &command {
-        swarmy_cloud::Command::Down {
-            name, keep_bucket, ..
-        } => Some((name.clone(), *keep_bucket)),
-        _ => None,
-    };
-    match Box::pin(swarmy_cloud::run(command, json))
+    let outcome = Box::pin(swarmy_cloud::run(command, json, false))
         .await
-        .with_context(|| format!("swarmy remote {name} failed"))?
-    {
+        .map_err(|error| {
+            if matches!(
+                error,
+                swarmy_cloud::Error::MissingPermission { .. }
+            ) {
+                eprintln!(
+                    "AWS denied the named permission; nothing was deleted by this operation. Grant it and retry; local remote state is retained"
+                );
+            }
+            error
+        })
+        .with_context(|| format!("swarmy remote {name} failed"))?;
+    match outcome {
         swarmy_cloud::RunOutcome::Completed => Ok(()),
-        swarmy_cloud::RunOutcome::NeedsConfirmation(plan) => {
-            let Some((node, keep_bucket)) = down else {
-                anyhow::bail!("remote down confirmation expired; rerun the command");
-            };
+        swarmy_cloud::RunOutcome::NeedsConfirmation {
+            plan,
+            name,
+            keep_bucket,
+        } => {
             confirm_deletion(&plan, json)?;
             Box::pin(swarmy_cloud::run(
                 swarmy_cloud::Command::Down {
-                    name: node,
+                    name: name.clone(),
                     keep_bucket,
                     yes: true,
                 },
                 json,
+                true,
+            ))
+            .await
+            .with_context(|| format!("swarmy remote {name} failed"))?;
+            Ok(())
+        }
+        swarmy_cloud::RunOutcome::NeedsTagConfirmation { targets, name } => {
+            confirm_tag(&targets, &name)?;
+            Box::pin(swarmy_cloud::run(
+                swarmy_cloud::Command::Tag { name: name.clone() },
+                json,
+                true,
             ))
             .await
             .with_context(|| format!("swarmy remote {name} failed"))?;
@@ -402,7 +411,7 @@ fn remote_name(command: &swarmy_cloud::Command) -> &'static str {
 /// The rerun cannot need confirmation again: it passes `--yes`.
 #[cfg(feature = "remote")]
 fn confirm_deletion(plan: &swarmy_cloud::DeletionPlan, json: bool) -> anyhow::Result<()> {
-    use std::io::{IsTerminal, Write};
+    use std::io::IsTerminal;
     if json {
         anyhow::bail!("remote down --json requires --yes to delete owned resources");
     }
@@ -419,12 +428,40 @@ fn confirm_deletion(plan: &swarmy_cloud::DeletionPlan, json: bool) -> anyhow::Re
     if let Some(role) = &plan.role {
         println!("  role {role}");
     }
-    print!("Continue? [y/N] ");
-    std::io::stdout().flush()?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
+    let answer = read_confirmation("Continue? [y/N] ")?;
     if answer.trim() != "y" && answer.trim() != "yes" {
         anyhow::bail!("remote down cancelled");
     }
     Ok(())
+}
+
+/// Adoption is deliberately interactive and requires typing every exact
+/// resource name. Shares the confirmation reader with `remote down`.
+#[cfg(feature = "remote")]
+fn confirm_tag(targets: &[(String, String)], node: &str) -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!("remote tag requires a terminal");
+    }
+    for (kind, name) in targets {
+        let answer = read_confirmation(&format!(
+            "Type the exact {kind} name {name} to adopt it for remote {node}: "
+        ))?;
+        if answer.trim() != name {
+            anyhow::bail!("remote tag cancelled");
+        }
+    }
+    Ok(())
+}
+
+/// One confirmation reader for every remote prompt: print the wording,
+/// flush, and return the operator's answer.
+#[cfg(feature = "remote")]
+fn read_confirmation(message: &str) -> anyhow::Result<String> {
+    use std::io::Write;
+    print!("{message}");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    Ok(answer)
 }

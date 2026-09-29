@@ -23,9 +23,9 @@ where
 {
     fn aws_context(self, operation: &'static str) -> Result<T> {
         self.map_err(|error| {
-            let code = error.code().map(str::to_owned);
-            let message = error.message().map(str::to_owned);
-            if access_denied(code.as_deref()) {
+            let code = error.code().unwrap_or("unknown").to_owned();
+            let message = error.message().unwrap_or("unknown").to_owned();
+            if access_denied(Some(&code)) {
                 crate::Error::MissingPermission {
                     operation: operation.to_owned(),
                     source: Box::new(error),
@@ -35,7 +35,6 @@ where
                     operation: operation.to_owned(),
                     code,
                     message,
-                    source: Box::new(error),
                 }
             }
         })
@@ -1195,19 +1194,54 @@ mod aws_context_tests {
                 operation,
                 code,
                 message,
-                ..
             } => {
                 assert_eq!(operation, "ec2:RunInstances");
-                assert_eq!(code.as_deref(), Some("InvalidParameterValue"));
-                assert!(
-                    message
-                        .as_deref()
-                        .unwrap_or_default()
-                        .contains("Invalid IAM Instance Profile")
+                assert_eq!(code, "InvalidParameterValue");
+                assert!(message.contains("Invalid IAM Instance Profile"));
+                assert_eq!(
+                    crate::Error::Aws {
+                        operation: "ec2:RunInstances".into(),
+                        code,
+                        message,
+                    }
+                    .to_string(),
+                    "ec2:RunInstances: InvalidParameterValue: Invalid IAM Instance Profile name: fixture-profile"
                 );
             }
             error => panic!("expected Aws, got {error:?}"),
         }
+    }
+
+    #[test]
+    fn generic_errors_keep_throttling_code_and_unknown_parts() {
+        match mapped("ec2:DescribeInstances", "Throttling", "rate exceeded") {
+            crate::Error::Aws {
+                operation,
+                code,
+                message,
+            } => {
+                assert_eq!(operation, "ec2:DescribeInstances");
+                assert_eq!(code, "Throttling");
+                assert_eq!(message, "rate exceeded");
+            }
+            error => panic!("expected Aws, got {error:?}"),
+        }
+        let error = Err::<(), _>(aws_sdk_ec2::error::ErrorMetadata::builder().build())
+            .aws_context("ec2:DescribeInstances")
+            .unwrap_err();
+        match &error {
+            crate::Error::Aws {
+                operation,
+                code,
+                message,
+            } => {
+                assert_eq!(operation, "ec2:DescribeInstances");
+                assert_eq!(code, "unknown");
+                assert_eq!(message, "unknown");
+            }
+            error => panic!("expected Aws, got {error:?}"),
+        }
+        assert_eq!(error.to_string(), "ec2:DescribeInstances: unknown: unknown");
     }
 
     #[test]

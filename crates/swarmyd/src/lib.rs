@@ -37,31 +37,11 @@ pub enum Response {
 
 /// Failures in node hosting and volume operations.
 ///
-/// The transparent variants are the error sources the node deals with;
-/// everything else is an arbitrary cause kept as its source in `Other` for
-/// the daemon entry point to render with `{:#}`.
+/// Only failures callers branch on have their own variant; everything else
+/// is an arbitrary cause kept as its source in `Other` for the daemon entry
+/// point to render with its source chain.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error(transparent)]
-    Store(#[from] swarmy_store::StoreError),
-    #[error(transparent)]
-    Bus(#[from] swarmy_bus::Error),
-    #[error(transparent)]
-    Sandbox(#[from] swarmy_sandbox::Error),
-    #[error(transparent)]
-    Volume(#[from] swarmy_volume::VolumeError),
-    #[error(transparent)]
-    Config(#[from] swarmy_config::Error),
-    #[error(transparent)]
-    Blob(#[from] swarmy_store::blob::BlobError),
-    #[error(transparent)]
-    VolumeServer(#[from] swarmy_volume::server::Error),
-    #[error(transparent)]
-    Timestamp(#[from] jiff::Error),
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Json(#[from] serde_json::Error),
     #[error(transparent)]
     Other(Box<dyn std::error::Error + Send + Sync>),
 }
@@ -88,6 +68,17 @@ other_from!(
     tokio::time::error::Elapsed,
     tokio::task::JoinError,
     std::fmt::Error,
+    swarmy_store::StoreError,
+    swarmy_bus::Error,
+    swarmy_sandbox::Error,
+    swarmy_volume::VolumeError,
+    swarmy_config::Error,
+    swarmy_store::blob::BlobError,
+    swarmy_volume::server::Error,
+    swarmy_image::ImageError,
+    jiff::Error,
+    std::io::Error,
+    serde_json::Error,
 );
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -490,7 +490,9 @@ impl Hosting {
             };
             match tokio::time::timeout(budget, renewal).await {
                 Ok(Ok(current)) => placement = current,
-                Ok(Err(error)) => return error,
+                Ok(Err(error)) => {
+                    return Error::other(format!("placement lease renewal failed: {error}"));
+                }
                 Err(_) => return Error::other("placement lease expired during renewal"),
             }
         }
