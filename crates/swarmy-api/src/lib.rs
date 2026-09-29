@@ -485,7 +485,8 @@ async fn create_agent(
         )
         .await
         .map_err(storage)?;
-    Ok(Json(views::agent(record)))
+    // Echo the new row the way the list shows it; `show` adds the detail fields.
+    views::agent_summary(&state, record).await.map(Json)
 }
 async fn update_agent(
     State(state): State<AppState>,

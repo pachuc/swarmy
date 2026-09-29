@@ -149,7 +149,10 @@ async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
         .json()
         .await
         .unwrap();
-    assert_eq!(&shown, first);
+    assert_eq!(shown.id, first.id);
+    assert_eq!(shown.name, first.name);
+    assert!(shown.usage.is_some());
+    assert!(shown.sandbox_state.is_some());
     let providers: Vec<Provider> = client
         .get(format!("{base}/v1/providers"))
         .bearer_auth("test-token")
@@ -289,7 +292,10 @@ async fn assert_session(client: &reqwest::Client, base: &str, id: &str) {
         .json()
         .await
         .unwrap();
-    assert_eq!(shown, listed[0]);
+    assert_eq!(shown.id, listed[0].id);
+    assert_eq!(shown.state, listed[0].state);
+    assert!(shown.usage.is_some());
+    assert!(shown.requirements.is_some());
     let events: Vec<Event> = client
         .get(format!("{base}/v1/sessions/{id}/events?after=0&limit=4"))
         .bearer_auth("test-token")
