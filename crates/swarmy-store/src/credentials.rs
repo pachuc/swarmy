@@ -292,10 +292,10 @@ impl CredentialStore {
             &self.keyring,
             scope,
             &entry_identity(provider, label),
-            &record,
+            record,
         )?;
         let key = crate::keys::Keys::new(&self.store.root).credential_entry(scope, provider, label);
-        let (needs_login, expires_at) = entry_readiness(&record, self.store.now());
+        let (needs_login, expires_at) = entry_readiness(record, self.store.now());
         self.store
             .transaction(|trx| {
                 let key = &key;
