@@ -213,11 +213,7 @@ async fn assert_service_discovery(client: &Client) {
 async fn assert_catalog_and_credentials(client: &Client) {
     let first = &client.models().await.unwrap()[0];
     assert_eq!(
-        client
-            .model(&first.provider, &first.id)
-            .await
-            .unwrap()
-            .id,
+        client.model(&first.provider, &first.id).await.unwrap().id,
         first.id
     );
     assert!(!client.search_models("gpt").await.unwrap().is_empty());
