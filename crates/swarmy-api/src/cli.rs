@@ -14,7 +14,7 @@ use swarmy_store::{ServiceDetail, ServiceRole};
 use ulid::Ulid;
 
 /// One bounded API read gives doctor a consistent view of service heartbeats.
-pub async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnapshot> {
+pub(crate) async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnapshot> {
     let nodes = registered_nodes(&state).await?;
     let services = state.store.list_services().await.map_err(storage)?;
     let services: Vec<_> = services
@@ -186,7 +186,7 @@ fn route_steps(steps: &[api::RouteStep]) -> Vec<swarmy_core::RouteStep> {
         .collect()
 }
 
-pub async fn routes(State(state): State<AppState>) -> ApiResult<Vec<api::CliRoute>> {
+pub(crate) async fn routes(State(state): State<AppState>) -> ApiResult<Vec<api::CliRoute>> {
     Ok(Json(
         state
             .store
@@ -199,7 +199,7 @@ pub async fn routes(State(state): State<AppState>) -> ApiResult<Vec<api::CliRout
     ))
 }
 
-pub async fn route_show(
+pub(crate) async fn route_show(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> ApiResult<api::CliRoute> {
@@ -212,7 +212,7 @@ pub async fn route_show(
     Ok(Json(cli_route(&record)))
 }
 
-pub async fn route_set(
+pub(crate) async fn route_set(
     State(state): State<AppState>,
     Json(body): Json<api::CliRouteInput>,
 ) -> ApiResult<api::CliSaved> {
@@ -232,7 +232,7 @@ pub async fn route_set(
     .await
 }
 
-pub async fn route_remove(
+pub(crate) async fn route_remove(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> ApiResult<api::CliRouteDeleted> {
@@ -243,7 +243,7 @@ pub async fn route_remove(
     Ok(Json(api::CliRouteDeleted { deleted }))
 }
 
-pub async fn session_set_route(
+pub(crate) async fn session_set_route(
     State(state): State<AppState>,
     Path(text): Path<String>,
     Json(body): Json<api::SetSessionRoute>,
@@ -278,7 +278,7 @@ pub async fn session_set_route(
     .await?;
     session_show(State(state), Path(text)).await
 }
-pub async fn sessions(
+pub(crate) async fn sessions(
     State(state): State<AppState>,
     Query(page): Query<Page>,
 ) -> ApiResult<Vec<api::CliSession>> {
@@ -370,7 +370,7 @@ async fn selection(
     }
     Ok(selected)
 }
-pub async fn session_show(
+pub(crate) async fn session_show(
     State(state): State<AppState>,
     Path(text): Path<String>,
 ) -> ApiResult<api::CliSessionDetail> {
@@ -467,7 +467,7 @@ pub async fn session_show(
     )?))
 }
 
-pub async fn agents(
+pub(crate) async fn agents(
     State(state): State<AppState>,
     Query(page): Query<Page>,
 ) -> ApiResult<Vec<api::CliAgent>> {
@@ -487,7 +487,7 @@ pub async fn agents(
     }
     Ok(Json(result))
 }
-pub async fn agent_show(
+pub(crate) async fn agent_show(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> ApiResult<api::CliAgent> {
@@ -641,7 +641,7 @@ async fn agent_detail(
     value["sessions"] = json!(listed);
     Ok(())
 }
-pub async fn image_show(
+pub(crate) async fn image_show(
     State(state): State<AppState>,
     Path((name, tag)): Path<(String, String)>,
 ) -> ApiResult<api::CliImage> {
@@ -672,7 +672,7 @@ pub async fn image_show(
 }
 
 #[derive(serde::Deserialize)]
-pub struct ModelsQuery {
+pub(crate) struct ModelsQuery {
     pub q: Option<String>,
     pub provider: Option<String>,
     pub reasoning: Option<bool>,
@@ -716,7 +716,7 @@ fn settings(
         route: body.route.clone(),
     })
 }
-pub async fn agent_create(
+pub(crate) async fn agent_create(
     State(state): State<AppState>,
     Json(body): Json<AgentChoice>,
 ) -> ApiResult<api::CliAgent> {
@@ -757,7 +757,7 @@ pub async fn agent_create(
     })
     .await
 }
-pub async fn agent_update(
+pub(crate) async fn agent_update(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(body): Json<AgentChoice>,
@@ -816,7 +816,9 @@ pub async fn agent_update(
     .await
 }
 type CredentialInput = api::CliCredentialInput;
-pub async fn credentials(State(state): State<AppState>) -> ApiResult<Vec<api::CliCredential>> {
+pub(crate) async fn credentials(
+    State(state): State<AppState>,
+) -> ApiResult<Vec<api::CliCredential>> {
     let store = super::credential_store(&state)?;
     Ok(Json(
         store
@@ -828,7 +830,7 @@ pub async fn credentials(State(state): State<AppState>) -> ApiResult<Vec<api::Cl
             .collect::<Result<Vec<_>, _>>()?,
     ))
 }
-pub async fn credential(
+pub(crate) async fn credential(
     State(state): State<AppState>,
     Path(provider): Path<String>,
 ) -> ApiResult<api::CliCredential> {
@@ -842,7 +844,7 @@ pub async fn credential(
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "credential_not_found"))?;
     Ok(Json(typed(json!(summary))?))
 }
-pub async fn credential_set(
+pub(crate) async fn credential_set(
     State(state): State<AppState>,
     Json(body): Json<CredentialInput>,
 ) -> ApiResult<api::CliSaved> {

@@ -176,7 +176,14 @@
         },
         "responses": {
           "200": {
-            "description": "Deletion marker"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDeleted"
+                }
+              }
+            }
           }
         }
       },
@@ -963,7 +970,14 @@
         },
         "responses": {
           "200": {
-            "description": "Deletion marker"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDeleted"
+                }
+              }
+            }
           }
         }
       }
@@ -2741,6 +2755,18 @@
           }
         }
       },
+      "AgentDeleted": {
+        "type": "object",
+        "description": "Deleting an agent reports whether the intent completed.",
+        "required": [
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        }
+      },
       "AgentMetrics": {
         "type": "object",
         "required": [
@@ -3923,58 +3949,6 @@
               "data": {
                 "type": "object",
                 "required": [
-                  "turn"
-                ],
-                "properties": {
-                  "turn": {
-                    "$ref": "#/components/schemas/Turn"
-                  }
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "turn_started"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "turn"
-                ],
-                "properties": {
-                  "turn": {
-                    "$ref": "#/components/schemas/Turn"
-                  }
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "turn_finished"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
                   "turn_id",
                   "call_id",
                   "name",
@@ -4043,36 +4017,6 @@
               "data": {
                 "type": "object",
                 "required": [
-                  "turn_id",
-                  "error"
-                ],
-                "properties": {
-                  "error": {
-                    "$ref": "#/components/schemas/ApiError"
-                  },
-                  "turn_id": {
-                    "type": "string"
-                  }
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "inference_error"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
                   "session_id"
                 ],
                 "properties": {
@@ -4121,58 +4065,6 @@
                 "type": "string",
                 "enum": [
                   "token_delta"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "health"
-                ],
-                "properties": {
-                  "health": {
-                    "$ref": "#/components/schemas/ServiceHealth"
-                  }
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "service_status_changed"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "node"
-                ],
-                "properties": {
-                  "node": {
-                    "$ref": "#/components/schemas/Node"
-                  }
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "node_status_changed"
                 ]
               }
             }

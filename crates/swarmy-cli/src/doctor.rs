@@ -359,9 +359,9 @@ async fn api_checks(
             return Vec::new();
         }
     };
-    let version = health["version"].as_str().unwrap_or("unknown");
-    let commit = health["git_commit"].as_str().unwrap_or("unknown");
-    let api_version = health["api_version"].as_str().unwrap_or("");
+    let version = health.version.as_str();
+    let commit = health.git_commit.as_str();
+    let api_version = health.api_version.as_str();
     // Servers older than the documented contract carry no api_version; those
     // still need an exact binary match. Newer servers only need the same major
     // API version, so minor releases do not break existing clients.

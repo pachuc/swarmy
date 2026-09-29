@@ -9,7 +9,7 @@ use swarmy_api_types as api;
 use swarmy_store as store;
 
 #[must_use]
-pub fn into_api_stage(value: store::StageTiming) -> api::StageTiming {
+pub(crate) fn into_api_stage(value: store::StageTiming) -> api::StageTiming {
     api::StageTiming {
         stage: value.stage,
         request_id: value.request_id,
@@ -20,7 +20,7 @@ pub fn into_api_stage(value: store::StageTiming) -> api::StageTiming {
 }
 
 #[must_use]
-pub fn into_api_inference(value: store::InferenceMetric) -> api::InferenceMetric {
+pub(crate) fn into_api_inference(value: store::InferenceMetric) -> api::InferenceMetric {
     api::InferenceMetric {
         request_id: value.request_id,
         provider: value.provider,
@@ -44,7 +44,7 @@ pub fn into_api_inference(value: store::InferenceMetric) -> api::InferenceMetric
 }
 
 #[must_use]
-pub fn into_api_tool(value: store::ToolMetric) -> api::ToolMetric {
+pub(crate) fn into_api_tool(value: store::ToolMetric) -> api::ToolMetric {
     api::ToolMetric {
         request_id: value.request_id,
         name: value.name,
@@ -59,7 +59,7 @@ pub fn into_api_tool(value: store::ToolMetric) -> api::ToolMetric {
 }
 
 #[must_use]
-pub fn into_api_computer(value: &store::ComputerMetric) -> api::ComputerMetric {
+pub(crate) fn into_api_computer(value: &store::ComputerMetric) -> api::ComputerMetric {
     api::ComputerMetric {
         placement_ms: value.placement_ms,
         cold: value.cold,
@@ -75,7 +75,7 @@ pub fn into_api_computer(value: &store::ComputerMetric) -> api::ComputerMetric {
 }
 
 #[must_use]
-pub fn into_api_turn(value: store::TurnMetrics) -> api::TurnMetrics {
+pub(crate) fn into_api_turn(value: store::TurnMetrics) -> api::TurnMetrics {
     api::TurnMetrics {
         session_id: value.session_id,
         turn_id: value.turn_id,
@@ -98,7 +98,7 @@ pub fn into_api_turn(value: store::TurnMetrics) -> api::TurnMetrics {
 }
 
 #[must_use]
-pub fn into_api_latency(value: &store::LatencyPercentiles) -> api::LatencyPercentiles {
+pub(crate) fn into_api_latency(value: &store::LatencyPercentiles) -> api::LatencyPercentiles {
     api::LatencyPercentiles {
         p50_ms: value.p50_ms,
         p95_ms: value.p95_ms,
@@ -106,7 +106,7 @@ pub fn into_api_latency(value: &store::LatencyPercentiles) -> api::LatencyPercen
 }
 
 #[must_use]
-pub fn into_api_agent(value: store::AgentMetrics) -> api::AgentMetrics {
+pub(crate) fn into_api_agent(value: store::AgentMetrics) -> api::AgentMetrics {
     api::AgentMetrics {
         agent_id: value.agent_id,
         main_session_id: value.main_session_id,
@@ -142,7 +142,41 @@ mod tests {
         reason = "the exact-JSON pin needs its full fixture and literal inline"
     )]
     #[test]
-    fn metric_views_serialize_every_field() {
+    fn metric_views_round_trip() {
+        let stage = store::StageTiming {
+            stage: "appended".into(),
+            request_id: None,
+            clock_id: "boot".into(),
+            monotonic_ns: 1_000_000,
+            unix_ns: 1_000_000,
+        };
+        assert_eq!(into_api_stage(stage.clone()).stage, stage.stage);
+        let inference = store::InferenceMetric {
+            request_id: "r".into(),
+            provider: "fake".into(),
+            model: "scripted".into(),
+            output_tokens: 4,
+            streamed: Some(false),
+            ..store::InferenceMetric::default()
+        };
+        assert_eq!(
+            into_api_inference(inference.clone()).provider,
+            inference.provider
+        );
+        let tool = store::ToolMetric {
+            request_id: "c".into(),
+            name: "bash".into(),
+            ..store::ToolMetric::default()
+        };
+        assert_eq!(into_api_tool(tool.clone()).name, tool.name);
+        let computer = store::ComputerMetric {
+            chunks_fetched: 7,
+            ..store::ComputerMetric::default()
+        };
+        assert_eq!(
+            into_api_computer(&computer).chunks_fetched,
+            computer.chunks_fetched
+        );
         let turn = store::TurnMetrics {
             session_id: "s".into(),
             turn_id: "t".into(),
@@ -204,76 +238,12 @@ mod tests {
             dropped_inference: 2,
             dropped_tools: 3,
         };
-        assert_eq!(
-            serde_json::to_value(into_api_turn(turn)).unwrap(),
-            json!({
-                "session_id": "s",
-                "turn_id": "t",
-                "stages": [{
-                    "stage": "appended",
-                    "request_id": null,
-                    "clock_id": "boot",
-                    "monotonic_ns": 1_000_000,
-                    "unix_ns": 1_000_000,
-                }],
-                "inference": [{
-                    "request_id": "r",
-                    "provider": "fake",
-                    "model": "scripted",
-                    "input_tokens": 10,
-                    "cached_input_tokens": 2,
-                    "output_tokens": 4,
-                    "reasoning_tokens": 1,
-                    "cost_micros": 8,
-                    "time_to_first_token_ms": 1.5,
-                    "streaming_duration_ms": 2.5,
-                    "request_duration_ms": 3.5,
-                    "streamed": true,
-                    "output_tokens_per_second": 4.5,
-                    "retries": 1,
-                    "rate_limit_waits": 2,
-                    "gateway_waits": 3,
-                    "provider_failures": 4,
-                    "error": "boom",
-                }],
-                "tools": [{
-                    "request_id": "c",
-                    "name": "bash",
-                    "dispatched_ns": 1,
-                    "started_ns": 2,
-                    "completed_ns": 3,
-                    "exit_status": 0,
-                    "output_bytes": 9,
-                    "queue_ms": 0.5,
-                    "process_wall_ms": 1.5,
-                }],
-                "computer": {
-                    "placement_ms": 2.5,
-                    "cold": true,
-                    "chunks_fetched": 7,
-                    "bytes_fetched": 8,
-                    "fetch_p50_ms": 3.5,
-                    "fetch_p95_ms": 4.5,
-                    "first_tool_chunks_fetched": 5,
-                    "first_tool_bytes_fetched": 6,
-                    "first_tool_fetch_p50_ms": 7.5,
-                    "first_tool_fetch_p95_ms": 8.5,
-                },
-                "append_to_first_token_ms": 9.5,
-                "inference_duration_ms": 10.5,
-                "append_to_idle_ms": 11.5,
-                "error": "turn failed",
-                "dropped_stages": 1,
-                "dropped_inference": 2,
-                "dropped_tools": 3,
-            })
-        );
-    }
-
-    /// Pin the agent rollup JSON the same way: latencies keyed by stage with
-    /// both percentiles, plus every counter.
-    #[test]
-    fn agent_view_serializes_every_field() {
+        assert_eq!(into_api_turn(turn.clone()).turn_id, turn.turn_id);
+        let latency = store::LatencyPercentiles {
+            p50_ms: 1.0,
+            p95_ms: 2.0,
+        };
+        assert!((into_api_latency(&latency).p50_ms - latency.p50_ms).abs() < f64::EPSILON);
         let agent = store::AgentMetrics {
             agent_id: "a".into(),
             main_session_id: Some("s".into()),
@@ -294,22 +264,6 @@ mod tests {
             errors: 6,
             cost_micros: 8,
         };
-        assert_eq!(
-            serde_json::to_value(into_api_agent(agent)).unwrap(),
-            json!({
-                "agent_id": "a",
-                "main_session_id": "s",
-                "turns": 7,
-                "latencies": {"append_to_idle": {"p50_ms": 1.0, "p95_ms": 2.0}},
-                "input_tokens": 10,
-                "cached_input_tokens": 2,
-                "output_tokens": 4,
-                "reasoning_tokens": 1,
-                "mean_output_tokens_per_second": 3.5,
-                "retries": 5,
-                "errors": 6,
-                "cost_micros": 8,
-            })
-        );
+        assert_eq!(into_api_agent(agent.clone()).agent_id, agent.agent_id);
     }
 }

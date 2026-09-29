@@ -39,7 +39,7 @@ fn busy() -> (StatusCode, Json<api::ApiError>) {
     )
 }
 
-pub async fn start(
+pub(crate) async fn start(
     State(state): State<AppState>,
     Json(body): Json<api::StartGcRun>,
 ) -> ApiResult<api::GcRun> {
@@ -144,7 +144,7 @@ pub async fn start(
     Ok(Json(initial))
 }
 
-pub async fn show(
+pub(crate) async fn show(
     State(state): State<AppState>,
     Path(text): Path<String>,
 ) -> ApiResult<api::GcRun> {

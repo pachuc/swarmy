@@ -68,7 +68,7 @@ fn provider_timeout() -> (StatusCode, Json<api::ApiError>) {
     )
 }
 
-pub async fn probe(
+pub(crate) async fn probe(
     State(state): State<AppState>,
     Json(body): Json<api::ProbeModel>,
 ) -> ApiResult<api::ProbeResult> {

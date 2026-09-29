@@ -188,15 +188,16 @@ async fn assert_agent_routes(client: &Client) {
         client
             .delete_agent("fixture-agent", "delete")
             .await
-            .unwrap()["deleted"],
+            .unwrap()
+            .deleted,
         true
     );
 }
 
 async fn assert_service_discovery(client: &Client) {
     let health = client.health().await.unwrap();
-    assert!(health.get("version").is_some());
-    assert!(health.get("api_version").is_some());
+    assert!(!health.version.is_empty());
+    assert!(!health.api_version.is_empty());
     assert!(client.openapi().await.unwrap().get("openapi").is_some());
 }
 
@@ -231,7 +232,8 @@ async fn assert_catalog_and_credentials(client: &Client) {
             client
                 .remove_credential("fixture-provider", "delete-credential")
                 .await
-                .unwrap()["deleted"],
+                .unwrap()
+                .deleted,
             true
         );
     }

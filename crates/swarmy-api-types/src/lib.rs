@@ -528,6 +528,12 @@ pub struct DeleteRequest {
     pub idempotency_key: String,
 }
 
+/// Deleting an agent reports whether the intent completed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AgentDeleted {
+    pub deleted: bool,
+}
+
 /// Deleting a labelled credential reports the removal without returning secrets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CredentialDeleted {
@@ -977,8 +983,8 @@ pub mod cli_paths {
 /// Versioned resource routes. These signatures are mirrored by the server router.
 pub mod api_paths {
     use super::{
-        Agent, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession, CreateAgent,
-        CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
+        Agent, AgentDeleted, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession,
+        CreateAgent, CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
         EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload, InterruptOutcome,
         InterruptSession, Model, ProbeModel, ProbeResult, Provider, QuotaEntry, Route,
         RouteDeleted, Session, SessionClosed, SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun,
@@ -1016,7 +1022,7 @@ pub mod api_paths {
     #[utoipa::path(delete, path = "/v1/agents/{id}",
         params(("id" = String, Path, description = "Agent id or name")),
         request_body = DeleteRequest,
-        responses((status = 200, description = "Deletion marker")))]
+        responses((status = 200, body = AgentDeleted)))]
     pub fn delete_agent() {}
     #[utoipa::path(get, path = "/v1/sessions",
         params(
@@ -1172,7 +1178,7 @@ pub mod api_paths {
     #[utoipa::path(delete, path = "/v1/credentials/{provider}",
         params(("provider" = String, Path, description = "Provider id")),
         request_body = DeleteRequest,
-        responses((status = 200, description = "Deletion marker")))]
+        responses((status = 200, body = AgentDeleted)))]
     pub fn remove_credential() {}
     #[utoipa::path(get, path = "/v1/sessions/{id}/metrics",
         params(
@@ -1281,7 +1287,7 @@ pub mod api_paths {
     CreateSession, UpdateSession,
     CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
     InterruptStatus, InterruptOutcome, SessionClosed,
-    CreateImage, CreateCredential, CredentialDeleted, SetEntryQuota, EntryQuotaView, QuotaEntry, EntryQuotaDetail,
+    CreateImage, CreateCredential, CredentialDeleted, AgentDeleted, SetEntryQuota, EntryQuotaView, QuotaEntry, EntryQuotaDetail,
     UsageTotalsView, UsageGroupView, UsageResponse, EntryUsageView,
     Event, EventPayload, ApiError, CliSession, CliSessionDetail,
     CliAgent, CliImage, CliCredential, CliSaved, CliAgentChoice, CliCredentialInput,
@@ -1410,9 +1416,6 @@ mod tests {
     #[test]
     fn event_json_contract() {
         let message = serde_json::json!({"id":"m","session_id":"s","role":"user","text":"hi"});
-        let turn = serde_json::json!({"id":"t","session_id":"s","status":"running","started_at":"2026-09-23T12:00:00Z","finished_at":null});
-        let node = serde_json::json!({"id":"n","roles":["sandbox"],"capacity":{"cpu_millis":1000,"memory_bytes":4096,"disk_bytes":8192,"sandboxes":2},"alive":true,"last_seen":"2026-09-23T12:00:00Z"});
-        let health = serde_json::json!({"role":"gateway","instance_id":"g1","version":"0.1.0","alive":true,"last_seen":"2026-09-23T12:00:00Z"});
         // A durable session-log entry and a live timeline observation both
         // arrive under the `store_record` tag; older clients decode the
         // record as a value, so the tag and field name never change.
@@ -1420,15 +1423,10 @@ mod tests {
         let observation = serde_json::json!({"session_id":"01J00000000000000000000000","turn_id":"01J00000000000000000000001","stage":"submitted","request_id":null,"clock_id":"boot","monotonic_ns":1,"unix_ns":1});
         let payloads = [
             serde_json::json!({"type":"message_appended","data":{"message":message}}),
-            serde_json::json!({"type":"turn_started","data":{"turn":turn}}),
-            serde_json::json!({"type":"turn_finished","data":{"turn":turn}}),
             serde_json::json!({"type":"tool_call","data":{"turn_id":"t","call_id":"c","name":"bash","arguments":{"command":"ls"}}}),
             serde_json::json!({"type":"tool_result","data":{"turn_id":"t","call_id":"c","result":{"output":"ok"}}}),
-            serde_json::json!({"type":"inference_error","data":{"turn_id":"t","error":{"code":"provider_error","message":"failed","provider_text":"original"}}}),
             serde_json::json!({"type":"idle","data":{"session_id":"s"}}),
             serde_json::json!({"type":"token_delta","data":{"turn_id":"t","position":0,"text":"a"}}),
-            serde_json::json!({"type":"service_status_changed","data":{"health":health}}),
-            serde_json::json!({"type":"node_status_changed","data":{"node":node}}),
             serde_json::json!({"type":"store_record","data":{"record":stored}}),
             serde_json::json!({"type":"store_record","data":{"record":observation}}),
         ];

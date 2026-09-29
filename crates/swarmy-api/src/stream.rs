@@ -44,7 +44,7 @@ pub(crate) struct Connection {
 }
 
 #[derive(Deserialize)]
-pub struct StreamQuery {
+pub(crate) struct StreamQuery {
     subscription: Option<String>,
 }
 
@@ -116,7 +116,7 @@ fn decode_cursor(text: &str) -> Result<Subscription, ApiError> {
 /// A Last-Event-ID overrides the original set as well as its cursors, so a
 /// normal `EventSource` reconnect works after subscription changes. With that
 /// header, the subscription query parameter can be omitted.
-pub async fn subscribe(
+pub(crate) async fn subscribe(
     State(state): State<AppState>,
     Query(query): Query<StreamQuery>,
     headers: HeaderMap,
@@ -194,7 +194,7 @@ pub async fn subscribe(
 }
 
 /// Replace the subscribed logs and token preference without closing the stream.
-pub async fn update(
+pub(crate) async fn update(
     State(state): State<AppState>,
     Path(connection_id): Path<String>,
     Json(subscription): Json<Subscription>,

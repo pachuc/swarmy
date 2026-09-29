@@ -1,3 +1,4 @@
+#![deny(unreachable_pub)]
 //! HTTP control plane. Public handlers use the versioned JSON contract.
 use axum::{
     Json, Router,
@@ -9,7 +10,6 @@ use axum::{
 };
 use jiff::Timestamp;
 use serde::Deserialize;
-use serde_json::{Value, json};
 use std::sync::Arc;
 mod cli;
 mod conversation;
@@ -17,7 +17,7 @@ mod gc;
 pub mod images;
 mod models;
 mod stream;
-pub mod views;
+mod views;
 use swarmy_api_types as api;
 use swarmy_bus::Bus;
 use swarmy_config::Keyring;
@@ -499,7 +499,7 @@ async fn delete_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(body): Json<api::DeleteRequest>,
-) -> ApiResult<Value> {
+) -> ApiResult<api::AgentDeleted> {
     let store = state.store.clone();
     replay(
         &state,
@@ -509,7 +509,7 @@ async fn delete_agent(
             if let Some(record) = store.get_agent_by_name(&name).await.map_err(storage)? {
                 store.delete_agent(record.agent_id).await.map_err(storage)?;
             }
-            Ok(Json(json!({"deleted": true})))
+            Ok(Json(api::AgentDeleted { deleted: true }))
         },
     )
     .await
@@ -1201,7 +1201,7 @@ async fn remove_credential_entry(
     State(state): State<AppState>,
     Path((provider, label)): Path<(String, String)>,
     Json(body): Json<api::DeleteRequest>,
-) -> ApiResult<Value> {
+) -> ApiResult<api::CredentialDeleted> {
     let store = credential_store(&state)?;
     replay(
         &state,
@@ -1212,7 +1212,7 @@ async fn remove_credential_entry(
                 .delete_entry(CredentialScope::Cluster, &provider, &label)
                 .await
                 .map_err(storage)?;
-            Ok(Json(json!({"deleted":true})))
+            Ok(Json(api::CredentialDeleted { deleted: true }))
         },
     )
     .await
@@ -1221,7 +1221,7 @@ async fn remove_credential(
     State(state): State<AppState>,
     Path(provider): Path<String>,
     Json(body): Json<api::DeleteRequest>,
-) -> ApiResult<Value> {
+) -> ApiResult<api::CredentialDeleted> {
     let store = credential_store(&state)?;
     replay(
         &state,
@@ -1240,7 +1240,7 @@ async fn remove_credential(
                     .await
                     .map_err(storage)?;
             }
-            Ok(Json(json!({"deleted": true})))
+            Ok(Json(api::CredentialDeleted { deleted: true }))
         },
     )
     .await

@@ -1,3 +1,4 @@
+#![deny(unreachable_pub)]
 //! HTTP client for the versioned swarmy API. No control-plane service libraries are linked.
 pub mod api_client;
 use futures_util::{Stream, StreamExt};
@@ -117,7 +118,7 @@ impl Client {
     ///
     /// # Errors
     /// Returns an API, transport, or response decoding error.
-    pub async fn health(&self) -> Result<serde_json::Value, Error> {
+    pub async fn health(&self) -> Result<api::HealthResponse, Error> {
         self.get("health", &[]).await
     }
     /// Read live service, image, and credential health for doctor.
@@ -175,7 +176,7 @@ impl Client {
     ///
     /// # Errors
     /// Returns an API, transport, or response decoding error.
-    pub async fn delete_agent(&self, id: &str, key: &str) -> Result<serde_json::Value, Error> {
+    pub async fn delete_agent(&self, id: &str, key: &str) -> Result<api::AgentDeleted, Error> {
         self.send(
             Method::DELETE,
             &format!("agents/{}", segment(id)),
@@ -481,7 +482,7 @@ impl Client {
         &self,
         provider: &str,
         key: &str,
-    ) -> Result<serde_json::Value, Error> {
+    ) -> Result<api::CredentialDeleted, Error> {
         self.send(
             Method::DELETE,
             &format!("credentials/{}", segment(provider)),
@@ -511,7 +512,7 @@ impl Client {
         provider: &str,
         label: &str,
         key: &str,
-    ) -> Result<serde_json::Value, Error> {
+    ) -> Result<api::CredentialDeleted, Error> {
         self.send(
             Method::DELETE,
             &format!("credentials/{}/{}", segment(provider), segment(label)),

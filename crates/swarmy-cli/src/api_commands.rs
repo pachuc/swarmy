@@ -29,9 +29,12 @@ fn validate_label(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn print(value: &Value, text: &str, json: bool) {
+fn print<T: serde::Serialize>(value: &T, text: &str, json: bool) {
     if json {
-        println!("{value}");
+        println!(
+            "{}",
+            serde_json::to_string(value).expect("API response serializes")
+        );
     } else {
         println!("{text}");
     }
@@ -280,7 +283,7 @@ async fn close_session(client: &Client, endpoint: &str, id: &str) -> Result<()> 
         swarmy_client::Error::Api { body, .. } if body.code == "main_session_close" => {
             anyhow::anyhow!("cannot close an agent main session; use swarmy agent delete")
         }
-        _ => swarmy_client::api_client::api_error(&error, endpoint),
+        _ => swarmy_client::api_client::api_error(error, endpoint),
     })?;
     Ok(())
 }
@@ -796,7 +799,7 @@ async fn update_agent(client: &Client, endpoint: &str, name: &str, body: Value) 
         swarmy_client::Error::Api { body, .. } if body.code == "agent_computer_placed" => {
             anyhow::anyhow!("the agent's computer is placed; retry after it is released")
         }
-        _ => swarmy_client::api_client::api_error(&error, endpoint),
+        _ => swarmy_client::api_client::api_error(error, endpoint),
     })?;
     Ok(serde_json::to_value(updated)?)
 }
@@ -1364,28 +1367,19 @@ async fn quota(
     Ok(())
 }
 
-fn route_text(name: &str, steps: &[Value]) -> String {
-    let steps = steps
+fn route_text(route: &swarmy_api_types::Route) -> String {
+    let steps = route
+        .steps
         .iter()
-        .map(|step| {
-            let model = step["model"].as_str().unwrap_or("");
-            if model.is_empty() {
-                format!(
-                    "{}/{}",
-                    str_field(step, "provider"),
-                    str_field(step, "entry")
-                )
-            } else {
-                format!(
-                    "{}/{}={model}",
-                    str_field(step, "provider"),
-                    str_field(step, "entry")
-                )
+        .map(|step| match step.model.as_deref() {
+            Some(model) if !model.is_empty() => {
+                format!("{}/{}={model}", step.provider, step.entry)
             }
+            _ => format!("{}/{}", step.provider, step.entry),
         })
         .collect::<Vec<_>>()
         .join(" ");
-    format!("{name} {steps}")
+    format!("{} {steps}", route.name)
 }
 
 async fn routes(
@@ -1396,20 +1390,13 @@ async fn routes(
 ) -> Result<()> {
     match command {
         auth_command::RoutesCommand::Ls => {
-            for row in request(endpoint, client.cli_routes())
-                .await?
-                .into_iter()
-                .map(serde_json::to_value)
-                .collect::<Result<Vec<_>, _>>()?
-            {
-                let steps = row["steps"].as_array().cloned().unwrap_or_default();
-                print(&row, &route_text(str_field(&row, "name"), &steps), json);
+            for row in request(endpoint, client.routes()).await? {
+                print(&row, &route_text(&row), json);
             }
         }
         auth_command::RoutesCommand::Show { name } => {
-            let row = projection(endpoint, client.cli_route(&name)).await?;
-            let steps = row["steps"].as_array().cloned().unwrap_or_default();
-            print(&row, &route_text(str_field(&row, "name"), &steps), json);
+            let row = request(endpoint, client.route(&name)).await?;
+            print(&row, &route_text(&row), json);
         }
         auth_command::RoutesCommand::Set { name, steps } => {
             ensure!(!steps.is_empty(), "a route needs at least one step");
@@ -1417,19 +1404,21 @@ async fn routes(
             for step in &steps {
                 let step = swarmy_core::route::parse_step(step)
                     .map_err(|message| anyhow::anyhow!("{message}"))?;
-                parsed.push(serde_json::json!({
-                    "provider": step.provider,
-                    "entry": step.entry,
-                    "model": step.model,
-                }));
+                parsed.push(swarmy_api_types::RouteStep {
+                    provider: step.provider,
+                    entry: step.entry,
+                    model: step.model,
+                });
             }
-            projection(
+            request(
                 endpoint,
-                client.cli_set_route(&serde_json::from_value(serde_json::json!({
-                    "idempotency_key": Ulid::generate().to_string(),
-                    "name": name,
-                    "steps": parsed,
-                }))?),
+                client.set_route(
+                    &name,
+                    &swarmy_api_types::SetRoute {
+                        idempotency_key: Ulid::generate().to_string(),
+                        steps: parsed,
+                    },
+                ),
             )
             .await?;
             print(
@@ -1441,7 +1430,7 @@ async fn routes(
         auth_command::RoutesCommand::Rm { name } => {
             request(
                 endpoint,
-                client.cli_remove_route(&name, &Ulid::generate().to_string()),
+                client.remove_route(&name, &Ulid::generate().to_string()),
             )
             .await?;
             print(

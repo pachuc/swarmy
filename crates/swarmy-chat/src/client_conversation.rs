@@ -112,18 +112,8 @@ pub async fn wait_healthy(client: &Client, endpoint: &str, provider: Option<&str
     let mut last = String::new();
     loop {
         let health = crate::api_client::call(endpoint, client.health()).await?;
-        let services: Vec<api::ServiceHealth> = serde_json::from_value(
-            health
-                .get("services")
-                .cloned()
-                .context("health has no services")?,
-        )?;
-        let provider = provider.or_else(|| {
-            health
-                .get("default_provider")
-                .and_then(serde_json::Value::as_str)
-        });
-        let problem = service_problem(&services, provider);
+        let provider = provider.or(Some(health.default_provider.as_str()));
+        let problem = service_problem(&health.services, provider);
         if problem.is_empty() {
             return Ok(());
         }
