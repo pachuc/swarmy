@@ -79,7 +79,7 @@ pub enum SessionKind {
     Named,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionState {
     Idle,
@@ -91,7 +91,7 @@ pub enum SessionState {
     Completed,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
     None,
@@ -127,6 +127,36 @@ impl From<swarmy_core::ReasoningEffort> for ReasoningEffort {
             swarmy_core::ReasoningEffort::High => Self::High,
             swarmy_core::ReasoningEffort::Xhigh => Self::Xhigh,
             swarmy_core::ReasoningEffort::Max => Self::Max,
+        }
+    }
+}
+
+impl ReasoningEffort {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+impl SessionState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Runnable => "runnable",
+            Self::Leased => "leased",
+            Self::WaitingInference => "waiting_inference",
+            Self::WaitingTools => "waiting_tools",
+            Self::Sleeping => "sleeping",
+            Self::Completed => "completed",
         }
     }
 }
@@ -172,6 +202,33 @@ pub struct Agent {
     pub main_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
+    pub requirements: SandboxRequirements,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub scratch: Option<ScratchView>,
+    #[serde(default)]
+    pub session_count: usize,
+    #[serde(default)]
+    pub usage: Option<UsageTotalsView>,
+    #[serde(default)]
+    pub entries: Vec<EntryUsageView>,
+    #[serde(default)]
+    pub providers: Vec<String>,
+    #[serde(default)]
+    pub placement: Option<PlacementView>,
+    #[serde(default)]
+    pub sandbox_address: Option<String>,
+    #[serde(default)]
+    pub last_snapshot_at: Option<String>,
+    #[serde(default)]
+    pub last_snapshot_age_seconds: Option<i64>,
+    #[serde(default)]
+    pub sandbox_state: Option<SandboxState>,
+    #[serde(default)]
+    pub call_status: Option<AgentCallView>,
+    #[serde(default)]
+    pub sessions: Vec<Session>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -198,8 +255,6 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved: Option<ResolvedInference>,
     #[serde(default)]
-    pub archived: bool,
-    #[serde(default)]
     pub main: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
@@ -207,6 +262,22 @@ pub struct Session {
     pub previous_session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_since: Option<String>,
+    #[serde(default)]
+    pub interrupt_requested: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageTotalsView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<EntryUsageView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scratch: Option<ScratchView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirements: Option<SandboxRequirements>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<PlacementView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_address: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -214,6 +285,16 @@ pub struct ResolvedInference {
     pub provider: String,
     pub model: String,
     pub effort: ReasoningEffort,
+}
+
+impl From<swarmy_core::ResolvedSelection> for ResolvedInference {
+    fn from(value: swarmy_core::ResolvedSelection) -> Self {
+        Self {
+            provider: value.provider,
+            model: value.model,
+            effort: value.effort.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -270,9 +351,6 @@ pub struct Model {
     pub limit: ModelLimit,
     pub cost: ModelCost,
     pub supported_efforts: Vec<ReasoningEffort>,
-    #[serde(flatten)]
-    #[serde(default)]
-    pub catalog: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -297,9 +375,6 @@ pub struct Provider {
     pub auth_kinds: Vec<String>,
     pub env_keys: Vec<String>,
     pub credential_env_keys: Vec<String>,
-    #[serde(flatten)]
-    #[serde(default)]
-    pub catalog: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -405,23 +480,7 @@ pub struct DoctorNode {
     pub committed_memory_bytes: u64,
 }
 
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    ToSchema,
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    ToSchema,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceRole {
     Scheduler,
@@ -431,6 +490,7 @@ pub enum ServiceRole {
     Node,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DoctorService {
     pub role: ServiceRole,
     pub instance_id: String,
@@ -950,94 +1010,69 @@ pub struct ApiError {
     pub provider_text: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct SessionDetail {
-    #[schema(value_type = serde_json::Value)]
-    pub session: swarmy_core::SessionRecord,
-    #[schema(value_type = serde_json::Value)]
-    pub resolved: swarmy_core::ResolvedSelection,
-    #[schema(value_type = serde_json::Value)]
-    pub usage: swarmy_core::UsageTotals,
-    pub cost_dollars: String,
-    pub entries: Vec<EntryUsageView>,
-    pub providers: Vec<String>,
-    pub scratch: Option<ScratchView>,
-    #[schema(value_type = serde_json::Value)]
-    pub requirements: swarmy_core::SandboxRequirements,
-    #[schema(value_type = serde_json::Value)]
-    pub placement: Option<swarmy_core::PlacementRecord>,
-    pub address: Option<String>,
-    pub wait: Option<InferenceWaitView>,
-    #[schema(value_type = Vec<serde_json::Value>)]
-    pub events: Vec<swarmy_core::Event>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ScratchView {
     pub node_id: String,
     pub bytes: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct InferenceWaitView {
     pub wake_at: String,
     pub reasons: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct AgentView {
-    #[serde(flatten)]
-    #[schema(value_type = serde_json::Value)]
-    pub record: swarmy_core::AgentRecord,
-    pub node_id: Option<String>,
-    pub scratch: Option<ScratchView>,
-    pub session_count: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<serde_json::Value>)]
-    pub usage: Option<swarmy_core::UsageTotals>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cost_dollars: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub entries: Vec<EntryUsageView>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub providers: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<serde_json::Value>)]
-    pub placement: Option<swarmy_core::PlacementRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox_address: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_snapshot_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_snapshot_age_seconds: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sandbox_state: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<serde_json::Value>)]
-    pub call_status: Option<swarmy_core::AgentCallStatus>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sessions: Vec<AgentSessionView>,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SandboxRequirements {
+    pub memory_mib: u64,
+    pub gpu: GpuMode,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct AgentSessionView {
-    #[serde(flatten)]
-    #[schema(value_type = serde_json::Value)]
-    pub record: swarmy_core::SessionRecord,
-    pub archived: bool,
-    pub next_session: Option<String>,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PlacementView {
+    pub node_id: String,
+    pub epoch: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AgentCallView {
+    pub node_id: String,
+    pub epoch: u64,
+    pub holder_session_id: Option<String>,
+    pub queued_calls: u64,
+    pub observed_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxState {
+    Busy,
+    Idle,
+    Unknown,
+}
+
+impl SandboxState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Busy => "busy",
+            Self::Idle => "idle",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 /// Versioned resource routes. These signatures are mirrored by the server router.
 pub mod api_paths {
     use super::{
-        Agent, AgentDeleted, AgentMetrics, AgentView, ApiError, AppendMessage, AppendedMessage,
-        CloseSession, CreateAgent, CreateCredential, CreateSession, Credential, CredentialDeleted,
-        DeleteRequest, DoctorSnapshot, EntryQuotaView, Event, GcRun, HealthResponse, Image,
-        ImageUpload, InterruptOutcome, InterruptSession, Model, ProbeModel, ProbeResult, Provider,
+        Agent, AgentDeleted, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession,
+        CreateAgent, CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
+        DoctorSnapshot, EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload,
+        InterruptOutcome, InterruptSession, Model, ProbeModel, ProbeResult, Provider,
         PutCredentialRecord, QuotaEntry, Route, RouteDeleted, Session, SessionClosed,
-        SessionDetail, SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun, Subscription,
-        TurnMetrics, UpdateAgent, UsageResponse,
+        SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun, Subscription, TurnMetrics,
+        UpdateAgent, UsageResponse,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
@@ -1066,12 +1101,6 @@ pub mod api_paths {
         params(("id" = String, Path, description = "Agent id or name")),
         responses((status = 200, body = Agent), (status = 404, body = ApiError)))]
     pub fn show_agent() {}
-    #[utoipa::path(get, path = "/v1/agents/details",
-        responses((status = 200, body = Vec<AgentView>), (status = 400, body = ApiError)))]
-    pub fn agent_views() {}
-    #[utoipa::path(get, path = "/v1/agents/{id}/detail",
-        responses((status = 200, body = AgentView), (status = 404, body = ApiError)))]
-    pub fn agent_view() {}
     #[utoipa::path(patch, path = "/v1/agents/{id}",
         params(("id" = String, Path, description = "Agent id or name")),
         request_body = UpdateAgent,
@@ -1097,10 +1126,6 @@ pub mod api_paths {
         params(("id" = String, Path, description = "Session id")),
         responses((status = 200, body = Session), (status = 404, body = ApiError)))]
     pub fn show_session() {}
-    #[utoipa::path(get, path = "/v1/sessions/{id}/detail",
-        params(("id" = String, Path, description = "Session id")),
-        responses((status = 200, body = SessionDetail), (status = 404, body = ApiError)))]
-    pub fn session_detail() {}
     #[utoipa::path(delete, path = "/v1/sessions/{id}",
         params(("id" = String, Path, description = "Session id")),
         request_body = CloseSession,
@@ -1318,10 +1343,8 @@ pub mod api_paths {
     paths(
         api_paths::health, api_paths::doctor, api_paths::openapi, api_paths::docs,
         api_paths::list_agents, api_paths::create_agent, api_paths::show_agent,
-        api_paths::agent_views, api_paths::agent_view,
         api_paths::update_agent, api_paths::delete_agent,
         api_paths::list_sessions, api_paths::create_session, api_paths::show_session,
-        api_paths::session_detail,
         api_paths::close_session, api_paths::append_message, api_paths::interrupt_session,
         api_paths::wait_idle, api_paths::session_events, api_paths::session_metrics,
         api_paths::agent_metrics,
@@ -1352,8 +1375,7 @@ pub mod api_paths {
     InterruptStatus, InterruptOutcome, SessionClosed,
     CreateImage, CreateCredential, CredentialDeleted, AgentDeleted, SetEntryQuota, EntryQuotaView, QuotaEntry, EntryQuotaDetail,
     UsageTotalsView, UsageGroupView, UsageResponse, EntryUsageView,
-    Event, EventPayload, ApiError, SessionDetail,
-    AgentView,
+    Event, EventPayload, ApiError,
     Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute
 )))]
 pub struct ApiDocument;
@@ -1405,8 +1427,8 @@ mod tests {
         check!(WaitingReason, {"wake_at":"2026-09-23T12:00:00Z","reasons":["provider rate limit"]});
         check!(ImageRef, {"name":"base","tag":"dev"});
         check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s"});
-        check!(Session, {"id":"s","agent_id":"a","kind":"named","state":"sleeping","log_id":{"kind":"session","id":"s"},"head_sequence":2,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":{"wake_at":null,"reasons":["timer"]},"archived":false,"main":false});
-        check!(Session, {"id":"archived","agent_id":"a","kind":"named","state":"completed","log_id":{"kind":"session","id":"archived"},"head_sequence":7,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":null,"archived":false,"main":false,"provider":"fake","model":"scripted","effort":"medium","next_session":"successor"});
+        check!(Session, {"id":"s","agent_id":"a","kind":"named","state":"sleeping","log_id":{"kind":"session","id":"s"},"head_sequence":2,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":{"wake_at":null,"reasons":["timer"]},"main":false});
+        check!(Session, {"id":"archived","agent_id":"a","kind":"named","state":"completed","log_id":{"kind":"session","id":"archived"},"head_sequence":7,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":null,"main":false,"provider":"fake","model":"scripted","effort":"medium","next_session":"successor"});
         check!(Turn, {"id":"t","session_id":"s","status":"running","started_at":"2026-09-23T12:00:00Z","finished_at":null});
         for role in ["user", "assistant", "tool", "system"] {
             check!(MessageRole, role);

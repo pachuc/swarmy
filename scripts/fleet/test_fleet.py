@@ -40,8 +40,9 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
         print(json.dumps({'event':'session_opened', 'session_id':'01AAAA', 'agent_name': rest[2]}), flush=True)
         print(json.dumps({'event':'run_outcome', 'outcome':'completed'}), flush=True)
     elif rest[:2] == ['agent', 'show']:
-        print(json.dumps({'name': rest[2], 'main_session':'01AAAA','provider':'fake','model':'fake',
-            'cost_dollars':1.25, 'created_at':'2026-09-23T00:00:00Z'}))
+        print(json.dumps({'name': rest[2], 'id':'01AGENT', 'main_session_id':'01AAAA','provider':'fake','model':'fake',
+            'usage':{'input_tokens':0,'cached_input_tokens':0,'cache_write_input_tokens':0,'output_tokens':0,'reasoning_output_tokens':0,'total_tokens':0,'cost_micros':1250000,'cost_dollars':'1.25','completions':0},
+            'created_at':'2026-09-23T00:00:00Z'}))
     elif rest[:3] == ['session', 'ls', '--json']:
         if (root / 'interrupted').exists():
             count = int((root / 'ls_count').read_text()) if (root / 'ls_count').exists() else 0
@@ -61,15 +62,17 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
     elif rest[:2] == ['session', 'show']:
         sid = rest[2] if len(rest) > 2 else ''
         if sid not in ('01AAAA', '01BBBB'):
-            print(json.dumps({'state':'waiting_for_inference','reasons':[]}))
+            print(json.dumps({'id':sid,'state':'sleeping','waiting':{'wake_at':None,'reasons':[]}}))
         else:
             if not (root / 'interrupted').exists() and not os.environ.get('SUCCESSOR'):
-                print(json.dumps({'state':'waiting_for_inference','reasons':json.loads(os.environ.get('WAIT_REASONS', '["429 rate limited"]'))}))
+                print(json.dumps({'id':sid,'state':'sleeping','waiting':{'wake_at':None,'reasons':json.loads(os.environ.get('WAIT_REASONS', '["429 rate limited"]'))}}))
+            else:
+                print(json.dumps({'id':sid,'state':'sleeping','waiting':None}))
             if os.environ.get('SUCCESSOR') and sid == '01AAAA':
                 text = os.environ.get('OLD_MESSAGE', 'Working, no link yet')
             else:
                 text = os.environ.get('LAST_MESSAGE', 'Done https://github.com/pachuc/swarmy/pull/42')
-            print(json.dumps({'inference_completed': {'message': {'role':'assistant',
+            print(json.dumps({'inference_completed': {'seq':1, 'message': {'role':'assistant',
                 'parts':[{'text':{'text':text}}]}}}))
     elif rest[:2] == ['session', 'metrics']:
         # Fake durable per-turn records for fleet report tests. REPORT_METRICS

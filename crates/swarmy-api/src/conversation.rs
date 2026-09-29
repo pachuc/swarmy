@@ -203,7 +203,7 @@ pub(crate) async fn create(
             .await
             .map_err(storage)?
             .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
-        Ok(Json(session_with_next(&response_state, &record).await?))
+        Ok(Json(session_with_next(&response_state, &record, &mut std::collections::HashMap::new()).await?))
     })
     .await
 }
@@ -232,7 +232,14 @@ pub(crate) async fn set_route(
                 .await
                 .map_err(storage)?
                 .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
-            Ok(Json(session_with_next(&response_state, &record).await?))
+            Ok(Json(
+                session_with_next(
+                    &response_state,
+                    &record,
+                    &mut std::collections::HashMap::new(),
+                )
+                .await?,
+            ))
         },
     )
     .await
@@ -411,7 +418,9 @@ pub(crate) async fn wait_idle(
             || (record.state == SessionState::Idle
                 && query.after.is_none_or(|after| record.head_seq > after))
         {
-            return Ok(Json(session_with_next(&state, &record).await?));
+            return Ok(Json(
+                session_with_next(&state, &record, &mut std::collections::HashMap::new()).await?,
+            ));
         }
         loop {
             tokio::select! {

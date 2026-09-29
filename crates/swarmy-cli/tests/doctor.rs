@@ -200,6 +200,9 @@ fn api_fixture(scheduler_alive: bool) -> (Fixture, std::thread::JoinHandle<()>) 
         "provider = 'fake'\n[api]\nurl = 'http://{}'\ntoken = 'fixture'\n",
         listener.local_addr().unwrap()
     ));
+    listener
+        .set_nonblocking(true)
+        .expect("fixture listener is nonblocking");
     let handle = std::thread::spawn(move || {
         for body in [
             serde_json::json!({
@@ -216,7 +219,19 @@ fn api_fixture(scheduler_alive: bool) -> (Fixture, std::thread::JoinHandle<()>) 
             ),
             "[]".to_owned(),
         ] {
-            let (mut stream, _) = listener.accept().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(pair) => break pair,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("fixture accept failed: {error}"),
+                }
+            };
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
@@ -265,6 +280,9 @@ fn api_check_accepts_same_major_api_despite_binary_drift() {
             "provider = 'fake'\n[api]\nurl = 'http://{}'\ntoken = 'fixture'\n",
             listener.local_addr().unwrap()
         ));
+        listener
+            .set_nonblocking(true)
+            .expect("fixture listener is nonblocking");
         let server = std::thread::spawn(move || {
             let health = serde_json::json!({
                 "version": "9.9.9",
@@ -279,7 +297,19 @@ fn api_check_accepts_same_major_api_despite_binary_drift() {
                 \"version\":\"0.1.0\",\"alive\":true,\"providers\":[],\"capacity\":null}],\
                 \"images\":[],\"default_image\":null,\"credentials\":[]}";
             for body in [health, snapshot.to_owned(), "[]".to_owned()] {
-                let (mut stream, _) = listener.accept().unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                let (mut stream, _) = loop {
+                    match listener.accept() {
+                        Ok(pair) => break pair,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && std::time::Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("fixture accept failed: {error}"),
+                    }
+                };
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                     .unwrap();

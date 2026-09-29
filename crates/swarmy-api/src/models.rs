@@ -84,17 +84,10 @@ pub(crate) async fn probe(
         .catalog
         .model(&body.provider, &body.model)
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "model_not_found"))?;
-    let requested = body
-        .effort
-        .clone()
-        .map(|effort| {
-            serde_json::to_value(effort)
-                .ok()
-                .and_then(|value| serde_json::from_value(value).ok())
-                .ok_or_else(|| error(StatusCode::BAD_REQUEST, "invalid_request"))
-        })
-        .transpose()?
-        .unwrap_or(swarmy_core::ReasoningEffort::None);
+    let requested = body.effort.map_or(
+        swarmy_core::ReasoningEffort::None,
+        swarmy_core::ReasoningEffort::from,
+    );
     let (effort, _) = model.clamp_effort(requested);
     let auth = if provider.api == swarmy_llm::catalog::Api::Fake {
         let (script, call_log) = state

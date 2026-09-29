@@ -409,7 +409,7 @@ async fn check_doctor(base: &str) {
     assert_eq!(doctor.default_image.as_deref(), Some("fixture:test"));
     assert_eq!(doctor.images[0], "fixture:test");
     assert!(doctor.services.iter().any(|row| {
-        row.role == "node"
+        row.role == swarmy_api_types::ServiceRole::Node
             && row
                 .capacity
                 .as_ref()
@@ -419,10 +419,10 @@ async fn check_doctor(base: &str) {
         doctor
             .services
             .iter()
-            .any(|row| row.role == "scheduler" && row.alive)
+            .any(|row| row.role == swarmy_api_types::ServiceRole::Scheduler && row.alive)
     );
     assert!(doctor.services.iter().any(|row| {
-        row.role == "gateway"
+        row.role == swarmy_api_types::ServiceRole::Gateway
             && row
                 .providers
                 .first()
@@ -609,8 +609,8 @@ async fn route_session(client: &swarmy_client::Client) -> swarmy_api_types::Sess
         .await
         .unwrap();
     assert_eq!(session.route.as_deref(), Some("fallback"));
-    let detail = client.session_detail(&session.id).await.unwrap();
-    assert_eq!(detail.session.route.as_deref(), Some("fallback"));
+    let detail = client.session(&session.id).await.unwrap();
+    assert_eq!(detail.route.as_deref(), Some("fallback"));
     let session = client
         .set_session_route(
             &session.id,

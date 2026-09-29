@@ -73,7 +73,7 @@ async fn server_probe(
             "Cost: ${} ({} micros; catalog estimate)\nEffort used: {}\nElapsed: {:.3}s",
             dollars,
             answer.cost_micros,
-            serde_json::to_value(&answer.effort)
+            serde_json::to_value(answer.effort)
                 .ok()
                 .and_then(|value| value.as_str().map(str::to_owned))
                 .unwrap_or_else(|| "unknown".into()),

@@ -108,39 +108,6 @@
         }
       }
     },
-    "/v1/agents/details": {
-      "get": {
-        "tags": [
-          "api_paths"
-        ],
-        "operationId": "agent_views",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/AgentView"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/agents/{id}": {
       "get": {
         "tags": [
@@ -253,36 +220,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Agent"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/agents/{id}/detail": {
-      "get": {
-        "tags": [
-          "api_paths"
-        ],
-        "operationId": "agent_view",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentView"
                 }
               }
             }
@@ -1843,47 +1780,6 @@
         }
       }
     },
-    "/v1/sessions/{id}/detail": {
-      "get": {
-        "tags": [
-          "api_paths"
-        ],
-        "operationId": "session_detail",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Session id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SessionDetail"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/sessions/{id}/events": {
       "get": {
         "tags": [
@@ -2335,9 +2231,20 @@
           "name",
           "description",
           "image",
-          "created_at"
+          "created_at",
+          "requirements"
         ],
         "properties": {
+          "call_status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AgentCallView"
+              }
+            ]
+          },
           "created_at": {
             "type": "string"
           },
@@ -2354,11 +2261,30 @@
               }
             ]
           },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EntryUsageView"
+            }
+          },
           "id": {
             "type": "string"
           },
           "image": {
             "$ref": "#/components/schemas/ImageRef"
+          },
+          "last_snapshot_age_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "last_snapshot_at": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "main_session_id": {
             "type": [
@@ -2375,11 +2301,36 @@
           "name": {
             "type": "string"
           },
+          "node_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "placement": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlacementView"
+              }
+            ]
+          },
           "provider": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "requirements": {
+            "$ref": "#/components/schemas/SandboxRequirements"
           },
           "route": {
             "type": [
@@ -2387,11 +2338,94 @@
               "null"
             ]
           },
+          "sandbox_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sandbox_state": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SandboxState"
+              }
+            ]
+          },
+          "scratch": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ScratchView"
+              }
+            ]
+          },
+          "session_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Session"
+            }
+          },
           "system_prompt": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "usage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UsageTotalsView"
+              }
+            ]
+          }
+        }
+      },
+      "AgentCallView": {
+        "type": "object",
+        "required": [
+          "node_id",
+          "epoch",
+          "queued_calls",
+          "observed_at",
+          "expires_at"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "holder_session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "queued_calls": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -2497,113 +2531,6 @@
           "model",
           "effort",
           "route"
-        ]
-      },
-      "AgentSessionView": {
-        "allOf": [
-          {},
-          {
-            "type": "object",
-            "required": [
-              "archived"
-            ],
-            "properties": {
-              "archived": {
-                "type": "boolean"
-              },
-              "next_session": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            }
-          }
-        ]
-      },
-      "AgentView": {
-        "allOf": [
-          {},
-          {
-            "type": "object",
-            "required": [
-              "session_count"
-            ],
-            "properties": {
-              "call_status": {},
-              "cost_dollars": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "entries": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/EntryUsageView"
-                }
-              },
-              "last_snapshot_age_seconds": {
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "int64"
-              },
-              "last_snapshot_at": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "node_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "placement": {},
-              "providers": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "sandbox_address": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "sandbox_state": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "scratch": {
-                "oneOf": [
-                  {
-                    "type": "null"
-                  },
-                  {
-                    "$ref": "#/components/schemas/ScratchView"
-                  }
-                ]
-              },
-              "session_count": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "sessions": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/AgentSessionView"
-                }
-              },
-              "usage": {}
-            }
-          }
         ]
       },
       "ApiError": {
@@ -3164,7 +3091,7 @@
             }
           },
           "role": {
-            "type": "string"
+            "$ref": "#/components/schemas/ServiceRole"
           },
           "version": {
             "type": "string"
@@ -3893,24 +3820,6 @@
           }
         }
       },
-      "InferenceWaitView": {
-        "type": "object",
-        "required": [
-          "wake_at",
-          "reasons"
-        ],
-        "properties": {
-          "reasons": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "wake_at": {
-            "type": "string"
-          }
-        }
-      },
       "InterruptOutcome": {
         "type": "object",
         "required": [
@@ -4074,8 +3983,7 @@
               "$ref": "#/components/schemas/ReasoningEffort"
             }
           }
-        },
-        "additionalProperties": {}
+        }
       },
       "ModelCost": {
         "type": "object",
@@ -4183,6 +4091,23 @@
           "volume"
         ]
       },
+      "PlacementView": {
+        "type": "object",
+        "required": [
+          "node_id",
+          "epoch"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "node_id": {
+            "type": "string"
+          }
+        }
+      },
       "ProbeModel": {
         "type": "object",
         "description": "Probe a model with a live request through the control plane's stored\ncredentials. The optional label selects one labelled credential entry.",
@@ -4260,7 +4185,8 @@
           "api",
           "credential",
           "auth_kinds",
-          "env_keys"
+          "env_keys",
+          "credential_env_keys"
         ],
         "properties": {
           "api": {
@@ -4274,6 +4200,12 @@
           },
           "credential": {
             "type": "string"
+          },
+          "credential_env_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "env_keys": {
             "type": "array",
@@ -4290,8 +4222,7 @@
           "status": {
             "type": "string"
           }
-        },
-        "additionalProperties": {}
+        }
       },
       "PutCredentialRecord": {
         "type": "object",
@@ -4427,6 +4358,31 @@
           }
         }
       },
+      "SandboxRequirements": {
+        "type": "object",
+        "required": [
+          "memory_mib",
+          "gpu"
+        ],
+        "properties": {
+          "gpu": {
+            "$ref": "#/components/schemas/GpuMode"
+          },
+          "memory_mib": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "SandboxState": {
+        "type": "string",
+        "enum": [
+          "busy",
+          "idle",
+          "unknown"
+        ]
+      },
       "ScratchView": {
         "type": "object",
         "required": [
@@ -4477,6 +4433,16 @@
           }
         }
       },
+      "ServiceRole": {
+        "type": "string",
+        "enum": [
+          "scheduler",
+          "worker",
+          "gateway",
+          "api",
+          "node"
+        ]
+      },
       "Session": {
         "type": "object",
         "required": [
@@ -4520,6 +4486,12 @@
               }
             ]
           },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EntryUsageView"
+            }
+          },
           "head_sequence": {
             "type": "integer",
             "format": "int64",
@@ -4527,6 +4499,9 @@
           },
           "id": {
             "type": "string"
+          },
+          "interrupt_requested": {
+            "type": "boolean"
           },
           "kind": {
             "$ref": "#/components/schemas/SessionKind"
@@ -4549,6 +4524,16 @@
               "null"
             ]
           },
+          "placement": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlacementView"
+              }
+            ]
+          },
           "previous_session": {
             "type": [
               "string",
@@ -4559,6 +4544,22 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "requirements": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SandboxRequirements"
+              }
             ]
           },
           "resolved": {
@@ -4577,8 +4578,40 @@
               "null"
             ]
           },
+          "sandbox_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scratch": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ScratchView"
+              }
+            ]
+          },
           "state": {
             "$ref": "#/components/schemas/SessionState"
+          },
+          "state_since": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UsageTotalsView"
+              }
+            ]
           },
           "waiting": {
             "oneOf": [
@@ -4600,72 +4633,6 @@
         "properties": {
           "closed": {
             "type": "boolean"
-          }
-        }
-      },
-      "SessionDetail": {
-        "type": "object",
-        "required": [
-          "session",
-          "resolved",
-          "usage",
-          "cost_dollars",
-          "entries",
-          "providers",
-          "requirements",
-          "placement",
-          "events"
-        ],
-        "properties": {
-          "address": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "cost_dollars": {
-            "type": "string"
-          },
-          "entries": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/EntryUsageView"
-            }
-          },
-          "events": {
-            "type": "array",
-            "items": {}
-          },
-          "placement": {},
-          "providers": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "requirements": {},
-          "resolved": {},
-          "scratch": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/ScratchView"
-              }
-            ]
-          },
-          "session": {},
-          "usage": {},
-          "wait": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/InferenceWaitView"
-              }
-            ]
           }
         }
       },

@@ -1,6 +1,5 @@
 //! Commands whose state is read or mutated through the control-plane API.
 use anyhow::{Context, Result, ensure};
-use serde_json::json;
 use std::fmt::Write as _;
 use swarmy_client::Client;
 
@@ -245,7 +244,11 @@ async fn cost(client: &Client, endpoint: &str, args: cost_command::Args, json: b
     print_usage(&response, json)
 }
 
-async fn close_session(client: &Client, endpoint: &str, id: &str) -> Result<()> {
+async fn close_session(
+    client: &Client,
+    endpoint: &str,
+    id: &str,
+) -> Result<swarmy_api_types::SessionClosed> {
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
         client.close_session(
@@ -262,8 +265,7 @@ async fn close_session(client: &Client, endpoint: &str, id: &str) -> Result<()> 
             anyhow::anyhow!("cannot close an agent main session; use swarmy agent delete")
         }
         _ => swarmy_client::api_client::api_error(error, endpoint),
-    })?;
-    Ok(())
+    })
 }
 
 async fn session(
@@ -290,10 +292,7 @@ async fn session(
                     } else {
                         "named"
                     };
-                    let state = serde_json::to_value(&row.state)?
-                        .as_str()
-                        .context("session state is a string")?
-                        .to_owned();
+                    let state = row.state.as_str().to_owned();
                     print(
                         &row,
                         &format!(
@@ -305,7 +304,7 @@ async fn session(
                             row.agent_name.as_deref().unwrap_or("-"),
                             row.head_sequence,
                             row.computer_deleted,
-                            row.archived,
+                            row.next_session.is_some(),
                             row.main,
                             row.previous_session.as_deref().unwrap_or("-")
                         ),
@@ -320,12 +319,8 @@ async fn session(
         }
         session_command::Command::Close { session_id } => {
             let id = session_id.to_string();
-            close_session(client, endpoint, &id).await?;
-            print(
-                &json!({"event":"session_closed","session_id":id}),
-                &format!("Closed session {id}"),
-                json,
-            );
+            let closed = close_session(client, endpoint, &id).await?;
+            print(&closed, &format!("Closed session {id}"), json);
         }
         session_command::Command::Interrupt { session_id } => {
             let id = session_id.to_string();
@@ -339,19 +334,15 @@ async fn session(
                 ),
             )
             .await?;
-            let (status, message) = match outcome.result {
+            let message = match outcome.result {
                 swarmy_api_types::InterruptStatus::Finished => {
-                    ("finished", format!("Interrupted session {id}"))
+                    format!("Interrupted session {id}")
                 }
                 swarmy_api_types::InterruptStatus::Requested => {
-                    ("requested", format!("Interrupt requested for session {id}"))
+                    format!("Interrupt requested for session {id}")
                 }
             };
-            print(
-                &json!({"event":"session_interrupt","session_id":id,"result":status}),
-                &message,
-                json,
-            );
+            print(&outcome, &message, json);
         }
         session_command::Command::Metrics { session_id } => {
             session_metrics(client, endpoint, session_id, json).await?;
@@ -414,61 +405,59 @@ async fn show_session(
     session_id: ulid::Ulid,
     json: bool,
 ) -> Result<()> {
-    let details = request(endpoint, client.session_detail(&session_id.to_string())).await?;
-    let record = &details.session;
-    let selection = &details.resolved;
+    let record = request(endpoint, client.session(&session_id.to_string())).await?;
+    let selection = record
+        .resolved
+        .clone()
+        .context("session resolution missing")?;
     let id = session_id.to_string();
-    let value = json!({"event":"session_selection","session_id":id,"state":record.state,
-                "interrupt_requested":record.interrupt_requested,"inference":record.inference,"resolved":selection,
-                "scratch":details.scratch,"sandbox_requirements":details.requirements,
-                "memory_limit_mib":details.requirements.memory_mib,"placement":details.placement,
-                "sandbox_address":details.address,"sandbox_status":if details.placement.is_none() {"waiting_for_capacity_or_first_tool"} else {"placed"}});
-    let inherited = |present: bool| if present { "" } else { " (inherited)" };
-    let scratch_node = details
-        .scratch
-        .as_ref()
-        .map_or("-".to_owned(), |scratch| scratch.node_id.clone());
-    let scratch_bytes = details.scratch.as_ref().map_or(0, |scratch| scratch.bytes);
-    print(
-        &value,
-        &format!(
+    if json {
+        println!("{}", serde_json::to_string(&record)?);
+    } else {
+        let inherited = |present: bool| if present { "" } else { " (inherited)" };
+        let scratch_node = record
+            .scratch
+            .as_ref()
+            .map_or("-".to_owned(), |scratch| scratch.node_id.clone());
+        let scratch_bytes = record.scratch.as_ref().map_or(0, |scratch| scratch.bytes);
+        let requirements =
+            record
+                .requirements
+                .clone()
+                .unwrap_or(swarmy_api_types::SandboxRequirements {
+                    memory_mib: 0,
+                    gpu: swarmy_api_types::GpuMode::None,
+                });
+        println!(
             "Session {id}: {}, interrupt_requested={} provider={}{} model={}{} effort={}{} route={} scratch_node={} scratch_bytes={} sandbox_memory_mib={} sandbox_gpu={:?} sandbox_address={}",
-            serde_json::to_value(&record.state)?
-                .as_str()
-                .context("session state is a string")?,
+            state_name(record.state),
             record.interrupt_requested,
             selection.provider,
-            inherited(record.inference.provider.is_some()),
+            inherited(record.provider.is_some()),
             selection.model,
-            inherited(record.inference.model.is_some()),
-            selection.effort,
-            inherited(record.inference.effort.is_some()),
+            inherited(record.model.is_some()),
+            selection.effort.as_str(),
+            inherited(record.effort.is_some()),
             record.route.as_deref().unwrap_or("(swarm default)"),
             scratch_node,
             scratch_bytes,
-            details.requirements.memory_mib,
-            details.requirements.gpu,
-            details.address.as_deref().unwrap_or("-")
-        ),
-        json,
-    );
-    let tokens = &details.usage.usage;
-    print(
-        &json!({"session_usage":details.usage,"cost_dollars":details.cost_dollars,"entries":details.entries,"providers":details.providers}),
-        &format!(
-            "Usage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
-            tokens.input_tokens,
-            tokens.cached_input_tokens,
-            tokens.cache_write_input_tokens,
-            tokens.output_tokens,
-            tokens.reasoning_output_tokens,
-            tokens.total_tokens,
-            details.cost_dollars
-        ),
-        json,
-    );
-    if !json {
-        for entry in &details.entries {
+            requirements.memory_mib,
+            requirements.gpu,
+            record.sandbox_address.as_deref().unwrap_or("-")
+        );
+        if let Some(usage) = &record.usage {
+            println!(
+                "Usage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
+                usage.input_tokens,
+                usage.cached_input_tokens,
+                usage.cache_write_input_tokens,
+                usage.output_tokens,
+                usage.reasoning_output_tokens,
+                usage.total_tokens,
+                usage.cost_dollars
+            );
+        }
+        for entry in &record.entries {
             println!(
                 "entry {} cost=${} input={} output={} total={} completions={}",
                 entry.entry,
@@ -479,29 +468,38 @@ async fn show_session(
                 entry.totals.completions
             );
         }
-        println!("providers={}", details.providers.join(","));
-    }
-    if record.state == swarmy_core::SessionState::Sleeping
-        && let Some(wait) = &details.wait
-    {
-        print(
-            &json!({"state":"waiting_for_inference","wake_at":wait.wake_at,"reasons":wait.reasons}),
-            &format!(
+        if !record.providers.is_empty() {
+            println!("providers={}", record.providers.join(","));
+        }
+        if record.state == swarmy_api_types::SessionState::Sleeping
+            && let Some(wait) = &record.waiting
+        {
+            println!(
                 "WaitingForInference until {}: {}",
-                wait.wake_at,
+                wait.wake_at.as_deref().unwrap_or("-"),
                 wait.reasons.join("; ")
-            ),
-            json,
-        );
+            );
+        }
     }
-    for event in &details.events {
+    let events = request(endpoint, client.events(&id, 0, 10_000)).await?;
+    for event in &events {
+        let swarmy_api_types::EventPayload::StoreRecord {
+            record: swarmy_api_types::RecordBody::Event(inner),
+        } = &event.payload
+        else {
+            continue;
+        };
         if json {
-            println!("{}", serde_json::to_string(event)?);
+            println!("{}", serde_json::to_string(inner)?);
         } else {
-            println!("{} {}", event.seq(), serde_json::to_string(event)?);
+            println!("{} {}", event.sequence, serde_json::to_string(inner)?);
         }
     }
     Ok(())
+}
+
+fn state_name(state: swarmy_api_types::SessionState) -> &'static str {
+    state.as_str()
 }
 
 async fn image(
@@ -519,9 +517,8 @@ async fn image(
                     break;
                 }
                 for image in page {
-                    let value = json!({"name":image.name,"tag":image.tag,"manifest_id":image.id});
                     print(
-                        &value,
+                        &image,
                         &format!("{}:{} {}", image.name, image.tag, image.id),
                         json,
                     );
@@ -563,19 +560,16 @@ async fn image(
     Ok(())
 }
 
-fn settings_text(agent: &swarmy_api_types::AgentView) -> String {
-    let record = &agent.record;
+fn settings_text(agent: &swarmy_api_types::Agent) -> String {
     format!(
         "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nroute={}\nsandbox_memory_mib={}\nsandbox_gpu={:?}",
-        record.provider.as_deref().unwrap_or("(stack default)"),
-        record.system_prompt.as_deref().unwrap_or("(stack default)"),
-        record.model.as_deref().unwrap_or("(stack default)"),
-        record
-            .reasoning_effort
-            .map_or("(stack default)", |v| v.as_str()),
-        record.route.as_deref().unwrap_or("(stack default)"),
-        record.requirements.memory_mib,
-        record.requirements.gpu,
+        agent.provider.as_deref().unwrap_or("(stack default)"),
+        agent.system_prompt.as_deref().unwrap_or("(stack default)"),
+        agent.model.as_deref().unwrap_or("(stack default)"),
+        agent.effort.map_or("(stack default)", |v| v.as_str()),
+        agent.route.as_deref().unwrap_or("(stack default)"),
+        agent.requirements.memory_mib,
+        agent.requirements.gpu,
     )
 }
 struct AgentFlags {
@@ -635,14 +629,13 @@ fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<AgentFl
         resets,
     })
 }
-fn agent_text(agent: &swarmy_api_types::AgentView, detail: bool) -> String {
-    let record = &agent.record;
+fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
     let mut text = format!(
         "{} {} image={}:{} node={} scratch_node={} scratch_bytes={} sessions={} created={} main_session={}",
-        record.name,
-        record.agent_id,
-        record.image.name,
-        record.image.tag.0,
+        agent.name,
+        agent.id,
+        agent.image.name,
+        agent.image.tag,
         agent.node_id.as_deref().unwrap_or("-"),
         agent
             .scratch
@@ -650,25 +643,22 @@ fn agent_text(agent: &swarmy_api_types::AgentView, detail: bool) -> String {
             .map_or("-", |scratch| scratch.node_id.as_str()),
         agent.scratch.as_ref().map_or(0, |scratch| scratch.bytes),
         agent.session_count,
-        record.created_at,
-        record
-            .main_session
-            .map_or_else(|| "-".into(), |id| id.to_string()),
+        agent.created_at,
+        agent.main_session_id.as_deref().unwrap_or("-"),
     );
     if detail {
         text.push_str(&settings_text(agent));
         if let Some(usage) = &agent.usage {
-            let tokens = &usage.usage;
             let _ = write!(
                 text,
                 "\nUsage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
-                tokens.input_tokens,
-                tokens.cached_input_tokens,
-                tokens.cache_write_input_tokens,
-                tokens.output_tokens,
-                tokens.reasoning_output_tokens,
-                tokens.total_tokens,
-                agent.cost_dollars.as_deref().unwrap_or("-")
+                usage.input_tokens,
+                usage.cached_input_tokens,
+                usage.cache_write_input_tokens,
+                usage.output_tokens,
+                usage.reasoning_output_tokens,
+                usage.total_tokens,
+                usage.cost_dollars
             );
         }
         for entry in &agent.entries {
@@ -687,13 +677,13 @@ fn agent_text(agent: &swarmy_api_types::AgentView, detail: bool) -> String {
         let _ = write!(
             text,
             "\ndescription={}\nplacement_epoch={}\nsandbox_address={}\nsandbox_state={}\nlast_snapshot={} age_seconds={}",
-            record.description,
+            agent.description,
             agent
                 .placement
                 .as_ref()
                 .map_or_else(|| "-".into(), |placement| placement.epoch.to_string()),
             agent.sandbox_address.as_deref().unwrap_or("-"),
-            agent.sandbox_state.as_deref().unwrap_or("-"),
+            agent.sandbox_state.map_or("-", |state| state.as_str()),
             agent.last_snapshot_at.as_deref().unwrap_or("-"),
             agent
                 .last_snapshot_age_seconds
@@ -703,9 +693,7 @@ fn agent_text(agent: &swarmy_api_types::AgentView, detail: bool) -> String {
             let _ = write!(
                 text,
                 "\ncall_holder={} queued_calls={} observed_at={} expires_at={} node={} epoch={}",
-                status
-                    .holder_session_id
-                    .map_or_else(|| "-".into(), |v| v.to_string()),
+                status.holder_session_id.as_deref().unwrap_or("-"),
                 status.queued_calls,
                 status.observed_at,
                 status.expires_at,
@@ -717,14 +705,11 @@ fn agent_text(agent: &swarmy_api_types::AgentView, detail: bool) -> String {
             let _ = write!(
                 text,
                 "\nsession={} state={} computer_deleted={} main={} archived={}",
-                session.record.session_id,
-                serde_json::to_value(&session.record.state)
-                    .expect("state serializes")
-                    .as_str()
-                    .expect("state is a string"),
-                session.record.computer_deleted,
-                record.main_session == Some(session.record.session_id),
-                session.archived
+                session.id,
+                session.state.as_str(),
+                session.computer_deleted,
+                agent.main_session_id.as_deref() == Some(session.id.as_str()),
+                session.next_session.is_some()
             );
         }
     }
@@ -735,7 +720,7 @@ async fn update_agent(
     endpoint: &str,
     name: &str,
     body: &swarmy_api_types::UpdateAgent,
-) -> Result<swarmy_api_types::AgentView> {
+) -> Result<swarmy_api_types::Agent> {
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
         client.update_agent(name, body),
@@ -748,7 +733,7 @@ async fn update_agent(
         }
         _ => swarmy_client::api_client::api_error(error, endpoint),
     })?;
-    request(endpoint, client.agent_view(name)).await
+    request(endpoint, client.agent(name)).await
 }
 
 async fn agent_create(
@@ -804,15 +789,15 @@ async fn agent_create(
         }),
     )
     .await?;
-    let created = request(endpoint, client.agent_view(&created.id)).await?;
+    let created = request(endpoint, client.agent(&created.id)).await?;
     print(
         &created,
         &format!(
             "Created agent {} {} image={}:{}{}",
-            created.record.name,
-            created.record.agent_id,
-            created.record.image.name,
-            created.record.image.tag.0,
+            created.name,
+            created.id,
+            created.image.name,
+            created.image.tag,
             settings_text(&created)
         ),
         json,
@@ -830,18 +815,18 @@ async fn agent(
         agent_command::Command::Ls => {
             let mut after = None;
             loop {
-                let page = request(endpoint, client.agent_views(after.as_deref(), 256)).await?;
+                let page = request(endpoint, client.agents(after.as_deref(), 256)).await?;
                 if page.is_empty() {
                     break;
                 }
                 for row in page {
                     print(&row, &agent_text(&row, false), json);
-                    after = Some(row.record.agent_id.to_string());
+                    after = Some(row.id.clone());
                 }
             }
         }
         agent_command::Command::Show { name } => {
-            let row = request(endpoint, client.agent_view(&name)).await?;
+            let row = request(endpoint, client.agent(&name)).await?;
             print(&row, &agent_text(&row, true), json);
         }
         agent_command::Command::Create(args) => {
@@ -878,8 +863,8 @@ async fn agent(
                 &updated,
                 &format!(
                     "Updated agent {} {}{}",
-                    updated.record.name,
-                    updated.record.agent_id,
+                    updated.name,
+                    updated.id,
                     settings_text(&updated)
                 ),
                 json,
@@ -934,17 +919,14 @@ async fn delete_agent(
     yes: bool,
     json: bool,
 ) -> Result<()> {
-    let current = request(endpoint, client.agent_view(name)).await?;
+    let current = request(endpoint, client.agent(name)).await?;
     if !yes {
         use std::io::{IsTerminal as _, Write as _};
         ensure!(
             std::io::stdin().is_terminal(),
             "agent delete requires confirmation; pass --yes for noninteractive deletion"
         );
-        eprint!(
-            "Delete agent {} and its computer? [y/N] ",
-            current.record.name
-        );
+        eprint!("Delete agent {} and its computer? [y/N] ", current.name);
         std::io::stderr().flush()?;
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer)?;
@@ -958,13 +940,9 @@ async fn delete_agent(
         client.delete_agent(name, &Ulid::generate().to_string()),
     )
     .await?;
-    let value = json!({"event":"agent_deleted","agent_id":current.record.agent_id,"name":current.record.name});
     print(
-        &value,
-        &format!(
-            "Deleted agent {} {}",
-            current.record.name, current.record.agent_id
-        ),
+        &current,
+        &format!("Deleted agent {} {}", current.name, current.id),
         json,
     );
 
@@ -1000,9 +978,15 @@ async fn key_from_source(
         .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
         .with_context(|| format!("set {} before using --from-env", names.join(" or ")))
 }
+#[derive(serde::Serialize)]
+struct AuthEvent<'a> {
+    event: &'a str,
+    provider: &'a str,
+}
+
 fn auth_report(event: &str, provider: &str, json: bool) {
     print(
-        &json!({"event":event,"provider":provider}),
+        &AuthEvent { event, provider },
         &format!("{provider}: {event}"),
         json,
     );
@@ -1063,11 +1047,11 @@ async fn set_entry_quota(
         client.set_entry_quota(
             provider,
             label,
-            &serde_json::from_value(json!({
-                "idempotency_key": Ulid::generate().to_string(),
-                "limit": limit,
-                "window_seconds": window_seconds,
-            }))?,
+            &swarmy_api_types::SetEntryQuota {
+                idempotency_key: Ulid::generate().to_string(),
+                limit,
+                window_seconds,
+            },
         ),
     )
     .await?;
@@ -1404,7 +1388,7 @@ async fn routes(
                     model: step.model,
                 });
             }
-            request(
+            let saved = request(
                 endpoint,
                 client.set_route(
                     &name,
@@ -1415,23 +1399,15 @@ async fn routes(
                 ),
             )
             .await?;
-            print(
-                &serde_json::json!({"event":"saved","route":name}),
-                &format!("{name}: saved"),
-                json,
-            );
+            print(&saved, &format!("{name}: saved"), json);
         }
         auth_command::RoutesCommand::Rm { name } => {
-            request(
+            let removed = request(
                 endpoint,
                 client.remove_route(&name, &Ulid::generate().to_string()),
             )
             .await?;
-            print(
-                &serde_json::json!({"event":"removed","route":name}),
-                &format!("{name}: removed"),
-                json,
-            );
+            print(&removed, &format!("{name}: removed"), json);
         }
     }
     Ok(())

@@ -56,7 +56,9 @@ async fn recent(client: &Client) -> Result<Vec<(String, String)>> {
                 let api::EventPayload::StoreRecord { record } = event.payload else {
                     return None;
                 };
-                let swarmy_core::Event::MessageAppended { message, .. } = record else {
+                let api::RecordBody::Event(swarmy_core::Event::MessageAppended { message, .. }) =
+                    record
+                else {
                     return None;
                 };
                 message.parts.into_iter().find_map(|part| match part {
@@ -294,6 +296,7 @@ fn is_busy_client_error(error: &swarmy_client::Error) -> bool {
         error,
         swarmy_client::Error::Api { status, body }
             if status.as_u16() == 409
+                && (body.code == "session_not_idle" || body.code == "stale_head")
     )
 }
 

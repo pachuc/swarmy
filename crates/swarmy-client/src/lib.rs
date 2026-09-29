@@ -593,30 +593,6 @@ impl Client {
         }
         self.get("usage", &query).await
     }
-    /// Read the typed resource detail.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn session_detail(&self, id: &str) -> Result<api::SessionDetail, Error> {
-        self.get(&format!("sessions/{}/detail", segment(id)), &[])
-            .await
-    }
-    /// Read the typed resource detail.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn agent_views(
-        &self,
-        after: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<api::AgentView>, Error> {
-        self.get("agents/details", &page(after, limit)).await
-    }
-    /// Read the typed resource detail.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn agent_view(&self, name: &str) -> Result<api::AgentView, Error> {
-        self.get(&format!("agents/{}/detail", segment(name)), &[])
-            .await
-    }
     /// Read full catalog model rows for CLI rendering.
     /// # Errors
     /// Returns transport, API, or decoding failures.

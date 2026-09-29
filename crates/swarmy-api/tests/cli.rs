@@ -93,25 +93,19 @@ async fn assert_resource_projections(
     agent: &swarmy_core::AgentRecord,
     session: swarmy_core::SessionId,
 ) {
-    let rows: Vec<serde_json::Value> = client
-        .agent_views(None, 10)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|row| serde_json::to_value(row).unwrap())
-        .collect();
-    assert_eq!(rows[0]["agent_id"], agent.agent_id.to_string());
-    assert_eq!(rows[0]["session_count"], 1);
-    let detailed = serde_json::to_value(client.agent_view("fixture-agent").await.unwrap()).unwrap();
-    assert_eq!(detailed["name"], agent.name);
-    assert_eq!(detailed["sessions"][0]["session_id"], session.to_string());
+    let rows = client.agents(None, 10).await.unwrap();
+    assert_eq!(rows[0].id, agent.agent_id.to_string());
+    assert_eq!(rows[0].session_count, 0);
+    let detailed = client.agent("fixture-agent").await.unwrap();
+    assert_eq!(detailed.name, agent.name);
+    assert_eq!(detailed.sessions.len(), 1);
+    assert_eq!(detailed.sessions[0].id, session.to_string());
     let rows = client.sessions(None, 10).await.unwrap();
     let stored = store.fetch_session(session).await.unwrap().unwrap();
     assert_eq!(rows[0].id, session.to_string());
     assert_eq!(rows[0].state, stored.state.into());
-    let detail =
-        serde_json::to_value(client.session_detail(&session.to_string()).await.unwrap()).unwrap();
-    assert_eq!(detail["session"]["session_id"], session.to_string());
+    let detail = client.session(&session.to_string()).await.unwrap();
+    assert_eq!(detail.id, session.to_string());
     assert_eq!(
         client.image("fixture", "test").await.unwrap().name,
         "fixture"
@@ -191,7 +185,7 @@ async fn stopped_api_reports_endpoint_quickly() {
         return;
     };
     server.abort();
-    let result = tokio::time::timeout(Duration::from_secs(2), client.agent_views(None, 10)).await;
+    let result = tokio::time::timeout(Duration::from_secs(2), client.agents(None, 10)).await;
     assert!(result.is_ok());
     assert!(result.unwrap().is_err());
 }
@@ -232,10 +226,9 @@ async fn agent_management_uses_api_and_preserves_requirements() {
     );
     assert_eq!(
         client
-            .agent_view("worker")
+            .agent("worker")
             .await
             .unwrap()
-            .record
             .requirements
             .memory_mib,
         2048
@@ -265,11 +258,11 @@ async fn agent_management_uses_api_and_preserves_requirements() {
         )
         .await
         .unwrap();
-    let updated = client.agent_view("worker").await.unwrap();
-    assert_eq!(updated.record.requirements.memory_mib, 1024);
-    assert!(updated.record.provider.is_none());
-    assert!(updated.record.model.is_none());
-    assert_eq!(updated.record.agent_id.to_string(), created.id);
+    let updated = client.agent("worker").await.unwrap();
+    assert_eq!(updated.requirements.memory_mib, 1024);
+    assert!(updated.provider.is_none());
+    assert!(updated.model.is_none());
+    assert_eq!(updated.id, created.id);
     client.delete_agent("worker", "delete").await.unwrap();
     assert!(store.get_agent_by_name("worker").await.unwrap().is_none());
     server.abort();

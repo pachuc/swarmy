@@ -150,7 +150,16 @@ mod tests {
             monotonic_ns: 1_000_000,
             unix_ns: 1_000_000,
         };
-        assert_eq!(into_api_stage(stage.clone()).stage, stage.stage);
+        assert_eq!(
+            into_api_stage(stage.clone()),
+            api::StageTiming {
+                stage: stage.stage.clone(),
+                request_id: stage.request_id.clone(),
+                clock_id: stage.clock_id.clone(),
+                monotonic_ns: stage.monotonic_ns,
+                unix_ns: stage.unix_ns,
+            }
+        );
         let inference = store::InferenceMetric {
             request_id: "r".into(),
             provider: "fake".into(),
@@ -159,24 +168,27 @@ mod tests {
             streamed: Some(false),
             ..store::InferenceMetric::default()
         };
-        assert_eq!(
-            into_api_inference(inference.clone()).provider,
-            inference.provider
-        );
+        let converted = into_api_inference(inference.clone());
+        assert_eq!(converted.provider, inference.provider);
+        assert_eq!(converted.model, inference.model);
+        assert_eq!(converted.output_tokens, inference.output_tokens);
+        assert_eq!(converted.streamed, inference.streamed);
+        assert_eq!(converted.request_id, inference.request_id);
         let tool = store::ToolMetric {
             request_id: "c".into(),
             name: "bash".into(),
             ..store::ToolMetric::default()
         };
-        assert_eq!(into_api_tool(tool.clone()).name, tool.name);
+        let converted_tool = into_api_tool(tool.clone());
+        assert_eq!(converted_tool.name, tool.name);
+        assert_eq!(converted_tool.request_id, tool.request_id);
         let computer = store::ComputerMetric {
             chunks_fetched: 7,
             ..store::ComputerMetric::default()
         };
-        assert_eq!(
-            into_api_computer(&computer).chunks_fetched,
-            computer.chunks_fetched
-        );
+        let converted_computer = into_api_computer(&computer);
+        assert_eq!(converted_computer.chunks_fetched, computer.chunks_fetched);
+        assert_eq!(converted_computer.bytes_fetched, computer.bytes_fetched);
         let turn = store::TurnMetrics {
             session_id: "s".into(),
             turn_id: "t".into(),
@@ -238,7 +250,16 @@ mod tests {
             dropped_inference: 2,
             dropped_tools: 3,
         };
-        assert_eq!(into_api_turn(turn.clone()).turn_id, turn.turn_id);
+        let converted_turn = into_api_turn(turn.clone());
+        assert_eq!(converted_turn.turn_id, turn.turn_id);
+        assert_eq!(converted_turn.session_id, turn.session_id);
+        assert_eq!(converted_turn.stages.len(), 1);
+        assert_eq!(converted_turn.inference.len(), 1);
+        assert_eq!(converted_turn.tools.len(), 1);
+        assert!(converted_turn.computer.is_some());
+        assert_eq!(converted_turn.dropped_stages, turn.dropped_stages);
+        assert_eq!(converted_turn.dropped_inference, turn.dropped_inference);
+        assert_eq!(converted_turn.dropped_tools, turn.dropped_tools);
         let latency = store::LatencyPercentiles {
             p50_ms: 1.0,
             p95_ms: 2.0,
@@ -264,6 +285,9 @@ mod tests {
             errors: 6,
             cost_micros: 8,
         };
-        assert_eq!(into_api_agent(agent.clone()).agent_id, agent.agent_id);
+        let converted_agent = into_api_agent(agent.clone());
+        assert_eq!(converted_agent.agent_id, agent.agent_id);
+        assert_eq!(converted_agent.latencies.len(), 1);
+        assert_eq!(converted_agent.turns, agent.turns);
     }
 }

@@ -76,12 +76,7 @@ async fn create_session(
             image: image.clone(),
             provider: selection.provider,
             model: selection.model,
-            effort: selection
-                .effort
-                .map(serde_json::to_value)
-                .transpose()?
-                .map(serde_json::from_value)
-                .transpose()?,
+            effort: selection.effort.map(Into::into),
             route,
         })
         .await;
@@ -639,7 +634,7 @@ impl Conversation {
         if !quiet && json {
             println!(
                 "{}",
-                serde_json::json!({"event":"session_event","value":record})
+                serde_json::to_string(record).expect("record serializes")
             );
         }
         let api::RecordBody::Event(event) = record else {

@@ -167,6 +167,20 @@ fn agent(record: swarmy_core::AgentRecord) -> api::Agent {
         created_at: record.created_at.to_string(),
         main_session_id: record.main_session.map(|value| value.to_string()),
         route: record.route,
+        requirements: resource_views::requirements(record.requirements),
+        node_id: None,
+        scratch: None,
+        session_count: 0,
+        usage: None,
+        entries: Vec::new(),
+        providers: Vec::new(),
+        placement: None,
+        sandbox_address: None,
+        last_snapshot_at: None,
+        last_snapshot_age_seconds: None,
+        sandbox_state: None,
+        call_status: None,
+        sessions: Vec::new(),
     }
 }
 fn session(record: &swarmy_core::SessionRecord) -> api::Session {
@@ -193,33 +207,37 @@ fn session(record: &swarmy_core::SessionRecord) -> api::Session {
         next_session: None,
         route: record.route.clone(),
         resolved: None,
-        archived: false,
         main: false,
         agent_name: None,
         previous_session: None,
         state_since: None,
+        interrupt_requested: record.interrupt_requested,
+        usage: None,
+        entries: Vec::new(),
+        providers: Vec::new(),
+        scratch: None,
+        requirements: None,
+        placement: None,
+        sandbox_address: None,
     }
 }
-pub(crate) async fn resolve_selection(
-    state: &AppState,
+
+fn resolve_with_agent(
     record: &swarmy_core::SessionRecord,
-) -> Result<swarmy_core::ResolvedSelection, (StatusCode, Json<swarmy_api_types::ApiError>)> {
-    let agent = state
-        .store
-        .get_agent(record.agent_id)
-        .await
-        .map_err(storage)?;
+    agent: Option<&swarmy_core::AgentRecord>,
+    default: &swarmy_core::ResolvedSelection,
+) -> swarmy_core::ResolvedSelection {
     let selected = agent.map_or_else(
-        || state.default_selection.clone(),
-        |agent| agent.inference().resolve(&state.default_selection),
+        || default.clone(),
+        |agent| agent.inference().resolve(default),
     );
-    let selected = record.inference.resolve(&selected);
-    Ok(selected)
+    record.inference.resolve(&selected)
 }
 
-async fn session_with_next(
+pub(crate) async fn session_with_next(
     state: &AppState,
     record: &swarmy_core::SessionRecord,
+    agents: &mut std::collections::HashMap<swarmy_core::AgentId, swarmy_core::AgentRecord>,
 ) -> Result<api::Session, (StatusCode, Json<api::ApiError>)> {
     let mut result = session(record);
     if record.state == swarmy_core::SessionState::Completed {
@@ -230,7 +248,6 @@ async fn session_with_next(
             .map_err(storage)?
             .map(|id| id.to_string());
     }
-    result.archived = result.next_session.is_some();
     result.state_since = state
         .store
         .session_state_since(record.session_id)
@@ -243,22 +260,120 @@ async fn session_with_next(
         .await
         .map_err(storage)?
         .map(|id| id.to_string());
+    match agents.entry(record.agent_id) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            if let Some(agent) = state
+                .store
+                .get_agent(record.agent_id)
+                .await
+                .map_err(storage)?
+            {
+                entry.insert(agent);
+            }
+        }
+        std::collections::hash_map::Entry::Occupied(_) => {}
+    }
+    let agent = agents.get(&record.agent_id);
+    if let Some(agent) = agent {
+        result.main = agent.main_session == Some(record.session_id);
+        result.agent_name = Some(agent.name.clone());
+    }
+    let resolved = resolve_with_agent(record, agent, &state.default_selection);
+    result.resolved = Some(resolved.into());
+    Ok(result)
+}
+
+pub(crate) async fn populate_session_detail(
+    state: &AppState,
+    result: &mut api::Session,
+    record: &swarmy_core::SessionRecord,
+) -> Result<(), (StatusCode, Json<api::ApiError>)> {
+    if let Some(wait) = state
+        .store
+        .inference_wait(record.session_id)
+        .await
+        .map_err(storage)?
+    {
+        result.waiting = Some(api::WaitingReason {
+            wake_at: Some(wait.wake_at.to_string()),
+            reasons: wait.reasons,
+        });
+    }
+    let usage = state
+        .store
+        .session_usage(record.session_id)
+        .await
+        .map_err(storage)?;
+    result.usage = Some(totals_view(&usage, 0));
+    let (entries, providers) = entry_breakdown(
+        state
+            .store
+            .dimension_totals(
+                swarmy_store::MeteringDimension::SessionEntry,
+                &record.session_id.to_string(),
+                None,
+            )
+            .await
+            .map_err(storage)?,
+    );
+    result.entries = entries;
+    result.providers = providers;
+    if let Some(scratch) = state
+        .store
+        .scratch(record.agent_id)
+        .await
+        .map_err(storage)?
+    {
+        result.scratch = Some(resource_views::scratch_view(&scratch));
+    }
     let agent = state
         .store
         .get_agent(record.agent_id)
         .await
         .map_err(storage)?;
-    if let Some(agent) = &agent {
-        result.main = agent.main_session == Some(record.session_id);
-        result.agent_name = Some(agent.name.clone());
+    if let Some(agent) = agent {
+        result.requirements = Some(resource_views::requirements(agent.requirements));
+    } else if let Some(image) = state
+        .store
+        .pinned_image(record.session_id)
+        .await
+        .map_err(storage)?
+    {
+        let memory_mib = state
+            .store
+            .image_memory(&image)
+            .await
+            .map_err(storage)?
+            .unwrap_or(swarmy_core::SandboxRequirements::default().memory_mib);
+        result.requirements = Some(resource_views::requirements(
+            swarmy_core::SandboxRequirements {
+                memory_mib,
+                gpu: swarmy_core::GpuRequirement::default(),
+            },
+        ));
+    } else {
+        result.requirements = Some(resource_views::requirements(
+            swarmy_core::SandboxRequirements::default(),
+        ));
     }
-    let resolved = resolve_selection(state, record).await?;
-    result.resolved = Some(api::ResolvedInference {
-        provider: resolved.provider,
-        model: resolved.model,
-        effort: resolved.effort.into(),
-    });
-    Ok(result)
+    let placement = state
+        .store
+        .get_by_agent(record.agent_id)
+        .await
+        .map_err(storage)?;
+    if let Some(placement) = &placement {
+        result.sandbox_address = state
+            .store
+            .placement_address(placement)
+            .await
+            .map_err(storage)?
+            .map(|address| address.to_string());
+        result.placement = Some(api::PlacementView {
+            node_id: placement.node_id.to_string(),
+            epoch: placement.epoch,
+        });
+    }
+    Ok(())
 }
 async fn authorize(
     State(state): State<AppState>,
@@ -280,8 +395,6 @@ async fn authorize(
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/v1/doctor", get(resource_views::doctor))
-        .route("/v1/agents/details", get(resource_views::agents))
-        .route("/v1/agents/{id}/detail", get(resource_views::agent_show))
         .route("/v1/agents", get(agents).post(create_agent))
         .route(
             "/v1/agents/{id}",
@@ -291,10 +404,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/sessions/{id}",
             get(show_session).delete(conversation::close),
-        )
-        .route(
-            "/v1/sessions/{id}/detail",
-            get(resource_views::session_show),
         )
         .route(
             "/v1/sessions/{id}/messages",
@@ -411,16 +520,16 @@ async fn agents(
         .as_deref()
         .map(|v| id(v, AgentId::from_ulid))
         .transpose()?;
-    Ok(Json(
-        state
-            .store
-            .list_agents(after, limit(page.limit))
-            .await
-            .map_err(storage)?
-            .into_iter()
-            .map(agent)
-            .collect(),
-    ))
+    let records = state
+        .store
+        .list_agents(after, limit(page.limit))
+        .await
+        .map_err(storage)?;
+    let mut result = Vec::with_capacity(records.len());
+    for record in records {
+        result.push(resource_views::agent_value(&state, record, false).await?);
+    }
+    Ok(Json(result))
 }
 async fn show_agent(
     State(state): State<AppState>,
@@ -432,9 +541,13 @@ async fn show_agent(
         state.store.get_agent_by_name(&name).await
     }
     .map_err(storage)?;
-    Ok(Json(agent(record.ok_or_else(|| {
-        error(StatusCode::NOT_FOUND, "agent_not_found")
-    })?)))
+    resource_views::agent_value(
+        &state,
+        record.ok_or_else(|| error(StatusCode::NOT_FOUND, "agent_not_found"))?,
+        true,
+    )
+    .await
+    .map(Json)
 }
 async fn replay<T: serde::Serialize + serde::de::DeserializeOwned>(
     state: &AppState,
@@ -604,8 +717,9 @@ async fn sessions(
         .await
         .map_err(storage)?;
     let mut result = Vec::with_capacity(records.len());
+    let mut agents = std::collections::HashMap::new();
     for record in &records {
-        result.push(session_with_next(&state, record).await?);
+        result.push(session_with_next(&state, record, &mut agents).await?);
     }
     Ok(Json(result))
 }
@@ -620,7 +734,10 @@ async fn show_session(
         .await
         .map_err(storage)?
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
-    Ok(Json(session_with_next(&state, &record).await?))
+    let mut agents = std::collections::HashMap::new();
+    let mut result = session_with_next(&state, &record, &mut agents).await?;
+    populate_session_detail(&state, &mut result, &record).await?;
+    Ok(Json(result))
 }
 async fn session_metrics(
     State(state): State<AppState>,
@@ -799,23 +916,6 @@ fn model(
     provider: &swarmy_llm::catalog::ProviderInfo,
     entry: &swarmy_llm::catalog::ModelInfo,
 ) -> api::Model {
-    let mut catalog = serde_json::to_value(entry)
-        .expect("catalog model serializes")
-        .as_object()
-        .expect("catalog model is an object")
-        .clone();
-    for field in ["id", "name", "key", "limit", "cost", "supported_efforts"] {
-        catalog.remove(field);
-    }
-    catalog.insert("provider".into(), serde_json::json!(provider.id));
-    catalog.insert(
-        "effective_api".into(),
-        serde_json::json!(entry.api.unwrap_or(provider.api)),
-    );
-    catalog.insert(
-        "effective_base_url".into(),
-        serde_json::json!(entry.base_url.as_deref().unwrap_or(&provider.base_url)),
-    );
     api::Model {
         id: entry.id.clone(),
         provider_id: provider.id.clone(),
@@ -835,7 +935,6 @@ fn model(
             .into_iter()
             .map(Into::into)
             .collect(),
-        catalog: catalog.into_iter().collect(),
     }
 }
 async fn models(
@@ -909,8 +1008,10 @@ async fn providers(State(state): State<AppState>) -> Json<Vec<api::Provider>> {
                 credential: "unknown".into(),
                 auth_kinds: p.auth_kinds.clone(),
                 env_keys: p.env_keys.clone(),
-                credential_env_keys: swarmy_llm::auth::provider_env_keys(&p.id),
-                catalog: Default::default(),
+                credential_env_keys: swarmy_llm::auth::provider_env_keys(&p.id)
+                    .iter()
+                    .map(|key| (*key).to_owned())
+                    .collect(),
             })
             .collect(),
     )

@@ -399,8 +399,18 @@ def current_session(config, session_id, sessions=None):
 
 def state_for(session, events, log):
     state = session.get("state") if session else None
-    wait = next((item for item in events if item.get("state") == "waiting_for_inference"), None)
-    if state == "sleeping" and wait:
+    # Typed `session show --json` prints the Session first (with `waiting`)
+    # followed by raw event lines. Older fakes printed a separate
+    # `waiting_for_inference` line; accept both.
+    waiting = (session.get("waiting") if session else None) or next(
+        (
+            item.get("waiting") or item
+            for item in events
+            if item.get("waiting") or item.get("state") == "waiting_for_inference"
+        ),
+        None,
+    )
+    if state == "sleeping" and waiting:
         state = "waiting_inference"
     if state is None:
         return "unknown", ""
@@ -411,7 +421,11 @@ def state_for(session, events, log):
         if outcomes and outcomes[-1].get("outcome") == "failed":
             return "failed", ""
         return "idle", ""
-    reasons = "; ".join(wait.get("reasons", [])) if wait and state == "waiting_inference" else ""
+    reasons = (
+        "; ".join((waiting or {}).get("reasons", []))
+        if waiting and state == "waiting_inference"
+        else ""
+    )
     return state, ("waiting for inference: " + reasons if reasons else "")
 
 
@@ -458,7 +472,7 @@ def status(config):
             logged = records(run_log.read_text()) if run_log.exists() else []
         # A task runs in its own side conversation; fall back to the main one
         # for launches recorded before that change.
-        session_id = data.get("session_id") or detail.get("main_session")
+        session_id = data.get("session_id") or detail.get("main_session_id") or detail.get("main_session")
         session_id = current_session(config, session_id, sessions)
         events = session_events(config, session_id) if session_id else []
         session = sessions.get(session_id)
@@ -473,8 +487,9 @@ def status(config):
             state_label += "; " + reasons
         started = data.get("started_at")
         elapsed = int((datetime.now(timezone.utc) - datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds()) if started else 0
+        cost = detail.get("usage", {}).get("cost_dollars", detail.get("cost_dollars", 0))
         print(f"{name}\t{task_id or '-'}\t{detail.get('provider') or '-'}\t{detail.get('model') or '-'}\t"
-              f"{state_label}\t{elapsed}s\t${detail.get('cost_dollars', 0)}")
+              f"{state_label}\t{elapsed}s\t${cost}")
     day, month = fleet_cost(config)
     if day is not None and month is not None:
         print(f"cost today=${day} this_month=${month}")

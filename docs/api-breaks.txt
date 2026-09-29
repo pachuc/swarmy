@@ -75,3 +75,12 @@ GET /v1/cli/routes/{name} api path removed without deprecation
 GET /v1/cli/sessions api path removed without deprecation
 GET /v1/cli/sessions/{id} api path removed without deprecation
 PATCH /v1/cli/sessions/{id}/route api path removed without deprecation
+
+# 2026-09-29: Agent and session detail projections folded into the typed resource. List and show share api::Agent and api::Session; detail-only fields are optional on the resource.
+GET /v1/agents/details api path removed without deprecation
+GET /v1/agents/{id}/detail api path removed without deprecation
+GET /v1/sessions/{id}/detail api path removed without deprecation
+
+# 2026-09-29: Model and provider catalog passthrough removed. The CLI renders only typed limit, cost, effort, auth, and env-key fields; no client read the free-form map.
+GET /v1/models removes catalog from response properties
+GET /v1/providers removes catalog from response properties
