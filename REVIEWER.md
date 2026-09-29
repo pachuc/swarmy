@@ -131,8 +131,24 @@ outcome.
     - computing the expected value with the same code or formula under test;
     - a near-copy of an existing test with trivially different inputs;
     - a private-function test whose behaviour the public interface already
-      covers;
+      covers. A private-function test stays only with a one-line comment
+      saying why the public path cannot reach the case cheaply;
     - asserting only `is_ok()` or "does not panic" where the value matters.
+    - exact internal counters (request counts, collection lengths, timing
+      sums): assert the externally visible accounting instead; counters
+      belong in benchmarks, not tests;
+    - pins on checked-in fixture or config file contents: assert
+      loadability plus the rejection cases instead, so the test does not
+      rot on every config edit;
+    - pins on description or documentation prose (tool schemas, help text):
+      assert parse, validation, and dispatch behaviour instead, since
+      nothing matches on the wording.
+- [ ] A round-trip helper that also freezes discriminants, tags, or
+      sequence mappings is a contract test and stays: the check is
+      whether the test would fail on a wire-format change. A bare
+      round trip with no pinned bytes goes.
+- [ ] User-visible notice wording is asserted with key-fact
+      `contains` checks (timestamps, loss facts), never exact sentences.
 - [ ] No test was weakened to pass: no loosened assertion, no new `#[ignore]`,
       no `is_ok()` where the value matters.
 - [ ] No fixed `sleep`; waits poll a condition with a budget. Time-dependent
