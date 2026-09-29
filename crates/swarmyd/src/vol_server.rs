@@ -14,7 +14,12 @@ async fn config() -> Result<ServerConfig> {
     })
 }
 
-pub(crate) async fn control(id: VolumeId, mount: Option<PathBuf>, detach: bool, json: bool) -> Result<()> {
+pub(crate) async fn control(
+    id: VolumeId,
+    mount: Option<PathBuf>,
+    detach: bool,
+    json: bool,
+) -> Result<()> {
     let flushed = server::control_flush(&config().await?, id, mount, detach).await?;
     let mut value = serde_json::to_value(&flushed)?;
     value["volume_id"] = serde_json::to_value(id)?;
@@ -57,7 +62,12 @@ pub(crate) async fn attach(
     Ok(())
 }
 
-pub(crate) async fn flush(id: VolumeId, mount: Option<PathBuf>, freeze: bool, json: bool) -> Result<()> {
+pub(crate) async fn flush(
+    id: VolumeId,
+    mount: Option<PathBuf>,
+    freeze: bool,
+    json: bool,
+) -> Result<()> {
     let flushed =
         server::control_flush_with_freeze(&config().await?, id, mount, false, freeze).await?;
     let mut value = serde_json::to_value(&flushed)?;

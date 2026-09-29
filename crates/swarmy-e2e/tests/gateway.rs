@@ -1146,17 +1146,17 @@ fn assert_logged_history_order(messages: &[swarmy_core::Message]) {
     let call = messages
         .iter()
         .position(|m| {
-            m.parts.iter().any(|p| {
-                matches!(p, Part::ToolCall { call_id, .. } if call_id.0 == "clock-0")
-            })
+            m.parts
+                .iter()
+                .any(|p| matches!(p, Part::ToolCall { call_id, .. } if call_id.0 == "clock-0"))
         })
         .expect("call in logged history");
     let result = messages
         .iter()
         .position(|m| {
-            m.parts.iter().any(|p| {
-                matches!(p, Part::ToolResult { call_id, .. } if call_id.0 == "clock-0")
-            })
+            m.parts
+                .iter()
+                .any(|p| matches!(p, Part::ToolResult { call_id, .. } if call_id.0 == "clock-0"))
         })
         .expect("result in logged history");
     assert!(call < result, "logged call must precede its result");
@@ -1173,9 +1173,9 @@ fn assert_logged_history_order(messages: &[swarmy_core::Message]) {
             messages
                 .iter()
                 .filter(|m| {
-                    m.parts.iter().any(|p| {
-                matches!(p, Part::ToolCall { call_id, .. } if call_id.0 == "clock-0")
-            })
+                    m.parts.iter().any(
+                        |p| matches!(p, Part::ToolCall { call_id, .. } if call_id.0 == "clock-0"),
+                    )
                 })
                 .count(),
         ),
@@ -1184,9 +1184,9 @@ fn assert_logged_history_order(messages: &[swarmy_core::Message]) {
             messages
                 .iter()
                 .filter(|m| {
-                    m.parts.iter().any(|p| {
-                matches!(p, Part::ToolResult { call_id, .. } if call_id.0 == "clock-0")
-            })
+                    m.parts.iter().any(
+                        |p| matches!(p, Part::ToolResult { call_id, .. } if call_id.0 == "clock-0"),
+                    )
                 })
                 .count(),
         ),

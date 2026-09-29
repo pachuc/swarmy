@@ -151,7 +151,11 @@ impl Hosting {
 
     /// Serve one tool call with its durable turn already resolved by the
     /// caller, so the execution path needs no `request_turn_id` lookup.
-    pub(crate) async fn call(self: &Arc<Self>, job: ToolJob, turn: Option<MessageId>) -> Result<()> {
+    pub(crate) async fn call(
+        self: &Arc<Self>,
+        job: ToolJob,
+        turn: Option<MessageId>,
+    ) -> Result<()> {
         let agent = match self.store.tool_agent(&job, self.node).await {
             Ok(Some(agent)) => agent,
             Ok(None) => return Ok(()),
@@ -266,7 +270,10 @@ impl Hosting {
         Ok(placement)
     }
 
-    #[expect(clippy::cast_precision_loss, reason = "fetch histogram reads are approximate, so floating-point display precision is sufficient")]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "fetch histogram reads are approximate, so floating-point display precision is sufficient"
+    )]
     fn observe_computer_boot(
         &self,
         session: SessionId,

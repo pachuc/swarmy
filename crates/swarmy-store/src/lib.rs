@@ -931,9 +931,9 @@ where
     result.map_err(|error| match error {
         FdbBindingError::CustomError(error) => match error.downcast::<StoreError>() {
             Ok(error) => *error,
-            Err(error) => StoreError::Storage(StorageError::Binding(
-                FdbBindingError::CustomError(error),
-            )),
+            Err(error) => {
+                StoreError::Storage(StorageError::Binding(FdbBindingError::CustomError(error)))
+            }
         },
         other => StoreError::Storage(StorageError::Binding(other)),
     })

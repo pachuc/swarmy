@@ -29,7 +29,10 @@ fn no_raw_family_packing_outside_registry() {
         }
     }
 }
-#[expect(clippy::too_many_lines, reason = "the fixture lists complete master-era tuple keys for every family together, including nested time tuples, binary identifiers, and each final component, so an omitted constructor is visible")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixture lists complete master-era tuple keys for every family together, including nested time tuples, binary identifiers, and each final component, so an omitted constructor is visible"
+)]
 #[test]
 fn family_key_layout_matches_checked_in_hex() {
     let root = Subspace::from_bytes(Vec::new());

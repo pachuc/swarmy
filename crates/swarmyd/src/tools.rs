@@ -325,7 +325,10 @@ async fn run_command(
     Ok(CommandOutcome { result, summary })
 }
 
-#[expect(clippy::cast_precision_loss, reason = "fetch histogram reads are approximate, so floating-point display precision is sufficient")]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "fetch histogram reads are approximate, so floating-point display precision is sufficient"
+)]
 fn observe_tool_completion(
     store: &Store,
     runtime: Arc<RuncRuntime>,
@@ -586,7 +589,10 @@ pub(crate) async fn exec(
     Ok((exit?, stdout, stderr))
 }
 
-pub(crate) async fn has_processes(runtime: &RuncRuntime, placement: &PlacementRecord) -> Result<bool> {
+pub(crate) async fn has_processes(
+    runtime: &RuncRuntime,
+    placement: &PlacementRecord,
+) -> Result<bool> {
     let arguments = SandboxArguments::ProcessList(ProcessListArguments {
         limit: 20,
         all: false,

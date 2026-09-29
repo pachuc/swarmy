@@ -28,9 +28,7 @@ fn part_has_content(part: &swarmy_core::Part) -> bool {
 /// fake provider's `PartDone` stream starts the first-token clock.
 fn is_first_content(delta: &Delta) -> bool {
     match delta {
-        Delta::Text { text, .. } | Delta::Reasoning { text, .. } => {
-            !text.is_empty()
-        }
+        Delta::Text { text, .. } | Delta::Reasoning { text, .. } => !text.is_empty(),
         Delta::ToolArguments { arguments, .. } => !arguments.is_empty(),
         Delta::PartDone { part, .. } => part_has_content(part),
         Delta::Completed(_) => false,
@@ -43,9 +41,7 @@ fn is_first_content(delta: &Delta) -> bool {
 /// would label every single-chunk response as streamed.
 fn is_stream_chunk(delta: &Delta) -> bool {
     match delta {
-        Delta::Text { text, .. } | Delta::Reasoning { text, .. } => {
-            !text.is_empty()
-        }
+        Delta::Text { text, .. } | Delta::Reasoning { text, .. } => !text.is_empty(),
         Delta::ToolArguments { arguments, .. } => !arguments.is_empty(),
         Delta::PartDone { .. } | Delta::Completed(_) => false,
     }
@@ -495,15 +491,13 @@ mod retry_tests {
         assert!(is_first_content(&done));
         assert!(is_stream_chunk(&text));
         assert!(!is_stream_chunk(&done));
-        assert!(!is_stream_chunk(&Delta::Completed(
-            Response {
-                parts: Vec::new(),
-                stop_reason: swarmy_llm::StopReason::EndTurn,
-                usage: swarmy_llm::TokenUsage::default(),
-                quota_remaining: std::collections::BTreeMap::new(),
-                quota_resets: std::collections::BTreeMap::new(),
-            }
-        )));
+        assert!(!is_stream_chunk(&Delta::Completed(Response {
+            parts: Vec::new(),
+            stop_reason: swarmy_llm::StopReason::EndTurn,
+            usage: swarmy_llm::TokenUsage::default(),
+            quota_remaining: std::collections::BTreeMap::new(),
+            quota_resets: std::collections::BTreeMap::new(),
+        })));
     }
 
     /// Build a real `Gateway` against the dev stack so the stream tests below

@@ -64,7 +64,12 @@ fn turn_event(
     }
 }
 
-pub(crate) async fn run(client: Client, endpoint: String, command: Command, json: bool) -> Result<()> {
+pub(crate) async fn run(
+    client: Client,
+    endpoint: String,
+    command: Command,
+    json: bool,
+) -> Result<()> {
     let Command::Turn {
         turns,
         image,

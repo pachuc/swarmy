@@ -60,7 +60,11 @@ pub(crate) fn log(id: SessionId, events: &[Event]) -> Result<usize> {
     Ok(requests.len() - retryable_failures)
 }
 
-pub(crate) fn finished(session: &SessionRecord, events: &[Event], expected_steps: usize) -> Result<()> {
+pub(crate) fn finished(
+    session: &SessionRecord,
+    events: &[Event],
+    expected_steps: usize,
+) -> Result<()> {
     let id = session.session_id;
     ensure!(
         log(id, events)? == expected_steps,

@@ -44,7 +44,11 @@ impl Cache {
     }
 }
 
-pub(crate) async fn resolve(store: &Store, agent: AgentId, lease: Duration) -> Result<PlacementRecord> {
+pub(crate) async fn resolve(
+    store: &Store,
+    agent: AgentId,
+    lease: Duration,
+) -> Result<PlacementRecord> {
     // The last rejection explains a placement that never succeeds.
     let mut rejection = None;
     // Contention can change the winner while capacity is being reserved. Re-read

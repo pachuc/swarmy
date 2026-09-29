@@ -79,9 +79,7 @@ pub const API_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// # Errors
 /// Fails if the request times out or the API rejects it.
-pub async fn timed_call<T>(
-    future: impl Future<Output = Result<T, Error>>,
-) -> Result<T, Error> {
+pub async fn timed_call<T>(future: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
     tokio::time::timeout(API_TIMEOUT, future)
         .await
         .map_err(|_| Error::Timeout)?

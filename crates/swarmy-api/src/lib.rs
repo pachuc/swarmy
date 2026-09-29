@@ -113,7 +113,10 @@ fn error(status: StatusCode, code: &str) -> (StatusCode, Json<api::ApiError>) {
         }),
     )
 }
-#[expect(clippy::needless_pass_by_value, reason = "`map_err` passes the owned error; taking a reference would require closures at every call site")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` passes the owned error; taking a reference would require closures at every call site"
+)]
 fn storage(value: swarmy_store::StoreError) -> (StatusCode, Json<api::ApiError>) {
     use swarmy_store::StoreError;
     match value {
@@ -179,14 +182,8 @@ pub fn router(state: AppState) -> Router {
             "/v1/sessions/{id}",
             get(show_session).delete(conversation::close),
         )
-        .route(
-            "/v1/sessions/{id}/messages",
-            post(conversation::append),
-        )
-        .route(
-            "/v1/sessions/{id}/interrupt",
-            post(conversation::interrupt),
-        )
+        .route("/v1/sessions/{id}/messages", post(conversation::append))
+        .route("/v1/sessions/{id}/interrupt", post(conversation::interrupt))
         .route(
             "/v1/sessions/{id}/route",
             axum::routing::patch(conversation::set_route),
@@ -214,10 +211,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/models/{provider}/{model}", get(show_model))
         .route("/v1/providers", get(providers))
         .route("/v1/credentials", get(credentials).post(set_credential))
-        .route(
-            "/v1/credentials/records",
-            post(put_credential_record),
-        )
+        .route("/v1/credentials/records", post(put_credential_record))
         .route(
             "/v1/credentials/{provider}",
             get(check_credential).delete(remove_credential),

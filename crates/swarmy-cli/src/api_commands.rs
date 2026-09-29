@@ -400,12 +400,7 @@ async fn session_events(
     Ok(events)
 }
 
-async fn show_session(
-    client: &Client,
-    endpoint: &str,
-    session_id: Ulid,
-    json: bool,
-) -> Result<()> {
+async fn show_session(client: &Client, endpoint: &str, session_id: Ulid, json: bool) -> Result<()> {
     let record = request(endpoint, client.session(&session_id.to_string())).await?;
     let selection = record
         .resolved

@@ -70,7 +70,10 @@ impl Store {
         .await
     }
 
-    #[expect(clippy::too_many_arguments, reason = "the handoff commits input, request, outbox, events, and route step atomically; splitting the parameters would separate that one write")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the handoff commits input, request, outbox, events, and route step atomically; splitting the parameters would separate that one write"
+    )]
     async fn submit_inference_after_inner<T: Serialize, R: Serialize>(
         &self,
         expected_head: u64,

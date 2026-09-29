@@ -111,10 +111,7 @@ pub(super) async fn run(state_dir: &Path, state: &State, name: &str, json: bool)
     )
 }
 
-fn reserve_api(
-    node: &RemoteNode,
-    reservations: &mut Vec<TcpListener>,
-) -> Result<u16> {
+fn reserve_api(node: &RemoteNode, reservations: &mut Vec<TcpListener>) -> Result<u16> {
     if !remote_api(node) {
         return Ok(0);
     }

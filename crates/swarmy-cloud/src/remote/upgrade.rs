@@ -27,7 +27,12 @@ pub(super) struct Options {
 }
 
 impl Options {
-    pub(super) fn new(allow_dirty: bool, services_only: bool, drain_timeout: u64, json: bool) -> Self {
+    pub(super) fn new(
+        allow_dirty: bool,
+        services_only: bool,
+        drain_timeout: u64,
+        json: bool,
+    ) -> Self {
         Self {
             dirty_paths: Vec::new(),
             allow_dirty,
@@ -42,7 +47,11 @@ impl Options {
     }
 }
 
-pub(super) async fn command(state: &super::state::State, name: &str, mut options: Options) -> Result<()> {
+pub(super) async fn command(
+    state: &super::state::State,
+    name: &str,
+    mut options: Options,
+) -> Result<()> {
     let _lock = state.lock()?;
     let node = state.require(name)?;
     let host = ssh::Ssh::discover()?;

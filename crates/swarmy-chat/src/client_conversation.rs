@@ -141,7 +141,10 @@ pub(crate) fn terminal_error(error: impl std::fmt::Display) -> Error {
 /// Client-side stream item: server events plus the CLI-synthesized notice
 /// that a summarized session continues elsewhere. The server never sends
 /// the notice, so it lives here rather than in the API contract.
-#[expect(clippy::large_enum_variant, reason = "the stream variant dwarfs the successor notice, but this enum is short-lived (returned by value from `next` and matched immediately): padding the notice costs one stack slot per call, while boxing would add a heap allocation per streamed event")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the stream variant dwarfs the successor notice, but this enum is short-lived (returned by value from `next` and matched immediately): padding the notice costs one stack slot per call, while boxing would add a heap allocation per streamed event"
+)]
 pub enum ConversationItem {
     Stream(StreamItem),
     Summarized {

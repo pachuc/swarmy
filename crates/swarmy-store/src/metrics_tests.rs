@@ -239,7 +239,10 @@ mod integration_tests {
     static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 
     #[tokio::test]
-    #[expect(clippy::too_many_lines, reason = "one turn with staged writes, inference, and idle checks needs its setup inline")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one turn with staged writes, inference, and idle checks needs its setup inline"
+    )]
     async fn incremental_records_merge_under_one_turn_key() {
         let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
             return;
@@ -423,7 +426,10 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    #[expect(clippy::too_many_lines, reason = "the required 200-tool, 100-request turn builds its rows inline")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the required 200-tool, 100-request turn builds its rows inline"
+    )]
     async fn long_turn_with_two_hundred_tools_and_one_hundred_requests_reads_back_complete() {
         let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
             return;
@@ -577,7 +583,10 @@ mod integration_tests {
         assert_eq!(record.dropped_stages, 0);
         assert_eq!(record.dropped_inference, 0);
         assert_eq!(record.dropped_tools, 0);
-        #[expect(clippy::cast_precision_loss, reason = "nanosecond wall times exceed f64 integer precision; the millisecond check does not need it")]
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "nanosecond wall times exceed f64 integer precision; the millisecond check does not need it"
+        )]
         let expected_idle_ms = (idle_ns - appended_ns) as f64 / 1_000_000.0;
         assert_eq!(record.append_to_idle_ms, Some(expected_idle_ms));
         // Paging on the arrays truncates deterministically and reports the

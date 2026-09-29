@@ -499,7 +499,10 @@ async fn leased(f: &Fixture, id: SessionId) -> Lease {
 
 /// Resolve one retryable failure against the pair route in a single
 /// transaction, so step tests read as one call per failure.
-#[expect(clippy::too_many_arguments, reason = "one retryable failure resolves against the pair route in a single transaction, so step tests read as one call per failure")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one retryable failure resolves against the pair route in a single transaction, so step tests read as one call per failure"
+)]
 async fn failover(
     f: &Fixture,
     lease: &Lease,

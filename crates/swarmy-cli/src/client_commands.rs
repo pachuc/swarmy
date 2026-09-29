@@ -298,7 +298,12 @@ pub(crate) fn print_event(event: &Event) {
     );
 }
 
-pub(crate) async fn chat(client: Client, endpoint: String, args: ChatArgs, json: bool) -> Result<()> {
+pub(crate) async fn chat(
+    client: Client,
+    endpoint: String,
+    args: ChatArgs,
+    json: bool,
+) -> Result<()> {
     use tokio::io::AsyncBufReadExt;
     let ChatArgs {
         session_id,

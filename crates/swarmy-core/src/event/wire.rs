@@ -327,10 +327,8 @@ mod tests {
 
     #[test]
     fn routed_completions_keep_the_metered_discriminant() {
-        let request_id = RequestId::for_step(
-            crate::SessionId::from_ulid(ulid::Ulid::from_parts(3, 4)),
-            2,
-        );
+        let request_id =
+            RequestId::for_step(crate::SessionId::from_ulid(ulid::Ulid::from_parts(3, 4)), 2);
         let plain = Event::InferenceCompleted {
             seq: 5,
             request_id,

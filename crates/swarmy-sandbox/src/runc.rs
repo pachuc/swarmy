@@ -813,7 +813,10 @@ impl RuncRuntime {
         }
         result
     }
-    #[expect(clippy::too_many_lines, reason = "creation keeps attachment cleanup and journal publication in one fenced path")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "creation keeps attachment cleanup and journal publication in one fenced path"
+    )]
     /// Create a sandbox on the supplied disk.
     /// # Errors
     /// Returns attachment, mount, or container startup errors.

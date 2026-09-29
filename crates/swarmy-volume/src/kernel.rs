@@ -20,7 +20,10 @@ const DISCONNECT: libc::c_ulong = 0xab08;
 const SET_TIMEOUT: libc::c_ulong = 0xab09;
 const SET_FLAGS: libc::c_ulong = 0xab0a;
 
-#[expect(unsafe_code, reason = "the kernel requires ioctl; all arguments here are integer values, not pointers")]
+#[expect(
+    unsafe_code,
+    reason = "the kernel requires ioctl; all arguments here are integer values, not pointers"
+)]
 fn ioctl(file: &File, request: libc::c_ulong, value: libc::c_ulong) -> io::Result<()> {
     // SAFETY: file holds a live descriptor throughout the call. These NBD
     // requests accept an integer or no argument and never dereference value.

@@ -352,13 +352,23 @@ impl References {
     }
 
     fn positions(&self, hash: ContentHash) -> impl Iterator<Item = (usize, u8)> + use<> {
-        let first = u64::from_le_bytes(hash.0[..8].try_into().expect("a content hash is 32 bytes, so its first eight bytes form a u64"));
-        let step = u64::from_le_bytes(hash.0[8..16].try_into().expect("a content hash is 32 bytes, so its second eight bytes form a u64")) | 1;
+        let first = u64::from_le_bytes(
+            hash.0[..8]
+                .try_into()
+                .expect("a content hash is 32 bytes, so its first eight bytes form a u64"),
+        );
+        let step = u64::from_le_bytes(
+            hash.0[8..16]
+                .try_into()
+                .expect("a content hash is 32 bytes, so its second eight bytes form a u64"),
+        ) | 1;
         let size = u64::try_from(self.bytes.len()).expect("a filter allocation always fits in u64");
         (0..7).map(move |index| {
             let value = first.wrapping_add(step.wrapping_mul(index));
             (
-                usize::try_from((value >> 3) % size).expect("the remainder is smaller than the filter length, which always fits in usize"),
+                usize::try_from((value >> 3) % size).expect(
+                    "the remainder is smaller than the filter length, which always fits in usize",
+                ),
                 1 << (value & 7),
             )
         })

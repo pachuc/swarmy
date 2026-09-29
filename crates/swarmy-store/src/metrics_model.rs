@@ -50,7 +50,10 @@ pub struct InferenceMetric {
 impl InferenceMetric {
     /// A zero interval cannot yield a meaningful throughput.
     #[must_use]
-    #[expect(clippy::cast_precision_loss, reason = "throughput is an approximate rate; sub-token precision is not meaningful")]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "throughput is an approximate rate; sub-token precision is not meaningful"
+    )]
     pub(crate) fn tokens_per_second(tokens: u64, duration_ms: f64) -> Option<f64> {
         (tokens > 0 && duration_ms > 0.0 && duration_ms.is_finite())
             .then_some(tokens as f64 * 1_000.0 / duration_ms)
@@ -127,7 +130,10 @@ pub struct TurnMetrics {
 impl TurnMetrics {
     /// Compare monotonic times only within a boot; otherwise use wall time.
     #[must_use]
-    #[expect(clippy::cast_precision_loss, reason = "millisecond display precision is lower than the nanosecond source precision")]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "millisecond display precision is lower than the nanosecond source precision"
+    )]
     pub fn duration_ms(first: &StageTiming, last: &StageTiming) -> Option<f64> {
         if first.clock_id == last.clock_id {
             last.monotonic_ns
@@ -141,7 +147,10 @@ impl TurnMetrics {
         }
     }
 
-    #[expect(clippy::cast_precision_loss, reason = "queue durations are approximate millisecond measurements")]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "queue durations are approximate millisecond measurements"
+    )]
     pub fn derive(&mut self) {
         let first = |stage: &str| self.stages.iter().find(|row| row.stage == stage);
         self.append_to_first_token_ms = first("appended")
@@ -309,7 +318,10 @@ fn clipped(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
-#[expect(clippy::cast_precision_loss, reason = "wall nanoseconds exceed f64 integer precision; millisecond display values do not need it")]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "wall nanoseconds exceed f64 integer precision; millisecond display values do not need it"
+)]
 fn wall_ms(first_ns: Option<i64>, last_ns: Option<i64>) -> Option<f64> {
     let (first, last) = (first_ns?, last_ns?);
     last.checked_sub(first)
@@ -482,7 +494,10 @@ fn tool_entry<'a>(
         })
 }
 
-#[expect(clippy::too_many_lines, reason = "one merge updates row, summary totals, and throughput together; splitting would separate the delta bookkeeping from the row it deltas against")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one merge updates row, summary totals, and throughput together; splitting would separate the delta bookkeeping from the row it deltas against"
+)]
 fn apply_inference_update(
     summary: &mut StoredTurnSummaryCurrent,
     inference: &mut BTreeMap<String, StoredTurnInferenceCurrent>,

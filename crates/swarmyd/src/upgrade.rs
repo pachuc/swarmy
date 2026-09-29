@@ -86,7 +86,10 @@ async fn process_list_with_timeout(
     }
 }
 
-pub(crate) async fn run(loaded: &swarmy_config::Loaded, warn: impl Fn(&str)) -> Result<Vec<String>> {
+pub(crate) async fn run(
+    loaded: &swarmy_config::Loaded,
+    warn: impl Fn(&str),
+) -> Result<Vec<String>> {
     let node: NodeId = loaded.node_id()?;
     let opened = swarmy_store::Store::open_store(&loaded.settings).await?;
     let store = opened.store;
