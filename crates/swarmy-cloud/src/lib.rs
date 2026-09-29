@@ -17,9 +17,9 @@ pub fn set_output_sink(sink: fn(&str, bool)) -> bool {
     OUTPUT.set(sink).is_ok()
 }
 
-fn emit(message: String, stderr: bool) {
+fn emit(message: &str, stderr: bool) {
     if let Some(sink) = OUTPUT.get() {
-        sink(&message, stderr);
+        sink(message, stderr);
     } else if stderr {
         tracing::warn!("{message}");
     } else {
@@ -28,10 +28,10 @@ fn emit(message: String, stderr: bool) {
 }
 
 macro_rules! cloud_out {
-    ($($arg:tt)*) => { $crate::emit(format!($($arg)*), false) };
+    ($($arg:tt)*) => { $crate::emit(&format!($($arg)*), false) };
 }
 macro_rules! cloud_err {
-    ($($arg:tt)*) => { $crate::emit(format!($($arg)*), true) };
+    ($($arg:tt)*) => { $crate::emit(&format!($($arg)*), true) };
 }
 
 mod command;
