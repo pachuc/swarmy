@@ -21,7 +21,6 @@ needless_collect = "deny"
 large_stack_frames = "deny"
 
 [workspace.dependencies]
-swarmy-gateway = { path = "crates/swarmy-gateway" }
 swarmy-version = { path = "crates/swarmy-version" }
 # Every TLS client in the workspace uses ring as its only crypto provider, so
 # the C-based aws-lc backend is never compiled. reqwest's `rustls-tls`,
@@ -41,7 +40,6 @@ aws-sdk-ec2 = { version = "1", default-features = false, features = ["rustls", "
 aws-sdk-ssm = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "rt-tokio", "sigv4a", "http-1x"] }
 aws-sdk-iam = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
-aws-credential-types = "1"
 portable-pty = "0.9"
 vt100 = "0.16"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
@@ -70,7 +68,6 @@ blake3 = "1"
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
-libloading = "0.8"
 libc = "0.2"
 url = "2"
 jsonwebtoken = "9"
@@ -102,9 +99,9 @@ swarmy-core = { path = "crates/swarmy-core" }
 swarmy-image = { path = "crates/swarmy-image" }
 swarmy-bus = { path = "crates/swarmy-bus" }
 swarmy-cloud = { path = "crates/swarmy-cloud" }
-# Dependents get no swarmy-llm default features: the gateway and the CLI opt
-# into the cloud providers through their own forwarding features, and nothing
-# else enables any, so node-side services never compile the cloud SDKs.
+# Dependents get no swarmy-llm default features. The API, gateway, and CLI
+# enable cloud providers for direct model probes and inference; node-side
+# services do not need their cloud SDKs.
 swarmy-llm = { path = "crates/swarmy-llm", default-features = false }
 swarmy-sandbox = { path = "crates/swarmy-sandbox" }
 swarmy-volume = { path = "crates/swarmy-volume" }

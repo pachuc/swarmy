@@ -208,8 +208,7 @@ fn needs_backing_services() -> bool {
         "SWARMY_NATS_URL",
         "SWARMY_S3_ENDPOINT",
     ] {
-        if std::env::var_os(variable).is_none() {
-            eprintln!("skipping image acceptance test: {variable} is unset");
+        if swarmy_core::test_support::stack_env_os(variable).is_none() {
             return false;
         }
     }

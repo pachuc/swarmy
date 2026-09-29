@@ -1,0 +1,96 @@
+{
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "input": [
+    {
+      "content": [
+        {
+          "text": "Be helpful.",
+          "type": "input_text"
+        }
+      ],
+      "role": "developer",
+      "type": "message"
+    },
+    {
+      "content": [
+        {
+          "text": "Hello",
+          "type": "input_text"
+        }
+      ],
+      "role": "user",
+      "type": "message"
+    },
+    {
+      "type": "reasoning",
+      "id": "rs_1",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "Think first."
+        }
+      ],
+      "encrypted_content": "opaque-reasoning"
+    },
+    {
+      "content": [
+        {
+          "text": "Checking.",
+          "type": "output_text"
+        }
+      ],
+      "role": "assistant",
+      "type": "message"
+    },
+    {
+      "arguments": "{\"zone\":\"UTC\"}",
+      "call_id": "call_1",
+      "name": "get_time",
+      "type": "function_call"
+    },
+    {
+      "call_id": "call_1",
+      "output": "12:00",
+      "type": "function_call_output"
+    },
+    {
+      "arguments": "{}",
+      "call_id": "call_2",
+      "name": "unknown_tool",
+      "type": "function_call"
+    },
+    {
+      "call_id": "call_2",
+      "output": "{\"error\":\"unavailable\"}",
+      "type": "function_call_output"
+    }
+  ],
+  "max_output_tokens": 100,
+  "model": "fixture-model",
+  "parallel_tool_calls": true,
+  "store": false,
+  "stream": true,
+  "temperature": 0.5,
+  "tool_choice": "auto",
+  "tools": [
+    {
+      "description": "Get time",
+      "name": "get_time",
+      "parameters": {
+        "properties": {
+          "zone": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "zone"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    }
+  ]
+}

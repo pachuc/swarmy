@@ -3,13 +3,21 @@ on:
   push:
     branches: [master]
   pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   lint:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
@@ -19,14 +27,18 @@ jobs:
         with:
           shared-key: lint
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      - run: scripts/check-public-ids.sh
       - run: cargo fmt --all --check
       - run: cargo build --locked -p swarmy-cli --no-default-features
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
       - run: cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
       - run: cargo test --locked -p swarmy-llm --no-default-features
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
   workspace-tests:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
@@ -36,47 +48,18 @@ jobs:
         with:
           shared-key: workspace-tests
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - name: Install development services
-        env:
-          FDB_VERSION: 7.3.79
-          NATS_VERSION: 2.14.6
-          SEAWEEDFS_VERSION: '4.47'
-        run: |
-          set -euo pipefail
-          cd "$(mktemp -d)"
-          for pkg in clients server; do
-            deb="foundationdb-${pkg}_${FDB_VERSION}-1_amd64.deb"
-            curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${deb}"
-            curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${deb}.sha256"
-            sha256sum -c "${deb}.sha256"
-            # Avoid package hooks starting a system database on our local port.
-            sudo dpkg-deb -x "$deb" /
-          done
-          sudo ldconfig
-          curl --retry 3 -fsSL "https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-linux-amd64.tar.gz" | tar -xz
-          sudo install -m 0755 "nats-server-v${NATS_VERSION}-linux-amd64/nats-server" /usr/local/bin/nats-server
-          curl --retry 3 -fsSL "https://github.com/seaweedfs/seaweedfs/releases/download/${SEAWEEDFS_VERSION}/linux_amd64.tar.gz" | tar -xz
-          sudo install -m 0755 weed /usr/local/bin/weed
-          /usr/sbin/fdbserver --version
-          fdbcli --version
-          nats-server --version
-          weed version
-      - name: Start development services
-        run: |
-          scripts/dev-stack.sh start
-          source .dev/env
-          for name in SWARMY_FDB_CLUSTER_FILE SWARMY_NATS_URL SWARMY_S3_ENDPOINT SWARMY_S3_ACCESS_KEY SWARMY_S3_SECRET_KEY SWARMY_S3_BUCKET SWARMY_S3_REGION; do
-            printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
-          done
+      - uses: ./.github/actions/install-dev-services
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked --exclude swarmy-e2e
       - name: Stop development services
         if: always()
-        run: |
-          scripts/dev-stack.sh stop
-          scripts/dev-stack.sh status
+        uses: ./.github/actions/install-dev-services
+        with:
+          mode: stop
   e2e-and-chaos:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
@@ -86,48 +69,19 @@ jobs:
         with:
           shared-key: e2e-and-chaos
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - name: Install development services
-        env:
-          FDB_VERSION: 7.3.79
-          NATS_VERSION: 2.14.6
-          SEAWEEDFS_VERSION: '4.47'
-        run: |
-          set -euo pipefail
-          cd "$(mktemp -d)"
-          for pkg in clients server; do
-            deb="foundationdb-${pkg}_${FDB_VERSION}-1_amd64.deb"
-            curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${deb}"
-            curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${deb}.sha256"
-            sha256sum -c "${deb}.sha256"
-            # Avoid package hooks starting a system database on our local port.
-            sudo dpkg-deb -x "$deb" /
-          done
-          sudo ldconfig
-          curl --retry 3 -fsSL "https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-linux-amd64.tar.gz" | tar -xz
-          sudo install -m 0755 "nats-server-v${NATS_VERSION}-linux-amd64/nats-server" /usr/local/bin/nats-server
-          curl --retry 3 -fsSL "https://github.com/seaweedfs/seaweedfs/releases/download/${SEAWEEDFS_VERSION}/linux_amd64.tar.gz" | tar -xz
-          sudo install -m 0755 weed /usr/local/bin/weed
-          /usr/sbin/fdbserver --version
-          fdbcli --version
-          nats-server --version
-          weed version
-      - name: Start development services
-        run: |
-          scripts/dev-stack.sh start
-          source .dev/env
-          for name in SWARMY_FDB_CLUSTER_FILE SWARMY_NATS_URL SWARMY_S3_ENDPOINT SWARMY_S3_ACCESS_KEY SWARMY_S3_SECRET_KEY SWARMY_S3_BUCKET SWARMY_S3_REGION; do
-            printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
-          done
+      - uses: ./.github/actions/install-dev-services
       - run: cargo build --workspace --locked
       - run: cargo test --locked -p swarmy-e2e --test gateway --test scheduler --test worker -- --test-threads=1
       - run: scripts/chaos-ci.sh
       - name: Stop development services
         if: always()
-        run: |
-          scripts/dev-stack.sh stop
-          scripts/dev-stack.sh status
+        uses: ./.github/actions/install-dev-services
+        with:
+          mode: stop
   cli-session:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
@@ -137,47 +91,18 @@ jobs:
         with:
           shared-key: cli-session
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - name: Install development services
-        env:
-          FDB_VERSION: 7.3.79
-          NATS_VERSION: 2.14.6
-          SEAWEEDFS_VERSION: '4.47'
-        run: |
-          set -euo pipefail
-          cd "$(mktemp -d)"
-          for pkg in clients server; do
-            deb="foundationdb-${pkg}_${FDB_VERSION}-1_amd64.deb"
-            curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${deb}"
-            curl --retry 3 -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/${deb}.sha256"
-            sha256sum -c "${deb}.sha256"
-            # Avoid package hooks starting a system database on our local port.
-            sudo dpkg-deb -x "$deb" /
-          done
-          sudo ldconfig
-          curl --retry 3 -fsSL "https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-linux-amd64.tar.gz" | tar -xz
-          sudo install -m 0755 "nats-server-v${NATS_VERSION}-linux-amd64/nats-server" /usr/local/bin/nats-server
-          curl --retry 3 -fsSL "https://github.com/seaweedfs/seaweedfs/releases/download/${SEAWEEDFS_VERSION}/linux_amd64.tar.gz" | tar -xz
-          sudo install -m 0755 weed /usr/local/bin/weed
-          /usr/sbin/fdbserver --version
-          fdbcli --version
-          nats-server --version
-          weed version
-      - name: Start development services
-        run: |
-          scripts/dev-stack.sh start
-          source .dev/env
-          for name in SWARMY_FDB_CLUSTER_FILE SWARMY_NATS_URL SWARMY_S3_ENDPOINT SWARMY_S3_ACCESS_KEY SWARMY_S3_SECRET_KEY SWARMY_S3_BUCKET SWARMY_S3_REGION; do
-            printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
-          done
+      - uses: ./.github/actions/install-dev-services
       - run: cargo build --workspace --locked
       - run: cargo test --locked -p swarmy-e2e --test cli_session -- --test-threads=1
       - name: Stop development services
         if: always()
-        run: |
-          scripts/dev-stack.sh stop
-          scripts/dev-stack.sh status
+        uses: ./.github/actions/install-dev-services
+        with:
+          mode: stop
   remote-tests:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain
@@ -190,10 +115,46 @@ jobs:
       - run: cargo test --locked -p swarmy-cloud --features remote
       - run: cargo test --locked -p swarmy-cli --features remote -- --skip dev_up_run_recover_reconfigure_and_down
   openapi-compat:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Check OpenAPI compatibility
         run: scripts/check-openapi-compat.sh origin/master
+  script-tests:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/install-dev-services
+        with:
+          mode: install
+      - run: scripts/test-scripts.sh
+  dependency-policy:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete@0.9.2
+      - run: cargo deny check licenses bans sources
+      - run: cargo machete
+  advisories:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny check advisories

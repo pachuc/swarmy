@@ -1,13 +1,29 @@
-use futures::TryStreamExt;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, time::Duration};
+use std::collections::BTreeMap;
 use swarmy_core::{Message, MessageId, MessageRole, Part, ToolCallId, ToolResult};
 use swarmy_llm::{
-    Delta, GenerationSettings, Provider, ReasoningEffort, Request, Response, StopReason,
-    TokenUsage, ToolDefinition,
-    fake::FakeProvider,
-    responses::{ResponsesStream as SseParser, request_json},
+    Delta, GenerationSettings, ReasoningEffort, Request, Response, StopReason, TokenUsage,
+    ToolDefinition, api::responses::ResponsesStream as SseParser,
 };
+
+fn request_json(request: &Request) -> Result<Value, swarmy_llm::Error> {
+    use swarmy_llm::{
+        ClientAuth,
+        api::responses::{ResponsesEndpoint, request_json_for},
+        catalog::Compat,
+    };
+    let endpoint = ResponsesEndpoint {
+        url: "https://example.invalid".into(),
+        auth: ClientAuth::ApiKey("fixture".into()),
+        extra_headers: BTreeMap::new(),
+        codex: false,
+        compat: Compat(BTreeMap::from([(
+            "supports_developer_role".into(),
+            json!(true),
+        )])),
+    };
+    request_json_for(request, &endpoint, "fixture", None, None)
+}
 
 fn request() -> Request {
     Request {
@@ -44,8 +60,8 @@ fn reasoning() -> Part {
     Part::Reasoning {
         text: "Think first.".into(),
         metadata: BTreeMap::from([(
-            "chatgpt".into(),
-            json!({"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "Think first."}], "encrypted_content": "opaque-reasoning"}),
+            "openai_responses".into(),
+            json!({"provider": "fixture", "model": "fixture-model", "item": {"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "Think first."}], "encrypted_content": "opaque-reasoning"}}),
         )]),
     }
 }
@@ -87,8 +103,11 @@ fn shared_request_matches_responses_fixture() {
     request.settings.reasoning_effort = Some(ReasoningEffort::Low);
     request.settings.max_output_tokens = Some(100);
     request.settings.temperature = Some(0.5);
-    let expected: Value = serde_json::from_str(include_str!("fixtures/request.json")).unwrap();
-    assert_eq!(request_json(&request).unwrap(), expected);
+    let body = request_json(&request).unwrap();
+    assert_eq!(
+        body,
+        serde_json::from_str::<Value>(include_str!("fixtures/responses-request.json")).unwrap()
+    );
 }
 
 #[test]
@@ -111,9 +130,9 @@ fn rebuild_notice_preserves_call_result_order_with_developer_role() {
         ),
     ];
     let value = request_json(&request).unwrap();
-    assert_eq!(value["input"][0]["type"], "function_call");
+    assert_eq!(value["input"][1]["type"], "function_call");
     assert_eq!(
-        value["input"][1],
+        value["input"][3],
         json!({"type":"message", "role":"developer", "content":[{"type":"input_text", "text":"Computer rebuilt; processes were lost."}]})
     );
     assert_eq!(value["input"][2]["type"], "function_call_output");
@@ -125,7 +144,7 @@ fn rebuild_notice_preserves_call_result_order_with_developer_role() {
 }
 
 fn parse(fixture: &str, chunk_size: usize) -> Vec<Delta> {
-    let mut parser = SseParser::default();
+    let mut parser = SseParser::with_context("fixture", "fixture-model");
     let mut deltas = vec![];
     for chunk in fixture.as_bytes().chunks(chunk_size) {
         deltas.extend(parser.push(chunk).unwrap());
@@ -216,21 +235,37 @@ fn sse_fixtures_preserve_text_calls_reasoning_and_usage_at_every_chunk_boundary(
 
 #[test]
 fn sse_errors_truncation_and_malformed_calls_fail() {
-    let mut parser = SseParser::default();
+    let mut parser = SseParser::with_context("fixture", "fixture-model");
     let error = parser
         .push(include_bytes!("fixtures/error.sse"))
         .unwrap_err();
     assert!(error.to_string().contains("quota_exceeded"));
     assert!(
-        SseParser::default()
+        SseParser::with_context("fixture", "fixture-model")
             .push(b"data: {\"type\":\"error\",\"message\":\"failed\"}\n\n")
             .is_err()
     );
-    assert!(SseParser::default().push(b"data: [DONE]\n\n").is_err());
-    assert!(SseParser::default().finish().is_err());
-    assert!(SseParser::default().push(b"data: invalid\n\n").is_err());
+    assert!(
+        SseParser::with_context("fixture", "fixture-model")
+            .push(b"data: [DONE]\n\n")
+            .is_err()
+    );
+    assert!(
+        SseParser::with_context("fixture", "fixture-model")
+            .finish()
+            .is_err()
+    );
+    assert!(
+        SseParser::with_context("fixture", "fixture-model")
+            .push(b"data: invalid\n\n")
+            .is_err()
+    );
     let bad = include_str!("fixtures/function.sse").replace("\\\"UTC\\\"}", "oops");
-    assert!(SseParser::default().push(bad.as_bytes()).is_err());
+    assert!(
+        SseParser::with_context("fixture", "fixture-model")
+            .push(bad.as_bytes())
+            .is_err()
+    );
 }
 
 #[test]
@@ -249,7 +284,11 @@ fn multiline_data_and_incomplete_response() {
 }
 
 #[tokio::test]
+#[cfg(feature = "fake")]
 async fn fake_scripts_and_counter_work_through_dyn_provider() {
+    use futures::TryStreamExt;
+    use std::time::Duration;
+    use swarmy_llm::{Provider, fake::FakeProvider};
     let response = Response {
         parts: vec![text("scripted")],
         stop_reason: StopReason::EndTurn,
@@ -348,7 +387,7 @@ fn image_request_body_for_each_protocol() {
         completions::request_json(&completions_req, "openrouter", completions_model).unwrap();
     for (actual, expected) in [
         (
-            responses["input"][0]["content"][0].clone(),
+            responses["input"][1]["content"][0].clone(),
             json!({"type":"input_image", "image_url":"data:image/png;base64,AQID", "detail":"low"}),
         ),
         (
@@ -408,8 +447,8 @@ fn responses_input(req: &Request) -> Vec<Value> {
         swarmy_llm::ClientAuth::ApiKey("test-key".into()),
     )
     .unwrap();
-    swarmy_llm::responses::request_json_for(req, &endpoint, "openai", Some(&openai), None).unwrap()
-        ["input"]
+    swarmy_llm::api::responses::request_json_for(req, &endpoint, "openai", Some(&openai), None)
+        .unwrap()["input"]
         .as_array()
         .unwrap()
         .clone()

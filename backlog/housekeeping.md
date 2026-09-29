@@ -33,18 +33,6 @@ be forgotten. Do them opportunistically alongside related work.
   in `swarmy-worker` failed once with "lease is absent, expired, or no longer
   matches". Both passed on rerun. Worth a look if they recur in CI.
 
-- After the CLI management commands moved behind the API (PR 132), the
-  store-backed `Agent`, `Image`, and `Session` List/Show handlers in
-  `crates/swarmy-session/src/runtime.rs` are unreachable from `swarmy` but
-  still callable through `swarmy-session` directly. Remove them so there is
-  one implementation.
-
-- `chat::named::open_chat_follows_a_summarized_main_with_a_notice`
-  (`crates/swarmy-cli/tests/session/chat_named.rs`) timed out once in CI on
-  2026-09-24 waiting for the typed message to appear on the successor
-  session; it passed on master minutes earlier. Timing-sensitive; widen the
-  wait or make the TUI fixture signal readiness before typing.
-
 - Low priority: session logs are kept forever, and tool outputs over 80 KiB
   spill to blobs that stay referenced as long as the session exists. At some
   point truncate long tool outputs in long-term session storage (keep the

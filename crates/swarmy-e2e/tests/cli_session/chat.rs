@@ -983,8 +983,7 @@ async fn root_chat_default_image_executes_pwd() {
         eprintln!("skipping root chat test: run the built test with sudo");
         return;
     }
-    let Ok(image) = std::env::var("SWARMY_TEST_IMAGE") else {
-        eprintln!("skipping root chat test: SWARMY_TEST_IMAGE is unset");
+    let Some(image) = swarmy_core::test_support::optional_env("SWARMY_TEST_IMAGE") else {
         return;
     };
     run(|fixture| async move {

@@ -342,8 +342,8 @@ async fn base_image(settings: &swarmy_config::Settings, store: &Store) -> Manife
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_node_scratch_is_local_persistent_and_removed_on_delete() {
     if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n"
-        || std::env::var_os("SWARMY_FDB_CLUSTER_FILE").is_none()
-        || std::env::var_os("SWARMY_S3_ENDPOINT").is_none()
+        || swarmy_core::test_support::stack_env_os("SWARMY_FDB_CLUSTER_FILE").is_none()
+        || swarmy_core::test_support::stack_env_os("SWARMY_S3_ENDPOINT").is_none()
     {
         eprintln!("skipping scratch acceptance: root and dev stack are required");
         return;
@@ -721,8 +721,7 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
         return;
     }
     for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
-        if std::env::var_os(variable).is_none() {
-            eprintln!("skipping node acceptance: {variable} is unset");
+        if swarmy_core::test_support::stack_env_os(variable).is_none() {
             return;
         }
     }
@@ -859,14 +858,14 @@ async fn network_cycles(node: &Node, store: &Store, head: ManifestId) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_dev_stack_uses_sandbox_loopback() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n"
-        || std::env::var_os("SWARMY_TEST_DEV_IMAGE").is_none()
-    {
-        eprintln!("skipping dev stack acceptance: root and SWARMY_TEST_DEV_IMAGE are required");
+    let Some(image_spec) = swarmy_core::test_support::optional_env("SWARMY_TEST_DEV_IMAGE") else {
+        return;
+    };
+    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
+        eprintln!("skipping dev stack acceptance: root is required");
         return;
     }
     boot_network();
-    let image_spec = std::env::var("SWARMY_TEST_DEV_IMAGE").unwrap();
     let (image_name, image_tag) = image_spec.split_once(':').expect("image must be name:tag");
     let settings = swarmy_config::Settings::load().unwrap().settings;
     let store = store(&settings).await;
@@ -1129,8 +1128,7 @@ async fn root_deleted_computer_stops_call_destroys_sandbox_and_detaches_device()
         "SWARMY_S3_ENDPOINT",
         "SWARMY_NATS_URL",
     ] {
-        if std::env::var_os(variable).is_none() {
-            eprintln!("skipping computer deletion acceptance: {variable} is unset");
+        if swarmy_core::test_support::stack_env_os(variable).is_none() {
             return;
         }
     }
@@ -1160,8 +1158,7 @@ async fn root_named_agent_calls_serialize_and_report_occupancy() {
         "SWARMY_S3_ENDPOINT",
         "SWARMY_NATS_URL",
     ] {
-        if std::env::var_os(variable).is_none() {
-            eprintln!("skipping shared calls acceptance: {variable} is unset");
+        if swarmy_core::test_support::stack_env_os(variable).is_none() {
             return;
         }
     }
@@ -1195,8 +1192,7 @@ async fn root_bash_yield_spill_stdin_and_web_fetch() {
         "SWARMY_S3_ENDPOINT",
         "SWARMY_NATS_URL",
     ] {
-        if std::env::var_os(variable).is_none() {
-            eprintln!("skipping bash yield acceptance: {variable} is unset");
+        if swarmy_core::test_support::stack_env_os(variable).is_none() {
             return;
         }
     }
@@ -1227,8 +1223,7 @@ async fn root_file_tools_run_on_agent_disk() {
         "SWARMY_S3_ENDPOINT",
         "SWARMY_NATS_URL",
     ] {
-        if std::env::var_os(variable).is_none() {
-            eprintln!("skipping file tools acceptance: {variable} is unset");
+        if swarmy_core::test_support::stack_env_os(variable).is_none() {
             return;
         }
     }

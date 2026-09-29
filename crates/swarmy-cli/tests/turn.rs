@@ -2,10 +2,7 @@ use std::process::Command;
 
 #[test]
 fn configured_stack_records_every_stage_for_both_turn_shapes() {
-    let Ok(image) = std::env::var("SWARMY_BENCH_IMAGE") else {
-        eprintln!(
-            "skipping turn benchmark integration: SWARMY_BENCH_IMAGE is unset; requires the turn fake script and a running node"
-        );
+    let Some(image) = swarmy_core::test_support::optional_env("SWARMY_BENCH_IMAGE") else {
         return;
     };
     let directory = tempfile::tempdir().unwrap();

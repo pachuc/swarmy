@@ -433,17 +433,7 @@ fn request_input(request: &Request, model: &ModelInfo) -> Result<ConverseStreamI
 }
 
 fn tool_id(id: &str) -> String {
-    if !id.is_empty()
-        && id.len() <= 64
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    {
-        id.into()
-    } else {
-        // Hashing avoids collisions between foreign IDs that sanitize identically.
-        blake3::hash(id.as_bytes()).to_hex().to_string()
-    }
+    crate::protocol::sanitize_tool_id(id, "", 64)
 }
 
 fn result_block(id: &str, text: String, error: bool) -> Result<ContentBlock, Error> {

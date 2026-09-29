@@ -375,7 +375,7 @@ async fn finish_reasons_errors_and_retry() {
             .request(request(id))
             .try_collect::<Vec<_>>()
             .await,
-        Err(Error::Protocol(_))
+        Err(Error::MalformedStream(_))
     ));
 }
 
