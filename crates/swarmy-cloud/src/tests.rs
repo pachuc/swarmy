@@ -1580,7 +1580,10 @@ fn node_settings(services: swarmy_config::RemoteServices, token: &str) -> swarmy
             services,
             ..settings()
         },
-        provider: "fake".into(),
+        selection: swarmy_config::SelectionSettings {
+            provider: "fake".into(),
+            ..Default::default()
+        },
         api: swarmy_config::ApiSettings {
             token: token.into(),
             ..Default::default()
