@@ -405,8 +405,8 @@ fn remote_name(command: &swarmy_cloud::Command) -> &'static str {
     }
 }
 
-/// Print what `remote down` would delete and prompt, then rerun confirmed.
-/// The rerun cannot need confirmation again: it passes `--yes`.
+/// Print what `remote down` would delete and read one confirmation.
+/// The caller reruns the original command with `confirmed` set.
 #[cfg(feature = "remote")]
 fn confirm_deletion(plan: &swarmy_cloud::DeletionPlan, json: bool) -> anyhow::Result<()> {
     use std::io::IsTerminal;

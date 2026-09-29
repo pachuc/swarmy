@@ -1,8 +1,8 @@
 use crate::vol_command::Command;
+use anyhow::{Context, Result};
 use std::{fmt::Write, sync::Arc};
 use swarmy_core::{ImageTag, VolumeId};
 use swarmy_store::{MAX_SCAN_LIMIT, Store};
-use swarmyd::{Result, other};
 
 /// Developer volume tools, served from the node daemon: attach and snapshot
 /// need local devices and the store, neither of which the client links.
@@ -50,10 +50,7 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         Command::Snapshot { volume } => {
             let id = VolumeId::from_ulid(volume);
             let store = store().await?;
-            let record = store
-                .get_volume(id)
-                .await?
-                .ok_or_else(|| other("volume not found"))?;
+            let record = store.get_volume(id).await?.context("volume not found")?;
             if record
                 .writer_lease
                 .as_ref()
@@ -79,16 +76,13 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
 async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
     match command {
         Command::Create { image } => {
-            let (name, tag) = image
-                .split_once(':')
-                .ok_or_else(|| other("expected NAME:TAG"))?;
-            // validate_label carries the reason; its source is preserved.
+            let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
             swarmy_volume::image::validate_label(name)?;
             swarmy_volume::image::validate_label(tag)?;
             let manifest = store
                 .get_image(name, &ImageTag(tag.into()))
                 .await?
-                .ok_or_else(|| other("image not found"))?;
+                .context("image not found")?;
             let id = VolumeId::from_ulid(ulid::Ulid::generate());
             store.create_volume(id, manifest).await?;
             output(
@@ -125,10 +119,7 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
         }
         Command::Show { volume } => {
             let id = VolumeId::from_ulid(volume);
-            let record = store
-                .get_volume(id)
-                .await?
-                .ok_or_else(|| other("volume not found"))?;
+            let record = store.get_volume(id).await?.context("volume not found")?;
 
             let mut chain = Vec::new();
             let mut text = format!(
@@ -141,7 +132,7 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
                 let header = store
                     .get_manifest(manifest)
                     .await?
-                    .ok_or_else(|| other("manifest missing"))?;
+                    .context("manifest missing")?;
                 write!(
                     text,
                     "\n{manifest} size={} root_hash={}",

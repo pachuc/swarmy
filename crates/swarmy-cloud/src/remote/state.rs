@@ -42,11 +42,10 @@ impl State {
         match fs::read(self.path(name, "json")?) {
             Ok(bytes) => {
                 let node: RemoteNode = serde_json::from_slice(&bytes)?;
-                if node.name != name {
-                    return Err(crate::Error::other(
-                        "remote state name does not match its filename",
-                    ));
-                }
+                crate::Error::ensure(
+                    node.name == name,
+                    "remote state name does not match its filename",
+                )?;
                 Ok(Some(node))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -112,11 +111,10 @@ impl State {
 
     pub fn remove_key(&self, node: &RemoteNode) -> Result<()> {
         // Only remove generated files inside our directory, even if state was edited.
-        if node.key_path.parent() != Some(self.directory.as_path()) {
-            return Err(crate::Error::other(
-                "key is outside the remote state directory",
-            ));
-        }
+        crate::Error::ensure(
+            node.key_path.parent() == Some(self.directory.as_path()),
+            "key is outside the remote state directory",
+        )?;
         for path in [
             node.key_path.clone(),
             node.key_path.with_extension("pub"),

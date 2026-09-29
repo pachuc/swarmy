@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use base64::Engine as _;
 use std::{
     sync::Arc,
@@ -10,7 +11,6 @@ use swarmy_core::{
 };
 use swarmy_sandbox::{ExecOutput, ExecRequest, RuncRuntime};
 use swarmy_store::{Store, StoreError};
-use swarmyd::{Error, Result, other};
 use tokio::sync::mpsc;
 
 const LEASE: Duration = Duration::from_secs(30);
@@ -47,10 +47,7 @@ async fn serve(
     loop {
         tokio::select! {
             delivery = messages.next() => {
-                let Some(message) = delivery else {
-                    return Err(other("node tool subscription closed"));
-                };
-                let message = message?;
+                let message = delivery.context("node tool subscription closed")??;
                 let hosting = hosting.clone();
                 let store = store.clone();
                 let bus = bus.clone();
@@ -63,7 +60,7 @@ async fn serve(
                         result = async {
                             loop {
                                 tokio::time::sleep(ack_wait / 3).await;
-                                if let Err(error) = message.extend_deadline().await { break Err(error.into()); }
+                                if let Err(error) = message.extend_deadline().await { break Err(anyhow::Error::from(error)); }
                             }
                         } => result,
                     };
@@ -89,7 +86,7 @@ async fn serve(
                             message.negative_acknowledge(Some(Duration::from_secs(2))).await?;
                         }
                     }
-                    Ok::<_, Error>(())
+                    Ok::<_, anyhow::Error>(())
                 });
             }
             Some(result) = calls.join_next(), if !calls.is_empty() => { result??; }
@@ -101,15 +98,16 @@ pub(crate) fn placement_refusal(
     current: Option<&PlacementRecord>,
     dispatched: &PlacementRecord,
     node: NodeId,
-) -> Option<Error> {
+) -> Option<anyhow::Error> {
     current
         .filter(|placement| placement.node_id != node)
         .or_else(|| (dispatched.node_id != node).then_some(dispatched))
         .map(|placement| {
-            other(format!(
+            anyhow::anyhow!(
                 "agent is placed on another node {} at epoch {}",
-                placement.node_id, placement.epoch
-            ))
+                placement.node_id,
+                placement.epoch
+            )
         })
 }
 
@@ -146,9 +144,7 @@ pub async fn execute(
             return Err(error.into());
         }
     };
-    if !claimed {
-        return Err(other("tool call already claimed"));
-    }
+    anyhow::ensure!(claimed, "tool call already claimed");
     let _activity = swarmy_volume::priority::ToolActivity::begin();
     tokio::select! {
         result = run(store, runtime, &claim, turn, needs_computer_sample) => result,
@@ -168,21 +164,21 @@ async fn run(
         agent_id: claim.placement.agent_id,
     };
     if claim.job.arguments.is_display_tool() {
-        let Some(agent) = store.get_agent(claim.placement.agent_id).await? else {
-            return Err(other("agent missing"));
-        };
-        if !store.image_display(&agent.image).await? {
-            return Err(other("display tool requires a display image"));
-        }
+        let agent = store
+            .get_agent(claim.placement.agent_id)
+            .await?
+            .context("agent missing")?;
+        anyhow::ensure!(
+            store.image_display(&agent.image).await?,
+            "display tool requires a display image"
+        );
     }
     let outcome = run_command(store, &runtime, &sandbox, claim).await?;
     let mut result = outcome.result;
     if let ToolResult::Completed { metadata, .. } = &mut result
         && let Some(encoded) = metadata.remove("image_base64")
     {
-        let Some(encoded) = encoded.as_str() else {
-            return Err(other("image payload must be base64"));
-        };
+        let encoded = encoded.as_str().context("image payload must be base64")?;
         let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
         let key = store.put_tool_blob(bytes).await?;
         metadata.insert("image_object_key".into(), serde_json::json!(key));
@@ -313,7 +309,7 @@ async fn run_command(
                 store
                     .get_volume(VolumeId::from_ulid(sandbox.agent_id.as_ulid()))
                     .await?
-                    .ok_or_else(|| other("agent volume missing"))?
+                    .context("agent volume missing")?
                     .head_manifest
             );
             let metadata = serde_json::from_value(value.clone())?;
@@ -425,9 +421,10 @@ async fn stop_result_process(
         serde_json::json!({"process_id": process_id}),
     )?);
     let (exit, _, stderr) = exec(runtime, sandbox, request(&arguments, epoch, "")).await?;
-    if exit.exit_code != 0 || exit.timed_out {
-        return Err(other(format!("process stop failed: {stderr}")));
-    }
+    anyhow::ensure!(
+        exit.exit_code == 0 && !exit.timed_out,
+        "process stop failed: {stderr}"
+    );
     Ok(())
 }
 
@@ -435,7 +432,7 @@ fn display_result(name: &str, mut value: serde_json::Value) -> Result<ToolResult
     let mut metadata = std::collections::BTreeMap::new();
     if let Some(encoded) = value
         .as_object_mut()
-        .ok_or_else(|| other("display result is not an object"))?
+        .context("display result is not an object")?
         .remove("image_base64")
     {
         metadata.insert("image_base64".into(), encoded);
@@ -603,9 +600,10 @@ pub async fn has_processes(runtime: &RuncRuntime, placement: &PlacementRecord) -
         request(&arguments, placement.epoch, ""),
     )
     .await?;
-    if exit.exit_code != 0 || exit.timed_out {
-        return Err(other(format!("process listing failed: {stderr}")));
-    }
+    anyhow::ensure!(
+        exit.exit_code == 0 && !exit.timed_out,
+        "process listing failed: {stderr}"
+    );
     let records: Vec<serde_json::Value> = serde_json::from_str(&stdout)?;
     Ok(records.iter().any(|record| record["status"] == "running"))
 }

@@ -15,7 +15,7 @@ impl Report {
     fn failed(&mut self, resource: &str, permission: &str, error: &crate::Error) {
         let detail = match error {
             crate::Error::MissingPermission { operation, source } => {
-                format!("{operation}: {}", crate::render_source(source.as_ref()))
+                format!("{operation}: {}", crate::render(source.as_ref()))
             }
             _ => crate::render(error),
         };
@@ -92,16 +92,14 @@ pub fn adoption_targets(state: &State, node: &RemoteNode) -> Result<Vec<(String,
         .cloud_settings()
         .instance_profile(&node.name)
         .ok_or_else(|| crate::Error::other("bucket has no node role"))?;
-    if state.bucket_shared(&node.name, bucket)? {
-        return Err(crate::Error::other(
-            "bucket is also recorded by another remote",
-        ));
-    }
-    if state.role_shared(&node.name, &role)? {
-        return Err(crate::Error::other(
-            "role is also recorded by another remote",
-        ));
-    }
+    crate::Error::ensure(
+        !state.bucket_shared(&node.name, bucket)?,
+        "bucket is also recorded by another remote",
+    )?;
+    crate::Error::ensure(
+        !state.role_shared(&node.name, &role)?,
+        "role is also recorded by another remote",
+    )?;
     Ok([
         ("bucket", bucket),
         ("role", role.as_str()),
@@ -164,12 +162,11 @@ pub async fn run(
         }
     }
     report.print();
-    if !report.live.is_empty() {
-        let live = report.live.join(", ");
-        return Err(crate::Error::other(format!(
-            "instances {live} may still exist; local state retained for retry"
-        )));
-    }
+    let live = report.live.join(", ");
+    crate::Error::ensure(
+        report.live.is_empty(),
+        format!("instances {live} may still exist; local state retained for retry"),
+    )?;
     cleanup_bucket_and_role(cloud, state, node, keep_bucket).await?;
     for current in nodes {
         state.remove_key(current)?;

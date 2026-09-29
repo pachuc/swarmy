@@ -1,8 +1,8 @@
+use anyhow::{Context, Result, ensure};
 use std::{collections::HashMap, sync::Arc};
 use swarmy_core::{ManifestId, MemoryRequest, NodeId, Sandbox, VolumeId};
 use swarmy_sandbox::{ExecRequest, RuncRuntime};
 use swarmy_store::Store;
-use swarmyd::{Result, other};
 use tokio::sync::Mutex;
 
 type CacheKey = (swarmy_core::AgentId, u64, ManifestId, u64, String, usize);
@@ -12,7 +12,7 @@ pub fn spawn(
     store: Store,
     runtime: Arc<RuncRuntime>,
     node: NodeId,
-) -> tokio::task::JoinHandle<std::result::Result<(), swarmy_bus::Error>> {
+) -> tokio::task::JoinHandle<Result<(), swarmy_bus::Error>> {
     let memory = Memory::new(store, runtime, node);
     tokio::spawn(async move {
         tokio::try_join!(
@@ -51,15 +51,17 @@ impl Memory {
     }
 
     async fn check(&self, request: &MemoryRequest) -> Result<()> {
-        let Some(placement) = self.store.get_by_agent(request.agent_id).await? else {
-            return Err(other("computer is not placed"));
-        };
-        if placement.node_id != self.node
-            || placement.epoch != request.epoch
-            || placement.expires_at <= jiff::Timestamp::now()
-        {
-            return Err(other("memory placement expired or changed"));
-        }
+        let placement = self
+            .store
+            .get_by_agent(request.agent_id)
+            .await?
+            .context("computer is not placed")?;
+        ensure!(
+            placement.node_id == self.node
+                && placement.epoch == request.epoch
+                && placement.expires_at > jiff::Timestamp::now(),
+            "memory placement expired or changed"
+        );
         Ok(())
     }
 
@@ -87,9 +89,10 @@ impl Memory {
             },
         )
         .await?;
-        if exit.exit_code != 0 || exit.timed_out {
-            return Err(other(format!("instruction read failed: {error}")));
-        }
+        ensure!(
+            exit.exit_code == 0 && !exit.timed_out,
+            "instruction read failed: {error}"
+        );
         self.check(&request).await?;
         Ok(text)
     }
@@ -140,9 +143,10 @@ impl Memory {
             },
         )
         .await?;
-        if exit.exit_code != 0 || exit.timed_out {
-            return Err(other(format!("memory read failed: {error}")));
-        }
+        ensure!(
+            exit.exit_code == 0 && !exit.timed_out,
+            "memory read failed: {error}"
+        );
         self.check(&request).await?;
         // Do not cache an observation that overlapped a write or rebuild.
         if fingerprint

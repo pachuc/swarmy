@@ -141,7 +141,10 @@ async fn read_remote_api_token(
         .await
         .map_err(crate::Error::ssh(&command))?;
     if !output.status.success() {
-        return Err(crate::Error::ssh_status(command, output.status));
+        return Err(crate::Error::SshStatus {
+            command,
+            status: output.status,
+        });
     }
     let remote: toml::Value = toml::from_str(&String::from_utf8(output.stdout)?)?;
     let token = remote
@@ -149,11 +152,10 @@ async fn read_remote_api_token(
         .and_then(|api| api.get("token"))
         .and_then(toml::Value::as_str)
         .unwrap_or("");
-    if token.is_empty() {
-        return Err(crate::Error::other(
-            "remote API has no token; run swarmy dev up on the node",
-        ));
-    }
+    crate::Error::ensure(
+        !token.is_empty(),
+        "remote API has no token; run swarmy dev up on the node",
+    )?;
     Ok(Some(token.to_owned()))
 }
 /// Open one session over the forwarding connection and record the cluster
@@ -181,7 +183,10 @@ async fn forward_session(
         .await
         .map_err(crate::Error::ssh(&command))?;
     if !output.status.success() {
-        return Err(crate::Error::ssh_status(command, output.status));
+        return Err(crate::Error::SshStatus {
+            command,
+            status: output.status,
+        });
     }
     let cluster = if node.launch_settings.is_some() {
         rewrite_address(&String::from_utf8(output.stdout)?, ports.fdb)?
@@ -302,11 +307,10 @@ fn rewrite_address(cluster: &str, port: u16) -> Result<String> {
     let Some((identity, address)) = line.split_once('@') else {
         return Err(crate::Error::other("invalid cluster file"));
     };
-    if !(identity.contains(':') && address.parse::<std::net::SocketAddr>().is_ok()) {
-        return Err(crate::Error::other(
-            "expected one coordinator address in remote cluster file",
-        ));
-    }
+    crate::Error::ensure(
+        identity.contains(':') && address.parse::<std::net::SocketAddr>().is_ok(),
+        "expected one coordinator address in remote cluster file",
+    )?;
     Ok(format!("{identity}@127.0.0.1:{port}\n"))
 }
 

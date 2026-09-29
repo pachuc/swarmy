@@ -13,12 +13,11 @@ pub async fn run(state_dir: &Path, state: &State, name: &str) -> Result<()> {
     let profile = RemoteProfile::read(state_dir, name)?;
     if ssh::control(&profile, "check").await?.status.success() {
         let output = ssh::control(&profile, "exit").await?;
-        if !output.status.success() {
-            return Err(crate::Error::other(format!(
-                "cannot stop tunnel: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        crate::Error::ensure(
+            output.status.success(),
+            format!("cannot stop tunnel: {stderr}"),
+        )?;
     }
     connect::cleanup(&profile)?;
     std::fs::remove_file(path)?;

@@ -83,11 +83,8 @@ pub enum Error {
         command: String,
         status: std::process::ExitStatus,
     },
-    #[error("SSH is unreachable at both instance addresses ({command})")]
-    SshUnavailable {
-        /// The probe attempted, such as "ssh 192.0.2.1 true or ssh 10.0.0.1 true".
-        command: String,
-    },
+    #[error("SSH is unreachable at both instance addresses")]
+    SshUnavailable,
     #[error("API at {endpoint}")]
     Client {
         endpoint: String,
@@ -102,24 +99,7 @@ pub enum Error {
 /// variant with `#[source]` must not also print the source in its message;
 /// the chain here supplies the causes.
 #[cfg(feature = "remote")]
-pub(crate) fn render(error: &Error) -> String {
-    // Transparent: the outer message is the cause's message.
-    if let Error::Other(source) = error {
-        return render_source(source.as_ref());
-    }
-    let mut out = error.to_string();
-    let mut next = std::error::Error::source(error);
-    while let Some(source) = next {
-        out.push_str(": ");
-        out.push_str(&source.to_string());
-        next = source.source();
-    }
-    out
-}
-
-/// Render an arbitrary cause with its source chain.
-#[cfg(feature = "remote")]
-pub(crate) fn render_source(error: &(dyn std::error::Error + 'static)) -> String {
+pub(crate) fn render(error: &(dyn std::error::Error + 'static)) -> String {
     let mut out = error.to_string();
     let mut next = error.source();
     while let Some(source) = next {
@@ -186,11 +166,6 @@ impl Error {
             command,
             source: source.into(),
         }
-    }
-
-    /// An SSH command that ran and exited nonzero.
-    pub(crate) fn ssh_status(command: String, status: std::process::ExitStatus) -> Self {
-        Self::SshStatus { command, status }
     }
 
     #[cfg(feature = "remote")]

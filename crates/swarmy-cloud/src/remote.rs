@@ -326,20 +326,16 @@ fn profile_not_propagated(error: &crate::Error) -> bool {
 pub(crate) async fn wait_running(cloud: &impl Cloud, id: &str, delay: Duration) -> Result<Machine> {
     for _ in 0..120 {
         if let Some(machine) = cloud.get(id).await? {
-            if machine.id != id {
-                return Err(crate::Error::other("provider returned a different machine"));
+            crate::Error::ensure(machine.id == id, "provider returned a different machine")?;
+            let state = machine.state.as_str();
+            if state == "running" && !machine.public_ip.is_empty() && !machine.private_ip.is_empty()
+            {
+                return Ok(machine);
             }
-            match machine.state.as_str() {
-                "running" if !machine.public_ip.is_empty() && !machine.private_ip.is_empty() => {
-                    return Ok(machine);
-                }
-                "pending" | "running" => {}
-                state => {
-                    return Err(crate::Error::other(format!(
-                        "machine {id} entered {state} while waiting for running"
-                    )));
-                }
-            }
+            crate::Error::ensure(
+                state == "pending" || state == "running",
+                format!("machine {id} entered {state} while waiting for running"),
+            )?;
         }
         tokio::time::sleep(delay).await;
     }

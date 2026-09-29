@@ -89,12 +89,7 @@ pub async fn reachable_address(node: &RemoteNode) -> Result<String> {
             return Ok(address.clone());
         }
     }
-    Err(crate::Error::SshUnavailable {
-        command: format!(
-            "ssh {} true or ssh {} true",
-            node.public_ip, node.private_ip
-        ),
-    })
+    Err(crate::Error::SshUnavailable)
 }
 
 /// The interactive login command to print after provisioning.
@@ -145,7 +140,10 @@ async fn checked(command: &mut Command, action: &str) -> Result<()> {
         .await
         .map_err(crate::Error::ssh(action))?;
     if !status.success() {
-        return Err(crate::Error::ssh_status(action.to_owned(), status));
+        return Err(crate::Error::SshStatus {
+            command: action.to_owned(),
+            status,
+        });
     }
     Ok(())
 }
@@ -153,7 +151,10 @@ async fn checked(command: &mut Command, action: &str) -> Result<()> {
 async fn run_output(command: &mut Command, action: &str) -> Result<std::process::Output> {
     let output = command.output().await.map_err(crate::Error::ssh(action))?;
     if !output.status.success() {
-        return Err(crate::Error::ssh_status(action.to_owned(), output.status));
+        return Err(crate::Error::SshStatus {
+            command: action.to_owned(),
+            status: output.status,
+        });
     }
     Ok(output)
 }
@@ -383,11 +384,10 @@ impl Ssh {
             )
             .await?;
             let cluster = String::from_utf8(cluster.stdout)?;
-            if !cluster.trim().ends_with("@127.0.0.1:4500") {
-                return Err(crate::Error::other(
-                    "primary cluster file does not advertise loopback port 4500; recreate this remote",
-                ));
-            }
+            crate::Error::ensure(
+                cluster.trim().ends_with("@127.0.0.1:4500"),
+                "primary cluster file does not advertise loopback port 4500; recreate this remote",
+            )?;
             checked(
                 base(node)?.arg(&address).arg(format!(
                     "mkdir -p swarmy/.dev && printf %s {} > swarmy/.dev/fdb.cluster",

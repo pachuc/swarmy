@@ -124,12 +124,13 @@ pub async fn run(
     primary: &RemoteNode,
     options: Options,
 ) -> Result<Vec<Summary>> {
-    if !(options.dirty_paths.is_empty() || options.allow_dirty) {
-        return Err(crate::Error::other(format!(
+    crate::Error::ensure(
+        options.dirty_paths.is_empty() || options.allow_dirty,
+        format!(
             "checkout has uncommitted paths ({}); commit or ignore them, or pass --allow-dirty",
             options.dirty_paths.join(", ")
-        )));
-    }
+        ),
+    )?;
     let mut nodes = Vec::new();
     visit(primary, &mut nodes);
     print_version(

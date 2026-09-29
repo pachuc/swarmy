@@ -16,7 +16,6 @@ clap.workspace = true
 rustix = { workspace = true, features = ["process"] }
 swarmy-bus.workspace = true
 ulid.workspace = true
-# Binary edge only (main.rs); the library above uses boxed std errors.
 anyhow.workspace = true
 swarmy-core.workspace = true
 swarmy-config.workspace = true

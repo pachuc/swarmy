@@ -23,9 +23,13 @@ where
 {
     fn aws_context(self, operation: &'static str) -> Result<T> {
         self.map_err(|error| {
-            let code = error.code().unwrap_or("unknown").to_owned();
-            let message = error.message().unwrap_or("unknown").to_owned();
-            if access_denied(Some(&code)) {
+            // Without a service code the failure is local (credentials,
+            // dispatch, network): keep the SDK error as the cause so the
+            // report shows it instead of a synthesized "unknown".
+            let Some(code) = error.code() else {
+                return crate::Error::context(error, operation);
+            };
+            if access_denied(Some(code)) {
                 crate::Error::MissingPermission {
                     operation: operation.to_owned(),
                     source: Box::new(error),
@@ -33,8 +37,8 @@ where
             } else {
                 crate::Error::Aws {
                     operation: operation.to_owned(),
-                    code,
-                    message,
+                    code: code.to_owned(),
+                    message: error.message().unwrap_or("unknown").to_owned(),
                 }
             }
         })
@@ -163,11 +167,10 @@ impl Aws {
         match location {
             Ok(output) => {
                 let found = bucket_region(output.location_constraint());
-                if found != region {
-                    return Err(crate::Error::other(format!(
-                        "bucket {bucket} is in {found}, not {region}"
-                    )));
-                }
+                crate::Error::ensure(
+                    found == region,
+                    format!("bucket {bucket} is in {found}, not {region}"),
+                )?;
             }
             Err(error)
                 if error
@@ -411,13 +414,12 @@ fn ensure_not_another_remote<'a>(
     tags: impl Iterator<Item = (&'a str, &'a str)>,
     owner: &str,
 ) -> Result<()> {
-    if tags
-        .into_iter()
-        .any(|(key, value)| key == REMOTE_TAG && value != owner)
-    {
-        return Err(crate::Error::other("resource is tagged for another remote"));
-    }
-    Ok(())
+    crate::Error::ensure(
+        !tags
+            .into_iter()
+            .any(|(key, value)| key == REMOTE_TAG && value != owner),
+        "resource is tagged for another remote",
+    )
 }
 
 fn owned<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, owner: &str) -> Ownership {
@@ -787,13 +789,14 @@ impl Cloud for Aws {
 
     async fn delete_bucket(&self, name: &str, owner: &str) -> Result<bool> {
         use aws_sdk_s3::types::{Delete, ObjectIdentifier};
-        match self.bucket_ownership(name, owner).await? {
-            Ownership::Absent => return Ok(false),
-            Ownership::Unmanaged => {
-                return Err(crate::Error::other("bucket ownership tags do not match"));
-            }
-            Ownership::Owned => {}
+        let ownership = self.bucket_ownership(name, owner).await?;
+        if ownership == Ownership::Absent {
+            return Ok(false);
         }
+        crate::Error::ensure(
+            ownership == Ownership::Owned,
+            "bucket ownership tags do not match",
+        )?;
         let mut count = 0usize;
         // Re-read the first page after every deletion. Markers would skip keys
         // when the page just deleted changes the listing beneath the cursor.
@@ -845,12 +848,13 @@ impl Cloud for Aws {
                 .send()
                 .await
                 .aws_context("s3:DeleteObjects")?;
-            if !result.errors().is_empty() {
-                return Err(crate::Error::other(format!(
+            crate::Error::ensure(
+                result.errors().is_empty(),
+                format!(
                     "s3:DeleteObjects failed for {} objects",
                     result.errors().len()
-                )));
-            }
+                ),
+            )?;
             count += size;
             if count / 10_000 != (count - size) / 10_000 {
                 cloud_out!("Deleted {count} objects from bucket {name}");
@@ -872,9 +876,10 @@ impl Cloud for Aws {
 
     async fn delete_node_role(&self, name: &str, owner: &str) -> Result<(bool, bool)> {
         let (profile_status, role_status) = self.role_ownership(name, owner).await?;
-        if profile_status == Ownership::Unmanaged || role_status == Ownership::Unmanaged {
-            return Err(crate::Error::other("IAM ownership tags do not match"));
-        }
+        crate::Error::ensure(
+            profile_status != Ownership::Unmanaged && role_status != Ownership::Unmanaged,
+            "IAM ownership tags do not match",
+        )?;
         let profile = match self
             .iam
             .get_instance_profile()
@@ -1217,22 +1222,20 @@ mod aws_context_tests {
             }
             error => panic!("expected Aws, got {error:?}"),
         }
-        let error = Err::<(), _>(aws_sdk_ec2::error::ErrorMetadata::builder().build())
+        // Errors without a service code (credentials, dispatch, network)
+        // keep the SDK error as their cause instead of a made-up "unknown".
+        let inner = aws_sdk_ec2::error::ErrorMetadata::builder().build();
+        let cause = inner.to_string();
+        let error = Err::<(), _>(inner)
             .aws_context("ec2:DescribeInstances")
             .unwrap_err();
         match &error {
-            crate::Error::Aws {
-                operation,
-                code,
-                message,
-            } => {
-                assert_eq!(operation, "ec2:DescribeInstances");
-                assert_eq!(code, "unknown");
-                assert_eq!(message, "unknown");
-            }
-            error => panic!("expected Aws, got {error:?}"),
+            crate::Error::Other(_) => {}
+            error => panic!("expected Other, got {error:?}"),
         }
-        assert_eq!(error.to_string(), "ec2:DescribeInstances: unknown: unknown");
+        let rendered = crate::render(&error);
+        assert!(rendered.contains("ec2:DescribeInstances"), "{rendered}");
+        assert!(rendered.contains(&cause), "{rendered}");
     }
 
     #[test]

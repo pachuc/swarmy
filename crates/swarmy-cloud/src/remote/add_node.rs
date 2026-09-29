@@ -31,15 +31,15 @@ pub async fn run(
         ));
     };
     shape.apply(&mut settings)?;
-    if primary.instance_id.is_empty() {
-        return Err(crate::Error::other("first node has not launched"));
-    }
+    crate::Error::ensure(
+        !primary.instance_id.is_empty(),
+        "first node has not launched",
+    )?;
     let _: std::net::Ipv4Addr = primary.private_ip.parse()?;
-    if settings.region != primary.region {
-        return Err(crate::Error::other(
-            "saved launch region differs from remote region",
-        ));
-    }
+    crate::Error::ensure(
+        settings.region == primary.region,
+        "saved launch region differs from remote region",
+    )?;
     let Some(image) = settings.aws.image.clone() else {
         return Err(crate::Error::other("saved launch image is missing"));
     };

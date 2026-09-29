@@ -292,11 +292,10 @@ async fn inventory(
         .url
         .clone()
         .unwrap_or_else(|| format!("http://{}", settings.api.listen));
-    if settings.api.token.is_empty() {
-        return Err(crate::Error::other(format!(
-            "no [api] token configured for remote {name}"
-        )));
-    }
+    crate::Error::ensure(
+        !settings.api.token.is_empty(),
+        format!("no [api] token configured for remote {name}"),
+    )?;
     let client = swarmy_client::Client::new(&endpoint, settings.api.token.clone())
         .map_err(|source| client_error(&endpoint, source))?;
     let snapshot = tokio::time::timeout(Duration::from_secs(10), client.doctor())

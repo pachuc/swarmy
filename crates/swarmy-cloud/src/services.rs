@@ -52,33 +52,29 @@ impl<'a> Options<'a> {
         recipe: Option<&'a Path>,
         keyring: Option<PathBuf>,
     ) -> Result<Self> {
-        if copy && settings.remote.services != RemoteServices::Node {
-            return Err(crate::Error::other(
-                "--copy-credential requires --services node (or remote.services = 'node')",
-            ));
-        }
+        crate::Error::ensure(
+            !copy || settings.remote.services == RemoteServices::Node,
+            "--copy-credential requires --services node (or remote.services = 'node')",
+        )?;
         if let Some(path) = &keyring {
             swarmy_config::Keyring::read(path)?;
         }
         let credential = if copy {
             let path = PathBuf::from(&settings.credential_file);
-            if !path.is_file() {
-                return Err(crate::Error::other(
-                    "configure credential_file before using --copy-credential",
-                ));
-            }
+            crate::Error::ensure(
+                path.is_file(),
+                "configure credential_file before using --copy-credential",
+            )?;
             Some(path)
         } else {
             None
         };
-        if settings.remote.services == RemoteServices::Node
-            && settings.provider != "fake"
-            && credential.is_none()
-        {
-            return Err(crate::Error::other(
-                "node gateway requires --copy-credential for ChatGPT; this explicitly acknowledges the credential leaves the laptop",
-            ));
-        }
+        crate::Error::ensure(
+            settings.remote.services != RemoteServices::Node
+                || settings.provider == "fake"
+                || credential.is_some(),
+            "node gateway requires --copy-credential for ChatGPT; this explicitly acknowledges the credential leaves the laptop",
+        )?;
         // Copy only service options. Local paths, cloud secrets, endpoints, and
         // the selected tunnel profile must never become node configuration.
         let mut remote = Settings {
@@ -173,10 +169,10 @@ pub async fn install(node: &RemoteNode, address: &str, options: &Options<'_>) ->
         .await
         .map_err(crate::Error::ssh("start node services"))?;
     if !status.success() {
-        return Err(crate::Error::ssh_status(
-            "start node services".to_owned(),
+        return Err(crate::Error::SshStatus {
+            command: "start node services".to_owned(),
             status,
-        ));
+        });
     }
     Ok(())
 }
@@ -204,7 +200,7 @@ async fn upload(node: &RemoteNode, address: &str, path: &str, bytes: &[u8]) -> R
         .map_err(crate::Error::ssh(&command))?;
     let status = child.wait().await.map_err(crate::Error::ssh(&command))?;
     if !status.success() {
-        return Err(crate::Error::ssh_status(command, status));
+        return Err(crate::Error::SshStatus { command, status });
     }
     Ok(())
 }

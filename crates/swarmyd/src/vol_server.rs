@@ -1,7 +1,7 @@
+use anyhow::Result;
 use std::path::PathBuf;
 use swarmy_core::VolumeId;
 use swarmy_volume::server::{self, ServerConfig};
-use swarmyd::{Result, other};
 
 async fn config() -> Result<ServerConfig> {
     let loaded = swarmy_config::Settings::load()?;
@@ -29,9 +29,10 @@ pub async fn attach(
     background: bool,
     json: bool,
 ) -> Result<()> {
-    if !rustix::process::geteuid().is_root() {
-        return Err(other("vol attach requires root; run it with sudo -E"));
-    }
+    anyhow::ensure!(
+        rustix::process::geteuid().is_root(),
+        "vol attach requires root; run it with sudo -E"
+    );
     let config = config().await?;
     let node = config.node;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;

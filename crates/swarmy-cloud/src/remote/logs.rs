@@ -14,7 +14,7 @@ pub async fn run(state: &State, name: &str) -> Result<()> {
         result = child.wait() => {
             let status = result.map_err(crate::Error::ssh(&command))?;
             if !status.success() {
-                return Err(crate::Error::ssh_status(command, status));
+                return Err(crate::Error::SshStatus { command, status });
             }
         }
         result = tokio::signal::ctrl_c() => {

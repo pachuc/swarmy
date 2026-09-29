@@ -7,12 +7,7 @@ mod vol;
 mod vol_command;
 mod vol_server;
 
-use anyhow::{Context as _, Result, ensure};
-
-/// Move a node-library failure into anyhow so the edge can name the command.
-fn boxed<T>(result: swarmyd::Result<T>) -> Result<T> {
-    result.map_err(anyhow::Error::from_boxed)
-}
+use anyhow::{Result, ensure};
 use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
 use swarmy_core::NodeRecord;
 use swarmy_sandbox::{RuncRuntime, ScratchPolicy};
@@ -40,19 +35,16 @@ fn main() -> Result<()> {
     if vol_command {
         let _network = swarmy_store::boot();
         let runtime = tokio::runtime::Runtime::new()?;
-        boxed(runtime.block_on(vol::run_cli())).context("swarmyd vol failed")?;
-        return Ok(());
+        return runtime.block_on(vol::run_cli());
     }
     let _network = swarmy_store::boot();
     let runtime = tokio::runtime::Runtime::new()?;
     if upgrade_processes {
-        let busy = boxed(runtime.block_on(upgrade::run(&loaded, |line| eprintln!("{line}"))))
-            .context("swarmyd upgrade check failed")?;
+        let busy = runtime.block_on(upgrade::run(&loaded, |line| eprintln!("{line}")))?;
         println!("{}", serde_json::to_string(&busy)?);
         Ok(())
     } else {
-        runtime.block_on(run(loaded)).context("swarmyd failed")?;
-        Ok(())
+        runtime.block_on(run(loaded))
     }
 }
 
@@ -82,8 +74,7 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
     std::fs::create_dir_all(&root)?;
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
     let runtime = open_runtime(&loaded, root.clone(), node, store.clone(), objects).await?;
-    let hosting =
-        boxed(hosting::Hosting::new(store.clone(), runtime.clone(), node, settings).await)?;
+    let hosting = hosting::Hosting::new(store.clone(), runtime.clone(), node, settings).await?;
     let socket = root.join("control.sock");
     if socket.exists() {
         std::fs::remove_file(&socket)?;
@@ -116,7 +107,7 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
         loop {
             tokio::select! {
                 result = &mut memory_server => { result??; break; }
-                result = &mut tool_server => { boxed(result?)?; break; }
+                result = &mut tool_server => { result??; break; }
                 connection = listener.accept() => {
                     let (socket, _) = connection?;
                     let runtime = runtime.clone();
@@ -128,7 +119,7 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
                 _ = heartbeat.tick() => {
                     record.last_heartbeat = jiff::Timestamp::now();
                     store.put_node(&record).await?;
-                    boxed(hosting.report_status(Duration::from_millis(settings.node_heartbeat_interval_ms).saturating_mul(3)).await)?;
+                    hosting.report_status(Duration::from_millis(settings.node_heartbeat_interval_ms).saturating_mul(3)).await?;
                 }
                 _ = scratch_sweep.tick() => {
                     if let Err(error) = runtime.sweep_scratch().await { tracing::warn!(%error, "scratch sweep failed"); }

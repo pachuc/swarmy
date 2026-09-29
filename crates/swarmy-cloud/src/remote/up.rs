@@ -154,11 +154,10 @@ async fn provision(
 }
 
 fn validate(settings: &RemoteSettings, name: &str) -> Result<()> {
-    if settings.region.is_empty() {
-        return Err(crate::Error::other(
-            "configure remote.region in config.toml before running swarmy remote up",
-        ));
-    }
+    crate::Error::ensure(
+        !settings.region.is_empty(),
+        "configure remote.region in config.toml before running swarmy remote up",
+    )?;
     for (field, value) in [
         ("subnet", &settings.aws.subnet),
         ("security_group", &settings.aws.security_group),
@@ -169,31 +168,33 @@ fn validate(settings: &RemoteSettings, name: &str) -> Result<()> {
             )));
         }
     }
-    if settings.disk_gb == 0
-        || settings.managed_by_tag.is_empty()
-        || settings.aws.instance_type.is_empty()
-    {
-        return Err(crate::Error::other(
-            "remote disk_gb must be positive and aws.instance_type and managed_by_tag must not be empty",
-        ));
-    }
+    crate::Error::ensure(
+        settings.disk_gb != 0
+            && !settings.managed_by_tag.is_empty()
+            && !settings.aws.instance_type.is_empty(),
+        "remote disk_gb must be positive and aws.instance_type and managed_by_tag must not be empty",
+    )?;
     if let Some(bucket) = &settings.bucket {
-        if name.len() > 57 {
-            return Err(crate::Error::other(
-                "bucket-backed remote name must be at most 57 characters to fit the IAM role name",
-            ));
-        }
-        if !(3..=63).contains(&bucket.len())
-            || !bucket
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-            || bucket.starts_with('-')
-            || bucket.ends_with('-')
-        {
-            return Err(crate::Error::other(
-                "remote.bucket must be a 3-63 character lowercase DNS name without dots (HTTPS virtual-hosted S3 requires this)",
-            ));
-        }
+        crate::Error::ensure(
+            name.len() <= 57,
+            "bucket-backed remote name must be at most 57 characters to fit the IAM role name",
+        )?;
+        crate::Error::ensure(
+            valid_bucket_name(bucket),
+            "remote.bucket must be a 3-63 character lowercase DNS name without dots (HTTPS virtual-hosted S3 requires this)",
+        )?;
     }
     Ok(())
+}
+
+/// S3 bucket names are lowercase DNS labels; HTTPS virtual-hosted requests
+/// fail otherwise, so reject them before creating cloud resources.
+fn valid_bucket_name(bucket: &str) -> bool {
+    fn dns(byte: u8) -> bool {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+    }
+    (3..=63).contains(&bucket.len())
+        && bucket.bytes().all(dns)
+        && !bucket.starts_with('-')
+        && !bucket.ends_with('-')
 }
