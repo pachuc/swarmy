@@ -539,15 +539,24 @@ impl Ssh {
             "stack"
         };
         cloud_out!("Provisioning node and building release binaries (this takes several minutes)");
+        // Static S3 keys travel on SSH stdin into a root-owned file, never on
+        // a command line. The provisioning script appends them to the 0600
+        // node environment without printing them.
+        crate::services::upload_bucket_keys(node, &address).await?;
         checked(
-            base(node)?.arg(&address).arg(provisioning_command(
-                mode,
-                service_ip,
-                node.bucket().unwrap_or(""),
-                &node.region,
-                node.sandboxes,
-                node,
-            )?),
+            base(node)?.arg(&address).arg({
+                let spec = node.bucket_spec();
+                provisioning_command(
+                    mode,
+                    service_ip,
+                    spec.as_ref().map(|spec| spec.bucket.as_str()).unwrap_or(""),
+                    &node.region,
+                    spec.as_ref().map(|spec| spec.endpoint.as_str()).unwrap_or(""),
+                    spec.as_ref().map(|spec| spec.prefix.as_str()).unwrap_or(""),
+                    node.sandboxes,
+                    node,
+                )?
+            }),
             "provision remote node",
         )
         .await?;
@@ -584,16 +593,20 @@ fn provisioning_command(
     service_ip: std::net::Ipv4Addr,
     bucket: &str,
     region: &str,
+    endpoint: &str,
+    prefix: &str,
     sandboxes: u32,
     node: &RemoteNode,
 ) -> Result<String> {
     let user = service_user(node)?;
     // Bash resolves `~user` through the passwd entry; Rust passes only the login.
     Ok(format!(
-        "cd {} && bash scripts/remote-provision.sh {mode} {service_ip} {} {} {sandboxes} {} {}",
+        "cd {} && bash scripts/remote-provision.sh {mode} {service_ip} {} {} {} {} {sandboxes} {} {}",
         tilde_repo(&user),
         shell_words::quote(bucket),
         shell_words::quote(region),
+        shell_words::quote(endpoint),
+        shell_words::quote(prefix),
         shell_words::quote(&user),
         shell_words::quote(node.local_storage()),
     ))
@@ -1003,12 +1016,12 @@ mod provisioning_command_tests {
     fn sandbox_limit_is_passed_to_both_node_modes() {
         let ip = "10.0.0.1".parse().unwrap();
         assert_eq!(
-            provisioning_command("stack", ip, "", "us-east-1", 0, &node()).unwrap(),
-            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 0 swarmy /dev/nvme1n1"
+            provisioning_command("stack", ip, "", "us-east-1", "", "", 0, &node()).unwrap(),
+            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 '' '' 0 swarmy /dev/nvme1n1"
         );
         assert_eq!(
-            provisioning_command("node", ip, "", "us-east-1", 4, &node()).unwrap(),
-            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh node 10.0.0.1 '' us-east-1 4 swarmy /dev/nvme1n1"
+            provisioning_command("node", ip, "", "us-east-1", "", "", 4, &node()).unwrap(),
+            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh node 10.0.0.1 '' us-east-1 '' '' 4 swarmy /dev/nvme1n1"
         );
     }
 
@@ -1023,8 +1036,8 @@ mod provisioning_command_tests {
         .unwrap();
         assert_eq!(legacy.service_user(), "ubuntu");
         assert_eq!(
-            provisioning_command("stack", ip, "", "us-east-1", 0, &legacy).unwrap(),
-            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 0 ubuntu ''"
+            provisioning_command("stack", ip, "", "us-east-1", "", "", 0, &legacy).unwrap(),
+            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 '' '' 0 ubuntu ''"
         );
     }
 
@@ -1042,8 +1055,27 @@ mod provisioning_command_tests {
         .unwrap();
         assert_eq!(existing.service_user(), "ubuntu");
         assert_eq!(
-            provisioning_command("stack", ip, "", "us-east-1", 0, &existing).unwrap(),
-            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 0 ubuntu ''"
+            provisioning_command("stack", ip, "", "us-east-1", "", "", 0, &existing).unwrap(),
+            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 '' '' 0 ubuntu ''"
+        );
+    }
+
+    #[test]
+    fn static_coordinates_are_quoted_positionally() {
+        let ip = "10.0.0.1".parse().unwrap();
+        assert_eq!(
+            provisioning_command(
+                "stack",
+                ip,
+                "test-bucket",
+                "eu-west-1",
+                "https://objects.example.invalid",
+                "runs/team",
+                4,
+                &node(),
+            )
+            .unwrap(),
+            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 test-bucket eu-west-1 https://objects.example.invalid runs/team 4 swarmy /dev/nvme1n1"
         );
     }
 }

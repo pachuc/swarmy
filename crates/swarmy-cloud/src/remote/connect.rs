@@ -244,8 +244,7 @@ pub(super) fn new_profile(
             format!("http://127.0.0.1:{api_port}")
         }),
         api_token: None,
-        s3_bucket: node.bucket().map(str::to_owned),
-        s3_region: node.bucket().map(|_| node.region.clone()),
+        bucket: node.bucket_spec(),
         default_image: node.default_image.clone(),
     })
 }
@@ -288,7 +287,7 @@ fn tunnel_command(
         .args(["-o", "ControlPersist=no", "-o", "ExitOnForwardFailure=yes"]);
     for (local, remote) in [(ports.fdb, node.ports.fdb), (ports.nats, node.ports.nats)]
         .into_iter()
-        .chain((profile.s3_bucket.is_none()).then_some((ports.s3, node.ports.s3)))
+        .chain((profile.bucket.is_none()).then_some((ports.s3, node.ports.s3)))
         .chain(remote_api(node).then_some((api_port, 8742)))
     {
         crate::Error::ensure(remote != 0, "remote ports must be nonzero")?;
@@ -357,12 +356,21 @@ fn print(profile: &RemoteProfile, json: bool, timing: &Timing) -> Result<()> {
         output["timing"] = serde_json::to_value(timing)?;
         cloud_out!("{output}");
     } else {
+        // The bucket description prints without secrets; keys stay in the
+        // 0600 profile file and never reach terminal output or logs.
+        let s3 = match &profile.bucket {
+            Some(spec) if spec.endpoint.is_empty() => {
+                format!("{} ({})", spec.bucket, spec.region)
+            }
+            Some(spec) => format!("{} at {}", spec.bucket, spec.endpoint),
+            None => profile.s3_endpoint.clone(),
+        };
         cloud_out!(
             "export SWARMY_REMOTE={}\n# FoundationDB: {}\n# NATS: {}\n# S3: {}",
             profile.name,
             profile.fdb_cluster_file.display(),
             profile.nats_url,
-            profile.s3_bucket.as_deref().unwrap_or(&profile.s3_endpoint)
+            s3
         );
         if let Some(image) = &profile.default_image {
             cloud_out!("# Default image: {image}");
@@ -443,8 +451,7 @@ mod tests {
             s3_endpoint: String::new(),
             api_url: None,
             api_token: None,
-            s3_bucket: None,
-            s3_region: None,
+            bucket: None,
             default_image: None,
         };
         for (settings, destination) in [
@@ -476,8 +483,11 @@ mod tests {
         );
         node.launch_settings = None;
         let mut bucket_profile = profile;
-        bucket_profile.s3_bucket = Some("bucket-test".into());
-        bucket_profile.s3_region = Some("us-east-1".into());
+        bucket_profile.bucket = Some(swarmy_config::BucketSpec {
+            region: "us-east-1".into(),
+            bucket: "bucket-test".into(),
+            ..Default::default()
+        });
         let (command, _) =
             tunnel_command(&node, &bucket_profile, dir.path(), &node.public_ip).unwrap();
         let args: Vec<_> = command
@@ -497,7 +507,7 @@ mod tests {
         }))
         .unwrap();
         node.launch_settings = Some(swarmy_config::RemoteSettings {
-            bucket: Some("bucket-test".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("bucket-test")),
             ..Default::default()
         });
         let (reservations, ports) = reserve_ports(&node).unwrap();

@@ -152,7 +152,7 @@ impl Cloud for FakeCloud {
         self.terminated.borrow_mut().push(id.into());
         std::future::ready(Ok(()))
     }
-    fn bucket_ownership(&self, _: &str, _: &str) -> impl Future<Output = Result<Ownership>> {
+    fn bucket_ownership(&self, _: &ObjectBucket) -> impl Future<Output = Result<Ownership>> {
         if self.deny_tag_read.get() {
             return std::future::ready(Err(denied("s3:GetBucketTagging")));
         }
@@ -183,13 +183,15 @@ impl Cloud for FakeCloud {
             status(self.untagged_role.get()),
         )))
     }
-    fn tag_bucket(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
+    fn tag_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<()>> {
         if self.foreign_bucket.get() {
             return std::future::ready(Err(crate::Error::other(
                 "bucket belongs to another remote",
             )));
         }
-        self.tagged.borrow_mut().push(format!("bucket {name}"));
+        self.tagged
+            .borrow_mut()
+            .push(format!("bucket {}", bucket.name));
         std::future::ready(Ok(()))
     }
     fn tag_node_role(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
@@ -201,11 +203,13 @@ impl Cloud for FakeCloud {
             .push(format!("role and profile {name}"));
         std::future::ready(Ok(()))
     }
-    fn delete_bucket(&self, name: &str, _: &str) -> impl Future<Output = Result<bool>> {
+    fn delete_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<bool>> {
         if self.deny_version_list.get() {
             return std::future::ready(Err(denied("s3:ListBucketVersions")));
         }
-        self.teardown.borrow_mut().push(format!("bucket {name}"));
+        self.teardown
+            .borrow_mut()
+            .push(format!("bucket {}", bucket.name));
         std::future::ready(Ok(!self.absent.get()))
     }
     fn delete_node_role(&self, name: &str, _: &str) -> impl Future<Output = Result<(bool, bool)>> {
@@ -1206,7 +1210,7 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
         sandboxes: 0,
     };
     let settings = RemoteSettings {
-        bucket: Some("test-bucket".into()),
+        bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
         ..settings()
     };
     up::run(
@@ -1306,7 +1310,7 @@ async fn iam_role_override_reaches_bucket_and_machine() {
     observe_running(&cloud);
     let host = FakeHost::default();
     let mut settings = settings();
-    settings.bucket = Some("test-bucket".into());
+    settings.bucket = Some(swarmy_config::BucketSpec::aws("test-bucket"));
     settings.aws.iam_role = Some("custom-node-role".into());
     up::run(
         &cloud,
@@ -1757,7 +1761,7 @@ async fn bucket_profile_is_kept_when_key_deletion_is_denied() {
     let cloud = FakeCloud::default();
     observe_running(&cloud);
     let settings = RemoteSettings {
-        bucket: Some("test-bucket".into()),
+        bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
         ..settings()
     };
     up::run(
@@ -1900,7 +1904,7 @@ async fn down_deletes_bucket_then_role_after_nodes_and_retries_absent_resources(
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -1947,7 +1951,7 @@ async fn down_plan_reports_owned_resources_for_confirmation() {
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -1982,7 +1986,7 @@ async fn down_leaves_untagged_resources_and_removes_state() {
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -2022,7 +2026,7 @@ async fn down_keeps_mixed_ownership_iam_pairs() {
             &FakeHost::default(),
             &state,
             &RemoteSettings {
-                bucket: Some("test-bucket".into()),
+                bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
                 ..settings()
             },
             up::NewNode {
@@ -2066,7 +2070,7 @@ async fn down_refuses_bucket_shared_by_another_remote() {
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -2107,7 +2111,7 @@ async fn tag_requires_exact_resource_names_and_calls_cloud_only_after_all_confir
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -2160,7 +2164,7 @@ async fn down_ignores_tunnel_profile_and_keeps_shared_role() {
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -2177,7 +2181,7 @@ async fn down_ignores_tunnel_profile_and_keeps_shared_role() {
     assert!(!state.bucket_shared("cleanup", "test-bucket").unwrap());
     let mut other = node.clone();
     other.name = "other".into();
-    other.launch_settings.as_mut().unwrap().bucket = Some("different-bucket".into());
+    other.launch_settings.as_mut().unwrap().bucket = Some(swarmy_config::BucketSpec::aws("different-bucket"));
     // The other remote uses the same IAM override, but not the same bucket.
     other.launch_settings.as_mut().unwrap().aws.iam_role = Some("swarmy-cleanup".into());
     state.save(&other).unwrap();
@@ -2213,7 +2217,7 @@ async fn tag_refuses_cloud_resources_owned_by_another_remote() {
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -2254,7 +2258,7 @@ async fn denied_ownership_and_version_reads_retain_state_and_explain_permission(
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -2294,7 +2298,7 @@ async fn up_continues_when_creation_tags_are_denied_and_down_keeps_untagged_reso
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
