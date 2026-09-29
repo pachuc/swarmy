@@ -4467,9 +4467,6 @@
               "null"
             ]
           },
-          "archived": {
-            "type": "boolean"
-          },
           "computer_deleted": {
             "type": "boolean"
           },
