@@ -132,8 +132,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: taiki-e/install-action@cargo-deny
-      - uses: taiki-e/install-action@cargo-machete
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete@0.9.2
       - run: cargo deny check licenses bans sources
       - run: cargo machete
   advisories:
@@ -142,5 +146,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: taiki-e/install-action@cargo-deny
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
       - run: cargo deny check advisories
