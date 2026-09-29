@@ -8,12 +8,12 @@ use crate::Result;
 use swarmy_config::{RemoteNode, validate_remote_name};
 
 /// The `remote` directory under the state directory: node records, keys, and the lock.
-pub struct State {
+pub(super) struct State {
     pub directory: PathBuf,
 }
 
 impl State {
-    pub fn open(directory: &Path) -> Result<Self> {
+    pub(super) fn open(directory: &Path) -> Result<Self> {
         fs::create_dir_all(directory)?;
         fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
         Ok(Self {
@@ -22,7 +22,7 @@ impl State {
     }
 
     /// Serialize every remote command on this state directory.
-    pub fn lock(&self) -> Result<File> {
+    pub(super) fn lock(&self) -> Result<File> {
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -38,7 +38,7 @@ impl State {
         Ok(self.directory.join(format!("{name}.{extension}")))
     }
 
-    pub fn read(&self, name: &str) -> Result<Option<RemoteNode>> {
+    pub(super) fn read(&self, name: &str) -> Result<Option<RemoteNode>> {
         match fs::read(self.path(name, "json")?) {
             Ok(bytes) => {
                 let node: RemoteNode = serde_json::from_slice(&bytes)?;
@@ -53,7 +53,7 @@ impl State {
         }
     }
 
-    pub fn require(&self, name: &str) -> Result<RemoteNode> {
+    pub(super) fn require(&self, name: &str) -> Result<RemoteNode> {
         self.read(name)?
             .ok_or_else(|| crate::Error::NotFound(name.to_owned()))
     }
@@ -79,11 +79,11 @@ impl State {
         Ok(false)
     }
 
-    pub fn bucket_shared(&self, owner: &str, bucket: &str) -> Result<bool> {
+    pub(super) fn bucket_shared(&self, owner: &str, bucket: &str) -> Result<bool> {
         self.shared(owner, |other| other.bucket() == Some(bucket))
     }
 
-    pub fn role_shared(&self, owner: &str, role: &str) -> Result<bool> {
+    pub(super) fn role_shared(&self, owner: &str, role: &str) -> Result<bool> {
         self.shared(owner, |other| {
             other
                 .cloud_settings()
@@ -93,7 +93,7 @@ impl State {
         })
     }
 
-    pub fn save(&self, node: &RemoteNode) -> Result<()> {
+    pub(super) fn save(&self, node: &RemoteNode) -> Result<()> {
         let path = self.path(&node.name, "json")?;
         let mut bytes = serde_json::to_vec_pretty(node)?;
         bytes.push(b'\n');
@@ -102,14 +102,14 @@ impl State {
         Ok(())
     }
 
-    pub fn remove(&self, node: &RemoteNode) -> Result<()> {
+    pub(super) fn remove(&self, node: &RemoteNode) -> Result<()> {
         self.remove_key(node)?;
         fs::remove_file(self.path(&node.name, "json")?)?;
         File::open(&self.directory)?.sync_all()?;
         Ok(())
     }
 
-    pub fn remove_key(&self, node: &RemoteNode) -> Result<()> {
+    pub(super) fn remove_key(&self, node: &RemoteNode) -> Result<()> {
         // Only remove generated files inside our directory, even if state was edited.
         crate::Error::ensure(
             node.key_path.parent() == Some(self.directory.as_path()),
@@ -132,7 +132,7 @@ impl State {
 }
 
 /// Replace a file atomically; the temporary file is private to this user.
-pub fn write(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) fn write(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     let Some(parent) = path.parent() else {
         return Err(crate::Error::other("path has no parent"));

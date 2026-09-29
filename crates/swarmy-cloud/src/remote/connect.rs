@@ -28,7 +28,7 @@ impl Drop for StartingTunnel {
     }
 }
 
-pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Result<()> {
+pub(super) async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Result<()> {
     let started = Instant::now();
     let _lock = state.lock()?;
     let node = state.require(name)?;
@@ -112,7 +112,7 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
 }
 
 fn reserve_api(
-    node: &swarmy_config::RemoteNode,
+    node: &RemoteNode,
     reservations: &mut Vec<TcpListener>,
 ) -> Result<u16> {
     if !remote_api(node) {
@@ -124,7 +124,7 @@ fn reserve_api(
     Ok(port)
 }
 async fn read_remote_api_token(
-    node: &swarmy_config::RemoteNode,
+    node: &RemoteNode,
     profile: &RemoteProfile,
     address: &str,
 ) -> Result<Option<String>> {
@@ -200,7 +200,7 @@ async fn forward_session(
     Ok(())
 }
 
-fn remote_api(node: &swarmy_config::RemoteNode) -> bool {
+fn remote_api(node: &RemoteNode) -> bool {
     node.launch_settings
         .as_ref()
         .is_some_and(|settings| settings.services == swarmy_config::RemoteServices::Node)
@@ -208,7 +208,7 @@ fn remote_api(node: &swarmy_config::RemoteNode) -> bool {
 
 pub(super) fn new_profile(
     state_dir: &Path,
-    node: &swarmy_config::RemoteNode,
+    node: &RemoteNode,
     ports: RemotePorts,
     api_port: u16,
     socket_path: std::path::PathBuf,
@@ -239,7 +239,7 @@ pub(super) fn new_profile(
     })
 }
 
-fn reserve_ports(node: &swarmy_config::RemoteNode) -> Result<(Vec<TcpListener>, RemotePorts)> {
+fn reserve_ports(node: &RemoteNode) -> Result<(Vec<TcpListener>, RemotePorts)> {
     let mut reservations = vec![reserve(node.ports.fdb)?, reserve(node.ports.nats)?];
     let s3 = if node.bucket().is_some() {
         0
@@ -258,7 +258,7 @@ fn reserve_ports(node: &swarmy_config::RemoteNode) -> Result<(Vec<TcpListener>, 
 }
 
 fn tunnel_command(
-    node: &swarmy_config::RemoteNode,
+    node: &RemoteNode,
     profile: &RemoteProfile,
     state_dir: &Path,
     address: &str,
@@ -415,7 +415,7 @@ mod tests {
     fn all_tunnels_forward_to_loopback() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("remote")).unwrap();
-        let mut node: swarmy_config::RemoteNode = serde_json::from_value(serde_json::json!({
+        let mut node: RemoteNode = serde_json::from_value(serde_json::json!({
             "name": "test", "region": "test", "instance_id": "i-test",
             "public_ip": "203.0.113.1", "private_ip": "10.0.0.1",
             "key_path": "key", "launch_attempted":true,"created_at": "now"
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn bucket_remote_reserves_only_database_and_bus_ports() {
-        let mut node: swarmy_config::RemoteNode = serde_json::from_value(serde_json::json!({
+        let mut node: RemoteNode = serde_json::from_value(serde_json::json!({
             "name": "test", "region": "us-east-1", "instance_id": "i-test",
             "public_ip": "203.0.113.1", "private_ip": "10.0.0.1",
             "key_path": "key", "launch_attempted":true,"created_at": "now"

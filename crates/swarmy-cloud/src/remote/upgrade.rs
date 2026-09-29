@@ -8,17 +8,17 @@ use swarmy_config::RemoteNode;
 use super::ssh;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Scope {
+pub(super) enum Scope {
     All,
     ServicesOnly,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Format {
+pub(super) enum Format {
     Human,
     Json,
 }
 
-pub struct Options {
+pub(super) struct Options {
     pub dirty_paths: Vec<String>,
     pub allow_dirty: bool,
     pub scope: Scope,
@@ -27,7 +27,7 @@ pub struct Options {
 }
 
 impl Options {
-    pub fn new(allow_dirty: bool, services_only: bool, drain_timeout: u64, json: bool) -> Self {
+    pub(super) fn new(allow_dirty: bool, services_only: bool, drain_timeout: u64, json: bool) -> Self {
         Self {
             dirty_paths: Vec::new(),
             allow_dirty,
@@ -42,7 +42,7 @@ impl Options {
     }
 }
 
-pub async fn command(state: &super::state::State, name: &str, mut options: Options) -> Result<()> {
+pub(super) async fn command(state: &super::state::State, name: &str, mut options: Options) -> Result<()> {
     let _lock = state.lock()?;
     let node = state.require(name)?;
     let host = ssh::Ssh::discover()?;
@@ -51,14 +51,14 @@ pub async fn command(state: &super::state::State, name: &str, mut options: Optio
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-pub struct Summary {
+pub(super) struct Summary {
     pub node: String,
     pub changed: Vec<String>,
     pub restarted: Vec<String>,
     pub elapsed_seconds: f64,
 }
 
-pub trait UpgradeHost {
+pub(super) trait UpgradeHost {
     async fn version(&self, node: &RemoteNode) -> Result<String>;
     async fn has_service_units(&self, node: &RemoteNode) -> Result<bool>;
     async fn upgrade(
@@ -119,7 +119,7 @@ pub(super) fn json_line(summary: &Summary) -> Result<String> {
     Ok(serde_json::to_string(summary)?)
 }
 
-pub async fn run(
+pub(super) async fn run(
     host: &impl UpgradeHost,
     primary: &RemoteNode,
     options: Options,

@@ -6,12 +6,12 @@ use swarmy_config::{RemoteNode, RemotePorts, RemoteSettings};
 use super::{Cloud, Host, MachineSpec, ObjectBucket, key_name, state::State, wait_running};
 
 #[derive(Clone, Copy)]
-pub struct NewNode<'a> {
+pub(super) struct NewNode<'a> {
     pub name: &'a str,
     pub sandboxes: u32,
 }
 
-pub async fn run(
+pub(super) async fn run(
     cloud: &impl Cloud,
     host: &impl Host,
     state: &State,
