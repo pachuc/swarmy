@@ -968,7 +968,7 @@ async fn key_from_source(
             .trim()
             .to_owned());
     }
-    let providers = swarmy_client::api_client::call(endpoint, client.cli_providers()).await?;
+    let providers = swarmy_client::api_client::call(endpoint, client.providers()).await?;
     let names = providers
         .iter()
         .find(|row| row.id == provider)

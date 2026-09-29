@@ -874,17 +874,6 @@ pub struct ApiError {
     pub provider_text: Option<String>,
 }
 
-/// CLI projections retain store record fields for compatibility with existing scripts.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliSession {
-    pub session_id: String,
-    pub resolved_inference: serde_json::Value,
-    pub archived: bool,
-    pub main: bool,
-    pub agent_name: Option<String>,
-    #[serde(flatten)]
-    pub record: std::collections::BTreeMap<String, serde_json::Value>,
-}
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct SessionDetail {
     #[schema(value_type = serde_json::Value)]
@@ -926,31 +915,6 @@ pub struct CliAgent {
     #[serde(flatten)]
     pub record: std::collections::BTreeMap<String, serde_json::Value>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliImage {
-    pub name: String,
-    pub tag: String,
-    pub manifest_id: String,
-    pub header: serde_json::Value,
-    pub scratch: Vec<String>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliCredential {
-    pub provider: String,
-    pub kind: String,
-    pub label: String,
-    pub status: String,
-    pub updated_at: String,
-    #[serde(default)]
-    pub created_at: String,
-    #[serde(default)]
-    pub last_used_at: Option<String>,
-    pub expires_at: Option<String>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliSaved {
-    pub saved: bool,
-}
 /// Input for CLI agent creation or settings updates.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct CliAgentChoice {
@@ -970,28 +934,9 @@ pub struct CliAgentChoice {
     #[serde(default)]
     pub route: Option<String>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliCredentialInput {
-    pub idempotency_key: String,
-    pub provider: String,
-    #[serde(default)]
-    pub label: Option<String>,
-    /// Encrypted by the API, never returned by credential endpoints.
-    pub record: serde_json::Value,
-}
-
 /// CLI compatibility routes. These signatures are mirrored by the server router.
 pub mod cli_paths {
-    use super::{
-        ApiError, CliAgent, CliAgentChoice, CliCredential, CliCredentialInput, CliImage, CliSaved,
-        CliSession, DoctorSnapshot,
-    };
-    #[utoipa::path(get, path = "/v1/cli/doctor",
-        responses((status = 200, body = DoctorSnapshot), (status = 503, body = ApiError)))]
-    pub fn cli_doctor() {}
-    #[utoipa::path(get, path = "/v1/cli/sessions",
-        responses((status = 200, body = Vec<CliSession>), (status = 400, body = ApiError)))]
-    pub fn cli_sessions() {}
+    use super::{ApiError, CliAgent, CliAgentChoice};
     #[utoipa::path(get, path = "/v1/cli/agents",
         responses((status = 200, body = Vec<CliAgent>), (status = 400, body = ApiError)))]
     pub fn cli_agents() {}
@@ -1006,19 +951,6 @@ pub mod cli_paths {
     request_body = CliAgentChoice,
         responses((status = 200, body = CliAgent), (status = 400, body = ApiError)))]
     pub fn cli_update_agent() {}
-    #[utoipa::path(get, path = "/v1/cli/images/{name}/{tag}",
-        responses((status = 200, body = CliImage), (status = 400, body = ApiError)))]
-    pub fn cli_image() {}
-    #[utoipa::path(get, path = "/v1/cli/credentials",
-        responses((status = 200, body = Vec<CliCredential>), (status = 400, body = ApiError)))]
-    pub fn cli_credentials() {}
-    #[utoipa::path(post, path = "/v1/cli/credentials",
-    request_body = CliCredentialInput,
-        responses((status = 200, body = CliSaved), (status = 400, body = ApiError)))]
-    pub fn cli_set_credential() {}
-    #[utoipa::path(get, path = "/v1/cli/credentials/{provider}",
-        responses((status = 200, body = CliCredential), (status = 400, body = ApiError)))]
-    pub fn cli_credential() {}
 }
 
 /// Versioned resource routes. These signatures are mirrored by the server router.
@@ -1026,15 +958,18 @@ pub mod api_paths {
     use super::{
         Agent, AgentDeleted, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession,
         CreateAgent, CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
-        EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload, InterruptOutcome,
-        InterruptSession, Model, ProbeModel, ProbeResult, Provider, PutCredentialRecord,
-        QuotaEntry, Route, RouteDeleted, Session, SessionClosed, SessionDetail, SetEntryQuota,
-        SetRoute, SetSessionRoute, StartGcRun, Subscription, TurnMetrics, UpdateAgent,
-        UsageResponse,
+        DoctorSnapshot, EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload,
+        InterruptOutcome, InterruptSession, Model, ProbeModel, ProbeResult, Provider,
+        PutCredentialRecord, QuotaEntry, Route, RouteDeleted, Session, SessionClosed,
+        SessionDetail, SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun, Subscription,
+        TurnMetrics, UpdateAgent, UsageResponse,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
     pub fn health() {}
+    #[utoipa::path(get, path = "/v1/doctor",
+        responses((status = 200, body = DoctorSnapshot), (status = 503, body = ApiError)))]
+    pub fn doctor() {}
     #[utoipa::path(get, path = "/v1/openapi.json",
         responses((status = 200, description = "The OpenAPI document for this server version")))]
     pub fn openapi() {}
@@ -1300,7 +1235,7 @@ pub mod api_paths {
     info(title = "Swarmy API", version = "1.0.0", description = "Version 1 control plane. Additive-only within /v1: new routes and fields may appear, nothing is removed or retyped, and deprecations carry an x-sunset date. See docs/api.md."),
     servers((url = "/v1", description = "Version 1 control plane")),
     paths(
-        api_paths::health, api_paths::openapi, api_paths::docs,
+        api_paths::health, api_paths::doctor, api_paths::openapi, api_paths::docs,
         api_paths::list_agents, api_paths::create_agent, api_paths::show_agent,
         api_paths::update_agent, api_paths::delete_agent,
         api_paths::list_sessions, api_paths::create_session, api_paths::show_session,
@@ -1320,10 +1255,9 @@ pub mod api_paths {
         api_paths::usage,
         api_paths::list_routes, api_paths::set_route, api_paths::show_route,
         api_paths::delete_route, api_paths::set_session_route,
-        cli_paths::cli_doctor, cli_paths::cli_sessions, cli_paths::cli_agents,
+        cli_paths::cli_agents,
         cli_paths::cli_create_agent, cli_paths::cli_agent, cli_paths::cli_update_agent,
-        cli_paths::cli_image, cli_paths::cli_credentials, cli_paths::cli_set_credential,
-        cli_paths::cli_credential
+
     ),
     components(schemas(
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
@@ -1338,8 +1272,8 @@ pub mod api_paths {
     InterruptStatus, InterruptOutcome, SessionClosed,
     CreateImage, CreateCredential, CredentialDeleted, AgentDeleted, SetEntryQuota, EntryQuotaView, QuotaEntry, EntryQuotaDetail,
     UsageTotalsView, UsageGroupView, UsageResponse, EntryUsageView,
-    Event, EventPayload, ApiError, CliSession, SessionDetail,
-    CliAgent, CliImage, CliCredential, CliSaved, CliAgentChoice, CliCredentialInput,
+    Event, EventPayload, ApiError, SessionDetail,
+    CliAgent, CliAgentChoice,
     Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute
 )))]
 pub struct ApiDocument;

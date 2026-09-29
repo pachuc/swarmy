@@ -8,7 +8,7 @@ use axum::{
 };
 use serde_json::{Value, json};
 use swarmy_api_types as api;
-use swarmy_core::{AgentId, ImageTag, SessionId, VolumeId};
+use swarmy_core::{AgentId, SessionId, VolumeId};
 use swarmy_store::MAX_SCAN_LIMIT;
 use swarmy_store::{ServiceDetail, ServiceRole};
 use ulid::Ulid;
@@ -144,66 +144,6 @@ fn typed<T: serde::de::DeserializeOwned>(
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))
 }
 
-pub(crate) async fn sessions(
-    State(state): State<AppState>,
-    Query(page): Query<Page>,
-) -> ApiResult<Vec<api::CliSession>> {
-    let after = page
-        .after
-        .as_deref()
-        .map(|value| id(value, SessionId::from_ulid))
-        .transpose()?;
-    let records = state
-        .store
-        .list_sessions(after, limit(page.limit))
-        .await
-        .map_err(storage)?;
-    let mut result = Vec::new();
-    for session in records {
-        let agent = if matches!(session.kind, swarmy_core::SessionKind::Named { .. }) {
-            state
-                .store
-                .get_agent(session.agent_id)
-                .await
-                .map_err(storage)?
-        } else {
-            None
-        };
-        let name = agent.as_ref().map(|agent| agent.name.clone());
-        let main = agent
-            .as_ref()
-            .is_some_and(|agent| agent.main_session == Some(session.session_id));
-        let selection = super::resolve_selection(&state, &session).await?;
-        let successor = state
-            .store
-            .next_session(session.session_id)
-            .await
-            .map_err(storage)?;
-        let mut value = serde_json::to_value(&session)
-            .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))?;
-        value["state_since"] = json!(
-            state
-                .store
-                .session_state_since(session.session_id)
-                .await
-                .map_err(storage)?
-        );
-        value["archived"] = json!(successor.is_some());
-        value["next_session"] = json!(successor);
-        value["previous_session"] = json!(
-            state
-                .store
-                .previous_session(session.session_id)
-                .await
-                .map_err(storage)?
-        );
-        value["resolved_inference"] = json!(selection);
-        value["main"] = json!(main);
-        value["agent_name"] = json!(name);
-        result.push(typed(value)?);
-    }
-    Ok(Json(result))
-}
 pub(crate) async fn session_show(
     State(state): State<AppState>,
     Path(text): Path<String>,
@@ -491,36 +431,6 @@ async fn agent_detail(
     value["sessions"] = json!(listed);
     Ok(())
 }
-pub(crate) async fn image_show(
-    State(state): State<AppState>,
-    Path((name, tag)): Path<(String, String)>,
-) -> ApiResult<api::CliImage> {
-    let manifest_id = state
-        .store
-        .get_image(&name, &ImageTag(tag.clone()))
-        .await
-        .map_err(storage)?
-        .ok_or_else(|| error(StatusCode::NOT_FOUND, "image_not_found"))?;
-    let scratch = state
-        .store
-        .image_scratch(&swarmy_core::ImageRecord {
-            name: name.clone(),
-            tag: ImageTag(tag.clone()),
-            manifest_id,
-        })
-        .await
-        .map_err(storage)?;
-    let header = state
-        .store
-        .get_manifest(manifest_id)
-        .await
-        .map_err(storage)?
-        .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "image_manifest_missing"))?;
-    Ok(Json(typed(
-        json!({"name":name,"tag":tag,"manifest_id":manifest_id,"header":header,"scratch":scratch}),
-    )?))
-}
-
 #[derive(serde::Deserialize)]
 pub(crate) struct ModelsQuery {
     pub q: Option<String>,
@@ -661,68 +571,6 @@ pub(crate) async fn agent_update(
                     .map_err(storage)?;
             }
             Ok(Json(typed(json!(updated))?))
-        },
-    )
-    .await
-}
-type CredentialInput = api::CliCredentialInput;
-pub(crate) async fn credentials(
-    State(state): State<AppState>,
-) -> ApiResult<Vec<api::CliCredential>> {
-    let store = super::credential_store(&state)?;
-    Ok(Json(
-        store
-            .list_entries(swarmy_core::CredentialScope::Cluster)
-            .await
-            .map_err(storage)?
-            .into_iter()
-            .map(|summary| typed(json!(summary)))
-            .collect::<Result<Vec<_>, _>>()?,
-    ))
-}
-pub(crate) async fn credential(
-    State(state): State<AppState>,
-    Path(provider): Path<String>,
-) -> ApiResult<api::CliCredential> {
-    let store = super::credential_store(&state)?;
-    let summary = store
-        .list_entries(swarmy_core::CredentialScope::Cluster)
-        .await
-        .map_err(storage)?
-        .into_iter()
-        .find(|entry| entry.provider == provider)
-        .ok_or_else(|| error(StatusCode::NOT_FOUND, "credential_not_found"))?;
-    Ok(Json(typed(json!(summary))?))
-}
-pub(crate) async fn credential_set(
-    State(state): State<AppState>,
-    Json(body): Json<CredentialInput>,
-) -> ApiResult<api::CliSaved> {
-    let store = super::credential_store(&state)?;
-    let provider = body.provider.clone();
-    super::replay(
-        &state,
-        &body.idempotency_key,
-        &format!(
-            "cli:credentials:{provider}:{}:set",
-            body.label.as_deref().unwrap_or("default")
-        ),
-        async move {
-            let record: swarmy_core::CredentialRecord = serde_json::from_value(body.record.clone())
-                .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_credential"))?;
-            // Without a label the provider's default entry is replaced so a
-            // rotation takes over serving; pass --label to keep a second entry.
-            let label = body.label.unwrap_or_else(|| "default".into());
-            store
-                .put_entry(
-                    swarmy_core::CredentialScope::Cluster,
-                    &provider,
-                    &label,
-                    &record,
-                )
-                .await
-                .map_err(storage)?;
-            Ok(Json(api::CliSaved { saved: true }))
         },
     )
     .await

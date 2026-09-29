@@ -126,7 +126,7 @@ impl Client {
     /// # Errors
     /// Returns transport, API, or response decoding failures.
     pub async fn doctor(&self) -> Result<api::DoctorSnapshot, Error> {
-        self.get("cli/doctor", &[]).await
+        self.get("doctor", &[]).await
     }
     /// Calls the corresponding API route.
     ///
@@ -592,16 +592,6 @@ impl Client {
         }
         self.get("usage", &query).await
     }
-    /// Read a CLI compatibility projection without linking the store.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_sessions(
-        &self,
-        after: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<api::CliSession>, Error> {
-        self.get("cli/sessions", &page(after, limit)).await
-    }
     /// Read a CLI compatibility projection.
     /// # Errors
     /// Returns transport, API, or decoding failures.
@@ -626,16 +616,6 @@ impl Client {
         self.get(&format!("cli/agents/{}", segment(name)), &[])
             .await
     }
-    /// Read image metadata used by the CLI.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_image(&self, name: &str, tag: &str) -> Result<api::CliImage, Error> {
-        self.get(
-            &format!("cli/images/{}/{}", segment(name), segment(tag)),
-            &[],
-        )
-        .await
-    }
     /// Read full catalog model rows for CLI rendering.
     /// # Errors
     /// Returns transport, API, or decoding failures.
@@ -653,12 +633,6 @@ impl Client {
             query.push(("provider", provider.into()));
         }
         self.get("models", &query).await
-    }
-    /// Read full provider rows for CLI rendering.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_providers(&self) -> Result<Vec<api::Provider>, Error> {
-        self.get("providers", &[]).await
     }
     /// Submit a CLI management mutation.
     /// # Errors
@@ -683,28 +657,6 @@ impl Client {
             body,
         )
         .await
-    }
-    /// Read credential metadata in the legacy CLI format.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_credentials(&self) -> Result<Vec<api::CliCredential>, Error> {
-        self.get("cli/credentials", &[]).await
-    }
-    /// Read credential metadata in the legacy CLI format.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_credential(&self, provider: &str) -> Result<api::CliCredential, Error> {
-        self.get(&format!("cli/credentials/{}", segment(provider)), &[])
-            .await
-    }
-    /// Submit an encrypted credential through the API.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_set_credential(
-        &self,
-        body: &api::CliCredentialInput,
-    ) -> Result<api::CliSaved, Error> {
-        self.send(Method::POST, "cli/credentials", body).await
     }
     /// Assign or clear one session's route override.
     /// # Errors

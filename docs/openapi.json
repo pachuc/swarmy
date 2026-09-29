@@ -438,200 +438,6 @@
         }
       }
     },
-    "/v1/cli/credentials": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_credentials",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/CliCredential"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_set_credential",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CliCredentialInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliSaved"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/credentials/{provider}": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_credential",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliCredential"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/doctor": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_doctor",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DoctorSnapshot"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/images/{name}/{tag}": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_image",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CliImage"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/sessions": {
-      "get": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_sessions",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/CliSession"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/credentials": {
       "get": {
         "tags": [
@@ -1058,6 +864,36 @@
         "responses": {
           "200": {
             "description": "Rendered API reference for this server version"
+          }
+        }
+      }
+    },
+    "/v1/doctor": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "doctor",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DoctorSnapshot"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           }
         }
       }
@@ -2906,141 +2742,6 @@
             ]
           }
         }
-      },
-      "CliCredential": {
-        "type": "object",
-        "required": [
-          "provider",
-          "kind",
-          "label",
-          "status",
-          "updated_at"
-        ],
-        "properties": {
-          "created_at": {
-            "type": "string"
-          },
-          "expires_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "kind": {
-            "type": "string"
-          },
-          "label": {
-            "type": "string"
-          },
-          "last_used_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "provider": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          },
-          "updated_at": {
-            "type": "string"
-          }
-        }
-      },
-      "CliCredentialInput": {
-        "type": "object",
-        "required": [
-          "idempotency_key",
-          "provider",
-          "record"
-        ],
-        "properties": {
-          "idempotency_key": {
-            "type": "string"
-          },
-          "label": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "provider": {
-            "type": "string"
-          },
-          "record": {
-            "description": "Encrypted by the API, never returned by credential endpoints."
-          }
-        }
-      },
-      "CliImage": {
-        "type": "object",
-        "required": [
-          "name",
-          "tag",
-          "manifest_id",
-          "header",
-          "scratch"
-        ],
-        "properties": {
-          "header": {},
-          "manifest_id": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "scratch": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "tag": {
-            "type": "string"
-          }
-        }
-      },
-      "CliSaved": {
-        "type": "object",
-        "required": [
-          "saved"
-        ],
-        "properties": {
-          "saved": {
-            "type": "boolean"
-          }
-        }
-      },
-      "CliSession": {
-        "type": "object",
-        "description": "CLI projections retain store record fields for compatibility with existing scripts.",
-        "required": [
-          "session_id",
-          "resolved_inference",
-          "archived",
-          "main"
-        ],
-        "properties": {
-          "agent_name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "archived": {
-            "type": "boolean"
-          },
-          "main": {
-            "type": "boolean"
-          },
-          "resolved_inference": {},
-          "session_id": {
-            "type": "string"
-          }
-        },
-        "additionalProperties": {}
       },
       "CloseSession": {
         "type": "object",

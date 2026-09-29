@@ -288,20 +288,13 @@ async fn authorize(
 /// Construct the router without binding a socket so integration tests can serve it in-process.
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
-        .route("/v1/cli/doctor", get(cli::doctor))
-        .route("/v1/cli/sessions", get(cli::sessions))
+        .route("/v1/doctor", get(cli::doctor))
         .route("/v1/cli/agents", get(cli::agents).post(cli::agent_create))
         .route(
             "/v1/cli/agents/{name}/settings",
             axum::routing::patch(cli::agent_update),
         )
-        .route(
-            "/v1/cli/credentials",
-            get(cli::credentials).post(cli::credential_set),
-        )
-        .route("/v1/cli/credentials/{provider}", get(cli::credential))
         .route("/v1/cli/agents/{name}", get(cli::agent_show))
-        .route("/v1/cli/images/{name}/{tag}", get(cli::image_show))
         .route("/v1/agents", get(agents).post(create_agent))
         .route(
             "/v1/agents/{id}",

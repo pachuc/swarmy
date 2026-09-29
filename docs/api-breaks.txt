@@ -65,3 +65,9 @@ GET /v1/cli/routes/{name} removed duplicate route detail
 DELETE /v1/cli/routes/{name} removed duplicate route deletion
 PATCH /v1/cli/sessions/{id}/route removed duplicate session route mutation
 GET /v1/cli/sessions/{id} removed duplicate session detail; use GET /v1/sessions/{id}/detail
+GET /v1/cli/sessions removed duplicate session list; use GET /v1/sessions
+GET /v1/cli/credentials removed duplicate credential list; use GET /v1/credentials
+POST /v1/cli/credentials removed duplicate credential import; use POST /v1/credentials/records
+GET /v1/cli/credentials/{provider} removed duplicate credential detail; use GET /v1/credentials/{provider}
+GET /v1/cli/images/{name}/{tag} removed duplicate image detail; use GET /v1/images/{name}/{tag}
+GET /v1/cli/doctor moved to GET /v1/doctor

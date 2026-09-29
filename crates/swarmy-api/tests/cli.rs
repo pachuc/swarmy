@@ -105,24 +105,15 @@ async fn assert_resource_projections(
     let detailed = serde_json::to_value(client.cli_agent("fixture-agent").await.unwrap()).unwrap();
     assert_eq!(detailed["name"], agent.name);
     assert_eq!(detailed["sessions"][0]["session_id"], session.to_string());
-    let rows: Vec<serde_json::Value> = client
-        .cli_sessions(None, 10)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|row| serde_json::to_value(row).unwrap())
-        .collect();
+    let rows = client.sessions(None, 10).await.unwrap();
     let stored = store.fetch_session(session).await.unwrap().unwrap();
-    assert_eq!(rows[0]["session_id"], session.to_string());
-    assert_eq!(
-        rows[0]["state"],
-        serde_json::to_value(stored.state).unwrap()
-    );
+    assert_eq!(rows[0].id, session.to_string());
+    assert_eq!(rows[0].state, stored.state.into());
     let detail =
         serde_json::to_value(client.session_detail(&session.to_string()).await.unwrap()).unwrap();
     assert_eq!(detail["session"]["session_id"], session.to_string());
     assert_eq!(
-        client.cli_image("fixture", "test").await.unwrap().name,
+        client.image("fixture", "test").await.unwrap().name,
         "fixture"
     );
     assert!(
@@ -132,7 +123,7 @@ async fn assert_resource_projections(
             .unwrap()
             .is_empty()
     );
-    assert!(!client.cli_providers().await.unwrap().is_empty());
+    assert!(!client.providers().await.unwrap().is_empty());
 }
 
 async fn assert_credential_entries(client: &swarmy_client::Client) {
@@ -144,14 +135,22 @@ async fn assert_credential_entries(client: &swarmy_client::Client) {
         },
         updated_at: jiff::Timestamp::now(),
     };
-    client.cli_set_credential(&serde_json::from_value(serde_json::json!({"idempotency_key":"credential","provider":"test-provider","record":record})).unwrap()).await.unwrap();
-    let summaries = client.cli_credentials().await.unwrap();
+    client
+        .put_credential_record(&swarmy_api_types::PutCredentialRecord {
+            idempotency_key: "credential".into(),
+            provider: "test-provider".into(),
+            label: "default".into(),
+            record,
+        })
+        .await
+        .unwrap();
+    let summaries = client.credentials().await.unwrap();
     assert_eq!(summaries[0].provider, "test-provider");
-    assert_eq!(summaries[0].kind, "api-key");
+    assert_eq!(summaries[0].kind, swarmy_api_types::CredentialKind::ApiKey);
     assert_eq!(summaries[0].label, "default");
     assert_eq!(
-        client.cli_credential("test-provider").await.unwrap().status,
-        "ready"
+        client.credential("test-provider").await.unwrap().status,
+        swarmy_api_types::CredentialStatus::Ready
     );
     let cloud = client
         .set_credential(&swarmy_api_types::CreateCredential {
@@ -173,18 +172,18 @@ async fn assert_credential_entries(client: &swarmy_client::Client) {
             .unwrap(),
         cloud
     );
-    let listed = client.cli_credentials().await.unwrap();
+    let listed = client.credentials().await.unwrap();
     assert_eq!(listed.len(), 2);
     assert!(
         listed
             .iter()
-            .any(|row| row.label == "backup" && row.kind == "cloud")
+            .any(|row| row.label == "backup" && row.kind == swarmy_api_types::CredentialKind::Cloud)
     );
     client
         .remove_credential_entry("test-provider", "backup", "remove-backup")
         .await
         .unwrap();
-    assert_eq!(client.cli_credentials().await.unwrap().len(), 1);
+    assert_eq!(client.credentials().await.unwrap().len(), 1);
 }
 #[tokio::test]
 async fn stopped_api_reports_endpoint_quickly() {

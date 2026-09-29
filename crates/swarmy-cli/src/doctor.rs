@@ -389,7 +389,7 @@ async fn api_checks(
         .map_err(|error| format!("{error:#}"));
     match snapshot {
         Ok(snapshot) => {
-            let providers = swarmy_client::api_client::call(&endpoint, client.cli_providers())
+            let providers = swarmy_client::api_client::call(&endpoint, client.providers())
                 .await
                 .ok();
             snapshot_checks(checks, snapshot, &loaded.settings, providers.as_deref())
