@@ -237,9 +237,7 @@ mod tests {
 
     fn test_store() -> Option<Store> {
         static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-        let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
-            return None;
-        };
+        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
         NETWORK.get_or_init(swarmy_store::boot);
         Some(Store::with_subspace(
             Arc::new(Database::new(Some(&cluster)).unwrap()),

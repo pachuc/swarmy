@@ -42,12 +42,11 @@ pub fn stack_env_os(name: &str) -> Option<std::ffi::OsString> {
 /// provisioned on hosted runners.
 #[must_use = "check the returned option: missing optional settings skip the test"]
 pub fn optional_env(name: &str) -> Option<String> {
-    match std::env::var(name) {
-        Ok(value) => Some(value),
-        Err(_) => {
-            eprintln!("skipping integration test: optional {name} is unavailable");
-            None
-        }
+    if let Ok(value) = std::env::var(name) {
+        Some(value)
+    } else {
+        eprintln!("skipping integration test: optional {name} is unavailable");
+        None
     }
 }
 
@@ -55,12 +54,11 @@ pub fn optional_env(name: &str) -> Option<String> {
 /// Disabled flags skip even under `CI`; the hint must say how to opt in.
 #[must_use = "check the returned option: disabled opt-in flags skip the test"]
 pub fn opt_in_env(name: &str, hint: &str) -> Option<String> {
-    match std::env::var(name).as_deref() {
-        Ok("1") => Some("1".to_owned()),
-        _ => {
-            eprintln!("skipping opt-in integration test: {hint}");
-            None
-        }
+    if let Ok("1") = std::env::var(name).as_deref() {
+        Some("1".to_owned())
+    } else {
+        eprintln!("skipping opt-in integration test: {hint}");
+        None
     }
 }
 

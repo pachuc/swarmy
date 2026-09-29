@@ -55,18 +55,14 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        let Some(url) = swarmy_core::test_support::stack_env("SWARMY_NATS_URL") else {
-            return None;
-        };
+        let url = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
         Self::new_at(url).await
     }
 
     async fn new_at(nats_url: String) -> Option<Self> {
         static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
         for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
-            if swarmy_core::test_support::stack_env(variable).is_none() {
-                return None;
-            }
+            swarmy_core::test_support::stack_env(variable)?;
         }
         NETWORK.get_or_init(swarmy_store::boot);
         let prefix = format!("worker_{}", Ulid::generate());

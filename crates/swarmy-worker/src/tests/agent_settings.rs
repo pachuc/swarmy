@@ -15,12 +15,8 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        let (Some(cluster), Some(url)) = (
-            swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
-            swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
-        ) else {
-            return None;
-        };
+        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
+        let url = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
         NETWORK.get_or_init(swarmy_store::boot);
         let prefix = format!("agent_inference_{}", Ulid::generate());
         let mut config = config(cluster.clone(), url.clone(), &prefix, Arc::default());

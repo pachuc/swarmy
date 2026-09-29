@@ -90,9 +90,7 @@ impl ObjectStore for FailOneDelete {
 impl Fixture {
     fn new() -> Option<Self> {
         static NETWORK: OnceLock<NetworkAutoStop> = OnceLock::new();
-        let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
-            return None;
-        };
+        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
         NETWORK.get_or_init(swarmy_store::boot);
         let directory = tempfile::tempdir().unwrap();
         let objects = Arc::new(LocalFileSystem::new_with_prefix(directory.path()).unwrap());

@@ -61,9 +61,7 @@ impl Fixture {
             "SWARMY_NATS_URL",
             "SWARMY_S3_ENDPOINT",
         ] {
-            if swarmy_core::test_support::stack_env(variable).is_none() {
-                return None;
-            }
+            swarmy_core::test_support::stack_env(variable)?;
         }
         NETWORK.get_or_init(swarmy_store::boot);
         let prefix = format!("gateway_{}", Ulid::generate());
