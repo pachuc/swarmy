@@ -72,7 +72,7 @@ pub fn upload_timeout(size_bytes: u64) -> Duration {
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Run one API future with the standard timeout, keeping the typed error.
-/// [`api_client::call`](crate::api_client::call) wraps this with the endpoint
+/// [`api_client::call`] wraps this with the endpoint
 /// context the binary prints; the chat library maps [`Error::Timeout`] to its
 /// own endpoint-carrying timeout error.
 ///
