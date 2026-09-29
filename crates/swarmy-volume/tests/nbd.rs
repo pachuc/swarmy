@@ -8,7 +8,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use swarmy_core::CHUNK_SIZE;
+use swarmy_core::{CHUNK_SIZE, ignore_best_effort};
 use swarmy_volume::{ChunkStore, Manifest, ManifestBuilder, VolumeDevice, kernel::Attachment};
 
 struct Cleanup {
@@ -206,10 +206,13 @@ async fn run_fio(mount: &Path) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ext4_files_fio_detach_and_readahead() {
-    let _ = tracing_subscriber::fmt()
-        .with_test_writer()
-        .with_max_level(tracing::Level::INFO)
-        .try_init();
+    ignore_best_effort(
+        tracing_subscriber::fmt()
+            .with_test_writer()
+            .with_max_level(tracing::Level::INFO)
+            .try_init(),
+        "install test log subscriber",
+    );
     if command("id", &["-u"]).await.trim() != "0" {
         tracing::warn!(
             "skipping NBD integration test: root is required; execute the built test binary with sudo"

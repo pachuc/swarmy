@@ -25,7 +25,7 @@ use std::{
 };
 use swarmy_api_types::{self as api, LogId, Subscription};
 use swarmy_bus::LiveFeed;
-use swarmy_core::{LiveTokenDelta, SessionId, TurnEvent};
+use swarmy_core::{LiveTokenDelta, SessionId, TurnEvent, ignore_best_effort};
 use swarmy_store::MAX_SCAN_LIMIT;
 use tokio::{
     sync::{mpsc, watch},
@@ -170,7 +170,7 @@ pub(crate) async fn subscribe(
         .retry(Duration::from_secs(1))
         .id(encode_cursor(&subscription)?)
         .data(serde_json::json!({"connection_id": connection_id}).to_string());
-    let _ = sender.try_send(initial);
+    ignore_best_effort(sender.try_send(initial), "publish initial stream state");
     tokio::spawn(produce(
         state.clone(),
         receiver,

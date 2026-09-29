@@ -1,6 +1,7 @@
 use crate::{LeaseOwnerId, ManifestId, NodeId, RequestId, SessionId, ToolCallId, VolumeId};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
+use swarmy_core::ignore_best_effort;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -348,7 +349,7 @@ pub fn tool_spill_path(call_id: &str) -> String {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
             encoded.push(byte as char);
         } else {
-            let _ = write!(encoded, "%{byte:02X}");
+            ignore_best_effort(write!(encoded, "%{byte:02X}"), "percent-encode byte");
         }
     }
     if encoded.is_empty() {

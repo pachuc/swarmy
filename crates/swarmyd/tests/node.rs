@@ -7,7 +7,7 @@ use std::{
 };
 use swarmy_core::{
     AgentId, BlockDevice, ExecOutput, ExecRequest, ImageTag, ManifestId, NodeId, Sandbox,
-    SandboxSpec, VolumeId,
+    SandboxSpec, VolumeId, ignore_best_effort,
 };
 use swarmy_store::{Store, blob::ObjectBlobStore};
 use swarmyd::{Request, Response};
@@ -183,21 +183,24 @@ impl Drop for Node {
             );
         }
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            ignore_best_effort(child.kill(), "kill child process");
+            ignore_best_effort(child.wait(), "reap child process");
         }
         let root = self.root.path().join(".swarmy/node");
         // Cleanup does not rely on swarmyd being alive or the test succeeding.
         if let Ok(bundles) = std::fs::read_dir(root.join("bundles")) {
             for bundle in bundles.flatten() {
-                let _ = Command::new("runc")
-                    .arg("--root")
-                    .arg(root.join("runc"))
-                    .args(["delete", "--force"])
-                    .arg(bundle.file_name())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+                ignore_best_effort(
+                    Command::new("runc")
+                        .arg("--root")
+                        .arg(root.join("runc"))
+                        .args(["delete", "--force"])
+                        .arg(bundle.file_name())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status(),
+                    "force-remove leftover bundle",
+                );
                 // The runtime writes the pasta PID under /run (see
                 // swarmy_sandbox::pasta_pid_file); resolve it through that
                 // accessor rather than the bundle directory.
@@ -213,24 +216,30 @@ impl Drop for Node {
                                 .windows(pid_path.as_os_str().as_encoded_bytes().len())
                                 .any(|window| window == pid_path.as_os_str().as_encoded_bytes())
                         {
-                            let _ = Command::new("kill")
-                                .arg(pid.to_string())
-                                .stdout(Stdio::null())
-                                .stderr(Stdio::null())
-                                .status();
+                            ignore_best_effort(
+                                Command::new("kill")
+                                    .arg(pid.to_string())
+                                    .stdout(Stdio::null())
+                                    .stderr(Stdio::null())
+                                    .status(),
+                                "kill stale pasta process",
+                            );
                         }
                     }
                 }
-                let _ = Command::new("ip")
-                    .args(["netns", "delete"])
-                    .arg(format!(
-                        "swarmy-{}-{}",
-                        self.id,
-                        bundle.file_name().to_string_lossy()
-                    ))
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+                ignore_best_effort(
+                    Command::new("ip")
+                        .args(["netns", "delete"])
+                        .arg(format!(
+                            "swarmy-{}-{}",
+                            self.id,
+                            bundle.file_name().to_string_lossy()
+                        ))
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status(),
+                    "delete leftover network namespace",
+                );
                 let mount = bundle.path().join("rootfs");
                 let source = Command::new("findmnt")
                     .args(["--noheadings", "--output", "SOURCE", "--mountpoint"])
@@ -238,17 +247,23 @@ impl Drop for Node {
                     .output()
                     .ok()
                     .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
-                let _ = Command::new("umount")
-                    .arg(&mount)
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+                ignore_best_effort(
+                    Command::new("umount")
+                        .arg(&mount)
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status(),
+                    "unmount leftover rootfs",
+                );
                 if let Some(source) = source.filter(|source| {
                     source
                         .strip_prefix("/dev/nbd")
                         .is_some_and(|suffix| suffix.parse::<u32>().is_ok())
                 }) {
-                    let _ = swarmy_volume::kernel::cleanup_stale(Path::new(&source));
+                    ignore_best_effort(
+                        swarmy_volume::kernel::cleanup_stale(Path::new(&source)),
+                        "clean up stale kernel state",
+                    );
                 }
             }
         }

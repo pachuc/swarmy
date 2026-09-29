@@ -14,7 +14,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use swarmy_core::{LeaseOwnerId, ManifestId, NodeId, VolumeId};
+use swarmy_core::{LeaseOwnerId, ManifestId, NodeId, VolumeId, ignore_best_effort};
 
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -367,7 +367,7 @@ fn start_renewal(
         loop {
             tokio::time::sleep(Duration::from_secs(15)).await;
             if let Err(error) = writer.renew(LEASE_DURATION).await {
-                let _ = lost_tx.send(error);
+                ignore_best_effort(lost_tx.send(error), "report lost volume writer");
                 break;
             }
         }
@@ -484,8 +484,11 @@ async fn handle(
     };
     // A caller may disconnect after submitting a command; completing publication
     // and detach does not depend on whether it receives the reply.
-    let _ = write.write_all(&serde_json::to_vec(&reply)?).await;
-    let _ = write.write_all(b"\n").await;
+    ignore_best_effort(
+        write.write_all(&serde_json::to_vec(&reply)?).await,
+        "write volume reply",
+    );
+    ignore_best_effort(write.write_all(b"\n").await, "write volume reply");
     Ok(detached)
 }
 

@@ -22,7 +22,7 @@ use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, SubjectToken};
 use swarmy_core::{
     AgentId, Event, LeaseOwnerId, MessageRole, Nudge, RequestId, RunnableEntry, SessionId,
-    SessionRecord, SessionState, ToolCallId, ToolCallRecord, WakeReply, decode,
+    SessionRecord, SessionState, ToolCallId, ToolCallRecord, WakeReply, decode, ignore_best_effort,
 };
 use swarmy_store::{Store, blob::MemoryBlobStore, runnable_partition};
 use tokio::time::{Instant, sleep, timeout};
@@ -36,8 +36,8 @@ struct Process(Child);
 
 impl Drop for Process {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        ignore_best_effort(self.0.kill(), "kill child process");
+        ignore_best_effort(self.0.wait(), "reap child process");
     }
 }
 

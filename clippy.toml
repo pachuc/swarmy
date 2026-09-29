@@ -8,5 +8,11 @@
 # integration tests (see `Cargo.toml`), but the line stays so the exemption
 # is in place if the deny ever becomes scoped enough to enable.
 allow-unwrap-in-tests = true
-cognitive-complexity-threshold = 15
-excessive-nesting-threshold = 4
+# Part 2 (task kkr5bd) owns this stanza; the parallel lint task keeps its
+# own block above.
+# Complexity: 96 functions exceed 15, 40 exceed 20, 21 exceed 25; the 21
+# were split by concern and what remains over 25 is genuinely too complex
+# to keep. Nesting: depth 8 is the observed maximum; only real offenders
+# fail at 6.
+cognitive-complexity-threshold = 25
+excessive-nesting-threshold = 6

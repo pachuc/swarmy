@@ -20,7 +20,7 @@ use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use object_store::{ObjectStore, PutMode, path::Path};
-use swarmy_core::{CHUNK_SIZE, ContentHash, EncodingError};
+use swarmy_core::{CHUNK_SIZE, ContentHash, EncodingError, ignore_best_effort};
 
 pub use manifest::{BLOCKS_PER_LEAF, Manifest, ManifestBuilder};
 
@@ -83,7 +83,7 @@ impl ChunkStore {
 
     pub(crate) fn protect_uploads(&self, metadata: swarmy_store::Store) {
         // An attachment binds once, before its uploader starts. Clones share it.
-        let _ = self.metadata.set(metadata);
+        ignore_best_effort(self.metadata.set(metadata), "cache volume metadata");
     }
 
     async fn protect_reuse(&self, hash: ContentHash) -> Result<()> {

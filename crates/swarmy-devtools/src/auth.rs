@@ -2,7 +2,7 @@ use crate::auth_command::Command;
 use anyhow::{Result, ensure};
 use std::path::PathBuf;
 use swarmy_config::Settings;
-use swarmy_core::CredentialRecord;
+use swarmy_core::{CredentialRecord, ignore_best_effort};
 use swarmy_llm::auth::{CredentialStore as _, FileCredentialStore};
 
 pub(crate) async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Result<()> {
@@ -101,12 +101,15 @@ impl swarmy_llm::auth::LoginUi for TerminalUi {
         } else {
             "xdg-open"
         };
-        let _ = tokio::process::Command::new(opener)
-            .arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+        ignore_best_effort(
+            tokio::process::Command::new(opener)
+                .arg(url)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn(),
+            "open browser for login",
+        );
         Ok(())
     }
     async fn notify_device_code(&self, url: &str, code: &str) -> Result<(), swarmy_llm::Error> {
@@ -155,7 +158,7 @@ fn read_secret() -> Result<String, swarmy_llm::Error> {
     struct RawMode;
     impl Drop for RawMode {
         fn drop(&mut self) {
-            let _ = crossterm::terminal::disable_raw_mode();
+            ignore_best_effort(crossterm::terminal::disable_raw_mode(), "restore terminal");
         }
     }
     if !std::io::stdin().is_terminal() {

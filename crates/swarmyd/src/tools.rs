@@ -630,7 +630,9 @@ async fn heartbeat(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::placement_refusal;
-    use swarmy_core::{AgentId, NodeId, PlacementChangeReason, PlacementRecord};
+    use swarmy_core::{
+        AgentId, NodeId, PlacementChangeReason, PlacementRecord, ignore_best_effort,
+    };
 
     #[test]
     fn rejected_claim_explains_other_nodes_placement() {
@@ -737,11 +739,14 @@ mod tests {
             for entry in std::fs::read_dir(self.0.path()).unwrap().flatten() {
                 if let Ok(bytes) = std::fs::read(entry.path().join("record.json")) {
                     let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                    let _ = std::process::Command::new("kill")
-                        .args(["-KILL", "--", &format!("-{}", record["pid"])])
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status();
+                    ignore_best_effort(
+                        std::process::Command::new("kill")
+                            .args(["-KILL", "--", &format!("-{}", record["pid"])])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status(),
+                        "kill stale sandbox process",
+                    );
                 }
             }
         }

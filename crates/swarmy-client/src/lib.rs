@@ -6,6 +6,7 @@ use reqwest::{Method, Response, StatusCode};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{collections::HashMap, pin::Pin, time::Duration};
 use swarmy_api_types as api;
+use swarmy_core::ignore_best_effort;
 use thiserror::Error;
 use tokio::sync::watch;
 
@@ -1263,7 +1264,10 @@ mod tests {
             token_deltas: true,
         };
         handle.set(updated.clone());
-        let _ = tokio::time::timeout(Duration::from_millis(100), stream.next()).await;
+        ignore_best_effort(
+            tokio::time::timeout(Duration::from_millis(100), stream.next()).await,
+            "settle the notification stream",
+        );
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(2), received.recv())
                 .await

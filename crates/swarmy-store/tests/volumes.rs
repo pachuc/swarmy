@@ -7,6 +7,7 @@ use std::{
 };
 use swarmy_core::{
     CHUNK_SIZE, ContentHash, ImageTag, Lease, LeaseOwnerId, ManifestHeader, ManifestId, VolumeId,
+    ignore_best_effort,
 };
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use swarmy_volume::{ChunkStore, Manifest, SnapshotLoop, VolumeDevice, VolumeWriter};
@@ -91,7 +92,10 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.directory);
+        ignore_best_effort(
+            std::fs::remove_dir_all(&self.directory),
+            "remove test directory",
+        );
     }
 }
 fn manifest_id() -> ManifestId {

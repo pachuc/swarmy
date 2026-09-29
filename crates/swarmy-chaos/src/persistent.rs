@@ -11,7 +11,7 @@ use std::{
 };
 use swarmy_core::{
     Event, Message, MessageId, MessageRole, NodeId, Part, PlacementChangeReason, SessionId,
-    SessionState, ToolResult, VolumeId,
+    SessionState, ToolResult, VolumeId, ignore_best_effort,
 };
 use tokio::time::{Instant, sleep, timeout};
 
@@ -24,7 +24,10 @@ struct Nodes {
 impl Drop for Nodes {
     fn drop(&mut self) {
         if let Some(driver) = &self.driver {
-            let _ = std::process::Command::new(driver).arg("stop").status();
+            ignore_best_effort(
+                std::process::Command::new(driver).arg("stop").status(),
+                "stop test driver",
+            );
         }
         for process in &mut self.processes {
             process.kill_now();

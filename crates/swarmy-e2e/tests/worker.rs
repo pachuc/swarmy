@@ -22,7 +22,7 @@ use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken, WorkQueue};
 use swarmy_core::{
     AgentId, Event, Message, MessageId, MessageRole, Nudge, Part, RequestId, SessionId,
-    SessionRecord, SessionState, ToolCallId, ToolResult,
+    SessionRecord, SessionState, ToolCallId, ToolResult, ignore_best_effort,
 };
 use swarmy_llm::{Response, StopReason, TokenUsage};
 use swarmy_store::{AgentSessionOptions, Store, blob::ObjectBlobStore, runnable_partition};
@@ -528,7 +528,7 @@ impl Fixture {
 
     async fn cleanup(&mut self) {
         for child in &mut self.children {
-            let _ = child.kill().await;
+            ignore_best_effort(child.kill().await, "kill child process");
         }
         let blobs = ObjectBlobStore::from_env().unwrap();
         for key in self.snapshots.get_mut().unwrap().drain() {
@@ -1291,8 +1291,8 @@ async fn recover_at_each_kill_point() {
                 assert_requests(id, &events, 2);
                 assert_eq!(f.calls() - calls_before, 2, "kill point {point}");
                 for index in [worker, replacement, gateway] {
-                    let _ = f.children[index].kill().await;
-                    let _ = f.children[index].wait().await;
+                    ignore_best_effort(f.children[index].kill().await, "kill child process");
+                    ignore_best_effort(f.children[index].wait().await, "reap child process");
                 }
             }
         })

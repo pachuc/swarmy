@@ -12,7 +12,7 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime},
 };
-use swarmy_core::AgentId;
+use swarmy_core::{AgentId, ignore_best_effort};
 use swarmy_store::ScratchRecord;
 use swarmy_volume::server::{self, ServerConfig};
 use tokio::{
@@ -446,10 +446,13 @@ impl RuncRuntime {
                         .windows(pid_file.as_os_str().as_encoded_bytes().len())
                         .any(|window| window == pid_file.as_os_str().as_encoded_bytes())
                 {
-                    let _ = Command::new("kill").arg(pid.to_string()).status().await;
+                    ignore_best_effort(
+                        Command::new("kill").arg(pid.to_string()).status().await,
+                        "kill stale process",
+                    );
                 }
             }
-            let _ = std::fs::remove_file(pid_file);
+            ignore_best_effort(std::fs::remove_file(pid_file), "remove stale file");
         }
         let name = self.network_name(id);
         if Path::new("/run/netns").join(&name).exists() {
@@ -668,7 +671,7 @@ impl RuncRuntime {
         let entry = self.running(id).await?;
         let mut running = entry.lock().await;
         if let Some(mut network) = running.network.take() {
-            let _ = network.kill().await;
+            ignore_best_effort(network.kill().await, "kill child process");
         }
         // A delayed cancellation signal must finish before this id can be reused.
         while running
@@ -686,7 +689,7 @@ impl RuncRuntime {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         ) {
-            let _ = task.join();
+            ignore_best_effort(task.join(), "join background thread");
         }
         unmount(&self.bundle(id).join("rootfs")).await?;
         let mut forced = false;
@@ -997,8 +1000,8 @@ impl RuncRuntime {
             Err(_) => {
                 std::fs::write(guard.guest.join(format!("{token}.cancel")), b"")?;
                 checked(&mut guard.kill_command()).await?;
-                let _ = child.kill().await;
-                let _ = child.wait().await;
+                ignore_best_effort(child.kill().await, "kill child process");
+                ignore_best_effort(child.wait().await, "reap child process");
                 guard.armed = false;
                 Ok(ExecResult {
                     exit_code: 137,
@@ -1080,11 +1083,14 @@ impl Drop for ExecGuard {
         if self.armed {
             // Mark cancellation before signalling so an exec still starting
             // cannot escape cleanup by publishing its pid after the signal.
-            let _ = std::fs::write(self.guest.join(format!("{}.cancel", self.token)), b"");
+            ignore_best_effort(
+                std::fs::write(self.guest.join(format!("{}.cancel", self.token)), b""),
+                "write cancellation marker",
+            );
             let mut command: std::process::Command = self.kill_command().into_std();
             if let Ok(mut child) = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
                 let task = std::thread::spawn(move || {
-                    let _ = child.wait();
+                    ignore_best_effort(child.wait(), "reap child process");
                 });
                 self.cancellations
                     .lock()
@@ -1092,8 +1098,14 @@ impl Drop for ExecGuard {
                     .push(task);
             }
         } else {
-            let _ = std::fs::remove_file(self.guest.join(format!("{}.pid", self.token)));
-            let _ = std::fs::remove_file(self.guest.join(format!("{}.cancel", self.token)));
+            ignore_best_effort(
+                std::fs::remove_file(self.guest.join(format!("{}.pid", self.token))),
+                "remove stale file",
+            );
+            ignore_best_effort(
+                std::fs::remove_file(self.guest.join(format!("{}.cancel", self.token))),
+                "remove stale file",
+            );
         }
     }
 }

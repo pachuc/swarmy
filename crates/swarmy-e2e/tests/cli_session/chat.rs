@@ -5,6 +5,7 @@ use std::{
     io::{Read, Write},
     path::PathBuf,
 };
+use swarmy_core::ignore_best_effort;
 
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::mpsc;
@@ -242,8 +243,8 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        ignore_best_effort(self.child.kill(), "kill child process");
+        ignore_best_effort(self.child.wait(), "reap child process");
     }
 }
 
@@ -282,7 +283,10 @@ async fn session_events(fixture: &Fixture, session: Option<SessionId>) -> String
         Ok(Ok(events)) => {
             let mut summary = format!("session events for {id} (last {} events):\n", events.len());
             for event in events {
-                let _ = writeln!(summary, "  seq {} {}", event.seq(), event_name(&event));
+                ignore_best_effort(
+                    writeln!(summary, "  seq {} {}", event.seq(), event_name(&event)),
+                    "append event summary line",
+                );
             }
             summary
         }
@@ -386,7 +390,10 @@ impl Services {
     fn log_tails(&self) -> String {
         let mut tails = String::new();
         for name in ["scheduler", "worker", "gateway"] {
-            let _ = writeln!(tails, "--- {name}.log (last 20 lines) ---");
+            ignore_best_effort(
+                writeln!(tails, "--- {name}.log (last 20 lines) ---"),
+                "append log tail line",
+            );
             match std::fs::read_to_string(self.files.path().join(format!("{name}.log"))) {
                 Ok(contents) => {
                     let lines: Vec<&str> = contents.lines().collect();
@@ -397,7 +404,10 @@ impl Services {
                     for line in &lines[start..] {
                         let truncated: String = line.chars().take(500).collect();
                         if truncated.len() < line.len() {
-                            let _ = writeln!(tails, "{truncated}… (truncated)");
+                            ignore_best_effort(
+                                writeln!(tails, "{truncated}… (truncated)"),
+                                "append log tail line",
+                            );
                         } else {
                             tails.push_str(line);
                             tails.push('\n');
@@ -405,7 +415,10 @@ impl Services {
                     }
                 }
                 Err(error) => {
-                    let _ = writeln!(tails, "(unreadable: {error})");
+                    ignore_best_effort(
+                        writeln!(tails, "(unreadable: {error})"),
+                        "append log tail line",
+                    );
                 }
             }
         }
@@ -669,7 +682,7 @@ async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
         terminal.type_text("\x1b");
         terminal.exit(true).await;
         for child in &mut services.children {
-            let _ = child.kill().await;
+            ignore_best_effort(child.kill().await, "kill child process");
         }
     })
     .await;
@@ -939,8 +952,8 @@ impl Drop for Node {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        ignore_best_effort(self.child.kill(), "kill child process");
+        ignore_best_effort(self.child.wait(), "reap child process");
         // Also clean an interrupted boot whose node could not shut down normally.
         if let Ok(bundles) = std::fs::read_dir(self.root.join("bundles")) {
             for bundle in bundles.flatten() {
@@ -963,8 +976,10 @@ impl Drop for Node {
                         .strip_prefix("/dev/nbd")
                         .is_some_and(|suffix| suffix.parse::<u32>().is_ok())
                 {
-                    let _ =
-                        swarmy_volume::kernel::cleanup_stale(std::path::Path::new(device.trim()));
+                    ignore_best_effort(
+                        swarmy_volume::kernel::cleanup_stale(std::path::Path::new(device.trim())),
+                        "clean up stale kernel state",
+                    );
                 }
             }
         }
