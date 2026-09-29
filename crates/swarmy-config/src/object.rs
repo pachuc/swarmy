@@ -97,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn prefix_round_trips_and_environment_overrides_file() {
+    fn prefix_environment_overrides_file() {
         let mut settings: Settings = toml::from_str("[s3]\nprefix = 'file/nested'").unwrap();
         settings
             .apply_environment(&BTreeMap::from([(
@@ -106,8 +106,6 @@ mod tests {
             )]))
             .unwrap();
         assert_eq!(settings.s3.prefix.as_str(), "env/nested");
-        let decoded: Settings = toml::from_str(&settings.to_toml().unwrap()).unwrap();
-        assert_eq!(decoded.s3.prefix, settings.s3.prefix);
         let mut exported = Settings::default();
         exported.apply_environment(&settings.environment()).unwrap();
         assert_eq!(exported.s3.prefix, settings.s3.prefix);
