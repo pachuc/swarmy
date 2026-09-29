@@ -58,22 +58,71 @@ GET /v1/sessions/{id}/events removes legacy_context_notice from notice kind valu
 
 # 2026-09-29: `swarmy-config` TOML keys are grouped and durations carry their
 # unit in the key. Old laptop and node `config.toml` files fail to load
-# (`deny_unknown_fields`). Re-render with `swarmy dev up` (or re-run the
-# remote provisioning that wrote the node file), or edit the file by hand
-# with the renames below. `SWARMY_*` environment names are unchanged.
-# - top-level `fdb_cluster_file` moves to `[store] cluster_file`
-# - top-level `store_directory` moves to `[store] directory`
-# - top-level `placement_lease` moves to `[scheduler] placement_lease_secs`
-# - top-level `ephemeral_retention` moves to `[scheduler] ephemeral_retention_secs`
-# - `[volume_snapshots] period` becomes `[volume_snapshots] period_secs`
-# - `[gc] grace` becomes `[gc] grace_secs`; `[gc] interval` becomes `[gc] interval_secs`
-# - `[inference] max_wait` becomes `[inference] max_wait_secs`; `max_backoff` becomes `max_backoff_secs`; `gateway_wait` becomes `gateway_wait_secs`
-# - `[bus] ack_wait` becomes `[bus] ack_wait_ms`
-# - `[worker] lease` becomes `[worker] lease_ms`; `[worker] recovery_interval` becomes `[worker] recovery_interval_ms`
-# - `[scheduler] scan_interval` becomes `[scheduler] scan_interval_ms`; `[scheduler] resend_interval` becomes `[scheduler] resend_interval_ms`
-# - `[node] heartbeat_interval` becomes `[node] heartbeat_interval_ms`
-# - `[sandbox] idle` becomes `[sandbox] idle_secs`
+# (`deny_unknown_fields`). `SWARMY_*` environment names are unchanged.
+# The rename list below is generated from scripts/migrate-config-2026-09.py
+# MOVES (via --print-breaks) so the two cannot disagree.
+# - `fdb_cluster_file` moves to `store.cluster_file`
+# - `store_directory` moves to `store.directory`
+# - `nats_url` moves to `bus.nats_url`
+# - `bus_prefix` moves to `bus.prefix`
+# - `bus_ack_wait_ms` moves to `bus.ack_wait_ms`
+# - `bus_max_deliver` moves to `bus.max_deliver`
+# - `s3_endpoint` moves to `s3.endpoint`
+# - `s3_access_key` moves to `s3.access_key`
+# - `s3_secret_key` moves to `s3.secret_key`
+# - `s3_bucket` moves to `s3.bucket`
+# - `s3_prefix` moves to `s3.prefix`
+# - `s3_region` moves to `s3.region`
+# - `provider` moves to `selection.provider`
+# - `providers` moves to `selection.providers`
+# - `custom_providers` moves to `selection.custom_providers`
+# - `models` moves to `selection.models`
+# - `model` moves to `selection.model`
+# - `default_image` moves to `selection.default_image`
+# - `reasoning_effort` moves to `selection.effort`
+# - `credential_file` moves to `selection.credential_file`
+# - `system_prompt` moves to `context.system_prompt`
+# - `summarize_at_tokens` moves to `context.summarize_at`
+# - `model_context_window_tokens` moves to `context.context_window`
+# - `memory_dir` moves to `memory.dir`
+# - `memory_max_bytes` moves to `memory.max_bytes`
+# - `worker_partitions` moves to `worker.partitions`
+# - `scheduler_partitions` moves to `scheduler.partitions`
+# - `scheduler_scan_interval_ms` moves to `scheduler.scan_interval_ms`
+# - `scheduler_resend_interval_ms` moves to `scheduler.resend_interval_ms`
+# - `worker_lease_ms` moves to `worker.lease_ms`
+# - `worker_recovery_interval_ms` moves to `worker.recovery_interval_ms`
+# - `gateway_concurrency` moves to `gateway.concurrency`
+# - `worker_kill_point` moves to `worker.kill_point`
+# - `image_upload_max_bytes` moves to `image.upload_max_bytes`
+# - `ephemeral_retention_seconds` moves to `scheduler.ephemeral_retention_secs`
+# - `placement_lease_seconds` moves to `scheduler.placement_lease_secs`
+# - `sandbox_idle_seconds` moves to `sandbox.idle_secs`
+# - `node_id` moves to `node.id`
+# - `node_roles` moves to `node.roles`
+# - `node_capacity` moves to `node.capacity`
+# - `node_memory_reserve_mib` moves to `node.memory_reserve_mib`
+# - `node_heartbeat_interval_ms` moves to `node.heartbeat_interval_ms`
+# - `volume_snapshots.period_seconds` moves to `volume_snapshots.period_secs`
+# - `gc.grace_seconds` moves to `gc.grace_secs`
+# - `gc.interval_seconds` moves to `gc.interval_secs`
+# - `inference.max_wait_seconds` moves to `inference.max_wait_secs`
+# - `inference.max_backoff_seconds` moves to `inference.max_backoff_secs`
+# - `inference.gateway_wait_seconds` moves to `inference.gateway_wait_secs`
 # Logging: api, scheduler, and gateway used to log to stdout with ANSI colour;
 # every service now logs plain text to stderr. `swarmyd vol`/`upgrade` now
 # opens the store through the shared helper, so `upgrade` needs a valid S3
 # config like every other service.
+# Operator steps (do not run `swarmy dev up` first: dev.rs reads the old file
+# and fails; `swarmy remote upgrade` only swaps binaries and never migrates):
+# - Laptop: for each config file (project `.swarmy/config.toml` and user
+#   `~/.swarmy/config.toml` or `$XDG_CONFIG_HOME/swarmy/config.toml`), run
+#   `python3 scripts/migrate-config-2026-09.py <file>` (writes `<file>.bak`,
+#   idempotent, reports unknown keys without dropping them), verify with
+#   `cargo run -p swarmy-config --example check-config <file>`, then run
+#   `swarmy dev up`.
+# - Each node: copy the script (it needs only stdlib tomllib) and run
+#   `python3 migrate-config-2026-09.py /home/ubuntu/swarmy/.swarmy/config.toml`
+#   over SSH, verify, then restart services (`swarmy remote upgrade` or
+#   `sudo systemctl restart swarmy-*`). Fresh nodes provisioned after this
+#   change already receive the grouped layout.

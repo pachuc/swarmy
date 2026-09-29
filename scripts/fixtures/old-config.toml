@@ -1,0 +1,91 @@
+# Fixture copied from a real master-rendered node config (crates/swarmy-cloud
+# services.rs on master builds a full flat Settings via to_toml with placeholder
+# values). Every old flat key appears here so the migration test covers it.
+state_dir = ".swarmy"
+ephemeral_retention_seconds = 86400
+sandbox_idle_seconds = 1800
+placement_lease_seconds = 30
+node_roles = ["sandbox", "volume"]
+node_memory_reserve_mib = 512
+node_heartbeat_interval_ms = 5000
+fdb_cluster_file = ".dev/fdb.cluster"
+nats_url = "nats://127.0.0.1:4222"
+s3_endpoint = "http://127.0.0.1:8333"
+s3_access_key = "swarmy-dev"
+s3_secret_key = "swarmy-dev-secret"
+s3_bucket = "swarmy"
+s3_prefix = ""
+s3_region = "us-east-1"
+store_directory = "swarmy"
+bus_prefix = "testprefix"
+provider = "fake"
+model = "gpt-5"
+reasoning_effort = "medium"
+credential_file = "/etc/swarmy/auth.json"
+worker_partitions = "0-1"
+scheduler_partitions = "2-3"
+scheduler_scan_interval_ms = 5000
+scheduler_resend_interval_ms = 5000
+worker_lease_ms = 30000
+worker_recovery_interval_ms = 5000
+bus_ack_wait_ms = 30000
+bus_max_deliver = 5
+gateway_concurrency = 4
+system_prompt = "test prompt"
+memory_dir = "/home/agent/memory"
+memory_max_bytes = 32768
+worker_kill_point = "after_claim"
+providers = ["fake"]
+default_image = "test:tag"
+summarize_at_tokens = 4097
+model_context_window_tokens = 8193
+node_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+image_upload_max_bytes = 17179869184
+
+[api]
+listen = "127.0.0.1:8742"
+token = "test-token-keep-me"
+
+[remote]
+services = "node"
+
+[volume_snapshots]
+period_seconds = 600
+retention = 10
+
+[sandbox]
+scratch_idle_days = 7
+scratch_high_water = 80
+scratch_low_water = 70
+
+[gc]
+grace_seconds = 21600
+interval_seconds = 3600
+filter_bytes = 67108864
+batch_size = 256
+delete_concurrency = 32
+
+[inference]
+max_wait_seconds = 3600
+max_backoff_seconds = 300
+gateway_wait_seconds = 30
+
+[metering]
+raw_retention_days = 90
+
+[node_capacity]
+cpu_millis = 1000
+memory_bytes = 1073741824
+disk_bytes = 34359738368
+sandboxes = 1
+
+[custom_providers.openai]
+base_url = "https://example.com"
+
+[[models]]
+provider = "openai"
+id = "test-model"
+
+[fake]
+script = "/etc/swarmy/fake.json"
+call_log = "/home/ubuntu/swarmy/.swarmy/calls.log"
