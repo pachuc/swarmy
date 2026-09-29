@@ -294,7 +294,7 @@ fn is_busy_client_error(error: &swarmy_client::Error) -> bool {
     matches!(
         error,
         swarmy_client::Error::Api { status, body }
-            if *status == reqwest::StatusCode::CONFLICT
+            if status.as_u16() == 409
                 && matches!(body.code.as_str(), "session_not_idle" | "stale_head")
     )
 }
@@ -711,7 +711,7 @@ mod tests {
             "main_session_close"
         )));
         assert!(is_busy_send_error(
-            &super::client_conversation::SessionNotIdle.into()
+            &crate::client_conversation::SessionNotIdle.into()
         ));
         // The API wrapper retains the typed source through context.
         let wrapped = swarmy_client::api_client::api_error(
