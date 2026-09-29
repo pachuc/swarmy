@@ -902,13 +902,15 @@ async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
         .unwrap();
     assert!(replacement.epoch > old.epoch);
     fixture.store.release(&replacement).await.unwrap();
+    // A live placement the resolve must observe: the expiry is seconds out
+    // so CI latency alone can never expire it before the read below.
     let short = fixture
         .store
         .place(
             fixture.agent,
             fixture.nodes[0],
             Timestamp::now()
-                .checked_add(Duration::from_millis(100))
+                .checked_add(Duration::from_secs(5))
                 .unwrap(),
         )
         .await
@@ -921,7 +923,13 @@ async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
             .unwrap(),
         short
     );
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // Wait until the expiry has passed rather than racing it: the take-over
+    // below requires an expired placement, and elapsed time only grows.
+    let remaining = short
+        .expires_at
+        .duration_since(Timestamp::now())
+        .unsigned_abs();
+    tokio::time::sleep(remaining + Duration::from_millis(200)).await;
     let after_expiry = cache
         .resolve(&fixture.store, fixture.agent, duration)
         .await
