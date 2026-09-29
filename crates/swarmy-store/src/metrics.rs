@@ -1542,7 +1542,6 @@ mod tests {
     /// Checked-in current summary bytes. Generated with
     /// `swarmy_core::encode(&StoredTurnMetrics::Summary(fixture_summary()))`;
     /// decoding them pins the unbounded layout.
-    /// the capped record.
     const CURRENT_SUMMARY_HEX: &str = "010001730174000180897a00000180b6dc050000000000000000000000000000000000000000000000000000000000";
     /// Checked-in current inference-row bytes for a single-chunk request.
     const CURRENT_INFERENCE_HEX: &str = "010101720466616b6508736372697074656400000400000000000100000000000000018092f401000180ade204";

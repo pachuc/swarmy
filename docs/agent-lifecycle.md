@@ -17,12 +17,11 @@ and rejects any explicit image with:
 The CLI explains that `--image` cannot be used with a named agent.
 
 `list_sessions_by_agent` pages the secondary index by session id. New sessions
-are indexed at creation. Sessions are indexed at creation.
+are indexed at creation.
 
 Session kind is stored in the session header. `computer_deleted` on
 fetched session records is resolved from a durable agent tombstone. This marks
-all of an agent's sessions without a
-transaction proportional to the number of sessions. Transcripts and snapshots
+all of an agent's sessions without a transaction proportional to the number of sessions. Transcripts and snapshots
 of conversation state remain readable.
 
 `delete_computer(agent)` atomically releases the current placement and its
