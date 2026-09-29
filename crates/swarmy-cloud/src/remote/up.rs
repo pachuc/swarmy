@@ -43,30 +43,7 @@ pub async fn run(
         Some(image) => image.clone(),
         None => cloud.base_image().await?,
     };
-    let mut node = RemoteNode {
-        name: name.into(),
-        region: settings.region.clone(),
-        instance_id: String::new(),
-        launch_attempted: false,
-        public_ip: String::new(),
-        private_ip: String::new(),
-        key_path: state
-            .directory
-            .join(format!("swarmy-{}", ulid::Ulid::generate())),
-        ssh_user: "ubuntu".into(),
-        ports: RemotePorts::default(),
-        nodes: Vec::new(),
-        sandboxes,
-        default_image: None,
-        launch_settings: Some(RemoteSettings {
-            aws: swarmy_config::AwsSettings {
-                image: Some(image.clone()),
-                ..settings.aws.clone()
-            },
-            ..settings.clone()
-        }),
-        created_at: jiff::Timestamp::now().to_string(),
-    };
+    let mut node = initial_node(state, settings, name, sandboxes, &image);
     // Write the key name before any AWS mutation so down can recover an interrupted launch.
     state.save(&node)?;
     let result = async {
@@ -114,6 +91,55 @@ pub async fn run(
     );
     cloud_out!("{}", super::ssh::command_line(&node, &address)?);
     Ok(())
+}
+
+/// Build the first node record. The cloud image logs in and runs units as
+/// `ubuntu`, written explicitly so a later configuration default (`swarmy`
+/// for plain servers) never moves existing fleet checkouts. The
+/// instance-store disk beside the root disk is passed through the same
+/// setting when the node needs it.
+fn initial_node(
+    state: &State,
+    settings: &RemoteSettings,
+    name: &str,
+    sandboxes: u32,
+    image: &str,
+) -> RemoteNode {
+    let local_storage = if settings.local_storage.is_empty() {
+        if sandboxes > 0 {
+            "/dev/nvme1n1".to_owned()
+        } else {
+            String::new()
+        }
+    } else {
+        settings.local_storage.clone()
+    };
+    RemoteNode {
+        name: name.into(),
+        region: settings.region.clone(),
+        instance_id: String::new(),
+        launch_attempted: false,
+        public_ip: String::new(),
+        private_ip: String::new(),
+        key_path: state
+            .directory
+            .join(format!("swarmy-{}", ulid::Ulid::generate())),
+        ssh_user: "ubuntu".into(),
+        ports: RemotePorts::default(),
+        nodes: Vec::new(),
+        sandboxes,
+        default_image: None,
+        launch_settings: Some(RemoteSettings {
+            service_user: "ubuntu".into(),
+            local_storage,
+            aws: swarmy_config::AwsSettings {
+                image: Some(image.to_owned()),
+                ..settings.aws.clone()
+            },
+            ..settings.clone()
+        }),
+        created_at: jiff::Timestamp::now().to_string(),
+    }
 }
 
 async fn provision(

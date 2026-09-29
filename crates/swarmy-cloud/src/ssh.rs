@@ -46,11 +46,53 @@ fn arguments(node: &RemoteNode) -> Result<Vec<String>> {
     ])
 }
 
-/// Checkout path on the node, derived from the configured service user.
-/// The user is validated first so the path is data, never shell.
-fn service_repo(node: &RemoteNode) -> Result<String> {
-    swarmy_config::validate_service_user(node.service_user())?;
-    Ok(node.service_repo())
+/// Service login for a node, validated so it is data, never shell.
+/// Bash on the host resolves its home (`~user`); Rust never assumes
+/// `/home/<user>`.
+fn service_user(node: &RemoteNode) -> Result<String> {
+    let user = node.service_user().to_owned();
+    swarmy_config::validate_service_user(&user)?;
+    Ok(user)
+}
+
+/// Home directory resolved on the host, keeping one path implementation in
+/// bash (`~user` expands through the passwd entry).
+fn tilde_repo(user: &str) -> String {
+    format!("~{user}/swarmy")
+}
+
+/// Create the service user before the first copy so a root login has a
+/// destination owned by its owner. Returns the host-resolved home for the
+/// rsync destination; every later command resolves the same home through
+/// `~user` on the host instead of assuming `/home/<user>`.
+async fn bootstrap_service_user(node: &RemoteNode, address: &str, user: &str) -> Result<String> {
+    if user == "root" {
+        return Ok("/root".to_owned());
+    }
+    // `user` is validated (letters, digits, `_`, `-`), so embedding it in
+    // `~user` is data, never shell.
+    let script = format!(
+        "set -e; id {user} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash {user}; \
+        sudo mkdir -p /etc/sudoers.d; \
+        printf '%s ALL=(ALL) NOPASSWD:ALL\\n' {user} | sudo tee /etc/sudoers.d/90-swarmy-{user} >/dev/null; \
+        sudo chmod 0440 /etc/sudoers.d/90-swarmy-{user}; \
+        sudo visudo -cf /etc/sudoers.d/90-swarmy-{user} >/dev/null; \
+        home=~{user}; \
+        if [ -d \"$home\" ] && [ \"$(stat -c %U \"$home\")\" != \"{user}\" ]; then sudo chown {user}:{user} \"$home\"; fi; \
+        sudo -u {user} mkdir -p \"$home\"; \
+        printf '%s\\n' \"$home\""
+    );
+    let output = run_output(base(node)?.arg(address).arg(script), "create service user").await?;
+    let home = String::from_utf8(output.stdout)?.trim().to_owned();
+    crate::Error::ensure(
+        home.starts_with('/')
+            && !home.contains([
+                ' ', '\t', '\n', '\'', '"', '$', '`', ';', '&', '|', '(', ')', '<', '>',
+            ])
+            && !home.contains(".."),
+        "invalid service home from host",
+    )?;
+    Ok(home)
 }
 
 fn base(node: &RemoteNode) -> Result<Command> {
@@ -245,7 +287,11 @@ impl Ssh {
         // Dedicated servers boot without cloud-init; only wait where it exists.
         checked(base(node)?.arg(address)
             .arg("command -v rsync >/dev/null || (if command -v cloud-init >/dev/null 2>&1; then sudo cloud-init status --wait; fi; sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y rsync)"), "prepare remote rsync").await?;
-        let repo = service_repo(node)?;
+        let user = service_user(node)?;
+        // A root login has no service home yet; create the user before the
+        // copy so rsync has a destination owned by its owner.
+        let home = bootstrap_service_user(node, address, &user).await?;
+        let repo = format!("{home}/swarmy");
         let mut transport = vec!["ssh".to_owned()];
         transport.extend(arguments(node)?);
         let settings = swarmy_config::Settings::load_base()?.settings;
@@ -261,6 +307,7 @@ impl Ssh {
             copy.arg(format!("--exclude=/{}", relative.display()));
         }
         copy.arg("-az");
+        copy.arg("--mkpath");
         for filter in checkout_filters() {
             copy.arg(filter);
         }
@@ -273,18 +320,16 @@ impl Ssh {
         )
         .await?;
         // A root bootstrap login owns the copied tree; hand it to the service user.
-        if node.ssh_user != node.service_user() {
-            checked(
-                base(node)?.arg(address).arg(format!(
-                    "sudo chown -R {}:{} {}",
-                    node.service_user(),
-                    node.service_user(),
-                    shell_words::quote(&repo)
-                )),
-                "hand copied checkout to service user",
-            )
-            .await?;
-        }
+        // The user already exists from the bootstrap, so the chown cannot fail
+        // on a missing login.
+        checked(
+            base(node)?.arg(address).arg(format!(
+                "sudo chown -R {user}:{user} {}",
+                shell_words::quote(&repo)
+            )),
+            "hand copied checkout to service user",
+        )
+        .await?;
         Ok(())
     }
 
@@ -364,10 +409,11 @@ impl Ssh {
         } else {
             "all"
         };
-        let repo = service_repo(node)?;
+        let user = service_user(node)?;
+        // Bash resolves the checkout through `~user`; Rust passes only the login.
         let script = format!(
             "cd {} && bash scripts/remote-upgrade.sh {mode} {services} {}",
-            shell_words::quote(&repo),
+            tilde_repo(&user),
             drain_timeout.as_secs()
         );
         let mut remote = base(node)?;
@@ -473,15 +519,14 @@ fn provisioning_command(
     sandboxes: u32,
     node: &RemoteNode,
 ) -> Result<String> {
-    let user = node.service_user();
-    swarmy_config::validate_service_user(user)?;
-    let repo = service_repo(node)?;
+    let user = service_user(node)?;
+    // Bash resolves `~user` through the passwd entry; Rust passes only the login.
     Ok(format!(
         "cd {} && bash scripts/remote-provision.sh {mode} {service_ip} {} {} {sandboxes} {} {}",
-        shell_words::quote(&repo),
+        tilde_repo(&user),
         shell_words::quote(bucket),
         shell_words::quote(region),
-        shell_words::quote(user),
+        shell_words::quote(&user),
         shell_words::quote(node.local_storage()),
     ))
 }
@@ -494,7 +539,7 @@ fn provisioning_command(
 pub async fn build_image(node: &RemoteNode, address: &str, recipe: &Path) -> Result<()> {
     checked(
         base(node)?.arg(address).arg(image_build_command(
-            &service_repo(node)?,
+            &service_user(node)?,
             recipe,
             &node.name,
         )?),
@@ -503,7 +548,7 @@ pub async fn build_image(node: &RemoteNode, address: &str, recipe: &Path) -> Res
     .await
 }
 
-fn image_build_command(repo: &str, recipe: &Path, tag: &str) -> Result<String> {
+fn image_build_command(user: &str, recipe: &Path, tag: &str) -> Result<String> {
     let recipe = recipe
         .to_str()
         .ok_or_else(|| crate::Error::other("image recipe path must be UTF-8"))?;
@@ -519,7 +564,7 @@ fn image_build_command(repo: &str, recipe: &Path, tag: &str) -> Result<String> {
     ]);
     Ok(format!(
         "cd {} && sudo -n bash -c {}",
-        shell_words::quote(repo),
+        tilde_repo(user),
         shell_words::quote(&format!(
             "set -e; set -a; . /etc/swarmy/node.env; set +a; exec {build}"
         ))
@@ -527,46 +572,37 @@ fn image_build_command(repo: &str, recipe: &Path, tag: &str) -> Result<String> {
 }
 
 /// Remote commands built synchronously so their temporaries never inflate
-/// the provisioning futures. Each validates the service user first, keeping
-/// the derived paths data, never shell.
+/// the provisioning futures. Each validates the service user first and
+/// resolves its home through `~user` on the host, keeping one path
+/// implementation in bash.
 fn read_cluster_command(primary: &RemoteNode) -> Result<String> {
-    let repo = service_repo(primary)?;
-    Ok(format!(
-        "cat {}",
-        shell_words::quote(&format!("{repo}/.dev/fdb.cluster"))
-    ))
+    let user = service_user(primary)?;
+    Ok(format!("cat {}/.dev/fdb.cluster", tilde_repo(&user)))
 }
 
 fn copy_cluster_command(node: &RemoteNode, cluster: &str) -> Result<String> {
-    let repo = service_repo(node)?;
+    let user = service_user(node)?;
+    let repo = tilde_repo(&user);
     Ok(format!(
-        "mkdir -p {} && printf %s {} > {}",
-        shell_words::quote(&format!("{repo}/.dev")),
+        "mkdir -p {repo}/.dev && printf %s {} > {repo}/.dev/fdb.cluster && chown -R {user}:{user} {repo}/.dev",
         shell_words::quote(cluster),
-        shell_words::quote(&format!("{repo}/.dev/fdb.cluster")),
     ))
 }
 
 fn tunnel_key_command(node: &RemoteNode) -> Result<String> {
-    let repo = service_repo(node)?;
-    let dot = format!("{repo}/.swarmy");
-    let dot_quoted = shell_words::quote(&dot);
-    let key = format!("{dot}/tunnel-key");
-    let key_quoted = shell_words::quote(&key);
-    let pub_key = format!("{key}.pub");
-    let pub_quoted = shell_words::quote(&pub_key);
+    let user = service_user(node)?;
+    let repo = tilde_repo(&user);
     Ok(format!(
-        "umask 077; mkdir -p {dot_quoted}; test -f {key_quoted} || ssh-keygen -q -t ed25519 -N '' -f {key_quoted}; cat {pub_quoted}",
+        "umask 077; mkdir -p {repo}/.swarmy; chown -R {user}:{user} {repo}/.swarmy; test -f {repo}/.swarmy/tunnel-key || sudo -u {user} ssh-keygen -q -t ed25519 -N '' -f {repo}/.swarmy/tunnel-key; chown {user}:{user} {repo}/.swarmy/tunnel-key {repo}/.swarmy/tunnel-key.pub; cat {repo}/.swarmy/tunnel-key.pub",
     ))
 }
 
 fn pin_primary_key_command(node: &RemoteNode, known_host: &str) -> Result<String> {
-    let repo = service_repo(node)?;
-    let dot = format!("{repo}/.swarmy");
+    let user = service_user(node)?;
+    let repo = tilde_repo(&user);
     Ok(format!(
-        "umask 077; printf '%s\\n' {} > {}",
+        "umask 077; printf '%s\\n' {} > {repo}/.swarmy/tunnel-known-hosts && chown {user}:{user} {repo}/.swarmy/tunnel-known-hosts",
         shell_words::quote(known_host),
-        shell_words::quote(&format!("{dot}/tunnel-known-hosts")),
     ))
 }
 
@@ -584,8 +620,11 @@ async fn install_tunnel(
     .await?;
     let key = String::from_utf8(output.stdout)?;
     let authorization = tunnel_authorization(&key)?;
+    // The tunnel unit connects as the service user, so its key belongs in the
+    // service user's authorized_keys, not the bootstrap login's.
+    let primary_user = service_user(primary)?;
     checked(base(primary)?.arg(source).arg(format!(
-        "umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && (grep -qxF -- {0} ~/.ssh/authorized_keys || printf '%s\\n' {0} >> ~/.ssh/authorized_keys)",
+        "service_user={primary_user}; service_home=~{primary_user}; umask 077; sudo -u $service_user mkdir -p $service_home/.ssh && sudo -u $service_user touch $service_home/.ssh/authorized_keys && (sudo -u $service_user grep -qxF -- {0} $service_home/.ssh/authorized_keys || printf '%s\\n' {0} | sudo -u $service_user tee -a $service_home/.ssh/authorized_keys >/dev/null)",
         shell_words::quote(&authorization)
     )), "authorize joining node tunnel").await?;
     // Obtain the host key over the already authenticated provisioning connection.
@@ -754,19 +793,11 @@ mod tests {
     #[test]
     fn image_command_sources_node_environment_and_quotes_recipe() {
         let path = std::path::Path::new("images/custom ' $(touch unwanted)");
-        let command = image_build_command("/home/swarmy/swarmy", path, "demo").unwrap();
+        let command = image_build_command("swarmy", path, "demo").unwrap();
         let outer = shell_words::split(&command).unwrap();
         assert_eq!(
             &outer[..7],
-            [
-                "cd",
-                "/home/swarmy/swarmy",
-                "&&",
-                "sudo",
-                "-n",
-                "bash",
-                "-c"
-            ]
+            ["cd", "~swarmy/swarmy", "&&", "sudo", "-n", "bash", "-c"]
         );
         let script = &outer[7];
         assert!(script.starts_with("set -e; set -a; . /etc/swarmy/node.env; set +a; exec "));
@@ -905,11 +936,11 @@ mod provisioning_command_tests {
         let ip = "10.0.0.1".parse().unwrap();
         assert_eq!(
             provisioning_command("stack", ip, "", "us-east-1", 0, &node()).unwrap(),
-            "cd /home/swarmy/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 0 swarmy /dev/nvme1n1"
+            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 0 swarmy /dev/nvme1n1"
         );
         assert_eq!(
             provisioning_command("node", ip, "", "us-east-1", 4, &node()).unwrap(),
-            "cd /home/swarmy/swarmy && bash scripts/remote-provision.sh node 10.0.0.1 '' us-east-1 4 swarmy /dev/nvme1n1"
+            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh node 10.0.0.1 '' us-east-1 4 swarmy /dev/nvme1n1"
         );
     }
 
@@ -925,7 +956,26 @@ mod provisioning_command_tests {
         assert_eq!(legacy.service_user(), "ubuntu");
         assert_eq!(
             provisioning_command("stack", ip, "", "us-east-1", 0, &legacy).unwrap(),
-            "cd /home/ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 0 ubuntu ''"
+            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 0 ubuntu ''"
+        );
+    }
+
+    #[test]
+    fn existing_launch_settings_without_user_keep_the_login() {
+        let ip = "10.0.0.1".parse().unwrap();
+        let existing: swarmy_config::RemoteNode = serde_json::from_value(serde_json::json!({
+            "name": "existing", "region": "us-east-1", "instance_id": "i-test",
+            "public_ip": "203.0.113.1", "private_ip": "10.0.0.1",
+            "key_path": "key", "launch_attempted": true, "created_at": "now",
+            "launch_settings": {
+                "aws": {"instance_type": "m6id.xlarge"}, "disk_gb": 100,
+            },
+        }))
+        .unwrap();
+        assert_eq!(existing.service_user(), "ubuntu");
+        assert_eq!(
+            provisioning_command("stack", ip, "", "us-east-1", 0, &existing).unwrap(),
+            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 0 ubuntu ''"
         );
     }
 }

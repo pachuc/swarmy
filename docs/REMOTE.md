@@ -32,12 +32,11 @@ disk_gb = 100
 managed_by_tag = "swarmy"
 # bucket = "NAME"
 # Login owning the checkout and the node units. Plain servers use the
-# default `swarmy`; EC2 configurations keep `ubuntu` by setting it here.
-service_user = "ubuntu"
+# default `swarmy`; EC2 launches write `ubuntu` explicitly.
+# service_user = "swarmy"
 # Local disk for sandbox data: a block device to format and mount at
-# /mnt/swarmy-local, dir:/path for an existing directory, or empty to
-# pick an unused disk automatically (sandbox nodes) or use none
-# (control-only nodes).
+# /mnt/swarmy-local or dir:/path for an existing directory. Sandbox nodes
+# require it; control-only nodes leave it empty for the root disk.
 # local_storage = "/dev/nvme1n1"
 
 [remote.aws]
@@ -66,14 +65,16 @@ through SSM in the configured region. Custom images must be compatible with
 Ubuntu 24.04 and grant the service user passwordless sudo; cloud-init is
 waited on only where it is installed, so plain servers boot without it.
 Provisioning creates the service user when it is missing, so a plain server
-arriving with only a root login can be adopted.
+arriving with only a root login can be adopted. Records saved before the
+setting existed have no `service_user` in `launch_settings` and keep the SSH
+login they were provisioned with (`ubuntu` for the existing fleet).
 Sandbox nodes need local storage for their volume caches and dirty data: set
 `local_storage` to a block device to format and mount at `/mnt/swarmy-local`
 (on a single instance-store type this is the NVMe disk beside the root disk;
 confirm with `lsblk`), or to `dir:/path` for an existing directory when the
-server's disks are already partitioned. Empty picks an unused disk
-automatically and fails with a message when every disk is partitioned, in
-which case set the device or directory explicitly. A control-only first node
+server's disks are already partitioned. EC2 launches fill the instance-store
+device explicitly; other servers fail with a message until the device or
+directory is set. A control-only first node
 (`--sandboxes 0`) needs no local storage; its volume server and scratch
 directories remain on its root disk. The repository, backing databases, and
 node identity stay on the root disk. The script refuses the root disk and
@@ -182,8 +183,8 @@ and `sudo journalctl -u swarmyd -f` follows node logs. The provisioning script
 writes `/etc/swarmy/node.env`, enables both units at boot, and configures
 `Restart=always` for swarmyd. To rerun provisioning, use
 `cd ~/swarmy && bash scripts/remote-provision.sh stack PRIVATE_IP BUCKET REGION SANDBOXES SERVICE_USER LOCAL_STORAGE` on the first
-node (`SERVICE_USER` defaults to `swarmy`, `LOCAL_STORAGE` to automatic; pass
-a block device or `dir:/path` for an explicitly chosen disk). Joining nodes run swarmyd and `swarmy-tunnel.service`; rerun their
+node (`SERVICE_USER` defaults to `swarmy`; sandbox nodes require a block
+device or `dir:/path` as `LOCAL_STORAGE`). Joining nodes run swarmyd and `swarmy-tunnel.service`; rerun their
 provisioning with `node FIRST_NODE_PRIVATE_IP BUCKET REGION SANDBOXES SERVICE_USER LOCAL_STORAGE` instead. Their cluster file is
 copied from the first node, preserving its cluster identity and loopback
 coordinator address. `add-node` generates a dedicated tunnel key on the joining
@@ -193,7 +194,7 @@ no interactive shell. The tunnel forwards local ports 4500 and 4222 to
 the same loopback ports on the first node, plus 8333 only when SeaweedFS is used. It starts before swarmyd and restarts
 automatically after SSH failure. Inspect it with
 `sudo journalctl -u swarmy-tunnel`. Its identity and pinned host key are stored
-under `/etc/swarmy/`, readable only by the SSH user. The scheduler, gateway, worker,
+under `/etc/swarmy/`, readable only by the service user. The scheduler, gateway, worker,
 and CLI release binaries are also installed in `/usr/local/bin`.
 
 The local NVMe mount persists across reboot. Instance stop/start can discard

@@ -367,6 +367,11 @@ async fn up_waits_and_persists_connection_and_cleanup_contract() {
         (node.ports.fdb, node.ports.nats, node.ports.s3),
         (4500, 4222, 8333)
     );
+    // AWS launches write the service login and disk explicitly so later
+    // configuration defaults never move existing fleet checkouts.
+    assert_eq!(node.service_user(), "ubuntu");
+    assert_eq!(node.service_repo(), "/home/ubuntu/swarmy");
+    assert_eq!(node.local_storage(), "/dev/nvme1n1");
     assert!(node.nodes.is_empty());
     assert!(node.created_at.parse::<jiff::Timestamp>().is_ok());
     assert!(node.key_path.is_file());

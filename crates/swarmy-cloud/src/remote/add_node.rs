@@ -31,6 +31,11 @@ pub async fn run(
         ));
     };
     shape.apply(&mut settings)?;
+    // Joining sandbox nodes need the same explicit disk as first nodes when the
+    // saved launch left it empty (control-only primaries).
+    if settings.local_storage.is_empty() && sandboxes > 0 {
+        settings.local_storage = "/dev/nvme1n1".to_owned();
+    }
     crate::Error::ensure(
         !primary.instance_id.is_empty(),
         "first node has not launched",

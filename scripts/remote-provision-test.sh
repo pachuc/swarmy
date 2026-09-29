@@ -59,15 +59,22 @@ getent() { printf 'swarmy:x:1001:1001::/srv/custom:/bin/bash\n'; }
 unset -f getent
 
 # cloud-init exists on cloud images only; stock servers skip the wait.
-if command -v cloud-init >/dev/null 2>&1; then had_cloud_init=true; else had_cloud_init=false; fi
-if $had_cloud_init; then needs_cloud_init_wait; else ! needs_cloud_init_wait; fi
-cloud-init() { echo 'stub cloud-init present'; }
-needs_cloud_init_wait
-unset -f cloud-init
-if $had_cloud_init; then needs_cloud_init_wait; else ! needs_cloud_init_wait; fi
+# Stub `command` so the test does not depend on the machine it runs on.
+command() {
+    if [[ ${1-} == -v && ${2-} == cloud-init ]]; then
+        [[ ${SWARMY_TEST_HAS_CLOUD_INIT:-absent} == present ]] && return 0 || return 1
+    fi
+    builtin command "$@"
+}
+SWARMY_TEST_HAS_CLOUD_INIT=present needs_cloud_init_wait
+SWARMY_TEST_HAS_CLOUD_INIT=absent; if needs_cloud_init_wait; then echo 'waited without cloud-init' >&2; exit 1; fi
+SWARMY_TEST_HAS_CLOUD_INIT=present; needs_cloud_init_wait
+unset -f command
+# The real binary still decides the real wait, but only through the helper.
+if command -v cloud-init >/dev/null 2>&1; then needs_cloud_init_wait; else ! needs_cloud_init_wait; fi
 
-# Local storage setting classification.
-[[ $(parse_local_storage '') == auto ]]
+# Local storage setting classification: empty means none, never guessing.
+[[ $(parse_local_storage '') == none ]]
 [[ $(parse_local_storage /dev/nvme1n1) == 'device /dev/nvme1n1' ]]
 [[ $(parse_local_storage device:/dev/md0) == 'device /dev/md0' ]]
 [[ $(parse_local_storage dir:/srv/swarmy-local) == 'dir /srv/swarmy-local' ]]
@@ -79,46 +86,4 @@ for invalid in relative dir: device: dir:relative; do
         exit 1
     fi
 done
-
-# Unused-disk discovery against stubbed block tools and a fixture /sys/block.
-sys_block=$(mktemp -d)
-trap 'rm -rf "$sys_block"' EXIT
-for disk in nvme0n1:200000 nvme1n1:100000 nvme2n1:300000 sda:500000 nvme3n1:400000 nvme4n1:600000 loop0:700000; do
-    mkdir -p "$sys_block/${disk%%:*}"
-    printf '%s\n' "${disk##*:}" > "$sys_block/${disk%%:*}/size"
-done
-findmnt() { printf '/dev/nvme0n1p1\n'; }
-lsblk() {
-    local device=${@: -1}
-    case "$*" in
-        *PKNAME*)
-            if [[ $device == /dev/nvme0n1p1 ]]; then printf 'nvme0n1\n'; fi
-            ;;
-        *'NAME'*)
-            if [[ $device == /dev/sda ]]; then printf 'sda\nsda1\n'; else printf '%s\n' "${device#/dev/}"; fi
-            ;;
-        *MOUNTPOINTS*)
-            if [[ $device == /dev/nvme4n1 ]]; then printf '[/mnt/data]\n'; fi
-            ;;
-    esac
-}
-blkid() { [[ ${@: -1} == /dev/nvme3n1 ]]; }
-export SWARMY_SYS_BLOCK="$sys_block"
-# Largest usable disk wins: sda is partitioned, nvme3n1 has a filesystem,
-# nvme4n1 is mounted, nvme0n1 backs root, loop devices never qualify.
-[[ $(discover_unused_disk) == /dev/nvme2n1 ]]
-# Nothing usable left: every candidate is excluded.
-lsblk() {
-    local device=${@: -1}
-    case "$*" in
-        *PKNAME*)
-            if [[ $device == /dev/nvme0n1p1 ]]; then printf 'nvme0n1\n'; fi
-            ;;
-        *'NAME'*) printf '%s\n%s1\n' "${device#/dev/}" "${device#/dev/}" ;;
-    esac
-}
-if discover_unused_disk >/dev/null 2>&1; then
-    echo 'discovered a disk among only partitioned devices' >&2
-    exit 1
-fi
 echo 'remote provision argument and environment tests passed'

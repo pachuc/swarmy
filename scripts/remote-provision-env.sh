@@ -55,19 +55,27 @@ ensure_service_user() {
     if ! id "$user" >/dev/null 2>&1; then
         sudo useradd -m -s /bin/bash "$user"
     fi
+    # A bootstrap copy as root can leave an existing home owned by root.
+    local home
+    home=$(service_home_for "$user")
+    if [[ -d $home && $(stat -c %U "$home") != "$user" ]]; then
+        sudo chown "$user:$user" "$home"
+    fi
     sudo mkdir -p /etc/sudoers.d
     printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$user" | sudo tee "/etc/sudoers.d/90-swarmy-$user" >/dev/null
     sudo chmod 0440 "/etc/sudoers.d/90-swarmy-$user"
+    sudo visudo -cf "/etc/sudoers.d/90-swarmy-$user"
 }
 
-# Classify the local-storage setting. Prints `auto`, `device <path>`, or
+# Classify the local-storage setting. Prints `none`, `device <path>`, or
 # `dir <path>`: a block device is formatted and mounted at
 # /mnt/swarmy-local, while a directory is used directly (dedicated servers
 # usually have their disks already partitioned, often as software RAID).
+# Empty means no local storage; sandbox nodes fail later with a message.
 parse_local_storage() {
     local setting=${1-}
     if [[ -z $setting ]]; then
-        printf 'auto\n'
+        printf 'none\n'
     elif [[ $setting == dir:* ]]; then
         [[ -n ${setting#dir:} && ${setting#dir:} == /* ]] || { echo 'local storage directory must be an absolute path after dir:' >&2; return 1; }
         printf 'dir %s\n' "${setting#dir:}"
@@ -95,36 +103,17 @@ parent_disk_of() {
     fi
 }
 
-# Print the largest unused whole disk, or fail. A disk is usable when it
-# backs neither the root filesystem nor any mount, and carries no partitions
-# or filesystem signature. Selection never probes vendor or model strings:
-# a fresh cloud disk is unformatted whatever its source, and a partitioned
-# server disk never matches. Reads /sys/block, or $SWARMY_SYS_BLOCK in tests.
-discover_unused_disk() {
-    local sys_block=${SWARMY_SYS_BLOCK:-/sys/block}
-    local root_source root_disk name size best best_size=0 mounts children
-    root_source=$(findmnt -n -o SOURCE / 2>/dev/null) || { echo 'cannot determine the root disk' >&2; return 1; }
-    root_disk=$(parent_disk_of "$root_source")
-    best=''
-    for path in "$sys_block"/*; do
-        name=${path##*/}
-        case $name in loop*|ram*|fd*|sr*|dm-*) continue;; esac
-        [[ -e $path/size ]] || continue
-        [[ $(parent_disk_of "/dev/$name") != "$root_disk" ]] || continue
-        children=$(lsblk -nr -o NAME "/dev/$name" 2>/dev/null | wc -l)
-        [[ $children == 1 ]] || continue
-        mounts=$(lsblk -nr -o MOUNTPOINTS "/dev/$name" 2>/dev/null | tr -d '[:space:]')
-        [[ -z $mounts ]] || continue
-        if blkid "/dev/$name" >/dev/null 2>&1; then continue; fi
-        size=$(tr -d '[:space:]' < "$path/size")
-        [[ $size =~ ^[0-9]+$ ]] || continue
-        if (( size > best_size )); then
-            best_size=$size
-            best="/dev/$name"
-        fi
-    done
-    [[ -n $best ]] || { echo 'no unused disk found; pass a block device or dir:/path as local storage' >&2; return 1; }
-    printf '%s\n' "$best"
+# Point `.swarmy/volumes` at the local-storage volumes directory. One shared
+# implementation for device mounts and existing directories.
+link_volumes_to() {
+    local mount=$1
+    sudo mkdir -p "$mount/volumes"
+    sudo chown "$service_user:$service_user" "$mount/volumes"
+    mkdir -p .swarmy
+    if [[ ! -e .swarmy/volumes && ! -L .swarmy/volumes ]]; then
+        ln -s "$mount/volumes" .swarmy/volumes
+    fi
+    [[ $(readlink -f .swarmy/volumes) == "$mount/volumes" ]]
 }
 
 node_disk_bytes() {

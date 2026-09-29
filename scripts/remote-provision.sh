@@ -3,8 +3,8 @@
 # Arguments: MODE SERVICE_ADDRESS [BUCKET] [BUCKET_REGION] [SANDBOXES]
 #   [SERVICE_USER] [LOCAL_STORAGE]. SERVICE_USER owns the checkout and the
 #   units (default swarmy); LOCAL_STORAGE is a block device to format and
-#   mount at /mnt/swarmy-local, dir:/path for an existing directory, or
-#   empty to pick an unused disk automatically (sandbox nodes only).
+#   mount at /mnt/swarmy-local or dir:/path for an existing directory.
+#   Sandbox nodes require it; control-only nodes use the root disk.
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
 mode=${1:-stack}
@@ -19,7 +19,7 @@ ensure_service_user "$service_user"
 # Privileged setup runs as any sudoer, but the build and the units belong to
 # the service user; re-enter as that user so files land owned correctly.
 if [[ $(id -un) != "$service_user" ]]; then
-    exec sudo -u "$service_user" bash "$0" "$@"
+    exec sudo -H -u "$service_user" bash "$0" "$@"
 fi
 service_home=$(service_home_for "$service_user")
 service_repo=$(service_repo_for "$service_user")
@@ -64,13 +64,9 @@ fi
 # Sandbox scratch lives on local storage; control-only nodes keep everything
 # on the root disk. A device is formatted once and mounted by label, while an
 # existing directory (already partitioned server disks) is used directly.
+# The setting is explicit: sandbox nodes fail without one.
 local_mount=/mnt/swarmy-local
 storage_is_mount=false
-if [[ $storage == auto ]]; then
-    if (( sandboxes > 0 )); then
-        storage="device $(discover_unused_disk)"
-    fi
-fi
 if [[ $storage == device\ * ]]; then
     local_device=${storage#device }
     [[ -b $local_device ]] || { echo "Local storage device not found: $local_device" >&2; exit 1; }
@@ -91,25 +87,13 @@ if [[ $storage == device\ * ]]; then
         printf 'LABEL=swarmy-local /mnt/swarmy-local ext4 defaults,nofail 0 2\n' | sudo tee -a /etc/fstab >/dev/null
     fi
     storage_is_mount=true
-    sudo mkdir -p "$local_mount/volumes"
-    sudo chown "$service_user:$service_user" "$local_mount/volumes"
-    mkdir -p .swarmy
-    if [[ ! -e .swarmy/volumes && ! -L .swarmy/volumes ]]; then
-        ln -s "$local_mount/volumes" .swarmy/volumes
-    fi
-    [[ $(readlink -f .swarmy/volumes) == "$local_mount/volumes" ]]
+    link_volumes_to "$local_mount"
 elif [[ $storage == dir\ * ]]; then
     local_mount=${storage#dir }
-    sudo mkdir -p "$local_mount/volumes"
-    sudo chown "$service_user:$service_user" "$local_mount/volumes"
-    mkdir -p .swarmy
-    if [[ ! -e .swarmy/volumes && ! -L .swarmy/volumes ]]; then
-        ln -s "$local_mount/volumes" .swarmy/volumes
-    fi
-    [[ $(readlink -f .swarmy/volumes) == "$local_mount/volumes" ]]
+    link_volumes_to "$local_mount"
 else
     # With no mount, the volume server and scratch directories use the root disk.
-    (( sandboxes == 0 )) || { echo 'Local storage is required for sandbox nodes' >&2; exit 1; }
+    (( sandboxes == 0 )) || { echo 'Local storage is required for sandbox nodes: pass a block device or dir:/path' >&2; exit 1; }
     mkdir -p .swarmy/volumes
 fi
 # Keep node identity, backing data, and configuration on the root disk.

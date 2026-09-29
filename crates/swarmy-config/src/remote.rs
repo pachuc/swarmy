@@ -62,12 +62,12 @@ pub struct RemoteSettings {
     pub managed_by_tag: String,
     pub profile: Option<String>,
     /// Login that owns the checkout and runs the node units. Plain servers
-    /// use `swarmy`; EC2 configurations keep `ubuntu` by setting it.
+    /// use `swarmy`; EC2 launches write `ubuntu` explicitly.
     pub service_user: String,
     /// Local disk for sandbox data: a block device to format and mount at
-    /// `/mnt/swarmy-local` (for example `/dev/nvme1n1`), `dir:/path` for an
-    /// existing directory to use directly, or empty to pick an unused disk
-    /// automatically (sandbox nodes) or use none (control-only nodes).
+    /// `/mnt/swarmy-local` (for example `/dev/nvme1n1`) or `dir:/path` for an
+    /// existing directory to use directly. Sandbox nodes require it;
+    /// control-only nodes leave it empty for the root disk.
     pub local_storage: String,
     pub aws: AwsSettings,
 }
@@ -114,7 +114,10 @@ impl Default for RemoteSettingsHelper {
             disk_gb: 100,
             managed_by_tag: "swarmy".into(),
             profile: None,
-            service_user: default_service_user(),
+            // Empty means the record predates the setting; `RemoteNode::service_user`
+            // falls back to the SSH login it was provisioned with. Configuration
+            // files fill the new default on load (`Settings::read`).
+            service_user: String::new(),
             local_storage: String::new(),
             aws: AwsHelper::default(),
         }
@@ -137,11 +140,9 @@ impl<'de> Deserialize<'de> for RemoteSettings {
         D: serde::Deserializer<'de>,
     {
         let helper = RemoteSettingsHelper::deserialize(deserializer)?;
-        let service_user = if helper.service_user.is_empty() {
-            default_service_user()
-        } else {
-            helper.service_user
-        };
+        // Keep an absent service user empty so saved node records fall back to
+        // the SSH login they were provisioned with. Configuration files fill
+        // the new default on load; see `Settings::read`.
         Ok(Self {
             provider: helper.provider,
             services: helper.services,
@@ -150,7 +151,7 @@ impl<'de> Deserialize<'de> for RemoteSettings {
             disk_gb: helper.disk_gb,
             managed_by_tag: helper.managed_by_tag,
             profile: helper.profile,
-            service_user,
+            service_user: helper.service_user,
             local_storage: helper.local_storage,
             aws: AwsSettings {
                 subnet: helper.aws.subnet,
@@ -263,7 +264,7 @@ impl RemoteNode {
     /// Checkout holding the provisioning scripts on the node.
     #[must_use]
     pub fn service_repo(&self) -> String {
-        format!("{}/swarmy", self.service_home())
+        service_repo_for(self.service_user())
     }
 
     /// Settings selecting the cloud provider for this remote. Records saved
@@ -294,6 +295,17 @@ fn default_service_user() -> String {
     "swarmy".into()
 }
 
+impl RemoteSettings {
+    /// Fill the new default for configuration files. Saved node records keep
+    /// an empty service user so `RemoteNode::service_user` falls back to the
+    /// SSH login they were provisioned with.
+    pub fn normalize_service_user(&mut self) {
+        if self.service_user.is_empty() {
+            self.service_user = default_service_user();
+        }
+    }
+}
+
 /// Home directory for a service login: `/root` for root, `/home/{user}` otherwise.
 #[must_use]
 pub fn service_home_for(user: &str) -> String {
@@ -302,6 +314,12 @@ pub fn service_home_for(user: &str) -> String {
     } else {
         format!("/home/{user}")
     }
+}
+
+/// Checkout holding the provisioning scripts for a service login.
+#[must_use]
+pub fn service_repo_for(user: &str) -> String {
+    format!("{}/swarmy", service_home_for(user))
 }
 
 /// Validate service logins before using them in paths or shell output.
@@ -569,6 +587,23 @@ mod tests {
         assert_eq!(legacy.local_storage(), "");
         assert_eq!(legacy.service_home(), "/home/ubuntu");
         assert_eq!(legacy.service_repo(), "/home/ubuntu/swarmy");
+
+        // Saved launch settings without the new field keep the login they were
+        // provisioned with instead of taking the new default.
+        let existing: RemoteNode = serde_json::from_str(
+            r#"{"name":"existing","region":"us-east-1","instance_id":"i-old","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","launch_settings":{"aws":{"instance_type":"m6id.xlarge"},"disk_gb":100},"launch_attempted":true,"created_at":"2026-09-16T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(existing.service_user(), "ubuntu");
+        assert_eq!(existing.service_home(), "/home/ubuntu");
+        assert_eq!(existing.service_repo(), "/home/ubuntu/swarmy");
+
+        // Configuration files without the field take the new default on load.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[remote]\nregion = 'us-east-1'\n").unwrap();
+        let loaded = Settings::read(&path).unwrap();
+        assert_eq!(loaded.remote.service_user, "swarmy");
 
         // New records resolve through their saved launch settings.
         let node: RemoteNode = serde_json::from_str(

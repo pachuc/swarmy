@@ -78,10 +78,7 @@ impl<'a> Options<'a> {
         // Copy only service options. Local paths, cloud secrets, endpoints, and
         // the selected tunnel profile must never become node configuration.
         swarmy_config::validate_service_user(&settings.remote.service_user)?;
-        let service_repo = format!(
-            "{}/swarmy",
-            swarmy_config::service_home_for(&settings.remote.service_user)
-        );
+        let service_repo = swarmy_config::service_repo_for(&settings.remote.service_user);
         let mut remote = Settings {
             api: settings.api.clone(),
             selection: swarmy_config::SelectionSettings {
@@ -149,9 +146,11 @@ impl<'a> Options<'a> {
 }
 
 pub async fn install(node: &RemoteNode, address: &str, options: &Options<'_>) -> Result<()> {
-    swarmy_config::validate_service_user(node.service_user())?;
-    let repo = node.service_repo();
-    let home = node.service_home();
+    let user = node.service_user().to_owned();
+    swarmy_config::validate_service_user(&user)?;
+    // Bash resolves `~user` through the passwd entry; Rust passes only the login.
+    let repo = format!("~{user}/swarmy");
+    let home = format!("~{user}");
     upload(
         node,
         address,
@@ -188,10 +187,8 @@ pub async fn install(node: &RemoteNode, address: &str, options: &Options<'_>) ->
     let status = super::ssh::command(node)?
         .arg(address)
         .arg(format!(
-            "cd {} && bash scripts/remote-services.sh {} {}",
-            shell_words::quote(&repo),
-            shell_words::quote(node.service_user()),
-            shell_words::quote(&repo),
+            "cd {repo} && bash scripts/remote-services.sh {}",
+            shell_words::quote(&user),
         ))
         .status()
         .await
