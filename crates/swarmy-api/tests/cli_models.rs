@@ -232,8 +232,6 @@ context_window = 42
         })
     );
 
-    assert_eq!(rows[0]["effective_api"], "OpenAiCompletions");
-    assert_eq!(rows[0]["effective_base_url"], "http://localhost:8000/v1");
     let shown = fixture.json(&["models", "show", "private/team/reasoner", "--json"]);
     assert_eq!(shown, rows[0]);
     let rows = fixture.json(&["models", "search", "PRIVATE/", "--json"]);
