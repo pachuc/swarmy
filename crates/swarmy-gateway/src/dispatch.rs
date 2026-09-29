@@ -243,7 +243,7 @@ async fn refresh(
             role: ServiceRole::Gateway,
             instance_id: gateway.health_id.clone(),
             version: env!("CARGO_PKG_VERSION").into(),
-            host: std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into()),
+            host: swarmy_config::service_hostname(),
             started_at: gateway.started_at,
             last_seen: Timestamp::now(),
             detail: ServiceDetail::Providers(changes.served),
