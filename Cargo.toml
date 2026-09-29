@@ -9,7 +9,7 @@ publish = false
 license = "MIT"
 
 [workspace.lints.rust]
-# Deny rather than forbid: the volume and sandbox crates must speak to kernel
+# Deny rather than forbid: the store and volume crates must speak to kernel
 # block-device and VM interfaces and opt back in per module with a justification.
 unsafe_code = "deny"
 

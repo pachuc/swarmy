@@ -109,9 +109,9 @@ fn visit<'a>(node: &'a RemoteNode, nodes: &mut Vec<&'a RemoteNode>) {
 
 fn print_version(message: &str, json: bool) {
     if json {
-        eprintln!("{message}");
+        cloud_err!("{message}");
     } else {
-        println!("{message}");
+        cloud_out!("{message}");
     }
 }
 
@@ -157,9 +157,9 @@ pub async fn run(
             )
             .await?;
         if options.format == Format::Json {
-            println!("{}", json_line(&summary)?);
+            cloud_out!("{}", json_line(&summary)?);
         } else {
-            println!(
+            cloud_out!(
                 "{}: changed={} restarted={} elapsed={:.1}s",
                 summary.node,
                 summary.changed.join(","),

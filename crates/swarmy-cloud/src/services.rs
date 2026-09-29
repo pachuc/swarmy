@@ -141,7 +141,7 @@ pub async fn install(node: &RemoteNode, address: &str, options: &Options<'_>) ->
         upload(node, address, "/etc/swarmy/fake.json", script).await?;
     }
     if let Some(path) = &options.credential {
-        eprintln!(
+        cloud_err!(
             "WARNING: --copy-credential sends your ChatGPT credential file and cluster keyring to node {} over SSH. Legacy file credentials share one refresh chain; import into the cluster before running multiple gateways.",
             node.name
         );

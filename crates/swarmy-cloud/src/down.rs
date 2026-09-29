@@ -32,7 +32,7 @@ impl Report {
 
     fn print(&self) {
         for failure in &self.failures {
-            eprintln!("{failure}");
+            cloud_err!("{failure}");
         }
     }
 }
@@ -82,15 +82,15 @@ pub async fn confirm(
     if !io::stdin().is_terminal() {
         bail!("remote down requires --yes without a terminal");
     }
-    println!("Permanently delete these owned resources and their data:");
+    cloud_out!("Permanently delete these owned resources and their data:");
     if bucket_owned {
-        println!("  bucket {bucket} (all objects and versions)");
+        cloud_out!("  bucket {bucket} (all objects and versions)");
     }
     if profile_owned {
-        println!("  instance profile {role}");
+        cloud_out!("  instance profile {role}");
     }
     if role_owned {
-        println!("  role {role}");
+        cloud_out!("  role {role}");
     }
     print!("Continue? [y/N] ");
     io::stdout().flush()?;
@@ -153,7 +153,7 @@ pub(crate) async fn tag_with_confirmation(
     }
     cloud.tag_bucket(bucket, &node.name).await?;
     cloud.tag_node_role(&role, &node.name).await?;
-    println!(
+    cloud_out!(
         "Tagged bucket {bucket}, role {role}, and instance profile {role} for remote {}",
         node.name
     );
@@ -177,7 +177,7 @@ pub async fn run(
     // Every operation is attempted even if another AWS permission is denied.
     for current in nodes.iter().rev() {
         if !current.launch_attempted && current.instance_id.is_empty() {
-            println!("Nothing was launched for {}", current.name);
+            cloud_out!("Nothing was launched for {}", current.name);
             continue;
         }
         let key = key_name(current)?;
@@ -189,7 +189,7 @@ pub async fn run(
                 &error,
             );
         } else {
-            println!("Key pair {key}: removed or absent");
+            cloud_out!("Key pair {key}: removed or absent");
         }
     }
     report.print();
@@ -204,7 +204,7 @@ pub async fn run(
         state.remove_key(current)?;
     }
     state.remove(node)?;
-    println!("Removed remote {}", node.name);
+    cloud_out!("Removed remote {}", node.name);
     Ok(())
 }
 
@@ -220,7 +220,7 @@ async fn cleanup_bucket_and_role(
             .instance_profile(&node.name)
             .ok_or_else(|| anyhow::anyhow!("bucket has no node role"))?;
         if keep_bucket {
-            println!("Kept bucket {bucket} and guarding role and instance profile {role}");
+            cloud_out!("Kept bucket {bucket} and guarding role and instance profile {role}");
         } else {
             let shared = state.bucket_shared(&node.name, bucket)?;
             let bucket_status = if shared {
@@ -229,19 +229,19 @@ async fn cleanup_bucket_and_role(
                 cloud.bucket_ownership(bucket, &node.name).await?
             };
             if shared {
-                println!("Bucket {bucket}: kept (another remote state records it)");
+                cloud_out!("Bucket {bucket}: kept (another remote state records it)");
             } else {
                 match bucket_status {
                     Ownership::Owned => {
                         let removed = cloud.delete_bucket(bucket, &node.name).await?;
-                        println!(
+                        cloud_out!(
                             "Bucket {bucket}: {}",
                             if removed { "removed" } else { "absent" }
                         );
                     }
-                    Ownership::Absent => println!("Bucket {bucket}: absent"),
+                    Ownership::Absent => cloud_out!("Bucket {bucket}: absent"),
                     Ownership::Unmanaged => {
-                        println!("Bucket {bucket}: kept (ownership tags do not match)");
+                        cloud_out!("Bucket {bucket}: kept (ownership tags do not match)");
                     }
                 }
             }
@@ -252,29 +252,29 @@ async fn cleanup_bucket_and_role(
                 } else {
                     "bucket is retained"
                 };
-                println!("Instance profile {role}: kept ({reason})");
-                println!("Role {role}: kept ({reason})");
+                cloud_out!("Instance profile {role}: kept ({reason})");
+                cloud_out!("Role {role}: kept ({reason})");
             } else {
                 let (profile, role_status) = cloud.role_ownership(&role, &node.name).await?;
                 if profile == Ownership::Unmanaged {
-                    println!("Instance profile {role}: kept (ownership tags do not match)");
+                    cloud_out!("Instance profile {role}: kept (ownership tags do not match)");
                 }
                 if role_status == Ownership::Unmanaged && profile != Ownership::Unmanaged {
-                    println!("Instance profile {role}: kept (role is unowned)");
+                    cloud_out!("Instance profile {role}: kept (role is unowned)");
                 }
                 if role_status == Ownership::Unmanaged || profile == Ownership::Unmanaged {
-                    println!(
+                    cloud_out!(
                         "Role {role}: kept (ownership tags do not match or profile is unowned)"
                     );
                 }
                 if profile != Ownership::Unmanaged && role_status != Ownership::Unmanaged {
                     let (profile_removed, role_removed) =
                         cloud.delete_node_role(&role, &node.name).await?;
-                    println!(
+                    cloud_out!(
                         "Instance profile {role}: {}",
                         if profile_removed { "removed" } else { "absent" }
                     );
-                    println!(
+                    cloud_out!(
                         "Role {role}: {}",
                         if role_removed { "removed" } else { "absent" }
                     );
@@ -309,10 +309,10 @@ async fn stop_instance(
         Some(node.instance_id.clone())
     };
     let Some(id) = id else {
-        println!("No launched instance found for {}", node.name);
+        cloud_out!("No launched instance found for {}", node.name);
         return;
     };
-    println!("Terminating {id}");
+    cloud_out!("Terminating {id}");
     if let Err(error) = cloud.destroy(&id).await {
         report.failed(
             &format!("instance {id}"),
@@ -323,7 +323,7 @@ async fn stop_instance(
         return;
     }
     match wait_terminated(cloud, &id, delay).await {
-        Ok(()) => println!("Confirmed {id} is terminated or absent"),
+        Ok(()) => cloud_out!("Confirmed {id} is terminated or absent"),
         Err(error) => {
             report.failed(&format!("instance {id}"), "ec2:DescribeInstances", &error);
             report.live.push(id);

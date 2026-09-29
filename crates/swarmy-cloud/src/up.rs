@@ -29,16 +29,16 @@ pub async fn run(
             && !existing.instance_id.is_empty()
             && !existing.public_ip.is_empty()
         {
-            println!(
+            cloud_out!(
                 "Remote node {name} already exists; ignored --services, --copy-credential, and image recipe/build options. Use remote down before reprovisioning."
             );
             return Ok(());
         }
-        anyhow::bail!("remote node {name} already exists; run swarmy remote down {name} first");
+        return Err(crate::Error::AlreadyExists(name.to_owned()).into());
     }
     validate(settings, name)?;
     let started = Instant::now();
-    println!("Resolving Ubuntu image in {}", settings.region);
+    cloud_out!("Resolving Ubuntu image in {}", settings.region);
     let image = match &settings.aws.image {
         Some(image) => image.clone(),
         None => cloud.base_image().await?,
@@ -86,28 +86,28 @@ pub async fn run(
             host.services(&node, &address, &options).await?;
         }
         if let Some(recipe) = options.recipe {
-            println!("Building base-ubuntu:{name} (this takes several minutes)");
+            cloud_out!("Building base-ubuntu:{name} (this takes several minutes)");
             let build_started = Instant::now();
             host.build_image(&node, &address, recipe).await?;
             node.default_image = Some(format!("base-ubuntu:{name}"));
             state.save(&node)?;
-            println!(
+            cloud_out!(
                 "Image base-ubuntu:{name} built and registered in {:.1}s",
                 build_started.elapsed().as_secs_f64()
             );
         } else {
-            println!("Skipping image build (--no-image)");
+            cloud_out!("Skipping image build (--no-image)");
         }
         Ok::<_, anyhow::Error>(address)
     }
     .await;
     let address = result
         .with_context(|| format!("remote up failed; cleanup with swarmy remote down {name}"))?;
-    println!(
+    cloud_out!(
         "Remote node {name} ready in {:.1}s",
         started.elapsed().as_secs_f64()
     );
-    println!("{}", super::ssh::command_line(&node, &address)?);
+    cloud_out!("{}", super::ssh::command_line(&node, &address)?);
     Ok(())
 }
 
@@ -120,13 +120,13 @@ async fn provision(
     node: &mut RemoteNode,
     delay: Duration,
 ) -> Result<String> {
-    println!("Generating and importing ed25519 SSH key");
+    cloud_out!("Generating and importing ed25519 SSH key");
     let public_key = host.generate_key(node).await?;
     let key_name = key_name(node)?.to_owned();
     cloud
         .import_ssh_key(&key_name, public_key.clone(), &settings.managed_by_tag)
         .await?;
-    println!("Launching {} from {image}", settings.aws.instance_type);
+    cloud_out!("Launching {} from {image}", settings.aws.instance_type);
     node.launch_attempted = true;
     state.save(node)?;
     node.instance_id = cloud
@@ -140,7 +140,7 @@ async fn provision(
         ))
         .await?;
     state.save(node)?;
-    println!("Waiting for {} to run", node.instance_id);
+    cloud_out!("Waiting for {} to run", node.instance_id);
     let machine = wait_running(cloud, &node.instance_id, delay).await?;
     node.public_ip = machine.public_ip;
     node.private_ip = machine.private_ip;

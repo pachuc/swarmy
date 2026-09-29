@@ -1,6 +1,6 @@
 # Sandbox runtime
 
-`SandboxRuntime` implements the compute seam from design section 11, with exec
+`RuncRuntime` implements the compute seam from design section 11, with exec
 added for this slice. Shared request/result types live in `swarmy-core`.
 `RuncRuntime::open` takes a node state directory and the shared volume server
 configuration. Keep one runtime alive for the node and call `shutdown` before

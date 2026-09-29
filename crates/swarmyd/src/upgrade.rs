@@ -87,7 +87,7 @@ async fn process_list_with_timeout(
     }
 }
 
-pub async fn run(loaded: &swarmy_config::Loaded) -> Result<()> {
+pub async fn run(loaded: &swarmy_config::Loaded, warn: impl Fn(&str)) -> Result<Vec<String>> {
     let node: NodeId = loaded.node_id()?;
     let settings = &loaded.settings;
     let directory: Vec<_> = settings
@@ -128,10 +128,10 @@ pub async fn run(loaded: &swarmy_config::Loaded) -> Result<()> {
                 match process_list(&socket, placement.agent_id, placement.epoch).await {
                     Ok(running) => running,
                     Err(error) => {
-                        eprintln!(
+                        warn(&format!(
                             "process listing for {} failed, treating it as busy: {error:#}",
                             placement.agent_id
-                        );
+                        ));
                         true
                     }
                 }
@@ -141,8 +141,7 @@ pub async fn run(loaded: &swarmy_config::Loaded) -> Result<()> {
             }
         }
     }
-    println!("{}", serde_json::to_string(&busy)?);
-    Ok(())
+    Ok(busy)
 }
 
 #[cfg(test)]

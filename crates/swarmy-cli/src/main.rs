@@ -146,6 +146,13 @@ fn main() -> anyhow::Result<()> {
     if matches!(cli.command, Command::Remote { .. }) {
         anyhow::bail!("swarmy was built without remote support");
     }
+    let _ = swarmy_cloud::set_output_sink(|message, stderr| {
+        if stderr {
+            eprintln!("{message}");
+        } else {
+            println!("{message}");
+        }
+    });
     swarmy_cloud::select(cli.remote.as_deref())?;
     // Background service logs must not overwrite the full-screen transcript.
     let writer = if matches!(cli.command, Command::Chat { .. }) {
