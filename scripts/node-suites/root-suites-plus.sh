@@ -35,12 +35,17 @@ done
 # Since the client split `swarmy image build` uploads through the API, and the
 # root suites above already stopped theirs, serve one on a loopback port for
 # this build. The node and chat sections after it need no API.
+# The swarmy-dev virtual disk is larger than the API's default 16 GiB upload
+# limit, so raise the suite API's limit to the recipe's disk size, read here
+# rather than duplicated, or the build fails with image_too_large.
+dev_upload_max_bytes=$(python3 -c 'import tomllib; print(tomllib.load(open("images/swarmy-dev/recipe.toml", "rb"))["disk_size"])') \
+  || { echo "could not read images/swarmy-dev/recipe.toml disk_size"; echo "PLUS_EXIT=1"; exit 1; }
 api_pid=""
 if [ -x ./target/debug/swarmy-api ]; then
   api_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
   export SWARMY_API_TOKEN="suite-$(date +%s)-$RANDOM"
   export SWARMY_API_URL="http://127.0.0.1:$api_port"
-  SWARMY_API_LISTEN="127.0.0.1:$api_port" ./target/debug/swarmy-api > ~/root-suites-plus-api.log 2>&1 &
+  SWARMY_API_LISTEN="127.0.0.1:$api_port" SWARMY_IMAGE_UPLOAD_MAX_BYTES="$dev_upload_max_bytes" ./target/debug/swarmy-api > ~/root-suites-plus-api.log 2>&1 &
   api_pid=$!
   for _ in $(seq 1 120); do
     (echo > "/dev/tcp/127.0.0.1/$api_port") 2>/dev/null && break
