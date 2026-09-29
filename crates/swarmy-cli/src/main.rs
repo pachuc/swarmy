@@ -136,21 +136,21 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
     // One match owns every command and calls into its module. Each arm
-    // connects on its own path, except the local `dev` and `swarmy-auth`
-    // helpers which never touch the API.
+    // connects on its own path, except the local `dev` supervisor and the
+    // `swarmy-auth` helpers which never touch the API.
     let runtime = tokio::runtime::Runtime::new()?;
     let json = cli.json;
     match cli.command {
         Command::Dev { command } => runtime.block_on(dev::run(command, json)),
         Command::Auth { command, auth_file } => {
-            runtime.block_on(api_commands::auth_command(command, auth_file, json))
+            runtime.block_on(auth_command::run(command, auth_file, json))
         }
         Command::Session { command } => {
             runtime.block_on(api_commands::session_command(command, json))
         }
         Command::Agent { command } => runtime.block_on(api_commands::agent_command(command, json)),
         Command::Cost { args } => runtime.block_on(api_commands::cost_command(args, json)),
-        Command::Image { command } => runtime.block_on(api_commands::image_command(command, json)),
+        Command::Image { command } => runtime.block_on(image::run(command, json)),
         Command::Models { command } => runtime.block_on(models::run(command, json)),
         Command::Bench { command } => runtime.block_on(run_bench(command, json)),
         Command::Run { args } => runtime.block_on(run_prompt(args, json)),

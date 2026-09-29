@@ -44,10 +44,15 @@ pub enum Error {
     /// The API did not answer before the client timeout.
     #[error("API at {endpoint}: request timed out")]
     ApiTimeout { endpoint: String },
-    /// A control-plane request failed. The message renders the inner error,
-    /// and the source chain keeps its type for `downcast_ref` checks.
-    #[error("{0}")]
-    Client(#[from] swarmy_client::Error),
+    /// A control-plane request failed. The message names the endpoint the
+    /// binary resolved, and the source chain keeps the typed client error
+    /// for `downcast_ref` checks.
+    #[error("API at {endpoint}: {source}")]
+    Client {
+        endpoint: String,
+        #[source]
+        source: swarmy_client::Error,
+    },
     /// Terminal setup or input failed (interactive chat only).
     #[error("terminal error: {0}")]
     Terminal(String),
@@ -57,35 +62,6 @@ pub enum Error {
     /// A terminal or pipe write failed.
     #[error("{0}")]
     Io(#[from] std::io::Error),
-}
-
-/// How one turn's progress is reported. One variant replaces the old
-/// `until_idle(json, run, quiet)` booleans: the shape selects JSON or text
-/// rendering, and the `Run` suffix requires an assistant reply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputMode {
-    /// Human-readable streaming text; the turn fails without a reply.
-    TextRun,
-    /// Human-readable streaming text for an interactive session.
-    TextChat,
-    /// Machine-readable JSON lines; the turn fails without a reply.
-    JsonRun,
-    /// Machine-readable JSON lines for an interactive session.
-    JsonChat,
-}
-
-impl OutputMode {
-    /// Whether the CLI renders each output as a JSON line.
-    #[must_use]
-    pub fn is_json(self) -> bool {
-        matches!(self, Self::JsonRun | Self::JsonChat)
-    }
-
-    /// Whether an idle turn without an assistant reply fails.
-    #[must_use]
-    pub fn requires_reply(self) -> bool {
-        matches!(self, Self::TextRun | Self::JsonRun)
-    }
 }
 
 /// One renderable turn event, in arrival order. The conversation produces
@@ -126,9 +102,9 @@ pub enum TurnOutput {
 const PICKUP_DEADLINE: Duration = Duration::from_secs(30);
 
 /// One API call with the standard client timeout. The duration lives in
-/// `swarmy-client` next to the CLI's own call; this wrapper only attaches the
-/// endpoint the binary resolved so timeouts name it.
-async fn call<T>(
+/// `swarmy-client` next to the CLI's own call; this wrapper attaches the
+/// endpoint the binary resolved so every client error names it.
+pub(crate) async fn call<T>(
     endpoint: &str,
     future: impl std::future::Future<Output = Result<T, swarmy_client::Error>>,
 ) -> Result<T, Error> {
@@ -138,8 +114,20 @@ async fn call<T>(
             swarmy_client::Error::Timeout => Error::ApiTimeout {
                 endpoint: endpoint.to_owned(),
             },
-            error => Error::Client(error),
+            error => Error::Client {
+                endpoint: endpoint.to_owned(),
+                source: error,
+            },
         })
+}
+
+/// Wrap one client error that did not go through [`call`] (stream opens and
+/// direct matches) so it still names the endpoint while keeping its type.
+fn client_error(endpoint: &str, error: swarmy_client::Error) -> Error {
+    Error::Client {
+        endpoint: endpoint.to_owned(),
+        source: error,
+    }
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -242,6 +230,7 @@ fn check_open_args(
 
 async fn create_session(
     client: &Client,
+    endpoint: &str,
     image: Option<&str>,
     agent_id: Option<String>,
     new: bool,
@@ -249,8 +238,9 @@ async fn create_session(
     route: Option<String>,
 ) -> Result<api::Session> {
     let image = image.map(image_ref).transpose()?;
-    let result = client
-        .create_session(&api::CreateSession {
+    let result = call(
+        endpoint,
+        client.create_session(&api::CreateSession {
             idempotency_key: ulid::Ulid::generate().to_string(),
             agent_id,
             new,
@@ -259,11 +249,13 @@ async fn create_session(
             model: selection.model,
             effort: selection.effort.map(Into::into),
             route,
-        })
-        .await;
+        }),
+    )
+    .await;
     match result {
-        Err(swarmy_client::Error::Api { body, .. }) if body.code == "image_not_found" => {
-            let images = client.images(None, 100).await?;
+        Err(Error::Client { source, .. }) if matches!(&source, swarmy_client::Error::Api { body, .. } if body.code == "image_not_found") =>
+        {
+            let images = call(endpoint, client.images(None, 100)).await?;
             let known = images
                 .iter()
                 .map(|image| format!("{}:{}", image.name, image.tag))
@@ -373,7 +365,7 @@ impl Conversation {
         check_open_args(id.as_deref(), image.as_deref(), agent.as_deref(), new)?;
         let provider = selection.provider.clone();
         let agent_record = if let Some(name) = &agent {
-            Some(client.agent(name).await?)
+            Some(call(&endpoint, client.agent(name)).await?)
         } else {
             None
         };
@@ -383,13 +375,14 @@ impl Conversation {
                     .as_ref()
                     .is_none_or(|a| a.main_session_id.is_none()));
         let session = if let Some(id) = id {
-            client.session(&id).await?
+            call(&endpoint, client.session(&id)).await?
         } else {
             // Agent sessions inherit the agent and reject overrides at
             // creation; the route override below assigns them afterwards.
             let for_create = route.clone().filter(|_| agent_record.is_none());
             create_session(
                 &client,
+                &endpoint,
                 image.as_deref(),
                 agent_record.as_ref().map(|a| a.id.clone()),
                 new,
@@ -401,7 +394,11 @@ impl Conversation {
         let mut session = session;
         let predecessor = session.id.clone();
         while session.state == api::SessionState::Completed {
-            let Some(next) = client.successor(&session).await? else {
+            let successor = {
+                let session_ref = &session;
+                call(&endpoint, client.successor(session_ref)).await?
+            };
+            let Some(next) = successor else {
                 break;
             };
             session = next;
@@ -409,7 +406,7 @@ impl Conversation {
         let predecessor = (predecessor != session.id).then_some(predecessor);
         let agent_record = if agent_record.is_none() {
             if let Some(agent_id) = &session.agent_id {
-                Some(client.agent(agent_id).await?)
+                Some(call(&endpoint, client.agent(agent_id)).await?)
             } else {
                 None
             }
@@ -423,7 +420,10 @@ impl Conversation {
             }],
             token_deltas: true,
         });
-        stream.open().await?;
+        stream
+            .open()
+            .await
+            .map_err(|error| client_error(&endpoint, error))?;
         let provider = session
             .provider
             .clone()
@@ -483,12 +483,10 @@ impl Conversation {
             queue,
             text,
         };
-        let first = self.client.append_message(&self.id, &body).await;
+        let first = call(&self.endpoint, self.client.append_message(&self.id, &body)).await;
         let appended = match first {
-            Err(swarmy_client::Error::Api {
-                status,
-                body: error,
-            }) if status.as_u16() == 409 && error.code == "stale_head" => {
+            Err(Error::Client { source, .. }) if matches!(&source, swarmy_client::Error::Api { status, body } if status.as_u16() == 409 && body.code == "stale_head") =>
+            {
                 self.session = call(&self.endpoint, self.client.session(&self.id)).await?;
                 if !queue && self.session.state != api::SessionState::Idle {
                     return Err(Error::SessionNotIdle);
@@ -564,7 +562,8 @@ impl Conversation {
         // the switch must not clobber the new session with the archived
         // one it read, nor queue the archived feed into the new turn.
         let id = self.id.clone();
-        let session = self.client.session(&id).await?;
+        let endpoint = self.endpoint.clone();
+        let session = call(&endpoint, self.client.session(&id)).await?;
         if self.id != id {
             return Ok(false);
         }
@@ -576,7 +575,7 @@ impl Conversation {
         // cursor advances on return, so also skip sequences already waiting
         // in pending when two ticks fire before the queue drains.
         let after = self.pending_after();
-        let history = self.client.events(&id, after, 100).await?;
+        let history = call(&endpoint, self.client.events(&id, after, 100)).await?;
         if self.id != id {
             return Ok(false);
         }
@@ -616,8 +615,13 @@ impl Conversation {
 
     async fn take_successor(&mut self) -> Result<Option<ConversationItem>> {
         let old = self.id.clone();
-        let session = self.client.session(&old).await?;
-        let Some(successor) = self.client.successor(&session).await? else {
+        let endpoint = self.endpoint.clone();
+        let session = call(&endpoint, self.client.session(&old)).await?;
+        let successor = {
+            let session_ref = &session;
+            call(&endpoint, self.client.successor(session_ref)).await?
+        };
+        let Some(successor) = successor else {
             return Ok(None);
         };
         let next = successor.id.clone();
@@ -669,9 +673,10 @@ impl Conversation {
             let (item, queued) = if let Some(item) = self.pending.pop_front() {
                 (ConversationItem::Stream(item), true)
             } else {
+                let endpoint = self.endpoint.clone();
                 (
                     ConversationItem::Stream(tokio::select! {
-                        item = self.stream.next_item() => item?,
+                        item = self.stream.next_item() => item.map_err(|error| client_error(&endpoint, error))?,
                         _ = self.poll.tick(), if self.current_turn.is_some() || self.session.state != api::SessionState::Idle => {
                             if self.poll_tick().await? {
                                 continue;
@@ -735,14 +740,15 @@ impl Conversation {
     /// Returns API and transport errors, an interruption, or the turn failure.
     pub async fn until_idle(
         &mut self,
-        mode: OutputMode,
+        json: bool,
+        requires_reply: bool,
         emit: &mut impl FnMut(TurnOutput),
     ) -> Result<()> {
         let mut progress = TurnProgress::default();
         let deadline = Instant::now() + PICKUP_DEADLINE;
         loop {
             let next = async {
-                if mode.requires_reply() && !progress.started {
+                if requires_reply && !progress.started {
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     Ok(tokio::time::timeout(remaining, self.next())
                         .await
@@ -770,7 +776,14 @@ impl Conversation {
                 ConversationItem::Stream(StreamItem::Event(event)) => {
                     let sequence = event.sequence;
                     if let api::EventPayload::StoreRecord { record } = event.payload
-                        && self.record_event(&record, sequence, mode, &mut progress, &mut *emit)?
+                        && self.record_event(
+                            &record,
+                            sequence,
+                            json,
+                            requires_reply,
+                            &mut progress,
+                            &mut *emit,
+                        )?
                     {
                         return Ok(());
                     }
@@ -796,14 +809,15 @@ impl Conversation {
         &mut self,
         record: &api::RecordBody,
         sequence: u64,
-        mode: OutputMode,
+        json: bool,
+        requires_reply: bool,
         progress: &mut TurnProgress,
         emit: &mut impl FnMut(TurnOutput),
     ) -> Result<bool> {
         if sequence < self.min_sequence {
             return Ok(false);
         }
-        if mode.is_json() {
+        if json {
             emit(TurnOutput::Record(record.clone()));
         }
         let api::RecordBody::Event(event) = record else {
@@ -816,12 +830,12 @@ impl Conversation {
                 }
                 swarmy_core::SessionState::Completed => return Err(Error::SessionCompleted),
                 swarmy_core::SessionState::Idle => {
-                    return self.finish_idle(sequence, mode, progress, emit);
+                    return self.finish_idle(sequence, json, requires_reply, progress, emit);
                 }
                 _ => {}
             },
             swarmy_core::Event::InferenceRequested { .. } => progress.started = true,
-            swarmy_core::Event::MessageQueued { .. } if !mode.is_json() => {
+            swarmy_core::Event::MessageQueued { .. } if !json => {
                 emit(TurnOutput::QueueDelivered);
             }
             swarmy_core::Event::ToolCallCompleted { result, .. } => {
@@ -837,14 +851,14 @@ impl Conversation {
                 progress.error = Some(inference_error(error, *failure_kind));
             }
             swarmy_core::Event::MessageAppended { message, .. } => {
-                self.render_message(message, mode, progress, emit);
+                self.render_message(message, json, progress, emit);
             }
             swarmy_core::Event::InferenceCompleted { completion, .. } => {
-                self.render_message(&completion.message, mode, progress, emit);
+                self.render_message(&completion.message, json, progress, emit);
             }
             _ => {}
         }
-        if !mode.is_json() {
+        if !json {
             for output in tool_outputs(event) {
                 emit(output);
             }
@@ -855,14 +869,15 @@ impl Conversation {
     fn finish_idle(
         &mut self,
         sequence: u64,
-        mode: OutputMode,
+        json: bool,
+        requires_reply: bool,
         progress: &mut TurnProgress,
         emit: &mut impl FnMut(TurnOutput),
     ) -> Result<bool> {
-        if !mode.is_json() && !progress.streamed.is_empty() && !progress.streamed.ends_with('\n') {
+        if !json && !progress.streamed.is_empty() && !progress.streamed.ends_with('\n') {
             emit(TurnOutput::TokenText("\n".into()));
         }
-        if mode.is_json() {
+        if json {
             emit(TurnOutput::SessionIdle {
                 session_id: self.id.clone(),
             });
@@ -874,7 +889,7 @@ impl Conversation {
         if let Some(sender) = &self.observer {
             let _ = sender.send(swarmy_core::TurnStage::InputEnabled);
         }
-        if let Some(outcome) = turn_outcome(progress, mode.requires_reply()) {
+        if let Some(outcome) = turn_outcome(progress, requires_reply) {
             progress.error.take();
             return Err(Error::TurnFailed(outcome));
         }
@@ -884,7 +899,7 @@ impl Conversation {
     fn render_message(
         &mut self,
         message: &swarmy_core::Message,
-        mode: OutputMode,
+        json: bool,
         progress: &mut TurnProgress,
         emit: &mut impl FnMut(TurnOutput),
     ) {
@@ -897,7 +912,7 @@ impl Conversation {
         if let Some(sender) = &self.observer {
             let _ = sender.send(swarmy_core::TurnStage::FinalTextRendered);
         }
-        if mode.is_json() {
+        if json {
             emit(TurnOutput::AssistantMessage(text));
         } else {
             let remaining = text.strip_prefix(&progress.streamed).unwrap_or(&text);
@@ -1051,12 +1066,18 @@ mod tests {
     }
 
     #[test]
-    fn wrapped_client_error_keeps_its_typed_source() {
+    fn wrapped_client_error_keeps_endpoint_and_typed_source() {
         let inner = swarmy_client::Error::Timeout;
-        let error = Error::Client(inner);
+        let error = Error::Client {
+            endpoint: "http://127.0.0.1:1".into(),
+            source: inner,
+        };
+        assert_eq!(
+            error.to_string(),
+            "API at http://127.0.0.1:1: request timed out"
+        );
         let source = std::error::Error::source(&error).expect("client error has a source");
         assert!(source.downcast_ref::<swarmy_client::Error>().is_some());
-        assert_eq!(error.to_string(), "request timed out");
     }
 
     #[test]

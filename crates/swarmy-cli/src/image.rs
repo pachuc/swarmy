@@ -1,5 +1,73 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use swarmy_image::{Recipe, validate_label};
+
+/// Run one image command. One match owns every variant: builds run locally
+/// without a prior connection, while reads connect on their own path.
+pub async fn run(command: crate::image_command::Command, json: bool) -> Result<()> {
+    use crate::image_command::Command;
+    match command {
+        Command::Build {
+            recipe,
+            tag,
+            name,
+            output,
+        } => build(recipe, tag, name, output, json).await,
+        Command::Ls => {
+            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            let mut after = None;
+            loop {
+                let page = swarmy_client::api_client::call(
+                    &endpoint,
+                    client.images(after.as_deref(), 256),
+                )
+                .await?;
+                if page.is_empty() {
+                    break;
+                }
+                for image in page {
+                    if json {
+                        println!("{}", serde_json::to_string(&image)?);
+                    } else {
+                        println!("{}:{} {}", image.name, image.tag, image.manifest_id);
+                    }
+                    after = Some(format!("{}:{}", image.name, image.tag));
+                }
+            }
+            Ok(())
+        }
+        Command::Show { image } => {
+            let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
+            validate_label(name)?;
+            validate_label(tag)?;
+            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            let value = client.image(name, tag).await.map_err(|error| {
+                if matches!(&error, swarmy_client::Error::Api { body, .. } if body.code == "image_not_found") {
+                    anyhow::anyhow!("image not found")
+                } else {
+                    swarmy_client::api_client::api_error(error, &endpoint)
+                }
+            })?;
+            let header = value.header.as_ref().context("image header missing")?;
+            if json {
+                println!("{}", serde_json::to_string(&value)?);
+            } else {
+                println!(
+                    "{image} {}\nsize={} chunk_size={} root_hash={} scratch={}",
+                    value.manifest_id,
+                    header.size,
+                    header.chunk_size,
+                    header.root_hash,
+                    value
+                        .scratch
+                        .as_ref()
+                        .context("image scratch missing")?
+                        .join(",")
+                );
+            }
+            Ok(())
+        }
+    }
+}
 
 /// Build a recipe locally and register it through the control plane.
 pub async fn build(

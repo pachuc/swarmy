@@ -5,21 +5,9 @@ use swarmy_client::Client;
 
 use ulid::Ulid;
 
-use crate::{agent_command, auth_command, cost_command, image_command, session_command};
+use crate::{agent_command, auth_command, cost_command, session_command};
 
 use swarmy_client::api_client::call as request;
-// Keep the volume image label rule here so the client does not link libfdb_c.
-fn validate_label(value: &str) -> Result<()> {
-    ensure!(
-        !value.is_empty()
-            && value.len() <= 128
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)),
-        "names and tags must contain 1-128 ASCII letters, digits, dots, dashes, or underscores"
-    );
-    Ok(())
-}
 
 fn print<T: serde::Serialize>(value: &T, text: &str, json: bool) {
     if json {
@@ -72,121 +60,6 @@ pub async fn cost_command(args: cost_command::Args, json: bool) -> Result<()> {
     cost(&client, &endpoint, args, json).await
 }
 
-/// Run one image command. Builds run locally in `crate::image` without a
-/// prior connection; reads go through the API.
-pub async fn image_command(command: image_command::Command, json: bool) -> Result<()> {
-    match command {
-        image_command::Command::Build {
-            recipe,
-            tag,
-            name,
-            output,
-        } => crate::image::build(recipe, tag, name, output, json).await,
-        command => {
-            // Validate the reference before connecting so argument errors report
-            // without needing API configuration.
-            if let image_command::Command::Show { image } = &command {
-                let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
-                validate_label(name)?;
-                validate_label(tag)?;
-            }
-            let (client, endpoint) = swarmy_client::api_client::connect()?;
-            image(&client, &endpoint, command, json).await
-        }
-    }
-}
-
-/// Run one credential command. Logins and imports run through the
-/// `swarmy-auth` helper without connecting; everything else goes through the
-/// control-plane API.
-pub async fn auth_command(
-    command: auth_command::Command,
-    auth_file: Option<std::path::PathBuf>,
-    json: bool,
-) -> Result<()> {
-    match command {
-        auth_command::Command::Login {
-            provider,
-            label,
-            resource,
-            scope,
-        } => login_via_helper(auth_file, json, provider, label, resource, scope),
-        auth_command::Command::Import { file, label } => {
-            import_via_helper(auth_file, json, file, label)
-        }
-        command => {
-            let (client, endpoint) = swarmy_client::api_client::connect()?;
-            auth(&client, &endpoint, command, auth_file, json).await
-        }
-    }
-}
-
-/// `login` and `import` shell out to the `swarmy-auth` helper so terminal
-/// OAuth flows stay out of this binary; every other auth command goes through
-/// the control-plane API in the dispatch above.
-fn auth_helper(auth_file: Option<std::path::PathBuf>, json: bool) -> Result<std::process::Command> {
-    let sibling = std::env::current_exe()?.with_file_name("swarmy-auth");
-    let helper = if sibling.is_file() {
-        sibling.into_os_string()
-    } else {
-        "swarmy-auth".into()
-    };
-    let mut process = std::process::Command::new(helper);
-    if json {
-        process.arg("--json");
-    }
-    if let Some(file) = auth_file {
-        process.arg("--auth-file").arg(file);
-    }
-    Ok(process)
-}
-
-fn run_helper(mut process: std::process::Command) -> Result<()> {
-    let status = process.status().map_err(|error| {
-        anyhow::anyhow!("swarmy-auth helper unavailable; run make install-client or cargo install --path crates/swarmy-devtools: {error}")
-    })?;
-    anyhow::ensure!(status.success(), "swarmy-auth failed: {status}");
-    Ok(())
-}
-
-fn login_via_helper(
-    auth_file: Option<std::path::PathBuf>,
-    json: bool,
-    provider: String,
-    label: Option<String>,
-    resource: Option<String>,
-    scope: Option<String>,
-) -> Result<()> {
-    let mut helper = auth_helper(auth_file, json)?;
-    helper.arg("login").arg(provider);
-    if let Some(label) = label {
-        helper.arg("--label").arg(label);
-    }
-    if let Some(resource) = resource {
-        helper.arg("--resource").arg(resource);
-    }
-    if let Some(scope) = scope {
-        helper.arg("--scope").arg(scope);
-    }
-    run_helper(helper)
-}
-
-fn import_via_helper(
-    auth_file: Option<std::path::PathBuf>,
-    json: bool,
-    file: Option<std::path::PathBuf>,
-    label: Option<String>,
-) -> Result<()> {
-    let mut helper = auth_helper(auth_file, json)?;
-    helper.arg("import");
-    if let Some(file) = file {
-        helper.arg("--file").arg(file);
-    }
-    if let Some(label) = label {
-        helper.arg("--label").arg(label);
-    }
-    run_helper(helper)
-}
 /// Parse a `--since` or `--until` bound, defaulting to `default` when the
 /// flag is absent. The client resolves relative spans and calendar words
 /// locally so the API only ever sees absolute bounds.
@@ -625,72 +498,6 @@ async fn show_session(
     Ok(())
 }
 
-async fn image(
-    client: &Client,
-    endpoint: &str,
-    command: image_command::Command,
-    json: bool,
-) -> Result<()> {
-    match command {
-        image_command::Command::Ls => {
-            let mut after = None;
-            loop {
-                let page = request(endpoint, client.images(after.as_deref(), 256)).await?;
-                if page.is_empty() {
-                    break;
-                }
-                for image in page {
-                    print(
-                        &image,
-                        &format!("{}:{} {}", image.name, image.tag, image.manifest_id),
-                        json,
-                    );
-                    after = Some(format!("{}:{}", image.name, image.tag));
-                }
-            }
-        }
-        image_command::Command::Show { image } => {
-            // The reference was validated before connecting.
-            let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
-            let value = client.image(name, tag).await.map_err(|error| {
-                if matches!(&error, swarmy_client::Error::Api { body, .. } if body.code == "image_not_found") {
-                    anyhow::anyhow!("image not found")
-                } else {
-                    swarmy_client::api_client::api_error(error, endpoint)
-                }
-            })?;
-            let header = value.header.as_ref().context("image header missing")?;
-            print(
-                &value,
-                &format!(
-                    "{image} {}\nsize={} chunk_size={} root_hash={} scratch={}",
-                    value.manifest_id,
-                    header.size,
-                    header.chunk_size,
-                    header.root_hash,
-                    value
-                        .scratch
-                        .as_ref()
-                        .context("image scratch missing")?
-                        .join(",")
-                ),
-                json,
-            );
-        }
-        image_command::Command::Build {
-            recipe,
-            tag,
-            name,
-            output,
-        } => {
-            // Also handled before connecting above; repeated here so the
-            // match owns every variant without an impossible arm.
-            crate::image::build(recipe, tag, name, output, json).await?;
-        }
-    }
-    Ok(())
-}
-
 fn settings_text(agent: &swarmy_api_types::Agent) -> String {
     format!(
         "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nroute={}\nsandbox_memory_mib={}\nsandbox_gpu={}",
@@ -1124,7 +931,7 @@ struct AuthEvent<'a> {
     provider: &'a str,
 }
 
-fn auth_report(event: &str, provider: &str, json: bool) {
+pub(crate) fn auth_report(event: &str, provider: &str, json: bool) {
     print(
         &AuthEvent { event, provider },
         &format!("{provider}: {event}"),
@@ -1204,7 +1011,7 @@ struct CredentialWithExpiry<'a> {
     expires_in_seconds: Option<i64>,
 }
 
-fn auth_display(summary: &swarmy_api_types::Credential, json: bool, expiry: bool) {
+pub(crate) fn auth_display(summary: &swarmy_api_types::Credential, json: bool, expiry: bool) {
     let seconds = summary
         .expires_at
         .as_deref()
@@ -1242,7 +1049,7 @@ fn auth_display(summary: &swarmy_api_types::Credential, json: bool, expiry: bool
         );
     }
 }
-async fn auth_set(
+pub(crate) async fn auth_set(
     client: &Client,
     endpoint: &str,
     args: auth_command::Set,
@@ -1316,100 +1123,6 @@ fn validate_auth_set_sources(args: &auth_command::Set) -> Result<()> {
     Ok(())
 }
 
-async fn auth(
-    client: &Client,
-    endpoint: &str,
-    command: auth_command::Command,
-    auth_file: Option<std::path::PathBuf>,
-    json: bool,
-) -> Result<()> {
-    match command {
-        auth_command::Command::Set(args) => {
-            auth_set(client, endpoint, args, json).await?;
-        }
-        auth_command::Command::Ls => {
-            for summary in request(endpoint, client.credentials()).await? {
-                auth_display(&summary, json, false);
-            }
-        }
-        auth_command::Command::Check { provider, label } => {
-            let rows: Vec<_> = request(endpoint, client.credentials())
-                .await?
-                .into_iter()
-                .filter(|row| {
-                    provider
-                        .as_ref()
-                        .is_none_or(|provider| row.provider == *provider)
-                        && label.as_ref().is_none_or(|label| row.label == *label)
-                })
-                .collect();
-            ensure!(!rows.is_empty(), "credential does not exist");
-            let ready = rows
-                .iter()
-                .all(|row| row.status == swarmy_api_types::CredentialStatus::Ready);
-            let expired_bedrock = rows.iter().any(|row| {
-                row.provider == "amazon-bedrock"
-                    && row.status == swarmy_api_types::CredentialStatus::Expired
-            });
-            for summary in rows {
-                auth_display(&summary, json, true);
-            }
-            ensure!(
-                ready,
-                if expired_bedrock {
-                    "Bedrock console API keys expire after twelve hours and are for development only; use an IAM identity for long-lived use"
-                } else {
-                    "one or more credentials are expired or need login"
-                }
-            );
-        }
-        auth_command::Command::Rm { provider, label } => {
-            request(
-                endpoint,
-                client.remove_credential_entry(&provider, &label, &Ulid::generate().to_string()),
-            )
-            .await?;
-            auth_report("removed", &provider, json);
-        }
-        auth_command::Command::Routes { command } => {
-            routes(client, endpoint, command, json).await?;
-        }
-        auth_command::Command::Quota {
-            entry,
-            group,
-            since,
-            until,
-        } => {
-            quota(
-                client,
-                endpoint,
-                entry.as_deref(),
-                group,
-                since.as_deref(),
-                until.as_deref(),
-                json,
-            )
-            .await?;
-        }
-        auth_command::Command::Login {
-            provider,
-            label,
-            resource,
-            scope,
-        } => {
-            // Also handled without connecting above; repeated here so the
-            // match owns every variant without an impossible arm.
-            login_via_helper(auth_file, json, provider, label, resource, scope)?;
-        }
-        auth_command::Command::Import { file, label } => {
-            // Also handled without connecting above; repeated here so the
-            // match owns every variant without an impossible arm.
-            import_via_helper(auth_file, json, file, label)?;
-        }
-    }
-    Ok(())
-}
-
 fn quota_line(entry: &swarmy_api_types::QuotaEntry) -> String {
     let quota = &entry.quota;
     let mut line = format!(
@@ -1443,7 +1156,7 @@ fn quota_line(entry: &swarmy_api_types::QuotaEntry) -> String {
 /// series. Observed entries report the provider's latest published
 /// remaining values; configured entries count completions from the
 /// entry rollups over their window.
-async fn quota(
+pub(crate) async fn quota(
     client: &Client,
     endpoint: &str,
     entry: Option<&str>,
@@ -1515,7 +1228,7 @@ fn route_text(route: &swarmy_api_types::Route) -> String {
     format!("{} {steps}", route.name)
 }
 
-async fn routes(
+pub(crate) async fn routes(
     client: &Client,
     endpoint: &str,
     command: auth_command::RoutesCommand,

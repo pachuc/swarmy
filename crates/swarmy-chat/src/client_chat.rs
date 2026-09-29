@@ -2,7 +2,7 @@
 
 use crate::client_conversation::Conversation;
 use crate::client_conversation::ConversationItem;
-use crate::client_conversation::{Error, OpenArgs, terminal_error};
+use crate::client_conversation::{Error, OpenArgs, call, terminal_error};
 use crate::input::Input;
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -46,6 +46,7 @@ fn terminal() -> Result<(DefaultTerminal, RestoreTerminal)> {
 /// means the operator quit the picker, and `Some(None)` starts a session.
 async fn pick_session(
     client: &Client,
+    endpoint: &str,
     terminal: &mut DefaultTerminal,
     keys: &mut EventStream,
     args: &OpenArgs,
@@ -56,7 +57,7 @@ async fn pick_session(
         && args.selection.model.is_none()
         && args.selection.effort.is_none()
     {
-        picker(client, terminal, keys).await
+        picker(client, endpoint, terminal, keys).await
     } else {
         Ok(Some(args.id.clone()))
     }
@@ -67,12 +68,12 @@ fn quit(key: KeyEvent) -> bool {
         || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
 }
 
-async fn recent(client: &Client) -> Result<Vec<(String, String)>> {
-    let mut sessions = client.sessions(None, 100).await?;
+async fn recent(client: &Client, endpoint: &str) -> Result<Vec<(String, String)>> {
+    let mut sessions = call(endpoint, client.sessions(None, 100)).await?;
     sessions.reverse();
     let mut result = Vec::new();
     for session in sessions.into_iter().take(20) {
-        let events = client.events(&session.id, 0, 50).await?;
+        let events = call(endpoint, client.events(&session.id, 0, 50)).await?;
         let text = events
             .into_iter()
             .find_map(|event| {
@@ -97,10 +98,11 @@ async fn recent(client: &Client) -> Result<Vec<(String, String)>> {
 
 async fn picker(
     client: &Client,
+    endpoint: &str,
     terminal: &mut DefaultTerminal,
     keys: &mut EventStream,
 ) -> Result<Option<Option<String>>> {
-    let sessions = recent(client).await?;
+    let sessions = recent(client, endpoint).await?;
     let mut selection = ListState::default().with_selected(Some(0));
     loop {
         terminal
@@ -153,11 +155,16 @@ pub async fn run(
     }
     let (mut terminal, _restore) = terminal()?;
     let mut keys = EventStream::new();
-    let Some(choice) = pick_session(&client, &mut terminal, &mut keys, &args).await? else {
+    let Some(choice) = pick_session(&client, &endpoint, &mut terminal, &mut keys, &args).await?
+    else {
         return Ok(());
     };
-    let mut conversation =
-        Conversation::open(client.clone(), endpoint, OpenArgs { id: choice, ..args }).await?;
+    let mut conversation = Conversation::open(
+        client.clone(),
+        endpoint.clone(),
+        OpenArgs { id: choice, ..args },
+    )
+    .await?;
     // Health warnings belong on the ordinary terminal, not behind the alternate screen.
     disable_raw_mode().map_err(terminal_error)?;
     execute!(io::stdout(), LeaveAlternateScreen).map_err(terminal_error)?;
@@ -171,7 +178,7 @@ pub async fn run(
     // History is read after subscribing, so a concurrent append cannot be lost.
     let mut after = 0;
     while after < conversation.session.head_sequence {
-        let events = client.events(&conversation.id, after, 100).await?;
+        let events = call(&endpoint, client.events(&conversation.id, after, 100)).await?;
         if events.is_empty() {
             break;
         }
@@ -303,7 +310,7 @@ async fn send_or_queue(
 fn is_busy_send_error(error: &Error) -> bool {
     match error {
         Error::SessionNotIdle => true,
-        Error::Client(client) => is_busy_client_error(client),
+        Error::Client { source, .. } => is_busy_client_error(source),
         _ => false,
     }
 }
@@ -688,14 +695,17 @@ mod tests {
     }
 
     fn api_error(status: reqwest::StatusCode, code: &str) -> Error {
-        Error::Client(swarmy_client::Error::Api {
-            status,
-            body: swarmy_api_types::ApiError {
-                code: code.into(),
-                message: code.into(),
-                provider_text: None,
+        Error::Client {
+            endpoint: "http://127.0.0.1:1".into(),
+            source: swarmy_client::Error::Api {
+                status,
+                body: swarmy_api_types::ApiError {
+                    code: code.into(),
+                    message: code.into(),
+                    provider_text: None,
+                },
             },
-        })
+        }
     }
 
     #[test]

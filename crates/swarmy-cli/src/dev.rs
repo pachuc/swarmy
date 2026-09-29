@@ -122,29 +122,20 @@ impl Layout {
 }
 
 pub async fn run(command: Command, json: bool) -> Result<()> {
-    // The supervisor is spawned without flags by `dev up`, so it runs
-    // before the JSON rejection below.
-    if let Command::Supervise { state, binaries } = command {
-        return supervise(&state, &binaries).await;
-    }
-    // `dev` manages local processes with human-readable progress lines,
-    // so it has no JSON rendering. Reject `--json` explicitly instead of
-    // silently printing text.
-    if json {
-        bail!("--json is not supported for dev commands; run without it for human-readable output");
-    }
-    let layout = Layout::discover()?;
+    // One match owns every variant. The supervisor is spawned without flags
+    // by `dev up`, so it never takes the human-output path; every other arm
+    // rejects `--json` and discovers the layout through one helper.
     match command {
-        // Also handled before the JSON rejection above; repeated here so the
-        // match owns every variant without an impossible arm.
         Command::Supervise { state, binaries } => supervise(&state, &binaries).await,
         Command::Up {
             allow_version_mismatch,
         } => {
+            let layout = local(json)?;
             let _lock = layout.lock()?;
             up(&layout, allow_version_mismatch).await
         }
         Command::Down => {
+            let layout = local(json)?;
             let _lock = layout.lock()?;
             stop_services(&layout.state).await?;
             let remote = layout.state.join("remote").exists()
@@ -157,10 +148,10 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             }
             Ok(())
         }
-        Command::Status => status(&layout).await,
+        Command::Status => status(&local(json)?).await,
         Command::Logs { service } => {
             logs(
-                &layout.state,
+                &local(json)?.state,
                 service
                     .map(|service| crate::cost_command::value_name(&service))
                     .as_deref(),
@@ -168,6 +159,17 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
             .await
         }
     }
+}
+
+/// Reject `--json` and discover the checkout layout for human-output `dev`
+/// commands. `dev` manages local processes with progress lines, so it has no
+/// JSON rendering; the explicit rejection keeps `--json dev` from silently
+/// printing text.
+fn local(json: bool) -> Result<Layout> {
+    if json {
+        bail!("--json is not supported for dev commands; run without it for human-readable output");
+    }
+    Layout::discover()
 }
 
 fn write_private(path: &Path, content: &str) -> Result<()> {

@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 use swarmy_api_types as api;
-use swarmy_chat::client_conversation::{Conversation, OpenArgs, OutputMode};
+use swarmy_chat::client_conversation::{Conversation, OpenArgs};
 use swarmy_client::{Client, EventStream};
 use swarmy_core::{MessageId, RequestId, SessionId, ToolResult, TurnEvent, TurnStage};
 
@@ -160,9 +160,9 @@ async fn measure(
     let mut client_elapsed = Duration::ZERO;
     let mut silent = |_: swarmy_chat::client_conversation::TurnOutput| {};
     {
-        // Text mode with an emitter that does nothing: the turn still
+        // Text rendering with an emitter that does nothing: the turn still
         // requires a reply, but nothing renders during measurement.
-        let done = conversation.until_idle(OutputMode::TextRun, &mut silent);
+        let done = conversation.until_idle(false, true, &mut silent);
         tokio::pin!(done);
         loop {
             tokio::select! {

@@ -2,9 +2,7 @@ use crate::selection_command::SelectionArgs;
 use anyhow::Result;
 use std::io::Write;
 use swarmy_api_types as api;
-use swarmy_chat::client_conversation::{
-    Conversation, ConversationItem, OpenArgs, OutputMode, TurnOutput,
-};
+use swarmy_chat::client_conversation::{Conversation, ConversationItem, OpenArgs, TurnOutput};
 use swarmy_client::Client;
 
 /// Flags for `swarmy run`, sharing one struct from parsing to execution so
@@ -86,13 +84,8 @@ pub async fn run(client: Client, endpoint: String, args: RunArgs, json: bool) ->
         }
         return Ok(());
     }
-    let mode = if json {
-        OutputMode::JsonRun
-    } else {
-        OutputMode::TextRun
-    };
     let result = conversation
-        .until_idle(mode, &mut |output| print_turn_output(output, json))
+        .until_idle(json, true, &mut |output| print_turn_output(output, json))
         .await;
     if json {
         match &result {
@@ -150,20 +143,13 @@ fn print_summary(json: bool, previous_session_id: &str, session_id: &str) {
     }
 }
 
-/// Print one turn output in the mode `until_idle` ran with. The conversation
-/// hands these over as they arrive, so text still streams incrementally.
+/// Print one turn output. The conversation hands these over as they arrive,
+/// so text still streams incrementally; the emitter already knows JSON vs text.
 fn print_turn_output(output: TurnOutput, json: bool) {
     match output {
         TurnOutput::TokenText(text) => {
             if json {
-                print_event(&Event::ModelDelta {
-                    delta: ModelDeltaInner {
-                        text: ModelDeltaText {
-                            output_index: 0,
-                            text: &text,
-                        },
-                    },
-                });
+                print_event(&Event::model_delta(&text));
             } else {
                 print!("{text}");
                 std::io::stdout().flush().expect("stdout flushes");
@@ -216,7 +202,9 @@ fn print_turn_output(output: TurnOutput, json: bool) {
 /// One machine-readable JSON line on stdout. A single tagged enum replaces
 /// the earlier per-event structs so every line shares one shape and one
 /// print helper; the serialized form is unchanged, including the `Text`
-/// discriminant the fleet driver and the `cli_session` suite read.
+/// discriminant the fleet driver and the `cli_session` suite read. Field
+/// insertion order in the serialized JSON may differ from earlier builds;
+/// field names and nesting do not, and nothing parses by position.
 #[derive(serde::Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub(crate) enum Event<'a> {
@@ -241,7 +229,7 @@ pub(crate) enum Event<'a> {
         session_id: &'a str,
     },
     ModelDelta {
-        delta: ModelDeltaInner<'a>,
+        delta: serde_json::Value,
     },
     SessionIdle {
         session_id: &'a str,
@@ -258,6 +246,14 @@ pub(crate) enum Event<'a> {
         chunks_total: u64,
         chunks_stored: u64,
         chunks_uploaded: u64,
+    },
+    ProbeSummary {
+        provider: &'a str,
+        model: &'a str,
+        usage: &'a serde_json::Value,
+        cost_micros: u64,
+        effort: swarmy_api_types::ReasoningEffort,
+        elapsed_seconds: f64,
     },
 }
 
@@ -276,6 +272,21 @@ impl<'a> Event<'a> {
             chunks_uploaded: uploaded.chunks_uploaded,
         }
     }
+
+    /// The `model_delta` line keeps the `Text` discriminant name the fleet
+    /// reads. The payload is built as JSON so no separate wrapper structs
+    /// are needed; the serialized bytes match the old shape.
+    #[must_use]
+    pub(crate) fn model_delta(text: &str) -> Self {
+        Self::ModelDelta {
+            delta: serde_json::json!({
+                "Text": {
+                    "output_index": 0,
+                    "text": text,
+                },
+            }),
+        }
+    }
 }
 
 /// Print one event line. Serialization of these shapes cannot fail, so the
@@ -285,20 +296,6 @@ pub(crate) fn print_event(event: &Event) {
         "{}",
         serde_json::to_string(event).expect("event serializes")
     );
-}
-
-/// The `delta` wrapper keeps the `Text` discriminant name the fleet reads.
-#[derive(serde::Serialize)]
-pub(crate) struct ModelDeltaInner<'a> {
-    #[serde(rename = "Text")]
-    text: ModelDeltaText<'a>,
-}
-
-/// One streamed text delta.
-#[derive(serde::Serialize)]
-pub(crate) struct ModelDeltaText<'a> {
-    output_index: u32,
-    text: &'a str,
 }
 
 pub async fn chat(client: Client, endpoint: String, args: ChatArgs, json: bool) -> Result<()> {
@@ -332,14 +329,12 @@ pub async fn chat(client: Client, endpoint: String, args: ChatArgs, json: bool) 
             eprintln!("{message}");
         })
         .await?;
-    let mode = if json {
-        OutputMode::JsonChat
-    } else {
-        OutputMode::TextChat
-    };
+
     if conversation.session.state != api::SessionState::Idle {
         conversation
-            .until_idle(mode, &mut |output| print_turn_output(output, json))
+            .until_idle(json, false, &mut |output| {
+                print_turn_output(output, json);
+            })
             .await?;
     }
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
@@ -356,7 +351,11 @@ pub async fn chat(client: Client, endpoint: String, args: ChatArgs, json: bool) 
                     eprintln!("{message}");
                 }).await?;
                 conversation.send(prompt).await?;
-                conversation.until_idle(mode, &mut |output| print_turn_output(output, json)).await?;
+                conversation
+                    .until_idle(json, false, &mut |output| {
+                        print_turn_output(output, json);
+                    })
+                    .await?;
             }
             _ = tokio::signal::ctrl_c() => {
                 conversation.interrupt().await?;
@@ -366,7 +365,11 @@ pub async fn chat(client: Client, endpoint: String, args: ChatArgs, json: bool) 
                 match item? {
                     ConversationItem::Stream(swarmy_client::StreamItem::Event(event)) => {
                         conversation.queue(swarmy_client::StreamItem::Event(event));
-                        conversation.until_idle(mode, &mut |output| print_turn_output(output, json)).await?;
+                        conversation
+                            .until_idle(json, false, &mut |output| {
+                                print_turn_output(output, json);
+                            })
+                            .await?;
                     }
                     ConversationItem::Stream(swarmy_client::StreamItem::TokenDelta { .. }) => {}
                     ConversationItem::Summarized {
