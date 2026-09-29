@@ -75,6 +75,7 @@ fn parse_image_environment(content: &str) -> Result<Vec<String>> {
 mod image_environment_tests {
     use super::parse_image_environment;
 
+    // Tested directly because a running container is needed to reach this through `create`.
     #[test]
     fn parses_literal_values_and_rejects_malformed_lines() {
         assert_eq!(
@@ -102,6 +103,7 @@ mod scratch_pressure_tests {
     use super::{SCRATCH_PRESSURE_GRACE, pressure_eligible};
     use std::time::{Duration, SystemTime};
 
+    // Tested directly because pressuring a real filesystem to the high-water mark is not cheap.
     #[test]
     fn recent_scratch_survives_pressure_after_a_daemon_restart() {
         assert!(!pressure_eligible(SystemTime::now()));

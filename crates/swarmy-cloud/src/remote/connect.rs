@@ -492,6 +492,8 @@ mod tests {
         let (reservations, ports) = reserve_ports(&node).unwrap();
         assert_eq!(reservations.len(), 2);
         assert_eq!(ports.s3, 0);
+        assert_ne!(ports.fdb, 0);
+        assert_ne!(ports.nats, 0);
     }
 
     #[test]

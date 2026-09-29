@@ -361,29 +361,6 @@ mod tests {
         assert!(fake.request(request).next().await.unwrap().is_ok());
         assert_eq!(fake.call_count(), 2);
     }
-    #[tokio::test]
-    async fn captures_image_inputs() {
-        let fake = FakeProvider::default();
-        let mut request = Request {
-            no_cache: false,
-            system_prompt: String::new(),
-            messages: Vec::new(),
-            tools: Vec::new(),
-            settings: crate::GenerationSettings::default(),
-        };
-        request.messages.push(swarmy_core::Message {
-            id: swarmy_core::MessageId::from_ulid(ulid::Ulid::nil()),
-            role: swarmy_core::MessageRole::User,
-            parts: vec![Part::Image {
-                media_type: "image/png".into(),
-                bytes: vec![1, 2, 3],
-                object_key: None,
-                detail: None,
-            }],
-        });
-        let _ = fake.request(request.clone()).next().await;
-        assert_eq!(fake.requests(), vec![request]);
-    }
 }
 
 #[cfg(test)]

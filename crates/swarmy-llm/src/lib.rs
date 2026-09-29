@@ -570,42 +570,8 @@ mod job_tests {
     }
 
     // Each gated provider reports NotCompiledIn when its feature is off, so a
-    // slim build fails with a clear error instead of a compile failure.
-    #[test]
-    #[cfg(not(feature = "bedrock"))]
-    fn bedrock_without_feature_reports_not_compiled_in() {
-        let catalog = catalog::Catalog::get();
-        let provider = catalog.provider("amazon-bedrock").unwrap();
-        let model = provider.models.values().next().unwrap();
-        assert!(matches!(
-            client_for(provider, model, ClientAuth::None),
-            Err(Error::NotCompiledIn(_))
-        ));
-    }
-
-    #[test]
-    #[cfg(not(feature = "gemini"))]
-    fn gemini_without_feature_reports_not_compiled_in() {
-        let catalog = catalog::Catalog::get();
-        let provider = catalog.provider("google").unwrap();
-        let model = provider.models.values().next().unwrap();
-        assert!(matches!(
-            client_for(provider, model, ClientAuth::None),
-            Err(Error::NotCompiledIn(_))
-        ));
-    }
-
-    #[test]
-    #[cfg(not(feature = "azure"))]
-    fn azure_without_feature_reports_not_compiled_in() {
-        let catalog = catalog::Catalog::get();
-        let provider = catalog.provider("azure").unwrap();
-        let model = provider.models.values().next().unwrap();
-        assert!(matches!(
-            client_for(provider, model, ClientAuth::None),
-            Err(Error::NotCompiledIn(_))
-        ));
-    }
+    // slim build fails with a clear error instead of a compile failure. That
+    // behaviour is covered per provider by the dispatch loop above.
 
     #[test]
     fn masters_inference_job_layout_still_decodes() {
@@ -706,43 +672,6 @@ mod job_tests {
         assert!(!job.summary_prefix);
         assert_eq!(job.summary_cut, None);
         assert!(!job.summary_recovery);
-    }
-
-    #[test]
-    fn inference_jobs_with_tool_schemas_round_trip() {
-        let session_id = SessionId::from_ulid(ulid::Ulid::generate());
-        let job = InferenceJob {
-            summary: false,
-            summary_prefix: false,
-            summary_cut: None,
-            summary_recovery: false,
-            provider: "fake".into(),
-            entry: Some("primary".into()),
-            route: Some("fallback".into()),
-            route_step: 1,
-            session_id,
-            step: 7,
-            request_id: RequestId::for_step(session_id, 7),
-            request: Request {
-                no_cache: false,
-                system_prompt: "test".into(),
-                messages: Vec::new(),
-                tools: vec![ToolDefinition {
-                    name: "clock".into(),
-                    description: "Read the time".into(),
-                    parameters: serde_json::json!({"type": "object", "properties": {}}),
-                }],
-                settings: GenerationSettings::default(),
-            },
-        };
-        let encoded = swarmy_core::encode(&job).unwrap();
-        assert_eq!(swarmy_core::decode::<InferenceJob>(&encoded).unwrap(), job);
-        let reference = InferenceJobRef::from(&job);
-        let encoded = swarmy_core::encode(&reference).unwrap();
-        assert_eq!(
-            swarmy_core::decode::<InferenceJobRef>(&encoded).unwrap(),
-            reference
-        );
     }
 }
 

@@ -86,6 +86,8 @@ pub(crate) fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option
 #[cfg(test)]
 mod header_tests {
     use super::*;
+    // Future-date and invalid Retry-After forms cannot go through the mocks
+    // without sleeping, so they are pinned at the parser.
     #[test]
     fn seconds_dates_and_invalid_values() {
         assert_eq!(retry_after("12"), Some(Duration::from_secs(12)));

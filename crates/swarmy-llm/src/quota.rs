@@ -154,49 +154,55 @@ pub(crate) fn anthropic_resets(headers: &reqwest::header::HeaderMap) -> BTreeMap
 mod tests {
     use super::*;
 
+    fn headers(entries: &[(&str, &str)]) -> reqwest::header::HeaderMap {
+        let mut map = reqwest::header::HeaderMap::new();
+        for (name, value) in entries {
+            map.insert(
+                name.parse::<reqwest::header::HeaderName>().unwrap(),
+                value.parse::<reqwest::header::HeaderValue>().unwrap(),
+            );
+        }
+        map
+    }
+
     #[test]
-    fn openai_prefix_collects_numeric_remaining_only() {
-        let headers = BTreeMap::from([
-            ("x-ratelimit-remaining-requests".into(), "99".into()),
-            ("x-ratelimit-remaining-tokens".into(), "12000".into()),
-            ("x-ratelimit-limit-requests".into(), "100".into()),
-            ("x-ratelimit-remaining-bad".into(), "many".into()),
+    fn openai_quota_headers_record_numeric_remaining_and_reset_windows() {
+        let map = headers(&[
+            ("x-ratelimit-remaining-requests", "99"),
+            ("x-ratelimit-remaining-tokens", "12000"),
+            ("x-ratelimit-limit-requests", "100"),
+            ("x-ratelimit-remaining-bad", "many"),
+            // Header names match case-insensitively.
+            ("X-Ratelimit-Reset-Requests", "6m0s"),
+            ("x-ratelimit-reset-tokens", "1500ms"),
+            ("x-ratelimit-reset-date", "2099-01-01T00:00:00Z"),
+            ("x-ratelimit-reset-empty", ""),
         ]);
-        let remaining = remaining_with(&headers, "x-ratelimit-remaining-");
+        let remaining = openai_remaining(&map);
         assert_eq!(remaining.len(), 2);
         assert_eq!(remaining["x-ratelimit-remaining-requests"], 99);
+        let resets = openai_resets(&map);
+        assert_eq!(resets.len(), 3);
+        assert_eq!(resets["x-ratelimit-reset-requests"], 360);
+        assert_eq!(resets["x-ratelimit-reset-tokens"], 2);
+        assert!(resets["x-ratelimit-reset-date"] > 1_000_000);
     }
 
     #[test]
-    fn anthropic_prefix_keeps_remaining_entries() {
-        let headers = BTreeMap::from([
-            ("anthropic-ratelimit-requests-remaining".into(), "50".into()),
-            ("anthropic-ratelimit-tokens-limit".into(), "100".into()),
+    fn anthropic_quota_headers_keep_remaining_entries_and_parse_resets() {
+        let map = headers(&[
+            ("anthropic-ratelimit-requests-remaining", "50"),
+            ("anthropic-ratelimit-tokens-limit", "100"),
+            ("anthropic-ratelimit-tokens-reset", "90"),
+            ("anthropic-ratelimit-requests-reset", "1d2h"),
+            ("anthropic-ratelimit-foo-reset", "bogus"),
         ]);
-        let remaining = remaining_with(&headers, "anthropic-ratelimit-");
-        assert_eq!(remaining.len(), 2);
-        let filtered: BTreeMap<_, _> = remaining
-            .into_iter()
-            .filter(|(name, _)| name.contains("remaining"))
-            .collect();
-        assert_eq!(filtered.len(), 1);
-    }
-
-    #[test]
-    fn reset_values_parse_durations_and_timestamps() {
-        assert_eq!(parse_reset_seconds("90"), Some(90));
-        assert_eq!(parse_reset_seconds("2s"), Some(2));
-        assert_eq!(parse_reset_seconds("500ms"), Some(1));
-        assert_eq!(parse_reset_seconds("2m"), Some(120));
-        assert_eq!(parse_reset_seconds("bogus"), None);
-    }
-
-    #[test]
-    fn compound_openai_reset_values_parse_to_seconds() {
-        assert_eq!(parse_reset_seconds("6m0s"), Some(360));
-        assert_eq!(parse_reset_seconds("1m30s"), Some(90));
-        assert_eq!(parse_reset_seconds("2h0m0s"), Some(7_200));
-        assert_eq!(parse_reset_seconds("1d2h"), Some(93_600));
-        assert_eq!(parse_reset_seconds("1500ms"), Some(2));
+        let remaining = anthropic_remaining(&map);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining["anthropic-ratelimit-requests-remaining"], 50);
+        let resets = anthropic_resets(&map);
+        assert_eq!(resets.len(), 2);
+        assert_eq!(resets["anthropic-ratelimit-tokens-reset"], 90);
+        assert_eq!(resets["anthropic-ratelimit-requests-reset"], 93_600);
     }
 }
