@@ -342,13 +342,11 @@ pub(crate) async fn interrupt(
                     .await
                     .map_err(storage)?
                     .pop()
-                {
-                    if let Err(error) = bus
+                    && let Err(error) = bus
                         .publish_live(LiveFeed::SessionEvents(session_id), &event)
                         .await
-                    {
-                        tracing::warn!(%error, "interrupt event publication failed; client will catch up");
-                    }
+                {
+                    tracing::warn!(%error, "interrupt event publication failed; client will catch up");
                 }
             }
             Ok(Json(api::InterruptOutcome {

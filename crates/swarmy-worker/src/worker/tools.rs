@@ -1,4 +1,4 @@
-use super::step::pending_tools;
+use super::step::{PendingCall, pending_tools};
 use super::{
     Bus, Context, Event, HeldLease, KillPoint, MAX_SCAN_LIMIT, MessageId, RequestId, Result,
     SandboxArguments, SessionId, SessionRecord, StoreError, ToolCallRecord, ToolJob, TurnStage,
@@ -20,9 +20,9 @@ impl Worker {
     ) -> Result<bool> {
         let mut jobs = Vec::new();
         let display = self.session_display(session).await?;
-        for (request_id, call) in pending_tools(events) {
+        for pending in pending_tools(events) {
             if let Some(job) = self
-                .resolve_pending_call(session, lease, events, turn, display, request_id, call)
+                .resolve_pending_call(session, lease, events, turn, display, pending)
                 .await?
             {
                 jobs.push(job);
@@ -86,9 +86,9 @@ impl Worker {
         events: &mut Vec<Event>,
         turn: Option<MessageId>,
         display: bool,
-        request_id: RequestId,
-        call: ToolCallRecord,
+        pending: PendingCall,
     ) -> Result<Option<ToolJob>> {
+        let PendingCall { request_id, call } = pending;
         let id = session.session_id;
         let result = match self.store.ensure_session_computer(id).await {
             Err(StoreError::Domain(swarmy_store::DomainError::ComputerDeleted)) => {
@@ -258,7 +258,6 @@ impl Worker {
                 )) if !retried => {
                     retried = true;
                     self.placements.invalidate(session.agent_id).await;
-                    continue;
                 }
                 result => {
                     let (events, jobs) = result?;

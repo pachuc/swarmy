@@ -864,12 +864,18 @@ pub(super) fn pending_inference(events: &[Event]) -> Option<RequestId> {
         .flatten()
 }
 
-pub(super) fn pending_tools(events: &[Event]) -> Vec<(RequestId, ToolCallRecord)> {
+pub(super) fn pending_tools(events: &[Event]) -> Vec<PendingCall> {
     events.iter().filter_map(|event| {
         if let Event::ToolCallRequested { request_id, call, .. } = event
             && !events.iter().any(|event| matches!(event, Event::ToolCallCompleted { request_id: completed, call_id, .. } if completed == request_id && *call_id == call.call_id)) {
-                return Some((*request_id, call.clone()));
-        }
+                return Some(PendingCall { request_id: *request_id, call: call.clone() });
+            }
         None
     }).collect()
+}
+
+/// One tool call awaiting dispatch: its request id and the recorded call.
+pub(super) struct PendingCall {
+    pub(super) request_id: RequestId,
+    pub(super) call: ToolCallRecord,
 }

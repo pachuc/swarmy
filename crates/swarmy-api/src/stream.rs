@@ -322,7 +322,7 @@ async fn deliver(sender: &mpsc::Sender<Event>, event: Event, deadline: Duration)
         .await
         .is_ok_and(|result| result.is_ok())
 }
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Replay {
     Done,
     Updated,

@@ -79,6 +79,9 @@ impl Gateway {
     /// Serve provider work until the work stream ends or a shutdown signal
     /// arrives, then drain queued turn metrics before exit so shutdown keeps
     /// every write.
+    /// # Errors
+    /// Returns store, transport, or decoding failures; per-delivery inference
+    /// failures are committed to the session log instead.
     pub async fn serve(self: Arc<Self>, concurrency: usize) -> Result<()> {
         let mut messages = futures::stream::SelectAll::new();
         let mut subscriptions = BTreeSet::new();

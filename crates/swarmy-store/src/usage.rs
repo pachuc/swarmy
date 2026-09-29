@@ -121,7 +121,7 @@ impl Store {
             model: attribution.model,
             recorded_at: attribution.recorded_at,
             entry: entry.as_deref(),
-            kind: kind.map(|kind| kind.as_str()),
+            kind: kind.map(swarmy_core::CredentialEntryKind::as_str),
             usage,
             cost: cost_micros,
         };
