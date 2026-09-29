@@ -139,7 +139,13 @@ async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
         .json()
         .await
         .unwrap();
-    assert_eq!(listed, vec![first.clone()]);
+    assert_eq!(listed.len(), 1);
+    // List rows are summaries; show carries the detail create returned.
+    assert_eq!(listed[0].id, first.id);
+    assert_eq!(listed[0].name, first.name);
+    assert_eq!(listed[0].session_count, 0);
+    assert!(listed[0].sessions.is_empty());
+    assert!(listed[0].usage.is_none());
     let shown: Agent = client
         .get(format!("{base}/v1/agents/test-agent"))
         .bearer_auth("test-token")
@@ -149,7 +155,15 @@ async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
         .json()
         .await
         .unwrap();
-    assert_eq!(&shown, first);
+    let mut created_value = serde_json::to_value(&first).unwrap();
+    let mut shown_value = serde_json::to_value(&shown).unwrap();
+    for value in [&mut created_value, &mut shown_value] {
+        value
+            .as_object_mut()
+            .expect("agent serializes to an object")
+            .remove("last_snapshot_age_seconds");
+    }
+    assert_eq!(created_value, shown_value);
     let providers: Vec<Provider> = client
         .get(format!("{base}/v1/providers"))
         .bearer_auth("test-token")
@@ -280,6 +294,9 @@ async fn assert_session(client: &reqwest::Client, base: &str, id: &str) {
         .unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, id);
+    // List rows are summaries; show hydrates usage, requirements, and placement.
+    assert!(listed[0].usage.is_none());
+    assert!(listed[0].requirements.is_none());
     let shown: Session = client
         .get(format!("{base}/v1/sessions/{id}"))
         .bearer_auth("test-token")
@@ -289,7 +306,10 @@ async fn assert_session(client: &reqwest::Client, base: &str, id: &str) {
         .json()
         .await
         .unwrap();
-    assert_eq!(shown, listed[0]);
+    assert_eq!(shown.id, listed[0].id);
+    assert_eq!(shown.state, listed[0].state);
+    assert!(shown.usage.is_some());
+    assert!(shown.requirements.is_some());
     let events: Vec<Event> = client
         .get(format!("{base}/v1/sessions/{id}/events?after=0&limit=4"))
         .bearer_auth("test-token")
