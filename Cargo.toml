@@ -12,6 +12,10 @@ license = "MIT"
 # Deny rather than forbid: the store and volume crates must speak to kernel
 # block-device and VM interfaces and opt back in per module with a justification.
 unsafe_code = "deny"
+# Part 1 (task n0sxwd): public surface stays minimal and paths stay short.
+# Both are fixed mechanically with `cargo fix`.
+unreachable_pub = "deny"
+unused_qualifications = "deny"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
@@ -19,6 +23,21 @@ pedantic = { level = "deny", priority = -1 }
 redundant_clone = "deny"
 needless_collect = "deny"
 large_stack_frames = "deny"
+# Part 1 (task n0sxwd): exceptions, panics, and printing. Kept in one block
+# so the parallel lint task's rebase is trivial.
+# Every `allow` needs a reason; `allow` itself stays legal for lints that
+# only fire under some feature combinations (see clippy.toml).
+allow_attributes_without_reason = "deny"
+# Panics: `expect("why this holds")` documents an invariant and stays
+# allowed; bare `unwrap` does not (outside tests, see clippy.toml).
+unwrap_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+# Printing: only the output modules of binaries that own user output may
+# print, each with an `expect` reason. Libraries print nothing.
+print_stdout = "deny"
+print_stderr = "deny"
 
 [workspace.dependencies]
 swarmy-version = { path = "crates/swarmy-version" }

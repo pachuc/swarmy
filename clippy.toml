@@ -1,0 +1,5 @@
+# Clippy thresholds and test exemptions. Workspace lints live in the root
+# `Cargo.toml` `[workspace.lints]`; only numeric thresholds and test-only
+# exemptions live here. Part 1 (task n0sxwd) owns this stanza; the parallel
+# lint task keeps its own block below.
+allow-unwrap-in-tests = true
