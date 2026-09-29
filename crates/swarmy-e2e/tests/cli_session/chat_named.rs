@@ -107,16 +107,7 @@ async fn root_named_chats_share_a_background_process_and_delete() {
                 "inspect": {"steps": 2, "tool_steps": [0], "bash_command": "kill -0 $(cat /background.pid) && echo shared-process-alive", "final_answer": "Inspected background process"}
             }
         }"#).await;
-        let created = fixture.output(&["agent", "create", "tommy", "--json"]).await;
-        assert!(created.status.success(), "{}", String::from_utf8_lossy(&created.stderr));
-        let shown: swarmy_api_types::Agent = serde_json::from_slice(&created.stdout).unwrap();
-        assert_eq!(shown.name, "tommy");
-        let agent = fixture
-            .store
-            .get_agent_by_name("tommy")
-            .await
-            .unwrap()
-            .unwrap();
+        let agent = create_tommy(&fixture).await;
         let mut first = Terminal::with_agent(&fixture, None, None, "", Some("tommy"), false);
         first
             .ready(Diagnostics {
@@ -191,6 +182,27 @@ async fn root_named_chats_share_a_background_process_and_delete() {
             assert!(fixture.store.fetch_session(session.session_id).await.unwrap().unwrap().computer_deleted);
         }
     }).await;
+}
+
+/// Create `tommy` through the CLI, assert the typed agent output, and return
+/// the store record the terminal harness needs.
+async fn create_tommy(fixture: &Fixture) -> swarmy_core::AgentRecord {
+    let created = fixture
+        .output(&["agent", "create", "tommy", "--json"])
+        .await;
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let shown: swarmy_api_types::Agent = serde_json::from_slice(&created.stdout).unwrap();
+    assert_eq!(shown.name, "tommy");
+    fixture
+        .store
+        .get_agent_by_name("tommy")
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 async fn bash_result(fixture: &Fixture, id: SessionId, services: &Services) -> String {
