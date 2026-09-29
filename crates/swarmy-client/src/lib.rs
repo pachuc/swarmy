@@ -806,7 +806,7 @@ impl EventStream {
             .await?;
         let status = response.status();
         if !status.is_success() {
-            return Err(decode::<serde_json::Value>(response).await.expect("decode rejects every non-success response, and the status check above guarantees this one is non-success"));
+            return Err(decode::<serde_json::Value>(response).await.expect_err("decode rejects every non-success response, and the status check above guarantees this one is non-success"));
         }
         self.connection_id = response
             .headers()
@@ -855,7 +855,7 @@ impl EventStream {
             task: tokio::spawn(async move {
                 let response = http.put(url).bearer_auth(&token).json(&body).send().await?;
                 if !response.status().is_success() {
-                    return Err(decode::<serde_json::Value>(response).await.expect("decode rejects every non-success response, and the status check above guarantees this one is non-success"));
+                    return Err(decode::<serde_json::Value>(response).await.expect_err("decode rejects every non-success response, and the status check above guarantees this one is non-success"));
                 }
                 Ok(())
             }),
