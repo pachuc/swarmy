@@ -440,7 +440,7 @@ The S3 namespace acceptance test also needs `SWARMY_S3_TEST_BUCKET` naming a
 pre-created, dedicated empty bucket. It refuses a non-empty bucket and cleans
 up its objects and metadata after each case, including assertion failures.
 It tests empty and nested prefixes, more than 1000 objects in one listing,
-legacy compatibility, sibling isolation, and dry and real collection. For the
+sibling isolation, and dry and real collection. For the
 local SeaweedFS stack:
 
 ```bash

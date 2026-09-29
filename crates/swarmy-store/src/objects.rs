@@ -71,23 +71,16 @@ fn builder_with_env(
 }
 
 /// Build the shared S3 client with namespace-relative request keys and
-/// listing names. A legacy bucket/prefix keeps its exact object locations.
+/// listing names.
 /// # Errors
 /// Rejects invalid or ambiguous namespaces and invalid S3 client settings.
 pub fn from_settings(settings: &Settings) -> Result<Arc<dyn ObjectStore>, BlobError> {
     let (bucket, prefix) = settings.s3_namespace()?;
-    if settings.s3_bucket.contains('/') {
-        tracing::warn!(
-            "s3_bucket = bucket/prefix is deprecated; set s3_bucket and s3_prefix separately"
-        );
-    }
     let store = builder(settings, bucket).build()?;
     if prefix.as_str().is_empty() {
         Ok(Arc::new(store))
     } else {
-        // Parse instead of converting: Path::from would encode some
-        // characters and could change where legacy objects live. The prefix
-        // was already validated, so this cannot fail in practice.
+        // Parse instead of converting so namespace characters stay exact.
         let path = object_store::path::Path::parse(prefix.as_str()).map_err(|error| {
             object_store::Error::Generic {
                 store: "S3 namespace",
@@ -213,25 +206,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_namespace_builds_and_ambiguity_is_rejected() {
-        let mut settings = Settings {
+    fn bucket_path_is_rejected() {
+        let settings = Settings {
             s3_bucket: "bucket/run/nested".into(),
             ..Settings::default()
         };
-        assert!(from_settings(&settings).is_ok());
-        settings.s3_prefix = "explicit".parse().unwrap();
         assert!(from_settings(&settings).is_err());
-        for value in [
-            "",
-            "/run",
-            "bucket/",
-            "bucket/a//b",
-            "bucket/a/../b",
-            "bucket/a/",
-        ] {
-            settings.s3_bucket = value.into();
-            settings.s3_prefix = swarmy_config::ObjectPrefix::default();
-            assert!(from_settings(&settings).is_err(), "{value}");
-        }
     }
 }

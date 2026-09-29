@@ -226,21 +226,6 @@ async fn retention_is_atomic_ordered_idempotent_and_does_not_prune_clones() {
     for &id in &published {
         assert!(test.store.get_manifest(id).await.unwrap().is_some());
     }
-    // Simulate a volume written before per-volume retention was introduced.
-    test.db
-        .run(|trx, _| {
-            let root = &test.root;
-            async move {
-                trx.clear(&root.pack(&("volume_snapshots", id.as_ulid().to_bytes().as_slice())));
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        test.store.volume_snapshots(id).await.unwrap(),
-        published.iter().rev().take(10).copied().collect::<Vec<_>>()
-    );
     let previous = *published.last().unwrap();
     let next = manifest_id();
     test.store

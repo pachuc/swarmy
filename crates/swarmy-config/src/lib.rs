@@ -402,15 +402,6 @@ impl Settings {
         Self::load_base_from(&cwd, &environment)
     }
 
-    /// Load with an explicit environment, without changing process globals.
-    /// # Errors
-    /// Fails for invalid settings or filesystem errors.
-    pub fn load_from(cwd: &Path, environment: &BTreeMap<String, String>) -> Result<Loaded, Error> {
-        let mut loaded = Self::load_base_from(cwd, environment)?;
-        loaded.settings.apply_remote()?;
-        Ok(loaded)
-    }
-
     /// Apply the selected profile after environment overrides.
     /// # Errors
     /// Returns errors for missing or invalid profiles.
@@ -1076,6 +1067,15 @@ impl Settings {
 mod tests {
     use super::*;
 
+    pub(crate) fn load_with_remote(
+        cwd: &Path,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<Loaded, Error> {
+        let mut loaded = Settings::load_base_from(cwd, environment)?;
+        loaded.settings.apply_remote()?;
+        Ok(loaded)
+    }
+
     #[test]
     fn hosting_policy_defaults_and_overrides() {
         let mut settings = Settings::default();
@@ -1197,12 +1197,12 @@ mod tests {
     #[test]
     fn node_identity_persists_and_environment_can_select_another_node() {
         let dir = tempfile::tempdir().unwrap();
-        let loaded = Settings::load_from(dir.path(), &BTreeMap::new()).unwrap();
+        let loaded = load_with_remote(dir.path(), &BTreeMap::new()).unwrap();
         let first = loaded.node_id().unwrap();
         assert_eq!(loaded.node_id().unwrap(), first);
         let second = swarmy_core::NodeId::from_ulid(ulid::Ulid::generate());
         let environment = BTreeMap::from([("SWARMY_NODE_ID".into(), second.to_string())]);
-        let loaded = Settings::load_from(dir.path(), &environment).unwrap();
+        let loaded = load_with_remote(dir.path(), &environment).unwrap();
         assert_eq!(loaded.node_id().unwrap(), second);
         assert_eq!(
             loaded.settings.environment()["SWARMY_NODE_ID"],
@@ -1226,7 +1226,7 @@ mod tests {
             "XDG_CONFIG_HOME".into(),
             temp.path().join("xdg").to_str().unwrap().into(),
         )]);
-        let loaded = Settings::load_from(&nested, &environment).unwrap();
+        let loaded = load_with_remote(&nested, &environment).unwrap();
         assert_eq!(loaded.path, Some(config.clone()));
         assert_eq!(loaded.settings.store_directory, "project");
         assert_eq!(loaded.settings.model, "custom");
@@ -1240,20 +1240,20 @@ mod tests {
         );
         environment.insert("SWARMY_STORE_DIRECTORY".into(), "override".into());
         environment.insert("SWARMY_GATEWAY_CONCURRENCY".into(), "7".into());
-        let loaded = Settings::load_from(&nested, &environment).unwrap();
+        let loaded = load_with_remote(&nested, &environment).unwrap();
         assert_eq!(loaded.settings.store_directory, "override");
         assert_eq!(loaded.settings.gateway_concurrency, 7);
         environment.remove("SWARMY_STORE_DIRECTORY");
         std::fs::remove_file(config).unwrap();
         assert_eq!(
-            Settings::load_from(&nested, &environment)
+            load_with_remote(&nested, &environment)
                 .unwrap()
                 .settings
                 .store_directory,
             "user"
         );
         environment.insert("SWARMY_GATEWAY_CONCURRENCY".into(), "bad".into());
-        assert!(Settings::load_from(&nested, &environment).is_err());
+        assert!(load_with_remote(&nested, &environment).is_err());
     }
 
     #[test]
@@ -1270,7 +1270,7 @@ mod tests {
             ("XDG_CONFIG_HOME".into(), String::new()),
             ("SWARMY_FDB_CLUSTER_FILE".into(), "custom.cluster".into()),
         ]);
-        let loaded = Settings::load_from(&cwd, &environment).unwrap();
+        let loaded = load_with_remote(&cwd, &environment).unwrap();
         assert_eq!(loaded.settings.model, "user-model");
         assert_eq!(
             loaded.settings.credential_file,
@@ -1285,13 +1285,13 @@ mod tests {
             "credential_file = '.swarmy/auth.json'",
         )
         .unwrap();
-        let loaded = Settings::load_from(&cwd, &environment).unwrap();
+        let loaded = load_with_remote(&cwd, &environment).unwrap();
         assert_eq!(
             loaded.settings.credential_file,
             user.join(".swarmy/auth.json").to_str().unwrap()
         );
         std::fs::write(user.join("config.toml"), "bad toml").unwrap();
-        assert!(Settings::load_from(&cwd, &environment).is_err());
+        assert!(load_with_remote(&cwd, &environment).is_err());
     }
 
     #[test]

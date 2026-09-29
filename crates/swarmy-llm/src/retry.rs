@@ -30,30 +30,28 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, Error>>,
 {
-    let mut delay = policy.initial_delay.min(policy.max_delay);
     let mut attempt = 1;
     loop {
         let result = f().await;
         let retry_after = match &result {
-            Err(
-                Error::Retryable {
-                    status,
-                    retry_after,
+            Err(error) => {
+                let class = error.classify();
+                if !class.retryable {
+                    return result;
                 }
-                | Error::ProviderResponse {
-                    status,
-                    retry_after,
-                    ..
-                },
-            ) if retryable(*status) => *retry_after,
-            Err(Error::Status(status)) if retryable(*status) => None,
+                class.retry_after
+            }
             _ => return result,
         };
         if attempt >= policy.max_attempts.max(1) {
             return result;
         }
-        tokio::time::sleep(retry_after.unwrap_or(delay).min(policy.max_delay)).await;
-        delay = delay.saturating_mul(2).min(policy.max_delay);
+        tokio::time::sleep(
+            retry_after
+                .unwrap_or_else(|| swarmy_core::backoff(policy.initial_delay, attempt, 5))
+                .min(policy.max_delay),
+        )
+        .await;
         attempt += 1;
     }
 }
@@ -64,7 +62,7 @@ pub(crate) fn retryable(status: reqwest::StatusCode) -> bool {
 
 /// Parse a Retry-After value as seconds or an HTTP date.
 #[must_use]
-pub fn retry_after(value: &str) -> Option<Duration> {
+pub(crate) fn retry_after(value: &str) -> Option<Duration> {
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(Duration::from_secs(seconds));
     }
@@ -77,7 +75,7 @@ pub fn retry_after(value: &str) -> Option<Duration> {
 
 /// Read Retry-After from a response.
 #[must_use]
-pub fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+pub(crate) fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     headers
         .get(reqwest::header::RETRY_AFTER)?
         .to_str()

@@ -12,7 +12,7 @@ use crate::{
     ClientAuth, Delta, Error, Provider, ProviderStream, ReasoningEffort, Request, Response,
     StopReason, TokenUsage,
     catalog::{Api, ModelInfo, ProviderInfo},
-    retry::{RetryPolicy, retryable, with_retry},
+    retry::{RetryPolicy, with_retry},
 };
 
 #[derive(Clone)]
@@ -111,20 +111,11 @@ impl GeminiProvider {
         }
         let retry_after = crate::retry::retry_after_header(response.headers());
         let body = response.text().await?;
-        if overflow(&body) {
-            return Err(Error::ContextOverflow(
-                "Gemini input token count exceeds the maximum".into(),
-            ));
-        }
-        if retryable(status) {
-            return Err(Error::ProviderResponse {
-                status,
-                reason: crate::classify_provider_failure(&body),
-                message: body,
-                retry_after,
-            });
-        }
-        Err(crate::error::provider_error(status, &body))
+        Err(crate::error::classify_http_failure(
+            status,
+            &body,
+            retry_after,
+        ))
     }
 }
 
@@ -371,11 +362,6 @@ fn flush_orphans(contents: &mut Vec<Value>, pending: &mut BTreeMap<String, Strin
     append_content(contents, "user", parts);
 }
 
-fn overflow(text: &str) -> bool {
-    let text = text.to_ascii_lowercase();
-    text.contains("input token count") && text.contains("exceeds the maximum")
-}
-
 #[derive(Default)]
 struct Sse(SseParser);
 impl Sse {
@@ -412,11 +398,7 @@ struct StreamState {
 impl StreamState {
     fn event(&mut self, event: &Value) -> Result<Vec<Delta>, Error> {
         if let Some(error) = event.get("error") {
-            return Err(if overflow(&error.to_string()) {
-                Error::ContextOverflow("Gemini input token count exceeds the maximum".into())
-            } else {
-                Error::Protocol("Gemini stream returned a provider error".into())
-            });
+            return Err(crate::error::stream_error(error));
         }
         if let Some(usage) = event.get("usageMetadata") {
             let count = |key: &str| usage[key].as_u64().unwrap_or_default();
@@ -505,9 +487,9 @@ impl StreamState {
     }
 
     fn finish(self, provider: &str, model: &str) -> Result<Response, Error> {
-        let reason = self
-            .reason
-            .ok_or_else(|| Error::Protocol("Gemini stream closed before finishReason".into()))?;
+        let reason = self.reason.ok_or_else(|| {
+            Error::MalformedStream("Gemini stream closed before finishReason".into())
+        })?;
         let calls = self.parts.iter().any(|p| p.get("functionCall").is_some());
         let stop_reason = match reason.as_str() {
             "STOP" if calls => StopReason::ToolCalls,

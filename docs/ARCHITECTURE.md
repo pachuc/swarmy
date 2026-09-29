@@ -97,18 +97,14 @@ use postcard serialization, with large data redirected to object storage
 ([lib.rs](../crates/swarmy-store/src/lib.rs),
 [blob.rs](../crates/swarmy-store/src/blob.rs)). Treat family names as internal
 schema, not an API. Postcard encodes structs positionally: append stored fields
-only at the end via [swarmy_core::trailing](../crates/swarmy-core/src/encoding.rs),
-with fixed-byte compatibility tests in
-[store/lib.rs](../crates/swarmy-store/src/lib.rs). When a format changes or is retired,
-migrate and clear old rows rather than refusing to start; record one-way
-changes in [api-breaks.txt](api-breaks.txt) (see
-[store migration](../crates/swarmy-store/src/lib.rs)).
+only at the end, with fixed-byte tests for stored formats. Format changes
+are one-way breaks: wipe the development store before deployment and record
+them in [api-breaks.txt](api-breaks.txt).
 
 - **Sessions and events.** `session` holds session state; `event` is indexed
   by `(session, seq)` and read as an append-only log. `turn`, `request_turn`,
   `runnable`, `runnable_by_session`, `inflight`, and `session_by_agent` provide
-  deduplication and scheduling indexes. Some `session_*` rows are legacy
-  hydration data rather than current state
+  deduplication and scheduling indexes. The session header owns session-local state
   ([keys.rs](../crates/swarmy-store/src/keys.rs),
   [turns.rs](../crates/swarmy-store/src/turns.rs)).
 - **Agents and computers.** `agent`, `agent_by_name`, `volume`, `manifest`,

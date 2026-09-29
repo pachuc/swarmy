@@ -5,5 +5,4 @@ pub const SCHED_WAKE: &str = "sched.wake";
 pub const INFER_REQ: &str = "infer.req.{provider_class}";
 pub const INFER_LIVE: &str = "infer.live.{session_id}";
 pub const TOOL_NODE: &str = "tool.node.{node_id}";
-pub const NODE_HEARTBEAT: &str = "node.heartbeat";
 pub const SESSION_EVENTS: &str = "session.events.{session_id}";

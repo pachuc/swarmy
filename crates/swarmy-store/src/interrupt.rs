@@ -32,10 +32,6 @@ impl Store {
         ))
     }
 
-    pub(crate) fn interrupt_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).interrupt_requested(id)
-    }
-
     /// Request the current turn to end, or finish a parked inference atomically.
     /// # Errors
     /// Returns an error when the session has no active turn or storage fails.

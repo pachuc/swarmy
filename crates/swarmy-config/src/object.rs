@@ -58,31 +58,16 @@ impl From<ObjectPrefix> for String {
 }
 
 impl Settings {
-    /// Split the configured bucket and prefix without building a client.
-    /// A legacy `bucket/prefix` keeps its exact object locations; combining
-    /// it with an explicit prefix is rejected as ambiguous.
+    /// Validate the configured bucket and prefix without building a client.
     /// # Errors
-    /// Rejects empty buckets and invalid or ambiguous namespaces.
+    /// Rejects empty bucket names or slash-separated bucket paths.
     pub fn s3_namespace(&self) -> Result<(&str, ObjectPrefix), Error> {
-        let (bucket, prefix) = if let Some((bucket, prefix)) = self.s3_bucket.split_once('/') {
-            if !self.s3_prefix.as_str().is_empty() {
-                return Err(Error::S3Namespace(
-                    "set either a legacy bucket/prefix or s3_prefix, not both",
-                ));
-            }
-            if prefix.is_empty() {
-                return Err(Error::S3Namespace(
-                    "legacy bucket/prefix has an empty prefix",
-                ));
-            }
-            (bucket, prefix.parse()?)
-        } else {
-            (self.s3_bucket.as_str(), self.s3_prefix.clone())
-        };
-        if bucket.is_empty() {
-            return Err(Error::S3Namespace("bucket must not be empty"));
+        if self.s3_bucket.is_empty() || self.s3_bucket.contains('/') {
+            return Err(Error::S3Namespace(
+                "bucket must be a nonempty name, not a path",
+            ));
         }
-        Ok((bucket, prefix))
+        Ok((&self.s3_bucket, self.s3_prefix.clone()))
     }
 }
 
@@ -136,25 +121,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_namespace_is_exact_and_ambiguity_is_rejected() {
-        let mut settings = Settings {
-            s3_bucket: "bucket/run/nested".into(),
-            ..Settings::default()
-        };
-        let (bucket, prefix) = settings.s3_namespace().unwrap();
-        assert_eq!(bucket, "bucket");
-        assert_eq!(prefix.as_str(), "run/nested");
-        settings.s3_prefix = "explicit".parse().unwrap();
-        assert!(settings.s3_namespace().is_err());
-        settings.s3_prefix = ObjectPrefix::default();
-        for value in [
-            "",
-            "/run",
-            "bucket/",
-            "bucket/a//b",
-            "bucket/a/../b",
-            "bucket/a/",
-        ] {
+    fn bucket_paths_are_rejected() {
+        let mut settings = Settings::default();
+        for value in ["", "/run", "bucket/", "bucket/run/nested"] {
             settings.s3_bucket = value.into();
             assert!(settings.s3_namespace().is_err(), "{value}");
         }

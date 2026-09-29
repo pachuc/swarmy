@@ -516,49 +516,6 @@ async fn hosting_claims_and_renewals_distinguish_loss_from_unstarted_takeover() 
 }
 
 #[tokio::test]
-async fn legacy_placements_without_hosting_metadata_still_report_loss() {
-    let Some(test) = TestStore::memory() else {
-        return;
-    };
-    let node = node(&test.store, 1).await.node_id;
-    let first = test
-        .store
-        .place(session().agent_id, node, future(60))
-        .await
-        .unwrap();
-    // Legacy placement and dispatch records retain their original postcard schema.
-    let key = test.root.pack(&(
-        "placement_hosting",
-        first.agent_id.as_ulid().to_bytes().as_slice(),
-    ));
-    test.db
-        .run(|trx, _| {
-            let key = &key;
-            async move {
-                trx.clear(key);
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-    let expired = expire(&test, &first).await;
-    let recovered = test
-        .store
-        .take_over(&expired, node, future(60))
-        .await
-        .unwrap();
-    assert_eq!(recovered.last_change_reason, PlacementChangeReason::Failure);
-    assert_eq!(
-        test.store
-            .placement_failure_estimate(&recovered)
-            .await
-            .unwrap(),
-        None
-    );
-    test.cleanup().await;
-}
-
-#[tokio::test]
 async fn placement_memory_budget_is_atomic_and_released() {
     let Some(test) = TestStore::memory() else {
         return;

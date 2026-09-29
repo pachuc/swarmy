@@ -1393,9 +1393,9 @@ fn upgrade_fixture() -> RemoteNode {
     serde_json::from_value(serde_json::json!({
         "name": "primary", "region": "us-east-1", "instance_id": "i-first",
         "public_ip": "203.0.113.1", "private_ip": "10.0.0.1", "key_path": "key",
-        "created_at": "now", "nodes": [
-            {"name":"child-a", "region":"us-east-1", "instance_id":"i-a", "public_ip":"203.0.113.2", "private_ip":"10.0.0.2", "key_path":"key-a", "created_at":"now"},
-            {"name":"child-b", "region":"us-east-1", "instance_id":"i-b", "public_ip":"203.0.113.3", "private_ip":"10.0.0.3", "key_path":"key-b", "created_at":"now"}
+        "launch_attempted":true,"created_at": "now", "nodes": [
+            {"name":"child-a", "region":"us-east-1", "instance_id":"i-a", "public_ip":"203.0.113.2", "private_ip":"10.0.0.2", "key_path":"key-a", "launch_attempted":true,"created_at":"now"},
+            {"name":"child-b", "region":"us-east-1", "instance_id":"i-b", "public_ip":"203.0.113.3", "private_ip":"10.0.0.3", "key_path":"key-b", "launch_attempted":true,"created_at":"now"}
         ]
     }))
     .unwrap()

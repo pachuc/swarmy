@@ -43,14 +43,6 @@ pub struct ExpandedRouteStep {
     pub model: Option<String>,
 }
 
-impl RouteStep {
-    /// Whether this step selects every entry of its provider.
-    #[must_use]
-    pub fn is_any(&self) -> bool {
-        self.entry == ANY_ENTRY
-    }
-}
-
 /// Route names share the volume label rule so they survive shell, TOML, and
 /// key encodings unchanged.
 fn valid_name(name: &str) -> bool {

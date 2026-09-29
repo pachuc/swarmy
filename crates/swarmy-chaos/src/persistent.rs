@@ -458,7 +458,7 @@ async fn bash(f: &mut Fixture, session: SessionId, command: &str) -> Result<Valu
 }
 
 async fn invoke(f: &mut Fixture, session: SessionId, tool: &str, input: Value) -> Result<Value> {
-    let usage = json!({"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0});
+    let usage = json!({"input_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0});
     std::fs::write(
         f.files.path().join("script.json"),
         serde_json::to_vec(&json!({"responses": {

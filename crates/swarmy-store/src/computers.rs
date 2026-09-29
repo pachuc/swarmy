@@ -37,10 +37,11 @@ impl Store {
     }
 
     /// Permanently delete a computer, retaining the identity and all transcripts.
-    /// The tombstone marks every associated session, including legacy sessions,
+    /// The tombstone marks every associated session,
     /// without an unbounded transaction. Node renewal fails and discards local state.
     /// # Errors
     /// Returns storage or decoding failures.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn delete_computer(&self, agent: AgentId) -> Result<()> {
         self.transaction(|trx| async move { self.delete_computer_in(&trx, agent).await })
             .await
@@ -90,7 +91,6 @@ impl Store {
     }
 
     /// Close idle ephemeral sessions older than the retention interval, in bounded transactions.
-    /// Legacy idle sessions without a timestamp start their retention clock on first observation.
     /// Each candidate is rechecked transactionally against concurrent activity and deletion.
     /// # Errors
     /// Returns storage, decoding, or timestamp-range failures.
@@ -138,12 +138,9 @@ impl Store {
                         {
                             return Ok(false);
                         }
-                        let Some(idle_since) = session.idle_since else {
-                            let mut session = session;
-                            session.idle_since = Some(now);
-                            self.write_session(&trx, &session)?;
-                            return Ok(false);
-                        };
+                        let idle_since = session
+                            .idle_since
+                            .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
                         if idle_since >= cutoff {
                             return Ok(false);
                         }

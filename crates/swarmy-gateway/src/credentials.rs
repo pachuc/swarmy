@@ -199,12 +199,11 @@ impl AuthStore for ClusterCredentials {
                         .ok_or(StoreError::Domain(
                             swarmy_store::DomainError::CredentialRefresh,
                         ))?;
-                    let mut record = CredentialRecord {
+                    let record = CredentialRecord {
                         bookkeeping: current.bookkeeping.clone(),
                         kind,
                         updated_at: jiff::Timestamp::now(),
                     };
-                    record.migrate_bookkeeping();
                     Ok(record)
                 },
             )

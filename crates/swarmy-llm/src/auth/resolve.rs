@@ -64,7 +64,7 @@ pub struct ResolvedAuth {
 
 /// Derive the rollup kind from a stored record without exposing secrets.
 #[must_use]
-pub fn entry_kind_for(record: &CredentialRecord) -> String {
+pub(crate) fn entry_kind_for(record: &CredentialRecord) -> String {
     match &record.kind {
         CredentialKind::OAuth { .. } => "subscription".into(),
         CredentialKind::ApiKey { .. } if record.bookkeeping.cloud => "cloud".into(),

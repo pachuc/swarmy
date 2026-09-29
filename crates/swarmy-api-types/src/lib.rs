@@ -297,11 +297,6 @@ pub struct DoctorSnapshot {
     /// this; clients must treat a missing list as unknown, not empty.
     #[serde(default)]
     pub nodes: Vec<DoctorNode>,
-    /// Retired single-record credential rows still stored. Boot migrates
-    /// them to entries; any remainder failed to decrypt. Older servers omit
-    /// this; clients must treat a missing count as unknown, not zero.
-    #[serde(default)]
-    pub legacy_credential_rows: u64,
 }
 
 /// One registered node and its committed sandbox memory in bytes.

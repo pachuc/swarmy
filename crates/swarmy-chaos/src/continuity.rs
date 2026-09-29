@@ -18,7 +18,7 @@ const NOTE: &str = "Two-minute reminder: check the observatory notebook.";
 const ANSWER: &str = "My memory file says: Tommy's favorite observatory is Violet Ridge.";
 
 fn response(parts: &Value, stop: &str, tokens: u64) -> Value {
-    json!({"parts":parts, "stop_reason":stop, "usage":{"input_tokens":tokens,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":tokens}})
+    json!({"parts":parts, "stop_reason":stop, "usage":{"input_tokens":tokens,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":tokens}})
 }
 
 fn tool(name: &str, input: &Value) -> Value {

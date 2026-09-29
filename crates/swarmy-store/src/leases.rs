@@ -198,21 +198,6 @@ impl Store {
         .await
     }
 
-    /// Release a live lease and return the session to Runnable.
-    /// # Errors
-    /// Rejects expired or replaced leases and transaction failures.
-    /// Test-only entry point, also available with the `test-support` feature.
-    #[cfg(any(test, feature = "test-support"))]
-    pub async fn release_lease(
-        &self,
-        id: SessionId,
-        expected: &Lease,
-        now: Timestamp,
-    ) -> Result<()> {
-        self.set_state(id, SessionState::Runnable, Some(expected), now)
-            .await
-    }
-
     /// Change state and update both indexes atomically. Leaving Leased requires
     /// its live token; entering Leased is only possible through `claim_lease`.
     /// # Errors

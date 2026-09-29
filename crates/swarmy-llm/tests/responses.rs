@@ -247,25 +247,6 @@ async fn reasoning_replay_requires_the_same_provider_and_model() {
         response(azure.as_ref(), replay.clone()).await;
         assert!(!body(&server).await.to_string().contains("opaque-reasoning"));
     }
-    if let Part::Reasoning { metadata, .. } = &mut replay.messages[1].parts[0] {
-        let saved = metadata.remove("openai_responses").unwrap();
-        metadata.insert("chatgpt".into(), saved);
-    }
-    response(original.as_ref(), replay.clone()).await;
-    assert_eq!(
-        body(&server).await["input"][2]["encrypted_content"],
-        "opaque-reasoning"
-    );
-    // Historical records did not include a model, so their signatures cannot be verified.
-    if let Part::Reasoning { metadata, .. } = &mut replay.messages[1].parts[0] {
-        let saved = metadata.remove("chatgpt").unwrap();
-        metadata.insert("chatgpt".into(), saved["item"].clone());
-    }
-    response(original.as_ref(), replay).await;
-    assert_eq!(
-        body(&server).await["input"][2]["content"][0]["text"],
-        "Think first."
-    );
 }
 
 #[tokio::test]
@@ -398,9 +379,12 @@ async fn transient_http_errors_retry_and_permanent_errors_do_not() {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("provider explanation"));
-        assert!(
-            matches!(error, Error::ProviderResponse { status: code, .. } if code.as_u16() == status)
-        );
+        assert!(match status {
+            400 => matches!(error, Error::BadRequest(_)),
+            401 => matches!(error, Error::Authentication(_)),
+            _ =>
+                matches!(error, Error::ProviderResponse { status: code, .. } if code.as_u16() == status),
+        });
     }
 }
 
@@ -645,7 +629,7 @@ impl swarmy_llm::auth::CredentialStore for MemoryCredentials {
 
 #[test]
 fn summary_request_disables_responses_cache_affinity() {
-    use swarmy_llm::responses::request_json_for;
+    use swarmy_llm::api::responses::request_json_for;
     let model = catalog_model("openai", "gpt-5.5");
     let provider = Catalog::get().provider("openai").unwrap();
     let endpoint =

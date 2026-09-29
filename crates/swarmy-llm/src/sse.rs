@@ -3,14 +3,14 @@
 use crate::Error;
 
 /// A complete SSE data payload or a non-SSE line (some providers return JSON errors).
-pub enum Frame {
+pub(crate) enum Frame {
     Data(Vec<u8>),
     Raw(Vec<u8>),
 }
 
 /// Frames multiline data across arbitrary chunks, CRLF boundaries and comments.
 #[derive(Default)]
-pub struct SseParser {
+pub(crate) struct SseParser {
     line: Vec<u8>,
     data: Vec<u8>,
     previous_cr: bool,
@@ -19,7 +19,7 @@ pub struct SseParser {
 impl SseParser {
     /// # Errors
     /// Rejects an event exceeding 8 MiB.
-    pub fn push_byte(&mut self, byte: u8) -> Result<Option<Frame>, Error> {
+    pub(crate) fn push_byte(&mut self, byte: u8) -> Result<Option<Frame>, Error> {
         if byte == b'\n' && self.previous_cr {
             self.previous_cr = false;
             return Ok(None);
@@ -58,7 +58,7 @@ impl SseParser {
     /// Parse a chunk into complete frames.
     /// # Errors
     /// Rejects an event exceeding 8 MiB.
-    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Frame>, Error> {
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> Result<Vec<Frame>, Error> {
         let mut frames = Vec::new();
         for &byte in bytes {
             if let Some(frame) = self.push_byte(byte)? {
@@ -71,7 +71,8 @@ impl SseParser {
     /// Flush a final unterminated event at EOF (used by Gemini).
     /// # Errors
     /// Rejects an oversized trailing line.
-    pub fn finish(&mut self) -> Result<Option<Frame>, Error> {
+    #[cfg(any(test, feature = "gemini"))]
+    pub(crate) fn finish(&mut self) -> Result<Option<Frame>, Error> {
         if !self.line.is_empty() {
             self.previous_cr = false;
             let _ = self.push_byte(b'\n')?;
@@ -81,7 +82,7 @@ impl SseParser {
     }
 
     #[must_use]
-    pub fn pending_line(&self) -> &[u8] {
+    pub(crate) fn pending_line(&self) -> &[u8] {
         &self.line
     }
 }

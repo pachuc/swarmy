@@ -17,6 +17,7 @@ default = ["azure", "bedrock", "gemini"]
 azure = []
 bedrock = ["dep:aws-config", "dep:aws-sdk-bedrockruntime", "dep:aws-smithy-types"]
 gemini = []
+fake = []
 
 [dependencies]
 async-trait.workspace = true
@@ -43,6 +44,7 @@ tracing.workspace = true
 ulid.workspace = true
 
 [dev-dependencies]
+swarmy-llm = { path = ".", default-features = false, features = ["fake"] }
 rsa.workspace = true
 swarmy-core = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
