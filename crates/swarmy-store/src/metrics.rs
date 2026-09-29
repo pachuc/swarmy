@@ -1619,6 +1619,15 @@ mod tests {
     }
 
     #[test]
+    fn detail_row_at_summary_key_is_corrupt() {
+        let bytes = swarmy_core::encode(&StoredTurnMetrics::V2Tool(fixture_tool())).unwrap();
+        assert!(matches!(
+            decode_summary(&bytes),
+            Err(StoreError::Storage(crate::StorageError::Corrupt))
+        ));
+    }
+
+    #[test]
     fn versioned_envelope_decodes_checked_in_v2_bytes() {
         let summary = decode::<StoredTurnMetrics>(&hex_to_bytes(V2_SUMMARY_HEX)).unwrap();
         let StoredTurnMetrics::V2Summary(decoded) = summary else {

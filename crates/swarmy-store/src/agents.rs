@@ -369,8 +369,7 @@ impl Store {
         self.check_computer(trx, session.agent_id).await?;
         let selected = match session.kind {
             SessionKind::Ephemeral => {
-                // The compatibility entry point accepts an existing anonymous id,
-                // but must never attach ephemeral lifetime rules to a named identity.
+                // Never attach ephemeral lifetime rules to a named identity.
                 if trx
                     .get(&self.agent_key(session.agent_id), false)
                     .await?

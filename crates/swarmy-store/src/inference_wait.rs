@@ -1,8 +1,8 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use swarmy_core::{SessionId, SessionState};
 #[cfg(any(test, feature = "test-support"))]
 use swarmy_core::Lease;
+use swarmy_core::{SessionId, SessionState};
 
 use crate::{Result, Store, StoreError, read, scan, write};
 

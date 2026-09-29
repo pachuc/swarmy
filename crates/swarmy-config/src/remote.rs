@@ -388,9 +388,9 @@ mod tests {
     }
 
     #[test]
-    fn saved_launch_settings_read_old_flat_json() {
+    fn saved_launch_settings_read_nested_json() {
         let node: RemoteNode = serde_json::from_str(
-            r#"{"name":"old","region":"us-east-1","instance_id":"i-old","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","launch_settings":{"instance_type":"m6i.large","disk_gb":40},"created_at":"2026-09-16T00:00:00Z"}"#,
+            r#"{"name":"old","region":"us-east-1","instance_id":"i-old","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","launch_settings":{"aws":{"instance_type":"m6i.large"},"disk_gb":40},"launch_attempted":true,"created_at":"2026-09-16T00:00:00Z"}"#,
         )
         .unwrap();
         let saved = node.launch_settings.clone().unwrap();
@@ -398,7 +398,7 @@ mod tests {
         assert_eq!(saved.disk_gb, 40);
         assert_eq!(node.cloud_settings().region, "us-east-1");
 
-        let bare: RemoteNode = serde_json::from_str(r#"{"name":"bare","region":"eu-west-1","instance_id":"","public_ip":"","private_ip":"","key_path":"/tmp/key","created_at":"2026-09-16T00:00:00Z"}"#).unwrap();
+        let bare: RemoteNode = serde_json::from_str(r#"{"name":"bare","region":"eu-west-1","instance_id":"","public_ip":"","private_ip":"","key_path":"/tmp/key","launch_attempted":true,"created_at":"2026-09-16T00:00:00Z"}"#).unwrap();
         let fallback = bare.cloud_settings();
         assert_eq!(fallback.provider, "aws");
         assert_eq!(fallback.region, "eu-west-1");
@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn shared_state_defaults_and_round_trip() {
-        let node: RemoteNode = serde_json::from_str(r#"{"name":"local","region":"local","instance_id":"i-local","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","created_at":"2026-09-16T00:00:00Z"}"#).unwrap();
+        let node: RemoteNode = serde_json::from_str(r#"{"name":"local","region":"local","instance_id":"i-local","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","launch_attempted":true,"created_at":"2026-09-16T00:00:00Z"}"#).unwrap();
         assert_eq!(node.ssh_user, "ubuntu");
         assert_eq!(node.ports, RemotePorts::default());
         assert!(node.nodes.is_empty());

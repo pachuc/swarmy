@@ -1135,7 +1135,7 @@ async fn scan(
 }
 
 #[cfg(test)]
-mod compatibility_tests {
+mod stored_format_tests {
     use super::*;
 
     #[test]

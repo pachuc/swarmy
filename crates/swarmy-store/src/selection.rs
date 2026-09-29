@@ -1,4 +1,4 @@
-//! Provider advertisements and the legacy session inference key.
+//! Provider availability advertisements.
 use crate::{Result, Store, read, write};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -9,8 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GatewayProvider {
     pub expires_at: Timestamp,
-    /// Discovery outcome of the last writing gateway; empty for legacy records.
-    #[serde(default, with = "swarmy_core::trailing")]
+    /// Discovery outcome of the last writing gateway.
     pub reason: String,
 }
 

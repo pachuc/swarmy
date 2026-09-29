@@ -317,13 +317,10 @@ impl Store {
         };
         let explanation = text.clone();
         // The index read conflicts with concurrent session creation, so every
-        // session present at delivery receives the same epoch atomically. Include
-        // the caller for legacy sessions created before the index existed.
+        // session present at delivery receives the same epoch atomically.
         let (mut begin, end) = crate::keys::Keys::new(&self.root)
             .session_by_agent_space(placement.agent_id)
             .range();
-        self.append_computer_notice(trx, id, placement.epoch, &message)
-            .await?;
         loop {
             let page = scan(trx, (begin.clone(), end.clone()), crate::MAX_SCAN_LIMIT).await?;
             if page.is_empty() {
