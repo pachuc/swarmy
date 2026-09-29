@@ -585,10 +585,22 @@ impl Worker {
     }
 
     pub(crate) async fn session_display(&self, session: &SessionRecord) -> Result<bool> {
-        // The display flag varies only by agent image, so key the bounded
-        // cache by that pair instead of by session. The database reads run
-        // without the lock held so concurrent steps do not block on them.
+        // The display flag varies only by agent image, so the cache is keyed
+        // by that pair with a per-session index for read-free hits. The lock
+        // is released before the database reads below so concurrent steps do
+        // not block on them.
+        {
+            let cache = self.display.lock().await;
+            if let Some(display) = cache.get(session.session_id) {
+                return Ok(display);
+            }
+        }
         let Some(agent) = self.store.get_agent(session.agent_id).await? else {
+            // Sessions without an agent row (ephemeral tests, deleted agents)
+            // have no display. Remember the miss so repeated lookups cost no
+            // reads, as a hit would.
+            let mut cache = self.display.lock().await;
+            cache.insert(session.session_id, session.agent_id, String::new(), false);
             return Ok(false);
         };
         // ImageRecord has no Hash impl, so flatten the identity that
@@ -597,19 +609,10 @@ impl Worker {
             "{}:{}:{}",
             agent.image.name, agent.image.tag.0, agent.image.manifest_id
         );
-        {
-            let cache = self.display_by_image.lock().await;
-            if let Some(display) = cache.get(&(session.agent_id, image_key.clone())) {
-                return Ok(*display);
-            }
-        }
         let display = self.store.image_display(&agent.image).await?;
         {
-            let mut cache = self.display_by_image.lock().await;
-            if cache.len() >= DISPLAY_CACHE_SIZE {
-                cache.clear();
-            }
-            cache.insert((session.agent_id, image_key), display);
+            let mut cache = self.display.lock().await;
+            cache.insert(session.session_id, session.agent_id, image_key, display);
         }
         Ok(display)
     }

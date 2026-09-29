@@ -116,11 +116,36 @@ impl KillPoint {
 
 /// Snapshots cached by content-addressed key alongside the claim that uses
 /// them. Display flags cached by the agent and image pair that determines
-/// them. Both caches clear instead of evicting entries because a worker
-/// handles few distinct keys and a full clear keeps the bound with no
-/// per-entry bookkeeping.
+/// them, with a per-session index so hits need no database reads. Caches
+/// clear instead of evicting entries because a worker handles few distinct
+/// keys and a full clear keeps the bound with no per-entry bookkeeping.
 const SNAPSHOT_CACHE_SIZE: usize = 16;
 const DISPLAY_CACHE_SIZE: usize = 64;
+
+/// Display flag per (agent, image), indexed by session. A worker restart
+/// drops this cache; restart workers after changing an agent's image.
+#[derive(Default)]
+struct DisplayCache {
+    by_image: HashMap<(AgentId, String), bool>,
+    by_session: HashMap<SessionId, (AgentId, String)>,
+}
+
+impl DisplayCache {
+    fn get(&self, session: SessionId) -> Option<bool> {
+        let key = self.by_session.get(&session)?;
+        self.by_image.get(key).copied()
+    }
+
+    fn insert(&mut self, session: SessionId, agent: AgentId, image: String, display: bool) {
+        if self.by_image.len() >= DISPLAY_CACHE_SIZE || self.by_session.len() >= DISPLAY_CACHE_SIZE
+        {
+            self.by_image.clear();
+            self.by_session.clear();
+        }
+        self.by_image.insert((agent, image.clone()), display);
+        self.by_session.insert(session, (agent, image));
+    }
+}
 
 pub struct Worker {
     store: Store,
@@ -129,7 +154,7 @@ pub struct Worker {
     config: Config,
     placements: crate::placement::Cache,
     snapshots: Mutex<HashMap<String, Snapshot>>,
-    display_by_image: Mutex<HashMap<(AgentId, String), bool>>,
+    display: Mutex<DisplayCache>,
     pub owner: LeaseOwnerId,
 }
 
@@ -142,7 +167,7 @@ impl Worker {
             config,
             placements: crate::placement::Cache::default(),
             snapshots: Mutex::default(),
-            display_by_image: Mutex::default(),
+            display: Mutex::default(),
             owner: LeaseOwnerId::from_ulid(Ulid::generate()),
         }
     }
