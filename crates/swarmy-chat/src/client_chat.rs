@@ -440,108 +440,82 @@ impl View {
                 let api::EventPayload::StoreRecord { record } = event.payload else {
                     return;
                 };
-                let Ok(record) = serde_json::to_value(&record) else {
+                let api::RecordBody::Event(record) = record else {
                     return;
                 };
-                if let Some(state) = record
-                    .get("state_changed")
-                    .and_then(|s| s.get("to"))
-                    .and_then(serde_json::Value::as_str)
-                {
-                    self.state = format!("{}{}", state[..1].to_uppercase(), &state[1..]);
-                    self.ready = state == "idle";
-                    if self.ready {
-                        self.partial.clear();
+                match record {
+                    swarmy_core::Event::StateChanged { to, .. } => {
+                        self.state = format!("{to:?}");
+                        self.ready = to == swarmy_core::SessionState::Idle;
+                        if self.ready {
+                            self.partial.clear();
+                        }
                     }
-                }
-                if let Some(error) = record
-                    .get("inference_failed")
-                    .and_then(|v| v.get("error"))
-                    .and_then(serde_json::Value::as_str)
-                {
-                    self.entries.push(format!("Error: {error}"));
-                }
-                if let Some(call) = record
-                    .get("tool_call_requested")
-                    .and_then(|v| v.get("call"))
-                {
-                    let id = call
-                        .get("call_id")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("unknown")
-                        .to_owned();
-                    if !self.tools.contains_key(&id) {
-                        self.tools.insert(id.clone(), self.entries.len());
-                        self.entries.push(format!(
-                            "Tool: {} [{id}] {} (running)",
-                            call.get("tool")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("tool"),
-                            call.get("arguments").unwrap_or(&serde_json::Value::Null)
-                        ));
+                    swarmy_core::Event::InferenceFailed { error, .. } => {
+                        self.entries.push(format!("Error: {error}"))
                     }
-                }
-                if let Some(completed) = record.get("tool_call_completed") {
-                    if let Some(id) = completed.get("call_id").and_then(serde_json::Value::as_str)
-                        && let Some(index) = self.tools.get(id).copied()
-                    {
-                        self.entries[index] = self.entries[index].replace("(running)", "(done)");
+                    swarmy_core::Event::ToolCallRequested { call, .. } => {
+                        let id = call.call_id.0;
+                        if !self.tools.contains_key(&id) {
+                            self.tools.insert(id.clone(), self.entries.len());
+                            self.entries.push(format!(
+                                "Tool: {} [{id}] {} (running)",
+                                call.tool, call.arguments
+                            ));
+                        }
                     }
-                    if let Some(output) = completed
-                        .get("result")
-                        .and_then(|v| v.get("completed"))
-                        .and_then(|v| v.get("output"))
-                        .and_then(serde_json::Value::as_str)
-                    {
-                        self.entries.push(format!("  Result: {output}"));
+                    swarmy_core::Event::ToolCallCompleted {
+                        call_id, result, ..
+                    } => {
+                        if let Some(index) = self.tools.get(&call_id.0).copied() {
+                            self.entries[index] =
+                                self.entries[index].replace("(running)", "(done)");
+                        }
+                        if let swarmy_core::ToolResult::Completed { output, .. } = result {
+                            self.entries.push(format!("  Result: {output}"));
+                        }
                     }
-                }
-                if let Some(message) = record.get("message_queued").and_then(|v| v.get("message"))
-                    && let api::LogId::Session(session_id) = &event.log_id
-                {
-                    self.message(message, session_id, true);
-                }
-                if let Some(message) = record
-                    .get("inference_completed")
-                    .or_else(|| record.get("message_appended"))
-                    .and_then(|v| v.get("message"))
-                    && let api::LogId::Session(session_id) = &event.log_id
-                {
-                    self.message(message, session_id, false);
+                    swarmy_core::Event::MessageQueued { message, .. } => {
+                        if let api::LogId::Session(session_id) = &event.log_id {
+                            self.message(&message, session_id, true);
+                        }
+                    }
+                    swarmy_core::Event::MessageAppended { message, .. }
+                    | swarmy_core::Event::InferenceCompleted { message, .. } => {
+                        if let api::LogId::Session(session_id) = &event.log_id {
+                            self.message(&message, session_id, false);
+                        }
+                    }
+                    _ => {}
                 }
             }
             ConversationItem::Stream(StreamItem::TokenDelta { .. }) => {}
         }
     }
-    fn message(&mut self, message: &serde_json::Value, session_id: &str, queued: bool) {
-        let Some(id) = message.get("id").and_then(serde_json::Value::as_str) else {
-            return;
-        };
-        let role = message.get("role").and_then(serde_json::Value::as_str);
+    fn message(&mut self, message: &swarmy_core::Message, session_id: &str, queued: bool) {
+        let id = message.id.to_string();
         let text = message
-            .get("parts")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|part| {
-                part.get("text")
-                    .or_else(|| part.get("notice"))
-                    .and_then(|v| v.get("text"))
-                    .and_then(serde_json::Value::as_str)
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                swarmy_core::Part::Text { text } | swarmy_core::Part::Notice { text, .. } => {
+                    Some(text.as_str())
+                }
+                _ => None,
             })
             .collect::<String>();
-        match role {
-            Some("user") if self.users.insert(id.into()) => {
+        match message.role {
+            swarmy_core::MessageRole::User if self.users.insert(id.clone()) => {
                 self.entries.push(format!(
                     "You{}: {text}",
                     if queued { " (queued)" } else { "" }
                 ));
             }
-            Some("system") if self.systems.insert(id.into()) => {
+            swarmy_core::MessageRole::System if self.systems.insert(id.clone()) => {
                 self.entries
                     .push(format!("System [session {session_id}]: {text}"));
             }
-            Some("assistant") if self.assistants.insert(id.into()) => {
+            swarmy_core::MessageRole::Assistant if self.assistants.insert(id) => {
                 self.partial.clear();
                 if !text.is_empty() {
                     self.entries.push(format!("Agent: {text}"));

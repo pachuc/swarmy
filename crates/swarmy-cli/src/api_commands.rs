@@ -1056,6 +1056,13 @@ async fn set_entry_quota(
     .await?;
     Ok(())
 }
+#[derive(serde::Serialize)]
+struct CredentialWithExpiry<'a> {
+    #[serde(flatten)]
+    credential: &'a swarmy_api_types::Credential,
+    expires_in_seconds: Option<i64>,
+}
+
 fn auth_display(summary: &swarmy_api_types::Credential, json: bool, expiry: bool) {
     let seconds = summary
         .expires_at
@@ -1066,7 +1073,11 @@ fn auth_display(summary: &swarmy_api_types::Credential, json: bool, expiry: bool
         if expiry {
             println!(
                 "{}",
-                json!({"credential": summary, "expires_in_seconds": seconds})
+                serde_json::to_string(&CredentialWithExpiry {
+                    credential: summary,
+                    expires_in_seconds: seconds,
+                })
+                .expect("credential serializes")
             );
         } else {
             println!(

@@ -149,7 +149,7 @@ fn set_list_check_remove_and_import() {
     let row: Value = serde_json::from_str(rows.trim()).unwrap();
     assert_eq!(row["provider"], "anthropic");
     assert_eq!(row["status"], "ready");
-    assert_eq!(row["kind"], "api-key");
+    assert_eq!(row["kind"], "api_key");
     f.success(&["auth", "check", "anthropic", "--json"]);
     f.success(&[
         "auth",

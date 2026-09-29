@@ -129,25 +129,22 @@ pub async fn wait_healthy(client: &Client, endpoint: &str, provider: Option<&str
     }
 }
 
-fn print_tools(record: &serde_json::Value) {
-    if let Some(call) = record
-        .get("tool_call_requested")
-        .and_then(|v| v.get("call"))
-    {
-        println!(
+fn print_tools(record: &swarmy_core::Event) -> Result<()> {
+    match record {
+        swarmy_core::Event::ToolCallRequested { call, .. } => println!(
             "Tool call {} {} {}",
-            call.get("call_id").unwrap_or(&serde_json::Value::Null),
-            call.get("tool").unwrap_or(&serde_json::Value::Null),
-            call.get("arguments").unwrap_or(&serde_json::Value::Null)
-        );
-    }
-    if let Some(completed) = record.get("tool_call_completed") {
-        println!(
+            call.call_id.0, call.tool, call.arguments
+        ),
+        swarmy_core::Event::ToolCallCompleted {
+            call_id, result, ..
+        } => println!(
             "Tool result {} {}",
-            completed.get("call_id").unwrap_or(&serde_json::Value::Null),
-            completed.get("result").unwrap_or(&serde_json::Value::Null)
-        );
+            call_id.0,
+            serde_json::to_string(result)?
+        ),
+        _ => {}
     }
+    Ok(())
 }
 
 /// Assign an explicit `--route` to the opened session only; the agent and
@@ -608,10 +605,7 @@ impl Conversation {
                 ConversationItem::Stream(StreamItem::Event(event)) => {
                     let sequence = event.sequence;
                     if let api::EventPayload::StoreRecord { record } = event.payload {
-                        let Ok(value) = serde_json::to_value(&record) else {
-                            continue;
-                        };
-                        if self.record_event(&value, sequence, json, run, quiet, &mut progress)? {
+                        if self.record_event(&record, sequence, json, run, quiet, &mut progress)? {
                             return Ok(());
                         }
                     }
@@ -632,7 +626,7 @@ impl Conversation {
 
     fn record_event(
         &mut self,
-        record: &serde_json::Value,
+        record: &api::RecordBody,
         sequence: u64,
         json: bool,
         run: bool,
@@ -648,33 +642,44 @@ impl Conversation {
                 serde_json::json!({"event":"session_event","value":record})
             );
         }
-        if let Some(state) = record.get("state_changed").and_then(|s| s.get("to")) {
-            if state == "leased" || state == "waiting_inference" {
-                progress.started = true;
+        let api::RecordBody::Event(event) = record else {
+            return Ok(false);
+        };
+        match event {
+            swarmy_core::Event::StateChanged { to, .. } => match to {
+                swarmy_core::SessionState::Leased | swarmy_core::SessionState::WaitingInference => {
+                    progress.started = true
+                }
+                swarmy_core::SessionState::Completed => bail!("session completed"),
+                swarmy_core::SessionState::Idle => {
+                    return self.finish_idle(sequence, json, quiet, run, progress);
+                }
+                _ => {}
+            },
+            swarmy_core::Event::InferenceRequested { .. } => progress.started = true,
+            swarmy_core::Event::MessageQueued { .. } if !quiet && !json => {
+                println!("[queued message delivered]")
             }
-            if state == "completed" {
-                bail!("session completed");
+            swarmy_core::Event::ToolCallCompleted { result, .. } => {
+                self.tool_count += 1;
+                self.tool_result = Some(serde_json::to_value(result)?);
+                progress.error = tool_error(result);
             }
-            if state == "idle" {
-                return self.finish_idle(sequence, json, quiet, run, progress);
+            swarmy_core::Event::InferenceFailed {
+                error,
+                failure_kind,
+                ..
+            } => {
+                progress.error = Some(inference_error(error, *failure_kind));
             }
-        }
-        if record.get("inference_requested").is_some() {
-            progress.started = true;
+            swarmy_core::Event::MessageAppended { message, .. }
+            | swarmy_core::Event::InferenceCompleted { message, .. } => {
+                self.render_message(message, json, quiet, progress)?
+            }
+            _ => {}
         }
         if !quiet && !json {
-            if record.get("message_queued").is_some() {
-                println!("[queued message delivered]");
-            }
-            print_tools(record);
-        }
-        self.track_tools(record, progress);
-        if let Some(message) = record
-            .get("inference_completed")
-            .or_else(|| record.get("message_appended"))
-            .and_then(|event| event.get("message"))
-        {
-            self.render_message(message, json, quiet, progress)?;
+            print_tools(event)?;
         }
         Ok(false)
     }
@@ -710,27 +715,9 @@ impl Conversation {
         Ok(true)
     }
 
-    fn track_tools(&mut self, record: &serde_json::Value, progress: &mut TurnProgress) {
-        if let Some(result) = record
-            .get("tool_call_completed")
-            .and_then(|v| v.get("result"))
-        {
-            self.tool_count += 1;
-            self.tool_result = Some(result.clone());
-        }
-        if let Some(error) = tool_error(record) {
-            progress.error = Some(error);
-        }
-        // An inference record supersedes a tool error, and one without an
-        // error string still clears a previous error.
-        if record.get("inference_failed").is_some() {
-            progress.error = inference_error(record);
-        }
-    }
-
     fn render_message(
         &mut self,
-        message: &serde_json::Value,
+        message: &swarmy_core::Message,
         json: bool,
         quiet: bool,
         progress: &mut TurnProgress,
@@ -767,58 +754,40 @@ impl Conversation {
 
 /// The tool failure a record reports for the current turn, if any. A later
 /// assistant text reply clears it (see `assistant_reply_text`).
-fn tool_error(record: &serde_json::Value) -> Option<String> {
-    let failure = record
-        .get("tool_call_completed")?
-        .get("result")?
-        .get("error")?;
-    Some(format!(
-        "tool failed: {}",
-        failure
-            .get("error")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown error")
-    ))
+fn tool_error(result: &swarmy_core::ToolResult) -> Option<String> {
+    match result {
+        swarmy_core::ToolResult::Error { error } => Some(format!("tool failed: {error}")),
+        swarmy_core::ToolResult::Completed { .. } => None,
+    }
 }
 
-/// The inference failure a record reports, if the record is an inference
-/// failure. Missing error strings clear a previous error.
-fn inference_error(record: &serde_json::Value) -> Option<String> {
-    let failure = record.get("inference_failed")?;
-    let error = failure.get("error")?.as_str()?;
-    if failure
-        .get("failure_kind")
-        .and_then(serde_json::Value::as_str)
-        == Some("gateway_unserved")
+fn inference_error(error: &str, kind: swarmy_core::FailureKind) -> String {
+    if kind == swarmy_core::FailureKind::GatewayUnserved {
+        format!("{error}; run `swarmy auth set PROVIDER` or start a gateway that serves it")
+    } else {
+        error.to_owned()
+    }
+}
+
+fn assistant_reply_text(message: &swarmy_core::Message) -> Option<String> {
+    if message.role != swarmy_core::MessageRole::Assistant
+        || message
+            .parts
+            .iter()
+            .any(|part| matches!(part, swarmy_core::Part::ToolCall { .. }))
     {
-        return Some(format!(
-            "{error}; run `swarmy auth set PROVIDER` or start a gateway that serves it"
-        ));
-    }
-    Some(error.to_owned())
-}
-
-/// The text of an assistant message that finishes a text turn: a non-empty
-/// text reply with no tool call. Tool-call messages do not finish the turn.
-fn assistant_reply_text(message: &serde_json::Value) -> Option<String> {
-    if message.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
         return None;
     }
-    let parts = message.get("parts").and_then(serde_json::Value::as_array)?;
-    if parts.iter().any(|part| part.get("tool_call").is_some()) {
-        return None;
-    }
-    let text = parts
+    let text = message
+        .parts
         .iter()
-        .filter_map(|part| {
-            part.get("text")
-                .and_then(|v| v.get("text"))
-                .and_then(serde_json::Value::as_str)
+        .filter_map(|part| match part {
+            swarmy_core::Part::Text { text } => Some(text.as_str()),
+            _ => None,
         })
         .collect::<String>();
     if text.is_empty() { None } else { Some(text) }
 }
-
 /// The idle-time failure for a turn, if the turn did not succeed.
 fn turn_outcome(progress: &TurnProgress, run: bool) -> Option<String> {
     if let Some(error) = progress.error.as_deref() {
@@ -983,26 +952,22 @@ mod tests {
 
     #[test]
     fn gateway_unserved_failure_gives_cli_advice() {
-        let record = serde_json::json!({"inference_failed": {
-            "error": "no gateway serves provider openai",
-            "failure_kind": "gateway_unserved"
-        }});
         assert_eq!(
-            inference_error(&record).as_deref(),
-            Some(
-                "no gateway serves provider openai; run `swarmy auth set PROVIDER` or start a gateway that serves it"
-            )
+            inference_error(
+                "no gateway serves provider openai",
+                swarmy_core::FailureKind::GatewayUnserved
+            ),
+            "no gateway serves provider openai; run `swarmy auth set PROVIDER` or start a gateway that serves it"
         );
     }
 
     #[test]
     fn inference_error_fails_the_turn() {
-        // Ported from the removed store-backed run path: an inference
-        // failure fails the turn with the provider error.
         let progress = TurnProgress {
-            error: inference_error(
-                &serde_json::json!({"inference_failed": {"error": "provider unavailable"}}),
-            ),
+            error: Some(inference_error(
+                "provider unavailable",
+                swarmy_core::FailureKind::Provider,
+            )),
             ..TurnProgress::default()
         };
         assert_eq!(
@@ -1011,17 +976,23 @@ mod tests {
         );
     }
 
+    fn assistant(parts: Vec<swarmy_core::Part>) -> swarmy_core::Message {
+        swarmy_core::Message {
+            id: swarmy_core::MessageId::from_ulid(ulid::Ulid::generate()),
+            role: swarmy_core::MessageRole::Assistant,
+            parts,
+        }
+    }
+
     #[test]
     fn idle_after_assistant_reply_completes_the_turn() {
-        // Ported from the removed store-backed run path: a text reply
-        // without a tool call completes the turn and clears a prior error.
         let mut progress = TurnProgress {
             error: Some("provider unavailable".into()),
             ..TurnProgress::default()
         };
-        let text = assistant_reply_text(
-            &serde_json::json!({"role": "assistant", "parts": [{"text": {"text": "ready"}}]}),
-        );
+        let text = assistant_reply_text(&assistant(vec![swarmy_core::Part::Text {
+            text: "ready".into(),
+        }]));
         assert_eq!(text.as_deref(), Some("ready"));
         progress.reply = true;
         progress.error = None;
@@ -1030,21 +1001,20 @@ mod tests {
 
     #[test]
     fn tool_call_message_does_not_finish_the_turn() {
-        // Tool-call assistant messages do not finish a text turn.
-        let text = assistant_reply_text(
-            &serde_json::json!({"role": "assistant", "parts": [{"tool_call": {"id": "1"}}]}),
-        );
+        let text = assistant_reply_text(&assistant(vec![swarmy_core::Part::ToolCall {
+            call_id: swarmy_core::ToolCallId("1".into()),
+            tool: "bash".into(),
+            input: serde_json::json!({}),
+        }]));
         assert_eq!(text, None);
     }
 
     #[test]
     fn tool_error_without_followup_reply_fails_the_turn() {
-        // Ported from the removed store-backed run path: a tool error with
-        // no follow-up reply fails the turn.
         let progress = TurnProgress {
-            error: tool_error(
-                &serde_json::json!({"tool_call_completed": {"result": {"error": {"error": "timeout"}}}}),
-            ),
+            error: tool_error(&swarmy_core::ToolResult::Error {
+                error: "timeout".into(),
+            }),
             ..TurnProgress::default()
         };
         assert_eq!(
