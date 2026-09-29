@@ -509,11 +509,9 @@ mod retry_tests {
     /// live publishes reach NATS.
     async fn stream_test_gateway() -> Option<Gateway> {
         use foundationdb::{Database, tuple::Subspace};
-        use std::sync::OnceLock;
-        static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
         let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
         let nats_url = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-        NETWORK.get_or_init(swarmy_store::boot);
+        crate::test_network();
         let store = Store::with_subspace(
             Arc::new(Database::new(Some(&cluster)).unwrap()),
             Subspace::all().subspace(&("gateway-stream-tests", ulid::Ulid::generate().to_string())),

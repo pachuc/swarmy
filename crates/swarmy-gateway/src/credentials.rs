@@ -219,7 +219,7 @@ mod tests {
     use std::{
         collections::BTreeMap,
         sync::{
-            Arc, OnceLock,
+            Arc,
             atomic::{AtomicUsize, Ordering},
         },
     };
@@ -235,9 +235,8 @@ mod tests {
     };
 
     fn test_store() -> Option<Store> {
-        static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
         let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        NETWORK.get_or_init(swarmy_store::boot);
+        crate::test_network();
         Some(Store::with_subspace(
             Arc::new(Database::new(Some(&cluster)).unwrap()),
             Subspace::all().subspace(&("gateway-login-tests", ulid::Ulid::generate().to_string())),
