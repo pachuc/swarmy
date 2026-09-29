@@ -68,6 +68,12 @@ if [[ $port_was_free == true ]]; then
     "$default_stack" start
     [[ $(cat "$test_dir/default/.dev/fdb.cluster") == 'dev:dev@127.0.0.1:4500' ]]
     "$default_stack" stop
+    # The stopped server releases its port asynchronously; wait for 4500 to
+    # be free before the dummy listener below occupies it.
+    for ((attempt = 0; attempt < 50; attempt++)); do
+        if ! (exec 3<>/dev/tcp/127.0.0.1/4500) 2>/dev/null; then break; fi
+        sleep 0.1
+    done
     python3 -c 'import socket, sys, time; s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", 4500)); s.listen(); open(sys.argv[1], "w").close(); time.sleep(600)' "$test_dir/dummy-ready" &
     dummy_pid=$!
     for ((attempt = 0; attempt < 50; attempt++)); do
