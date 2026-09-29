@@ -65,6 +65,7 @@ pub(crate) fn is_context_overflow(message: &str) -> bool {
         "exceeds the available context size",
         "greater than the context length",
         "maximum allowed input length",
+        "input token count exceeds the maximum",
     ]
     .iter()
     .any(|phrase| message.contains(phrase))
@@ -82,7 +83,7 @@ pub(crate) fn classify_http_failure(
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
         return Error::Authentication(body.to_owned());
     }
-    if status == StatusCode::BAD_REQUEST {
+    if status == StatusCode::BAD_REQUEST || status == StatusCode::NOT_FOUND {
         return Error::BadRequest(body.to_owned());
     }
     if crate::retry::retryable(status) {

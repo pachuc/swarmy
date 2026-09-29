@@ -661,7 +661,9 @@ mod wire {
             if self.completed {
                 Ok(())
             } else {
-                Err(Error::Protocol("stream closed before completion".into()))
+                Err(Error::MalformedStream(
+                    "stream closed before completion".into(),
+                ))
             }
         }
 
@@ -762,7 +764,7 @@ mod wire {
         fn complete_event(&mut self, event: &Value, deltas: &mut Vec<Delta>) -> Result<(), Error> {
             let response = &event["response"];
             if !response.is_object() {
-                return Err(Error::Protocol("missing completed response".into()));
+                return Err(Error::MalformedStream("missing completed response".into()));
             }
             if response["status"] == "failed" {
                 return Err(crate::error::response_event_error(&response["error"]));

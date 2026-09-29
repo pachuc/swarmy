@@ -446,7 +446,9 @@ impl CompletionsStream {
         if let Ok(value) = serde_json::from_slice::<Value>(self.framing.pending_line()) {
             return Err(error_from_json(&value));
         }
-        Err(Error::Protocol("stream closed before completion".into()))
+        Err(Error::MalformedStream(
+            "stream closed before completion".into(),
+        ))
     }
 
     fn event(&mut self, event: &Value, deltas: &mut Vec<Delta>) -> Result<(), Error> {
@@ -584,7 +586,7 @@ impl CompletionsStream {
         let stop_reason = self
             .stop_reason
             .clone()
-            .ok_or_else(|| Error::Protocol("stream ended without finish_reason".into()))?;
+            .ok_or_else(|| Error::MalformedStream("stream ended without finish_reason".into()))?;
         let mut parts = Vec::new();
         for output in &self.output {
             parts.push(match output {
@@ -599,7 +601,7 @@ impl CompletionsStream {
                 },
                 Output::Tool(tool) => {
                     if tool.id.is_empty() || tool.name.is_empty() {
-                        return Err(Error::Protocol("incomplete tool call".into()));
+                        return Err(Error::MalformedStream("incomplete tool call".into()));
                     }
                     Part::ToolCall {
                         call_id: ToolCallId(tool.id.clone()),

@@ -491,9 +491,9 @@ impl StreamState {
     }
 
     fn finish(self, provider: &str, model: &str) -> Result<Response, Error> {
-        let reason = self
-            .reason
-            .ok_or_else(|| Error::Protocol("Gemini stream closed before finishReason".into()))?;
+        let reason = self.reason.ok_or_else(|| {
+            Error::MalformedStream("Gemini stream closed before finishReason".into())
+        })?;
         let calls = self.parts.iter().any(|p| p.get("functionCall").is_some());
         let stop_reason = match reason.as_str() {
             "STOP" if calls => StopReason::ToolCalls,

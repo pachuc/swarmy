@@ -150,6 +150,7 @@ pub(crate) fn anthropic_resets(headers: &reqwest::header::HeaderMap) -> BTreeMap
         .collect()
 }
 
+#[cfg(test)]
 /// Remaining requests, matching headers whose name mentions requests.
 #[must_use]
 pub(crate) fn requests_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
@@ -160,6 +161,7 @@ pub(crate) fn requests_remaining(remaining: &BTreeMap<String, u64>) -> Option<u6
         .min()
 }
 
+#[cfg(test)]
 /// Remaining tokens, matching headers whose name mentions tokens.
 #[must_use]
 pub(crate) fn tokens_remaining(remaining: &BTreeMap<String, u64>) -> Option<u64> {
