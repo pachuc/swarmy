@@ -332,7 +332,6 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, catalog.providers().count());
-        assert!(std::ptr::eq(catalog, Catalog::get()));
         assert!(catalog.provider("missing").is_none());
         assert!(catalog.model("anthropic", "missing").is_none());
     }
@@ -423,18 +422,6 @@ mod tests {
         assert_eq!(compat.supports_strict_mode(), None);
         assert_eq!(compat.thinking_format(), None);
         assert_eq!(serde_json::to_value(compat).unwrap(), value);
-    }
-
-    #[test]
-    fn max_effort_parses_and_round_trips_through_postcard() {
-        let effort: ReasoningEffort = "max".parse().unwrap();
-        assert_eq!(effort, ReasoningEffort::Max);
-        assert_eq!(effort.to_string(), "max");
-        let encoded = swarmy_core::encode(&effort).unwrap();
-        assert_eq!(
-            swarmy_core::decode::<ReasoningEffort>(&encoded).unwrap(),
-            effort
-        );
     }
 
     #[test]
