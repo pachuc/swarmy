@@ -218,6 +218,19 @@ pub(crate) fn requirements(value: swarmy_core::SandboxRequirements) -> api::Sand
     }
 }
 
+/// One image header behind both the build response and `image show`, so the
+/// root hash has one wire shape (hex) everywhere. Both paths convert the
+/// stored manifest through this function instead of serializing the manifest
+/// directly, which would leak the hash as a 32-number array.
+#[must_use]
+pub(crate) fn image_header(value: &swarmy_core::ManifestHeader) -> api::ImageHeader {
+    api::ImageHeader {
+        size: value.size,
+        chunk_size: value.chunk_size,
+        root_hash: value.root_hash.to_string(),
+    }
+}
+
 #[must_use]
 pub(crate) fn scratch_view(value: &store::ScratchRecord) -> api::ScratchView {
     api::ScratchView {
@@ -845,5 +858,54 @@ mod tests {
         let latency = converted.latencies["append_to_idle"].clone();
         assert!((latency.p50_ms - 1.5).abs() < f64::EPSILON);
         assert!((latency.p95_ms - 2.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn image_header_uses_one_hex_shape_on_both_paths() {
+        // `image build` and `image show` convert the stored manifest through
+        // this one function: the root hash must read as hex in both
+        // responses, never as the manifest's 32-number array.
+        let manifest = swarmy_core::ManifestHeader {
+            size: 1 << 20,
+            chunk_size: 262_144,
+            root_hash: swarmy_core::ContentHash([
+                0x3e, 0x83, 0xe1, 0xfa, 0x8c, 0x0f, 0x7c, 0x9d, 0x3e, 0x4b, 0x5a, 0x69, 0x78, 0x87,
+                0x76, 0x65, 0x54, 0x43, 0x32, 0x21, 0x10, 0x0f, 0xfe, 0xee, 0xed, 0xdc, 0xcb, 0xba,
+                0xa9, 0x98, 0x87, 0x76,
+            ]),
+        };
+        let wire = serde_json::to_value(image_header(&manifest)).expect("header serializes");
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "size": 1 << 20,
+                "chunk_size": 262_144,
+                "root_hash": "3e83e1fa8c0f7c9d3e4b5a697887766554433221100ffeeeeddccbbaa9988776",
+            })
+        );
+        // The build response embeds the same typed header `image show`
+        // carries, so the two JSON shapes compare equal.
+        let upload = api::ImageUpload {
+            name: "base".into(),
+            tag: "dev".into(),
+            manifest_id: "m".into(),
+            header: image_header(&manifest),
+            size: manifest.size,
+            chunks_total: 1,
+            chunks_stored: 1,
+            chunks_uploaded: 0,
+        };
+        let shown = api::Image {
+            id: "m".into(),
+            name: "base".into(),
+            tag: "dev".into(),
+            header: Some(image_header(&manifest)),
+            scratch: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&upload.header).expect("upload header serializes"),
+            serde_json::to_value(shown.header.as_ref().expect("show carries a header"))
+                .expect("show header serializes"),
+        );
     }
 }

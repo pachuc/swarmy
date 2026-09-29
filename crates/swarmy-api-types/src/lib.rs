@@ -614,13 +614,15 @@ pub struct GcRun {
     pub duration_ms: u64,
 }
 
-/// A published image with its chunk statistics.
+/// A published image with its chunk statistics. The header shares the
+/// `ImageHeader` shape with `image show`, so the root hash reads the same
+/// hex string in both responses.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ImageUpload {
     pub name: String,
     pub tag: String,
     pub manifest_id: String,
-    pub header: serde_json::Value,
+    pub header: ImageHeader,
     pub size: u64,
     pub chunks_total: u64,
     pub chunks_stored: u64,
@@ -1582,7 +1584,7 @@ mod tests {
         check!(StartGcRun, {"idempotency_key":"k","dry_run":true});
         check!(StartGcRun, {"idempotency_key":"k","dry_run":true,"grace_seconds":1});
         check!(GcRun, {"run_id":"r","started_at":"2026-09-23T12:00:00Z","dry_run":true,"finished":true,"error":null,"manifests":1,"scanned":2,"candidates":3,"candidate_bytes":4,"deleted":5,"bytes_freed":6,"duration_ms":7});
-        check!(ImageUpload, {"name":"base","tag":"dev","manifest_id":"m","header":{},"size":8,"chunks_total":1,"chunks_stored":1,"chunks_uploaded":0});
+        check!(ImageUpload, {"name":"base","tag":"dev","manifest_id":"m","header":{"size":8,"chunk_size":1024,"root_hash":"3e83e1fa8c0f7c9d3e4b5a697887766554433221100ffeeeeddccbbaa9988776655"},"size":8,"chunks_total":1,"chunks_stored":1,"chunks_uploaded":0});
         check!(CreateCredential, {"idempotency_key":"k","provider":"openai","kind":"api_key","label":"primary","secret":"input-only"});
         check!(CredentialDeleted, {"deleted":true});
         check!(ProbeModel, {"provider":"openai","model":"gpt-5","effort":"high"});

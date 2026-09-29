@@ -3664,7 +3664,7 @@
       },
       "ImageUpload": {
         "type": "object",
-        "description": "A published image with its chunk statistics.",
+        "description": "A published image with its chunk statistics. The header shares the\n`ImageHeader` shape with `image show`, so the root hash reads the same\nhex string in both responses.",
         "required": [
           "name",
           "tag",
@@ -3691,7 +3691,9 @@
             "format": "int64",
             "minimum": 0
           },
-          "header": {},
+          "header": {
+            "$ref": "#/components/schemas/ImageHeader"
+          },
           "manifest_id": {
             "type": "string"
           },

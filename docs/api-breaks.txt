@@ -95,6 +95,11 @@ GET /v1/models/{provider}/{model} removed the required property `provider_id` fr
 # catalog map whose removal is recorded above. Availability is a doctor
 # concern and credentials are listed under /v1/credentials.
 GET /v1/providers removed the required property `items/status` from the response with the `200` status
+# 2026-09-29: One image header shape everywhere. The build response embedded
+# the stored manifest, leaking the root hash as a 32-number array, while
+# `image show` printed hex. Both now share the typed `ImageHeader` with a
+# hex root hash; the CLI is the only reader and was updated in lockstep.
+POST /v1/images/uploads changes header/root_hash from an array to a hex string
 
 # 2026-09-29: Session archived flag removed. Readers derive it from next_session being present; the field duplicated the successor link.
 GET /v1/sessions removes archived from response properties

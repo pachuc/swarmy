@@ -783,11 +783,7 @@ async fn show_image(
         id: manifest.to_string(),
         name,
         tag,
-        header: Some(api::ImageHeader {
-            size: header.size,
-            chunk_size: header.chunk_size,
-            root_hash: header.root_hash.to_string(),
-        }),
+        header: Some(views::image_header(&header)),
         scratch: Some(scratch),
     }))
 }
