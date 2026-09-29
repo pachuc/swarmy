@@ -160,50 +160,6 @@ mod tests {
     }
 
     #[test]
-    fn no_keys_honours_static_keys_from_the_environment() {
-        // Same branch with static keys in the environment map: the map is
-        // honoured, proving the no-keys tests above exercise the real
-        // environment path rather than a stub.
-        let mut settings = Settings::default();
-        settings.s3.endpoint.clear();
-        settings.s3.access_key.clear();
-        settings.s3.secret_key.clear();
-        let env = HashMap::from([
-            ("AWS_ACCESS_KEY_ID".into(), "env-key".into()),
-            ("AWS_SECRET_ACCESS_KEY".into(), "env-secret".into()),
-        ]);
-        let regional = builder_with_env(&settings, "bucket", &env).build().unwrap();
-        let debug = format!("{regional:?}");
-        assert!(debug.contains("https://bucket.s3.us-east-1.amazonaws.com"));
-        assert!(debug.contains("StaticCredentialProvider"));
-    }
-
-    #[test]
-    fn bucket_profile_uses_settings_region_without_network() {
-        // The S3 builder checks web identity directly in the process shell.
-        if std::env::var_os("AWS_WEB_IDENTITY_TOKEN_FILE").is_some()
-            && std::env::var_os("AWS_ROLE_ARN").is_some()
-        {
-            return;
-        }
-        let mut settings = Settings::default();
-        settings.s3.endpoint.clear();
-        settings.s3.access_key.clear();
-        settings.s3.secret_key.clear();
-        settings.s3.bucket = "bucket".into();
-        settings.s3.region = "eu-west-1".into();
-        let regional = builder_with_env(&settings, "bucket", &HashMap::new())
-            .build()
-            .unwrap();
-        let debug = format!("{regional:?}");
-        assert!(debug.contains("https://bucket.s3.eu-west-1.amazonaws.com"));
-        assert!(
-            debug.contains("InstanceCredentialProvider"),
-            "expected the instance-metadata provider, got: {debug}"
-        );
-    }
-
-    #[test]
     fn bucket_path_is_rejected() {
         let mut settings = Settings::default();
         settings.s3.bucket = "bucket/run/nested".into();

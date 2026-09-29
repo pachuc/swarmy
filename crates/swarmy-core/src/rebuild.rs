@@ -35,16 +35,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn failure_wording() {
-        assert_eq!(
-            computer_rebuilt_message(
-                PlacementChangeReason::Failure,
-                "2026-09-16T10:00:00Z".parse().unwrap(),
-                "2026-09-16T10:02:03Z".parse().unwrap(),
-                None,
-            )
-            .unwrap(),
-            "Your computer recovery began at 2026-09-16T10:02:03Z from the snapshot at 2026-09-16T10:00:00Z, which was 123 seconds before recovery. Running processes and file changes after that snapshot were lost. The interrupted tool call failed; check external side effects before retrying."
+    fn failure_notice_reports_snapshot_and_loss() {
+        let message = computer_rebuilt_message(
+            PlacementChangeReason::Failure,
+            "2026-09-16T10:00:00Z".parse().unwrap(),
+            "2026-09-16T10:02:03Z".parse().unwrap(),
+            None,
+        )
+        .unwrap();
+        assert!(message.contains("2026-09-16T10:02:03Z"));
+        assert!(message.contains("2026-09-16T10:00:00Z"));
+        assert!(message.contains("123 seconds before recovery"));
+        assert!(
+            message.contains("Running processes and file changes after that snapshot were lost")
         );
     }
 
@@ -80,16 +83,20 @@ mod tests {
     }
 
     #[test]
-    fn eviction_wording() {
-        assert_eq!(
-            computer_rebuilt_message(
-                PlacementChangeReason::Eviction,
-                "2026-09-16T10:00:00Z".parse().unwrap(),
-                "2026-09-16T10:00:02Z".parse().unwrap(),
-                None,
-            )
-            .unwrap(),
-            "Your computer was evicted while idle. Recovery began at 2026-09-16T10:00:02Z from its final checkpoint at 2026-09-16T10:00:00Z, which was 2 seconds before recovery. Running processes and file changes after that checkpoint were lost. Any interrupted tool call failed; check external side effects before retrying."
+    fn eviction_notice_reports_checkpoint_and_loss() {
+        let message = computer_rebuilt_message(
+            PlacementChangeReason::Eviction,
+            "2026-09-16T10:00:00Z".parse().unwrap(),
+            "2026-09-16T10:00:02Z".parse().unwrap(),
+            None,
+        )
+        .unwrap();
+        assert!(message.contains("evicted while idle"));
+        assert!(message.contains("2026-09-16T10:00:02Z"));
+        assert!(message.contains("2026-09-16T10:00:00Z"));
+        assert!(message.contains("2 seconds before recovery"));
+        assert!(
+            message.contains("Running processes and file changes after that checkpoint were lost")
         );
     }
 

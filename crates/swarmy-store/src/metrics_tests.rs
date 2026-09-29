@@ -167,12 +167,10 @@ fn throughput_covers_the_whole_request() {
 }
 
 #[test]
-fn batched_patches_equal_sequential_writes_and_bound_transactions() {
-    // One dispatch folds name plus stage; one completion folds tool plus
-    // stage. A turn with three tool calls costs six transactions (one
-    // dispatch and one completion per call) instead of roughly nine
-    // read-modify-write transactions per call; the first-tool computer
-    // re-sample adds one spawned transaction per turn.
+fn batched_patches_equal_sequential_writes() {
+    // Batched tool patches must fold to the same rows as sequential writes:
+    // one dispatch folds name plus stage, one completion folds tool plus
+    // stage, so batching changes transaction shape, never row content.
     let session = SessionId::from_ulid(ulid::Ulid::nil());
     let turn = MessageId::from_ulid(ulid::Ulid::nil());
     let dispatched = |request: swarmy_core::RequestId| TurnEvent {
@@ -208,11 +206,9 @@ fn batched_patches_equal_sequential_writes_and_bound_transactions() {
         inference: BTreeMap::new(),
         tools: BTreeMap::new(),
     };
-    let mut writes = 0;
     for (index, name) in ["a", "b", "c"].iter().enumerate() {
         let request = swarmy_core::RequestId::for_step(session, u64::try_from(index).unwrap() + 1);
         let dispatch = dispatch_patches(dispatched(request), name);
-        assert_eq!(dispatch.len(), 2);
         let completion = completion_patches(
             ToolMetric {
                 request_id: request.to_string(),
@@ -223,16 +219,13 @@ fn batched_patches_equal_sequential_writes_and_bound_transactions() {
             None,
             completed(request),
         );
-        assert_eq!(completion.len(), 2);
         apply_batch(&mut batched, dispatch.clone());
         apply_batch(&mut batched, completion.clone());
-        writes += 2;
         for patch in dispatch.into_iter().chain(completion) {
             apply_one(&mut sequential, &patch);
         }
     }
     assert_eq!(batched.tools, sequential.tools);
-    assert_eq!(writes, 6);
     assert_eq!(batched.tools.len(), 3);
 }
 

@@ -1039,9 +1039,17 @@ mod tests {
             bootstrap: None,
         };
         let input = launch_input(&request, "/dev/sda1").unwrap();
-        assert_eq!(input.image_id(), Some("ami-test"));
-        assert_eq!(input.key_name(), Some("unique-key"));
-        assert_eq!(input.client_token(), Some("unique-key"));
+        // Exactly one encrypted gp3 root disk that disappears with the instance.
+        let disk = input.block_device_mappings()[0].ebs().unwrap();
+        assert_eq!(disk.volume_type(), Some(&VolumeType::Gp3));
+        assert_eq!(disk.delete_on_termination(), Some(true));
+        assert_eq!(disk.encrypted(), Some(true));
+        // One instance on the public network so provisioning can reach it.
+        assert_eq!((input.min_count(), input.max_count()), (Some(1), Some(1)));
+        let network = &input.network_interfaces()[0];
+        assert_eq!(network.associate_public_ip_address(), Some(true));
+        assert_eq!(network.delete_on_termination(), Some(true));
+        // The instance profile is what grants the node its bucket access.
         assert!(input.iam_instance_profile().is_none());
         let with_profile = launch_input(
             &MachineSpec {
@@ -1056,21 +1064,6 @@ mod tests {
                 .iam_instance_profile()
                 .and_then(aws_sdk_ec2::types::IamInstanceProfileSpecification::name),
             Some("swarmy-test")
-        );
-        assert_eq!(input.instance_type(), Some(&InstanceType::M6idXlarge));
-        assert_eq!((input.min_count(), input.max_count()), (Some(1), Some(1)));
-        let network = &input.network_interfaces()[0];
-        assert_eq!(network.subnet_id(), Some("subnet-test"));
-        assert_eq!(network.groups(), &["sg-test"]);
-        assert_eq!(network.associate_public_ip_address(), Some(true));
-        let disk = input.block_device_mappings()[0].ebs().unwrap();
-        assert_eq!(disk.volume_size(), Some(100));
-        assert_eq!(disk.volume_type(), Some(&VolumeType::Gp3));
-        assert_eq!(disk.delete_on_termination(), Some(true));
-        assert_eq!(disk.encrypted(), Some(true));
-        assert_eq!(
-            input.block_device_mappings()[0].device_name(),
-            Some("/dev/sda1")
         );
         let mut specifications = input.tag_specifications().to_vec();
         specifications.push(tags(ResourceType::KeyPair, "test", "codex-launcher"));

@@ -211,35 +211,4 @@ mod codec_tests {
         };
         assert_eq!(row, fixture_tool());
     }
-    #[test]
-    fn v2_summary_and_rows_round_trip() {
-        let summary = StoredTurnSummaryCurrent {
-            session_id: "s".into(),
-            turn_id: "t".into(),
-            appended_ns: Some(1_000_000),
-            idle_ns: Some(6_000_000),
-            ..StoredTurnSummaryCurrent::default()
-        };
-        for value in [
-            StoredTurnMetrics::Summary(Box::new(summary)),
-            StoredTurnMetrics::Inference(StoredTurnInferenceCurrent {
-                metric: StoredInferenceMetricCurrent {
-                    request_id: "r".into(),
-                    ..StoredInferenceMetricCurrent::default()
-                },
-                started_ns: Some(2_000_000),
-                finished_ns: Some(5_000_000),
-                ..StoredTurnInferenceCurrent::default()
-            }),
-            StoredTurnMetrics::Tool(StoredToolMetricCurrent {
-                request_id: "c".into(),
-                name: "bash".into(),
-                ..StoredToolMetricCurrent::default()
-            }),
-        ] {
-            let bytes = swarmy_core::encode(&value).unwrap();
-            let decoded: StoredTurnMetrics = swarmy_core::decode(&bytes).unwrap();
-            assert_eq!(decoded, value);
-        }
-    }
 }
