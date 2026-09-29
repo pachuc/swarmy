@@ -377,7 +377,7 @@ impl RuncRuntime {
             os::unix::fs::MetadataExt,
         };
         let _running = self.running(agent).await?;
-        let relative = std::path::Path::new(directory)
+        let relative = Path::new(directory)
             .strip_prefix("/")
             .map_err(|_| Error::State)?;
         if relative

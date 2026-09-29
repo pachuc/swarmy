@@ -655,7 +655,7 @@ async fn populate_agent_detail(
     let snapshot = volume
         .as_ref()
         .map(|value| {
-            jiff::Timestamp::from_millisecond(
+            Timestamp::from_millisecond(
                 i64::try_from(value.head_manifest.as_ulid().timestamp_ms()).unwrap_or(i64::MAX),
             )
         })
@@ -663,7 +663,7 @@ async fn populate_agent_detail(
         .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "snapshot_timestamp"))?;
     view.last_snapshot_at = snapshot.map(|at| at.to_string());
     view.last_snapshot_age_seconds =
-        snapshot.map(|at| jiff::Timestamp::now().duration_since(at).as_secs().max(0));
+        snapshot.map(|at| Timestamp::now().duration_since(at).as_secs().max(0));
     let status = state
         .store
         .agent_call_status(agent_id)
