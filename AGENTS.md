@@ -234,6 +234,47 @@ satisfies it rather than silencing it. `unsafe_code` is denied
 workspace-wide; the one place that needs it opts in on a single function with
 a SAFETY comment.
 
+### Enforced by tools
+
+The authoritative list of mechanical checks; REVIEWER.md does not repeat it.
+The workspace lint table lives in the root `Cargo.toml` `[workspace.lints]`
+(every crate sets `[lints] workspace = true`); numeric thresholds and
+test-only exemptions live in the root `clippy.toml`. Run them locally with:
+
+```sh
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
+cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
+cargo clippy --locked -p swarmy-llm --no-default-features --all-targets -- -D warnings
+```
+
+- `clippy::allow_attributes_without_reason`: every `allow` carries a
+  `reason = "..."`. Prefer `#[expect(lint, reason = "...")]` so the build
+  fails if the exception goes stale; `#[allow(lint, reason = "...")]` stays
+  legal only where the lint fires under some feature combinations and not
+  others.
+- `unreachable_pub`: no `pub` wider than its crate (or parent module) can
+  reach. Binaries and private modules use `pub(crate)` or `pub(super)`.
+- `unused_qualifications`: paths use the shortest form their imports allow.
+  Fix mechanically with the compiler suggestion.
+- `clippy::todo`, `clippy::unimplemented`, `clippy::dbg_macro`: none of
+  these land in the tree.
+- `unsafe_code` (rustc): denied workspace-wide; the kernel and
+  FoundationDB boundaries opt out per function with a reason and a SAFETY
+  comment.
+
+Deliberately not enforced: `unwrap_used`, `print_stdout`, and
+`print_stderr`. `allow-unwrap-in-tests` covers only `#[cfg(test)]` code, so
+denying `unwrap_used` would need a per-file exception in each of the 65
+integration-test files that idiomatically panic on failure; the print denies
+would need one in each of the 21 test and 6 example files that log skip
+diagnostics and progress, plus the same boilerplate in every new test file.
+The production sites those lints reported were fixed directly instead
+(`expect` with an invariant message, no prints in libraries). A path-scoped
+check (for example ast-grep over non-test sources) could enforce the
+production half with no exceptions; until one exists the reviewer checks new
+production code by hand.
+
 ### Lint exceptions
 
 The bar for an exception is high. An exception is acceptable only when all of
