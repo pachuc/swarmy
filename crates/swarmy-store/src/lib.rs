@@ -462,6 +462,10 @@ impl Store {
         self
     }
 
+    pub(crate) fn keys(&self) -> crate::keys::Keys<'_> {
+        crate::keys::Keys::new(&self.root)
+    }
+
     pub(crate) fn now(&self) -> jiff::Timestamp {
         (self.clock)()
     }
@@ -521,6 +525,38 @@ impl Store {
         })
     }
 
+    /// Read every row in `range` across one transaction per page, paging by
+    /// the last key. Callers that must cross transaction boundaries use this
+    /// instead of copying the per-page `transaction` then `push(0)` loop.
+    pub(crate) async fn scan_all_pages(
+        &self,
+        begin: Vec<u8>,
+        end: Vec<u8>,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        let mut cursor: Option<Vec<u8>> = None;
+        let mut out = Vec::new();
+        loop {
+            let page = self
+                .transaction(|trx| {
+                    let (begin, end) = (begin.clone(), end.clone());
+                    let cursor = cursor.clone();
+                    async move {
+                        let start = cursor.unwrap_or(begin);
+                        scan(&trx, (start, end), MAX_SCAN_LIMIT).await
+                    }
+                })
+                .await?;
+            let full = page.len() == MAX_SCAN_LIMIT;
+            let next = page.last().map(|(key, _)| next_cursor(key));
+            out.extend(page);
+            if !full {
+                break;
+            }
+            cursor = next;
+        }
+        Ok(out)
+    }
+
     /// Persist binary tool content without adding it to the session event log.
     ///
     /// # Errors
@@ -557,7 +593,7 @@ impl Store {
     }
 
     fn session_chunk_key(&self, id: SessionId, index: u16) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_chunk(id, index)
+        self.keys().session_chunk(id, index)
     }
 
     async fn decode_session_in(&self, trx: &Transaction, bytes: &[u8]) -> Result<StoredSession> {
@@ -643,9 +679,7 @@ impl Store {
         if bytes.len() > SESSION_MAX_BYTES {
             return Err(StoreError::Storage(crate::StorageError::TooLarge));
         }
-        let (begin, end) = crate::keys::Keys::new(&self.root)
-            .session_chunk_space(session.session_id)
-            .range();
+        let (begin, end) = self.keys().session_chunk_space(session.session_id).range();
         trx.clear_range(&begin, &end);
         if bytes.len() > INLINE_LIMIT {
             let payload = &bytes[1..];
@@ -769,10 +803,10 @@ impl Store {
         check_limit(limit)?;
         let stored = self
             .transaction(|trx| async move {
-                let (mut begin, end) = crate::keys::Keys::new(&self.root).session_space().range();
+                let (mut begin, end) = self.keys().session_space().range();
                 if let Some(id) = after {
                     begin = self.session_key(id);
-                    begin.push(0);
+                    begin = crate::next_cursor(&begin);
                 }
                 let mut sessions = Vec::new();
                 for (_, value) in scan(&trx, (begin, end), limit).await? {
@@ -868,7 +902,7 @@ impl Store {
         if value.len() > MAX_BATCH_BYTES {
             return Err(StoreError::Storage(crate::StorageError::TooLarge));
         }
-        let replay_key = crate::keys::Keys::new(&self.root).api_append(key);
+        let replay_key = self.keys().api_append(key);
         self.transaction(|trx| {
             let replay_key = &replay_key;
             let value = &value;
@@ -877,12 +911,7 @@ impl Store {
                     return Ok((previous, false));
                 }
                 let mut session = self.session(&trx, id).await?;
-                if session.head_seq != expected_head {
-                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
-                        expected: expected_head,
-                        actual: session.head_seq,
-                    }));
-                }
+                crate::check_head(session.head_seq, expected_head)?;
                 if session.state != SessionState::Idle {
                     return Err(StoreError::Domain(crate::DomainError::SessionNotIdle));
                 }
@@ -932,12 +961,7 @@ impl Store {
                     self.check_worker_lease(&trx, id, lease, now).await?;
                 }
                 let mut session = self.session(&trx, id).await?;
-                if session.head_seq != expected_head {
-                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
-                        expected: expected_head,
-                        actual: session.head_seq,
-                    }));
-                }
+                crate::check_head(session.head_seq, expected_head)?;
                 if wake && session.state != SessionState::Idle {
                     return Err(StoreError::Domain(crate::DomainError::SessionNotIdle));
                 }
@@ -980,7 +1004,7 @@ impl Store {
             .transaction(|trx| async move {
                 let space = self.event_space(id);
                 let mut begin = self.event_key(id, after);
-                begin.push(0);
+                begin = crate::next_cursor(&begin);
                 scan(&trx, (begin, space.range().1), limit).await
             })
             .await?;
@@ -1018,30 +1042,27 @@ impl Store {
     }
 
     fn snapshot_key(&self, id: SessionId, seq: u64) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).snapshot(id, seq)
+        self.keys().snapshot(id, seq)
     }
 
     /// # Errors
     /// Returns storage, blob, or decoding errors.
     pub async fn get_idempotency(&self, id: RequestId) -> Result<Option<IdempotencyRecord>> {
-        self.get_payload(crate::keys::Keys::new(&self.root).idem(id))
-            .await
+        self.get_payload(self.keys().idem(id)).await
     }
 
     /// # Errors
     /// Returns storage or blob upload errors.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn put_inflight(&self, id: RequestId, record: &InflightRecord) -> Result<()> {
-        self.put_payload(crate::keys::Keys::new(&self.root).inflight(id), record)
-            .await
+        self.put_payload(self.keys().inflight(id), record).await
     }
 
     /// # Errors
     /// Returns storage, blob, or decoding errors.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn get_inflight(&self, id: RequestId) -> Result<Option<InflightRecord>> {
-        self.get_payload(crate::keys::Keys::new(&self.root).inflight(id))
-            .await
+        self.get_payload(self.keys().inflight(id)).await
     }
 
     async fn put_payload<T: Serialize>(&self, key: Vec<u8>, value: &T) -> Result<()> {
@@ -1095,6 +1116,22 @@ fn check_limit(limit: usize) -> Result<()> {
     }
 }
 
+pub(crate) fn check_head(actual: u64, expected: u64) -> Result<()> {
+    if actual != expected {
+        return Err(StoreError::Fence(crate::FenceError::StaleSequence {
+            expected,
+            actual,
+        }));
+    }
+    Ok(())
+}
+
+pub(crate) fn next_cursor(key: &[u8]) -> Vec<u8> {
+    let mut next = key.to_vec();
+    next.push(0);
+    next
+}
+
 async fn scan(
     trx: &Transaction,
     range: (Vec<u8>, Vec<u8>),
@@ -1110,6 +1147,28 @@ async fn scan(
         .map_ok(|kv| (kv.key().to_vec(), kv.value().to_vec()))
         .try_collect()
         .await?)
+}
+
+/// Read every row in `range` inside one transaction, paging by the last key.
+/// Callers that fit their scan in one transaction use this instead of copying
+/// the `scan` then `push(0)` loop.
+pub(crate) async fn scan_all(
+    trx: &Transaction,
+    range: (Vec<u8>, Vec<u8>),
+) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    let (mut begin, end) = range;
+    let mut out = Vec::new();
+    loop {
+        let page = scan(trx, (begin.clone(), end.clone()), MAX_SCAN_LIMIT).await?;
+        let full = page.len() == MAX_SCAN_LIMIT;
+        let next = page.last().map(|(key, _)| next_cursor(key));
+        out.extend(page);
+        if !full {
+            break;
+        }
+        begin = next.unwrap_or_else(|| end.clone());
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

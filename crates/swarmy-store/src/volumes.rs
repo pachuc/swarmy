@@ -146,7 +146,7 @@ impl Store {
     }
 
     fn image_display_key(&self, name: &str, tag: &ImageTag, manifest: ManifestId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).image_display(name, tag, manifest)
+        self.keys().image_display(name, tag, manifest)
     }
 
     /// Whether the immutable image exposes a graphical display.
@@ -170,7 +170,7 @@ impl Store {
         tag: &ImageTag,
         manifest: ManifestId,
     ) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).image_memory(name, tag, manifest)
+        self.keys().image_memory(name, tag, manifest)
     }
 
     /// Image default, if its recipe supplied one.
@@ -189,7 +189,7 @@ impl Store {
     }
 
     fn image_scratch_key(&self, name: &str, tag: &ImageTag, manifest: ManifestId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).image_scratch(name, tag, manifest)
+        self.keys().image_scratch(name, tag, manifest)
     }
 
     /// Read mount paths pinned to an image manifest.
@@ -223,11 +223,11 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<ImageRecord>> {
         self.transaction(|trx| async move {
-            let space = crate::keys::Keys::new(&self.root).image_space();
+            let space = self.keys().image_space();
             let (mut begin, end) = space.range();
             if let Some((name, tag)) = after {
                 begin = self.image_key(name, tag);
-                begin.push(0);
+                begin = crate::next_cursor(&begin);
             }
             let mut images = Vec::new();
             for (key, value) in scan(&trx, (begin, end), limit).await? {
@@ -441,11 +441,11 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<(VolumeId, VolumeRecord)>> {
         self.transaction(|trx| async move {
-            let space = crate::keys::Keys::new(&self.root).volume_space();
+            let space = self.keys().volume_space();
             let (mut begin, end) = space.range();
             if let Some(id) = after {
                 begin = self.volume_key(id);
-                begin.push(0);
+                begin = crate::next_cursor(&begin);
             }
             let mut volumes = Vec::new();
             for (key, value) in scan(&trx, (begin, end), limit).await? {
@@ -505,9 +505,9 @@ impl Store {
             let mut live = BTreeSet::new();
             for kind in ["volume", "image", "agent"] {
                 let space = match kind {
-                    "volume" => crate::keys::Keys::new(&self.root).volume_space(),
-                    "image" => crate::keys::Keys::new(&self.root).image_space(),
-                    "agent" => crate::keys::Keys::new(&self.root).agent_space(),
+                    "volume" => self.keys().volume_space(),
+                    "image" => self.keys().image_space(),
+                    "agent" => self.keys().agent_space(),
                     _ => unreachable!("unknown manifest source family"),
                 };
                 let (mut begin, end) = space.range();
@@ -541,7 +541,7 @@ impl Store {
                             }
                         }
                         begin = key;
-                        begin.push(0);
+                        begin = crate::next_cursor(&begin);
                     }
                 }
             }
@@ -557,11 +557,11 @@ impl Store {
     }
 
     pub(crate) fn volume_snapshots_key(&self, id: VolumeId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).volume_snapshots(id)
+        self.keys().volume_snapshots(id)
     }
 
     fn manifest_parent_key(&self, id: ManifestId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).manifest_parent(id)
+        self.keys().manifest_parent(id)
     }
 
     async fn require_manifest(&self, trx: &Transaction, id: ManifestId) -> Result<()> {

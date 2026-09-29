@@ -48,7 +48,7 @@ pub struct ServiceHealth {
 
 impl Store {
     fn service_key(&self, role: &ServiceRole, id: &str) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).service_heartbeat(&format!("{role:?}"), id)
+        self.keys().service_heartbeat(&format!("{role:?}"), id)
     }
 
     /// Refresh an instance's health. Older delayed writes cannot replace newer health.
@@ -88,10 +88,8 @@ impl Store {
                 let mut result = Vec::new();
                 for (space, node) in [("service_heartbeat", false), ("node", true)] {
                     let range = match space {
-                        "service_heartbeat" => crate::keys::Keys::new(&self.root)
-                            .service_heartbeat_space()
-                            .range(),
-                        "node" => crate::keys::Keys::new(&self.root).node_space().range(),
+                        "service_heartbeat" => self.keys().service_heartbeat_space().range(),
+                        "node" => self.keys().node_space().range(),
                         _ => unreachable!("unknown service key family"),
                     };
                     let values: Vec<_> = trx
@@ -148,9 +146,7 @@ impl Store {
             .checked_sub(jiff::Span::new().seconds(SERVICE_EXPIRE_SECONDS))
             .unwrap_or(Timestamp::MIN);
         self.transaction(|trx| async move {
-            let range = crate::keys::Keys::new(&self.root)
-                .service_heartbeat_space()
-                .range();
+            let range = self.keys().service_heartbeat_space().range();
             let values: Vec<_> = trx
                 .get_ranges_keyvalues(RangeOption::from(range), false)
                 .map_ok(|kv| (kv.key().to_vec(), kv.value().to_vec()))

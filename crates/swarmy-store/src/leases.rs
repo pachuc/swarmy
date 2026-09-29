@@ -28,11 +28,11 @@ impl Store {
     }
 
     fn lease_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).lease(id)
+        self.keys().lease(id)
     }
 
     fn expiry_key(&self, id: SessionId, expires: Timestamp) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).lease_by_expiry(expires, id)
+        self.keys().lease_by_expiry(expires, id)
     }
 
     async fn clear_lease(&self, trx: &Transaction, id: SessionId) -> Result<()> {
@@ -108,7 +108,7 @@ impl Store {
                 )?;
                 let space = self.event_space(id);
                 let mut begin = self.event_key(id, session.snapshot_seq.unwrap_or(0));
-                begin.push(0);
+                begin = crate::next_cursor(&begin);
                 let (snapshot, values) = futures::try_join!(
                     self.snapshot_for_session_in(&trx, &session),
                     scan(&trx, (begin, space.range().1), crate::MAX_SCAN_LIMIT),
@@ -271,16 +271,13 @@ impl Store {
     ) -> Result<Vec<(SessionId, Lease)>> {
         check_limit(limit)?;
         self.transaction(|trx| async move {
-            let space = crate::keys::Keys::new(&self.root).lease_by_expiry_space_root();
+            let space = self.keys().lease_by_expiry_space_root();
             let mut begin = space.range().0;
             if let Some((id, lease)) = after {
                 begin = self.expiry_key(*id, lease.expires_at);
-                begin.push(0);
+                begin = crate::next_cursor(&begin);
             }
-            let end = crate::keys::Keys::new(&self.root)
-                .lease_by_expiry_space(now)
-                .range()
-                .1;
+            let end = self.keys().lease_by_expiry_space(now).range().1;
             if begin >= end {
                 return Ok(Vec::new());
             }

@@ -1042,15 +1042,15 @@ fn assemble_turn(
 
 impl Store {
     fn turn_summary_key(&self, session: SessionId, turn: MessageId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).turn_metrics(session, turn)
+        self.keys().turn_metrics(session, turn)
     }
 
     fn turn_inference_key(&self, session: SessionId, turn: MessageId, request_id: &str) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).turn_inference(session, turn, request_id)
+        self.keys().turn_inference(session, turn, request_id)
     }
 
     fn turn_tool_key(&self, session: SessionId, turn: MessageId, call_id: &str) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).turn_tool(session, turn, call_id)
+        self.keys().turn_tool(session, turn, call_id)
     }
 
     /// Merge several independent observations in one read-modify-write
@@ -1231,69 +1231,16 @@ impl Store {
         Vec<StoredTurnInferenceCurrent>,
         Vec<StoredToolMetricCurrent>,
     )> {
-        let (inference_begin, inference_end) = crate::keys::Keys::new(&self.root)
-            .turn_inference_space(session, turn)
-            .range();
-        let (tool_begin, tool_end) = crate::keys::Keys::new(&self.root)
-            .turn_tool_space(session, turn)
-            .range();
+        let (inference_begin, inference_end) =
+            self.keys().turn_inference_space(session, turn).range();
+        let (tool_begin, tool_end) = self.keys().turn_tool_space(session, turn).range();
         let mut inference = Vec::new();
-        let mut after: Option<Vec<u8>> = None;
-        loop {
-            let page = self
-                .transaction(|trx| {
-                    let (mut begin, end) = (inference_begin.clone(), inference_end.clone());
-                    if let Some(cursor) = after.clone() {
-                        begin = cursor;
-                    }
-                    async move { scan(&trx, (begin, end), MAX_SCAN_LIMIT).await }
-                })
-                .await?;
-            let page_len = page.len();
-            if page_len == 0 {
-                break;
-            }
-            let mut next = page.last().map(|(key, _)| {
-                let mut key = key.clone();
-                key.push(0);
-                key
-            });
-            for (_, bytes) in page {
-                inference.push(decode_inference(&bytes)?);
-            }
-            after = next.take();
-            if page_len < MAX_SCAN_LIMIT {
-                break;
-            }
+        for (_, bytes) in self.scan_all_pages(inference_begin, inference_end).await? {
+            inference.push(decode_inference(&bytes)?);
         }
         let mut tools = Vec::new();
-        let mut after: Option<Vec<u8>> = None;
-        loop {
-            let page = self
-                .transaction(|trx| {
-                    let (mut begin, end) = (tool_begin.clone(), tool_end.clone());
-                    if let Some(cursor) = after.clone() {
-                        begin = cursor;
-                    }
-                    async move { scan(&trx, (begin, end), MAX_SCAN_LIMIT).await }
-                })
-                .await?;
-            let page_len = page.len();
-            if page_len == 0 {
-                break;
-            }
-            let mut next = page.last().map(|(key, _)| {
-                let mut key = key.clone();
-                key.push(0);
-                key
-            });
-            for (_, bytes) in page {
-                tools.push(decode_tool(&bytes)?);
-            }
-            after = next.take();
-            if page_len < MAX_SCAN_LIMIT {
-                break;
-            }
+        for (_, bytes) in self.scan_all_pages(tool_begin, tool_end).await? {
+            tools.push(decode_tool(&bytes)?);
         }
         Ok((inference, tools))
     }
@@ -1359,12 +1306,10 @@ impl Store {
     ) -> Result<Vec<TurnMetrics>> {
         let raw = self
             .transaction(|trx| async move {
-                let (mut begin, end) = crate::keys::Keys::new(&self.root)
-                    .turn_metrics_space(session)
-                    .range();
+                let (mut begin, end) = self.keys().turn_metrics_space(session).range();
                 if let Some(turn) = after {
-                    begin = crate::keys::Keys::new(&self.root).turn_metrics(session, turn);
-                    begin.push(0);
+                    begin = self.keys().turn_metrics(session, turn);
+                    begin = crate::next_cursor(&begin);
                 }
                 scan(&trx, (begin, end), limit).await
             })
@@ -1398,22 +1343,14 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<StoredTurnSummaryCurrent>> {
         let mut summaries = Vec::new();
-        let mut end = crate::keys::Keys::new(&self.root)
-            .turn_metrics_space(session)
-            .range()
-            .1;
+        let mut end = self.keys().turn_metrics_space(session).range().1;
         let begin = match since {
             Some(turn) => {
-                let mut key = crate::keys::Keys::new(&self.root).turn_metrics(session, turn);
-                key.push(0);
+                let mut key = self.keys().turn_metrics(session, turn);
+                key = crate::next_cursor(&key);
                 key
             }
-            None => {
-                crate::keys::Keys::new(&self.root)
-                    .turn_metrics_space(session)
-                    .range()
-                    .0
-            }
+            None => self.keys().turn_metrics_space(session).range().0,
         };
         while summaries.len() < limit {
             let take = (limit - summaries.len()).min(MAX_SCAN_LIMIT);

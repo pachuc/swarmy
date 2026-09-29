@@ -203,7 +203,8 @@ impl Store {
         key: &str,
         field: &str,
     ) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).metering_hour_single(dimension, hour, key, field)
+        self.keys()
+            .metering_hour_single(dimension, hour, key, field)
     }
 
     pub(crate) fn metering_bucket_key_combined(
@@ -214,7 +215,7 @@ impl Store {
         entry: &str,
         field: &str,
     ) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root)
+        self.keys()
             .metering_hour_combined(dimension, owner, hour, entry, field)
     }
 
@@ -323,29 +324,7 @@ impl Store {
         begin: Vec<u8>,
         end: Vec<u8>,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        let mut cursor = begin.clone();
-        let mut rows = Vec::new();
-        loop {
-            let batch = self
-                .transaction(|trx| {
-                    let range = (cursor.clone(), end.clone());
-                    async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
-                })
-                .await?;
-            if batch.is_empty() {
-                break;
-            }
-            let full = batch.len() >= crate::MAX_SCAN_LIMIT;
-            for (raw_key, _) in &batch {
-                cursor.clone_from(raw_key);
-                cursor.push(0);
-            }
-            rows.extend(batch);
-            if !full {
-                break;
-            }
-        }
-        Ok(rows)
+        self.scan_all_pages(begin, end).await
     }
 }
 
@@ -530,7 +509,8 @@ impl Store {
         let rows = self.scan_bucket_range(begin, end).await?;
         let mut hours: BTreeMap<i64, BTreeMap<String, u64>> = BTreeMap::new();
         if is_combined(dimension) {
-            let prefix = crate::keys::Keys::new(&self.root)
+            let prefix = self
+                .keys()
                 .metering_hour_space_owner(dimension.as_str(), owner.as_str());
             for (raw_key, value) in &rows {
                 let (hour, row_entry, field): (i64, String, String) = prefix
@@ -544,7 +524,7 @@ impl Store {
                 }
             }
         } else {
-            let prefix = crate::keys::Keys::new(&self.root).metering_hour_space(dimension.as_str());
+            let prefix = self.keys().metering_hour_space(dimension.as_str());
             for (raw_key, value) in &rows {
                 let (hour, row_key, field): (i64, String, String) = prefix
                     .unpack(raw_key)
@@ -611,7 +591,7 @@ impl Store {
         }
         let (begin, end) = self.single_hour_range(dimension, from_hour, to_hour);
         let rows = self.scan_bucket_range(begin, end).await?;
-        let prefix = crate::keys::Keys::new(&self.root).metering_hour_space(dimension.as_str());
+        let prefix = self.keys().metering_hour_space(dimension.as_str());
         // Each (hour, key, field) coordinate holds one atomic counter, so
         // every row in the slice folds exactly once.
         let mut folded: BTreeMap<i64, BTreeMap<String, u64>> = BTreeMap::new();
@@ -657,8 +637,9 @@ impl Store {
         }
         let (begin, end) = self.owner_hour_range(dimension, owner, window);
         let rows = self.scan_bucket_range(begin, end).await?;
-        let prefix =
-            crate::keys::Keys::new(&self.root).metering_hour_space_owner(dimension.as_str(), owner);
+        let prefix = self
+            .keys()
+            .metering_hour_space_owner(dimension.as_str(), owner);
         let mut folded: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
         for (raw_key, value) in &rows {
             let (_hour, entry, field): (i64, String, String) = prefix
@@ -701,9 +682,9 @@ impl Store {
         if limit == 0 {
             return Ok(0);
         }
-        let prefix = crate::keys::Keys::new(&self.root).usage_record_by_time_space();
+        let prefix = self.keys().usage_record_by_time_space();
         let (range_start, _) = prefix.range();
-        let range_end = crate::keys::Keys::new(&self.root).usage_record_by_time_from(cutoff_hour);
+        let range_end = self.keys().usage_record_by_time_from(cutoff_hour);
         let rows = self
             .transaction(|trx| {
                 let range = (range_start.clone(), range_end.clone());
@@ -718,13 +699,11 @@ impl Store {
             let (_, request): (i64, Vec<u8>) = prefix
                 .unpack(index_key)
                 .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-            let record_key = crate::keys::Keys::new(&self.root).usage_record(
-                swarmy_core::RequestId::from_bytes(
-                    request
-                        .try_into()
-                        .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
-                ),
-            );
+            let record_key = self.keys().usage_record(swarmy_core::RequestId::from_bytes(
+                request
+                    .try_into()
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
+            ));
             stale.push(index_key.clone());
             stale.push(record_key);
         }
@@ -751,10 +730,10 @@ impl Store {
         if limit == 0 {
             return Ok(0);
         }
-        let prefix = crate::keys::Keys::new(&self.root).usage_record_by_time_space();
-        let range_start = crate::keys::Keys::new(&self.root).usage_record_by_time_from(cutoff_hour);
+        let prefix = self.keys().usage_record_by_time_space();
+        let range_start = self.keys().usage_record_by_time_from(cutoff_hour);
         let next_hour = cutoff_hour.checked_add(3_600).unwrap_or(cutoff_hour);
-        let range_end = crate::keys::Keys::new(&self.root).usage_record_by_time_from(next_hour);
+        let range_end = self.keys().usage_record_by_time_from(next_hour);
         let rows = self
             .transaction(|trx| {
                 let range = (range_start.clone(), range_end.clone());
@@ -769,13 +748,11 @@ impl Store {
             let (_, request): (i64, Vec<u8>) = prefix
                 .unpack(index_key)
                 .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-            let record_key = crate::keys::Keys::new(&self.root).usage_record(
-                swarmy_core::RequestId::from_bytes(
-                    request
-                        .try_into()
-                        .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
-                ),
-            );
+            let record_key = self.keys().usage_record(swarmy_core::RequestId::from_bytes(
+                request
+                    .try_into()
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
+            ));
             pairs.push((index_key.clone(), record_key));
         }
         let keys: Vec<Vec<u8>> = pairs.iter().map(|(_, key)| key.clone()).collect();

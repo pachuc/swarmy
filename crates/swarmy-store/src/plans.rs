@@ -48,12 +48,7 @@ impl Store {
             async move {
                 self.check_worker_lease(&trx, id, lease, self.now()).await?;
                 let mut session = self.session(&trx, id).await?;
-                if session.head_seq != expected_head {
-                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
-                        expected: expected_head,
-                        actual: session.head_seq,
-                    }));
-                }
+                crate::check_head(session.head_seq, expected_head)?;
                 if let Ok(arguments) = parsed {
                     session.plan.clone_from(&arguments.plan);
                 }

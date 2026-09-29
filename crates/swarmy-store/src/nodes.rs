@@ -3,7 +3,7 @@ use swarmy_core::{NodeId, NodeRecord, decode};
 
 impl Store {
     pub(crate) fn node_key(&self, id: NodeId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).node(id)
+        self.keys().node(id)
     }
 
     /// Register or refresh a node's advertised capacity and heartbeat.
@@ -44,10 +44,10 @@ impl Store {
     ) -> Result<(Vec<NodeRecord>, Option<NodeId>)> {
         check_limit(limit)?;
         self.transaction(|trx| async move {
-            let (mut begin, end) = crate::keys::Keys::new(&self.root).node_space().range();
+            let (mut begin, end) = self.keys().node_space().range();
             if let Some(id) = after {
                 begin = self.node_key(id);
-                begin.push(0);
+                begin = crate::next_cursor(&begin);
             }
             let mut live = Vec::new();
             let mut cursor = None;

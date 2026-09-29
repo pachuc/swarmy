@@ -16,7 +16,7 @@ use swarmy_core::{
 
 #[cfg(any(test, feature = "test-support"))]
 use crate::{BreakerCandidate, CredentialKey, inference_wait::Breaker};
-use crate::{Result, Store, StoreError, read, scan, write};
+use crate::{Result, Store, StoreError, read, scan, scan_all, write};
 use foundationdb::RetryableTransaction;
 
 /// No secrets are returned by list operations. Each encrypted value is read once.
@@ -146,8 +146,7 @@ impl Store {
         scope: CredentialScope,
         provider: &str,
     ) -> Result<Vec<String>> {
-        let space =
-            crate::keys::Keys::new(&self.root).credential_entry_space_provider(scope, provider);
+        let space = self.keys().credential_entry_space_provider(scope, provider);
         let (begin, end) = space.range();
         let rows = self
             .transaction(|trx| {
@@ -183,25 +182,15 @@ impl Store {
         now: Timestamp,
     ) -> Result<Vec<BreakerCandidate>> {
         self.transaction(|trx| async move {
-            let space =
-                crate::keys::Keys::new(&self.root).credential_entry_space_provider(scope, provider);
-            let (mut begin, end) = space.range();
+            let space = self.keys().credential_entry_space_provider(scope, provider);
+            let range = space.range();
             let mut entries: Vec<(String, bool)> = Vec::new();
-            loop {
-                let rows = scan(&trx, (begin.clone(), end.clone()), crate::MAX_SCAN_LIMIT).await?;
-                let complete = rows.len() < crate::MAX_SCAN_LIMIT;
-                for (key, value) in rows {
-                    let (label,): (String,) = space
-                        .unpack(&key)
-                        .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-                    let entry = decode_entry(&value)?;
-                    entries.push((label, entry_ready(entry.needs_login, entry.expires_at, now)));
-                    begin = key;
-                    begin.push(0);
-                }
-                if complete {
-                    break;
-                }
+            for (key, value) in scan_all(&trx, range).await? {
+                let (label,): (String,) = space
+                    .unpack(&key)
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                let entry = decode_entry(&value)?;
+                entries.push((label, entry_ready(entry.needs_login, entry.expires_at, now)));
             }
             // Mirror the gateway pool: ready entries when any is ready, else
             // every entry so a provider with no usable key still parks behind
@@ -249,8 +238,7 @@ impl Store {
         scope: CredentialScope,
         provider: &str,
     ) -> Result<Option<[u8; 32]>> {
-        let space =
-            crate::keys::Keys::new(&self.root).credential_entry_space_provider(scope, provider);
+        let space = self.keys().credential_entry_space_provider(scope, provider);
         let (mut begin, end) = space.range();
         let mut hash = blake3::Hasher::new();
         let mut found = false;
@@ -270,7 +258,7 @@ impl Store {
                 let entry: EntryValue = decode_entry(&bytes)?;
                 hash.update(&entry.ciphertext);
                 begin = key;
-                begin.push(0);
+                begin = crate::next_cursor(&begin);
             }
         }
         Ok(found.then(|| *hash.finalize().as_bytes()))
@@ -438,7 +426,7 @@ impl CredentialStore {
                 summary.last_used_at = entry.last_used_at;
                 result.push(summary);
                 begin = key;
-                begin.push(0);
+                begin = crate::next_cursor(&begin);
             }
         }
         result.sort_by_key(|entry| {

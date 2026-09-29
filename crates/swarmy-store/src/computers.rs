@@ -107,11 +107,10 @@ impl Store {
         loop {
             let page: Vec<StoredSession> = self
                 .transaction(|trx| async move {
-                    let (mut begin, end) =
-                        crate::keys::Keys::new(&self.root).session_space().range();
+                    let (mut begin, end) = self.keys().session_space().range();
                     if let Some(id) = cursor {
                         begin = self.session_key(id);
-                        begin.push(0);
+                        begin = crate::next_cursor(&begin);
                     }
                     let mut page = Vec::new();
                     for (_, value) in scan(&trx, (begin, end), MAX_SCAN_LIMIT).await? {

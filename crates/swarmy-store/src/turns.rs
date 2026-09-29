@@ -134,27 +134,16 @@ impl Store {
                     self.session(&trx, id),
                     read::<swarmy_core::MessageId>(&trx, &turn_key),
                 )?;
-                if session.head_seq != expected_head {
-                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
-                        expected: expected_head,
-                        actual: session.head_seq,
-                    }));
-                }
+                crate::check_head(session.head_seq, expected_head)?;
                 if let Some(route) = route {
                     self.write_submit_route_step(&trx, id, &mut session, route, now)
                         .await?;
                 }
-                trx.set(
-                    &crate::keys::Keys::new(&self.root).inference_input(request_id),
-                    input,
-                );
+                trx.set(&self.keys().inference_input(request_id), input);
                 if let Some(request) = request {
                     trx.set(&self.inference_request_key(request_id), request);
                 }
-                trx.set(
-                    &crate::keys::Keys::new(&self.root).inflight(request_id),
-                    inflight,
-                );
+                trx.set(&self.keys().inflight(request_id), inflight);
                 for (seq, value) in preceding {
                     trx.set(&self.event_key(id, *seq), value);
                 }
@@ -237,12 +226,7 @@ impl Store {
                 let now = self.now();
                 self.check_worker_lease(&trx, id, lease, now).await?;
                 let mut session = self.session(&trx, id).await?;
-                if session.head_seq != expected_head {
-                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
-                        expected: expected_head,
-                        actual: session.head_seq,
-                    }));
-                }
+                crate::check_head(session.head_seq, expected_head)?;
                 if session.interrupt_requested
                     && !self
                         .last_event_is_operator_interrupt(&trx, id, expected_head)

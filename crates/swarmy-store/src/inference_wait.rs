@@ -117,16 +117,16 @@ impl Store {
     /// provider-only tuple is never read, so open provider-keyed breakers are
     /// dropped at upgrade; a stale one only costs one probe.
     pub(crate) fn breaker_key(&self, key: &CredentialKey) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root)
+        self.keys()
             .inference_breaker(key.provider.as_str(), key.label.as_deref().unwrap_or(""))
     }
 
     pub(crate) fn wait_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).inference_wait(id)
+        self.keys().inference_wait(id)
     }
 
     pub(crate) fn wait_due_key(&self, id: SessionId, at: Timestamp) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).inference_wait_due(at, id)
+        self.keys().inference_wait_due(at, id)
     }
 
     /// Grant one entry probe after the open period, or return the next eligible time.
@@ -387,11 +387,8 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn scan_due_inference_waits(&self, now: Timestamp) -> Result<Vec<SessionId>> {
-        let space = crate::keys::Keys::new(&self.root).inference_wait_due_space_root();
-        let end = crate::keys::Keys::new(&self.root)
-            .inference_wait_due_space(now)
-            .range()
-            .1;
+        let space = self.keys().inference_wait_due_space_root();
+        let end = self.keys().inference_wait_due_space(now).range().1;
         self.transaction(|trx| {
             let space = space.clone();
             let end = end.clone();

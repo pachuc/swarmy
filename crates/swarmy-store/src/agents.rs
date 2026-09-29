@@ -49,7 +49,7 @@ impl Store {
         let result = self
             .transaction(|trx| async move {
                 if let Some(key) = replay_key {
-                    let replay_key = crate::keys::Keys::new(&self.root).api_idempotency(key);
+                    let replay_key = self.keys().api_idempotency(key);
                     if let Some(previous) =
                         read::<crate::api_idempotency::ApiReplay>(&trx, &replay_key).await?
                         && previous.expires_at > now
@@ -104,7 +104,7 @@ impl Store {
                         .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
                     write(
                         &trx,
-                        &crate::keys::Keys::new(&self.root).api_idempotency(key),
+                        &self.keys().api_idempotency(key),
                         &crate::api_idempotency::ApiReplay {
                             result,
                             expires_at: now
@@ -187,10 +187,10 @@ impl Store {
     ) -> Result<Vec<AgentRecord>> {
         check_limit(limit)?;
         self.transaction(|trx| async move {
-            let (mut begin, end) = crate::keys::Keys::new(&self.root).agent_space().range();
+            let (mut begin, end) = self.keys().agent_space().range();
             if let Some(id) = after {
                 begin = self.agent_key(id);
-                begin.push(0);
+                begin = crate::next_cursor(&begin);
             }
             scan(&trx, (begin, end), limit)
                 .await?
@@ -239,12 +239,9 @@ impl Store {
             let previous_requirements = agent.requirements;
             settings.apply_to(&mut agent, resets);
             if agent.requirements != previous_requirements
-                && read::<swarmy_core::PlacementRecord>(
-                    &trx,
-                    &crate::keys::Keys::new(&self.root).placement(id),
-                )
-                .await?
-                .is_some()
+                && read::<swarmy_core::PlacementRecord>(&trx, &self.keys().placement(id))
+                    .await?
+                    .is_some()
             {
                 return Err(StoreError::Domain(
                     crate::DomainError::ActiveSandboxRequirements,
@@ -550,12 +547,7 @@ impl Store {
                 let now = self.now();
                 self.check_worker_lease(&trx, old, lease, now).await?;
                 let mut previous = self.session(&trx, old).await?;
-                if previous.head_seq != expected_head {
-                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
-                        expected: expected_head,
-                        actual: previous.head_seq,
-                    }));
-                }
+                crate::check_head(previous.head_seq, expected_head)?;
                 let mut agent = self
                     .read_agent(&trx, previous.agent_id)
                     .await?
@@ -637,12 +629,7 @@ impl Store {
                 let now = self.now();
                 self.check_worker_lease(&trx, old, lease, now).await?;
                 let mut previous = self.session(&trx, old).await?;
-                if previous.head_seq != expected_head {
-                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
-                        expected: expected_head,
-                        actual: previous.head_seq,
-                    }));
-                }
+                crate::check_head(previous.head_seq, expected_head)?;
                 let agent = self
                     .read_agent(&trx, previous.agent_id)
                     .await?
@@ -757,7 +744,7 @@ impl Store {
     }
 
     fn session_link_key(&self, direction: &str, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_chain(direction, id)
+        self.keys().session_chain(direction, id)
     }
 
     /// The successor of an archived main session, if it has been summarized.
@@ -802,12 +789,10 @@ impl Store {
         check_limit(limit)?;
         let ids: Vec<SessionId> = self
             .transaction(|trx| async move {
-                let (mut begin, end) = crate::keys::Keys::new(&self.root)
-                    .session_by_agent_space(agent)
-                    .range();
+                let (mut begin, end) = self.keys().session_by_agent_space(agent).range();
                 if let Some(id) = after {
                     begin = self.session_agent_key(agent, id);
-                    begin.push(0);
+                    begin = crate::next_cursor(&begin);
                 }
                 scan(&trx, (begin, end), limit)
                     .await?

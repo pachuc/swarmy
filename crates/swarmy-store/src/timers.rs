@@ -11,28 +11,28 @@ use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError, read, scan, write};
 
 impl Store {
     fn timer_key(&self, agent: AgentId, timer: TimerId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).timer(agent, timer)
+        self.keys().timer(agent, timer)
     }
 
     fn active_timers(&self, agent: AgentId) -> Subspace {
-        crate::keys::Keys::new(&self.root).timer_active_space(agent)
+        self.keys().timer_active_space(agent)
     }
 
     fn timer_due_key(&self, timer: &TimerRecord) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).timer_due(timer.due_at, timer.agent_id, timer.timer_id)
+        self.keys()
+            .timer_due(timer.due_at, timer.agent_id, timer.timer_id)
     }
 
     /// The session whose worker set the timer. Timers stay agent-scoped so a
     /// summarized or closed origin cannot strand a note, but delivery prefers
     /// this idle session over the main conversation.
     fn timer_origin_key(&self, agent: AgentId, timer: TimerId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).timer_origin(agent, timer)
+        self.keys().timer_origin(agent, timer)
     }
 
     fn save_timer(&self, trx: &Transaction, timer: &TimerRecord) -> Result<()> {
         write(trx, &self.timer_key(timer.agent_id, timer.timer_id), timer)?;
-        let active =
-            crate::keys::Keys::new(&self.root).timer_active(timer.agent_id, timer.timer_id);
+        let active = self.keys().timer_active(timer.agent_id, timer.timer_id);
         if timer.status == TimerStatus::Pending {
             write(trx, &active, timer)?;
             write(trx, &self.timer_due_key(timer), timer)?;
@@ -95,12 +95,7 @@ impl Store {
         self.transaction(|trx| async move {
             self.check_worker_lease(&trx, id, lease, self.now()).await?;
             let mut session = self.session(&trx, id).await?;
-            if session.head_seq != expected_head {
-                return Err(StoreError::Fence(crate::FenceError::StaleSequence {
-                    expected: expected_head,
-                    actual: session.head_seq,
-                }));
-            }
+            crate::check_head(session.head_seq, expected_head)?;
             self.check_computer(&trx, session.agent_id).await?;
             let result = if self.read_agent(&trx, session.agent_id).await?.is_some() {
                 self.timer_tool_in(&trx, session.agent_id, id, timer_id, call, now)
@@ -206,16 +201,13 @@ impl Store {
         now: Timestamp,
         after: Option<&TimerRecord>,
     ) -> Result<Vec<TimerRecord>> {
-        let space = crate::keys::Keys::new(&self.root).timer_due_space_root();
+        let space = self.keys().timer_due_space_root();
         let (mut begin, _) = space.range();
         if let Some(after) = after {
             begin = self.timer_due_key(after);
-            begin.push(0);
+            begin = crate::next_cursor(&begin);
         }
-        let end = crate::keys::Keys::new(&self.root)
-            .timer_due_space(now)
-            .range()
-            .1;
+        let end = self.keys().timer_due_space(now).range().1;
         self.transaction(|trx| {
             let range = (begin.clone(), end.clone());
             async move {

@@ -14,7 +14,7 @@ pub use swarmy_core::{RUNNABLE_PARTITIONS, runnable_partition};
 
 impl Store {
     pub(crate) fn request_turn_key(&self, id: swarmy_core::RequestId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).request_turn(id)
+        self.keys().request_turn(id)
     }
 
     /// Resolve the original user turn even when old work is redelivered later.
@@ -29,7 +29,7 @@ impl Store {
     }
 
     pub(crate) fn turn_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).turn(id)
+        self.keys().turn(id)
     }
 
     /// The latest user message identifies the turn, including after snapshots.
@@ -41,23 +41,23 @@ impl Store {
     }
 
     pub(crate) fn volume_key(&self, id: VolumeId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).volume(id)
+        self.keys().volume(id)
     }
 
     pub(crate) fn manifest_key(&self, id: ManifestId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).manifest(id)
+        self.keys().manifest(id)
     }
 
     pub(crate) fn image_key(&self, name: &str, tag: &ImageTag) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).image(name, tag)
+        self.keys().image(name, tag)
     }
 
     pub(crate) fn volume_lease_seq_key(&self, id: VolumeId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).volume_lease_seq(id)
+        self.keys().volume_lease_seq(id)
     }
 
     pub(crate) fn session_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session(id)
+        self.keys().session(id)
     }
 
     /// The last durable state transition, if it happened after this field was introduced.
@@ -69,7 +69,7 @@ impl Store {
     }
 
     pub(crate) fn event_key(&self, id: SessionId, seq: u64) -> Vec<u8> {
-        Keys::new(&self.root).event(id, seq)
+        self.keys().event(id, seq)
     }
 
     pub(crate) fn session_tool_key(
@@ -77,15 +77,15 @@ impl Store {
         id: SessionId,
         request: swarmy_core::RequestId,
     ) -> Vec<u8> {
-        Keys::new(&self.root).session_tools(id, request)
+        self.keys().session_tools(id, request)
     }
 
     pub(crate) fn event_space(&self, id: SessionId) -> Subspace {
-        crate::keys::Keys::new(&self.root).event_space(id)
+        self.keys().event_space(id)
     }
 
     fn runnable_key(&self, entry: &RunnableEntry) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).runnable(
+        self.keys().runnable(
             runnable_partition(entry.session_id),
             entry.priority,
             entry.wake_at,
@@ -94,7 +94,7 @@ impl Store {
     }
 
     fn runnable_lookup(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).runnable_by_session(id)
+        self.keys().runnable_by_session(id)
     }
 
     pub(crate) async fn remove_runnable(&self, trx: &Transaction, id: SessionId) -> Result<()> {
@@ -152,11 +152,11 @@ impl Store {
             return Err(StoreError::Domain(crate::DomainError::InvalidPartition));
         }
         self.transaction(|trx| async move {
-            let space = crate::keys::Keys::new(&self.root).runnable_space(partition);
+            let space = self.keys().runnable_space(partition);
             let (mut begin, end) = space.range();
             if let Some(entry) = after {
                 begin = self.runnable_key(entry);
-                begin.push(0);
+                begin = crate::next_cursor(&begin);
             }
             let mut entries = Vec::new();
             for (key, _) in scan(&trx, (begin, end), limit).await? {
@@ -185,20 +185,20 @@ pub(crate) fn session_id(bytes: Vec<u8>) -> Result<SessionId> {
 
 impl Store {
     pub(crate) fn agent_key(&self, id: swarmy_core::AgentId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).agent(id)
+        self.keys().agent(id)
     }
     pub(crate) fn agent_github_token_key(&self, id: swarmy_core::AgentId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).agent_github_token(id)
+        self.keys().agent_github_token(id)
     }
     pub(crate) fn agent_name_key(&self, name: &str) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).agent_by_name(name)
+        self.keys().agent_by_name(name)
     }
     pub(crate) fn computer_deleted_key(&self, id: swarmy_core::AgentId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).computer_deleted(id)
+        self.keys().computer_deleted(id)
     }
 
     pub(crate) fn session_agent_key(&self, agent: swarmy_core::AgentId, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_by_agent(agent, id)
+        self.keys().session_by_agent(agent, id)
     }
 }
 
