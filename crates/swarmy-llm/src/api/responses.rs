@@ -324,7 +324,6 @@ async fn check_response(response: reqwest::Response) -> Result<reqwest::Response
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn context_overflow_classification() {

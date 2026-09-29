@@ -1,10 +1,9 @@
-use futures::TryStreamExt;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, time::Duration};
+use std::collections::BTreeMap;
 use swarmy_core::{Message, MessageId, MessageRole, Part, ToolCallId, ToolResult};
 use swarmy_llm::{
-    Delta, GenerationSettings, Provider, ReasoningEffort, Request, Response, StopReason,
-    TokenUsage, ToolDefinition, api::responses::ResponsesStream as SseParser,
+    Delta, GenerationSettings, ReasoningEffort, Request, Response, StopReason, TokenUsage,
+    ToolDefinition, api::responses::ResponsesStream as SseParser,
 };
 
 fn request_json(request: &Request) -> Result<Value, swarmy_llm::Error> {
@@ -278,7 +277,9 @@ fn multiline_data_and_incomplete_response() {
 #[tokio::test]
 #[cfg(feature = "fake")]
 async fn fake_scripts_and_counter_work_through_dyn_provider() {
-    use swarmy_llm::fake::FakeProvider;
+    use futures::TryStreamExt;
+    use std::time::Duration;
+    use swarmy_llm::{Provider, fake::FakeProvider};
     let response = Response {
         parts: vec![text("scripted")],
         stop_reason: StopReason::EndTurn,

@@ -4242,6 +4242,7 @@ dependencies = [
  "serde_json",
  "swarmy-api-types",
  "swarmy-config",
+ "swarmy-core",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
