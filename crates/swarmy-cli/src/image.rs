@@ -44,7 +44,7 @@ pub async fn run(command: crate::image_command::Command, json: bool) -> Result<(
                 if matches!(&error, swarmy_client::Error::Api { body, .. } if body.code == "image_not_found") {
                     anyhow::anyhow!("image not found")
                 } else {
-                    swarmy_client::api_client::api_error(error, &endpoint)
+                    swarmy_client::api_client::api_error(error, &endpoint).into()
                 }
             })?;
             let header = value.header.as_ref().context("image header missing")?;

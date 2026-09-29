@@ -248,7 +248,7 @@ async fn close_session(
         swarmy_client::Error::Api { body, .. } if body.code == "main_session_close" => {
             anyhow::anyhow!("cannot close an agent main session; use swarmy agent delete")
         }
-        _ => swarmy_client::api_client::api_error(error, endpoint),
+        _ => swarmy_client::api_client::api_error(error, endpoint).into(),
     })
 }
 
@@ -670,7 +670,7 @@ async fn update_agent(
             swarmy_client::Error::Api { body, .. } if body.code == "agent_computer_placed" => {
                 anyhow::anyhow!("the agent's computer is placed; retry after it is released")
             }
-            _ => swarmy_client::api_client::api_error(error, endpoint),
+            _ => swarmy_client::api_client::api_error(error, endpoint).into(),
         })
 }
 

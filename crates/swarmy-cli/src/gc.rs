@@ -16,7 +16,7 @@ pub async fn run(dry_run: bool, grace_seconds: Option<u64>, json: bool) -> anyho
         if error.to_string().contains("gc_busy") {
             anyhow::anyhow!("another collection run is already in progress")
         } else {
-            error
+            error.into()
         }
     })?;
     // The sweep continues on the control plane; follow its durable record.

@@ -1,17 +1,15 @@
 //! Resolve one API endpoint for local or selected remote commands.
-use crate::Client;
-use anyhow::{Context, Result};
+use crate::{Client, Error};
 
 /// Load the configured API URL.
 ///
 /// # Errors
 /// Fails when configuration is unreadable or its API token is missing.
-pub fn endpoint() -> Result<String> {
+pub fn endpoint() -> Result<String, Error> {
     let settings = swarmy_config::Settings::load()?.settings;
-    anyhow::ensure!(
-        !settings.api.token.is_empty(),
-        "no [api] token configured; run swarmy dev up"
-    );
+    if settings.api.token.is_empty() {
+        return Err(Error::MissingToken);
+    }
     Ok(settings
         .api
         .url
@@ -23,19 +21,26 @@ pub fn endpoint() -> Result<String> {
 ///
 /// # Errors
 /// Fails when configuration or the API endpoint is invalid.
-pub fn connect() -> Result<(Client, String)> {
+pub fn connect() -> Result<(Client, String), Error> {
     let endpoint = endpoint()?;
     let token = swarmy_config::Settings::load()?.settings.api.token;
-    let client = Client::new(&endpoint, token)
-        .with_context(|| format!("invalid API endpoint {endpoint}"))?;
+    let client = Client::new(&endpoint, token).map_err(|error| match error {
+        Error::Url(source) => Error::InvalidEndpoint {
+            endpoint: endpoint.clone(),
+            source,
+        },
+        error => error,
+    })?;
     Ok((client, endpoint))
 }
 
 /// Include the endpoint in an API failure.
 #[must_use]
-pub fn api_error(error: crate::Error, endpoint: &str) -> anyhow::Error {
-    let message = format!("API at {endpoint}: {error}");
-    anyhow::Error::new(error).context(message)
+pub fn api_error(error: Error, endpoint: &str) -> Error {
+    Error::Endpoint {
+        endpoint: endpoint.into(),
+        source: Box::new(error),
+    }
 }
 
 /// Apply the standard API request timeout.
@@ -44,8 +49,8 @@ pub fn api_error(error: crate::Error, endpoint: &str) -> anyhow::Error {
 /// Fails if the request times out or the API rejects it.
 pub async fn call<T>(
     endpoint: &str,
-    future: impl std::future::Future<Output = Result<T, crate::Error>>,
-) -> Result<T> {
+    future: impl std::future::Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
     crate::timed_call(future)
         .await
         .map_err(|error| api_error(error, endpoint))
@@ -59,11 +64,11 @@ pub async fn call<T>(
 pub async fn call_with_timeout<T>(
     endpoint: &str,
     timeout: std::time::Duration,
-    future: impl std::future::Future<Output = Result<T, crate::Error>>,
-) -> Result<T> {
+    future: impl std::future::Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
     tokio::time::timeout(timeout, future)
         .await
-        .map_err(|_| anyhow::anyhow!("API at {endpoint}: request timed out"))?
+        .map_err(|_| api_error(Error::Timeout, endpoint))?
         .map_err(|error| api_error(error, endpoint))
 }
 
@@ -73,10 +78,13 @@ pub async fn call_with_timeout<T>(
 pub async fn call_upload<T>(
     endpoint: &str,
     file: &std::path::Path,
-    future: impl std::future::Future<Output = Result<T, crate::Error>>,
-) -> Result<T> {
+    future: impl std::future::Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
     let size = std::fs::metadata(file)
-        .with_context(|| format!("reading upload size for {}", file.display()))?
+        .map_err(|source| Error::UploadSize {
+            path: file.into(),
+            source,
+        })?
         .len();
     call_with_timeout(endpoint, crate::upload_timeout(size), future).await
 }

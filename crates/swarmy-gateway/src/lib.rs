@@ -20,8 +20,24 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Encode(#[from] swarmy_core::EncodingError),
+    #[error(transparent)]
+    Blob(#[from] swarmy_store::blob::BlobError),
+    #[error(transparent)]
+    Join(#[from] tokio::task::JoinError),
+    #[error(transparent)]
+    Semaphore(#[from] tokio::sync::AcquireError),
+    #[error(transparent)]
+    Jiff(#[from] jiff::Error),
     #[error("{0}")]
     Configuration(&'static str),
+    /// An internal invariant broke: the work stream ended, a stored
+    /// selection diverged from its delivery, or a claim was replaced.
+    /// These carry static messages because they name gateway states,
+    /// not failures a caller can match on.
+    #[error("{0}")]
+    Internal(&'static str),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
