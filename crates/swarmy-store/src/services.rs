@@ -86,12 +86,13 @@ impl Store {
         let rows = self
             .transaction(|trx| async move {
                 let mut result = Vec::new();
-                for (space, node) in [("service_heartbeat", false), ("node", true)] {
-                    let range = match space {
-                        "service_heartbeat" => self.keys().service_heartbeat_space().range(),
-                        "node" => self.keys().node_space().range(),
-                        _ => unreachable!("unknown service key family"),
-                    };
+                // Both key spaces hold heartbeat-shaped rows; node rows predate
+                // service metadata and decode through the legacy record.
+                let spaces = [
+                    (self.keys().service_heartbeat_space().range(), false),
+                    (self.keys().node_space().range(), true),
+                ];
+                for (range, node) in spaces {
                     let values: Vec<_> = trx
                         .get_ranges_keyvalues(RangeOption::from(range), false)
                         .map_ok(|kv| kv.value().to_vec())

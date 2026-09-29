@@ -325,7 +325,10 @@ async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnapshot>
                 .map(views::credential)
                 .collect::<Vec<_>>(),
         ),
-        Err(_) => None,
+        Err(error) => {
+            tracing::warn!(?error, "doctor credential listing unavailable");
+            None
+        }
     };
     Ok(Json(api::DoctorSnapshot {
         services,
