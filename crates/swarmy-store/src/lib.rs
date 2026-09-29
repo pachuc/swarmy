@@ -592,10 +592,6 @@ impl Store {
         }
     }
 
-    fn session_chunk_key(&self, id: SessionId, index: u16) -> Vec<u8> {
-        self.keys().session_chunk(id, index)
-    }
-
     async fn decode_session_in(&self, trx: &Transaction, bytes: &[u8]) -> Result<StoredSession> {
         if bytes.first() != Some(&SESSION_RECORD_VERSION) {
             return Err(StoreError::Storage(crate::StorageError::Corrupt));
@@ -612,7 +608,7 @@ impl Store {
             let mut payload = Vec::new();
             for index in 0..count {
                 let chunk = trx
-                    .get(&self.session_chunk_key(id, index), false)
+                    .get(&self.keys().session_chunk(id, index), false)
                     .await?
                     .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
                 payload.extend_from_slice(&chunk);
@@ -637,7 +633,7 @@ impl Store {
         id: SessionId,
     ) -> Result<Option<(StoredSession, Option<Vec<u8>>)>> {
         self.session_record_reads.fetch_add(1, Ordering::Relaxed);
-        let Some(bytes) = trx.get(&self.session_key(id), false).await? else {
+        let Some(bytes) = trx.get(&self.keys().session(id), false).await? else {
             return Ok(None);
         };
         let session = self.decode_session_in(trx, &bytes).await?;
@@ -652,7 +648,7 @@ impl Store {
     ) -> Result<Option<Vec<u8>>> {
         match session.snapshot_seq {
             Some(seq) => Ok(Some(
-                trx.get(&self.snapshot_key(session.session_id, seq), false)
+                trx.get(&self.keys().snapshot(session.session_id, seq), false)
                     .await?
                     .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?
                     .to_vec(),
@@ -664,7 +660,7 @@ impl Store {
     pub(crate) async fn session(&self, trx: &Transaction, id: SessionId) -> Result<StoredSession> {
         self.session_record_reads.fetch_add(1, Ordering::Relaxed);
         let bytes = trx
-            .get(&self.session_key(id), false)
+            .get(&self.keys().session(id), false)
             .await?
             .ok_or(StoreError::Domain(crate::DomainError::SessionMissing))?;
         self.decode_session_in(trx, &bytes).await
@@ -687,7 +683,7 @@ impl Store {
                 .map_err(|_| StoreError::Storage(crate::StorageError::TooLarge))?;
             for (index, chunk) in payload.chunks(INLINE_LIMIT).enumerate() {
                 trx.set(
-                    &self.session_chunk_key(
+                    &self.keys().session_chunk(
                         session.session_id,
                         u16::try_from(index)
                             .map_err(|_| StoreError::Storage(crate::StorageError::TooLarge))?,
@@ -700,7 +696,7 @@ impl Store {
             bytes.extend(session.session_id.as_ulid().to_bytes());
             bytes.extend(count.to_be_bytes());
         }
-        trx.set(&self.session_key(session.session_id), &bytes);
+        trx.set(&self.keys().session(session.session_id), &bytes);
         Ok(())
     }
 
@@ -805,7 +801,7 @@ impl Store {
             .transaction(|trx| async move {
                 let (mut begin, end) = self.keys().session_space().range();
                 if let Some(id) = after {
-                    begin = self.session_key(id);
+                    begin = self.keys().session(id);
                     begin = crate::next_cursor(&begin);
                 }
                 let mut sessions = Vec::new();
@@ -915,8 +911,8 @@ impl Store {
                 if session.state != SessionState::Idle {
                     return Err(StoreError::Domain(crate::DomainError::SessionNotIdle));
                 }
-                trx.set(&self.event_key(id, head), value);
-                write(&trx, &self.turn_key(id), &message.id)?;
+                trx.set(&self.keys().event(id, head), value);
+                write(&trx, &self.keys().turn(id), &message.id)?;
                 write(&trx, replay_key, &head)?;
                 session.head_seq = head;
                 self.transition(&trx, session, SessionState::Runnable, self.now())
@@ -946,7 +942,7 @@ impl Store {
         for (event, seq) in events.iter().zip((expected_head..head).map(|n| n + 1)) {
             let mut event = event.clone();
             event.set_seq(seq);
-            let key = self.event_key(id, seq);
+            let key = self.keys().event(id, seq);
             let value = self.prepare(&event).await?;
             size += key.len() + value.len();
             if size > MAX_BATCH_BYTES {
@@ -972,14 +968,14 @@ impl Store {
                     if let Event::MessageAppended { message, .. } = event
                         && message.role == swarmy_core::MessageRole::User
                     {
-                        write(&trx, &self.turn_key(id), &message.id)?;
+                        write(&trx, &self.keys().turn(id), &message.id)?;
                     }
                     if let Event::InferenceRequested { request_id, .. }
                     | Event::ToolCallRequested { request_id, .. } = event
                         && let Some(turn) =
-                            read::<swarmy_core::MessageId>(&trx, &self.turn_key(id)).await?
+                            read::<swarmy_core::MessageId>(&trx, &self.keys().turn(id)).await?
                     {
-                        write(&trx, &self.request_turn_key(*request_id), &turn)?;
+                        write(&trx, &self.keys().request_turn(*request_id), &turn)?;
                     }
                 }
                 session.head_seq = head;
@@ -1002,8 +998,8 @@ impl Store {
         check_limit(limit)?;
         let values = self
             .transaction(|trx| async move {
-                let space = self.event_space(id);
-                let mut begin = self.event_key(id, after);
+                let space = self.keys().event_space(id);
+                let mut begin = self.keys().event(id, after);
                 begin = crate::next_cursor(&begin);
                 scan(&trx, (begin, space.range().1), limit).await
             })
@@ -1033,16 +1029,12 @@ impl Store {
                         actual: session.head_seq,
                     }));
                 }
-                trx.set(&self.snapshot_key(id, snapshot.seq), value);
+                trx.set(&self.keys().snapshot(id, snapshot.seq), value);
                 session.snapshot_seq = Some(snapshot.seq);
                 self.write_session(&trx, &session)
             }
         })
         .await
-    }
-
-    fn snapshot_key(&self, id: SessionId, seq: u64) -> Vec<u8> {
-        self.keys().snapshot(id, seq)
     }
 
     /// # Errors

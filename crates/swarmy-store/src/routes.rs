@@ -242,10 +242,6 @@ impl RouteSnapshot {
 }
 
 impl Store {
-    pub(crate) fn route_key(&self, name: &str) -> Vec<u8> {
-        self.keys().route(name)
-    }
-
     /// Store a named failover chain, replacing any previous steps.
     /// # Errors
     /// Returns invalid routes or storage failures.
@@ -259,7 +255,7 @@ impl Store {
         };
         self.transaction(|trx| {
             let record = &record;
-            async move { write(&trx, &self.route_key(name), record) }
+            async move { write(&trx, &self.keys().route(name), record) }
         })
         .await
     }
@@ -268,7 +264,7 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn get_route(&self, name: &str) -> Result<Option<RouteRecord>> {
-        self.transaction(|trx| async move { read(&trx, &self.route_key(name)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().route(name)).await })
             .await
     }
 
@@ -312,7 +308,7 @@ impl Store {
     /// Returns storage failures.
     pub async fn delete_route(&self, name: &str) -> Result<bool> {
         self.transaction(|trx| async move {
-            let key = self.route_key(name);
+            let key = self.keys().route(name);
             let existed = trx.get(&key, false).await?.is_some();
             trx.clear(&key);
             Ok(existed)
@@ -687,7 +683,7 @@ impl Store {
         );
         let name = name.map(str::to_owned);
         let record = match name.as_deref() {
-            Some(name) => read::<RouteRecord>(trx, &self.route_key(name)).await?,
+            Some(name) => read::<RouteRecord>(trx, &self.keys().route(name)).await?,
             None => None,
         };
         // One pool scan per distinct provider in the same transaction; entry
@@ -768,7 +764,7 @@ impl Store {
         session.route_step = step;
         self.write_session(trx, &session)?;
         if !reasons.is_empty() {
-            let wait_key = self.wait_key(id);
+            let wait_key = self.keys().inference_wait(id);
             let mut wait = read::<InferenceWait>(trx, &wait_key)
                 .await?
                 .unwrap_or(InferenceWait {
@@ -823,7 +819,7 @@ impl Store {
         self.transaction(|trx| async move {
             self.check_worker_lease(&trx, id, lease, now).await?;
             let stored = self.session(&trx, id).await?;
-            if let Some(wait) = read::<InferenceWait>(&trx, &self.wait_key(id)).await?
+            if let Some(wait) = read::<InferenceWait>(&trx, &self.keys().inference_wait(id)).await?
                 && wait.last_failure_seq == seq
             {
                 return Ok(FailoverOutcome {

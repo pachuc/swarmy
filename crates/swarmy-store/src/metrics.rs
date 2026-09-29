@@ -1041,18 +1041,6 @@ fn assemble_turn(
 }
 
 impl Store {
-    fn turn_summary_key(&self, session: SessionId, turn: MessageId) -> Vec<u8> {
-        self.keys().turn_metrics(session, turn)
-    }
-
-    fn turn_inference_key(&self, session: SessionId, turn: MessageId, request_id: &str) -> Vec<u8> {
-        self.keys().turn_inference(session, turn, request_id)
-    }
-
-    fn turn_tool_key(&self, session: SessionId, turn: MessageId, call_id: &str) -> Vec<u8> {
-        self.keys().turn_tool(session, turn, call_id)
-    }
-
     /// Merge several independent observations in one read-modify-write
     /// transaction. A dispatch folds its tool name into its stage, and a node
     /// completion folds its tool result and completion stage, so each costs
@@ -1077,7 +1065,7 @@ impl Store {
         turn: MessageId,
         patches: Vec<MetricPatch>,
     ) -> Result<()> {
-        let summary_key = self.turn_summary_key(session, turn);
+        let summary_key = self.keys().turn_metrics(session, turn);
         // Collect the detail rows this batch touches so the transaction reads
         // only what it writes; a turn with hundreds of calls still commits
         // one small transaction per boundary.
@@ -1139,7 +1127,7 @@ impl Store {
                         };
                         for id in inference_ids {
                             if !state.inference.contains_key(id) {
-                                let key = self.turn_inference_key(session, turn, id);
+                                let key = self.keys().turn_inference(session, turn, id);
                                 if let Some(bytes) = trx.get(&key, false).await? {
                                     state
                                         .inference
@@ -1149,7 +1137,7 @@ impl Store {
                         }
                         for id in tool_ids {
                             if !state.tools.contains_key(id) {
-                                let key = self.turn_tool_key(session, turn, id);
+                                let key = self.keys().turn_tool(session, turn, id);
                                 if let Some(bytes) = trx.get(&key, false).await? {
                                     state.tools.insert(id.clone(), decode_tool(&bytes)?);
                                 }
@@ -1167,7 +1155,7 @@ impl Store {
                             if let Some(row) = state.inference.get(id) {
                                 write(
                                     &trx,
-                                    &self.turn_inference_key(session, turn, id),
+                                    &self.keys().turn_inference(session, turn, id),
                                     &StoredTurnMetrics::Inference(row.clone()),
                                 )?;
                             }
@@ -1176,7 +1164,7 @@ impl Store {
                             if let Some(row) = state.tools.get(id) {
                                 write(
                                     &trx,
-                                    &self.turn_tool_key(session, turn, id),
+                                    &self.keys().turn_tool(session, turn, id),
                                     &StoredTurnMetrics::Tool(row.clone()),
                                 )?;
                             }

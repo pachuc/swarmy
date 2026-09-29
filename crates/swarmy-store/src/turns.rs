@@ -128,7 +128,7 @@ impl Store {
             let route = &route;
             async move {
                 let now = self.now();
-                let turn_key = self.turn_key(id);
+                let turn_key = self.keys().turn(id);
                 let ((), mut session, turn) = futures::try_join!(
                     self.check_worker_lease(&trx, id, lease, now),
                     self.session(&trx, id),
@@ -141,15 +141,15 @@ impl Store {
                 }
                 trx.set(&self.keys().inference_input(request_id), input);
                 if let Some(request) = request {
-                    trx.set(&self.inference_request_key(request_id), request);
+                    trx.set(&self.keys().inference_request(request_id), request);
                 }
                 trx.set(&self.keys().inflight(request_id), inflight);
                 for (seq, value) in preceding {
-                    trx.set(&self.event_key(id, *seq), value);
+                    trx.set(&self.keys().event(id, *seq), value);
                 }
-                trx.set(&self.event_key(id, step), value);
+                trx.set(&self.keys().event(id, step), value);
                 if let Some(turn) = turn {
-                    write(&trx, &self.request_turn_key(request_id), &turn)?;
+                    write(&trx, &self.keys().request_turn(request_id), &turn)?;
                 }
                 session.head_seq = step;
                 self.transition(&trx, session, SessionState::WaitingInference, now)
@@ -182,7 +182,7 @@ impl Store {
         if route.reasons.is_empty() {
             return Ok(());
         }
-        let wait_key = self.wait_key(id);
+        let wait_key = self.keys().inference_wait(id);
         let mut wait = read::<InferenceWait>(trx, &wait_key)
             .await?
             .unwrap_or(InferenceWait {
@@ -250,8 +250,8 @@ impl Store {
                     from: SessionState::Leased,
                     to: state,
                 };
-                trx.set(&self.event_key(id, head), &self.prepare(&event).await?);
-                trx.set(&self.snapshot_key(id, head), reference);
+                trx.set(&self.keys().event(id, head), &self.prepare(&event).await?);
+                trx.set(&self.keys().snapshot(id, head), reference);
                 session.head_seq = head;
                 session.snapshot_seq = Some(head);
                 session.interrupt_requested = false;

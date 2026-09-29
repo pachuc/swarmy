@@ -68,8 +68,8 @@ impl Store {
                             message: message.clone(),
                         })
                         .await?;
-                    trx.set(&self.event_key(id, head), &event);
-                    write(&trx, &self.turn_key(id), &message.id)?;
+                    trx.set(&self.keys().event(id, head), &event);
+                    write(&trx, &self.keys().turn(id), &message.id)?;
                     session.head_seq = head;
                     self.transition(&trx, session, SessionState::Runnable, self.now())
                         .await?;
@@ -154,7 +154,7 @@ crate::check_head(session.head_seq, head)?;
                 }
                 for event in &events {
                     trx.set(
-                        &self.event_key(id, event.seq()),
+                        &self.keys().event(id, event.seq()),
                         &self.prepare(event).await?,
                     );
                 }

@@ -27,24 +27,20 @@ impl Store {
         .await
     }
 
-    fn lease_key(&self, id: SessionId) -> Vec<u8> {
-        self.keys().lease(id)
-    }
-
     fn expiry_key(&self, id: SessionId, expires: Timestamp) -> Vec<u8> {
         self.keys().lease_by_expiry(expires, id)
     }
 
     async fn clear_lease(&self, trx: &Transaction, id: SessionId) -> Result<()> {
-        if let Some(lease) = read::<Lease>(trx, &self.lease_key(id)).await? {
+        if let Some(lease) = read::<Lease>(trx, &self.keys().lease(id)).await? {
             trx.clear(&self.expiry_key(id, lease.expires_at));
-            trx.clear(&self.lease_key(id));
+            trx.clear(&self.keys().lease(id));
         }
         Ok(())
     }
 
     fn store_lease(&self, trx: &Transaction, id: SessionId, lease: &Lease) -> Result<()> {
-        write(trx, &self.lease_key(id), lease)?;
+        write(trx, &self.keys().lease(id), lease)?;
         write(trx, &self.expiry_key(id, lease.expires_at), lease)
     }
 
@@ -101,13 +97,13 @@ impl Store {
     )> {
         let (lease, session, snapshot, turn, values) = self
             .transaction(|trx| async move {
-                let turn_key = self.turn_key(id);
+                let turn_key = self.keys().turn(id);
                 let ((lease, session), turn) = futures::try_join!(
                     self.claim(&trx, id, owner, expires_at),
                     read(&trx, &turn_key),
                 )?;
-                let space = self.event_space(id);
-                let mut begin = self.event_key(id, session.snapshot_seq.unwrap_or(0));
+                let space = self.keys().event_space(id);
+                let mut begin = self.keys().event(id, session.snapshot_seq.unwrap_or(0));
                 begin = crate::next_cursor(&begin);
                 let (snapshot, values) = futures::try_join!(
                     self.snapshot_for_session_in(&trx, &session),
@@ -166,7 +162,7 @@ impl Store {
         id: SessionId,
         expected: &Lease,
     ) -> Result<Lease> {
-        let lease = read::<Lease>(trx, &self.lease_key(id))
+        let lease = read::<Lease>(trx, &self.keys().lease(id))
             .await?
             .ok_or(StoreError::Fence(crate::FenceError::LeaseMismatch))?;
         if &lease != expected {

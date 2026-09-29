@@ -13,7 +13,7 @@ impl Store {
             .await
     }
     pub(crate) async fn computer_deleted(&self, trx: &Transaction, agent: AgentId) -> Result<bool> {
-        Ok(read(trx, &self.computer_deleted_key(agent))
+        Ok(read(trx, &self.keys().computer_deleted(agent))
             .await?
             .unwrap_or(false))
     }
@@ -51,11 +51,11 @@ impl Store {
         // Reading the current epoch conflicts with renewal, takeover, dispatch and
         // publication. No holder of an earlier token can commit after this deletion.
         self.release_deleted_computer(trx, agent).await?;
-        trx.clear(&self.computer_memory_key(agent));
-        write(trx, &self.computer_deleted_key(agent), &true)?;
+        trx.clear(&self.keys().computer_memory(agent));
+        write(trx, &self.keys().computer_deleted(agent), &true)?;
         let volume = VolumeId::from_ulid(agent.as_ulid());
-        trx.clear(&self.volume_key(volume));
-        trx.clear(&self.volume_snapshots_key(volume));
+        trx.clear(&self.keys().volume(volume));
+        trx.clear(&self.keys().volume_snapshots(volume));
         Ok(())
     }
 
@@ -109,7 +109,7 @@ impl Store {
                 .transaction(|trx| async move {
                     let (mut begin, end) = self.keys().session_space().range();
                     if let Some(id) = cursor {
-                        begin = self.session_key(id);
+                        begin = self.keys().session(id);
                         begin = crate::next_cursor(&begin);
                     }
                     let mut page = Vec::new();

@@ -10,10 +10,6 @@ use swarmy_core::{
 use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError, read, scan, write};
 
 impl Store {
-    fn timer_key(&self, agent: AgentId, timer: TimerId) -> Vec<u8> {
-        self.keys().timer(agent, timer)
-    }
-
     fn active_timers(&self, agent: AgentId) -> Subspace {
         self.keys().timer_active_space(agent)
     }
@@ -26,12 +22,13 @@ impl Store {
     /// The session whose worker set the timer. Timers stay agent-scoped so a
     /// summarized or closed origin cannot strand a note, but delivery prefers
     /// this idle session over the main conversation.
-    fn timer_origin_key(&self, agent: AgentId, timer: TimerId) -> Vec<u8> {
-        self.keys().timer_origin(agent, timer)
-    }
 
     fn save_timer(&self, trx: &Transaction, timer: &TimerRecord) -> Result<()> {
-        write(trx, &self.timer_key(timer.agent_id, timer.timer_id), timer)?;
+        write(
+            trx,
+            &self.keys().timer(timer.agent_id, timer.timer_id),
+            timer,
+        )?;
         let active = self.keys().timer_active(timer.agent_id, timer.timer_id);
         if timer.status == TimerStatus::Pending {
             write(trx, &active, timer)?;
@@ -39,7 +36,7 @@ impl Store {
         } else {
             trx.clear(&active);
             trx.clear(&self.timer_due_key(timer));
-            trx.clear(&self.timer_origin_key(timer.agent_id, timer.timer_id));
+            trx.clear(&self.keys().timer_origin(timer.agent_id, timer.timer_id));
         }
         Ok(())
     }
@@ -68,7 +65,7 @@ impl Store {
     /// # Errors
     /// Returns database or decoding failures.
     pub async fn get_timer(&self, agent: AgentId, timer: TimerId) -> Result<Option<TimerRecord>> {
-        self.transaction(|trx| async move { read(&trx, &self.timer_key(agent, timer)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().timer(agent, timer)).await })
             .await
     }
 
@@ -121,7 +118,7 @@ impl Store {
                 result,
             };
             let value = self.prepare(&event).await?;
-            trx.set(&self.event_key(id, seq), &value);
+            trx.set(&self.keys().event(id, seq), &value);
             session.head_seq = seq;
             self.write_session(&trx, &session)?;
             Ok(event)
@@ -159,7 +156,7 @@ impl Store {
                     status: TimerStatus::Pending,
                 };
                 self.save_timer(trx, &timer)?;
-                write(trx, &self.timer_origin_key(agent, timer_id), &origin)?;
+                write(trx, &self.keys().timer_origin(agent, timer_id), &origin)?;
                 serde_json::to_string(&timer)
             }
             "cancel_timer" => {
@@ -169,7 +166,7 @@ impl Store {
                         Err(error) => return Ok(Err(error.to_string())),
                     };
                 let Some(mut timer) =
-                    read::<TimerRecord>(trx, &self.timer_key(agent, args.timer_id)).await?
+                    read::<TimerRecord>(trx, &self.keys().timer(agent, args.timer_id)).await?
                 else {
                     return Ok(Err("timer not found for this agent".into()));
                 };
@@ -234,7 +231,8 @@ impl Store {
         now: Timestamp,
     ) -> Result<Option<(SessionId, Event)>> {
         self.transaction(|trx| async move {
-            let Some(mut timer) = read::<TimerRecord>(&trx, &self.timer_key(agent, timer)).await?
+            let Some(mut timer) =
+                read::<TimerRecord>(&trx, &self.keys().timer(agent, timer)).await?
             else {
                 return Ok(None);
             };
@@ -246,9 +244,11 @@ impl Store {
                 self.save_timer(&trx, &timer)?;
                 return Ok(None);
             };
-            if let Some(origin) =
-                read::<SessionId>(&trx, &self.timer_origin_key(timer.agent_id, timer.timer_id))
-                    .await?
+            if let Some(origin) = read::<SessionId>(
+                &trx,
+                &self.keys().timer_origin(timer.agent_id, timer.timer_id),
+            )
+            .await?
             {
                 // Timers are lease-fenced to their agent, so a mismatched origin
                 // only means stale state: fall through to the main conversation.
@@ -284,7 +284,7 @@ impl Store {
                 );
                 self.create_session_in(&trx, &session, now, None).await?;
                 agent.main_session = Some(id);
-                write(&trx, &self.agent_key(agent.agent_id), &agent)?;
+                write(&trx, &self.keys().agent(agent.agent_id), &agent)?;
                 id
             };
             let session = self.session(&trx, id).await?;
@@ -328,7 +328,7 @@ impl Store {
             },
         };
         let value = self.prepare(&event).await?;
-        trx.set(&self.event_key(id, seq), &value);
+        trx.set(&self.keys().event(id, seq), &value);
         session.head_seq = seq;
         self.transition(trx, session, SessionState::Runnable, now)
             .await?;

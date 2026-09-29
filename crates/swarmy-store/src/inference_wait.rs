@@ -121,10 +121,6 @@ impl Store {
             .inference_breaker(key.provider.as_str(), key.label.as_deref().unwrap_or(""))
     }
 
-    pub(crate) fn wait_key(&self, id: SessionId) -> Vec<u8> {
-        self.keys().inference_wait(id)
-    }
-
     pub(crate) fn wait_due_key(&self, id: SessionId, at: Timestamp) -> Vec<u8> {
         self.keys().inference_wait_due(at, id)
     }
@@ -256,7 +252,7 @@ impl Store {
     /// # Errors
     /// Returns storage failures.
     pub async fn inference_wait(&self, id: SessionId) -> Result<Option<InferenceWait>> {
-        self.transaction(|trx| async move { read(&trx, &self.wait_key(id)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().inference_wait(id)).await })
             .await
     }
 
@@ -279,7 +275,7 @@ impl Store {
             if session.interrupt_requested {
                 return Ok(false);
             }
-            let key = self.wait_key(id);
+            let key = self.keys().inference_wait(id);
             let mut wait = read::<InferenceWait>(&trx, &key)
                 .await?
                 .unwrap_or(InferenceWait {
@@ -346,7 +342,7 @@ impl Store {
         now: Timestamp,
         max_wait: std::time::Duration,
     ) -> Result<bool> {
-        let key = self.wait_key(id);
+        let key = self.keys().inference_wait(id);
         let mut wait = read::<InferenceWait>(trx, &key)
             .await?
             .unwrap_or(InferenceWait {
@@ -413,7 +409,7 @@ impl Store {
     /// Returns storage failures.
     pub async fn wake_inference_wait(&self, id: SessionId, now: Timestamp) -> Result<bool> {
         self.transaction(|trx| async move {
-            let key = self.wait_key(id);
+            let key = self.keys().inference_wait(id);
             let Some(wait) = read::<InferenceWait>(&trx, &key).await? else {
                 return Ok(false);
             };
@@ -439,9 +435,10 @@ impl Store {
     /// Returns storage failures.
     pub async fn clear_inference_wait(&self, id: SessionId) -> Result<()> {
         self.transaction(|trx| async move {
-            if let Some(wait) = read::<InferenceWait>(&trx, &self.wait_key(id)).await? {
+            if let Some(wait) = read::<InferenceWait>(&trx, &self.keys().inference_wait(id)).await?
+            {
                 trx.clear(&self.wait_due_key(id, wait.wake_at));
-                trx.clear(&self.wait_key(id));
+                trx.clear(&self.keys().inference_wait(id));
             }
             let mut session = self.session(&trx, id).await?;
             session.route_step = 0;

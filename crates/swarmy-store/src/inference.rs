@@ -46,10 +46,6 @@ struct PreparedCompletion {
 }
 
 impl Store {
-    pub(crate) fn inference_request_key(&self, id: RequestId) -> Vec<u8> {
-        self.keys().inference_request(id)
-    }
-
     /// Store the gateway payload for a request published before requests were
     /// stored separately from their inputs, so a republished reference resolves.
     /// # Errors
@@ -59,7 +55,7 @@ impl Store {
         id: RequestId,
         request: &T,
     ) -> Result<()> {
-        self.put_payload(self.inference_request_key(id), request)
+        self.put_payload(self.keys().inference_request(id), request)
             .await
     }
 
@@ -345,7 +341,7 @@ impl Store {
                 )
                 .await?;
             }
-            trx.set(&self.event_key(claim.session_id, head), event);
+            trx.set(&self.keys().event(claim.session_id, head), event);
             trx.set(&self.keys().inference_result(claim.request_id), response);
             trx.set(&idem_key, completed);
             trx.clear(&self.keys().inflight(claim.request_id));
@@ -360,9 +356,9 @@ impl Store {
             let state = if let (false, Some(snapshot), Some((event, reference))) =
                 (interrupt_requested, snapshot, idle)
             {
-                trx.set(&self.event_key(claim.session_id, snapshot.seq), event);
+                trx.set(&self.keys().event(claim.session_id, snapshot.seq), event);
                 trx.set(
-                    &self.snapshot_key(claim.session_id, snapshot.seq),
+                    &self.keys().snapshot(claim.session_id, snapshot.seq),
                     reference,
                 );
                 session.head_seq = snapshot.seq;

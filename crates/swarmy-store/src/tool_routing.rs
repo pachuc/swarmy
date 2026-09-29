@@ -190,15 +190,15 @@ impl Store {
                 result: ToolResult::Error { error: explanation },
             })
             .await?;
-        trx.set(&self.event_key(job.session_id, session.head_seq), &event);
+        trx.set(&self.keys().event(job.session_id, session.head_seq), &event);
         let keys = self.keys();
         let request = job.request_id;
         trx.clear(&keys.tool_job(request));
         trx.clear(&keys.tool_placement(request));
         trx.clear(&keys.placed_tool_claim(request));
         write(trx, &self.keys().tool_done(job.request_id), &true)?;
-        let pending = self.pending_space(job.session_id);
-        trx.clear(&self.session_tool_key(job.session_id, job.request_id));
+        let pending = self.keys().session_tools_space(job.session_id);
+        trx.clear(&self.keys().session_tools(job.session_id, job.request_id));
         if session.state != SessionState::Completed
             && scan(trx, pending.range(), 1).await?.is_empty()
         {
@@ -259,16 +259,17 @@ impl Store {
             message
         } else {
             let volume = VolumeId::from_ulid(placement.agent_id.as_ulid());
-            let manifest =
-                if let Some(volume) = read::<VolumeRecord>(trx, &self.volume_key(volume)).await? {
-                    volume.head_manifest
-                } else {
-                    self.session(trx, id)
-                        .await?
-                        .image
-                        .ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?
-                        .manifest_id
-                };
+            let manifest = if let Some(volume) =
+                read::<VolumeRecord>(trx, &self.keys().volume(volume)).await?
+            {
+                volume.head_manifest
+            } else {
+                self.session(trx, id)
+                    .await?
+                    .image
+                    .ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?
+                    .manifest_id
+            };
             // Manifest IDs are time-ordered ULIDs minted for snapshot publication.
             let millis = i64::try_from(manifest.as_ulid().timestamp_ms())
                 .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
@@ -337,7 +338,7 @@ impl Store {
                     message: message.clone(),
                 })
                 .await?;
-            trx.set(&self.event_key(id, session.head_seq), &event);
+            trx.set(&self.keys().event(id, session.head_seq), &event);
             self.write_session(trx, &session)?;
             write(trx, &delivered, &true)?;
         }

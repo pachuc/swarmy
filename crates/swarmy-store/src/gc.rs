@@ -34,7 +34,7 @@ impl Store {
             };
             write(&trx, &sequence_key, &seq)?;
             write(&trx, &key, &lease)?;
-            write(&trx, &self.gc_run_key(run.owner), run)?;
+            write(&trx, &self.keys().gc_run(run.owner), run)?;
             Ok(lease)
         })
         .await
@@ -74,7 +74,7 @@ impl Store {
             {
                 return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
             }
-            write(&trx, &self.gc_run_key(run.owner), run)?;
+            write(&trx, &self.keys().gc_run(run.owner), run)?;
             trx.clear(&key);
             Ok(())
         })
@@ -98,7 +98,7 @@ impl Store {
         self.transaction(|trx| {
             let failed = &failed;
             async move {
-                write(&trx, &self.gc_run_key(owner), failed)?;
+                write(&trx, &self.keys().gc_run(owner), failed)?;
                 Ok(())
             }
         })
@@ -108,12 +108,8 @@ impl Store {
     /// # Errors
     /// Returns decoding or transaction errors.
     pub async fn get_gc_run(&self, owner: LeaseOwnerId) -> Result<Option<GcRun>> {
-        self.transaction(|trx| async move { read(&trx, &self.gc_run_key(owner)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().gc_run(owner)).await })
             .await
-    }
-
-    fn gc_run_key(&self, owner: LeaseOwnerId) -> Vec<u8> {
-        self.keys().gc_run(owner)
     }
 }
 

@@ -25,15 +25,11 @@ pub(crate) struct PlacementHosting {
 }
 
 impl Store {
-    fn scratch_key(&self, agent: AgentId) -> Vec<u8> {
-        self.keys().scratch(agent)
-    }
-
     /// Read the last reported local scratch location.
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn scratch(&self, agent: AgentId) -> Result<Option<ScratchRecord>> {
-        self.transaction(|trx| async move { read(&trx, &self.scratch_key(agent)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().scratch(agent)).await })
             .await
     }
 
@@ -49,7 +45,7 @@ impl Store {
             {
                 return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
-            write(&trx, &self.scratch_key(agent), record)
+            write(&trx, &self.keys().scratch(agent), record)
         })
         .await
     }
@@ -59,11 +55,11 @@ impl Store {
     /// Returns storage or decoding failures.
     pub async fn clear_scratch(&self, agent: AgentId, node: NodeId) -> Result<()> {
         self.transaction(|trx| async move {
-            if read::<ScratchRecord>(&trx, &self.scratch_key(agent))
+            if read::<ScratchRecord>(&trx, &self.keys().scratch(agent))
                 .await?
                 .is_some_and(|record| record.node_id == node)
             {
-                trx.clear(&self.scratch_key(agent));
+                trx.clear(&self.keys().scratch(agent));
             }
             Ok(())
         })
@@ -150,20 +146,8 @@ impl Store {
         .await
     }
 
-    fn placement_node_key(&self, node: NodeId, agent: AgentId) -> Vec<u8> {
-        self.keys().placement_by_node(node, agent)
-    }
-
-    fn placement_count_key(&self, node: NodeId) -> Vec<u8> {
-        self.keys().placement_count(node)
-    }
-
-    pub(crate) fn computer_memory_key(&self, agent: AgentId) -> Vec<u8> {
-        self.keys().computer_memory(agent)
-    }
-
     async fn requirement_bytes(&self, trx: &Transaction, agent: AgentId) -> Result<u64> {
-        let ephemeral: Option<u64> = read(trx, &self.computer_memory_key(agent)).await?;
+        let ephemeral: Option<u64> = read(trx, &self.keys().computer_memory(agent)).await?;
         let mib = if let Some(mib) = ephemeral {
             mib
         } else {
@@ -236,13 +220,13 @@ impl Store {
         node: NodeId,
         agent: AgentId,
     ) -> Result<()> {
-        let registered: NodeRecord = read(trx, &self.node_key(node))
+        let registered: NodeRecord = read(trx, &self.keys().node(node))
             .await?
             .ok_or(StoreError::Domain(crate::DomainError::NodeMissing))?;
         if !registered.roles.contains(&NodeRole::Sandbox) {
             return Err(StoreError::Domain(crate::DomainError::NodeNotSandbox));
         }
-        let key = self.placement_count_key(node);
+        let key = self.keys().placement_count(node);
         let count: u32 = read(trx, &key).await?.unwrap_or(0);
         if count >= registered.capacity.sandboxes {
             return Err(StoreError::Domain(crate::DomainError::NodeAtCapacity {
@@ -266,7 +250,7 @@ impl Store {
     }
 
     async fn free_computer(&self, trx: &Transaction, node: NodeId, _agent: AgentId) -> Result<()> {
-        let key = self.placement_count_key(node);
+        let key = self.keys().placement_count(node);
         let count: u32 = read(trx, &key)
             .await?
             .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
@@ -283,7 +267,9 @@ impl Store {
         write(trx, &self.keys().placement(record.agent_id), record)?;
         write(
             trx,
-            &self.placement_node_key(record.node_id, record.agent_id),
+            &self
+                .keys()
+                .placement_by_node(record.node_id, record.agent_id),
             record,
         )?;
         write(
@@ -431,7 +417,11 @@ impl Store {
             trx.clear(&self.keys().placement(current.agent_id));
             trx.clear(&self.keys().placement_hosting(current.agent_id));
             trx.clear(&self.keys().placement_address(current.agent_id));
-            trx.clear(&self.placement_node_key(current.node_id, current.agent_id));
+            trx.clear(
+                &self
+                    .keys()
+                    .placement_by_node(current.node_id, current.agent_id),
+            );
             Ok(())
         })
         .await
@@ -460,7 +450,11 @@ impl Store {
             // Clear the old row before reserving so the committed-memory sum,
             // which is derived from the node's placement rows, does not count
             // the crashed placement against the same node's capacity.
-            trx.clear(&self.placement_node_key(current.node_id, current.agent_id));
+            trx.clear(
+                &self
+                    .keys()
+                    .placement_by_node(current.node_id, current.agent_id),
+            );
             self.reserve_computer(&trx, node, current.agent_id).await?;
             let hosting = self
                 .read_placement_hosting(&trx, &current)
@@ -522,7 +516,7 @@ impl Store {
         self.transaction(|trx| async move {
             let (mut begin, end) = self.keys().placement_by_node_space(node).range();
             if let Some(agent) = after {
-                begin = self.placement_node_key(node, agent);
+                begin = self.keys().placement_by_node(node, agent);
                 begin = crate::next_cursor(&begin);
             }
             scan(&trx, (begin, end), limit)
@@ -545,7 +539,7 @@ impl Store {
             self.free_computer(trx, current.node_id, agent).await?;
             trx.clear(&self.keys().placement(agent));
             trx.clear(&self.keys().placement_hosting(agent));
-            trx.clear(&self.placement_node_key(current.node_id, agent));
+            trx.clear(&self.keys().placement_by_node(current.node_id, agent));
         }
         Ok(())
     }

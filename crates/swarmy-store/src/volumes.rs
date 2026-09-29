@@ -24,7 +24,7 @@ impl Store {
             return Err(StoreError::Domain(crate::DomainError::InvalidManifest));
         }
         self.transaction(|trx| async move {
-            let key = self.manifest_key(id);
+            let key = self.keys().manifest(id);
             if let Some(existing) = read::<ManifestHeader>(&trx, &key).await? {
                 return if &existing == header {
                     Ok(())
@@ -40,7 +40,7 @@ impl Store {
     /// # Errors
     /// Returns decoding and transaction errors.
     pub async fn get_manifest(&self, id: ManifestId) -> Result<Option<ManifestHeader>> {
-        self.transaction(|trx| async move { read(&trx, &self.manifest_key(id)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().manifest(id)).await })
             .await
     }
 
@@ -88,7 +88,7 @@ impl Store {
     /// # Errors
     /// Returns decoding and transaction errors.
     pub async fn get_volume(&self, id: VolumeId) -> Result<Option<VolumeRecord>> {
-        self.transaction(|trx| async move { read(&trx, &self.volume_key(id)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().volume(id)).await })
             .await
     }
 }
@@ -121,7 +121,7 @@ impl Store {
                 crate::DomainError::InvalidMemoryRequirement,
             ));
         }
-        let key = self.image_key(name, tag);
+        let key = self.keys().image(name, tag);
         if key.len() > 10_000 {
             return Err(StoreError::Storage(crate::StorageError::TooLarge));
         }
@@ -133,20 +133,24 @@ impl Store {
             async move {
                 self.require_manifest(&trx, manifest).await?;
                 write(&trx, key, &manifest)?;
-                write(&trx, &self.image_scratch_key(name, tag, manifest), scratch)?;
                 write(
                     &trx,
-                    &self.image_memory_key(name, tag, manifest),
+                    &self.keys().image_scratch(name, tag, manifest),
+                    scratch,
+                )?;
+                write(
+                    &trx,
+                    &self.keys().image_memory(name, tag, manifest),
                     memory_mib,
                 )?;
-                write(&trx, &self.image_display_key(name, tag, manifest), display)
+                write(
+                    &trx,
+                    &self.keys().image_display(name, tag, manifest),
+                    display,
+                )
             }
         })
         .await
-    }
-
-    fn image_display_key(&self, name: &str, tag: &ImageTag, manifest: ManifestId) -> Vec<u8> {
-        self.keys().image_display(name, tag, manifest)
     }
 
     /// Whether the immutable image exposes a graphical display.
@@ -156,21 +160,14 @@ impl Store {
         self.transaction(|trx| async move {
             Ok(read::<bool>(
                 &trx,
-                &self.image_display_key(&image.name, &image.tag, image.manifest_id),
+                &self
+                    .keys()
+                    .image_display(&image.name, &image.tag, image.manifest_id),
             )
             .await?
             .unwrap_or(false))
         })
         .await
-    }
-
-    pub(crate) fn image_memory_key(
-        &self,
-        name: &str,
-        tag: &ImageTag,
-        manifest: ManifestId,
-    ) -> Vec<u8> {
-        self.keys().image_memory(name, tag, manifest)
     }
 
     /// Image default, if its recipe supplied one.
@@ -180,16 +177,14 @@ impl Store {
         self.transaction(|trx| async move {
             Ok(read::<Option<u64>>(
                 &trx,
-                &self.image_memory_key(&image.name, &image.tag, image.manifest_id),
+                &self
+                    .keys()
+                    .image_memory(&image.name, &image.tag, image.manifest_id),
             )
             .await?
             .flatten())
         })
         .await
-    }
-
-    fn image_scratch_key(&self, name: &str, tag: &ImageTag, manifest: ManifestId) -> Vec<u8> {
-        self.keys().image_scratch(name, tag, manifest)
     }
 
     /// Read mount paths pinned to an image manifest.
@@ -199,7 +194,9 @@ impl Store {
         self.transaction(|trx| async move {
             Ok(read(
                 &trx,
-                &self.image_scratch_key(&image.name, &image.tag, image.manifest_id),
+                &self
+                    .keys()
+                    .image_scratch(&image.name, &image.tag, image.manifest_id),
             )
             .await?
             .unwrap_or_default())
@@ -210,7 +207,7 @@ impl Store {
     /// # Errors
     /// Returns decoding and transaction errors.
     pub async fn get_image(&self, name: &str, tag: &ImageTag) -> Result<Option<ManifestId>> {
-        self.transaction(|trx| async move { read(&trx, &self.image_key(name, tag)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().image(name, tag)).await })
             .await
     }
 
@@ -226,7 +223,7 @@ impl Store {
             let space = self.keys().image_space();
             let (mut begin, end) = space.range();
             if let Some((name, tag)) = after {
-                begin = self.image_key(name, tag);
+                begin = self.keys().image(name, tag);
                 begin = crate::next_cursor(&begin);
             }
             let mut images = Vec::new();
@@ -270,7 +267,7 @@ impl Store {
             {
                 return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
             }
-            let seq_key = self.volume_lease_seq_key(id);
+            let seq_key = self.keys().volume_lease_seq(id);
             let seq = read::<u64>(&trx, &seq_key)
                 .await?
                 .unwrap_or(0)
@@ -283,7 +280,7 @@ impl Store {
             };
             volume.writer_lease = Some(lease.clone());
             write(&trx, &seq_key, &seq)?;
-            write(&trx, &self.volume_key(id), &volume)?;
+            write(&trx, &self.keys().volume(id), &volume)?;
             Ok(lease)
         })
         .await
@@ -304,7 +301,7 @@ impl Store {
                 return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
             }
             volume.writer_lease = None;
-            write(&trx, &self.volume_key(id), &volume)
+            write(&trx, &self.keys().volume(id), &volume)
         })
         .await
     }
@@ -333,7 +330,7 @@ impl Store {
                 ..expected.clone()
             };
             volume.writer_lease = Some(lease.clone());
-            write(&trx, &self.volume_key(id), &volume)?;
+            write(&trx, &self.keys().volume(id), &volume)?;
             Ok(lease)
         })
         .await
@@ -385,10 +382,10 @@ impl Store {
             if volume.writer_lease.as_ref() != Some(expected) || expected.expires_at <= self.now() {
                 return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
             }
-            let parent_key = self.manifest_parent_key(next);
+            let parent_key = self.keys().manifest_parent(next);
             if volume.head_manifest == next
                 && read::<ManifestId>(&trx, &parent_key).await? == Some(previous)
-                && read::<ManifestHeader>(&trx, &self.manifest_key(next))
+                && read::<ManifestHeader>(&trx, &self.keys().manifest(next))
                     .await?
                     .as_ref()
                     == Some(header)
@@ -398,26 +395,26 @@ impl Store {
             if volume.head_manifest != previous {
                 return Err(StoreError::Fence(crate::FenceError::VolumeHeadMismatch));
             }
-            let old: ManifestHeader = read(&trx, &self.manifest_key(previous))
+            let old: ManifestHeader = read(&trx, &self.keys().manifest(previous))
                 .await?
                 .ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?;
             if header.size != old.size || header.chunk_size != old.chunk_size {
                 return Err(StoreError::Domain(crate::DomainError::InvalidManifest));
             }
-            if read::<ManifestHeader>(&trx, &self.manifest_key(next))
+            if read::<ManifestHeader>(&trx, &self.keys().manifest(next))
                 .await?
                 .is_some()
             {
                 return Err(StoreError::Domain(crate::DomainError::ManifestExists));
             }
-            write(&trx, &self.manifest_key(next), header)?;
+            write(&trx, &self.keys().manifest(next), header)?;
             write(&trx, &parent_key, &previous)?;
             let mut snapshots = self.snapshots(&trx, id).await?;
             snapshots.insert(0, next);
             snapshots.truncate(retention.get());
-            write(&trx, &self.volume_snapshots_key(id), &snapshots)?;
+            write(&trx, &self.keys().volume_snapshots(id), &snapshots)?;
             volume.head_manifest = next;
-            write(&trx, &self.volume_key(id), &volume)
+            write(&trx, &self.keys().volume(id), &volume)
         })
         .await
     }
@@ -428,7 +425,7 @@ impl Store {
     /// Returns decoding and transaction errors.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn manifest_parent(&self, id: ManifestId) -> Result<Option<ManifestId>> {
-        self.transaction(|trx| async move { read(&trx, &self.manifest_parent_key(id)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().manifest_parent(id)).await })
             .await
     }
 
@@ -444,7 +441,7 @@ impl Store {
             let space = self.keys().volume_space();
             let (mut begin, end) = space.range();
             if let Some(id) = after {
-                begin = self.volume_key(id);
+                begin = self.keys().volume(id);
                 begin = crate::next_cursor(&begin);
             }
             let mut volumes = Vec::new();
@@ -551,28 +548,20 @@ impl Store {
     }
 
     async fn snapshots(&self, trx: &Transaction, id: VolumeId) -> Result<Vec<ManifestId>> {
-        read(trx, &self.volume_snapshots_key(id))
+        read(trx, &self.keys().volume_snapshots(id))
             .await?
             .ok_or(StoreError::Storage(crate::StorageError::Corrupt))
     }
 
-    pub(crate) fn volume_snapshots_key(&self, id: VolumeId) -> Vec<u8> {
-        self.keys().volume_snapshots(id)
-    }
-
-    fn manifest_parent_key(&self, id: ManifestId) -> Vec<u8> {
-        self.keys().manifest_parent(id)
-    }
-
     async fn require_manifest(&self, trx: &Transaction, id: ManifestId) -> Result<()> {
-        read::<ManifestHeader>(trx, &self.manifest_key(id))
+        read::<ManifestHeader>(trx, &self.keys().manifest(id))
             .await?
             .ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?;
         Ok(())
     }
 
     async fn volume(&self, trx: &Transaction, id: VolumeId) -> Result<VolumeRecord> {
-        read(trx, &self.volume_key(id))
+        read(trx, &self.keys().volume(id))
             .await?
             .ok_or(StoreError::Domain(crate::DomainError::VolumeMissing))
     }
@@ -585,7 +574,7 @@ impl Store {
     ) -> Result<()> {
         self.check_computer(trx, swarmy_core::AgentId::from_ulid(id.as_ulid()))
             .await?;
-        let key = self.volume_key(id);
+        let key = self.keys().volume(id);
         if read::<VolumeRecord>(trx, &key).await?.is_some() {
             return Err(StoreError::Domain(crate::DomainError::VolumeExists));
         }
@@ -600,9 +589,9 @@ impl Store {
     ) -> Result<()> {
         write(
             trx,
-            &self.volume_snapshots_key(id),
+            &self.keys().volume_snapshots(id),
             &vec![record.head_manifest],
         )?;
-        write(trx, &self.volume_key(id), record)
+        write(trx, &self.keys().volume(id), record)
     }
 }

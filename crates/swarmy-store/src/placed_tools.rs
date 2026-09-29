@@ -20,10 +20,6 @@ fn job_digest(job: &ToolJob) -> Result<[u8; 32]> {
 }
 
 impl Store {
-    fn volume_placement_key(&self, id: VolumeId) -> Vec<u8> {
-        self.keys().volume_placement(id)
-    }
-
     /// Resolve the shared agent volume, initializing it from the session image.
     /// Existing slice 2 disks are imported once from their published head.
     /// Bind publication authority before attaching; never rebind a live writer.
@@ -41,9 +37,9 @@ impl Store {
                 return Err(StoreError::Fence(crate::FenceError::PlacementAgentMismatch));
             }
             let id = VolumeId::from_ulid(placement.agent_id.as_ulid());
-            let key = self.volume_placement_key(id);
+            let key = self.keys().volume_placement(id);
             let binding: Option<PlacementRecord> = read(&trx, &key).await?;
-            if let Some(volume) = read::<VolumeRecord>(&trx, &self.volume_key(id)).await? {
+            if let Some(volume) = read::<VolumeRecord>(&trx, &self.keys().volume(id)).await? {
                 if volume
                     .writer_lease
                     .is_some_and(|lease| lease.expires_at > self.now())
@@ -82,7 +78,7 @@ impl Store {
         owner: LeaseOwnerId,
     ) -> Result<()> {
         if let Some(placement) =
-            read::<PlacementRecord>(trx, &self.volume_placement_key(id)).await?
+            read::<PlacementRecord>(trx, &self.keys().volume_placement(id)).await?
         {
             if owner.as_ulid() != placement.node_id.as_ulid() {
                 return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
@@ -223,13 +219,13 @@ impl Store {
                 {
                     return Err(StoreError::Fence(crate::FenceError::ToolClaimMismatch));
                 }
-                trx.set(&self.event_key(job.session_id, head), event);
+                trx.set(&self.keys().event(job.session_id, head), event);
                 trx.clear(&self.keys().tool_job(job.request_id));
                 trx.clear(&self.keys().tool_placement(job.request_id));
                 trx.clear(&self.keys().placed_tool_claim(job.request_id));
                 write(&trx, &self.keys().tool_done(job.request_id), &true)?;
-                let pending = self.pending_space(job.session_id);
-                trx.clear(&self.session_tool_key(job.session_id, job.request_id));
+                let pending = self.keys().session_tools_space(job.session_id);
+                trx.clear(&self.keys().session_tools(job.session_id, job.request_id));
                 session.head_seq = head;
                 if scan(&trx, pending.range(), 1).await?.is_empty() {
                     self.transition(&trx, session, SessionState::Runnable, self.now())

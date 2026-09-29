@@ -13,10 +13,6 @@ use crate::{Result, Store, StoreError, read, scan, write};
 pub use swarmy_core::{RUNNABLE_PARTITIONS, runnable_partition};
 
 impl Store {
-    pub(crate) fn request_turn_key(&self, id: swarmy_core::RequestId) -> Vec<u8> {
-        self.keys().request_turn(id)
-    }
-
     /// Resolve the original user turn even when old work is redelivered later.
     /// # Errors
     /// Returns database and decoding errors.
@@ -24,40 +20,16 @@ impl Store {
         &self,
         id: swarmy_core::RequestId,
     ) -> Result<Option<swarmy_core::MessageId>> {
-        self.transaction(|trx| async move { read(&trx, &self.request_turn_key(id)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().request_turn(id)).await })
             .await
-    }
-
-    pub(crate) fn turn_key(&self, id: SessionId) -> Vec<u8> {
-        self.keys().turn(id)
     }
 
     /// The latest user message identifies the turn, including after snapshots.
     /// # Errors
     /// Returns database and decoding errors.
     pub async fn turn_id(&self, id: SessionId) -> Result<Option<swarmy_core::MessageId>> {
-        self.transaction(|trx| async move { read(&trx, &self.turn_key(id)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().turn(id)).await })
             .await
-    }
-
-    pub(crate) fn volume_key(&self, id: VolumeId) -> Vec<u8> {
-        self.keys().volume(id)
-    }
-
-    pub(crate) fn manifest_key(&self, id: ManifestId) -> Vec<u8> {
-        self.keys().manifest(id)
-    }
-
-    pub(crate) fn image_key(&self, name: &str, tag: &ImageTag) -> Vec<u8> {
-        self.keys().image(name, tag)
-    }
-
-    pub(crate) fn volume_lease_seq_key(&self, id: VolumeId) -> Vec<u8> {
-        self.keys().volume_lease_seq(id)
-    }
-
-    pub(crate) fn session_key(&self, id: SessionId) -> Vec<u8> {
-        self.keys().session(id)
     }
 
     /// The last durable state transition, if it happened after this field was introduced.
@@ -66,22 +38,6 @@ impl Store {
     pub async fn session_state_since(&self, id: SessionId) -> Result<Option<Timestamp>> {
         self.transaction(|trx| async move { Ok(self.session(&trx, id).await?.state_since) })
             .await
-    }
-
-    pub(crate) fn event_key(&self, id: SessionId, seq: u64) -> Vec<u8> {
-        self.keys().event(id, seq)
-    }
-
-    pub(crate) fn session_tool_key(
-        &self,
-        id: SessionId,
-        request: swarmy_core::RequestId,
-    ) -> Vec<u8> {
-        self.keys().session_tools(id, request)
-    }
-
-    pub(crate) fn event_space(&self, id: SessionId) -> Subspace {
-        self.keys().event_space(id)
     }
 
     fn runnable_key(&self, entry: &RunnableEntry) -> Vec<u8> {
@@ -93,12 +49,8 @@ impl Store {
         )
     }
 
-    fn runnable_lookup(&self, id: SessionId) -> Vec<u8> {
-        self.keys().runnable_by_session(id)
-    }
-
     pub(crate) async fn remove_runnable(&self, trx: &Transaction, id: SessionId) -> Result<()> {
-        let lookup = self.runnable_lookup(id);
+        let lookup = self.keys().runnable_by_session(id);
         if let Some(entry) = read::<RunnableEntry>(trx, &lookup).await? {
             trx.clear(&self.runnable_key(&entry));
             trx.clear(&lookup);
@@ -117,7 +69,11 @@ impl Store {
 
     pub(crate) fn write_runnable(&self, trx: &Transaction, entry: &RunnableEntry) -> Result<()> {
         write(trx, &self.runnable_key(entry), &())?;
-        write(trx, &self.runnable_lookup(entry.session_id), entry)
+        write(
+            trx,
+            &self.keys().runnable_by_session(entry.session_id),
+            entry,
+        )
     }
 
     /// Insert or reschedule a Runnable session, replacing its previous index entry.
@@ -181,25 +137,6 @@ pub(crate) fn session_id(bytes: Vec<u8>) -> Result<SessionId> {
         .try_into()
         .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
     Ok(SessionId::from_ulid(u128::from_be_bytes(bytes).into()))
-}
-
-impl Store {
-    pub(crate) fn agent_key(&self, id: swarmy_core::AgentId) -> Vec<u8> {
-        self.keys().agent(id)
-    }
-    pub(crate) fn agent_github_token_key(&self, id: swarmy_core::AgentId) -> Vec<u8> {
-        self.keys().agent_github_token(id)
-    }
-    pub(crate) fn agent_name_key(&self, name: &str) -> Vec<u8> {
-        self.keys().agent_by_name(name)
-    }
-    pub(crate) fn computer_deleted_key(&self, id: swarmy_core::AgentId) -> Vec<u8> {
-        self.keys().computer_deleted(id)
-    }
-
-    pub(crate) fn session_agent_key(&self, agent: swarmy_core::AgentId, id: SessionId) -> Vec<u8> {
-        self.keys().session_by_agent(agent, id)
-    }
 }
 
 // The store's tuple key family registry. All families have one private name

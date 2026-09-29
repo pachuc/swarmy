@@ -5,10 +5,6 @@ use swarmy_core::{Event, Lease, RequestId, SessionId, SessionState, ToolJob};
 type PreparedToolRequests = [(Event, Vec<u8>)];
 
 impl Store {
-    pub(crate) fn pending_space(&self, id: SessionId) -> foundationdb::tuple::Subspace {
-        self.keys().session_tools_space(id)
-    }
-
     /// Persist dispatch epochs with the jobs so a lost publication cannot lose its fence.
     /// # Errors
     /// Rejects stale workers, placements, unrelated jobs, and storage failures.
@@ -108,7 +104,7 @@ impl Store {
                         return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
                     }
                     let event = trx
-                        .get(&self.event_key(id, job.step), false)
+                        .get(&self.keys().event(id, job.step), false)
                         .await?
                         .ok_or(StoreError::Domain(crate::DomainError::MissingToolRequest))?;
                     match self.hydrate::<Event>(&event).await? {
@@ -127,7 +123,7 @@ impl Store {
                     }
                     trx.set(&self.keys().tool_job(job.request_id), value);
                     write(&trx, &self.keys().tool_placement(job.request_id), placement)?;
-                    write(&trx, &self.session_tool_key(id, job.request_id), &())?;
+                    write(&trx, &self.keys().session_tools(id, job.request_id), &())?;
                 }
                 let session = self.session(&trx, id).await?;
                 self.transition(&trx, session, SessionState::WaitingTools, self.now())
@@ -146,7 +142,7 @@ impl Store {
     ) -> Result<()> {
         let mut session = self.session(trx, id).await?;
         crate::check_head(session.head_seq, expected_head)?;
-        let turn = read::<swarmy_core::MessageId>(trx, &self.turn_key(id)).await?;
+        let turn = read::<swarmy_core::MessageId>(trx, &self.keys().turn(id)).await?;
         for (event, value) in events {
             let Event::ToolCallRequested {
                 seq, request_id, ..
@@ -154,9 +150,9 @@ impl Store {
             else {
                 return Err(StoreError::Domain(crate::DomainError::InvalidToolCall));
             };
-            trx.set(&self.event_key(id, *seq), value);
+            trx.set(&self.keys().event(id, *seq), value);
             if let Some(turn) = turn {
-                write(trx, &self.request_turn_key(*request_id), &turn)?;
+                write(trx, &self.keys().request_turn(*request_id), &turn)?;
             }
             session.head_seq = *seq;
         }
