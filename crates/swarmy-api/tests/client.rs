@@ -184,13 +184,12 @@ async fn assert_agent_routes(client: &Client) {
         .await
         .unwrap();
     assert!(named.agent_id.is_some());
-    assert_eq!(
+    assert!(
         client
             .delete_agent("fixture-agent", "delete")
             .await
             .unwrap()
-            .deleted,
-        true
+            .deleted
     );
 }
 
@@ -228,13 +227,12 @@ async fn assert_catalog_and_credentials(client: &Client) {
             created
         );
         assert!(!client.credentials().await.unwrap().is_empty());
-        assert_eq!(
+        assert!(
             client
                 .remove_credential("fixture-provider", "delete-credential")
                 .await
                 .unwrap()
-                .deleted,
-            true
+                .deleted
         );
     }
 }
