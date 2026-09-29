@@ -1,4 +1,4 @@
-//! Preserve existing postcard discriminants; JSON keeps the public completion name.
+//! Encode current postcard events; JSON keeps the public completion name.
 use super::{
     Event, FailureKind, Message, RequestId, SessionState, SnapshotRef, ToolCallId, ToolCallRecord,
     ToolResult,
@@ -94,11 +94,6 @@ enum BinaryEvent {
         /// The step used to derive the request id, even if earlier events were appended.
         step: u64,
     },
-    InferenceCompleted {
-        seq: u64,
-        request_id: RequestId,
-        message: Message,
-    },
     ToolCallRequested {
         seq: u64,
         request_id: RequestId,
@@ -124,37 +119,24 @@ enum BinaryEvent {
         seq: u64,
         request_id: RequestId,
         error: String,
-        #[serde(default, with = "crate::trailing")]
         failure_kind: FailureKind,
     },
     MeteredInferenceCompleted {
         seq: u64,
         request_id: RequestId,
         message: Message,
-        #[serde(default)]
         provider: String,
-        #[serde(default)]
         model: String,
-        #[serde(default)]
         effort_used: Option<crate::ReasoningEffort>,
-        #[serde(default)]
         usage: crate::TokenUsage,
-        #[serde(default)]
         cost_micros: u64,
-        #[serde(default)]
         effort_requested: Option<crate::ReasoningEffort>,
-        #[serde(default)]
         effort_clamped: bool,
-        /// Auth entry that served the turn, appended as trailing fields on
-        /// the completion row, which older readers reject: upgrade readers
-        /// before gateways (see `docs/providers.md`).
-        #[serde(default, with = "crate::trailing")]
+        /// Auth entry that served the turn.
         entry: Option<String>,
         /// Named route that selected the entry, if any.
-        #[serde(default, with = "crate::trailing")]
         route: Option<String>,
         /// Index into the resolved route, so metering names the exact step.
-        #[serde(default, with = "crate::trailing")]
         route_step: Option<u32>,
     },
     RetryableInferenceFailed {
@@ -163,7 +145,6 @@ enum BinaryEvent {
         error: String,
         retryable: bool,
         retry_at: Option<jiff::Timestamp>,
-        #[serde(default, with = "crate::trailing")]
         failure_kind: FailureKind,
     },
     MessageQueued {
@@ -191,11 +172,7 @@ impl<'de> Deserialize<'de> for Event {
         }
     }
 }
-/// Encode a completion on the metered shape with its route attribution as
-/// trailing fields, so the discriminant never changes when attribution is
-/// added. Older readers reject rows with trailing bytes, so upgrade readers
-/// (workers, API servers, CLI clients, chaos checkers) before gateways;
-/// current readers default missing trailing fields exactly like old rows.
+/// Encode a completion with route attribution.
 #[allow(clippy::too_many_arguments)]
 fn completion_to_binary(
     seq: u64,
@@ -238,18 +215,6 @@ fn failed_completion(
     retry_at: Option<jiff::Timestamp>,
     failure_kind: FailureKind,
 ) -> Event {
-    // Legacy interrupt events had no kind. Classify them once while decoding
-    // so the store never has to make a decision from the display text.
-    let failure_kind = if failure_kind == FailureKind::Unknown && error == "interrupted by operator"
-    {
-        FailureKind::OperatorInterrupted
-    } else if failure_kind == FailureKind::Unknown
-        && error.starts_with("no gateway serves provider ")
-    {
-        FailureKind::GatewayUnserved
-    } else {
-        failure_kind
-    };
     Event::InferenceFailed {
         seq,
         request_id,
@@ -260,27 +225,7 @@ fn failed_completion(
     }
 }
 
-/// Decode a completion from before metering existed.
-fn unmetered_completion(seq: u64, request_id: RequestId, message: Message) -> Event {
-    Event::InferenceCompleted {
-        seq,
-        request_id,
-        message,
-        provider: String::new(),
-        model: String::new(),
-        effort_used: None,
-        usage: crate::TokenUsage::default(),
-        cost_micros: 0,
-        effort_requested: None,
-        effort_clamped: false,
-        entry: None,
-        route: None,
-        route_step: None,
-    }
-}
-
-/// Decode a metered completion, defaulting route attribution that older
-/// rows never stored.
+/// Decode a metered completion with route attribution.
 #[allow(clippy::too_many_arguments)]
 fn metered_completion(
     seq: u64,
@@ -444,11 +389,6 @@ impl From<BinaryEvent> for Event {
                 request_id,
                 step,
             },
-            BinaryEvent::InferenceCompleted {
-                seq,
-                request_id,
-                message,
-            } => unmetered_completion(seq, request_id, message),
             BinaryEvent::ToolCallRequested {
                 seq,
                 request_id,
@@ -545,9 +485,8 @@ mod tests {
             route: None,
             route_step: None,
         };
-        // Attributed and plain completions share the metered discriminant;
-        // only the trailing bytes differ.
-        assert_eq!(usize::from(crate::encode(&plain).unwrap()[1]), 8);
+        // Attributed and plain completions share the metered discriminant.
+        assert_eq!(usize::from(crate::encode(&plain).unwrap()[1]), 7);
         assert_eq!(
             crate::decode::<Event>(&crate::encode(&plain).unwrap()).unwrap(),
             plain
@@ -584,7 +523,7 @@ mod tests {
             route_step: Some(1),
         };
         let bytes = crate::encode(&routed).unwrap();
-        assert_eq!(usize::from(bytes[1]), 8);
+        assert_eq!(usize::from(bytes[1]), 7);
         assert_eq!(crate::decode::<Event>(&bytes).unwrap(), routed);
         let json = serde_json::to_value(&routed).unwrap();
         assert_eq!(json["inference_completed"]["entry"], "backup");
@@ -601,130 +540,6 @@ mod tests {
         assert_eq!(serde_json::from_value::<Event>(old).unwrap(), plain);
     }
 
-    /// The pre-routes binary schema for the metered variant: the same fields
-    /// in the same order, without the trailing route attribution.
-    #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
-    enum PreRoutesBinaryEvent {
-        MessageAppended {
-            seq: u64,
-            message: Message,
-        },
-        InferenceRequested {
-            seq: u64,
-            request_id: RequestId,
-            step: u64,
-        },
-        InferenceCompleted {
-            seq: u64,
-            request_id: RequestId,
-            message: Message,
-        },
-        ToolCallRequested {
-            seq: u64,
-            request_id: RequestId,
-            call: ToolCallRecord,
-        },
-        ToolCallCompleted {
-            seq: u64,
-            request_id: RequestId,
-            call_id: ToolCallId,
-            result: ToolResult,
-        },
-        StateChanged {
-            seq: u64,
-            from: SessionState,
-            to: SessionState,
-        },
-        SnapshotWritten {
-            seq: u64,
-            snapshot: SnapshotRef,
-        },
-        InferenceFailed {
-            seq: u64,
-            request_id: RequestId,
-            error: String,
-        },
-        MeteredInferenceCompleted {
-            seq: u64,
-            request_id: RequestId,
-            message: Message,
-            #[serde(default)]
-            provider: String,
-            #[serde(default)]
-            model: String,
-            #[serde(default)]
-            effort_used: Option<crate::ReasoningEffort>,
-            #[serde(default)]
-            usage: crate::TokenUsage,
-            #[serde(default)]
-            cost_micros: u64,
-            #[serde(default)]
-            effort_requested: Option<crate::ReasoningEffort>,
-            #[serde(default)]
-            effort_clamped: bool,
-        },
-        RetryableInferenceFailed {
-            seq: u64,
-            request_id: RequestId,
-            error: String,
-            retryable: bool,
-            retry_at: Option<jiff::Timestamp>,
-        },
-    }
-
-    #[test]
-    fn old_failure_rows_default_kind() {
-        let request_id = crate::RequestId::for_step(
-            crate::SessionId::from_ulid(ulid::Ulid::from_parts(5, 6)),
-            4,
-        );
-        let old = PreRoutesBinaryEvent::RetryableInferenceFailed {
-            seq: 7,
-            request_id,
-            error: "provider unavailable".into(),
-            retryable: true,
-            retry_at: None,
-        };
-        let bytes = postcard::to_extend(&old, vec![crate::STORAGE_VERSION]).unwrap();
-        assert_eq!(
-            crate::decode::<Event>(&bytes).unwrap(),
-            Event::InferenceFailed {
-                seq: 7,
-                request_id,
-                error: "provider unavailable".into(),
-                retryable: true,
-                retry_at: None,
-                failure_kind: FailureKind::Unknown,
-            }
-        );
-        let unserved = PreRoutesBinaryEvent::InferenceFailed {
-            seq: 9,
-            request_id,
-            error: "no gateway serves provider openai".into(),
-        };
-        let bytes = postcard::to_extend(&unserved, vec![crate::STORAGE_VERSION]).unwrap();
-        assert!(matches!(
-            crate::decode::<Event>(&bytes).unwrap(),
-            Event::InferenceFailed {
-                failure_kind: FailureKind::GatewayUnserved,
-                ..
-            }
-        ));
-        let interrupt = PreRoutesBinaryEvent::InferenceFailed {
-            seq: 8,
-            request_id,
-            error: "interrupted by operator".into(),
-        };
-        let bytes = postcard::to_extend(&interrupt, vec![crate::STORAGE_VERSION]).unwrap();
-        assert!(matches!(
-            crate::decode::<Event>(&bytes).unwrap(),
-            Event::InferenceFailed {
-                failure_kind: FailureKind::OperatorInterrupted,
-                ..
-            }
-        ));
-    }
-
     #[test]
     fn queued_event_has_frozen_binary_layout() {
         let event = Event::MessageQueued {
@@ -737,108 +552,11 @@ mod tests {
             queued_at: jiff::Timestamp::UNIX_EPOCH,
         };
         let bytes = crate::encode(&event).unwrap();
-        let mut expected = vec![1, 10, 1, 26];
+        let mut expected = vec![1, 9, 1, 26];
         expected.extend_from_slice(b"00000000000000000000000000");
         expected.extend_from_slice(&[1, 0, 20]);
         expected.extend_from_slice(b"1970-01-01T00:00:00Z");
         assert_eq!(bytes, expected);
         assert_eq!(crate::decode::<Event>(&bytes).unwrap(), event);
-    }
-
-    #[test]
-    fn attributed_completions_default_route_fields_for_old_rows() {
-        let request_id = crate::RequestId::for_step(
-            crate::SessionId::from_ulid(ulid::Ulid::from_parts(5, 6)),
-            4,
-        );
-        // Rows written before routes carry no trailing attribution. The
-        // production decoder rejects trailing bytes, so an old reader still
-        // fails on rows a new gateway writes: rollouts must upgrade readers
-        // (workers, API servers, CLI clients, chaos checkers) before
-        // gateways. What the trailing fields do guarantee is the other
-        // direction, tested here: new readers decode old rows with
-        // defaulted attribution.
-        let old = PreRoutesBinaryEvent::MeteredInferenceCompleted {
-            seq: 9,
-            request_id,
-            message: crate::message::tests::message(),
-            provider: "openai".into(),
-            model: "gpt-5.5".into(),
-            effort_used: None,
-            usage: crate::TokenUsage::default(),
-            cost_micros: 11,
-            effort_requested: None,
-            effort_clamped: false,
-        };
-        let old_bytes = postcard::to_extend(&old, vec![crate::STORAGE_VERSION]).unwrap();
-        assert_eq!(
-            crate::decode::<Event>(&old_bytes).unwrap(),
-            Event::InferenceCompleted {
-                seq: 9,
-                request_id,
-                message: crate::message::tests::message(),
-                provider: "openai".into(),
-                model: "gpt-5.5".into(),
-                effort_used: None,
-                usage: crate::TokenUsage::default(),
-                cost_micros: 11,
-                effort_requested: None,
-                effort_clamped: false,
-                entry: None,
-                route: None,
-                route_step: None,
-            }
-        );
-        // New rows keep their attribution through the same decoder.
-        let routed = Event::InferenceCompleted {
-            seq: 9,
-            request_id,
-            message: crate::message::tests::message(),
-            provider: "openai".into(),
-            model: "gpt-5.5".into(),
-            effort_used: None,
-            usage: crate::TokenUsage::default(),
-            cost_micros: 11,
-            effort_requested: None,
-            effort_clamped: false,
-            entry: Some("backup".into()),
-            route: Some("fallback".into()),
-            route_step: Some(1),
-        };
-        assert_eq!(
-            crate::decode::<Event>(&crate::encode(&routed).unwrap()).unwrap(),
-            routed
-        );
-    }
-
-    #[test]
-    fn old_completions_decode_alone_and_inside_a_sequence() {
-        let old = BinaryEvent::InferenceCompleted {
-            seq: 7,
-            request_id: crate::RequestId::for_step(
-                crate::SessionId::from_ulid(ulid::Ulid::from_parts(1, 2)),
-                6,
-            ),
-            message: crate::message::tests::message(),
-        };
-        let bytes = crate::encode(&old).unwrap();
-        let event: Event = crate::decode(&bytes).unwrap();
-        assert!(
-            matches!(&event, Event::InferenceCompleted { usage, cost_micros: 0, provider, .. } if usage == &crate::TokenUsage::default() && provider.is_empty())
-        );
-        let bytes = crate::encode(&vec![
-            old,
-            BinaryEvent::StateChanged {
-                seq: 8,
-                from: SessionState::WaitingInference,
-                to: SessionState::Idle,
-            },
-        ])
-        .unwrap();
-        let events: Vec<Event> = crate::decode(&bytes).unwrap();
-        assert_eq!(events[0], event);
-        assert_eq!(events[1].seq(), 8);
-        let json = serde_json::json!({"inference_completed": {"seq": 7, "request_id": match &event { Event::InferenceCompleted {request_id, ..} => request_id, _ => unreachable!() }, "message": crate::message::tests::message()}});
-        assert_eq!(serde_json::from_value::<Event>(json).unwrap(), event);
     }
 }

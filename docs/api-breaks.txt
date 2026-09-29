@@ -53,3 +53,5 @@ POST /v1/sessions/{id}/messages accepts queue=true without interrupting a busy t
 # - Deprecated flat remote AWS settings and slash-separated S3 bucket/prefix settings are rejected. Saved remote state requires launch_attempted instead of defaulting it.
 GET /v1/cli/doctor removed the optional property `legacy_credential_rows` from the response with the `200` status
 GET /v1/sessions/{id}/events removes legacy_context_notice from notice kind values
+# 2026-09-29: Stored event rows no longer decode the unmetered completion variant or missing failure-kind and route-attribution fields. Current event discriminants after the removed completion shift by one. TokenUsage now requires six fields; five-field usage rows are rejected. Wipe the development store before deployment.
+# 2026-09-29: Turn metric envelopes use the current summary (tag 0), inference (tag 1), and tool (tag 2) variants only; older capped-metrics tags and bare detail rows are rejected.

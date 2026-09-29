@@ -230,22 +230,15 @@ pub(crate) mod tests {
             // change the interpretation of old stored events.
             assert_eq!(
                 usize::from(encode(&event).unwrap()[1]),
-                if index == 2 { 8 } else { index }
+                if index == 2 {
+                    7
+                } else if index > 2 {
+                    index - 1
+                } else {
+                    index
+                }
             );
         }
-    }
-
-    #[test]
-    fn version_one_event_fixture_remains_readable() {
-        // Version 1, StateChanged tag 5, seq 42, Leased tag 2, Idle tag 0.
-        let bytes = [1, 5, 42, 2, 0];
-        let event = Event::StateChanged {
-            seq: 42,
-            from: SessionState::Leased,
-            to: SessionState::Idle,
-        };
-        assert_eq!(decode::<Event>(&bytes).unwrap(), event);
-        assert_eq!(encode(&event).unwrap(), bytes);
     }
 
     #[test]
