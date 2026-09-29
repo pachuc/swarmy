@@ -528,7 +528,15 @@ async fn owner_day_totals_ignore_rows_outside_their_range() {
     complete_with(
         store,
         other,
-        &input("xai", "grok", "aux", CredentialEntryKind::ApiKey, tokens.clone(), 9_000, day),
+        &input(
+            "xai",
+            "grok",
+            "aux",
+            CredentialEntryKind::ApiKey,
+            tokens.clone(),
+            9_000,
+            day,
+        ),
     )
     .await;
     // Bulk history outside the range: thirty other-owner days must not move
@@ -538,7 +546,15 @@ async fn owner_day_totals_ignore_rows_outside_their_range() {
         complete_with(
             store,
             other,
-            &input("xai", "grok", "aux", CredentialEntryKind::ApiKey, tokens.clone(), 9_000, at),
+            &input(
+                "xai",
+                "grok",
+                "aux",
+                CredentialEntryKind::ApiKey,
+                tokens.clone(),
+                9_000,
+                at,
+            ),
         )
         .await;
     }

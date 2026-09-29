@@ -5,9 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, LiveFeed};
-use swarmy_core::{
-    CredentialEntryKind, Event, Message, MessageId, MessageRole,
-};
+use swarmy_core::{CredentialEntryKind, Event, Message, MessageId, MessageRole};
 use swarmy_llm::{InferenceJob, Response, cost::cost_micros};
 use swarmy_store::{InferenceClaim, InferenceCompletion};
 use tokio::time::sleep;
@@ -109,7 +107,6 @@ impl Gateway {
         }
     }
 
-
     pub(crate) async fn commit_terminal(
         &self,
         delivery: &Delivery<'_>,
@@ -174,7 +171,6 @@ impl Gateway {
         Ok(())
     }
 
-
     fn attribution_for(
         result: &std::result::Result<Response, swarmy_llm::Error>,
         entry: Option<String>,
@@ -201,7 +197,6 @@ impl Gateway {
             quota_resets,
         }
     }
-
 
     fn terminal_event(input: &TerminalInput<'_>) -> Event {
         match input.result {
@@ -243,7 +238,6 @@ impl Gateway {
         }
     }
 
-
     async fn touch_entry(&self, provider: &str, entry: Option<&str>) {
         let Some(label) = entry else {
             return;
@@ -258,7 +252,6 @@ impl Gateway {
             warn!(%error, "credential last-use update failed");
         }
     }
-
 
     async fn persist_response(
         &self,
@@ -329,7 +322,6 @@ impl Gateway {
         Ok(())
     }
 
-
     fn side_summarization_threshold(&self, provider: &str, model: &str) -> u64 {
         self.summarize_at_tokens
             .or_else(|| {
@@ -339,7 +331,6 @@ impl Gateway {
             .or_else(|| self.providers.catalog.summarize_at(provider, model))
             .unwrap_or(u64::MAX)
     }
-
 
     async fn terminal_snapshot(
         &self,
@@ -425,7 +416,6 @@ impl Gateway {
         self.blobs.put(&snapshot.object_key, bytes.into()).await?;
         Ok(Some(snapshot))
     }
-
 
     async fn notify_completion(
         &self,

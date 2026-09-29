@@ -269,7 +269,14 @@ impl Providers {
         &self,
         provider: &str,
         model: &swarmy_llm::catalog::ModelInfo,
-    ) -> Result<(Arc<dyn Provider>, Option<String>, Option<CredentialEntryKind>), swarmy_llm::Error> {
+    ) -> Result<
+        (
+            Arc<dyn Provider>,
+            Option<String>,
+            Option<CredentialEntryKind>,
+        ),
+        swarmy_llm::Error,
+    > {
         self.client_pinned(provider, model, None).await
     }
 
@@ -281,7 +288,14 @@ impl Providers {
         provider: &str,
         model: &swarmy_llm::catalog::ModelInfo,
         pinned: Option<&str>,
-    ) -> Result<(Arc<dyn Provider>, Option<String>, Option<CredentialEntryKind>), swarmy_llm::Error> {
+    ) -> Result<
+        (
+            Arc<dyn Provider>,
+            Option<String>,
+            Option<CredentialEntryKind>,
+        ),
+        swarmy_llm::Error,
+    > {
         let served = self
             .state
             .read()

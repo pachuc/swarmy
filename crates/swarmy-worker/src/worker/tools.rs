@@ -1,8 +1,8 @@
 use super::step::pending_tools;
 use super::{
-    Bus, Context, Event, HeldLease, MAX_SCAN_LIMIT, MessageId, RequestId, Result, SandboxArguments,
-    KillPoint, SessionId, SessionRecord, StoreError, ToolCallRecord, ToolJob, TurnStage, WorkQueue, Worker,
-    execution_result, runnable_partition,
+    Bus, Context, Event, HeldLease, KillPoint, MAX_SCAN_LIMIT, MessageId, RequestId, Result,
+    SandboxArguments, SessionId, SessionRecord, StoreError, ToolCallRecord, ToolJob, TurnStage,
+    WorkQueue, Worker, execution_result, runnable_partition,
 };
 
 enum Dispatch<'a> {
@@ -64,8 +64,7 @@ impl Worker {
             .await?;
         session.head_seq = event.seq();
         if call.tool == "update_plan"
-            && let Ok(arguments) =
-                swarmy_core::UpdatePlanArguments::parse(call.arguments.clone())
+            && let Ok(arguments) = swarmy_core::UpdatePlanArguments::parse(call.arguments.clone())
         {
             session.plan = arguments.plan;
         }

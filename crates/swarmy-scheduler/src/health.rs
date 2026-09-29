@@ -12,12 +12,7 @@ pub const HEALTH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Report this instance and expire stale service records until the process
 /// ends. Heartbeat and expiry failures only warn; the next tick retries.
-pub async fn run(
-    store: &Store,
-    instance_id: String,
-    started: Timestamp,
-    partitions: Vec<u16>,
-) {
+pub async fn run(store: &Store, instance_id: String, started: Timestamp, partitions: Vec<u16>) {
     let mut ticks = interval(HEALTH_INTERVAL);
     loop {
         ticks.tick().await;

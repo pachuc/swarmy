@@ -8,11 +8,9 @@ use crate::{Result, Store, StoreError, read, scan, write};
 
 /// How long a granted entry probe stays visibly open after its window ends,
 /// so waiters see one stable deadline instead of a flapping breaker.
-pub(crate) const BREAKER_PROBE_GRACE: std::time::Duration =
-    std::time::Duration::from_secs(1);
+pub(crate) const BREAKER_PROBE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 /// How long a granted probe may spend one request before the entry opens again.
-pub(crate) const BREAKER_PROBE_WINDOW: std::time::Duration =
-    std::time::Duration::from_secs(120);
+pub(crate) const BREAKER_PROBE_WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Breaker identity: one record per auth entry. A rate limit on one key opens
 /// only that key's breaker and leaves the provider's other entries closed.

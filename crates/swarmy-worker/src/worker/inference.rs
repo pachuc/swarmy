@@ -1,7 +1,7 @@
 use super::{
-    Context, Event, HeldLease, InferenceJob, InferenceJobRef, InflightRecord, LeaseOwnerId,
-    MAX_SCAN_LIMIT, MessageId, RequestId, Result, SessionId, SessionRecord, SessionState,
-    KillPoint, SubjectToken, SubmitInferenceOptions, Timestamp, Ulid, WorkQueue, Worker, Write,
+    Context, Event, HeldLease, InferenceJob, InferenceJobRef, InflightRecord, KillPoint,
+    LeaseOwnerId, MAX_SCAN_LIMIT, MessageId, RequestId, Result, SessionId, SessionRecord,
+    SessionState, SubjectToken, SubmitInferenceOptions, Timestamp, Ulid, WorkQueue, Worker, Write,
 };
 
 pub(super) enum StepFailure<'a> {

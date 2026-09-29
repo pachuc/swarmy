@@ -168,12 +168,7 @@ impl Gateway {
         Ok((response, Some(is_streamed_response(content_chunks))))
     }
 
-
-    pub(crate) fn effort_for(
-        &self,
-        job: &InferenceJob,
-        provider: &str,
-    ) -> EffortChoice<'_> {
+    pub(crate) fn effort_for(&self, job: &InferenceJob, provider: &str) -> EffortChoice<'_> {
         let model = self
             .providers
             .catalog
@@ -193,7 +188,6 @@ impl Gateway {
             clamped: effort_clamped,
         }
     }
-
 
     pub(crate) async fn attempt_provider(
         &self,
@@ -270,7 +264,6 @@ impl Gateway {
             entry_kind,
         })
     }
-
 
     pub(crate) async fn record_breaker(
         &self,

@@ -85,10 +85,7 @@ impl Store {
             read::<UsageTotals>(trx, &agent_key)
         )?;
         // The completion carries the entry, so the hot path needs no extra reads.
-        let (entry, kind) = (
-            attribution.entry.map(str::to_owned),
-            attribution.entry_kind,
-        );
+        let (entry, kind) = (attribution.entry.map(str::to_owned), attribution.entry_kind);
         crate::write(
             trx,
             &self.keys().usage_record(attribution.request),

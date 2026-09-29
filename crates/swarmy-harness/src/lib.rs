@@ -112,8 +112,10 @@ impl Harness {
     }
 }
 
-// Prompts copied verbatim from Pi: packages/coding-agent/src/core/compaction/
-// utils.ts:156 and compaction.ts:529-601, 964-978; messages.ts:11-16.
+// Prompts copied verbatim from Pi (earendil-works/pi@8eb2bcc):
+// packages/coding-agent/src/core/compaction/utils.ts@8eb2bcc:156,
+// packages/coding-agent/src/core/compaction/compaction.ts@8eb2bcc:529-601, 964-978,
+// packages/coding-agent/src/core/messages.ts@8eb2bcc:11-16.
 pub const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
 
 pub const SUMMARIZATION_PROMPT: &str = "The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or \"(none)\" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";

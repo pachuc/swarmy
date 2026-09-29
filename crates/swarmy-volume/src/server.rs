@@ -180,7 +180,9 @@ pub async fn discard(config: &ServerConfig, id: VolumeId) -> Result<()> {
 struct SocketGuard(PathBuf);
 impl Drop for SocketGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        if let Err(error) = std::fs::remove_file(&self.0) {
+            tracing::warn!(%error, "socket file removal failed");
+        }
     }
 }
 

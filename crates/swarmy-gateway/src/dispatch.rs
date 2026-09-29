@@ -20,11 +20,7 @@ use tokio::{
 use tracing::{error, info, warn};
 use ulid::Ulid;
 
-use crate::{
-    attempt::Delivery,
-    config,
-    providers::Providers,
-};
+use crate::{attempt::Delivery, config, providers::Providers};
 
 /// The gateway engine: claims inference work, streams provider responses,
 /// and commits terminal events. Constructed once in `main` and served until
@@ -256,7 +252,6 @@ impl Gateway {
             .is_some_and(|record| record.state == IdempotencyState::Completed))
     }
 
-
     pub(crate) async fn handle(&self, message: &WorkMessage<InferenceJobRef>) -> Result<()> {
         let job = &message.value;
         if job.request_id != RequestId::for_step(job.session_id, job.step) {
@@ -330,7 +325,6 @@ impl Gateway {
         }
     }
 
-
     fn turn_id(job: &InferenceJob) -> Option<MessageId> {
         job.request
             .messages
@@ -339,7 +333,6 @@ impl Gateway {
             .find(|message| message.role == MessageRole::User)
             .map(|message| message.id)
     }
-
 
     pub(crate) async fn observe_inference_stage(
         &self,
@@ -353,7 +346,6 @@ impl Gateway {
             self.store.observe_turn_stage(event);
         }
     }
-
 
     pub(crate) fn observe_wait(
         &self,
@@ -372,7 +364,6 @@ impl Gateway {
             );
         }
     }
-
 
     pub(crate) fn observe_terminal_metric(
         &self,
@@ -433,7 +424,6 @@ impl Gateway {
         }
     }
 
-
     pub(crate) async fn process(
         &self,
         message: &WorkMessage<InferenceJobRef>,
@@ -464,12 +454,15 @@ impl Gateway {
                 job.entry.as_deref(),
             )
             .await?;
-        self.observe_inference_stage(job, delivery.turn, swarmy_core::TurnStage::InferenceFinished)
-            .await;
+        self.observe_inference_stage(
+            job,
+            delivery.turn,
+            swarmy_core::TurnStage::InferenceFinished,
+        )
+        .await;
         let Some(outcome) = self.retry_or_continue(&delivery, outcome).await? else {
             return Ok(());
         };
         self.commit_terminal(&delivery, &effort, outcome).await
     }
-
 }
