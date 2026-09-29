@@ -7,6 +7,9 @@ pub fn stack_env(name: &str) -> Result<String, std::env::VarError> {
         std::env::var_os("CI").is_none() || value.is_ok(),
         "CI requires {name} for integration tests"
     );
+    if value.is_err() {
+        eprintln!("skipping integration test: {name} unavailable");
+    }
     value
 }
 
@@ -18,5 +21,8 @@ pub fn stack_env_os(name: &str) -> Option<std::ffi::OsString> {
         std::env::var_os("CI").is_none() || value.is_some(),
         "CI requires {name} for integration tests"
     );
+    if value.is_none() {
+        eprintln!("skipping integration test: {name} unavailable");
+    }
     value
 }

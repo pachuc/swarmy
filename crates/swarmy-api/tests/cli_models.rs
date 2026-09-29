@@ -32,7 +32,6 @@ impl Fixture {
             swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
             swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
         ) else {
-            eprintln!("skipping models integration: dev stack unavailable");
             return None;
         };
         let directory = tempfile::tempdir().unwrap();

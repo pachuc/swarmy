@@ -14,7 +14,6 @@ fn root_persistent_agent_continuity() {
         "SWARMY_S3_ENDPOINT",
     ] {
         if swarmy_core::test_support::stack_env_os(variable).is_none() {
-            eprintln!("skipping continuity acceptance: {variable} is unset");
             return;
         }
     }

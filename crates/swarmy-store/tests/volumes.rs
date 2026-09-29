@@ -22,7 +22,6 @@ impl Fixture {
     fn new() -> Option<Self> {
         static NETWORK: OnceLock<NetworkAutoStop> = OnceLock::new();
         let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
-            eprintln!("skipping snapshot integration test: SWARMY_FDB_CLUSTER_FILE is unset");
             return None;
         };
         NETWORK.get_or_init(swarmy_store::boot);

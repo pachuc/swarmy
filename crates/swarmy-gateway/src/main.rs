@@ -1509,11 +1509,9 @@ mod retry_tests {
         use std::sync::OnceLock;
         static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
         let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
-            eprintln!("skipping gateway stream test: SWARMY_FDB_CLUSTER_FILE unset");
             return None;
         };
         let Ok(nats_url) = swarmy_core::test_support::stack_env("SWARMY_NATS_URL") else {
-            eprintln!("skipping gateway stream test: SWARMY_NATS_URL unset");
             return None;
         };
         NETWORK.get_or_init(swarmy_store::boot);

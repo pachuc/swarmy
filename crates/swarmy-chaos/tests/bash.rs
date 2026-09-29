@@ -17,7 +17,6 @@ fn root_bash_disk_and_failure_acceptance() {
         "SWARMY_S3_ENDPOINT",
     ] {
         if swarmy_core::test_support::stack_env_os(variable).is_none() {
-            eprintln!("skipping bash acceptance: {variable} is unset");
             return;
         }
     }

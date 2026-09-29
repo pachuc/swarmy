@@ -29,6 +29,45 @@ help:
 	@sed -n '2,12p' Makefile | sed 's/^# \{0,1\}//'
 
 fdb-check:
+	@if [ -z "$(FDB_LIB_DIR)" ]; then \
+		echo "libfdb_c was not found in: $(FDB_CANDIDATES)"; \
+		echo "Run 'make dev-tools' first, or set SWARMY_FDB_LIB_DIR to the directory that holds it."; \
+		exit 1; \
+	fi
+	@echo "Using FoundationDB client library from $(FDB_LIB_DIR)"
+
+# The client links no database library and installs without libfdb_c. The
+# `remote` feature compiles the EC2, SSM, S3, and IAM SDKs for provisioning;
+# plain cargo builds leave it off for the slimmer node binary.
+install-client:
+	@echo "==> swarmy-cli"
+	@$(CARGO) install --locked --features remote,chat --path "crates/swarmy-cli" || exit 1
+	@$(CARGO) install --locked --path "crates/swarmy-devtools" || exit 1
+	@echo "Installed: $$(ls $(HOME)/.cargo/bin | grep '^swarmy' | tr '\n' ' ')"
+	@$(HOME)/.cargo/bin/swarmy --version
+
+install-core: fdb-check
+	@for crate in $(CORE_CRATES); do \
+		echo "==> swarmy-$$crate"; \
+		SWARMY_FDB_LIB_DIR="$(FDB_LIB_DIR)" $(CARGO) install --locked --path "crates/swarmy-$$crate" || exit 1; \
+	done
+
+install: install-client install-core
+
+install-node: install-core
+	@$(CARGO) install --locked --no-default-features --path "crates/swarmy-cli"
+	@for crate in $(NODE_CRATES); do \
+		echo "==> $$crate"; \
+		SWARMY_FDB_LIB_DIR="$(FDB_LIB_DIR)" $(CARGO) install --locked --path "crates/$$crate" || exit 1; \
+	done
+
+dev-tools:
+	scripts/install-dev-tools.sh
+
+models:
+	python3 scripts/models/generate.py
+
+check:
 	scripts/check-public-ids.sh
 	$(CARGO) fmt --all --check
 	$(CARGO) build --locked -p swarmy-cli --no-default-features
@@ -37,9 +76,7 @@ fdb-check:
 	$(CARGO) clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
 	$(CARGO) test --locked -p swarmy-llm --no-default-features
 	RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --no-deps --locked
-	$(CARGO) install cargo-deny --version 0.20.2 --locked
-	$(CARGO) deny check
-	$(CARGO) install cargo-machete --version 0.9.2 --locked
+	$(CARGO) deny check licenses bans sources
 	$(CARGO) machete
 	$(CARGO) build --workspace --locked
 	$(CARGO) test --workspace --locked --exclude swarmy-e2e

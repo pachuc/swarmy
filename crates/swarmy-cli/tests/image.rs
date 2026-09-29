@@ -209,7 +209,6 @@ fn needs_backing_services() -> bool {
         "SWARMY_S3_ENDPOINT",
     ] {
         if swarmy_core::test_support::stack_env_os(variable).is_none() {
-            eprintln!("skipping image acceptance test: {variable} is unset");
             return false;
         }
     }

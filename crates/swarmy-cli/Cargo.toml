@@ -56,5 +56,6 @@ ulid.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+swarmy-core = { workspace = true, features = ["test-support"] }
 # Unit tests in the chat client construct typed API errors; the binary itself
 # talks HTTP only through swarmy-client.

@@ -99,5 +99,5 @@ pub struct LiveTokenDelta {
     pub text: String,
 }
 
-#[doc(hidden)]
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

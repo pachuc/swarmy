@@ -56,7 +56,6 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Option<Self> {
         let Ok(url) = swarmy_core::test_support::stack_env("SWARMY_NATS_URL") else {
-            eprintln!("skipping worker integration test: SWARMY_NATS_URL is unset");
             return None;
         };
         Self::new_at(url).await
@@ -66,7 +65,6 @@ impl Fixture {
         static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
         for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
             if swarmy_core::test_support::stack_env(variable).is_err() {
-                eprintln!("skipping worker integration test: {variable} is unset");
                 return None;
             }
         }

@@ -1,9 +1,15 @@
 name: Install development services
 description: Install pinned FoundationDB, NATS and SeaweedFS binaries
+inputs:
+  mode:
+    description: Start or stop the development services
+    required: true
+    default: start
 runs:
   using: composite
   steps:
-    - shell: bash
+    - if: inputs.mode == 'start'
+      shell: bash
       env:
         FDB_VERSION: 7.3.79
         NATS_VERSION: 2.14.6
@@ -28,3 +34,16 @@ runs:
         fdbcli --version
         nats-server --version
         weed version
+    - if: inputs.mode == 'start'
+      shell: bash
+      run: |
+        scripts/dev-stack.sh start
+        source .dev/env
+        for name in SWARMY_FDB_CLUSTER_FILE SWARMY_NATS_URL SWARMY_S3_ENDPOINT SWARMY_S3_ACCESS_KEY SWARMY_S3_SECRET_KEY SWARMY_S3_BUCKET SWARMY_S3_REGION; do
+          printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
+        done
+    - if: inputs.mode == 'stop'
+      shell: bash
+      run: |
+        scripts/dev-stack.sh stop
+        scripts/dev-stack.sh status

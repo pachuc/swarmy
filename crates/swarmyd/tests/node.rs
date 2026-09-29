@@ -722,7 +722,6 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
     }
     for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
         if swarmy_core::test_support::stack_env_os(variable).is_none() {
-            eprintln!("skipping node acceptance: {variable} is unset");
             return;
         }
     }
@@ -1130,7 +1129,6 @@ async fn root_deleted_computer_stops_call_destroys_sandbox_and_detaches_device()
         "SWARMY_NATS_URL",
     ] {
         if swarmy_core::test_support::stack_env_os(variable).is_none() {
-            eprintln!("skipping computer deletion acceptance: {variable} is unset");
             return;
         }
     }
@@ -1161,7 +1159,6 @@ async fn root_named_agent_calls_serialize_and_report_occupancy() {
         "SWARMY_NATS_URL",
     ] {
         if swarmy_core::test_support::stack_env_os(variable).is_none() {
-            eprintln!("skipping shared calls acceptance: {variable} is unset");
             return;
         }
     }
@@ -1196,7 +1193,6 @@ async fn root_bash_yield_spill_stdin_and_web_fetch() {
         "SWARMY_NATS_URL",
     ] {
         if swarmy_core::test_support::stack_env_os(variable).is_none() {
-            eprintln!("skipping bash yield acceptance: {variable} is unset");
             return;
         }
     }
@@ -1228,7 +1224,6 @@ async fn root_file_tools_run_on_agent_disk() {
         "SWARMY_NATS_URL",
     ] {
         if swarmy_core::test_support::stack_env_os(variable).is_none() {
-            eprintln!("skipping file tools acceptance: {variable} is unset");
             return;
         }
     }

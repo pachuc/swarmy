@@ -19,7 +19,6 @@ impl Fixture {
             swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
             swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
         ) else {
-            eprintln!("skipping agent inference test: FoundationDB or NATS environment is unset");
             return None;
         };
         NETWORK.get_or_init(swarmy_store::boot);

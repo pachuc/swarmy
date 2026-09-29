@@ -28,7 +28,6 @@ impl Drop for Fixture {
 impl Fixture {
     fn new() -> Option<Self> {
         let Ok(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
-            eprintln!("skipping auth integration: SWARMY_FDB_CLUSTER_FILE unset");
             return None;
         };
         let Ok(nats) = swarmy_core::test_support::stack_env("SWARMY_NATS_URL") else {

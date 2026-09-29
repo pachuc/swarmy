@@ -62,7 +62,6 @@ impl Fixture {
             "SWARMY_S3_ENDPOINT",
         ] {
             if swarmy_core::test_support::stack_env(variable).is_err() {
-                eprintln!("skipping gateway integration test: {variable} is unset");
                 return None;
             }
         }

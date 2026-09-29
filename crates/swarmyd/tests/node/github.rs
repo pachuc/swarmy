@@ -97,7 +97,6 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
         "SWARMY_NATS_URL",
     ] {
         if swarmy_core::test_support::stack_env_os(variable).is_none() {
-            eprintln!("skipping GitHub acceptance: {variable} is unset");
             return;
         }
     }
