@@ -727,7 +727,7 @@ mod tests {
             .output()
             .is_err()
         {
-            cloud_err!("skipping fleet rsync copy: rsync is not installed");
+            eprintln!("skipping fleet rsync copy: rsync is not installed");
             return;
         }
         let dir = tempfile::tempdir().unwrap();

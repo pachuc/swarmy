@@ -12,9 +12,8 @@
 static OUTPUT: std::sync::OnceLock<fn(&str, bool)> = std::sync::OnceLock::new();
 
 /// Install the CLI's output handler before starting provisioning.
-/// Returns false if a handler was already installed.
-pub fn set_output_sink(sink: fn(&str, bool)) -> bool {
-    OUTPUT.set(sink).is_ok()
+pub fn set_output_sink(sink: fn(&str, bool)) {
+    let _ = OUTPUT.set(sink);
 }
 
 fn emit(message: &str, stderr: bool) {

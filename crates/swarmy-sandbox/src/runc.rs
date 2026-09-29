@@ -811,9 +811,6 @@ impl RuncRuntime {
         }
         result
     }
-}
-
-impl RuncRuntime {
     // Creation keeps attachment cleanup and journal publication in one fenced path.
     #[allow(clippy::too_many_lines)]
     /// Create a sandbox on the supplied disk.
@@ -929,6 +926,7 @@ impl RuncRuntime {
     }
 
     /// Execute a command and stream its output through a bounded channel.
+    /// The timeout includes output backpressure and kills all processes in the sandbox.
     /// # Errors
     /// Returns process or output transport errors.
     pub async fn exec(

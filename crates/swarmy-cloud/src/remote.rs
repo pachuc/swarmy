@@ -8,28 +8,17 @@ use state::State;
 use std::{future::Future, path::PathBuf, time::Duration};
 use swarmy_config::Settings;
 
-#[path = "add_node.rs"]
 mod add_node;
-#[path = "aws.rs"]
 mod aws;
-#[path = "connect.rs"]
 mod connect;
-#[path = "disconnect.rs"]
 mod disconnect;
-#[path = "down.rs"]
 mod down;
-#[path = "logs.rs"]
 mod logs;
-#[path = "state.rs"]
 mod state;
-#[path = "status.rs"]
 mod status;
 #[cfg(test)]
-#[path = "tests.rs"]
 mod tests;
-#[path = "up.rs"]
 mod up;
-#[path = "upgrade.rs"]
 mod upgrade;
 
 pub use super::services::Options as ServiceOptions;

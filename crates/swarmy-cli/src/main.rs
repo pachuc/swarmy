@@ -146,7 +146,7 @@ fn main() -> anyhow::Result<()> {
     if matches!(cli.command, Command::Remote { .. }) {
         anyhow::bail!("swarmy was built without remote support");
     }
-    let _ = swarmy_cloud::set_output_sink(|message, stderr| {
+    swarmy_cloud::set_output_sink(|message, stderr| {
         if stderr {
             eprintln!("{message}");
         } else {
