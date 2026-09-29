@@ -32,8 +32,28 @@ done
 # The dev-stack acceptance clones the checkout inside a sandbox and runs the
 # dev stack and cargo test there, which needs the Rust toolchain and stack
 # tools that only the swarmy-dev image carries; base-ubuntu cannot run it.
+# Since the client split `swarmy image build` uploads through the API, and the
+# root suites above already stopped theirs, serve one on a loopback port for
+# this build. The node and chat sections after it need no API.
+api_pid=""
+if [ -x ./target/debug/swarmy-api ]; then
+  api_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+  export SWARMY_API_TOKEN="suite-$(date +%s)-$RANDOM"
+  export SWARMY_API_URL="http://127.0.0.1:$api_port"
+  SWARMY_API_LISTEN="127.0.0.1:$api_port" ./target/debug/swarmy-api > ~/root-suites-plus-api.log 2>&1 &
+  api_pid=$!
+  for _ in $(seq 1 120); do
+    (echo > "/dev/tcp/127.0.0.1/$api_port") 2>/dev/null && break
+    kill -0 "$api_pid" 2>/dev/null || { echo "swarmy-api exited; see ~/root-suites-plus-api.log"; break; }
+    sleep 0.5
+  done
+  echo "== api on $SWARMY_API_URL (pid $api_pid)"
+fi
 echo "== image build swarmy-dev"
-sudo -E ./target/debug/swarmy image build images/swarmy-dev --tag dev 2>&1 | tail -2 || rc=1
+# The next section needs this image, so stop here when the build fails
+# instead of recording rc=1 and running the dependent test anyway.
+sudo -E ./target/debug/swarmy image build images/swarmy-dev --tag dev 2>&1 | tail -2 || { [ -n "$api_pid" ] && { kill "$api_pid" 2>/dev/null; wait "$api_pid" 2>/dev/null; }; echo "PLUS_EXIT=1"; exit 1; }
+[ -n "$api_pid" ] && { kill "$api_pid" 2>/dev/null; wait "$api_pid" 2>/dev/null; api_pid=""; }
 # The node acceptance and the chat tests refuse headless client binaries, so
 # rebuild default features once, before the sections that need them.
 CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-cli -p swarmyd -p swarmy-scheduler -p swarmy-worker -p swarmy-gateway -p swarmy-api >> ~/suite-build-plus.log 2>&1 \
