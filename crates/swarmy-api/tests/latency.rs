@@ -10,7 +10,7 @@ use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken};
 use swarmy_core::{
     InferenceSelection, Message, MessageId, MessageRole, Part, SessionId, SessionState,
 };
-use swarmy_store::{AgentSessionOptions, Store, blob::ObjectBlobStore};
+use swarmy_store::{AgentSessionOptions, Store};
 use ulid::Ulid;
 
 static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
@@ -57,31 +57,20 @@ async fn setup(image: &str) -> BenchFixture {
     NETWORK.get_or_init(swarmy_store::boot);
     let settings = swarmy_config::Settings::load().unwrap().settings;
     assert_eq!(
-        settings.provider, "fake",
+        settings.selection.provider, "fake",
         "benchmark needs the fake provider stack"
     );
-    let directory: Vec<_> = settings
-        .store_directory
-        .split('/')
-        .map(str::to_owned)
-        .collect();
-    let store = Store::open(
-        Some(&settings.fdb_cluster_file),
-        Some(&directory),
-        Arc::new(ObjectBlobStore::from_env().unwrap()),
-    )
-    .await
-    .unwrap();
+    let (store, _) = Store::open_store(&settings).await.unwrap();
     let bus = Bus::connect(
-        &settings.nats_url,
+        &settings.bus.nats_url,
         Config {
-            prefix: if settings.bus_prefix.is_empty() {
+            prefix: if settings.bus.prefix.is_empty() {
                 None
             } else {
-                Some(SubjectToken::new(&settings.bus_prefix).unwrap())
+                Some(SubjectToken::new(&settings.bus.prefix).unwrap())
             },
-            ack_wait: Duration::from_millis(settings.bus_ack_wait_ms),
-            max_deliver: settings.bus_max_deliver,
+            ack_wait: settings.bus.ack_wait,
+            max_deliver: settings.bus.max_deliver_i64(),
         },
     )
     .await
@@ -112,7 +101,7 @@ async fn setup(image: &str) -> BenchFixture {
                 tag: tag.into(),
             }),
             provider: Some("fake".into()),
-            model: Some(settings.model.clone()),
+            model: Some(settings.selection.model.clone()),
             effort: None,
             route: None,
         })
@@ -132,7 +121,7 @@ async fn setup(image: &str) -> BenchFixture {
                 image: Some(image),
                 inference: Some(&InferenceSelection {
                     provider: Some("fake".into()),
-                    model: Some(settings.model.clone()),
+                    model: Some(settings.selection.model.clone()),
                     effort: None,
                 }),
                 ..Default::default()
@@ -148,7 +137,7 @@ async fn setup(image: &str) -> BenchFixture {
         api_id,
         direct_id,
         server,
-        resend: Duration::from_millis(settings.scheduler_resend_interval_ms),
+        resend: settings.scheduler.resend_interval,
     }
 }
 

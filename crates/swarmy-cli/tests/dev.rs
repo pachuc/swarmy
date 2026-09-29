@@ -108,9 +108,15 @@ async fn dev_up_run_recover_reconfigure_and_down() {
     let config = fixture.files.path().join(".swarmy/config.toml");
     let prefix = format!("dev_test_{}", Ulid::generate());
     let settings = swarmy_config::Settings {
-        default_image: Some("fixture:test".into()),
+        selection: swarmy_config::SelectionSettings {
+            default_image: Some("fixture:test".into()),
+            ..Default::default()
+        },
         store_directory: prefix.clone(),
-        bus_prefix: prefix.clone(),
+        bus: swarmy_config::BusSettings {
+            prefix: prefix.clone(),
+            ..Default::default()
+        },
         ..Default::default()
     };
     fs::write(&config, settings.to_toml().unwrap()).unwrap();
