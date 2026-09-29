@@ -2,7 +2,6 @@
 use crate::{Result, Store, read, write};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use swarmy_core::SessionId;
 
 /// Gateway tasks refresh this record every 30 seconds with a future expiry.
 /// A skipped provider is recorded with an already expired advertisement so the
@@ -16,10 +15,6 @@ pub struct GatewayProvider {
 }
 
 impl Store {
-    pub(crate) fn session_inference_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_inference(id)
-    }
-
     /// Advertise provider availability; expired advertisements are ignored.
     /// # Errors
     /// Returns database or encoding errors.

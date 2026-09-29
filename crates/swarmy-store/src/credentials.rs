@@ -10,8 +10,8 @@ use rand::TryRngCore;
 use serde::{Deserialize, Serialize};
 use swarmy_config::Keyring;
 use swarmy_core::{
-    AgentId, CredentialKind, CredentialRecord, CredentialScope, CredentialStatus, Lease,
-    LeaseOwnerId, decode, encode,
+    CredentialKind, CredentialRecord, CredentialScope, CredentialStatus, Lease, LeaseOwnerId,
+    decode, encode,
 };
 
 #[cfg(any(test, feature = "test-support"))]

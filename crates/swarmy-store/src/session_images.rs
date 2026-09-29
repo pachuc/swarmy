@@ -1,4 +1,4 @@
-//! Session image pins live in V2 records; V1 image rows are read during migration.
+//! Session image pins live in versioned session records.
 use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError};
 use swarmy_core::{ImageRecord, ImageTag, ManifestId, SessionId};
 
@@ -19,11 +19,8 @@ impl Store {
         })
         .await
     }
-    pub(crate) fn session_image_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).session_image(id)
-    }
 
-    /// Read a session's pinned image. Old sessions may lack a pin.
+    /// Read a session's pinned image.
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn session_image(&self, id: SessionId) -> Result<Option<ManifestId>> {
@@ -39,8 +36,7 @@ impl Store {
                 }
             })
             .await?;
-        // Only committed, immutable pins are cached. A missing legacy row may
-        // be populated later, and an image tag can move without changing a pin.
+        // Only committed, immutable pins are cached; image tags may move.
         if let Some(manifest) = manifest {
             let mut cache = self.images.lock().await;
             if cache.len() >= 4096 {

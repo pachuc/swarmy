@@ -248,108 +248,6 @@ pub enum WaitKind {
     ProviderFailure,
 }
 
-/// First durable layout for a turn record. Field order is frozen: postcard is
-/// positional, so `#[serde(default)]` cannot rescue a shorter row. New layouts
-/// become `V2` and later variants of [`StoredTurnMetrics`]; old rows keep
-/// decoding through the enum. See the compatibility test below, which decodes
-/// checked-in `V1` bytes the way the session header test pins its layout.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-struct StoredTurnMetricsV1 {
-    session_id: String,
-    turn_id: String,
-    stages: Vec<StageTiming>,
-    inference: Vec<StoredInferenceMetricV1>,
-    tools: Vec<ToolMetric>,
-    computer: Option<ComputerMetric>,
-    append_to_first_token_ms: Option<f64>,
-    inference_duration_ms: Option<f64>,
-    append_to_idle_ms: Option<f64>,
-    error: Option<String>,
-    dropped_stages: u64,
-    dropped_inference: u64,
-    dropped_tools: u64,
-}
-
-/// Frozen inference row for `V1`. The live [`InferenceMetric`] gained
-/// `request_duration_ms` and `streamed` after `V1` was pinned, so `V1` keeps
-/// its own copy with the original field order; postcard cannot skip the new
-/// trailing fields when reading old bytes.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-struct StoredInferenceMetricV1 {
-    request_id: String,
-    provider: String,
-    model: String,
-    input_tokens: u64,
-    cached_input_tokens: u64,
-    output_tokens: u64,
-    reasoning_tokens: u64,
-    cost_micros: u64,
-    time_to_first_token_ms: Option<f64>,
-    streaming_duration_ms: Option<f64>,
-    output_tokens_per_second: Option<f64>,
-    retries: u32,
-    rate_limit_waits: u32,
-    gateway_waits: u32,
-    provider_failures: u32,
-    error: Option<String>,
-}
-
-impl StoredInferenceMetricV1 {
-    fn into_public(self) -> InferenceMetric {
-        InferenceMetric {
-            request_id: self.request_id,
-            provider: self.provider,
-            model: self.model,
-            input_tokens: self.input_tokens,
-            cached_input_tokens: self.cached_input_tokens,
-            output_tokens: self.output_tokens,
-            reasoning_tokens: self.reasoning_tokens,
-            cost_micros: self.cost_micros,
-            time_to_first_token_ms: self.time_to_first_token_ms,
-            streaming_duration_ms: self.streaming_duration_ms,
-            // Rows written before the whole-request throughput existed carry
-            // no request interval; the reader recomputes it from stages.
-            request_duration_ms: None,
-            // Rows written before the flag existed carry no chunk
-            // information; `None` keeps them out of the single-chunk count
-            // so old turns are never mislabeled.
-            streamed: None,
-            output_tokens_per_second: self.output_tokens_per_second,
-            retries: self.retries,
-            rate_limit_waits: self.rate_limit_waits,
-            gateway_waits: self.gateway_waits,
-            provider_failures: self.provider_failures,
-            error: self.error,
-        }
-    }
-
-    fn from_public(value: &InferenceMetric) -> Self {
-        Self {
-            request_id: value.request_id.clone(),
-            provider: value.provider.clone(),
-            model: value.model.clone(),
-            input_tokens: value.input_tokens,
-            cached_input_tokens: value.cached_input_tokens,
-            output_tokens: value.output_tokens,
-            reasoning_tokens: value.reasoning_tokens,
-            cost_micros: value.cost_micros,
-            time_to_first_token_ms: value.time_to_first_token_ms,
-            streaming_duration_ms: value.streaming_duration_ms,
-            output_tokens_per_second: value.output_tokens_per_second,
-            retries: value.retries,
-            rate_limit_waits: value.rate_limit_waits,
-            gateway_waits: value.gateway_waits,
-            provider_failures: value.provider_failures,
-            error: value.error.clone(),
-        }
-    }
-}
-
-/// Unbounded turn summary. Anchor timestamps are wall-clock nanoseconds so
-/// durations stay comparable across hosts; the idle anchor is a dedicated
-/// field so it can never be dropped the way the old 64-entry stage list
-/// dropped it. Token, cost, wait, and throughput totals are maintained
-/// incrementally so the agent rollup never fans out to per-request rows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct StoredTurnSummaryV2 {
     session_id: String,
@@ -554,113 +452,25 @@ struct StoredTurnInferenceV2 {
     finished_ns: Option<i64>,
 }
 
-/// Versioned storage envelope. New variants are appended so old tags retain
-/// their meaning; new readers read old variants while old readers reject
-/// unknown ones. `V1` is the complete capped record. `V2Summary`,
-/// `V2Inference`, and `V2Tool` are the unbounded rows keyed by their own
-/// prefixes; the public `TurnMetrics` API type is assembled from them.
+/// Stored summary and detail rows. Each keyspace accepts only its own variant.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 enum StoredTurnMetrics {
-    V1(StoredTurnMetricsV1),
     V2Summary(StoredTurnSummaryV2),
     V2Inference(StoredTurnInferenceV2),
     V2Tool(StoredToolMetricV2),
 }
 
-impl StoredTurnMetrics {
-    fn into_public(self) -> TurnMetrics {
-        match self {
-            Self::V1(inner) => TurnMetrics {
-                session_id: inner.session_id,
-                turn_id: inner.turn_id,
-                stages: inner.stages,
-                inference: inner
-                    .inference
-                    .into_iter()
-                    .map(StoredInferenceMetricV1::into_public)
-                    .collect(),
-                tools: inner.tools,
-                computer: inner.computer,
-                append_to_first_token_ms: inner.append_to_first_token_ms,
-                inference_duration_ms: inner.inference_duration_ms,
-                append_to_idle_ms: inner.append_to_idle_ms,
-                error: inner.error,
-                dropped_stages: inner.dropped_stages,
-                dropped_inference: inner.dropped_inference,
-                dropped_tools: inner.dropped_tools,
-            },
-            // Detail rows are never decoded as whole turns; reaching here
-            // means the caller read the wrong keyspace.
-            Self::V2Summary(_) | Self::V2Inference(_) | Self::V2Tool(_) => {
-                unreachable!("detail rows are never decoded as whole turns")
-            }
+fn decode_summary(bytes: &[u8]) -> Result<StoredTurnSummaryV2> {
+    match decode::<StoredTurnMetrics>(bytes)? {
+        StoredTurnMetrics::V2Summary(summary) => Ok(summary),
+        StoredTurnMetrics::V2Inference(_) | StoredTurnMetrics::V2Tool(_) => {
+            Err(StoreError::Storage(crate::StorageError::Corrupt))
         }
-    }
-
-    fn from_public(value: TurnMetrics) -> Self {
-        Self::V1(StoredTurnMetricsV1 {
-            session_id: value.session_id,
-            turn_id: value.turn_id,
-            stages: value.stages,
-            inference: value
-                .inference
-                .iter()
-                .map(StoredInferenceMetricV1::from_public)
-                .collect(),
-            tools: value.tools,
-            computer: value.computer,
-            append_to_first_token_ms: value.append_to_first_token_ms,
-            inference_duration_ms: value.inference_duration_ms,
-            append_to_idle_ms: value.append_to_idle_ms,
-            error: value.error,
-            dropped_stages: value.dropped_stages,
-            dropped_inference: value.dropped_inference,
-            dropped_tools: value.dropped_tools,
-        })
-    }
-}
-
-/// Decode a summary key. Returns the summary when the row is `V2`, the
-/// migrated legacy record when the row is still `V1`, or an error the caller
-/// skips with a warning.
-enum DecodedSummary {
-    V2(StoredTurnSummaryV2),
-    Legacy(TurnMetrics),
-}
-
-fn decode_summary(bytes: &[u8]) -> Result<DecodedSummary> {
-    if let Ok(record) = decode::<StoredTurnMetrics>(bytes) {
-        match record {
-            StoredTurnMetrics::V2Summary(summary) => return Ok(DecodedSummary::V2(summary)),
-            StoredTurnMetrics::V1(inner) => {
-                return Ok(DecodedSummary::Legacy(
-                    StoredTurnMetrics::V1(inner).into_public(),
-                ));
-            }
-            StoredTurnMetrics::V2Inference(_) | StoredTurnMetrics::V2Tool(_) => {
-                return Err(StoreError::Storage(crate::StorageError::Corrupt));
-            }
-        }
-    }
-    // Bare `V1` rows predate the envelope.
-    if let Ok(legacy) = decode::<StoredTurnMetricsV1>(bytes) {
-        return Ok(DecodedSummary::Legacy(
-            StoredTurnMetrics::V1(legacy).into_public(),
-        ));
-    }
-    match decode::<TurnMetrics>(bytes) {
-        Ok(record) => Ok(DecodedSummary::Legacy(
-            StoredTurnMetrics::from_public(record).into_public(),
-        )),
-        Err(first) => Err(StoreError::from(first)),
     }
 }
 
 fn decode_inference(bytes: &[u8]) -> Result<StoredTurnInferenceV2> {
     if let Ok(StoredTurnMetrics::V2Inference(row)) = decode::<StoredTurnMetrics>(bytes) {
-        return Ok(row);
-    }
-    if let Ok(row) = decode::<StoredTurnInferenceV2>(bytes) {
         return Ok(row);
     }
     Err(StoreError::Storage(crate::StorageError::Corrupt))
@@ -669,9 +479,6 @@ fn decode_inference(bytes: &[u8]) -> Result<StoredTurnInferenceV2> {
 fn decode_tool(bytes: &[u8]) -> Result<StoredToolMetricV2> {
     if let Ok(StoredTurnMetrics::V2Tool(row)) = decode::<StoredTurnMetrics>(bytes) {
         return Ok(row);
-    }
-    if let Ok(row) = decode::<ToolMetric>(bytes) {
-        return Ok(StoredToolMetricV2::from_public(&row));
     }
     Err(StoreError::Storage(crate::StorageError::Corrupt))
 }
@@ -797,10 +604,6 @@ struct TurnWrite {
     summary: StoredTurnSummaryV2,
     inference: BTreeMap<String, StoredTurnInferenceV2>,
     tools: BTreeMap<String, StoredToolMetricV2>,
-    /// Rows migrated from a legacy `V1` record that must be written even
-    /// when this batch does not touch them.
-    migrated_inference: BTreeMap<String, StoredTurnInferenceV2>,
-    migrated_tools: BTreeMap<String, StoredToolMetricV2>,
 }
 
 fn adjust_throughput(summary: &mut StoredTurnSummaryV2, old: Option<f64>, new: Option<f64>) {
@@ -1127,8 +930,6 @@ fn apply_one(state: &mut TurnWrite, patch: &MetricPatch) {
         summary,
         inference,
         tools,
-        migrated_inference: _,
-        migrated_tools: _,
     } = state;
     match patch {
         MetricPatch::Stage(event) => apply_stage(summary, inference, tools, event),
@@ -1142,96 +943,6 @@ fn apply_one(state: &mut TurnWrite, patch: &MetricPatch) {
     }
 }
 
-/// Convert a legacy capped record into an unbounded summary plus rows.
-fn migrate_legacy(
-    record: TurnMetrics,
-) -> (
-    StoredTurnSummaryV2,
-    Vec<StoredTurnInferenceV2>,
-    Vec<StoredToolMetricV2>,
-) {
-    let mut summary = StoredTurnSummaryV2 {
-        session_id: record.session_id.clone(),
-        turn_id: record.turn_id.clone(),
-        computer: record.computer.clone(),
-        error: record.error.clone(),
-        ..StoredTurnSummaryV2::default()
-    };
-    let stage_time = |name: &str, request: Option<&str>| {
-        record
-            .stages
-            .iter()
-            .filter(|row| row.stage == name && row.request_id.as_deref() == request)
-            .map(|row| row.unix_ns)
-            .next()
-    };
-    let stage_min = |name: &str| {
-        record
-            .stages
-            .iter()
-            .filter(|row| row.stage == name)
-            .map(|row| row.unix_ns)
-            .min()
-    };
-    let stage_max = |name: &str| {
-        record
-            .stages
-            .iter()
-            .filter(|row| row.stage == name)
-            .map(|row| row.unix_ns)
-            .max()
-    };
-    summary.submitted_ns = stage_min("submitted");
-    summary.appended_ns = stage_min("appended");
-    summary.first_token_ns = stage_min("first_token");
-    summary.idle_ns = stage_min("idle");
-    summary.inference_started_ns = stage_min("inference_started");
-    summary.inference_finished_ns = stage_max("inference_finished");
-    summary.first_tool_ns = stage_min("tool_dispatched");
-    // The legacy caps dropped rows the unbounded layout keeps; carry the
-    // counters so migrated baseline sessions still report what was lost.
-    summary.dropped_stages = record.dropped_stages;
-    summary.dropped_inference = record.dropped_inference;
-    summary.dropped_tools = record.dropped_tools;
-    let mut inference_rows = Vec::new();
-    for metric in record.inference {
-        let id = metric.request_id.clone();
-        let mut row = StoredTurnInferenceV2 {
-            metric: StoredInferenceMetricV2::from_public(&metric),
-            started_ns: stage_time("inference_started", Some(&id)),
-            first_token_ns: stage_time("first_token", Some(&id)),
-            finished_ns: stage_time("inference_finished", Some(&id)),
-        };
-        derive_inference(&mut row);
-        summary.input_tokens += row.metric.input_tokens;
-        summary.cached_input_tokens += row.metric.cached_input_tokens;
-        summary.output_tokens += row.metric.output_tokens;
-        summary.reasoning_tokens += row.metric.reasoning_tokens;
-        summary.cost_micros += row.metric.cost_micros;
-        summary.retries += u64::from(row.metric.retries);
-        summary.rate_limit_waits += u64::from(row.metric.rate_limit_waits);
-        summary.gateway_waits += u64::from(row.metric.gateway_waits);
-        summary.provider_failures += u64::from(row.metric.provider_failures);
-        if row.metric.error.is_some() {
-            summary.inference_errors += 1;
-        }
-        if let Some(rate) = row.metric.output_tokens_per_second {
-            summary.throughput_sum += rate;
-            summary.throughput_count += 1;
-        }
-        inference_rows.push(row);
-    }
-    derive_summary(&mut summary);
-    let tool_rows = record
-        .tools
-        .into_iter()
-        .map(|tool| StoredToolMetricV2::from_public(&tool))
-        .collect();
-    (summary, inference_rows, tool_rows)
-}
-
-/// Bounded reverse scan for newest-first pagination. Mirrors the forward
-/// [`scan`](crate::scan) bound so rollups stay under transaction limits.
 async fn scan_reverse(
     trx: &Transaction,
     range: (Vec<u8>, Vec<u8>),
@@ -1274,7 +985,7 @@ fn request_stage(name: &str, request_id: &str, unix_ns: Option<i64>) -> Option<S
     })
 }
 
-/// Turn anchors shared by the `V2` and migrated-legacy assembly paths.
+/// Turn anchors in the unbounded summary.
 fn anchor_stages(summary: &StoredTurnSummaryV2) -> Vec<StageTiming> {
     let mut stages = Vec::new();
     for (name, stamp) in [
@@ -1441,8 +1152,7 @@ impl Store {
     /// is safe.
     /// # Errors
     /// Returns database or encoding failures without changing the conversation.
-    // One transaction reads the summary, the touched rows, and any migrated
-    // legacy rows, then writes them back; splitting would separate the atomic
+    // One transaction reads the summary and touched rows, then writes them back; splitting would separate the atomic
     // read-modify-write the fence relies on.
     #[allow(clippy::too_many_lines)]
     pub async fn record_turn_metrics(
@@ -1499,58 +1209,18 @@ impl Store {
                     let inference_ids = &inference_ids;
                     let tool_ids = &tool_ids;
                     async move {
-                        let mut state = match trx.get(summary_key, false).await? {
-                            None => TurnWrite {
-                                summary: StoredTurnSummaryV2 {
+                        let mut state = TurnWrite {
+                            summary: match trx.get(summary_key, false).await? {
+                                None => StoredTurnSummaryV2 {
                                     session_id: session.to_string(),
                                     turn_id: turn.to_string(),
                                     ..StoredTurnSummaryV2::default()
                                 },
-                                inference: BTreeMap::new(),
-                                tools: BTreeMap::new(),
-                                migrated_inference: BTreeMap::new(),
-                                migrated_tools: BTreeMap::new(),
+                                Some(value) => decode_summary(&value)?,
                             },
-                            Some(value) => match decode_summary(&value)? {
-                                DecodedSummary::V2(summary) => TurnWrite {
-                                    summary,
-                                    inference: BTreeMap::new(),
-                                    tools: BTreeMap::new(),
-                                    migrated_inference: BTreeMap::new(),
-                                    migrated_tools: BTreeMap::new(),
-                                },
-                                DecodedSummary::Legacy(record) => {
-                                    let (summary, rows, tools) = migrate_legacy(record);
-                                    let mut state = TurnWrite {
-                                        summary,
-                                        inference: BTreeMap::new(),
-                                        tools: BTreeMap::new(),
-                                        migrated_inference: BTreeMap::new(),
-                                        migrated_tools: BTreeMap::new(),
-                                    };
-                                    for row in rows {
-                                        state
-                                            .migrated_inference
-                                            .insert(row.metric.request_id.clone(), row);
-                                    }
-                                    for tool in tools {
-                                        state.migrated_tools.insert(tool.request_id.clone(), tool);
-                                    }
-                                    state
-                                }
-                            },
+                            inference: BTreeMap::new(),
+                            tools: BTreeMap::new(),
                         };
-                        // Seed the write map with migrated rows and the rows
-                        // this batch touches.
-                        for (id, row) in &state.migrated_inference {
-                            state
-                                .inference
-                                .entry(id.clone())
-                                .or_insert_with(|| row.clone());
-                        }
-                        for (id, row) in &state.migrated_tools {
-                            state.tools.entry(id.clone()).or_insert_with(|| row.clone());
-                        }
                         for id in inference_ids {
                             if !state.inference.contains_key(id) {
                                 let key = self.turn_inference_key(session, turn, id);
@@ -1577,28 +1247,6 @@ impl Store {
                             summary_key,
                             &StoredTurnMetrics::V2Summary(state.summary.clone()),
                         )?;
-                        // Migrated rows land even when untouched so the legacy
-                        // summary is never the only copy of their data.
-                        for (id, row) in &state.migrated_inference {
-                            if !inference_ids.contains(id) {
-                                let key = self.turn_inference_key(session, turn, id);
-                                if trx.get(&key, false).await?.is_none() {
-                                    write(
-                                        &trx,
-                                        &key,
-                                        &StoredTurnMetrics::V2Inference(row.clone()),
-                                    )?;
-                                }
-                            }
-                        }
-                        for (id, row) in &state.migrated_tools {
-                            if !tool_ids.contains(id) {
-                                let key = self.turn_tool_key(session, turn, id);
-                                if trx.get(&key, false).await?.is_none() {
-                                    write(&trx, &key, &StoredTurnMetrics::V2Tool(row.clone()))?;
-                                }
-                            }
-                        }
                         for id in inference_ids {
                             if let Some(row) = state.inference.get(id) {
                                 write(
@@ -1809,21 +1457,10 @@ impl Store {
             })
             .await?;
         let mut summaries = Vec::new();
-        let mut legacy_turns: BTreeMap<String, TurnMetrics> = BTreeMap::new();
         for (_, bytes) in raw {
             match decode_summary(&bytes) {
-                Ok(DecodedSummary::V2(summary)) => summaries.push(summary),
-                Ok(DecodedSummary::Legacy(record)) => {
-                    // Turns written before the unbounded layout have no detail
-                    // rows; serve this page from the migrated record itself.
-                    // The next write to the turn persists the migrated rows.
-                    let (summary, rows, tools) = migrate_legacy(record);
-                    let turn = assemble_turn(&summary, rows, tools, inference_limit, tools_limit);
-                    legacy_turns.insert(turn.turn_id.clone(), turn);
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "skipping undecodable turn metric");
-                }
+                Ok(summary) => summaries.push(summary),
+                Err(error) => tracing::warn!(%error, "skipping undecodable turn metric"),
             }
         }
         let mut turns = Vec::new();
@@ -1833,8 +1470,6 @@ impl Store {
                     .await?,
             );
         }
-        // Legacy turns sort with the V2 turns by turn id.
-        turns.extend(legacy_turns.into_values());
         turns.sort_by(|a, b| a.turn_id.cmp(&b.turn_id));
         Ok(turns)
     }
@@ -1885,14 +1520,8 @@ impl Store {
                 .map_or_else(|| begin.clone(), |(key, _)| key.clone());
             for (_, bytes) in raw {
                 match decode_summary(&bytes) {
-                    Ok(DecodedSummary::V2(summary)) => summaries.push(summary),
-                    Ok(DecodedSummary::Legacy(record)) => {
-                        let (summary, _, _) = migrate_legacy(record);
-                        summaries.push(summary);
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "skipping undecodable turn metric");
-                    }
+                    Ok(summary) => summaries.push(summary),
+                    Err(error) => tracing::warn!(%error, "skipping undecodable turn metric"),
                 }
                 if summaries.len() >= limit {
                     break;
@@ -1988,41 +1617,6 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Checked-in `V1` envelope bytes for a fixed record. Generated once with
-    /// `swarmy_core::encode(&StoredTurnMetrics::V1(fixture_v1()))`; decoding
-    /// them pins the `FoundationDB` layout the way the session header test pins
-    /// its tuple encoding. New layouts add enum variants; this row must keep
-    /// decoding.
-    const V1_ENVELOPE_HEX: &str = "0100017301740108617070656e6465640004626f6f74c0843d80897a0101720466616b6508736372697074656400000400000000000000000000000000000000010203";
-    /// Checked-in bare-struct bytes from before the envelope existed. The
-    /// current reader keeps these rows visible after the layout change.
-    const V1_BARE_HEX: &str = "01017301740108617070656e6465640004626f6f74c0843d80897a0101720466616b6508736372697074656400000400000000000000000000000000000000010203";
-
-    fn fixture_v1() -> StoredTurnMetricsV1 {
-        StoredTurnMetricsV1 {
-            session_id: "s".into(),
-            turn_id: "t".into(),
-            stages: vec![StageTiming {
-                stage: "appended".into(),
-                request_id: None,
-                clock_id: "boot".into(),
-                monotonic_ns: 1_000_000,
-                unix_ns: 1_000_000,
-            }],
-            inference: vec![StoredInferenceMetricV1 {
-                request_id: "r".into(),
-                provider: "fake".into(),
-                model: "scripted".into(),
-                output_tokens: 4,
-                ..StoredInferenceMetricV1::default()
-            }],
-            dropped_stages: 1,
-            dropped_inference: 2,
-            dropped_tools: 3,
-            ..StoredTurnMetricsV1::default()
-        }
-    }
-
     fn hex_to_bytes(hex: &str) -> Vec<u8> {
         let hex: String = hex.chars().filter(|c| !c.is_whitespace()).collect();
         (0..hex.len())
@@ -2073,44 +1667,6 @@ mod tests {
             name: "bash".into(),
             ..StoredToolMetricV2::default()
         }
-    }
-
-    #[test]
-    fn versioned_envelope_decodes_checked_in_v1_bytes() {
-        if V1_ENVELOPE_HEX.starts_with("PLACEHOLDER") || V1_BARE_HEX.starts_with("PLACEHOLDER") {
-            return;
-        }
-        for hex in [V1_ENVELOPE_HEX, V1_BARE_HEX] {
-            // The fixture pins the production summary-key path: envelope and
-            // bare bytes both decode through `decode_summary` as legacy turns.
-            let DecodedSummary::Legacy(record) = decode_summary(&hex_to_bytes(hex)).unwrap() else {
-                panic!("expected legacy V1 turn");
-            };
-            assert_eq!(record.session_id, "s");
-            assert_eq!(record.turn_id, "t");
-            assert_eq!(record.dropped_stages, 1);
-            assert_eq!(record.dropped_inference, 2);
-            assert_eq!(record.dropped_tools, 3);
-            assert_eq!(record.inference[0].provider, "fake");
-        }
-        // The envelope adds a discriminant, so its bytes differ from the bare
-        // struct they supersede.
-        assert_ne!(V1_ENVELOPE_HEX, V1_BARE_HEX);
-    }
-
-    #[test]
-    fn stored_layout_round_trips_and_converts_to_the_api_type() {
-        let stored =
-            StoredTurnMetrics::from_public(StoredTurnMetrics::V1(fixture_v1()).into_public());
-        let bytes = swarmy_core::encode(&stored).unwrap();
-        let decoded: StoredTurnMetrics = swarmy_core::decode(&bytes).unwrap();
-        assert_eq!(decoded, stored);
-        assert_eq!(swarmy_core::encode(&decoded).unwrap(), bytes);
-        let api = decoded.into_public();
-        assert_eq!(api.session_id, "s");
-        assert_eq!(api.dropped_stages, 1);
-        assert_eq!(api.dropped_inference, 2);
-        assert_eq!(api.dropped_tools, 3);
     }
 
     #[test]
@@ -2171,29 +1727,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_dropped_counters_survive_migration() {
-        let mut legacy = fixture_v1();
-        legacy.dropped_stages = 7;
-        legacy.dropped_inference = 27;
-        legacy.dropped_tools = 42;
-        let api = StoredTurnMetrics::V1(legacy).into_public();
-        let (summary, rows, tools) = migrate_legacy(api);
-        assert_eq!(summary.dropped_stages, 7);
-        assert_eq!(summary.dropped_inference, 27);
-        assert_eq!(summary.dropped_tools, 42);
-        // The assembled turn reports the migrated remainder even on a
-        // complete read, and adds paging truncation on top.
-        let turn = assemble_turn(&summary, rows.clone(), tools.clone(), None, None);
-        assert_eq!(turn.dropped_stages, 7);
-        assert_eq!(turn.dropped_inference, 27);
-        assert_eq!(turn.dropped_tools, 42);
-        let paged = assemble_turn(&summary, rows, tools, Some(0), Some(0));
-        assert_eq!(paged.dropped_inference, 27 + 1);
-        assert_eq!(paged.dropped_tools, 42);
-        assert_eq!(paged.dropped_stages, 7);
-    }
-
-    #[test]
     fn v2_summary_and_rows_round_trip() {
         let summary = StoredTurnSummaryV2 {
             session_id: "s".into(),
@@ -2223,14 +1756,6 @@ mod tests {
             let decoded: StoredTurnMetrics = swarmy_core::decode(&bytes).unwrap();
             assert_eq!(decoded, value);
         }
-        // `V1` bytes still decode through the production legacy path.
-        if V1_ENVELOPE_HEX.starts_with("PLACEHOLDER") {
-            return;
-        }
-        assert!(matches!(
-            decode_summary(&hex_to_bytes(V1_ENVELOPE_HEX)),
-            Ok(DecodedSummary::Legacy(_))
-        ));
     }
 
     #[test]
@@ -2797,99 +2322,5 @@ mod integration_tests {
         assert_eq!(paged[0].tools.len(), 20);
         assert_eq!(paged[0].dropped_inference, 90);
         assert_eq!(paged[0].dropped_tools, 180);
-    }
-
-    #[tokio::test]
-    async fn legacy_v1_rows_keep_dropped_counters_through_rewrite() {
-        let Ok(cluster) = std::env::var("SWARMY_FDB_CLUSTER_FILE") else {
-            return;
-        };
-        NETWORK.get_or_init(crate::boot);
-        let path = vec![
-            "turn-metrics-legacy-migration-test".into(),
-            ulid::Ulid::generate().to_string(),
-        ];
-        let store = Store::open(
-            Some(&cluster),
-            Some(&path),
-            Arc::new(MemoryBlobStore::default()),
-        )
-        .await
-        .unwrap();
-        let session = SessionId::from_ulid(ulid::Ulid::generate());
-        let turn = MessageId::from_ulid(ulid::Ulid::generate());
-        // A baseline session written by the capped layout: V1 envelope bytes
-        // with non-zero dropped counters at the summary key.
-        let legacy = StoredTurnMetricsV1 {
-            session_id: session.to_string(),
-            turn_id: turn.to_string(),
-            stages: vec![StageTiming {
-                stage: "appended".into(),
-                request_id: None,
-                clock_id: "boot".into(),
-                monotonic_ns: 1_000_000,
-                unix_ns: 1_000_000,
-            }],
-            inference: vec![StoredInferenceMetricV1 {
-                request_id: "legacy-r".into(),
-                provider: "fake".into(),
-                model: "scripted".into(),
-                output_tokens: 4,
-                ..StoredInferenceMetricV1::default()
-            }],
-            dropped_stages: 7,
-            dropped_inference: 27,
-            dropped_tools: 42,
-            ..StoredTurnMetricsV1::default()
-        };
-        let summary_key = store.turn_summary_key(session, turn);
-        store
-            .transaction(|trx| {
-                let summary_key = &summary_key;
-                let legacy = &legacy;
-                async move {
-                    write(&trx, summary_key, &StoredTurnMetrics::V1(legacy.clone()))?;
-                    Ok(())
-                }
-            })
-            .await
-            .unwrap();
-        // The first read migrates in memory without rewriting the summary key.
-        let records = store.list_turn_metrics(session, None, 10).await.unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].dropped_stages, 7);
-        assert_eq!(records[0].dropped_inference, 27);
-        assert_eq!(records[0].dropped_tools, 42);
-        assert_eq!(records[0].inference.len(), 1);
-        assert_eq!(records[0].inference[0].request_id, "legacy-r");
-        // One more inference for the same turn takes the legacy branch of
-        // `record_turn_metrics`, which rewrites the summary as V2 plus detail
-        // rows. The migrated counters must survive the rewrite.
-        store
-            .record_turn_metric(
-                session,
-                turn,
-                MetricPatch::Inference(InferenceMetric {
-                    request_id: "new-r".into(),
-                    provider: "fake".into(),
-                    model: "scripted".into(),
-                    output_tokens: 1,
-                    ..InferenceMetric::default()
-                }),
-            )
-            .await
-            .unwrap();
-        let records = store.list_turn_metrics(session, None, 10).await.unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].dropped_stages, 7);
-        assert_eq!(records[0].dropped_inference, 27);
-        assert_eq!(records[0].dropped_tools, 42);
-        assert_eq!(records[0].inference.len(), 2);
-        assert!(
-            records[0]
-                .inference
-                .iter()
-                .any(|row| row.request_id == "legacy-r")
-        );
     }
 }
