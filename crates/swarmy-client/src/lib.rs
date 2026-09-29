@@ -592,14 +592,14 @@ impl Client {
         }
         self.get("usage", &query).await
     }
-    /// Read a CLI compatibility projection.
+    /// Read the typed resource detail.
     /// # Errors
     /// Returns transport, API, or decoding failures.
     pub async fn session_detail(&self, id: &str) -> Result<api::SessionDetail, Error> {
         self.get(&format!("sessions/{}/detail", segment(id)), &[])
             .await
     }
-    /// Read a CLI compatibility projection.
+    /// Read the typed resource detail.
     /// # Errors
     /// Returns transport, API, or decoding failures.
     pub async fn agent_views(
@@ -609,7 +609,7 @@ impl Client {
     ) -> Result<Vec<api::AgentView>, Error> {
         self.get("agents/details", &page(after, limit)).await
     }
-    /// Read a CLI compatibility projection.
+    /// Read the typed resource detail.
     /// # Errors
     /// Returns transport, API, or decoding failures.
     pub async fn agent_view(&self, name: &str) -> Result<api::AgentView, Error> {
@@ -633,30 +633,6 @@ impl Client {
             query.push(("provider", provider.into()));
         }
         self.get("models", &query).await
-    }
-    /// Submit a CLI management mutation.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_create_agent(
-        &self,
-        body: &api::CliAgentChoice,
-    ) -> Result<api::AgentView, Error> {
-        self.send(Method::POST, "cli/agents", body).await
-    }
-    /// Submit a CLI management mutation.
-    /// # Errors
-    /// Returns transport, API, or decoding failures.
-    pub async fn cli_update_agent(
-        &self,
-        name: &str,
-        body: &api::CliAgentChoice,
-    ) -> Result<api::AgentView, Error> {
-        self.send(
-            Method::PATCH,
-            &format!("cli/agents/{}/settings", segment(name)),
-            body,
-        )
-        .await
     }
     /// Assign or clear one session's route override.
     /// # Errors

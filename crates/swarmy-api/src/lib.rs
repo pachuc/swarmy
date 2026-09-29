@@ -11,11 +11,11 @@ use axum::{
 use jiff::Timestamp;
 use serde::Deserialize;
 use std::sync::Arc;
-mod cli;
 mod conversation;
 mod gc;
 pub mod images;
 mod models;
+mod resource_views;
 mod stream;
 mod views;
 use swarmy_api_types as api;
@@ -288,14 +288,9 @@ async fn authorize(
 /// Construct the router without binding a socket so integration tests can serve it in-process.
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
-        .route("/v1/doctor", get(cli::doctor))
-        .route("/v1/agents/details", get(cli::agents))
-        .route("/v1/cli/agents", axum::routing::post(cli::agent_create))
-        .route(
-            "/v1/cli/agents/{name}/settings",
-            axum::routing::patch(cli::agent_update),
-        )
-        .route("/v1/agents/{id}/detail", get(cli::agent_show))
+        .route("/v1/doctor", get(resource_views::doctor))
+        .route("/v1/agents/details", get(resource_views::agents))
+        .route("/v1/agents/{id}/detail", get(resource_views::agent_show))
         .route("/v1/agents", get(agents).post(create_agent))
         .route(
             "/v1/agents/{id}",
@@ -306,7 +301,10 @@ pub fn router(state: AppState) -> Router {
             "/v1/sessions/{id}",
             get(show_session).delete(conversation::close),
         )
-        .route("/v1/sessions/{id}/detail", get(cli::session_show))
+        .route(
+            "/v1/sessions/{id}/detail",
+            get(resource_views::session_show),
+        )
         .route(
             "/v1/sessions/{id}/messages",
             axum::routing::post(conversation::append),
@@ -477,10 +475,21 @@ async fn create_agent(
     State(state): State<AppState>,
     Json(body): Json<api::CreateAgent>,
 ) -> ApiResult<api::Agent> {
+    let selection = swarmy_llm::selection::normalize(
+        swarmy_core::InferenceSelection {
+            provider: body.provider,
+            model: body.model,
+            effort: body.effort.map(Into::into),
+        },
+        &state.catalog,
+    )
+    .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
+    swarmy_llm::selection::validate(&state.catalog, &selection, &state.default_selection)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
     let settings = AgentSettings {
-        provider: body.provider,
-        model: body.model,
-        reasoning_effort: body.effort.map(Into::into),
+        provider: selection.provider,
+        model: selection.model,
+        reasoning_effort: selection.effort,
         system_prompt: body.system_prompt,
         memory_mib: body.memory_mib,
         gpu: body.gpu.map(Into::into),
@@ -517,10 +526,19 @@ async fn update_agent(
         .await
         .map_err(storage)?
         .ok_or_else(|| error(StatusCode::NOT_FOUND, "agent_not_found"))?;
+    let selection = swarmy_llm::selection::normalize(
+        swarmy_core::InferenceSelection {
+            provider: body.provider,
+            model: body.model,
+            effort: body.effort.map(Into::into),
+        },
+        &state.catalog,
+    )
+    .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
     let settings = AgentSettings {
-        provider: body.provider,
-        model: body.model,
-        reasoning_effort: body.effort.map(Into::into),
+        provider: selection.provider,
+        model: selection.model,
+        reasoning_effort: selection.effort,
         system_prompt: body.system_prompt,
         memory_mib: body.memory_mib,
         gpu: body.gpu.map(Into::into),
@@ -835,7 +853,7 @@ fn model(
 }
 async fn models(
     State(state): State<AppState>,
-    Query(query): Query<cli::ModelsQuery>,
+    Query(query): Query<resource_views::ModelsQuery>,
 ) -> ApiResult<Vec<api::Model>> {
     if let Some(provider) = &query.provider
         && state.catalog.provider(provider).is_none()

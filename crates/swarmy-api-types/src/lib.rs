@@ -1004,38 +1004,6 @@ pub struct AgentSessionView {
     pub next_session: Option<String>,
 }
 
-/// Input for CLI agent creation or settings updates.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CliAgentChoice {
-    pub idempotency_key: String,
-    pub name: Option<String>,
-    pub image: Option<String>,
-    pub description: Option<String>,
-    pub provider: Option<String>,
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    pub system_prompt: Option<String>,
-    pub memory: Option<u64>,
-    pub gpu: Option<String>,
-    pub github_token: Option<String>,
-    pub clear_github_token: Option<bool>,
-    pub resets: Option<Vec<String>>,
-    #[serde(default)]
-    pub route: Option<String>,
-}
-/// CLI compatibility routes. These signatures are mirrored by the server router.
-pub mod cli_paths {
-    use super::{AgentView, ApiError, CliAgentChoice};
-    #[utoipa::path(post, path = "/v1/cli/agents",
-    request_body = CliAgentChoice,
-        responses((status = 200, body = AgentView), (status = 400, body = ApiError)))]
-    pub fn cli_create_agent() {}
-    #[utoipa::path(patch, path = "/v1/cli/agents/{name}/settings",
-    request_body = CliAgentChoice,
-        responses((status = 200, body = AgentView), (status = 400, body = ApiError)))]
-    pub fn cli_update_agent() {}
-}
-
 /// Versioned resource routes. These signatures are mirrored by the server router.
 pub mod api_paths {
     use super::{
@@ -1345,7 +1313,6 @@ pub mod api_paths {
         api_paths::usage,
         api_paths::list_routes, api_paths::set_route, api_paths::show_route,
         api_paths::delete_route, api_paths::set_session_route,
-        cli_paths::cli_create_agent, cli_paths::cli_update_agent,
 
     ),
     components(schemas(
@@ -1362,7 +1329,7 @@ pub mod api_paths {
     CreateImage, CreateCredential, CredentialDeleted, AgentDeleted, SetEntryQuota, EntryQuotaView, QuotaEntry, EntryQuotaDetail,
     UsageTotalsView, UsageGroupView, UsageResponse, EntryUsageView,
     Event, EventPayload, ApiError, SessionDetail,
-    AgentView, CliAgentChoice,
+    AgentView,
     Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute
 )))]
 pub struct ApiDocument;

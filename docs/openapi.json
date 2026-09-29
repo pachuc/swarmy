@@ -360,86 +360,6 @@
         }
       }
     },
-    "/v1/cli/agents": {
-      "post": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_create_agent",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CliAgentChoice"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentView"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/cli/agents/{name}/settings": {
-      "patch": {
-        "tags": [
-          "cli_paths"
-        ],
-        "operationId": "cli_update_agent",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CliAgentChoice"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentView"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/credentials": {
       "get": {
         "tags": [
@@ -2570,6 +2490,15 @@
           }
         }
       },
+      "AgentReset": {
+        "type": "string",
+        "enum": [
+          "provider",
+          "model",
+          "effort",
+          "route"
+        ]
+      },
       "AgentSessionView": {
         "allOf": [
           {},
@@ -2741,101 +2670,6 @@
           }
         }
       },
-      "CliAgentChoice": {
-        "type": "object",
-        "description": "Input for CLI agent creation or settings updates.",
-        "required": [
-          "idempotency_key"
-        ],
-        "properties": {
-          "clear_github_token": {
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
-          "description": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "effort": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "github_token": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "gpu": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "idempotency_key": {
-            "type": "string"
-          },
-          "image": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "memory": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "minimum": 0
-          },
-          "model": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "provider": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "resets": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            }
-          },
-          "route": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "system_prompt": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        }
-      },
       "CloseSession": {
         "type": "object",
         "required": [
@@ -2950,11 +2784,35 @@
               }
             ]
           },
+          "github_token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gpu": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GpuMode"
+              }
+            ]
+          },
           "idempotency_key": {
             "type": "string"
           },
           "image": {
             "$ref": "#/components/schemas/ImageRef"
+          },
+          "memory_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
           },
           "model": {
             "type": [
@@ -3751,6 +3609,14 @@
             "type": "string"
           }
         }
+      },
+      "GpuMode": {
+        "type": "string",
+        "enum": [
+          "none",
+          "shared",
+          "dedicated"
+        ]
       },
       "HealthResponse": {
         "type": "object",
@@ -5161,6 +5027,9 @@
           "idempotency_key"
         ],
         "properties": {
+          "clear_github_token": {
+            "type": "boolean"
+          },
           "description": {
             "type": [
               "string",
@@ -5177,8 +5046,32 @@
               }
             ]
           },
+          "github_token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gpu": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GpuMode"
+              }
+            ]
+          },
           "idempotency_key": {
             "type": "string"
+          },
+          "memory_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
           },
           "model": {
             "type": [
@@ -5191,6 +5084,12 @@
               "string",
               "null"
             ]
+          },
+          "resets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentReset"
+            }
           },
           "route": {
             "type": [
