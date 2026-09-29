@@ -501,15 +501,13 @@ impl Worker {
                     lease_ref,
                     seq,
                     error,
-                    failure_kind,
-                    retry_at,
-                    session.route_step,
-                    session.route.as_deref(),
-                    session.inference.provider.as_deref(),
-                    self.config.default_route.as_deref(),
-                    &self.config.provider,
-                    now,
-                    self.config.max_inference_wait,
+                    swarmy_store::RouteFailure {
+                        failure_kind,
+                        retry_at,
+                        route_step: session.route_step,
+                        max_wait: self.config.max_inference_wait,
+                    },
+                    super::route_selection(session, &self.config, now),
                 )
                 .await?
         };
@@ -673,16 +671,16 @@ impl Worker {
                 .await?
                 && job.summary
             {
-                if let Event::InferenceCompleted { message, .. } = event {
-                    summary_replies.push(message.id);
+                if let Event::InferenceCompleted { completion, .. } = event {
+                    summary_replies.push(completion.message.id);
                 }
                 if job.summary_recovery
                     && let Some(id) = prior_completion
                 {
                     recovery_replies.push(id);
                 }
-            } else if let Event::InferenceCompleted { message, .. } = event {
-                prior_completion = Some(message.id);
+            } else if let Event::InferenceCompleted { completion, .. } = event {
+                prior_completion = Some(completion.message.id);
             } else {
                 prior_completion = None;
             }

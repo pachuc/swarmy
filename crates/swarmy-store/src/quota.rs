@@ -62,14 +62,6 @@ pub struct EntryQuota {
 pub use swarmy_core::quota::parse_window;
 
 impl Store {
-    fn observed_key(&self, provider: &str, label: &str) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).entry_quota_observed(provider, label)
-    }
-
-    fn config_key(&self, provider: &str, label: &str) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).entry_quota_config(provider, label)
-    }
-
     pub(crate) fn write_observed(
         &self,
         trx: &Transaction,
@@ -85,7 +77,7 @@ impl Store {
         let window_seconds = resets.values().copied().min();
         crate::write(
             trx,
-            &self.observed_key(provider, label),
+            &self.keys().entry_quota_observed(provider, label),
             &ObservedQuota {
                 values: remaining.clone(),
                 resets: resets.clone(),
@@ -113,7 +105,7 @@ impl Store {
         let now = self.now();
         let remaining = remaining.clone();
         let resets = resets.clone();
-        let key = self.observed_key(provider, label);
+        let key = self.keys().entry_quota_observed(provider, label);
         let value = crate::encode(&ObservedQuota {
             values: remaining,
             window_seconds: resets.values().copied().min(),
@@ -144,7 +136,7 @@ impl Store {
         limit: u64,
         window_seconds: u64,
     ) -> Result<()> {
-        let key = self.config_key(provider, label);
+        let key = self.keys().entry_quota_config(provider, label);
         self.transaction(|trx| {
             let key = &key;
             async move {
@@ -166,8 +158,8 @@ impl Store {
         provider: &str,
         label: &str,
     ) -> Result<(Option<ObservedQuota>, Option<QuotaConfig>)> {
-        let observed_key = self.observed_key(provider, label);
-        let config_key = self.config_key(provider, label);
+        let observed_key = self.keys().entry_quota_observed(provider, label);
+        let config_key = self.keys().entry_quota_config(provider, label);
         self.transaction(|trx| {
             let observed_key = &observed_key;
             let config_key = &config_key;
@@ -251,8 +243,8 @@ impl Store {
     /// # Errors
     /// Returns storage errors.
     pub(crate) async fn clear_entry_quota(&self, provider: &str, label: &str) -> Result<()> {
-        let observed = self.observed_key(provider, label);
-        let config = self.config_key(provider, label);
+        let observed = self.keys().entry_quota_observed(provider, label);
+        let config = self.keys().entry_quota_config(provider, label);
         self.transaction(|trx| {
             let observed = &observed;
             let config = &config;

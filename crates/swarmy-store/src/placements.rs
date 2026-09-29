@@ -6,7 +6,7 @@ use swarmy_core::{
     AgentId, NodeId, NodeRecord, NodeRole, PlacementChangeReason, PlacementRecord, decode,
 };
 
-use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError, check_limit, read, scan, write};
+use crate::{Result, Store, StoreError, check_limit, read, scan, scan_all, write};
 
 /// Last node reporting local scratch for a computer. Bytes are an estimate.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -25,15 +25,11 @@ pub(crate) struct PlacementHosting {
 }
 
 impl Store {
-    fn scratch_key(&self, agent: AgentId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).scratch(agent)
-    }
-
     /// Read the last reported local scratch location.
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn scratch(&self, agent: AgentId) -> Result<Option<ScratchRecord>> {
-        self.transaction(|trx| async move { read(&trx, &self.scratch_key(agent)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().scratch(agent)).await })
             .await
     }
 
@@ -43,13 +39,13 @@ impl Store {
     pub async fn report_scratch(&self, agent: AgentId, record: &ScratchRecord) -> Result<()> {
         self.transaction(|trx| async move {
             self.check_computer(&trx, agent).await?;
-            if read::<PlacementRecord>(&trx, &crate::keys::Keys::new(&self.root).placement(agent))
+            if read::<PlacementRecord>(&trx, &self.keys().placement(agent))
                 .await?
                 .is_some_and(|placement| placement.node_id != record.node_id)
             {
                 return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
-            write(&trx, &self.scratch_key(agent), record)
+            write(&trx, &self.keys().scratch(agent), record)
         })
         .await
     }
@@ -59,11 +55,11 @@ impl Store {
     /// Returns storage or decoding failures.
     pub async fn clear_scratch(&self, agent: AgentId, node: NodeId) -> Result<()> {
         self.transaction(|trx| async move {
-            if read::<ScratchRecord>(&trx, &self.scratch_key(agent))
+            if read::<ScratchRecord>(&trx, &self.keys().scratch(agent))
                 .await?
                 .is_some_and(|record| record.node_id == node)
             {
-                trx.clear(&self.scratch_key(agent));
+                trx.clear(&self.keys().scratch(agent));
             }
             Ok(())
         })
@@ -74,11 +70,7 @@ impl Store {
         trx: &Transaction,
         placement: &PlacementRecord,
     ) -> Result<Option<PlacementHosting>> {
-        read(
-            trx,
-            &crate::keys::Keys::new(&self.root).placement_hosting(placement.agent_id),
-        )
-        .await
+        read(trx, &self.keys().placement_hosting(placement.agent_id)).await
     }
 
     /// Read the failure estimate for this epoch.
@@ -113,7 +105,7 @@ impl Store {
             hosting.claimed.get_or_insert_with(|| self.now());
             write(
                 &trx,
-                &crate::keys::Keys::new(&self.root).placement_hosting(expected.agent_id),
+                &self.keys().placement_hosting(expected.agent_id),
                 &hosting,
             )
         })
@@ -133,7 +125,7 @@ impl Store {
             self.check_live_placement(&trx, expected).await?;
             write(
                 &trx,
-                &crate::keys::Keys::new(&self.root).placement_address(expected.agent_id),
+                &self.keys().placement_address(expected.agent_id),
                 &(expected.epoch, address),
             )
         })
@@ -145,30 +137,17 @@ impl Store {
     /// Returns storage failures.
     pub async fn placement_address(&self, placement: &PlacementRecord) -> Result<Option<Ipv4Addr>> {
         self.transaction(|trx| async move {
-            Ok(read::<(u64, Ipv4Addr)>(
-                &trx,
-                &crate::keys::Keys::new(&self.root).placement_address(placement.agent_id),
+            Ok(
+                read::<(u64, Ipv4Addr)>(&trx, &self.keys().placement_address(placement.agent_id))
+                    .await?
+                    .and_then(|(epoch, address)| (epoch == placement.epoch).then_some(address)),
             )
-            .await?
-            .and_then(|(epoch, address)| (epoch == placement.epoch).then_some(address)))
         })
         .await
     }
 
-    fn placement_node_key(&self, node: NodeId, agent: AgentId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).placement_by_node(node, agent)
-    }
-
-    fn placement_count_key(&self, node: NodeId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).placement_count(node)
-    }
-
-    pub(crate) fn computer_memory_key(&self, agent: AgentId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).computer_memory(agent)
-    }
-
     async fn requirement_bytes(&self, trx: &Transaction, agent: AgentId) -> Result<u64> {
-        let ephemeral: Option<u64> = read(trx, &self.computer_memory_key(agent)).await?;
+        let ephemeral: Option<u64> = read(trx, &self.keys().computer_memory(agent)).await?;
         let mib = if let Some(mib) = ephemeral {
             mib
         } else {
@@ -208,33 +187,20 @@ impl Store {
         node: NodeId,
         exclude: AgentId,
     ) -> Result<u64> {
-        let (start, end) = crate::keys::Keys::new(&self.root)
-            .placement_by_node_space(node)
-            .range();
-        let mut begin = start;
+        let (begin, end) = self.keys().placement_by_node_space(node).range();
         let mut total: u64 = 0;
-        loop {
-            let page = scan(trx, (begin.clone(), end.clone()), MAX_SCAN_LIMIT).await?;
-            let full = page.len() == MAX_SCAN_LIMIT;
-            for (key, value) in page {
-                let record: PlacementRecord = decode(&value)?;
-                if record.agent_id == exclude {
-                    begin = key;
-                    begin.push(0);
-                    continue;
-                }
-                total = total
-                    .checked_add(self.requirement_bytes(trx, record.agent_id).await?)
-                    .ok_or(StoreError::Storage(
-                        crate::StorageError::MemoryCapacityOverflow,
-                    ))?;
-                begin = key;
-                begin.push(0);
+        for (_, value) in scan_all(trx, (begin, end)).await? {
+            let record: PlacementRecord = decode(&value)?;
+            if record.agent_id == exclude {
+                continue;
             }
-            if !full {
-                return Ok(total);
-            }
+            total = total
+                .checked_add(self.requirement_bytes(trx, record.agent_id).await?)
+                .ok_or(StoreError::Storage(
+                    crate::StorageError::MemoryCapacityOverflow,
+                ))?;
         }
+        Ok(total)
     }
 
     async fn reserve_computer(
@@ -243,13 +209,13 @@ impl Store {
         node: NodeId,
         agent: AgentId,
     ) -> Result<()> {
-        let registered: NodeRecord = read(trx, &self.node_key(node))
+        let registered: NodeRecord = read(trx, &self.keys().node(node))
             .await?
             .ok_or(StoreError::Domain(crate::DomainError::NodeMissing))?;
         if !registered.roles.contains(&NodeRole::Sandbox) {
             return Err(StoreError::Domain(crate::DomainError::NodeNotSandbox));
         }
-        let key = self.placement_count_key(node);
+        let key = self.keys().placement_count(node);
         let count: u32 = read(trx, &key).await?.unwrap_or(0);
         if count >= registered.capacity.sandboxes {
             return Err(StoreError::Domain(crate::DomainError::NodeAtCapacity {
@@ -273,7 +239,7 @@ impl Store {
     }
 
     async fn free_computer(&self, trx: &Transaction, node: NodeId, _agent: AgentId) -> Result<()> {
-        let key = self.placement_count_key(node);
+        let key = self.keys().placement_count(node);
         let count: u32 = read(trx, &key)
             .await?
             .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
@@ -287,19 +253,17 @@ impl Store {
     }
 
     fn write_placement(&self, trx: &Transaction, record: &PlacementRecord) -> Result<()> {
+        write(trx, &self.keys().placement(record.agent_id), record)?;
         write(
             trx,
-            &crate::keys::Keys::new(&self.root).placement(record.agent_id),
+            &self
+                .keys()
+                .placement_by_node(record.node_id, record.agent_id),
             record,
         )?;
         write(
             trx,
-            &self.placement_node_key(record.node_id, record.agent_id),
-            record,
-        )?;
-        write(
-            trx,
-            &crate::keys::Keys::new(&self.root).placement_epoch(record.agent_id),
+            &self.keys().placement_epoch(record.agent_id),
             &record.epoch,
         )
     }
@@ -310,12 +274,9 @@ impl Store {
         expected: &PlacementRecord,
     ) -> Result<PlacementRecord> {
         self.check_computer(trx, expected.agent_id).await?;
-        let current: PlacementRecord = read(
-            trx,
-            &crate::keys::Keys::new(&self.root).placement(expected.agent_id),
-        )
-        .await?
-        .ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
+        let current: PlacementRecord = read(trx, &self.keys().placement(expected.agent_id))
+            .await?
+            .ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
         if current.node_id != expected.node_id || current.epoch != expected.epoch {
             return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
         }
@@ -362,18 +323,15 @@ impl Store {
             if expires_at <= now {
                 return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
-            if read::<PlacementRecord>(&trx, &crate::keys::Keys::new(&self.root).placement(agent))
+            if read::<PlacementRecord>(&trx, &self.keys().placement(agent))
                 .await?
                 .is_some()
             {
                 return Err(StoreError::Domain(crate::DomainError::PlacementExists));
             }
-            let epoch: u64 = read(
-                &trx,
-                &crate::keys::Keys::new(&self.root).placement_epoch(agent),
-            )
-            .await?
-            .unwrap_or(0);
+            let epoch: u64 = read(&trx, &self.keys().placement_epoch(agent))
+                .await?
+                .unwrap_or(0);
             self.reserve_computer(&trx, node, agent).await?;
             let record = PlacementRecord {
                 agent_id: agent,
@@ -392,7 +350,7 @@ impl Store {
             self.write_placement(&trx, &record)?;
             write(
                 &trx,
-                &crate::keys::Keys::new(&self.root).placement_hosting(agent),
+                &self.keys().placement_hosting(agent),
                 &PlacementHosting::default(),
             )?;
             Ok(record)
@@ -423,7 +381,7 @@ impl Store {
             hosting.last_renewed = Some(now);
             write(
                 &trx,
-                &crate::keys::Keys::new(&self.root).placement_hosting(current.agent_id),
+                &self.keys().placement_hosting(current.agent_id),
                 &hosting,
             )?;
             current.expires_at = expires_at;
@@ -445,10 +403,14 @@ impl Store {
             }
             self.free_computer(&trx, current.node_id, current.agent_id)
                 .await?;
-            trx.clear(&crate::keys::Keys::new(&self.root).placement(current.agent_id));
-            trx.clear(&crate::keys::Keys::new(&self.root).placement_hosting(current.agent_id));
-            trx.clear(&crate::keys::Keys::new(&self.root).placement_address(current.agent_id));
-            trx.clear(&self.placement_node_key(current.node_id, current.agent_id));
+            trx.clear(&self.keys().placement(current.agent_id));
+            trx.clear(&self.keys().placement_hosting(current.agent_id));
+            trx.clear(&self.keys().placement_address(current.agent_id));
+            trx.clear(
+                &self
+                    .keys()
+                    .placement_by_node(current.node_id, current.agent_id),
+            );
             Ok(())
         })
         .await
@@ -477,7 +439,11 @@ impl Store {
             // Clear the old row before reserving so the committed-memory sum,
             // which is derived from the node's placement rows, does not count
             // the crashed placement against the same node's capacity.
-            trx.clear(&self.placement_node_key(current.node_id, current.agent_id));
+            trx.clear(
+                &self
+                    .keys()
+                    .placement_by_node(current.node_id, current.agent_id),
+            );
             self.reserve_computer(&trx, node, current.agent_id).await?;
             let hosting = self
                 .read_placement_hosting(&trx, &current)
@@ -502,11 +468,11 @@ impl Store {
                 last_changed_at: now,
                 ..current
             };
-            trx.clear(&crate::keys::Keys::new(&self.root).placement_address(current.agent_id));
+            trx.clear(&self.keys().placement_address(current.agent_id));
             self.write_placement(&trx, &record)?;
             write(
                 &trx,
-                &crate::keys::Keys::new(&self.root).placement_hosting(current.agent_id),
+                &self.keys().placement_hosting(current.agent_id),
                 &PlacementHosting {
                     failure_estimate: estimated_failure_at,
                     ..Default::default()
@@ -521,10 +487,8 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding errors.
     pub async fn get_by_agent(&self, agent: AgentId) -> Result<Option<PlacementRecord>> {
-        self.transaction(|trx| async move {
-            read(&trx, &crate::keys::Keys::new(&self.root).placement(agent)).await
-        })
-        .await
+        self.transaction(|trx| async move { read(&trx, &self.keys().placement(agent)).await })
+            .await
     }
 
     /// List placements (including expired leases) by agent id, strictly after the cursor.
@@ -539,12 +503,9 @@ impl Store {
     ) -> Result<Vec<PlacementRecord>> {
         check_limit(limit)?;
         self.transaction(|trx| async move {
-            let (mut begin, end) = crate::keys::Keys::new(&self.root)
-                .placement_by_node_space(node)
-                .range();
+            let (mut begin, end) = self.keys().placement_by_node_space(node).range();
             if let Some(agent) = after {
-                begin = self.placement_node_key(node, agent);
-                begin.push(0);
+                begin = crate::next_cursor(&self.keys().placement_by_node(node, agent));
             }
             scan(&trx, (begin, end), limit)
                 .await?
@@ -562,14 +523,11 @@ impl Store {
         trx: &Transaction,
         agent: AgentId,
     ) -> Result<()> {
-        if let Some(current) =
-            read::<PlacementRecord>(trx, &crate::keys::Keys::new(&self.root).placement(agent))
-                .await?
-        {
+        if let Some(current) = read::<PlacementRecord>(trx, &self.keys().placement(agent)).await? {
             self.free_computer(trx, current.node_id, agent).await?;
-            trx.clear(&crate::keys::Keys::new(&self.root).placement(agent));
-            trx.clear(&crate::keys::Keys::new(&self.root).placement_hosting(agent));
-            trx.clear(&self.placement_node_key(current.node_id, agent));
+            trx.clear(&self.keys().placement(agent));
+            trx.clear(&self.keys().placement_hosting(agent));
+            trx.clear(&self.keys().placement_by_node(current.node_id, agent));
         }
         Ok(())
     }

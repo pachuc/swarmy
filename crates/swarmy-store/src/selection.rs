@@ -23,11 +23,7 @@ impl Store {
         record: &GatewayProvider,
     ) -> Result<()> {
         self.transaction(|trx| async move {
-            write(
-                &trx,
-                &crate::keys::Keys::new(&self.root).gateway_provider(provider),
-                record,
-            )
+            write(&trx, &self.keys().gateway_provider(provider), record)
         })
         .await
     }
@@ -44,7 +40,7 @@ impl Store {
         self.transaction(|trx| async move {
             write(
                 &trx,
-                &crate::keys::Keys::new(&self.root).gateway_provider_entry(provider, label),
+                &self.keys().gateway_provider_entry(provider, label),
                 record,
             )
         })
@@ -60,11 +56,7 @@ impl Store {
         label: &str,
     ) -> Result<Option<GatewayProvider>> {
         self.transaction(|trx| async move {
-            read(
-                &trx,
-                &crate::keys::Keys::new(&self.root).gateway_provider_entry(provider, label),
-            )
-            .await
+            read(&trx, &self.keys().gateway_provider_entry(provider, label)).await
         })
         .await
     }
@@ -75,13 +67,9 @@ impl Store {
     /// Test-only entry point, also available with the `test-support` feature.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn gateway_provider(&self, provider: &str) -> Result<Option<GatewayProvider>> {
-        self.transaction(|trx| async move {
-            read(
-                &trx,
-                &crate::keys::Keys::new(&self.root).gateway_provider(provider),
-            )
-            .await
-        })
+        self.transaction(
+            |trx| async move { read(&trx, &self.keys().gateway_provider(provider)).await },
+        )
         .await
     }
 
@@ -90,12 +78,11 @@ impl Store {
     /// Returns database or decoding errors.
     pub async fn gateway_serves(&self, provider: &str) -> Result<bool> {
         self.transaction(|trx| async move {
-            Ok(read::<GatewayProvider>(
-                &trx,
-                &crate::keys::Keys::new(&self.root).gateway_provider(provider),
+            Ok(
+                read::<GatewayProvider>(&trx, &self.keys().gateway_provider(provider))
+                    .await?
+                    .is_some_and(|record| record.expires_at > self.now()),
             )
-            .await?
-            .is_some_and(|record| record.expires_at > self.now()))
         })
         .await
     }

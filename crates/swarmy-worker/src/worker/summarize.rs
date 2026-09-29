@@ -151,7 +151,9 @@ impl Worker {
         events: &mut Vec<Event>,
     ) -> Result<()> {
         let Some((seq, message)) = events.iter().rev().find_map(|event| match event {
-            Event::InferenceCompleted { seq, message, .. } => Some((*seq, message.clone())),
+            Event::InferenceCompleted {
+                seq, completion, ..
+            } => Some((*seq, completion.message.clone())),
             _ => None,
         }) else {
             return Ok(());
@@ -459,9 +461,9 @@ impl Worker {
         let Some((request_id, message)) = events.iter().rev().find_map(|event| match event {
             Event::InferenceCompleted {
                 request_id,
-                message,
+                completion,
                 ..
-            } => Some((*request_id, Some(message.clone()))),
+            } => Some((*request_id, Some(completion.message.clone()))),
             Event::InferenceFailed { request_id, .. } => Some((*request_id, None)),
             _ => None,
         }) else {
@@ -505,7 +507,7 @@ impl Worker {
         }
         // A failed attempt is not part of the context that Pi retries.
         if recovery
-            && let Some(Event::InferenceCompleted { message, .. }) =
+            && let Some(Event::InferenceCompleted { completion, .. }) =
                 events.iter().rev().find(|event| {
                     matches!(
                         event,
@@ -513,7 +515,7 @@ impl Worker {
                     )
                 })
         {
-            history.retain(|kept| kept.id != message.id);
+            history.retain(|kept| kept.id != completion.message.id);
         }
         let cut = raw_cut(&history);
         if cut == 0 || (cut == 1 && previous_summary(&history).is_some()) {
@@ -675,9 +677,9 @@ impl Worker {
             let prior = events.iter().rev().find_map(|event| match event {
                 Event::InferenceCompleted {
                     request_id,
-                    message,
+                    completion,
                     ..
-                } if *request_id != job.request_id => Some((*request_id, message)),
+                } if *request_id != job.request_id => Some((*request_id, &completion.message)),
                 _ => None,
             });
             let history_text = if let Some((request_id, prior_message)) = prior {
@@ -721,9 +723,9 @@ impl Worker {
             .filter_map(|event| match event {
                 Event::InferenceCompleted {
                     request_id,
-                    message,
+                    completion,
                     ..
-                } => Some((*request_id, message)),
+                } => Some((*request_id, &completion.message)),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -855,15 +857,13 @@ const SUMMARY_RESERVE_TOKENS: u64 = 16_384;
 /// Most recent completion's total usage from the in-memory event tail.
 pub(super) fn last_side_usage(events: &[Event]) -> Option<(String, String, u64)> {
     events.iter().rev().find_map(|event| match event {
-        Event::InferenceCompleted {
-            provider,
-            model,
-            usage,
-            ..
-        } => Some((
-            provider.clone(),
-            model.clone(),
-            usage.input_tokens.saturating_add(usage.output_tokens),
+        Event::InferenceCompleted { completion, .. } => Some((
+            completion.provider.clone(),
+            completion.model.clone(),
+            completion
+                .usage
+                .input_tokens
+                .saturating_add(completion.usage.output_tokens),
         )),
         _ => None,
     })

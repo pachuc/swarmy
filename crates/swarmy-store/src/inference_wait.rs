@@ -117,16 +117,8 @@ impl Store {
     /// provider-only tuple is never read, so open provider-keyed breakers are
     /// dropped at upgrade; a stale one only costs one probe.
     pub(crate) fn breaker_key(&self, key: &CredentialKey) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root)
+        self.keys()
             .inference_breaker(key.provider.as_str(), key.label.as_deref().unwrap_or(""))
-    }
-
-    pub(crate) fn wait_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).inference_wait(id)
-    }
-
-    pub(crate) fn wait_due_key(&self, id: SessionId, at: Timestamp) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).inference_wait_due(at, id)
     }
 
     /// Grant one entry probe after the open period, or return the next eligible time.
@@ -256,7 +248,7 @@ impl Store {
     /// # Errors
     /// Returns storage failures.
     pub async fn inference_wait(&self, id: SessionId) -> Result<Option<InferenceWait>> {
-        self.transaction(|trx| async move { read(&trx, &self.wait_key(id)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().inference_wait(id)).await })
             .await
     }
 
@@ -279,7 +271,7 @@ impl Store {
             if session.interrupt_requested {
                 return Ok(false);
             }
-            let key = self.wait_key(id);
+            let key = self.keys().inference_wait(id);
             let mut wait = read::<InferenceWait>(&trx, &key)
                 .await?
                 .unwrap_or(InferenceWait {
@@ -302,7 +294,7 @@ impl Store {
             }
             wait.wake_at = until.min(limit);
             write(&trx, &key, &wait)?;
-            write(&trx, &self.wait_due_key(id, wait.wake_at), &())?;
+            write(&trx, &self.keys().inference_wait_due(wait.wake_at, id), &())?;
             self.transition(&trx, session, SessionState::Sleeping, now)
                 .await?;
             Ok(true)
@@ -346,7 +338,7 @@ impl Store {
         now: Timestamp,
         max_wait: std::time::Duration,
     ) -> Result<bool> {
-        let key = self.wait_key(id);
+        let key = self.keys().inference_wait(id);
         let mut wait = read::<InferenceWait>(trx, &key)
             .await?
             .unwrap_or(InferenceWait {
@@ -368,7 +360,7 @@ impl Store {
             .checked_add(max_wait)
             .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
         if wait.last_failure_seq != 0 {
-            trx.clear(&self.wait_due_key(id, wait.wake_at));
+            trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
         }
         wait.last_failure_seq = failure.seq;
         wait.wake_at = if now >= limit {
@@ -377,7 +369,7 @@ impl Store {
             failure.wake_at.min(limit)
         };
         write(trx, &key, &wait)?;
-        write(trx, &self.wait_due_key(id, wait.wake_at), &())?;
+        write(trx, &self.keys().inference_wait_due(wait.wake_at, id), &())?;
         self.transition(trx, session, SessionState::Sleeping, now)
             .await?;
         Ok(true)
@@ -387,11 +379,8 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn scan_due_inference_waits(&self, now: Timestamp) -> Result<Vec<SessionId>> {
-        let space = crate::keys::Keys::new(&self.root).inference_wait_due_space_root();
-        let end = crate::keys::Keys::new(&self.root)
-            .inference_wait_due_space(now)
-            .range()
-            .1;
+        let space = self.keys().inference_wait_due_space_root();
+        let end = self.keys().inference_wait_due_space(now).range().1;
         self.transaction(|trx| {
             let space = space.clone();
             let end = end.clone();
@@ -416,14 +405,14 @@ impl Store {
     /// Returns storage failures.
     pub async fn wake_inference_wait(&self, id: SessionId, now: Timestamp) -> Result<bool> {
         self.transaction(|trx| async move {
-            let key = self.wait_key(id);
+            let key = self.keys().inference_wait(id);
             let Some(wait) = read::<InferenceWait>(&trx, &key).await? else {
                 return Ok(false);
             };
             if wait.wake_at > now {
                 return Ok(false);
             }
-            trx.clear(&self.wait_due_key(id, wait.wake_at));
+            trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
             let session = self.session(&trx, id).await?;
             if session.state == SessionState::Sleeping {
                 self.transition(&trx, session, SessionState::Runnable, now)
@@ -442,9 +431,10 @@ impl Store {
     /// Returns storage failures.
     pub async fn clear_inference_wait(&self, id: SessionId) -> Result<()> {
         self.transaction(|trx| async move {
-            if let Some(wait) = read::<InferenceWait>(&trx, &self.wait_key(id)).await? {
-                trx.clear(&self.wait_due_key(id, wait.wake_at));
-                trx.clear(&self.wait_key(id));
+            if let Some(wait) = read::<InferenceWait>(&trx, &self.keys().inference_wait(id)).await?
+            {
+                trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
+                trx.clear(&self.keys().inference_wait(id));
             }
             let mut session = self.session(&trx, id).await?;
             session.route_step = 0;

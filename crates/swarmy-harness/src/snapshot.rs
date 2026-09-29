@@ -101,15 +101,15 @@ impl Snapshot {
             }
             Event::InferenceCompleted {
                 request_id,
-                message,
+                completion,
                 ..
             } => {
                 if matches!(self.phase, Phase::WaitingInference { request_id: pending } if pending != *request_id)
                 {
                     return;
                 }
-                self.messages.push(message.clone());
-                self.phase = model_phase(message);
+                self.messages.push(completion.message.clone());
+                self.phase = model_phase(&completion.message);
             }
             Event::ToolCallRequested {
                 request_id, call, ..

@@ -76,7 +76,7 @@ pub fn finished(session: &SessionRecord, events: &[Event], expected_steps: usize
         "session {id}: log head mismatch"
     );
     let last = events.iter().rev().find_map(|event| match event {
-        Event::InferenceCompleted { message, .. } => Some(message),
+        Event::InferenceCompleted { completion, .. } => Some(&completion.message),
         _ => None,
     });
     ensure!(
@@ -191,22 +191,24 @@ mod tests {
             );
         }
         let completed = Event::InferenceCompleted {
-            provider: String::new(),
-            model: String::new(),
-            effort_used: None,
-            usage: swarmy_core::TokenUsage::default(),
-            cost_micros: 0,
-            effort_requested: None,
-            effort_clamped: false,
-            entry: None,
-            route: None,
-            route_step: None,
             seq: 2,
             request_id: RequestId::for_step(id, 1),
-            message: Message {
-                id: MessageId::from_ulid(Ulid::generate()),
-                role: MessageRole::Assistant,
-                parts: Vec::new(),
+            completion: swarmy_core::InferenceCompletion {
+                message: Message {
+                    id: MessageId::from_ulid(Ulid::generate()),
+                    role: MessageRole::Assistant,
+                    parts: Vec::new(),
+                },
+                provider: String::new(),
+                model: String::new(),
+                effort_used: None,
+                usage: swarmy_core::TokenUsage::default(),
+                cost_micros: 0,
+                effort_requested: None,
+                effort_clamped: false,
+                entry: None,
+                route: None,
+                route_step: None,
             },
         };
         assert!(log(id, &[request(1, 1), completed.clone(), request(3, 1)]).is_err());
@@ -254,24 +256,26 @@ mod tests {
                 request_id: RequestId::for_step(id, 1),
             },
             Event::InferenceCompleted {
-                provider: String::new(),
-                model: String::new(),
-                effort_used: None,
-                usage: swarmy_core::TokenUsage::default(),
-                cost_micros: 0,
-                effort_requested: None,
-                effort_clamped: false,
-                entry: None,
-                route: None,
-                route_step: None,
                 seq: 2,
                 request_id: RequestId::for_step(id, 1),
-                message: Message {
-                    id: MessageId::from_ulid(Ulid::generate()),
-                    role: MessageRole::Assistant,
-                    parts: vec![Part::Text {
-                        text: ANSWER.into(),
-                    }],
+                completion: swarmy_core::InferenceCompletion {
+                    message: Message {
+                        id: MessageId::from_ulid(Ulid::generate()),
+                        role: MessageRole::Assistant,
+                        parts: vec![Part::Text {
+                            text: ANSWER.into(),
+                        }],
+                    },
+                    provider: String::new(),
+                    model: String::new(),
+                    effort_used: None,
+                    usage: swarmy_core::TokenUsage::default(),
+                    cost_micros: 0,
+                    effort_requested: None,
+                    effort_clamped: false,
+                    entry: None,
+                    route: None,
+                    route_step: None,
                 },
             },
         ];
@@ -280,8 +284,8 @@ mod tests {
         session.state = SessionState::Runnable;
         assert!(finished(&session, &events, 1).is_err());
         session.state = SessionState::Idle;
-        if let Event::InferenceCompleted { message, .. } = &mut events[1] {
-            message.parts = vec![Part::Text {
+        if let Event::InferenceCompleted { completion, .. } = &mut events[1] {
+            completion.message.parts = vec![Part::Text {
                 text: "wrong".into(),
             }];
         }

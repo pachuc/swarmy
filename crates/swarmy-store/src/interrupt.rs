@@ -18,7 +18,7 @@ impl Store {
         id: SessionId,
         seq: u64,
     ) -> Result<bool> {
-        let Some(bytes) = trx.get(&self.event_key(id, seq), false).await? else {
+        let Some(bytes) = trx.get(&self.keys().event(id, seq), false).await? else {
             return Ok(false);
         };
         let event: Event = self.hydrate(&bytes).await?;
@@ -43,7 +43,7 @@ impl Store {
                     Err(StoreError::Domain(crate::DomainError::NothingToInterrupt))
                 }
                 SessionState::Sleeping => {
-                    let wait = read::<crate::InferenceWait>(&trx, &self.wait_key(id))
+                    let wait = read::<crate::InferenceWait>(&trx, &self.keys().inference_wait(id))
                         .await?
                         .ok_or(StoreError::Domain(crate::DomainError::MissingInferenceWait))?;
                     let request_id = if wait.last_failure_seq == 0 {
@@ -60,8 +60,8 @@ impl Store {
                     };
                     self.append_interrupted(&trx, session, request_id, self.now())
                         .await?;
-                    trx.clear(&self.wait_due_key(id, wait.wake_at));
-                    trx.clear(&self.wait_key(id));
+                    trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
+                    trx.clear(&self.keys().inference_wait(id));
                     Ok(InterruptResult::Finished)
                 }
                 _ => {
@@ -107,9 +107,11 @@ impl Store {
             };
             self.append_interrupted(&trx, session, request_id, self.now())
                 .await?;
-            if let Some(wait) = read::<crate::InferenceWait>(&trx, &self.wait_key(id)).await? {
-                trx.clear(&self.wait_due_key(id, wait.wake_at));
-                trx.clear(&self.wait_key(id));
+            if let Some(wait) =
+                read::<crate::InferenceWait>(&trx, &self.keys().inference_wait(id)).await?
+            {
+                trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
+                trx.clear(&self.keys().inference_wait(id));
             }
             Ok(true)
         })
@@ -122,7 +124,7 @@ impl Store {
         id: SessionId,
         seq: u64,
     ) -> Result<Option<RequestId>> {
-        let Some(bytes) = trx.get(&self.event_key(id, seq), false).await? else {
+        let Some(bytes) = trx.get(&self.keys().event(id, seq), false).await? else {
             return Ok(None);
         };
         let event: Event = match decode::<StoredValue>(&bytes)? {
@@ -150,7 +152,7 @@ impl Store {
             .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
         let event = swarmy_core::interrupted_event(head, request_id);
         let value = encode(&StoredValue::Inline(encode(&event)?))?;
-        trx.set(&self.event_key(session.session_id, head), &value);
+        trx.set(&self.keys().event(session.session_id, head), &value);
         session.head_seq = head;
         session.interrupt_requested = false;
         let state = if self.has_queued_in(trx, session.session_id).await? {

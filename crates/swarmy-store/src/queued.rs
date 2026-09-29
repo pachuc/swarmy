@@ -13,7 +13,7 @@ impl Store {
         trx: &foundationdb::Transaction,
         id: SessionId,
     ) -> Result<Vec<(Vec<u8>, QueuedMessage)>> {
-        let space = crate::keys::Keys::new(&self.root).queued_space(id);
+        let space = self.keys().queued_space(id);
         let mut result = Vec::new();
         for (key, value) in scan(trx, space.range(), crate::MAX_SCAN_LIMIT).await? {
             result.push((key, self.hydrate(&value).await?));
@@ -34,8 +34,8 @@ impl Store {
         if message.role != MessageRole::User {
             return Err(StoreError::Domain(DomainError::InvalidMessageRole));
         }
-        let replay_key = crate::keys::Keys::new(&self.root).queued_replay(key);
-        let keys = crate::keys::Keys::new(&self.root);
+        let replay_key = self.keys().queued_replay(key);
+        let keys = self.keys();
         let counter_key = keys.queued_counter(id);
         let prepared = self
             .prepare(&QueuedMessage {
@@ -68,8 +68,8 @@ impl Store {
                             message: message.clone(),
                         })
                         .await?;
-                    trx.set(&self.event_key(id, head), &event);
-                    write(&trx, &self.turn_key(id), &message.id)?;
+                    trx.set(&self.keys().event(id, head), &event);
+                    write(&trx, &self.keys().turn(id), &message.id)?;
                     session.head_seq = head;
                     self.transition(&trx, session, SessionState::Runnable, self.now())
                         .await?;
@@ -81,7 +81,7 @@ impl Store {
                         .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
                     if scan(
                         &trx,
-                        crate::keys::Keys::new(&self.root).queued_space(id).range(),
+                        self.keys().queued_space(id).range(),
                         crate::MAX_SCAN_LIMIT,
                     )
                     .await?
@@ -90,10 +90,7 @@ impl Store {
                     {
                         return Err(StoreError::Storage(crate::StorageError::TooLarge));
                     }
-                    trx.set(
-                        &crate::keys::Keys::new(&self.root).queued_message(id, index),
-                        prepared,
-                    );
+                    trx.set(&self.keys().queued_message(id, index), prepared);
                     write(&trx, counter_key, &index)?;
                 }
                 write(&trx, replay_key, &(head, idle))?;
@@ -122,12 +119,7 @@ impl Store {
             async move {
                 self.check_worker_lease(&trx, id, lease, self.now()).await?;
                 let mut session = self.session(&trx, id).await?;
-                if session.head_seq != head {
-                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
-                        expected: head,
-                        actual: session.head_seq,
-                    }));
-                }
+                crate::check_head(session.head_seq, head)?;
                 let queue = self.queued_in(&trx, id).await?;
                 let mut events = Vec::with_capacity(before.len() + queue.len() * 2);
                 let mut delivered_keys = Vec::new();
@@ -162,7 +154,7 @@ impl Store {
                 }
                 for event in &events {
                     trx.set(
-                        &self.event_key(id, event.seq()),
+                        &self.keys().event(id, event.seq()),
                         &self.prepare(event).await?,
                     );
                 }
@@ -191,7 +183,7 @@ impl Store {
         old: SessionId,
         new: SessionId,
     ) -> Result<()> {
-        let keys = crate::keys::Keys::new(&self.root);
+        let keys = self.keys();
         for (old_key, item) in self.queued_in(trx, old).await? {
             let space = keys.queued_space(old);
             let (index,): (u64,) = space

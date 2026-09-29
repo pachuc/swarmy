@@ -17,7 +17,7 @@ use crate::{
     CredentialKey, InferenceFailureWait, InferenceWait, Result, Store, StoreError,
     credentials::{decode_entry, entry_ready},
     inference_wait::Breaker,
-    read, scan, write,
+    read, scan_all, write,
 };
 
 /// One stored entry label with its readiness hint, in creation order.
@@ -117,6 +117,29 @@ pub struct RouteCache {
     routes: HashMap<String, Option<RouteRecord>>,
     pools: HashMap<String, Vec<PoolEntry>>,
     breakers: HashMap<BreakerKey, BreakerState>,
+}
+
+/// The failure inputs for one atomic failover step: what failed, when to
+/// retry it, where the session was in the chain, and how long parking may
+/// wait. Grouped so the step takes six arguments instead of nine.
+#[derive(Clone, Copy, Debug)]
+pub struct RouteFailure {
+    pub failure_kind: swarmy_core::FailureKind,
+    pub retry_at: Timestamp,
+    pub route_step: u32,
+    pub max_wait: std::time::Duration,
+}
+
+/// The five route-selection inputs shared by every snapshot and failover
+/// call: the session override, the swarm default, and the clock. The agent
+/// override is read inside the transaction, so it is not part of this group.
+#[derive(Clone, Copy, Debug)]
+pub struct RouteSelection<'a> {
+    pub session_route: Option<&'a str>,
+    pub session_provider: Option<&'a str>,
+    pub default_route: Option<&'a str>,
+    pub default_provider: &'a str,
+    pub now: Timestamp,
 }
 
 // Keep route and provider precedence identical for transactional worker reads
@@ -242,10 +265,6 @@ impl RouteSnapshot {
 }
 
 impl Store {
-    pub(crate) fn route_key(&self, name: &str) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).route(name)
-    }
-
     /// Store a named failover chain, replacing any previous steps.
     /// # Errors
     /// Returns invalid routes or storage failures.
@@ -259,7 +278,7 @@ impl Store {
         };
         self.transaction(|trx| {
             let record = &record;
-            async move { write(&trx, &self.route_key(name), record) }
+            async move { write(&trx, &self.keys().route(name), record) }
         })
         .await
     }
@@ -268,7 +287,7 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn get_route(&self, name: &str) -> Result<Option<RouteRecord>> {
-        self.transaction(|trx| async move { read(&trx, &self.route_key(name)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().route(name)).await })
             .await
     }
 
@@ -276,32 +295,19 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding failures.
     pub async fn list_routes(&self) -> Result<Vec<RouteRecord>> {
-        let space = crate::keys::Keys::new(&self.root).route_space();
-        let (mut begin, end) = space.range();
+        let space = self.keys().route_space();
+        let (begin, end) = space.range();
         let mut routes = Vec::new();
-        loop {
-            let rows = self
-                .transaction(|trx| {
-                    let range = (begin.clone(), end.clone());
-                    async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
-                })
-                .await?;
-            if rows.is_empty() {
-                break;
+        for (key, value) in self.scan_all_pages(begin, end).await? {
+            let (name,): (String,) = space
+                .unpack(&key)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+            let mut record: RouteRecord = swarmy_core::decode(&value)?;
+            if record.name != name {
+                return Err(StoreError::Storage(crate::StorageError::Corrupt));
             }
-            for (key, value) in rows {
-                let (name,): (String,) = space
-                    .unpack(&key)
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-                let mut record: RouteRecord = swarmy_core::decode(&value)?;
-                if record.name != name {
-                    return Err(StoreError::Storage(crate::StorageError::Corrupt));
-                }
-                record.name = name;
-                routes.push(record);
-                begin = key;
-                begin.push(0);
-            }
+            record.name = name;
+            routes.push(record);
         }
         Ok(routes)
     }
@@ -312,7 +318,7 @@ impl Store {
     /// Returns storage failures.
     pub async fn delete_route(&self, name: &str) -> Result<bool> {
         self.transaction(|trx| async move {
-            let key = self.route_key(name);
+            let key = self.keys().route(name);
             let existed = trx.get(&key, false).await?.is_some();
             trx.clear(&key);
             Ok(existed)
@@ -329,31 +335,22 @@ impl Store {
         provider: &str,
         now: Timestamp,
     ) -> Result<Vec<PoolEntry>> {
-        let space = crate::keys::Keys::new(&self.root)
+        let space = self
+            .keys()
             .credential_entry_space_provider(CredentialScope::Cluster, provider);
-        let (mut begin, end) = space.range();
         let mut entries: Vec<(Timestamp, PoolEntry)> = Vec::new();
-        loop {
-            let rows = scan(trx, (begin.clone(), end.clone()), crate::MAX_SCAN_LIMIT).await?;
-            let complete = rows.len() < crate::MAX_SCAN_LIMIT;
-            for (key, value) in rows {
-                let (label,): (String,) = space
-                    .unpack(&key)
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-                let entry = decode_entry(&value)?;
-                entries.push((
-                    entry.created_at,
-                    PoolEntry {
-                        label,
-                        ready: entry_ready(entry.needs_login, entry.expires_at, now),
-                    },
-                ));
-                begin = key;
-                begin.push(0);
-            }
-            if complete {
-                break;
-            }
+        for (key, value) in scan_all(trx, space.range()).await? {
+            let (label,): (String,) = space
+                .unpack(&key)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+            let entry = decode_entry(&value)?;
+            entries.push((
+                entry.created_at,
+                PoolEntry {
+                    label,
+                    ready: entry_ready(entry.needs_login, entry.expires_at, now),
+                },
+            ));
         }
         // Creation order is the failover order; labels break ties for
         // entries written in the same transaction.
@@ -368,26 +365,14 @@ impl Store {
     /// typo cannot wedge an agent's turns.
     /// # Errors
     /// Returns database or decoding errors.
-    #[allow(clippy::too_many_arguments)]
     pub async fn route_snapshot(
         &self,
         agent: AgentId,
-        session_route: Option<&str>,
-        session_provider: Option<&str>,
-        default_route: Option<&str>,
-        default_provider: &str,
-        now: Timestamp,
+        selection: RouteSelection<'_>,
     ) -> Result<RouteSnapshot> {
-        self.agent_and_route_snapshot(
-            agent,
-            session_route,
-            session_provider,
-            default_route,
-            default_provider,
-            now,
-        )
-        .await
-        .map(|(_, snapshot)| snapshot)
+        self.agent_and_route_snapshot(agent, selection)
+            .await
+            .map(|(_, snapshot)| snapshot)
     }
 
     /// Read the agent and resolve its session's failover chain in one
@@ -396,15 +381,10 @@ impl Store {
     /// inference settings and its route.
     /// # Errors
     /// Returns database or decoding errors.
-    #[allow(clippy::too_many_arguments)]
     pub async fn agent_and_route_snapshot(
         &self,
         agent: AgentId,
-        session_route: Option<&str>,
-        session_provider: Option<&str>,
-        default_route: Option<&str>,
-        default_provider: &str,
-        now: Timestamp,
+        selection: RouteSelection<'_>,
     ) -> Result<(Option<AgentRecord>, RouteSnapshot)> {
         self.transaction(|trx| async move {
             let agent = self.read_agent(&trx, agent).await?;
@@ -414,13 +394,9 @@ impl Store {
             let snapshot = self
                 .route_snapshot_in(
                     &trx,
-                    session_route,
                     agent_route.as_deref(),
-                    session_provider,
                     agent_provider.as_deref(),
-                    default_route,
-                    default_provider,
-                    now,
+                    selection,
                 )
                 .await?;
             Ok((agent, snapshot))
@@ -664,29 +640,24 @@ impl Store {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn route_snapshot_in(
         &self,
         trx: &foundationdb::Transaction,
-        session_route: Option<&str>,
         agent_route: Option<&str>,
-        session_provider: Option<&str>,
         agent_provider: Option<&str>,
-        default_route: Option<&str>,
-        default_provider: &str,
-        now: Timestamp,
+        selection: RouteSelection<'_>,
     ) -> Result<RouteSnapshot> {
         let (name, provider) = select_route(
-            session_route,
+            selection.session_route,
             agent_route,
-            default_route,
-            session_provider,
+            selection.default_route,
+            selection.session_provider,
             agent_provider,
-            default_provider,
+            selection.default_provider,
         );
         let name = name.map(str::to_owned);
         let record = match name.as_deref() {
-            Some(name) => read::<RouteRecord>(trx, &self.route_key(name)).await?,
+            Some(name) => read::<RouteRecord>(trx, &self.keys().route(name)).await?,
             None => None,
         };
         // One pool scan per distinct provider in the same transaction; entry
@@ -708,7 +679,7 @@ impl Store {
         for provider in providers {
             pools.insert(
                 provider.to_owned(),
-                self.pool_labels_in(trx, provider, now).await?,
+                self.pool_labels_in(trx, provider, selection.now).await?,
             );
         }
         let chain = Self::expand_chain(record.as_ref(), &pools, provider);
@@ -716,7 +687,8 @@ impl Store {
         for step in chain.steps {
             let key = CredentialKey::for_label(&step.provider, step.label.clone());
             let breaker: Option<Breaker> = read(trx, &self.breaker_key(&key)).await?;
-            let (open_until, reason) = crate::inference_wait::open_state(breaker.as_ref(), now);
+            let (open_until, reason) =
+                crate::inference_wait::open_state(breaker.as_ref(), selection.now);
             steps.push(RouteStepStatus {
                 provider: step.provider,
                 label: step.label,
@@ -767,7 +739,7 @@ impl Store {
         session.route_step = step;
         self.write_session(trx, &session)?;
         if !reasons.is_empty() {
-            let wait_key = self.wait_key(id);
+            let wait_key = self.keys().inference_wait(id);
             let mut wait = read::<InferenceWait>(trx, &wait_key)
                 .await?
                 .unwrap_or(InferenceWait {
@@ -802,27 +774,20 @@ impl Store {
     /// failure or parks the session with the successor's request in flight.
     /// # Errors
     /// Rejects stale leases or returns storage failures.
-    #[allow(clippy::too_many_arguments)]
     pub async fn failover_route_step(
         &self,
         id: SessionId,
         lease: &Lease,
         seq: u64,
         error: &str,
-        failure_kind: swarmy_core::FailureKind,
-        retry_at: Timestamp,
-        route_step: u32,
-        session_route: Option<&str>,
-        session_provider: Option<&str>,
-        default_route: Option<&str>,
-        default_provider: &str,
-        now: Timestamp,
-        max_wait: std::time::Duration,
+        failure: RouteFailure,
+        selection: RouteSelection<'_>,
     ) -> Result<FailoverOutcome> {
+        let now = selection.now;
         self.transaction(|trx| async move {
             self.check_worker_lease(&trx, id, lease, now).await?;
             let stored = self.session(&trx, id).await?;
-            if let Some(wait) = read::<InferenceWait>(&trx, &self.wait_key(id)).await?
+            if let Some(wait) = read::<InferenceWait>(&trx, &self.keys().inference_wait(id)).await?
                 && wait.last_failure_seq == seq
             {
                 return Ok(FailoverOutcome {
@@ -844,17 +809,13 @@ impl Store {
             let snapshot = self
                 .route_snapshot_in(
                     &trx,
-                    session_route,
                     agent_route.as_deref(),
-                    session_provider,
                     agent_provider.as_deref(),
-                    default_route,
-                    default_provider,
-                    now,
+                    selection,
                 )
                 .await?;
             let route = snapshot.name.clone();
-            if failure_kind == swarmy_core::FailureKind::GatewayUnserved {
+            if failure.failure_kind == swarmy_core::FailureKind::GatewayUnserved {
                 self.park_leased_in(
                     &trx,
                     id,
@@ -862,10 +823,10 @@ impl Store {
                     &InferenceFailureWait {
                         seq,
                         reason: error,
-                        wake_at: retry_at,
+                        wake_at: failure.retry_at,
                     },
                     now,
-                    max_wait,
+                    failure.max_wait,
                 )
                 .await?;
                 return Ok(FailoverOutcome {
@@ -874,10 +835,10 @@ impl Store {
                     skipped: snapshot.skipped.clone(),
                 });
             }
-            if let Some(target) = snapshot.pick(route_step.saturating_add(1)) {
+            if let Some(target) = snapshot.pick(failure.route_step.saturating_add(1)) {
                 let target = u32::try_from(target).unwrap_or(u32::MAX);
-                if target != route_step {
-                    let reasons = failover_reasons(&snapshot, route_step, target, error);
+                if target != failure.route_step {
+                    let reasons = failover_reasons(&snapshot, failure.route_step, target, error);
                     self.write_route_step_in(&trx, id, target, seq, &reasons, now)
                         .await?;
                     return Ok(FailoverOutcome {
@@ -891,7 +852,7 @@ impl Store {
                 // failure's retry time is safer than retrying the same step
                 // in a tight loop.
             }
-            let earliest = Self::earliest_retry(&snapshot.steps, retry_at);
+            let earliest = Self::earliest_retry(&snapshot.steps, failure.retry_at);
             self.park_leased_in(
                 &trx,
                 id,
@@ -902,7 +863,7 @@ impl Store {
                     wake_at: earliest,
                 },
                 now,
-                max_wait,
+                failure.max_wait,
             )
             .await?;
             let mut session = self.session(&trx, id).await?;

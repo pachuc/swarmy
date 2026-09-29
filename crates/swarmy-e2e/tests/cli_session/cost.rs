@@ -65,23 +65,25 @@ async fn complete(
     let event = Event::InferenceCompleted {
         seq: 0,
         request_id: request,
-        message: Message {
-            id: MessageId::from_ulid(Ulid::generate()),
-            role: MessageRole::Assistant,
-            parts: vec![Part::Text {
-                text: "done".into(),
-            }],
+        completion: swarmy_core::InferenceCompletion {
+            message: Message {
+                id: MessageId::from_ulid(Ulid::generate()),
+                role: MessageRole::Assistant,
+                parts: vec![Part::Text {
+                    text: "done".into(),
+                }],
+            },
+            provider: provider.into(),
+            model: model.into(),
+            effort_used: None,
+            usage: tokens(10, 20),
+            cost_micros: cost,
+            effort_requested: None,
+            effort_clamped: false,
+            entry: None,
+            route: None,
+            route_step: None,
         },
-        provider: provider.into(),
-        model: model.into(),
-        effort_used: None,
-        usage: tokens(10, 20),
-        cost_micros: cost,
-        effort_requested: None,
-        effort_clamped: false,
-        entry: None,
-        route: None,
-        route_step: None,
     };
     assert!(
         store

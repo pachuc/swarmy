@@ -73,6 +73,22 @@ impl HeldLeaseGuard<'_> {
     }
 }
 
+/// One route-selection group for every snapshot and failover call: the
+/// session override, the swarm default, and the clock.
+fn route_selection<'a>(
+    session: &'a SessionRecord,
+    config: &'a Config,
+    now: Timestamp,
+) -> swarmy_store::RouteSelection<'a> {
+    swarmy_store::RouteSelection {
+        session_route: session.route.as_deref(),
+        session_provider: session.inference.provider.as_deref(),
+        default_route: config.default_route.as_deref(),
+        default_provider: &config.provider,
+        now,
+    }
+}
+
 pub struct Worker {
     store: Store,
     bus: Bus,
