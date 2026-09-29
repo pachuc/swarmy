@@ -280,22 +280,23 @@ async fn send_or_queue(
     }
 }
 
-/// Whether a send failure is the transient busy-session race that may be
-/// retried on the next idle state. Any 409 conflict on an append is a lost
-/// A conflicting append means the ready snapshot became stale before send.
+/// Requeue only an idle guard or an API append conflict known to be transient.
 fn is_busy_send_error(error: &anyhow::Error) -> bool {
     error
-        .downcast_ref::<swarmy_client::Error>()
-        .is_some_and(is_busy_client_error)
+        .downcast_ref::<super::client_conversation::SessionNotIdle>()
+        .is_some()
+        || error
+            .downcast_ref::<swarmy_client::Error>()
+            .is_some_and(is_busy_client_error)
 }
 
 fn is_busy_client_error(error: &swarmy_client::Error) -> bool {
-    match error {
-        swarmy_client::Error::Api { status, .. } | swarmy_client::Error::Status { status, .. } => {
-            status.as_u16() == 409
-        }
-        _ => false,
-    }
+    matches!(
+        error,
+        swarmy_client::Error::Api { status, body }
+            if *status == reqwest::StatusCode::CONFLICT
+                && matches!(body.code.as_str(), "session_not_idle" | "stale_head")
+    )
 }
 
 /// Send the queued line now that the session is idle again. A send that still
@@ -705,14 +706,13 @@ mod tests {
             reqwest::StatusCode::CONFLICT,
             "stale_head"
         )));
-        // Any other 409 on a send is also a lost append race (for example a
-        // conflict code the API added for a newly archived session), so it
-        // requeues too. No 409 from an append is permanent: deletions report
-        // 404, auth 401, and storage 500.
-        assert!(is_busy_send_error(&api_error(
+        assert!(!is_busy_send_error(&api_error(
             reqwest::StatusCode::CONFLICT,
             "main_session_close"
         )));
+        assert!(is_busy_send_error(
+            &super::client_conversation::SessionNotIdle.into()
+        ));
         // The API wrapper retains the typed source through context.
         let wrapped = swarmy_client::api_client::api_error(
             swarmy_client::Error::Api {

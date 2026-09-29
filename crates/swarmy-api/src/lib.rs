@@ -170,16 +170,15 @@ fn agent(record: swarmy_core::AgentRecord) -> api::Agent {
     }
 }
 fn session(record: &swarmy_core::SessionRecord) -> api::Session {
-    let named = matches!(record.kind, swarmy_core::SessionKind::Named { .. });
+    let kind = match record.kind {
+        swarmy_core::SessionKind::Ephemeral => api::SessionKind::Ephemeral,
+        swarmy_core::SessionKind::Named { .. } => api::SessionKind::Named,
+    };
     let state = record.state.into();
     api::Session {
         id: record.session_id.to_string(),
-        agent_id: named.then(|| record.agent_id.to_string()),
-        kind: if named {
-            api::SessionKind::Named
-        } else {
-            api::SessionKind::Ephemeral
-        },
+        agent_id: matches!(kind, api::SessionKind::Named).then(|| record.agent_id.to_string()),
+        kind,
         state,
         log_id: api::LogId::Session(record.session_id.to_string()),
         head_sequence: record.head_seq,

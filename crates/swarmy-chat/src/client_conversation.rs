@@ -174,6 +174,18 @@ async fn apply_session_route(
     Ok(session)
 }
 
+/// A local idle guard failed before the append reached the API.
+#[derive(Debug)]
+pub struct SessionNotIdle;
+
+impl std::fmt::Display for SessionNotIdle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("session is not idle")
+    }
+}
+
+impl std::error::Error for SessionNotIdle {}
+
 impl Conversation {
     /// Open or resume a conversation.
     ///
@@ -299,10 +311,9 @@ impl Conversation {
         self.tool_count = 0;
         self.tool_result = None;
         self.pending.clear();
-        ensure!(
-            queue || self.session.state == api::SessionState::Idle,
-            "session is not idle"
-        );
+        if !queue && self.session.state != api::SessionState::Idle {
+            return Err(SessionNotIdle.into());
+        }
         let mut body = api::AppendMessage {
             idempotency_key: ulid::Ulid::generate().to_string(),
             expected_head: self.session.head_sequence,
@@ -317,10 +328,9 @@ impl Conversation {
             }) if status.as_u16() == 409 && error.code == "stale_head" => {
                 self.session =
                     crate::api_client::call(&self.endpoint, self.client.session(&self.id)).await?;
-                ensure!(
-                    queue || self.session.state == api::SessionState::Idle,
-                    "session is not idle"
-                );
+                if !queue && self.session.state != api::SessionState::Idle {
+                    return Err(SessionNotIdle.into());
+                }
                 body.expected_head = self.session.head_sequence;
                 crate::api_client::call(&self.endpoint, self.client.append_message(&self.id, &body))
                     .await?

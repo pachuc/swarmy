@@ -34,7 +34,8 @@ pub fn connect() -> Result<(Client, String)> {
 /// Include the endpoint in an API failure.
 #[must_use]
 pub fn api_error(error: crate::Error, endpoint: &str) -> anyhow::Error {
-    anyhow::Error::new(error).context(format!("API at {endpoint}"))
+    let message = format!("API at {endpoint}: {error}");
+    anyhow::Error::new(error).context(message)
 }
 
 /// Apply the standard API request timeout.
