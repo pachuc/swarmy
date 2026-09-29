@@ -30,7 +30,7 @@ impl Fixture {
         config.harness.settings.model = "default-model".into();
         config.harness.settings.reasoning_effort = Some(ReasoningEffort::Medium);
         let blobs = Arc::new(MemoryBlobStore::default());
-        let store = Store::open(Some(&cluster), Some(&[prefix.to_owned()]), blobs.clone())
+        let store = Store::open(Some(&cluster), Some(std::slice::from_ref(&prefix)), blobs.clone())
             .await
             .unwrap();
         image_fixture::image(&store).await;

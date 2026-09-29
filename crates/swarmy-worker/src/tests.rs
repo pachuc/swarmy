@@ -157,7 +157,7 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
     let calls = Arc::new(AtomicUsize::new(0));
     let config = config(url.clone(), &prefix, calls.clone());
     let blobs = Arc::new(MemoryBlobStore::default());
-    let store = Store::open(Some(&cluster), Some(&[prefix.to_owned()]), blobs.clone())
+    let store = Store::open(Some(&cluster), Some(std::slice::from_ref(&prefix)), blobs.clone())
         .await
         .unwrap();
     let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
@@ -347,7 +347,7 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
     let calls = Arc::new(AtomicUsize::new(0));
     let config = config(url.clone(), &prefix, calls.clone());
     let blobs = Arc::new(MemoryBlobStore::default());
-    let store = Store::open(Some(&cluster), Some(&[prefix.to_owned()]), blobs.clone())
+    let store = Store::open(Some(&cluster), Some(std::slice::from_ref(&prefix)), blobs.clone())
         .await
         .unwrap();
     let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
