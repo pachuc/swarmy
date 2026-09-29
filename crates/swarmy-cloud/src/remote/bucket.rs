@@ -74,19 +74,30 @@ pub(crate) fn resolve(
             .parse()
             .map_err(|source| crate::Error::context(source, "invalid --s3-prefix"))?;
     }
-    if let Some(access_key) = &options.access_key {
-        set_access_key(&mut spec, access_key.clone());
-    } else if let Some(access_key) = &options.env_access_key
-        && !access_key.is_empty()
-        && !spec.needs_static_keys()
+    // An explicit empty endpoint selects AWS S3 with the instance role.
+    if options.endpoint.as_deref() == Some("") {
+        spec.credentials = BucketCredentials::InstanceRole;
+    }
+    // Ambient `AWS_*` keys belong to the laptop identity and must never
+    // become node credentials on their own. They apply only when the bucket
+    // is static by endpoint, by flags, or by its saved description.
+    let explicit_secret =
+        options.secret_file.is_some() || options.secret_stdin || options.stdin_secret.is_some();
+    if !spec.endpoint.is_empty()
+        || options.access_key.is_some()
+        || explicit_secret
+        || spec.needs_static_keys()
     {
-        set_access_key(&mut spec, access_key.clone());
-    }
-    let secret = secret_from(options)?;
-    if let Some(secret) = secret {
-        set_secret_key(&mut spec, secret);
-    }
-    if spec.needs_static_keys() || !spec.endpoint.is_empty() || secret_was_given(options) {
+        if let Some(access_key) = &options.access_key {
+            set_access_key(&mut spec, access_key.clone());
+        } else if let Some(access_key) = &options.env_access_key
+            && !access_key.is_empty()
+        {
+            set_access_key(&mut spec, access_key.clone());
+        }
+        if let Some(secret) = secret_from(options)? {
+            set_secret_key(&mut spec, secret);
+        }
         // Static keys need all three coordinates; anything less is a typo.
         crate::Error::ensure(
             !spec.endpoint.is_empty(),
@@ -108,16 +119,6 @@ pub(crate) fn resolve(
     }
     spec.validate_name()?;
     Ok(Some(spec))
-}
-
-fn secret_was_given(options: &BucketOptions) -> bool {
-    options.secret_file.is_some()
-        || options.secret_stdin
-        || options.stdin_secret.is_some()
-        || options
-            .env_secret_key
-            .as_deref()
-            .is_some_and(|key| !key.is_empty())
 }
 
 fn set_access_key(spec: &mut BucketSpec, access_key: String) {
@@ -342,6 +343,41 @@ mod tests {
         missing_endpoint.access_key = Some("test-access".into());
         missing_endpoint.env_secret_key = Some("env-secret".into());
         assert!(resolve(None, &missing_endpoint).is_err());
+    }
+
+    #[test]
+    fn ambient_laptop_keys_never_become_node_credentials() {
+        // An operator with AWS keys exported for the provisioning identity
+        // runs plain AWS bucket remotes; the env keys must not convert the
+        // bucket to static or fail the run.
+        let mut options = empty_options();
+        options.bucket = Some("test-bucket".into());
+        options.env_access_key = Some("laptop-access".into());
+        options.env_secret_key = Some("laptop-secret".into());
+        let spec = resolve(None, &options).unwrap().unwrap();
+        assert!(spec.is_aws());
+        // The same holds when the saved description is already AWS.
+        let spec = resolve(Some(spec), &options).unwrap().unwrap();
+        assert!(spec.is_aws());
+        // An explicit empty endpoint switches a static bucket back to AWS.
+        let mut back = empty_options();
+        back.endpoint = Some(String::new());
+        let spec = resolve(
+            Some(BucketSpec {
+                endpoint: "https://objects.example.invalid".into(),
+                region: "eu-west-1".into(),
+                bucket: "test-bucket".into(),
+                credentials: BucketCredentials::StaticKeys {
+                    access_key: "old-access".into(),
+                    secret_key: "old-secret".into(),
+                },
+                ..BucketSpec::default()
+            }),
+            &back,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(spec.is_aws());
     }
 
     #[test]
