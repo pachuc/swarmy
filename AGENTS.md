@@ -222,11 +222,33 @@ opt-in feature that the workspace commands leave off. The CLI remote step skips
 the self-managed dev-stack test already covered by the workspace step. The e2e
 binaries run serially within each of two parallel CI jobs.
 
-Clippy runs with the `pedantic` group denied, so write code that satisfies it
-rather than silencing it. If a lint is genuinely wrong for a piece of code,
-allow that one lint at the narrowest scope with a comment explaining why.
-`unsafe_code` is denied workspace-wide; the crates that need it opt in
-explicitly and say why in their `Cargo.toml`.
+Clippy runs with the `all` and `pedantic` groups denied, so write code that
+satisfies it rather than silencing it. `unsafe_code` is denied
+workspace-wide; the one place that needs it opts in on a single function with
+a SAFETY comment.
+
+### Lint exceptions
+
+The bar for an exception is high. An exception is acceptable only when all of
+these hold:
+
+1. The lint is wrong for this code, not merely inconvenient. "The function is
+   long" is not a reason; "this is a flat match over every protocol event and
+   splitting it would scatter one table across files" can be.
+2. You tried the fix the lint asks for, and it made the code harder to read or
+   less correct. Say what you tried.
+3. The exception covers one item (a function, a statement, a match arm),
+   never a module or crate, unless the whole module genuinely is the
+   exception (for example a CLI output module and `print_stdout`).
+4. It is written as `#[expect(clippy::lint_name, reason = "...")]` with the
+   reason in full, so the build fails if the exception stops being needed.
+
+Never add an exception to get a task finished, never loosen a lint or a
+threshold in `Cargo.toml`, `clippy.toml`, or CI, and never split a function
+into pieces whose only purpose is to get under a limit. If you believe a lint
+is wrong for the whole codebase, say so in the pull request description and
+leave the lint as it is; the operator decides. Reviewers apply this bar using
+`REVIEWER.md`.
 
 Integration tests that need FoundationDB, NATS, or SeaweedFS get them from
 `scripts/dev-stack.sh start`, which writes connection settings to `.dev/env`.
@@ -312,6 +334,8 @@ keep its own disk in order. The rules, which the task prompt repeats:
 
 - One task per pull request, on the branch the launcher created. Do not touch
   files outside the task's scope, and do not weaken lints, tests, or CI.
+- Before marking a pull request ready, check it against `REVIEWER.md`; the
+  reviewer will.
 - Commit messages have an imperative subject line and a body explaining why.
 - The pull request description says what was built, lists the exact commands
   you ran to validate it with their results, and notes anything from the test
