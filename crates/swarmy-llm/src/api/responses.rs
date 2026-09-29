@@ -559,7 +559,13 @@ impl ResponsesStream {
     pub fn with_context(provider: &str, model: &str) -> Self {
         Self {
             context: (provider.into(), model.into()),
-            ..Self::default()
+            framing: SseParser::default(),
+            output: BTreeMap::new(),
+            text_content: BTreeMap::new(),
+            saw_tool_arguments: false,
+            completed: false,
+            quota_remaining: BTreeMap::new(),
+            quota_resets: BTreeMap::new(),
         }
     }
 
