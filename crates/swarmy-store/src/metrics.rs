@@ -284,9 +284,8 @@ struct StoredTurnSummaryCurrent {
 /// [`InferenceMetric`] at the current layout revision: postcard is positional, so
 /// the API type cannot be embedded directly (the next field added to the API
 /// type would make every stored row undecodable). Convert to and from the API
-/// type with the helpers below, and add any future stored fields as trailing
-/// fields through `swarmy_core::trailing` (see `swarmy_core::usage`), never by
-/// inserting mid-struct.
+/// type with the helpers below. Changing this positional layout requires a
+/// new fixed-byte fixture and a one-way break.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct StoredInferenceMetricCurrent {
     request_id: String,
@@ -337,7 +336,7 @@ impl StoredInferenceMetricCurrent {
 /// Frozen tool fields for one current tool row. Mirrors [`ToolMetric`] at the
 /// current layout revision for the same positional-encoding reason as
 /// [`StoredInferenceMetricCurrent`]; future stored fields go last through
-/// `swarmy_core::trailing`.
+/// a new fixed-byte fixture and a one-way break.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct StoredToolMetricCurrent {
     request_id: String,

@@ -306,8 +306,8 @@ const SESSION_RECORD_VERSION: u8 = 2;
 const SESSION_CHUNK_MARKER: u8 = 0xff;
 const SESSION_MAX_BYTES: usize = 10 * INLINE_LIMIT;
 
-/// The current format owns all session-local metadata. Add future fields only with
-/// `swarmy_core::trailing`; never change the shape of existing fields.
+/// The current format owns all session-local metadata. Postcard fields are
+/// positional; changes require a new fixed-byte fixture and a one-way break.
 #[derive(Serialize, Deserialize)]
 struct StoredSessionCurrent {
     session_id: SessionId,
