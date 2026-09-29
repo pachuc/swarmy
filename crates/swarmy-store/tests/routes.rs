@@ -679,7 +679,7 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
                 "openai/primary: quota reached",
                 swarmy_store::RouteFailure {
                     failure_kind: swarmy_core::FailureKind::Unknown,
-                    retry_at: retry_at,
+                    retry_at,
                     route_step: 0,
                     max_wait: Duration::from_secs(3600),
                 },
@@ -822,8 +822,8 @@ async fn failover_resume_after_advance_is_a_noop() {
             "openai/primary: quota reached",
             swarmy_store::RouteFailure {
                 failure_kind: swarmy_core::FailureKind::Unknown,
-                retry_at: retry_at,
-                route_step: route_step,
+                retry_at,
+                route_step,
                 max_wait: Duration::from_secs(3600),
             },
             swarmy_store::RouteSelection {
@@ -894,7 +894,7 @@ async fn failover_and_park_cost_one_transaction_each() {
             "openai/primary: quota reached",
             swarmy_store::RouteFailure {
                 failure_kind: swarmy_core::FailureKind::Unknown,
-                retry_at: retry_at,
+                retry_at,
                 route_step: 0,
                 max_wait: Duration::from_secs(3600),
             },
@@ -932,7 +932,7 @@ async fn failover_and_park_cost_one_transaction_each() {
             "openai/backup: quota reached",
             swarmy_store::RouteFailure {
                 failure_kind: swarmy_core::FailureKind::Unknown,
-                retry_at: retry_at,
+                retry_at,
                 route_step: 1,
                 max_wait: Duration::from_secs(3600),
             },

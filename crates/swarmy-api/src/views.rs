@@ -135,6 +135,12 @@ mod tests {
     /// Pin the full API JSON for one fully populated turn: every converted
     /// field appears, so a dropped or renamed field fails here instead of
     /// silently vanishing from the contract.
+    // The pinned literal must stay adjacent to the fixture it pins;
+    // splitting them into helpers would let the two drift apart unseen.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the exact-JSON pin needs its full fixture and literal inline"
+    )]
     #[test]
     fn metric_views_serialize_every_field() {
         let turn = store::TurnMetrics {
@@ -260,6 +266,49 @@ mod tests {
                 "dropped_stages": 1,
                 "dropped_inference": 2,
                 "dropped_tools": 3,
+            })
+        );
+    }
+
+    /// Pin the agent rollup JSON the same way: latencies keyed by stage with
+    /// both percentiles, plus every counter.
+    #[test]
+    fn agent_view_serializes_every_field() {
+        let agent = store::AgentMetrics {
+            agent_id: "a".into(),
+            main_session_id: Some("s".into()),
+            turns: 7,
+            latencies: std::collections::BTreeMap::from([(
+                "append_to_idle".into(),
+                store::LatencyPercentiles {
+                    p50_ms: 1.0,
+                    p95_ms: 2.0,
+                },
+            )]),
+            input_tokens: 10,
+            cached_input_tokens: 2,
+            output_tokens: 4,
+            reasoning_tokens: 1,
+            mean_output_tokens_per_second: Some(3.5),
+            retries: 5,
+            errors: 6,
+            cost_micros: 8,
+        };
+        assert_eq!(
+            serde_json::to_value(into_api_agent(agent)).unwrap(),
+            json!({
+                "agent_id": "a",
+                "main_session_id": "s",
+                "turns": 7,
+                "latencies": {"append_to_idle": {"p50_ms": 1.0, "p95_ms": 2.0}},
+                "input_tokens": 10,
+                "cached_input_tokens": 2,
+                "output_tokens": 4,
+                "reasoning_tokens": 1,
+                "mean_output_tokens_per_second": 3.5,
+                "retries": 5,
+                "errors": 6,
+                "cost_micros": 8,
             })
         );
     }
