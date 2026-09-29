@@ -784,36 +784,6 @@ impl Store {
             .transpose()
     }
 
-    /// Count sessions attached to an agent with one index scan.
-    /// Listing hydrates every session record; the agent list only needs the
-    /// count, so this counts index entries in a single transaction.
-    /// # Errors
-    /// Returns storage failures.
-    pub async fn count_sessions_by_agent(&self, agent: AgentId) -> Result<usize> {
-        self.transaction(|trx| async move {
-            let (begin, end) = crate::keys::Keys::new(&self.root)
-                .session_by_agent_space(agent)
-                .range();
-            let mut count = 0;
-            let mut cursor = begin;
-            loop {
-                let page = scan(&trx, (cursor, end.clone()), crate::MAX_SCAN_LIMIT).await?;
-                let done = page.len() < crate::MAX_SCAN_LIMIT;
-                count += page.len();
-                if done {
-                    break;
-                }
-                cursor = page.last().map_or(end.clone(), |(key, _)| {
-                    let mut next = key.clone();
-                    next.push(0);
-                    next
-                });
-            }
-            Ok(count)
-        })
-        .await
-    }
-
     /// List sessions attached to an agent by id, strictly after the cursor.
     /// The index includes all sessions created by this version of the store.
     /// # Errors

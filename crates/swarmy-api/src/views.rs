@@ -545,17 +545,13 @@ pub(crate) async fn populate_session_detail(
     Ok(())
 }
 
-async fn agent_base(
+/// The one agent conversion behind list, create, and show, so a freshly
+/// created row reads back identical. The session scan hydrates the session
+/// list the detail view carries; the count comes from the scanned rows.
+pub(crate) async fn agent_value(
     state: &AppState,
     record: swarmy_core::AgentRecord,
-) -> Result<
-    (
-        api::Agent,
-        swarmy_core::AgentId,
-        Option<swarmy_core::PlacementRecord>,
-    ),
-    (StatusCode, Json<api::ApiError>),
-> {
+) -> Result<api::Agent, (StatusCode, Json<api::ApiError>)> {
     let agent_id = record.agent_id;
     let placement = state
         .store
@@ -570,32 +566,6 @@ async fn agent_base(
     let mut view = agent(record);
     view.node_id = placement.as_ref().map(|value| value.node_id.to_string());
     view.scratch = scratch.as_ref().map(scratch_view);
-    Ok((view, agent_id, placement))
-}
-
-/// List view: placement and scratch plus the session count from one index
-/// scan. Hydrating every session just to count them cost one fetch per
-/// session on every agent row.
-pub(crate) async fn agent_summary(
-    state: &AppState,
-    record: swarmy_core::AgentRecord,
-) -> Result<api::Agent, (StatusCode, Json<api::ApiError>)> {
-    let (mut view, agent_id, _) = agent_base(state, record).await?;
-    view.session_count = state
-        .store
-        .count_sessions_by_agent(agent_id)
-        .await
-        .map_err(storage)?;
-    Ok(view)
-}
-
-/// Detail view: the full session list with usage, placement, and sandbox
-/// state for `agent show`.
-pub(crate) async fn agent_detail(
-    state: &AppState,
-    record: swarmy_core::AgentRecord,
-) -> Result<api::Agent, (StatusCode, Json<api::ApiError>)> {
-    let (mut view, agent_id, placement) = agent_base(state, record).await?;
     let mut sessions = Vec::new();
     let mut after = None;
     loop {

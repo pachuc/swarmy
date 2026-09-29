@@ -396,7 +396,7 @@ async fn agents(
         .map_err(storage)?;
     let mut result = Vec::with_capacity(records.len());
     for record in records {
-        result.push(views::agent_summary(&state, record).await?);
+        result.push(views::agent_value(&state, record).await?);
     }
     Ok(Json(result))
 }
@@ -410,7 +410,7 @@ async fn show_agent(
         state.store.get_agent_by_name(&name).await
     }
     .map_err(storage)?;
-    views::agent_detail(
+    views::agent_value(
         &state,
         record.ok_or_else(|| error(StatusCode::NOT_FOUND, "agent_not_found"))?,
     )
@@ -485,8 +485,9 @@ async fn create_agent(
         )
         .await
         .map_err(storage)?;
-    // Echo the new row the way the list shows it; `show` adds the detail fields.
-    views::agent_summary(&state, record).await.map(Json)
+    // Create and get build the agent through the same conversion, so a
+    // freshly created row reads back identical.
+    views::agent_value(&state, record).await.map(Json)
 }
 async fn update_agent(
     State(state): State<AppState>,
@@ -588,7 +589,12 @@ async fn sessions(
     let mut result = Vec::with_capacity(records.len());
     let mut agents = std::collections::HashMap::new();
     for record in &records {
-        result.push(views::session_with_next(&state, record, &mut agents).await?);
+        let mut item = views::session_with_next(&state, record, &mut agents).await?;
+        let agent = agents
+            .get(&record.agent_id)
+            .and_then(|entry| entry.as_ref());
+        views::populate_session_detail(&state, &mut item, record, agent).await?;
+        result.push(item);
     }
     Ok(Json(result))
 }
