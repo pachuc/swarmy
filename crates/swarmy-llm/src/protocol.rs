@@ -187,6 +187,8 @@ fn repair_paired(mut messages: Vec<Value>, wire: ToolWire) -> Vec<Value> {
 mod sanitizer_tests {
     use super::sanitize_tool_id;
 
+    // Wire-id sanitizing is covered here rather than through every provider
+    // builder because only this test pins per-wire stability and length caps.
     #[test]
     fn valid_ids_survive_and_invalid_ids_are_stable_per_wire() {
         let valid = "x".repeat(64);
