@@ -121,7 +121,7 @@ enum BinaryEvent {
         error: String,
         failure_kind: FailureKind,
     },
-    MeteredInferenceCompleted {
+    InferenceCompleted {
         seq: u64,
         request_id: RequestId,
         message: Message,
@@ -189,7 +189,7 @@ fn completion_to_binary(
     route: Option<String>,
     route_step: Option<u32>,
 ) -> BinaryEvent {
-    BinaryEvent::MeteredInferenceCompleted {
+    BinaryEvent::InferenceCompleted {
         seq,
         request_id,
         message,
@@ -427,7 +427,7 @@ impl From<BinaryEvent> for Event {
                 retry_at,
                 failure_kind,
             } => failed_completion(seq, request_id, error, retryable, retry_at, failure_kind),
-            BinaryEvent::MeteredInferenceCompleted {
+            BinaryEvent::InferenceCompleted {
                 seq,
                 request_id,
                 message,
@@ -485,7 +485,7 @@ mod tests {
             route: None,
             route_step: None,
         };
-        // Attributed and plain completions share the metered discriminant.
+        // Attributed and plain completions share the completion discriminant.
         assert_eq!(usize::from(crate::encode(&plain).unwrap()[1]), 7);
         assert_eq!(
             crate::decode::<Event>(&crate::encode(&plain).unwrap()).unwrap(),
