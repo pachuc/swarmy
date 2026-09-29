@@ -61,7 +61,7 @@ impl Fixture {
             "SWARMY_NATS_URL",
             "SWARMY_S3_ENDPOINT",
         ] {
-            if std::env::var(variable).is_err() {
+            if swarmy_core::test_support::stack_env(variable).is_err() {
                 eprintln!("skipping gateway integration test: {variable} is unset");
                 return None;
             }
@@ -409,7 +409,10 @@ impl Fixture {
 
     async fn cleanup(mut self) {
         self.kill().await;
-        let db = Database::new(Some(&swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap())).unwrap();
+        let db = Database::new(Some(
+            &swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap(),
+        ))
+        .unwrap();
         let path = vec![self.prefix.clone()];
         db.run(|trx, _| {
             let path = &path;

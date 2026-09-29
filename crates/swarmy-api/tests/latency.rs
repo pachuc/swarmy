@@ -35,6 +35,8 @@ async fn api_first_fake_token_stays_within_five_ms_of_direct_append() {
     if std::env::var("SWARMY_API_FAKE_BENCH").as_deref() != Ok("1") {
         return;
     }
+    swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap();
+    swarmy_core::test_support::stack_env("SWARMY_NATS_URL").unwrap();
     let fixture = setup(&image).await;
     let mut api = Vec::with_capacity(TURNS);
     let mut direct = Vec::with_capacity(TURNS);
@@ -316,6 +318,8 @@ async fn fake_turn_records_first_token_metrics() {
     let Ok(image) = std::env::var("SWARMY_TEST_IMAGE") else {
         return;
     };
+    swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap();
+    swarmy_core::test_support::stack_env("SWARMY_NATS_URL").unwrap();
     let fixture = setup(&image).await;
     let agent = fixture
         .store

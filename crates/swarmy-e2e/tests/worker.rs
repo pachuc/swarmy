@@ -65,7 +65,7 @@ impl Fixture {
     async fn new_at(nats_url: String) -> Option<Self> {
         static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
         for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
-            if std::env::var(variable).is_err() {
+            if swarmy_core::test_support::stack_env(variable).is_err() {
                 eprintln!("skipping worker integration test: {variable} is unset");
                 return None;
             }
@@ -540,7 +540,10 @@ impl Fixture {
         for key in self.snapshots.get_mut().unwrap().drain() {
             blobs.delete(&key).await.unwrap();
         }
-        let db = Database::new(Some(&swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap())).unwrap();
+        let db = Database::new(Some(
+            &swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap(),
+        ))
+        .unwrap();
         let path = vec![self.prefix.clone()];
         db.run(|trx, _| {
             let path = &path;
