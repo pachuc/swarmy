@@ -80,7 +80,7 @@ A process interrupted during a tool batch retries only incomplete calls. Local
 tools must tolerate execution again when a process dies before recording the
 result; `get_time` may return a newer timestamp. Completed tool calls and folded
 messages are retained. A snapshot is written at turn end using the core versioned
-encoding and the blob store, with its sequence in `Store::write_snapshot`.
+encoding and the blob store, committed with the turn's event sequence.
 Snapshots are derived from an immutable bounded log prefix. An orphaned snapshot
 or request upload can be collected after the blob collector's grace. The gateway
 request key is cleared with the terminal inference event; the saved job remains

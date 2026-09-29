@@ -599,6 +599,6 @@ impl Store {
             &self.volume_snapshots_key(id),
             &vec![record.head_manifest],
         )?;
-        write(trx, &key, record)
+        write(trx, &self.volume_key(id), record)
     }
 }
