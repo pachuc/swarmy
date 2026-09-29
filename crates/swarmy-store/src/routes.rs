@@ -121,7 +121,7 @@ pub struct RouteCache {
 
 /// The failure inputs for one atomic failover step: what failed, when to
 /// retry it, where the session was in the chain, and how long parking may
-/// wait. Grouped so the step takes five arguments instead of nine.
+/// wait. Grouped so the step takes six arguments instead of nine.
 #[derive(Clone, Copy, Debug)]
 pub struct RouteFailure {
     pub failure_kind: swarmy_core::FailureKind,
