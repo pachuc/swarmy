@@ -4,9 +4,9 @@ use anyhow::{Context, Result, ensure};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, LiveFeed, SubjectToken, WorkMessage, WorkQueue};
 use swarmy_core::{
-    Event, InflightRecord, Lease, LeaseOwnerId, MessageId, Nudge, RequestId, SandboxArguments,
-    SessionId, SessionRecord, SessionState, SnapshotRef, ToolCallRecord, ToolJob, TurnStage,
-    decode, encode,
+    Event, InflightRecord, Lease, LeaseOwnerId, ManifestId, MessageId, Nudge, RequestId,
+    SandboxArguments, SessionId, SessionRecord, SessionState, SnapshotRef, ToolCallRecord, ToolJob,
+    TurnStage, decode, encode,
 };
 use swarmy_harness::{Action, Snapshot, execution_result};
 use swarmy_llm::{InferenceJob, InferenceJobRef};
@@ -20,7 +20,7 @@ use tokio::{
 };
 use ulid::Ulid;
 
-use crate::config::Config;
+use crate::config::{Config, KillPoint};
 
 /// A step lease shared with its heartbeat. Release is explicit only after a
 /// successful fenced store transition.
@@ -89,6 +89,44 @@ fn route_selection<'a>(
     }
 }
 
+/// Snapshots cached by content-addressed key alongside the claim that uses
+/// them. Display flags cached by the image manifest that determines them,
+/// with a per-session index so hits need no database reads. Caches
+/// clear instead of evicting entries because a worker handles few distinct
+/// keys and a full clear keeps the bound with no per-entry bookkeeping.
+const SNAPSHOT_CACHE_SIZE: usize = 16;
+const DISPLAY_CACHE_SIZE: usize = 64;
+
+/// Display flag per image manifest, indexed by session. A worker restart
+/// drops this cache; restart workers after changing an agent's image.
+#[derive(Default)]
+struct DisplayCache {
+    by_image: HashMap<ManifestId, bool>,
+    by_session: HashMap<SessionId, bool>,
+}
+
+impl DisplayCache {
+    fn get(&self, session: SessionId) -> Option<bool> {
+        self.by_session.get(&session).copied()
+    }
+
+    fn get_image(&self, manifest: ManifestId) -> Option<bool> {
+        self.by_image.get(&manifest).copied()
+    }
+
+    fn insert(&mut self, session: SessionId, manifest: Option<ManifestId>, display: bool) {
+        if self.by_image.len() >= DISPLAY_CACHE_SIZE || self.by_session.len() >= DISPLAY_CACHE_SIZE
+        {
+            self.by_image.clear();
+            self.by_session.clear();
+        }
+        if let Some(manifest) = manifest {
+            self.by_image.insert(manifest, display);
+        }
+        self.by_session.insert(session, display);
+    }
+}
+
 pub struct Worker {
     store: Store,
     bus: Bus,
@@ -96,7 +134,7 @@ pub struct Worker {
     config: Config,
     placements: crate::placement::Cache,
     snapshots: Mutex<HashMap<String, Snapshot>>,
-    display_by_session: Mutex<HashMap<SessionId, bool>>,
+    display: Mutex<DisplayCache>,
     pub owner: LeaseOwnerId,
 }
 
@@ -109,19 +147,21 @@ impl Worker {
             config,
             placements: crate::placement::Cache::default(),
             snapshots: Mutex::default(),
-            display_by_session: Mutex::default(),
+            display: Mutex::default(),
             owner: LeaseOwnerId::from_ulid(Ulid::generate()),
         }
     }
 
-    fn kill(&self, point: &str) {
+    fn kill(&self, point: KillPoint) {
         // Production leaves kill_point unset; the chaos harness opts in at runtime.
-        if self.config.kill_point.as_deref() == Some(point) {
-            tracing::warn!(point, "instrumented worker kill");
-            let _ = rustix::process::kill_process(
+        if self.config.kill_point == Some(point) {
+            tracing::warn!(point = point.as_str(), "instrumented worker kill");
+            if let Err(error) = rustix::process::kill_process(
                 rustix::process::getpid(),
                 rustix::process::Signal::KILL,
-            );
+            ) {
+                tracing::warn!(%error, "chaos kill signal failed; aborting instead");
+            }
             std::process::abort();
         }
     }
@@ -152,7 +192,7 @@ impl Worker {
             self.bus.record_turn(&event).await;
             self.store.observe_turn_stage(event);
         }
-        self.kill("after_claim");
+        self.kill(KillPoint::AfterClaim);
         let mut ctx = step::StepContext {
             session: session.clone(),
             lease: Arc::new(HeldLease::new(lease)),
@@ -194,7 +234,8 @@ impl Worker {
 }
 
 mod inference;
-mod recovery;
+mod inflight;
+mod overflow;
 mod step;
 mod summarize;
 #[cfg(test)]

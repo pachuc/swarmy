@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use swarmy_config::Settings;
-use swarmy_core::CredentialScope;
+use swarmy_core::{CredentialEntryKind, CredentialScope};
 use swarmy_llm::{
     ClientAuth, Provider,
     auth::{ResolvedAuth, Resolver},
@@ -29,6 +29,14 @@ struct ProviderState {
     served: Vec<String>,
     skipped: BTreeMap<String, String>,
     fingerprints: BTreeMap<String, Option<[u8; 32]>>,
+}
+
+/// One resolved provider client: the shared client plus the stored entry
+/// behind it, so callers name the exact key in metering and breaker records.
+pub struct ResolvedClient {
+    pub client: Arc<dyn Provider>,
+    pub entry: Option<String>,
+    pub entry_kind: Option<CredentialEntryKind>,
 }
 
 pub struct ProviderChanges {
@@ -269,7 +277,7 @@ impl Providers {
         &self,
         provider: &str,
         model: &swarmy_llm::catalog::ModelInfo,
-    ) -> Result<(Arc<dyn Provider>, Option<String>, Option<String>), swarmy_llm::Error> {
+    ) -> Result<ResolvedClient, swarmy_llm::Error> {
         self.client_pinned(provider, model, None).await
     }
 
@@ -281,7 +289,7 @@ impl Providers {
         provider: &str,
         model: &swarmy_llm::catalog::ModelInfo,
         pinned: Option<&str>,
-    ) -> Result<(Arc<dyn Provider>, Option<String>, Option<String>), swarmy_llm::Error> {
+    ) -> Result<ResolvedClient, swarmy_llm::Error> {
         let served = self
             .state
             .read()
@@ -303,13 +311,21 @@ impl Providers {
         );
         let mut clients = self.clients.lock().await;
         if let Some(client) = clients.get(&key) {
-            return Ok((client.clone(), resolved.entry, resolved.entry_kind));
+            return Ok(ResolvedClient {
+                client: client.clone(),
+                entry: resolved.entry,
+                entry_kind: resolved.entry_kind,
+            });
         }
         let client = swarmy_llm::client_for(info, model, resolved.auth)?;
         // Retire obsolete credential versions without retaining their secrets indefinitely.
         clients.retain(|(id, name, _, _), _| id != provider || name != &model.id);
         clients.insert(key, client.clone());
-        Ok((client, resolved.entry, resolved.entry_kind))
+        Ok(ResolvedClient {
+            client,
+            entry: resolved.entry,
+            entry_kind: resolved.entry_kind,
+        })
     }
 }
 

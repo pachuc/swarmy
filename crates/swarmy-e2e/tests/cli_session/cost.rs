@@ -1,6 +1,6 @@
 //! Cost series, quota listings, and per-entry show breakdowns through the CLI.
 use super::*;
-use swarmy_core::{CredentialScope, LeaseOwnerId};
+use swarmy_core::{CredentialEntryKind, CredentialScope, LeaseOwnerId};
 
 fn tokens(input: u64, output: u64) -> swarmy_core::TokenUsage {
     swarmy_core::TokenUsage {
@@ -94,7 +94,7 @@ async fn complete(
                     event,
                     now: at,
                     entry: Some(entry.into()),
-                    entry_kind: Some("api-key".into()),
+                    entry_kind: Some(CredentialEntryKind::ApiKey),
                     quota_remaining: std::collections::BTreeMap::new(),
                     quota_resets: std::collections::BTreeMap::new(),
                 },

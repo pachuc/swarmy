@@ -234,7 +234,7 @@ async fn close_session(
     id: &str,
 ) -> Result<swarmy_api_types::SessionClosed> {
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        swarmy_client::API_TIMEOUT,
         client.close_session(
             id,
             &swarmy_api_types::CloseSession {
@@ -663,18 +663,15 @@ async fn update_agent(
     name: &str,
     body: &swarmy_api_types::UpdateAgent,
 ) -> Result<swarmy_api_types::Agent> {
-    tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        client.update_agent(name, body),
-    )
-    .await
-    .context("agent update timed out")?
-    .map_err(|error| match &error {
-        swarmy_client::Error::Api { body, .. } if body.code == "agent_computer_placed" => {
-            anyhow::anyhow!("the agent's computer is placed; retry after it is released")
-        }
-        _ => swarmy_client::api_client::api_error(error, endpoint),
-    })
+    tokio::time::timeout(swarmy_client::API_TIMEOUT, client.update_agent(name, body))
+        .await
+        .context("agent update timed out")?
+        .map_err(|error| match &error {
+            swarmy_client::Error::Api { body, .. } if body.code == "agent_computer_placed" => {
+                anyhow::anyhow!("the agent's computer is placed; retry after it is released")
+            }
+            _ => swarmy_client::api_client::api_error(error, endpoint),
+        })
 }
 
 async fn agent_create(

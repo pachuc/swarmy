@@ -105,7 +105,9 @@ pub(crate) async fn start(
             // The sweep never started; release the reservation so a retry
             // with the same key starts a fresh attempt instead of
             // replaying a run id that was never recorded.
-            let _ = state.store.remove_api_replay(&replay_key, &reserved).await;
+            if let Err(error) = state.store.remove_api_replay(&replay_key, &reserved).await {
+                tracing::warn!(%error, "gc replay reservation release failed");
+            }
             return Err(match error {
                 swarmy_volume::VolumeError::Store(swarmy_store::StoreError::Fence(
                     swarmy_store::FenceError::GcLeaseMismatch,
@@ -139,7 +141,9 @@ pub(crate) async fn start(
                 if current.error.is_none() {
                     current.error = Some(error.to_string());
                 }
-                let _ = background.store.fail_gc_run(owner, &current).await;
+                if let Err(error) = background.store.fail_gc_run(owner, &current).await {
+                    tracing::warn!(%error, "gc failure record write failed");
+                }
             }
         }
     });

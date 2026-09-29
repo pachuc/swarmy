@@ -5,8 +5,8 @@ use jiff::Timestamp;
 use swarmy_api::{AppState, router};
 use swarmy_client::Client;
 use swarmy_core::{
-    AgentId, Event, InflightRecord, LeaseOwnerId, Message, MessageId, MessageRole, Part, RequestId,
-    SessionId,
+    AgentId, CredentialEntryKind, Event, InflightRecord, LeaseOwnerId, Message, MessageId,
+    MessageRole, Part, RequestId, SessionId,
 };
 use swarmy_store::{
     AgentSessionOptions, MeteringDimension, Store, UsageGroupBy, blob::MemoryBlobStore,
@@ -79,7 +79,7 @@ struct CompletionSeed<'a> {
     provider: &'a str,
     model: &'a str,
     entry: &'a str,
-    kind: &'a str,
+    kind: CredentialEntryKind,
     at: Timestamp,
     cost: u64,
 }
@@ -158,7 +158,7 @@ async fn complete(store: &Store, id: SessionId, seed: &CompletionSeed<'_>) {
                     event,
                     now: seed.at,
                     entry: Some(seed.entry.into()),
-                    entry_kind: Some(seed.kind.into()),
+                    entry_kind: Some(seed.kind),
                     quota_remaining: std::collections::BTreeMap::new(),
                     quota_resets: std::collections::BTreeMap::new(),
                 },
@@ -227,7 +227,7 @@ async fn seed(store: &Store) -> (SessionId, SessionId, AgentId) {
                 provider,
                 model: "gpt-5",
                 entry,
-                kind: "api-key",
+                kind: CredentialEntryKind::ApiKey,
                 at,
                 cost: 100 * u64::try_from(index + 1).unwrap(),
             },
@@ -398,7 +398,7 @@ async fn usage_echoes_by_and_entry_quota_round_trips() {
             provider: "openai",
             model: "gpt-5",
             entry: "primary",
-            kind: "api-key",
+            kind: CredentialEntryKind::ApiKey,
             at: half_hour_before_to,
             cost: 7,
         },

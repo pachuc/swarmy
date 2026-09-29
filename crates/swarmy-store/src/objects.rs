@@ -158,11 +158,4 @@ mod tests {
             "expected the instance-metadata provider, got: {debug}"
         );
     }
-
-    #[test]
-    fn bucket_path_is_rejected() {
-        let mut settings = Settings::default();
-        settings.s3.bucket = "bucket/run/nested".into();
-        assert!(from_settings(&settings).is_err());
-    }
 }

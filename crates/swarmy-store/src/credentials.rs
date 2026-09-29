@@ -203,7 +203,8 @@ impl Store {
                     if record.open_until > now {
                         Some(record.open_until)
                     } else if record.probe_until.is_some_and(|until| until > now) {
-                        now.checked_add(Duration::from_secs(1)).ok()
+                        now.checked_add(crate::inference_wait::BREAKER_PROBE_GRACE)
+                            .ok()
                     } else {
                         None
                     }
@@ -534,7 +535,8 @@ impl CredentialStore {
         let refreshed = tokio::time::timeout(remaining, f(current.clone())).await;
         let (mut replacement, failed) = match refreshed {
             Ok(Ok(record)) => (record, false),
-            Ok(Err(_)) => {
+            Ok(Err(error)) => {
+                tracing::warn!(provider, label, %error, "credential refresh failed; marking entry needs-login");
                 let mut record = current.clone();
                 record.bookkeeping.needs_login = true;
                 (record, true)
@@ -772,6 +774,22 @@ mod tests {
         );
         let decoded: EntryValue = decode(&bytes).unwrap();
         assert_eq!(decoded.ciphertext, vec![1, 2]);
+    }
+
+    #[test]
+    fn entry_ready_matches_record_status_without_decrypting() {
+        // The scheduler skips entries needing login or past expiry without
+        // decrypting. The plaintext hints must agree with `status`: login
+        // never consults the clock, and only OAuth records expire.
+        let now = Timestamp::from_second(1000).unwrap();
+        let future = Timestamp::from_second(2000).unwrap();
+        let past = Timestamp::from_second(999).unwrap();
+        assert!(entry_ready(false, None, now));
+        assert!(!entry_ready(true, None, now));
+        assert!(entry_ready(false, Some(future), now));
+        assert!(!entry_ready(false, Some(past), now));
+        assert!(!entry_ready(false, Some(now), now));
+        assert!(!entry_ready(true, Some(future), now));
     }
 
     #[test]

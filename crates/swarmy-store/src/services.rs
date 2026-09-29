@@ -86,12 +86,13 @@ impl Store {
         let rows = self
             .transaction(|trx| async move {
                 let mut result = Vec::new();
-                for (space, node) in [("service_heartbeat", false), ("node", true)] {
-                    let range = match space {
-                        "service_heartbeat" => self.keys().service_heartbeat_space().range(),
-                        "node" => self.keys().node_space().range(),
-                        _ => unreachable!("unknown service key family"),
-                    };
+                // Both key spaces hold heartbeat-shaped rows; node rows predate
+                // service metadata and decode through the legacy record.
+                let spaces = [
+                    (self.keys().service_heartbeat_space().range(), false),
+                    (self.keys().node_space().range(), true),
+                ];
+                for (range, node) in spaces {
                     let values: Vec<_> = trx
                         .get_ranges_keyvalues(RangeOption::from(range), false)
                         .map_ok(|kv| kv.value().to_vec())
@@ -163,5 +164,39 @@ impl Store {
             Ok(count)
         })
         .await
+    }
+
+    /// Report this instance on the shared service tick until the process ends.
+    /// Heartbeat and expiry failures only warn; the next tick retries. The
+    /// worker, API, and scheduler share this instead of repeating the loop;
+    /// the scheduler also expires stale rows on each tick.
+    pub async fn heartbeat_loop(
+        &self,
+        role: ServiceRole,
+        instance_id: String,
+        version: String,
+        started_at: Timestamp,
+        detail: ServiceDetail,
+        expire_stale: bool,
+    ) {
+        let mut ticks = tokio::time::interval(swarmy_config::SERVICE_HEALTH_INTERVAL);
+        loop {
+            ticks.tick().await;
+            let record = ServiceHeartbeat {
+                role: role.clone(),
+                instance_id: instance_id.clone(),
+                version: version.clone(),
+                host: swarmy_config::service_hostname(),
+                started_at,
+                last_seen: Timestamp::now(),
+                detail: detail.clone(),
+            };
+            if let Err(error) = self.put_service_heartbeat(&record).await {
+                tracing::warn!(%error, role = ?role, "service health heartbeat failed");
+            }
+            if expire_stale && let Err(error) = self.expire_services().await {
+                tracing::warn!(%error, "service health expiry failed");
+            }
+        }
     }
 }
