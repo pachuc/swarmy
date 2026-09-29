@@ -14,6 +14,10 @@ use super::{Cloud, Machine, MachineSpec, ObjectBucket, Ownership, retry_profile_
 const UBUNTU_IMAGE: &str =
     "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id";
 
+const REMOTE_TAG: &str = "swarmy-remote";
+const MANAGED_TAG: &str = "managed-by";
+const MANAGER: &str = "swarmy";
+
 pub struct Aws {
     ec2: aws_sdk_ec2::Client,
     ssm: aws_sdk_ssm::Client,
@@ -226,8 +230,8 @@ impl Aws {
                 .assume_role_policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#);
             if let Err(error) = request
                 .clone()
-                .tags(iam_tag("managed-by", "swarmy"))
-                .tags(iam_tag("swarmy-remote", owner))
+                .tags(iam_tag(MANAGED_TAG, MANAGER))
+                .tags(iam_tag(REMOTE_TAG, owner))
                 .send()
                 .await
             {
@@ -274,8 +278,8 @@ impl Aws {
                     .instance_profile_name(role);
                 if let Err(error) = request
                     .clone()
-                    .tags(iam_tag("managed-by", "swarmy"))
-                    .tags(iam_tag("swarmy-remote", owner))
+                    .tags(iam_tag(MANAGED_TAG, MANAGER))
+                    .tags(iam_tag(REMOTE_TAG, owner))
                     .send()
                     .await
                 {
@@ -306,7 +310,7 @@ impl Aws {
             // A role or profile is visible to EC2 and STS only after IAM has
             // propagated it. Launching sooner can bind the instance to stale
             // identity data whose credentials are then rejected.
-            println!("Waiting for the new IAM role and instance profile to propagate");
+            cloud_out!("Waiting for the new IAM role and instance profile to propagate");
             tokio::time::sleep(Duration::from_secs(20)).await;
         }
         Ok(())
@@ -318,7 +322,7 @@ fn access_denied(message: &str) -> bool {
 }
 
 fn warn_untagged(permission: &str, resource: &str, owner: &str) {
-    eprintln!(
+    cloud_err!(
         "Warning: missing {permission} for {resource}; remote down will leave it in place. Grant {permission} and run swarmy remote tag {owner} later."
     );
 }
@@ -358,10 +362,10 @@ fn merged_bucket_tags(
 ) -> Vec<aws_sdk_s3::types::Tag> {
     let mut tags: Vec<_> = existing
         .into_iter()
-        .filter(|tag| tag.key() != "managed-by" && tag.key() != "swarmy-remote")
+        .filter(|tag| tag.key() != MANAGED_TAG && tag.key() != REMOTE_TAG)
         .collect();
-    tags.push(s3_tag("managed-by", "swarmy"));
-    tags.push(s3_tag("swarmy-remote", owner));
+    tags.push(s3_tag(MANAGED_TAG, MANAGER));
+    tags.push(s3_tag(REMOTE_TAG, owner));
     tags
 }
 
@@ -372,7 +376,7 @@ fn ensure_not_another_remote<'a>(
     anyhow::ensure!(
         !tags
             .into_iter()
-            .any(|(key, value)| key == "swarmy-remote" && value != owner),
+            .any(|(key, value)| key == REMOTE_TAG && value != owner),
         "resource is tagged for another remote"
     );
     Ok(())
@@ -382,10 +386,10 @@ fn owned<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, owner: &str) -> Own
     let tags: Vec<_> = tags.collect();
     if tags
         .iter()
-        .any(|(key, value)| *key == "managed-by" && *value == "swarmy")
+        .any(|(key, value)| *key == MANAGED_TAG && *value == MANAGER)
         && tags
             .iter()
-            .any(|(key, value)| *key == "swarmy-remote" && *value == owner)
+            .any(|(key, value)| *key == REMOTE_TAG && *value == owner)
     {
         Ownership::Owned
     } else {
@@ -397,7 +401,7 @@ fn tags(resource: ResourceType, name: &str, owner: &str) -> TagSpecification {
     TagSpecification::builder()
         .resource_type(resource)
         .tags(Tag::builder().key("Name").value(name).build())
-        .tags(Tag::builder().key("managed-by").value(owner).build())
+        .tags(Tag::builder().key(MANAGED_TAG).value(owner).build())
         .build()
 }
 
@@ -721,16 +725,16 @@ impl Cloud for Aws {
         self.iam
             .tag_role()
             .role_name(name)
-            .tags(iam_tag("managed-by", "swarmy"))
-            .tags(iam_tag("swarmy-remote", owner))
+            .tags(iam_tag(MANAGED_TAG, MANAGER))
+            .tags(iam_tag(REMOTE_TAG, owner))
             .send()
             .await
             .context("iam:TagRole")?;
         self.iam
             .tag_instance_profile()
             .instance_profile_name(name)
-            .tags(iam_tag("managed-by", "swarmy"))
-            .tags(iam_tag("swarmy-remote", owner))
+            .tags(iam_tag(MANAGED_TAG, MANAGER))
+            .tags(iam_tag(REMOTE_TAG, owner))
             .send()
             .await
             .context("iam:TagInstanceProfile")?;
@@ -802,7 +806,7 @@ impl Cloud for Aws {
             );
             count += size;
             if count / 10_000 != (count - size) / 10_000 {
-                println!("Deleted {count} objects from bucket {name}");
+                cloud_out!("Deleted {count} objects from bucket {name}");
             }
         }
         match self.s3.delete_bucket().bucket(name).send().await {

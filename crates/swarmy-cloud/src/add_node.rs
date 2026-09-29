@@ -98,8 +98,8 @@ pub async fn run(
         if let Some(options) = options {
             host.services(&node, &address, options).await?;
         }
-        println!("Remote node {} joined {name}", node.name);
-        println!("{}", super::ssh::command_line(&node, &address)?);
+        cloud_out!("Remote node {} joined {name}", node.name);
+        cloud_out!("{}", super::ssh::command_line(&node, &address)?);
         Ok::<_, anyhow::Error>(())
     }
     .await;

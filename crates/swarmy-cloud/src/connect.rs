@@ -315,9 +315,9 @@ fn print(profile: &RemoteProfile, json: bool, timing: &Timing) -> Result<()> {
     if json {
         let mut output = serde_json::to_value(profile)?;
         output["timing"] = serde_json::to_value(timing)?;
-        println!("{output}");
+        cloud_out!("{output}");
     } else {
-        println!(
+        cloud_out!(
             "export SWARMY_REMOTE={}\n# FoundationDB: {}\n# NATS: {}\n# S3: {}",
             profile.name,
             profile.fdb_cluster_file.display(),
@@ -325,10 +325,10 @@ fn print(profile: &RemoteProfile, json: bool, timing: &Timing) -> Result<()> {
             profile.s3_bucket.as_deref().unwrap_or(&profile.s3_endpoint)
         );
         if let Some(image) = &profile.default_image {
-            println!("# Default image: {image}");
+            cloud_out!("# Default image: {image}");
         }
-        println!("# swarmy dev up --remote {}", profile.name);
-        println!(
+        cloud_out!("# swarmy dev up --remote {}", profile.name);
+        cloud_out!(
             "# Connected in {:.3}s (address probing: {:.3}s; tunnel startup: {:.3}s; reused: {})",
             timing.elapsed_seconds,
             timing.address_probe_seconds,
@@ -337,9 +337,10 @@ fn print(profile: &RemoteProfile, json: bool, timing: &Timing) -> Result<()> {
         );
     }
     if profile.validate_fdb_port().is_err() {
-        eprintln!(
+        cloud_err!(
             "FoundationDB coordinator forwarded on {}, but the server advertises {}. FoundationDB rejects port remapping. Free the advertised port and reconnect before starting services; doctor will report this profile as unusable.",
-            profile.ports.fdb, profile.remote_ports.fdb
+            profile.ports.fdb,
+            profile.remote_ports.fdb
         );
     }
     Ok(())

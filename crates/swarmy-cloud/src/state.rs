@@ -55,7 +55,7 @@ impl State {
 
     pub fn require(&self, name: &str) -> Result<RemoteNode> {
         self.read(name)?
-            .with_context(|| format!("no remote node named {name}; run swarmy remote up {name}"))
+            .ok_or_else(|| crate::Error::NotFound(name.to_owned()).into())
     }
 
     /// Only remote records are inspected; tunnel profiles also use JSON here.

@@ -40,7 +40,9 @@ fn main() -> Result<()> {
     let _network = swarmy_store::boot();
     let runtime = tokio::runtime::Runtime::new()?;
     if upgrade_processes {
-        runtime.block_on(upgrade::run(&loaded))
+        let busy = runtime.block_on(upgrade::run(&loaded, |line| eprintln!("{line}")))?;
+        println!("{}", serde_json::to_string(&busy)?);
+        Ok(())
     } else {
         runtime.block_on(run(loaded))
     }

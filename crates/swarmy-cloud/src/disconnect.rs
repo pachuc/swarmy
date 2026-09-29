@@ -7,7 +7,7 @@ pub async fn run(state_dir: &Path, state: &State, name: &str) -> Result<()> {
     let _lock = state.lock()?;
     let path = remote_path(state_dir, name, "profile.json")?;
     if !path.exists() {
-        println!("{name}: disconnected");
+        cloud_out!("{name}: disconnected");
         return Ok(());
     }
     let profile = RemoteProfile::read(state_dir, name)?;
@@ -21,6 +21,6 @@ pub async fn run(state_dir: &Path, state: &State, name: &str) -> Result<()> {
     }
     connect::cleanup(&profile)?;
     std::fs::remove_file(path)?;
-    println!("{name}: disconnected");
+    cloud_out!("{name}: disconnected");
     Ok(())
 }

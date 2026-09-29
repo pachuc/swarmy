@@ -131,7 +131,7 @@ pub async fn run(json: bool) -> Result<()> {
         statuses.push(status);
     }
     if json {
-        println!("{}", serde_json::to_string(&statuses)?);
+        cloud_out!("{}", serde_json::to_string(&statuses)?);
     } else {
         print_human(statuses);
     }
@@ -140,7 +140,7 @@ pub async fn run(json: bool) -> Result<()> {
 
 fn print_human(statuses: Vec<Status>) {
     for status in statuses {
-        println!(
+        cloud_out!(
             "{} instance={} type={} state={} sandboxes={} tunnel={} api_token={}",
             status.name,
             status.instance_id,
@@ -151,7 +151,7 @@ fn print_human(statuses: Vec<Status>) {
             status.api_token,
         );
         for node in status.nodes {
-            println!(
+            cloud_out!(
                 "  {} instance={} type={} state={} private_ip={} sandboxes={}",
                 node.name,
                 node.instance_id,
@@ -162,7 +162,7 @@ fn print_human(statuses: Vec<Status>) {
             );
         }
         for service in status.services {
-            println!(
+            cloud_out!(
                 "  service {} {} {}",
                 service.role,
                 service.instance_id,
@@ -170,16 +170,18 @@ fn print_human(statuses: Vec<Status>) {
             );
         }
         for image in status.images {
-            println!(
+            cloud_out!(
                 "  image {}:{} {}",
-                image.name, image.tag.0, image.manifest_id
+                image.name,
+                image.tag.0,
+                image.manifest_id
             );
         }
         if let Some(error) = status.image_error {
-            println!("  images: {error}");
+            cloud_out!("  images: {error}");
         }
         for record in status.registrations {
-            println!(
+            cloud_out!(
                 "  swarmyd {} heartbeat={}s {} memory={}MiB committed={}MiB free",
                 record.node_id,
                 record.heartbeat_age_seconds,
@@ -189,7 +191,7 @@ fn print_human(statuses: Vec<Status>) {
             );
         }
         if let Some(error) = status.registration_error {
-            println!("  registration: {error}");
+            cloud_out!("  registration: {error}");
         }
     }
 }

@@ -9,7 +9,7 @@ use swarmy_core::{
     LeaseOwnerId, NodeId, PlacedToolClaim, PlacementRecord, ProcessListArguments, Sandbox,
     SandboxArguments, ToolJob, ToolResult, VolumeId,
 };
-use swarmy_sandbox::{ExecOutput, ExecRequest, RuncRuntime, SandboxRuntime};
+use swarmy_sandbox::{ExecOutput, ExecRequest, RuncRuntime};
 use swarmy_store::{Store, StoreError};
 use tokio::sync::mpsc;
 
