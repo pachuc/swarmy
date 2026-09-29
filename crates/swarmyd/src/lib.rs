@@ -81,6 +81,9 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub trait ErrorContext<T> {
+    /// Attach the operation that failed without discarding its source.
+    /// # Errors
+    /// Returns the original failure with its operation, or an absent-value error.
     fn context(self, message: &'static str) -> Result<T>;
 }
 
