@@ -636,9 +636,6 @@ mod tests {
 
     #[test]
     fn python_caches_are_ignored_but_other_untracked_paths_are_reported() {
-        assert!(super::is_python_cache("?? __pycache__/module.pyc"));
-        assert!(super::is_python_cache("?? src/__pycache__/module.pyc"));
-        assert!(!super::is_python_cache("?? src/main.rs"));
         let dir = tempfile::tempdir().unwrap();
         assert!(
             std::process::Command::new("git")
@@ -667,6 +664,7 @@ mod tests {
         );
     }
 
+    // Tested directly because `has_service_units` needs SSH to a live node.
     #[test]
     fn installed_units_select_the_full_package_set() {
         assert!(super::has_control_units(

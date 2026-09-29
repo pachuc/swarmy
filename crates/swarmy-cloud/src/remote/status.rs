@@ -383,6 +383,7 @@ async fn inventory(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Tested directly because `run` needs saved state, a tunnel, and SSH to a node.
     #[test]
     fn control_nodes_report_profile_token_presence_and_others_opt_out() {
         let mut node: RemoteNode = serde_json::from_str(r#"{"name":"test","region":"local","instance_id":"i-test","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"key","launch_attempted":true,"created_at":"now"}"#).unwrap();
