@@ -103,7 +103,6 @@ impl BlobStore for ObjectBlobStore {
 mod tests {
     use super::*;
     use futures::TryStreamExt;
-    use std::fmt::Write as _;
 
     #[tokio::test]
     async fn s3_namespace_lists_relative_keys_and_keeps_siblings() {

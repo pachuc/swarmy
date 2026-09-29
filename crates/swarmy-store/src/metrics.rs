@@ -417,29 +417,29 @@ struct StoredTurnInferenceV2 {
 /// Stored summary and detail rows. Each keyspace accepts only its own variant.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 enum StoredTurnMetrics {
-    V2Summary(StoredTurnSummaryV2),
-    V2Inference(StoredTurnInferenceV2),
-    V2Tool(StoredToolMetricV2),
+    Summary(Box<StoredTurnSummaryV2>),
+    Inference(StoredTurnInferenceV2),
+    Tool(StoredToolMetricV2),
 }
 
 fn decode_summary(bytes: &[u8]) -> Result<StoredTurnSummaryV2> {
     match decode::<StoredTurnMetrics>(bytes)? {
-        StoredTurnMetrics::V2Summary(summary) => Ok(summary),
-        StoredTurnMetrics::V2Inference(_) | StoredTurnMetrics::V2Tool(_) => {
+        StoredTurnMetrics::Summary(summary) => Ok(*summary),
+        StoredTurnMetrics::Inference(_) | StoredTurnMetrics::Tool(_) => {
             Err(StoreError::Storage(crate::StorageError::Corrupt))
         }
     }
 }
 
 fn decode_inference(bytes: &[u8]) -> Result<StoredTurnInferenceV2> {
-    if let Ok(StoredTurnMetrics::V2Inference(row)) = decode::<StoredTurnMetrics>(bytes) {
+    if let Ok(StoredTurnMetrics::Inference(row)) = decode::<StoredTurnMetrics>(bytes) {
         return Ok(row);
     }
     Err(StoreError::Storage(crate::StorageError::Corrupt))
 }
 
 fn decode_tool(bytes: &[u8]) -> Result<StoredToolMetricV2> {
-    if let Ok(StoredTurnMetrics::V2Tool(row)) = decode::<StoredTurnMetrics>(bytes) {
+    if let Ok(StoredTurnMetrics::Tool(row)) = decode::<StoredTurnMetrics>(bytes) {
         return Ok(row);
     }
     Err(StoreError::Storage(crate::StorageError::Corrupt))
@@ -1194,14 +1194,14 @@ impl Store {
                         write(
                             &trx,
                             summary_key,
-                            &StoredTurnMetrics::V2Summary(state.summary.clone()),
+                            &StoredTurnMetrics::Summary(Box::new(state.summary.clone())),
                         )?;
                         for id in inference_ids {
                             if let Some(row) = state.inference.get(id) {
                                 write(
                                     &trx,
                                     &self.turn_inference_key(session, turn, id),
-                                    &StoredTurnMetrics::V2Inference(row.clone()),
+                                    &StoredTurnMetrics::Inference(row.clone()),
                                 )?;
                             }
                         }
@@ -1210,7 +1210,7 @@ impl Store {
                                 write(
                                     &trx,
                                     &self.turn_tool_key(session, turn, id),
-                                    &StoredTurnMetrics::V2Tool(row.clone()),
+                                    &StoredTurnMetrics::Tool(row.clone()),
                                 )?;
                             }
                         }
@@ -1575,7 +1575,7 @@ mod tests {
     }
 
     /// Checked-in `V2` summary bytes. Generated with
-    /// `swarmy_core::encode(&StoredTurnMetrics::V2Summary(fixture_summary()))`;
+    /// `swarmy_core::encode(&StoredTurnMetrics::Summary(fixture_summary()))`;
     /// decoding them pins the unbounded layout.
     /// the capped record.
     const V2_SUMMARY_HEX: &str = "010001730174000180897a00000180b6dc050000000000000000000000000000000000000000000000000000000000";
@@ -1620,7 +1620,7 @@ mod tests {
 
     #[test]
     fn detail_row_at_summary_key_is_corrupt() {
-        let bytes = swarmy_core::encode(&StoredTurnMetrics::V2Tool(fixture_tool())).unwrap();
+        let bytes = swarmy_core::encode(&StoredTurnMetrics::Tool(fixture_tool())).unwrap();
         assert!(matches!(
             decode_summary(&bytes),
             Err(StoreError::Storage(crate::StorageError::Corrupt))
@@ -1630,18 +1630,18 @@ mod tests {
     #[test]
     fn versioned_envelope_decodes_checked_in_v2_bytes() {
         let summary = decode::<StoredTurnMetrics>(&hex_to_bytes(V2_SUMMARY_HEX)).unwrap();
-        let StoredTurnMetrics::V2Summary(decoded) = summary else {
+        let StoredTurnMetrics::Summary(decoded) = summary else {
             panic!("expected V2Summary");
         };
-        assert_eq!(decoded, fixture_summary());
+        assert_eq!(*decoded, fixture_summary());
         let inference = decode::<StoredTurnMetrics>(&hex_to_bytes(V2_INFERENCE_HEX)).unwrap();
-        let StoredTurnMetrics::V2Inference(row) = inference else {
+        let StoredTurnMetrics::Inference(row) = inference else {
             panic!("expected V2Inference");
         };
         assert_eq!(row, fixture_inference());
         assert_eq!(row.metric.streamed, Some(false));
         let tool = decode::<StoredTurnMetrics>(&hex_to_bytes(V2_TOOL_HEX)).unwrap();
-        let StoredTurnMetrics::V2Tool(row) = tool else {
+        let StoredTurnMetrics::Tool(row) = tool else {
             panic!("expected V2Tool");
         };
         assert_eq!(row, fixture_tool());
@@ -1694,8 +1694,8 @@ mod tests {
             ..StoredTurnSummaryV2::default()
         };
         for value in [
-            StoredTurnMetrics::V2Summary(summary),
-            StoredTurnMetrics::V2Inference(StoredTurnInferenceV2 {
+            StoredTurnMetrics::Summary(Box::new(summary)),
+            StoredTurnMetrics::Inference(StoredTurnInferenceV2 {
                 metric: StoredInferenceMetricV2 {
                     request_id: "r".into(),
                     ..StoredInferenceMetricV2::default()
@@ -1704,7 +1704,7 @@ mod tests {
                 finished_ns: Some(5_000_000),
                 ..StoredTurnInferenceV2::default()
             }),
-            StoredTurnMetrics::V2Tool(StoredToolMetricV2 {
+            StoredTurnMetrics::Tool(StoredToolMetricV2 {
                 request_id: "c".into(),
                 name: "bash".into(),
                 ..StoredToolMetricV2::default()
