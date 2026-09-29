@@ -37,6 +37,9 @@ pub use services::{
     ServiceRole,
 };
 mod keys;
+#[cfg(test)]
+mod keys_tests;
+mod runnable;
 pub use inference::{InferenceClaim, InferenceCompletion};
 pub mod metering;
 mod queued;
@@ -66,7 +69,7 @@ mod volumes;
 pub use volumes::PutImageOptions;
 
 pub use inference_wait::{BreakerCandidate, CredentialKey, InferenceFailureWait, InferenceWait};
-pub use keys::{RUNNABLE_PARTITIONS, runnable_partition};
+pub use runnable::{RUNNABLE_PARTITIONS, runnable_partition};
 
 use std::{
     future::Future,
