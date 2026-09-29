@@ -742,7 +742,7 @@ impl Gateway {
         let (class, retry_at) = self
             .record_breaker(provider, entry.as_deref(), job, &result, blocked)
             .await?;
-        if let Err(error) = &result {
+        if result.is_err() {
             let kind = if class.is_some_and(|class| class.rate_limited) {
                 swarmy_store::WaitKind::RateLimit
             } else {
