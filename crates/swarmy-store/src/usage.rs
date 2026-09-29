@@ -39,14 +39,8 @@ impl Store {
     /// Test-only entry point, also available with the `test-support` feature.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn inference_usage_record(&self, request: RequestId) -> Result<Option<UsageRecord>> {
-        self.transaction(|trx| async move {
-            read(
-                &trx,
-                &crate::keys::Keys::new(&self.root).usage_record(request),
-            )
+        self.transaction(|trx| async move { read(&trx, &self.keys().usage_record(request)).await })
             .await
-        })
-        .await
     }
 
     /// Read billed totals committed with successful inference completions.
@@ -54,7 +48,7 @@ impl Store {
     /// Returns database or decoding errors.
     pub async fn session_usage(&self, id: SessionId) -> Result<UsageTotals> {
         self.transaction(|trx| async move {
-            Ok(read(&trx, &crate::keys::Keys::new(&self.root).usage(id))
+            Ok(read(&trx, &self.keys().usage(id))
                 .await?
                 .unwrap_or_default())
         })
@@ -66,11 +60,9 @@ impl Store {
     /// Returns database or decoding errors.
     pub async fn agent_usage(&self, id: AgentId) -> Result<UsageTotals> {
         self.transaction(|trx| async move {
-            Ok(
-                read(&trx, &crate::keys::Keys::new(&self.root).usage_by_agent(id))
-                    .await?
-                    .unwrap_or_default(),
-            )
+            Ok(read(&trx, &self.keys().usage_by_agent(id))
+                .await?
+                .unwrap_or_default())
         })
         .await
     }
@@ -86,8 +78,8 @@ impl Store {
         usage: &swarmy_core::TokenUsage,
         cost_micros: u64,
     ) -> Result<()> {
-        let session_key = crate::keys::Keys::new(&self.root).usage(session);
-        let agent_key = crate::keys::Keys::new(&self.root).usage_by_agent(agent);
+        let session_key = self.keys().usage(session);
+        let agent_key = self.keys().usage_by_agent(agent);
         let (session_totals, agent_totals) = futures::try_join!(
             read::<UsageTotals>(trx, &session_key),
             read::<UsageTotals>(trx, &agent_key)
@@ -99,7 +91,7 @@ impl Store {
         );
         crate::write(
             trx,
-            &crate::keys::Keys::new(&self.root).usage_record(attribution.request),
+            &self.keys().usage_record(attribution.request),
             &UsageRecord {
                 provider: attribution.provider.into(),
                 entry: entry.clone(),
@@ -117,7 +109,7 @@ impl Store {
         // Secondary index for bounded pruning, written in the same transaction.
         let hour = crate::metering::hour_floor(attribution.recorded_at.as_second());
         trx.set(
-            &crate::keys::Keys::new(&self.root).usage_record_by_time(hour, attribution.request),
+            &self.keys().usage_record_by_time(hour, attribution.request),
             &[],
         );
         for (key, totals) in [(session_key, session_totals), (agent_key, agent_totals)] {

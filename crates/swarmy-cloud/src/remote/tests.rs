@@ -6,13 +6,36 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Result;
+use crate::Result;
 use swarmy_config::{RemoteNode, RemoteSettings};
 
 use super::{
     Cloud, Host, Machine, MachineSpec, ObjectBucket, Ownership, down, retry_profile_propagation,
     state::State, up, wait_running,
 };
+
+/// The CLI's tag flow: list targets, confirm every exact name, then apply.
+async fn tag_confirmed(
+    cloud: &FakeCloud,
+    state: &State,
+    node: &swarmy_config::RemoteNode,
+    mut confirm: impl FnMut(&str, &str) -> Result<()>,
+) -> Result<()> {
+    for (kind, name) in down::adoption_targets(state, node)? {
+        confirm(&kind, &name)?;
+    }
+    down::apply_tag(cloud, node).await
+}
+
+fn denied(operation: &str) -> crate::Error {
+    crate::Error::MissingPermission {
+        operation: operation.to_owned(),
+        source: Box::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "AccessDenied",
+        )),
+    }
+}
 
 #[derive(Default)]
 struct FakeCloud {
@@ -98,9 +121,11 @@ impl Cloud for FakeCloud {
     fn create(&self, spec: &MachineSpec) -> impl Future<Output = Result<String>> {
         self.requests.borrow_mut().push(spec.clone());
         if self.fail_profile_launch_once.replace(false) {
-            return std::future::ready(Err(anyhow::anyhow!(
-                "InvalidParameterValue: Invalid IAM Instance Profile name"
-            )));
+            return std::future::ready(Err(crate::Error::Aws {
+                operation: "ec2:RunInstances".into(),
+                code: "InvalidParameterValue".into(),
+                message: "Invalid IAM Instance Profile name: fixture-profile".into(),
+            }));
         }
         std::future::ready(Ok(self
             .launch_ids
@@ -121,7 +146,7 @@ impl Cloud for FakeCloud {
     }
     fn destroy(&self, id: &str) -> impl Future<Output = Result<()>> {
         if self.fail_terminate.get() {
-            return std::future::ready(Err(anyhow::anyhow!("access denied")));
+            return std::future::ready(Err(denied("ec2:TerminateInstances")));
         }
         self.teardown.borrow_mut().push(format!("instance {id}"));
         self.terminated.borrow_mut().push(id.into());
@@ -129,7 +154,7 @@ impl Cloud for FakeCloud {
     }
     fn bucket_ownership(&self, _: &str, _: &str) -> impl Future<Output = Result<Ownership>> {
         if self.deny_tag_read.get() {
-            return std::future::ready(Err(anyhow::anyhow!("s3:GetBucketTagging: AccessDenied")));
+            return std::future::ready(Err(denied("s3:GetBucketTagging")));
         }
         std::future::ready(Ok(if self.absent.get() || self.absent_bucket.get() {
             Ownership::Absent
@@ -160,14 +185,16 @@ impl Cloud for FakeCloud {
     }
     fn tag_bucket(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
         if self.foreign_bucket.get() {
-            return std::future::ready(Err(anyhow::anyhow!("bucket belongs to another remote")));
+            return std::future::ready(Err(crate::Error::other(
+                "bucket belongs to another remote",
+            )));
         }
         self.tagged.borrow_mut().push(format!("bucket {name}"));
         std::future::ready(Ok(()))
     }
     fn tag_node_role(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
         if self.foreign_role.get() {
-            return std::future::ready(Err(anyhow::anyhow!("role belongs to another remote")));
+            return std::future::ready(Err(crate::Error::other("role belongs to another remote")));
         }
         self.tagged
             .borrow_mut()
@@ -176,7 +203,7 @@ impl Cloud for FakeCloud {
     }
     fn delete_bucket(&self, name: &str, _: &str) -> impl Future<Output = Result<bool>> {
         if self.deny_version_list.get() {
-            return std::future::ready(Err(anyhow::anyhow!("s3:ListBucketVersions: AccessDenied")));
+            return std::future::ready(Err(denied("s3:ListBucketVersions")));
         }
         self.teardown.borrow_mut().push(format!("bucket {name}"));
         std::future::ready(Ok(!self.absent.get()))
@@ -189,7 +216,7 @@ impl Cloud for FakeCloud {
         self.teardown.borrow_mut().push(format!("key {name}"));
         self.key_delete_attempts.borrow_mut().push(name.into());
         if self.fail_delete.get() {
-            return std::future::ready(Err(anyhow::anyhow!("access denied")));
+            return std::future::ready(Err(denied("ec2:DeleteKeyPair")));
         }
         self.deleted.borrow_mut().push(name.into());
         std::future::ready(Ok(()))
@@ -237,7 +264,7 @@ impl Host for FakeHost {
             .borrow_mut()
             .push((node.name.clone(), address.into(), recipe.to_owned()));
         std::future::ready(if self.fail_image {
-            Err(anyhow::anyhow!("image build failed"))
+            Err(crate::Error::other("image build failed"))
         } else {
             Ok(())
         })
@@ -256,11 +283,11 @@ impl Host for FakeHost {
         self.provisioned.borrow_mut().push(node.clone());
         self.primaries.borrow_mut().push(primary.cloned());
         if self.fail {
-            return std::future::ready(Err(anyhow::anyhow!("SSH failed")));
+            return std::future::ready(Err(crate::Error::other("SSH failed")));
         }
         if self.nvme_failure {
-            return std::future::ready(Err(anyhow::anyhow!(
-                "An instance with local NVMe storage is required"
+            return std::future::ready(Err(crate::Error::other(
+                "An instance with local NVMe storage is required",
             )));
         }
         std::future::ready(Ok(node.public_ip.clone()))
@@ -1683,7 +1710,7 @@ async fn down_deletes_bucket_then_role_after_nodes_and_retries_absent_resources(
 }
 
 #[tokio::test]
-async fn down_requires_confirmation_for_json_and_non_terminal_calls() {
+async fn down_plan_reports_owned_resources_for_confirmation() {
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(dir.path()).unwrap();
     let cloud = FakeCloud::default();
@@ -1706,16 +1733,15 @@ async fn down_requires_confirmation_for_json_and_non_terminal_calls() {
     .await
     .unwrap();
     let node = state.require("cleanup").unwrap();
-    assert!(
-        down::confirm(&cloud, &state, &node, false, false, true)
-            .await
-            .is_err()
-    );
-    assert!(
-        down::confirm(&cloud, &state, &node, true, false, true)
-            .await
-            .is_ok()
-    );
+    // The library reports what would be deleted; the CLI prints the wording
+    // and prompts (including the --json and terminal refusals).
+    let plan = down::plan(&cloud, &state, &node)
+        .await
+        .unwrap()
+        .expect("owned bucket and role need confirmation");
+    assert_eq!(plan.bucket.as_deref(), Some("test-bucket"));
+    assert_eq!(plan.profile.as_deref(), Some("swarmy-cleanup"));
+    assert_eq!(plan.role.as_deref(), Some("swarmy-cleanup"));
 }
 
 #[tokio::test]
@@ -1786,11 +1812,7 @@ async fn down_keeps_mixed_ownership_iam_pairs() {
         cloud.untagged_role.set(!untagged_profile);
         // A missing bucket must not make a partially owned IAM pair deletable.
         cloud.absent_bucket.set(true);
-        assert!(
-            down::confirm(&cloud, &state, &node, false, false, true)
-                .await
-                .is_ok()
-        );
+        assert!(down::plan(&cloud, &state, &node).await.unwrap().is_none());
         cloud.observations.borrow_mut().push_back(None);
         down::run(&cloud, &state, &node, Duration::ZERO, false)
             .await
@@ -1872,7 +1894,7 @@ async fn tag_requires_exact_resource_names_and_calls_cloud_only_after_all_confir
     .unwrap();
     let node = state.require("cleanup").unwrap();
     let mut prompted = Vec::new();
-    down::tag_with_confirmation(&cloud, &state, &node, |kind, name| {
+    tag_confirmed(&cloud, &state, &node, |kind, name| {
         prompted.push((kind.to_owned(), name.to_owned()));
         Ok(())
     })
@@ -1891,9 +1913,11 @@ async fn tag_requires_exact_resource_names_and_calls_cloud_only_after_all_confir
         ["bucket test-bucket", "role and profile swarmy-cleanup"]
     );
     assert!(
-        down::tag_with_confirmation(&cloud, &state, &node, |_, _| anyhow::bail!("no"))
-            .await
-            .is_err()
+        tag_confirmed(&cloud, &state, &node, |_, _| {
+            Err(crate::Error::other("no"))
+        })
+        .await
+        .is_err()
     );
     assert_eq!(cloud.tagged.borrow().len(), 2);
 }
@@ -1977,7 +2001,7 @@ async fn tag_refuses_cloud_resources_owned_by_another_remote() {
     let node = state.require("cleanup").unwrap();
     cloud.foreign_bucket.set(true);
     assert!(
-        down::tag_with_confirmation(&cloud, &state, &node, |_, _| Ok(()))
+        tag_confirmed(&cloud, &state, &node, |_, _| Ok(()))
             .await
             .is_err()
     );
@@ -1985,7 +2009,7 @@ async fn tag_refuses_cloud_resources_owned_by_another_remote() {
     cloud.foreign_bucket.set(false);
     cloud.foreign_role.set(true);
     assert!(
-        down::tag_with_confirmation(&cloud, &state, &node, |_, _| Ok(()))
+        tag_confirmed(&cloud, &state, &node, |_, _| Ok(()))
             .await
             .is_err()
     );
@@ -2017,21 +2041,17 @@ async fn denied_ownership_and_version_reads_retain_state_and_explain_permission(
     .unwrap();
     let node = state.require("cleanup").unwrap();
     cloud.deny_tag_read.set(true);
-    let error = down::confirm(&cloud, &state, &node, false, false, false)
-        .await
-        .map_err(down::actionable_error)
-        .unwrap_err();
-    assert!(format!("{error:#}").contains("s3:GetBucketTagging"));
-    assert!(format!("{error:#}").contains("local remote state is retained"));
+    let error = down::plan(&cloud, &state, &node).await.unwrap_err();
+    assert!(crate::render(&error).contains("s3:GetBucketTagging"));
+    assert!(crate::render(&error).contains("missing permission"));
     assert!(state.read("cleanup").unwrap().is_some());
     cloud.deny_tag_read.set(false);
     cloud.deny_version_list.set(true);
     cloud.observations.borrow_mut().push_back(None);
     let error = down::run(&cloud, &state, &node, Duration::ZERO, false)
         .await
-        .map_err(down::actionable_error)
         .unwrap_err();
-    assert!(format!("{error:#}").contains("s3:ListBucketVersions"));
+    assert!(crate::render(&error).contains("s3:ListBucketVersions"));
     assert!(state.read("cleanup").unwrap().is_some());
 }
 
@@ -2060,11 +2080,7 @@ async fn up_continues_when_creation_tags_are_denied_and_down_keeps_untagged_reso
     .await
     .unwrap();
     let node = state.require("cleanup").unwrap();
-    assert!(
-        down::confirm(&cloud, &state, &node, false, false, true)
-            .await
-            .is_ok()
-    );
+    assert!(down::plan(&cloud, &state, &node).await.unwrap().is_none());
     cloud.observations.borrow_mut().push_back(None);
     down::run(&cloud, &state, &node, Duration::ZERO, false)
         .await

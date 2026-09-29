@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use crate::Result;
 use aws_sdk_ec2::{
     error::ProvideErrorMetadata,
     primitives::Blob,
@@ -10,6 +10,40 @@ use aws_sdk_ec2::{
 use std::time::Duration;
 
 use super::{Cloud, Machine, MachineSpec, ObjectBucket, Ownership, retry_profile_propagation};
+
+// AWS error codes, rather than rendered SDK messages, determine whether an
+// operation can be retried after an operator grants a missing permission.
+trait AwsContext<T> {
+    fn aws_context(self, operation: &'static str) -> Result<T>;
+}
+
+impl<T, E> AwsContext<T> for std::result::Result<T, E>
+where
+    E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
+{
+    fn aws_context(self, operation: &'static str) -> Result<T> {
+        self.map_err(|error| {
+            // Without a service code the failure is local (credentials,
+            // dispatch, network): keep the SDK error as the cause so the
+            // report shows it instead of a synthesized "unknown".
+            let Some(code) = error.code() else {
+                return crate::Error::context(error, operation);
+            };
+            if access_denied(Some(code)) {
+                crate::Error::MissingPermission {
+                    operation: operation.to_owned(),
+                    source: Box::new(error),
+                }
+            } else {
+                crate::Error::Aws {
+                    operation: operation.to_owned(),
+                    code: code.to_owned(),
+                    message: error.message().unwrap_or("unknown").to_owned(),
+                }
+            }
+        })
+    }
+}
 
 const UBUNTU_IMAGE: &str =
     "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id";
@@ -56,7 +90,7 @@ impl Aws {
             )
             .send()
             .await
-            .context("s3:PutBucketTagging")?;
+            .aws_context("s3:PutBucketTagging")?;
         Ok(())
     }
 
@@ -68,7 +102,7 @@ impl Aws {
                 .role_name(name)
                 .send()
                 .await
-                .context("iam:ListRolePolicies")?;
+                .aws_context("iam:ListRolePolicies")?;
             if policies.policy_names().is_empty() {
                 break;
             }
@@ -79,7 +113,7 @@ impl Aws {
                     .policy_name(policy)
                     .send()
                     .await
-                    .context("iam:DeleteRolePolicy")?;
+                    .aws_context("iam:DeleteRolePolicy")?;
             }
         }
         loop {
@@ -89,12 +123,14 @@ impl Aws {
                 .role_name(name)
                 .send()
                 .await
-                .context("iam:ListAttachedRolePolicies")?;
+                .aws_context("iam:ListAttachedRolePolicies")?;
             if policies.attached_policies().is_empty() {
                 break;
             }
             for policy in policies.attached_policies() {
-                let arn = policy.policy_arn().context("attached policy has no ARN")?;
+                let Some(arn) = policy.policy_arn() else {
+                    return Err(crate::Error::other("attached policy has no ARN"));
+                };
                 {
                     self.iam
                         .detach_role_policy()
@@ -102,7 +138,7 @@ impl Aws {
                         .policy_arn(arn)
                         .send()
                         .await
-                        .context("iam:DetachRolePolicy")?;
+                        .aws_context("iam:DetachRolePolicy")?;
                 }
             }
         }
@@ -121,7 +157,7 @@ impl Aws {
         request
             .send()
             .await
-            .context("s3:CreateBucket (bucket may belong to another account)")?;
+            .aws_context("s3:CreateBucket (bucket may belong to another account)")?;
         Ok(())
     }
 
@@ -131,10 +167,10 @@ impl Aws {
         match location {
             Ok(output) => {
                 let found = bucket_region(output.location_constraint());
-                anyhow::ensure!(
+                crate::Error::ensure(
                     found == region,
-                    "bucket {bucket} is in {found}, not {region}"
-                );
+                    format!("bucket {bucket} is in {found}, not {region}"),
+                )?;
             }
             Err(error)
                 if error
@@ -145,12 +181,12 @@ impl Aws {
                 self.create_bucket(bucket, region).await?;
                 created = true;
                 if let Err(error) = self.write_bucket_tags(bucket, owner, Vec::new()).await {
-                    warn_tag_denied(&error, "s3:PutBucketTagging", bucket, owner)?;
+                    warn_tag_denied(error, "s3:PutBucketTagging", bucket, owner)?;
                 }
             }
             Err(error) => {
                 return Err(error)
-                    .context("s3:GetBucketLocation (bucket may belong to another account)");
+                    .aws_context("s3:GetBucketLocation (bucket may belong to another account)");
             }
         }
         let needs_encryption = if created {
@@ -169,7 +205,7 @@ impl Aws {
                     true
                 }
                 Err(error) => {
-                    return Err(error).context(
+                    return Err(error).aws_context(
                         "s3:GetEncryptionConfiguration (bucket may belong to another account)",
                     );
                 }
@@ -196,7 +232,9 @@ impl Aws {
                 )
                 .send()
                 .await
-                .context("s3:PutEncryptionConfiguration (bucket may belong to another account)")?;
+                .aws_context(
+                    "s3:PutEncryptionConfiguration (bucket may belong to another account)",
+                )?;
         }
         self.s3
             .put_public_access_block()
@@ -211,7 +249,7 @@ impl Aws {
             )
             .send()
             .await
-            .context("s3:PutBucketPublicAccessBlock (bucket may belong to another account)")?;
+            .aws_context("s3:PutBucketPublicAccessBlock (bucket may belong to another account)")?;
         Ok(())
     }
 
@@ -224,7 +262,7 @@ impl Aws {
                 .and_then(ProvideErrorMetadata::code)
                 != Some("NoSuchEntity")
             {
-                return Err(error).context("iam:GetRole");
+                return Err(error).aws_context("iam:GetRole");
             }
             let request = self.iam.create_role().role_name(role)
                 .assume_role_policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#);
@@ -235,14 +273,14 @@ impl Aws {
                 .send()
                 .await
             {
-                if !access_denied(&error.to_string()) {
-                    return Err(error).context("iam:CreateRole");
+                if !access_denied(error.code()) {
+                    return Err(error).aws_context("iam:CreateRole");
                 }
                 // IAM can reject tags on CreateRole separately from role creation.
                 request
                     .send()
                     .await
-                    .context("iam:CreateRole (without tags)")?;
+                    .aws_context("iam:CreateRole (without tags)")?;
                 warn_untagged("iam:TagRole", role, owner);
             }
             created = true;
@@ -255,7 +293,7 @@ impl Aws {
             .policy_document(policy.to_string())
             .send()
             .await
-            .context("iam:PutRolePolicy")?;
+            .aws_context("iam:PutRolePolicy")?;
         let profile = self
             .iam
             .get_instance_profile()
@@ -283,19 +321,19 @@ impl Aws {
                     .send()
                     .await
                 {
-                    if !access_denied(&error.to_string()) {
-                        return Err(error).context("iam:CreateInstanceProfile");
+                    if !access_denied(error.code()) {
+                        return Err(error).aws_context("iam:CreateInstanceProfile");
                     }
                     request
                         .send()
                         .await
-                        .context("iam:CreateInstanceProfile (without tags)")?;
+                        .aws_context("iam:CreateInstanceProfile (without tags)")?;
                     warn_untagged("iam:TagInstanceProfile", role, owner);
                 }
                 created = true;
                 false
             }
-            Err(error) => return Err(error).context("iam:GetInstanceProfile"),
+            Err(error) => return Err(error).aws_context("iam:GetInstanceProfile"),
         };
         if !has_role {
             self.iam
@@ -304,7 +342,7 @@ impl Aws {
                 .role_name(role)
                 .send()
                 .await
-                .context("iam:AddRoleToInstanceProfile")?;
+                .aws_context("iam:AddRoleToInstanceProfile")?;
         }
         if created {
             // A role or profile is visible to EC2 and STS only after IAM has
@@ -317,8 +355,11 @@ impl Aws {
     }
 }
 
-fn access_denied(message: &str) -> bool {
-    message.contains("AccessDenied") || message.contains("Access denied")
+fn access_denied(code: Option<&str>) -> bool {
+    matches!(
+        code,
+        Some("AccessDenied" | "AccessDeniedException" | "UnauthorizedOperation")
+    )
 }
 
 fn warn_untagged(permission: &str, resource: &str, owner: &str) {
@@ -328,13 +369,13 @@ fn warn_untagged(permission: &str, resource: &str, owner: &str) {
 }
 
 fn warn_tag_denied(
-    error: &anyhow::Error,
+    error: crate::Error,
     permission: &str,
     resource: &str,
     owner: &str,
 ) -> Result<()> {
-    if !access_denied(&format!("{error:#}")) {
-        return Err(anyhow::anyhow!("{error:#}"));
+    if error.permission().is_none() {
+        return Err(error);
     }
     warn_untagged(permission, resource, owner);
     Ok(())
@@ -373,13 +414,12 @@ fn ensure_not_another_remote<'a>(
     tags: impl Iterator<Item = (&'a str, &'a str)>,
     owner: &str,
 ) -> Result<()> {
-    anyhow::ensure!(
+    crate::Error::ensure(
         !tags
             .into_iter()
             .any(|(key, value)| key == REMOTE_TAG && value != owner),
-        "resource is tagged for another remote"
-    );
-    Ok(())
+        "resource is tagged for another remote",
+    )
 }
 
 fn owned<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, owner: &str) -> Ownership {
@@ -409,7 +449,7 @@ fn launch_input(
     spec: &MachineSpec,
     root_device: &str,
 ) -> Result<aws_sdk_ec2::operation::run_instances::RunInstancesInput> {
-    let disk_gb = i32::try_from(spec.disk_gb).context("machine disk_gb is too large")?;
+    let disk_gb = i32::try_from(spec.disk_gb)?;
     Ok(
         aws_sdk_ec2::operation::run_instances::RunInstancesInput::builder()
             .image_id(&spec.image)
@@ -480,12 +520,17 @@ impl Cloud for Aws {
     }
 
     async fn base_image(&self) -> Result<String> {
-        let output = self.ssm.get_parameter().name(UBUNTU_IMAGE).send().await?;
-        Ok(output
-            .parameter()
-            .and_then(|p| p.value())
-            .context("Ubuntu SSM parameter has no value")?
-            .into())
+        let output = self
+            .ssm
+            .get_parameter()
+            .name(UBUNTU_IMAGE)
+            .send()
+            .await
+            .aws_context("ssm:GetParameter")?;
+        let Some(value) = output.parameter().and_then(|p| p.value()) else {
+            return Err(crate::Error::other("Ubuntu SSM parameter has no value"));
+        };
+        Ok(value.into())
     }
 
     async fn import_ssh_key(&self, name: &str, public_key: Vec<u8>, owner: &str) -> Result<()> {
@@ -495,7 +540,8 @@ impl Cloud for Aws {
             .public_key_material(Blob::new(public_key))
             .tag_specifications(tags(ResourceType::KeyPair, name, owner))
             .send()
-            .await?;
+            .await
+            .aws_context("ec2:ImportKeyPair")?;
         Ok(())
     }
 
@@ -505,12 +551,15 @@ impl Cloud for Aws {
             .describe_images()
             .image_ids(&spec.image)
             .send()
-            .await?;
-        let root = images
+            .await
+            .aws_context("ec2:DescribeImages")?;
+        let Some(root) = images
             .images()
             .first()
             .and_then(|image| image.root_device_name())
-            .context("AMI has no root device")?;
+        else {
+            return Err(crate::Error::other("AMI has no root device"));
+        };
         let output = retry_profile_propagation(
             || async {
                 let input = launch_input(spec, root)?;
@@ -528,19 +577,16 @@ impl Cloud for Aws {
                     .set_tag_specifications(input.tag_specifications)
                     .send()
                     .await
-                    .map_err(anyhow::Error::from)
+                    .aws_context("ec2:RunInstances")
             },
             spec.profile.is_some(),
             Duration::from_secs(2),
         )
-        .await
-        .context("ec2:RunInstances and iam:PassRole (when using a bucket profile)")?;
-        Ok(output
-            .instances()
-            .first()
-            .and_then(|i| i.instance_id())
-            .context("EC2 returned no instance id")?
-            .into())
+        .await?;
+        let Some(id) = output.instances().first().and_then(|i| i.instance_id()) else {
+            return Err(crate::Error::other("EC2 returned no instance id"));
+        };
+        Ok(id.into())
     }
 
     async fn get(&self, id: &str) -> Result<Option<Machine>> {
@@ -554,7 +600,7 @@ impl Cloud for Aws {
             {
                 return Ok(None);
             }
-            Err(error) => return Err(error).context("ec2:DescribeInstances"),
+            Err(error) => return Err(error).aws_context("ec2:DescribeInstances"),
         };
         Ok(output
             .reservations()
@@ -580,7 +626,7 @@ impl Cloud for Aws {
             .filters(Filter::builder().name("client-token").values(token).build())
             .send()
             .await
-            .context("ec2:DescribeInstances")?;
+            .aws_context("ec2:DescribeInstances")?;
         Ok(output
             .reservations()
             .iter()
@@ -607,7 +653,7 @@ impl Cloud for Aws {
             {
                 Ok(())
             }
-            Err(error) => Err(error).context("ec2:TerminateInstances"),
+            Err(error) => Err(error).aws_context("ec2:TerminateInstances"),
         }
     }
 
@@ -621,7 +667,7 @@ impl Cloud for Aws {
                 {
                     Some("NoSuchBucket") => Ok(Ownership::Absent),
                     Some("NoSuchTagSet") => Ok(Ownership::Unmanaged),
-                    _ => Err(error).context("s3:GetBucketTagging"),
+                    _ => Err(error).aws_context("s3:GetBucketTagging"),
                 };
             }
         };
@@ -655,7 +701,7 @@ impl Cloud for Aws {
             {
                 Ownership::Absent
             }
-            Err(error) => return Err(error).context("iam:GetInstanceProfile"),
+            Err(error) => return Err(error).aws_context("iam:GetInstanceProfile"),
         };
         let role = match self.iam.get_role().role_name(name).send().await {
             Ok(output) => output.role.map_or(Ownership::Absent, |role| {
@@ -672,7 +718,7 @@ impl Cloud for Aws {
             {
                 Ownership::Absent
             }
-            Err(error) => return Err(error).context("iam:GetRole"),
+            Err(error) => return Err(error).aws_context("iam:GetRole"),
         };
         Ok((profile, role))
     }
@@ -688,7 +734,7 @@ impl Cloud for Aws {
             {
                 Vec::new()
             }
-            Err(error) => return Err(error).context("s3:GetBucketTagging"),
+            Err(error) => return Err(error).aws_context("s3:GetBucketTagging"),
         };
         ensure_not_another_remote(tags.iter().map(|tag| (tag.key(), tag.value())), owner)?;
         self.write_bucket_tags(name, owner, tags).await
@@ -701,18 +747,18 @@ impl Cloud for Aws {
             .role_name(name)
             .send()
             .await
-            .context("iam:GetRole")?
+            .aws_context("iam:GetRole")?
             .role
-            .context("role is absent")?;
+            .ok_or_else(|| crate::Error::other("role is absent"))?;
         let profile = self
             .iam
             .get_instance_profile()
             .instance_profile_name(name)
             .send()
             .await
-            .context("iam:GetInstanceProfile")?
+            .aws_context("iam:GetInstanceProfile")?
             .instance_profile
-            .context("instance profile is absent")?;
+            .ok_or_else(|| crate::Error::other("instance profile is absent"))?;
         // Check both before changing either one, so a conflicting profile cannot leave a tagged role.
         ensure_not_another_remote(
             role.tags().iter().map(|tag| (tag.key(), tag.value())),
@@ -729,7 +775,7 @@ impl Cloud for Aws {
             .tags(iam_tag(REMOTE_TAG, owner))
             .send()
             .await
-            .context("iam:TagRole")?;
+            .aws_context("iam:TagRole")?;
         self.iam
             .tag_instance_profile()
             .instance_profile_name(name)
@@ -737,17 +783,20 @@ impl Cloud for Aws {
             .tags(iam_tag(REMOTE_TAG, owner))
             .send()
             .await
-            .context("iam:TagInstanceProfile")?;
+            .aws_context("iam:TagInstanceProfile")?;
         Ok(())
     }
 
     async fn delete_bucket(&self, name: &str, owner: &str) -> Result<bool> {
         use aws_sdk_s3::types::{Delete, ObjectIdentifier};
-        match self.bucket_ownership(name, owner).await? {
-            Ownership::Absent => return Ok(false),
-            Ownership::Unmanaged => anyhow::bail!("bucket ownership tags do not match"),
-            Ownership::Owned => {}
+        let ownership = self.bucket_ownership(name, owner).await?;
+        if ownership == Ownership::Absent {
+            return Ok(false);
         }
+        crate::Error::ensure(
+            ownership == Ownership::Owned,
+            "bucket ownership tags do not match",
+        )?;
         let mut count = 0usize;
         // Re-read the first page after every deletion. Markers would skip keys
         // when the page just deleted changes the listing beneath the cursor.
@@ -769,7 +818,7 @@ impl Cloud for Aws {
                 {
                     return Ok(false);
                 }
-                Err(error) => return Err(error).context("s3:ListBucketVersions"),
+                Err(error) => return Err(error).aws_context("s3:ListBucketVersions"),
             };
             let objects: Vec<_> = page
                 .versions()
@@ -798,12 +847,14 @@ impl Cloud for Aws {
                 .delete(Delete::builder().set_objects(Some(objects)).build()?)
                 .send()
                 .await
-                .context("s3:DeleteObjects")?;
-            anyhow::ensure!(
+                .aws_context("s3:DeleteObjects")?;
+            crate::Error::ensure(
                 result.errors().is_empty(),
-                "s3:DeleteObjects failed for {} objects",
-                result.errors().len()
-            );
+                format!(
+                    "s3:DeleteObjects failed for {} objects",
+                    result.errors().len()
+                ),
+            )?;
             count += size;
             if count / 10_000 != (count - size) / 10_000 {
                 cloud_out!("Deleted {count} objects from bucket {name}");
@@ -819,16 +870,16 @@ impl Cloud for Aws {
             {
                 Ok(false)
             }
-            Err(error) => Err(error).context("s3:DeleteBucket"),
+            Err(error) => Err(error).aws_context("s3:DeleteBucket"),
         }
     }
 
     async fn delete_node_role(&self, name: &str, owner: &str) -> Result<(bool, bool)> {
         let (profile_status, role_status) = self.role_ownership(name, owner).await?;
-        anyhow::ensure!(
+        crate::Error::ensure(
             profile_status != Ownership::Unmanaged && role_status != Ownership::Unmanaged,
-            "IAM ownership tags do not match"
-        );
+            "IAM ownership tags do not match",
+        )?;
         let profile = match self
             .iam
             .get_instance_profile()
@@ -845,7 +896,7 @@ impl Cloud for Aws {
             {
                 None
             }
-            Err(error) => return Err(error).context("iam:GetInstanceProfile"),
+            Err(error) => return Err(error).aws_context("iam:GetInstanceProfile"),
         };
         let profile_removed = profile.is_some();
         if let Some(profile) = profile {
@@ -864,7 +915,9 @@ impl Cloud for Aws {
                             .as_service_error()
                             .and_then(ProvideErrorMetadata::code)
                             == Some("NoSuchEntity") => {}
-                    Err(error) => return Err(error).context("iam:RemoveRoleFromInstanceProfile"),
+                    Err(error) => {
+                        return Err(error).aws_context("iam:RemoveRoleFromInstanceProfile");
+                    }
                 }
             }
             match self
@@ -880,7 +933,7 @@ impl Cloud for Aws {
                         .as_service_error()
                         .and_then(ProvideErrorMetadata::code)
                         == Some("NoSuchEntity") => {}
-                Err(error) => return Err(error).context("iam:DeleteInstanceProfile"),
+                Err(error) => return Err(error).aws_context("iam:DeleteInstanceProfile"),
             }
         }
         let role = match self.iam.get_role().role_name(name).send().await {
@@ -893,7 +946,7 @@ impl Cloud for Aws {
             {
                 None
             }
-            Err(error) => return Err(error).context("iam:GetRole"),
+            Err(error) => return Err(error).aws_context("iam:GetRole"),
         };
         if role.is_some() {
             self.delete_role_policies(name).await?;
@@ -904,7 +957,7 @@ impl Cloud for Aws {
                         .as_service_error()
                         .and_then(ProvideErrorMetadata::code)
                         == Some("NoSuchEntity") => {}
-                Err(error) => return Err(error).context("iam:DeleteRole"),
+                Err(error) => return Err(error).aws_context("iam:DeleteRole"),
             }
         }
         Ok((profile_removed, role.is_some()))
@@ -917,7 +970,7 @@ impl Cloud for Aws {
             .filters(Filter::builder().name("key-name").values(name).build())
             .send()
             .await
-            .context("ec2:DescribeKeyPairs")?;
+            .aws_context("ec2:DescribeKeyPairs")?;
         if keys.key_pairs().is_empty() {
             return Ok(());
         }
@@ -931,7 +984,7 @@ impl Cloud for Aws {
             {
                 Ok(())
             }
-            Err(error) => Err(error).context("ec2:DeleteKeyPair"),
+            Err(error) => Err(error).aws_context("ec2:DeleteKeyPair"),
         }
     }
 }
@@ -1080,7 +1133,10 @@ mod tag_denial_tests {
     fn denied_tagging_does_not_abort_creation_but_other_errors_do() {
         assert!(
             warn_tag_denied(
-                &anyhow::anyhow!("s3:PutBucketTagging: AccessDenied"),
+                crate::Error::MissingPermission {
+                    operation: "s3:PutBucketTagging".into(),
+                    source: Box::new(std::io::Error::other("AccessDenied"))
+                },
                 "s3:PutBucketTagging",
                 "swarmy-NAME",
                 "NAME"
@@ -1089,12 +1145,123 @@ mod tag_denial_tests {
         );
         assert!(
             warn_tag_denied(
-                &anyhow::anyhow!("s3:PutBucketTagging: network failure"),
+                crate::Error::other("s3:PutBucketTagging: network failure"),
                 "s3:PutBucketTagging",
                 "swarmy-NAME",
                 "NAME"
             )
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod aws_context_tests {
+    use super::AwsContext;
+
+    fn metadata(code: &str, message: &str) -> aws_sdk_ec2::error::ErrorMetadata {
+        aws_sdk_ec2::error::ErrorMetadata::builder()
+            .code(code)
+            .message(message)
+            .build()
+    }
+
+    fn mapped(operation: &'static str, code: &str, message: &str) -> crate::Error {
+        Err::<(), _>(metadata(code, message))
+            .aws_context(operation)
+            .unwrap_err()
+    }
+
+    #[test]
+    fn denial_codes_become_missing_permission() {
+        for code in [
+            "AccessDenied",
+            "AccessDeniedException",
+            "UnauthorizedOperation",
+        ] {
+            match mapped("ec2:RunInstances", code, "not authorized") {
+                crate::Error::MissingPermission { operation, .. } => {
+                    assert_eq!(operation, "ec2:RunInstances");
+                }
+                error => panic!("expected MissingPermission for {code}, got {error:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn other_errors_carry_code_and_message_from_metadata() {
+        match mapped(
+            "ec2:RunInstances",
+            "InvalidParameterValue",
+            "Invalid IAM Instance Profile name: fixture-profile",
+        ) {
+            crate::Error::Aws {
+                operation,
+                code,
+                message,
+            } => {
+                assert_eq!(operation, "ec2:RunInstances");
+                assert_eq!(code, "InvalidParameterValue");
+                assert!(message.contains("Invalid IAM Instance Profile"));
+            }
+            error => panic!("expected Aws, got {error:?}"),
+        }
+    }
+
+    #[test]
+    fn generic_errors_keep_throttling_code_and_unknown_parts() {
+        match mapped("ec2:DescribeInstances", "Throttling", "rate exceeded") {
+            crate::Error::Aws {
+                operation,
+                code,
+                message,
+            } => {
+                assert_eq!(operation, "ec2:DescribeInstances");
+                assert_eq!(code, "Throttling");
+                assert_eq!(message, "rate exceeded");
+            }
+            error => panic!("expected Aws, got {error:?}"),
+        }
+        // Errors without a service code (credentials, dispatch, network)
+        // keep the SDK error as their cause instead of a made-up "unknown".
+        let inner = aws_sdk_ec2::error::ErrorMetadata::builder().build();
+        let cause = inner.to_string();
+        let error = Err::<(), _>(inner)
+            .aws_context("ec2:DescribeInstances")
+            .unwrap_err();
+        match &error {
+            crate::Error::Other(_) => {}
+            error => panic!("expected Other, got {error:?}"),
+        }
+        let rendered = crate::render(&error);
+        assert!(rendered.contains("ec2:DescribeInstances"), "{rendered}");
+        assert!(rendered.contains(&cause), "{rendered}");
+    }
+
+    #[test]
+    fn profile_retry_needs_the_instance_profile_message() {
+        assert!(super::super::profile_not_propagated(&mapped(
+            "ec2:RunInstances",
+            "InvalidParameterValue",
+            "Invalid IAM Instance Profile name: fixture-profile",
+        )));
+        // Same code without the profile text is a real misconfiguration.
+        assert!(!super::super::profile_not_propagated(&mapped(
+            "ec2:RunInstances",
+            "InvalidParameterValue",
+            "value is not valid",
+        )));
+        // Denials map to MissingPermission, never to the retryable variant.
+        assert!(!super::super::profile_not_propagated(&mapped(
+            "ec2:RunInstances",
+            "AccessDenied",
+            "Invalid IAM Instance Profile name: fixture-profile",
+        )));
+        // Other operations never retry even with the profile text.
+        assert!(!super::super::profile_not_propagated(&mapped(
+            "ec2:DescribeInstances",
+            "InvalidParameterValue",
+            "Invalid IAM Instance Profile name: fixture-profile",
+        )));
     }
 }

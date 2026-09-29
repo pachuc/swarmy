@@ -18,6 +18,38 @@ pub enum FailureKind {
     ContextOverflow,
 }
 
+/// The completion payload shared by the public event and the binary row.
+/// One struct keeps the field list in one place; both variants below embed
+/// it so each field is written once. Field order matches the stored layout.
+/// Defaults keep old JSON readable: early completions predate attribution.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InferenceCompletion {
+    pub message: Message,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub effort_used: Option<crate::ReasoningEffort>,
+    #[serde(default)]
+    pub usage: crate::TokenUsage,
+    #[serde(default)]
+    pub cost_micros: u64,
+    #[serde(default)]
+    pub effort_requested: Option<crate::ReasoningEffort>,
+    #[serde(default)]
+    pub effort_clamped: bool,
+    /// Stored entry label behind this completion, for metering attribution.
+    #[serde(default)]
+    pub entry: Option<String>,
+    /// Route that selected the entry, when a named route resolved it.
+    #[serde(default)]
+    pub route: Option<String>,
+    /// Index into the resolved route, so metering names the exact step.
+    #[serde(default)]
+    pub route_step: Option<u32>,
+}
+
 /// One immutable entry in a session log. Sequence numbers start at one and are
 /// assigned by the store when appending; they are distinct from request step ids.
 ///
@@ -39,20 +71,7 @@ pub enum Event {
     InferenceCompleted {
         seq: u64,
         request_id: RequestId,
-        message: Message,
-        provider: String,
-        model: String,
-        effort_used: Option<crate::ReasoningEffort>,
-        usage: crate::TokenUsage,
-        cost_micros: u64,
-        effort_requested: Option<crate::ReasoningEffort>,
-        effort_clamped: bool,
-        /// Stored entry label behind this completion, for metering attribution.
-        entry: Option<String>,
-        /// Route that selected the entry, when a named route resolved it.
-        route: Option<String>,
-        /// Index into the resolved route, so metering names the exact step.
-        route_step: Option<u32>,
+        completion: InferenceCompletion,
     },
     ToolCallRequested {
         seq: u64,
@@ -161,19 +180,21 @@ pub(crate) mod tests {
                 step: 1,
             },
             Event::InferenceCompleted {
-                provider: String::new(),
-                model: String::new(),
-                effort_used: None,
-                usage: crate::TokenUsage::default(),
-                cost_micros: 0,
-                effort_requested: None,
-                effort_clamped: false,
-                entry: None,
-                route: None,
-                route_step: None,
                 seq: 3,
                 request_id,
-                message: message(),
+                completion: InferenceCompletion {
+                    message: message(),
+                    provider: String::new(),
+                    model: String::new(),
+                    effort_used: None,
+                    usage: crate::TokenUsage::default(),
+                    cost_micros: 0,
+                    effort_requested: None,
+                    effort_clamped: false,
+                    entry: None,
+                    route: None,
+                    route_step: None,
+                },
             },
             Event::ToolCallRequested {
                 seq: 4,

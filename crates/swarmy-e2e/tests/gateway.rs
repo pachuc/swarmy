@@ -315,8 +315,8 @@ impl Fixture {
             loop {
                 let events = self.store.read_events(job.session_id, 1, 64).await.unwrap();
                 if let Some(event) = events.first() {
-                    let idle = matches!(event, Event::InferenceCompleted { message, .. }
-                        if !message.parts.iter().any(|part| matches!(part, Part::ToolCall { .. })));
+                    let idle = matches!(event, Event::InferenceCompleted { completion, .. }
+                        if !completion.message.parts.iter().any(|part| matches!(part, Part::ToolCall { .. })));
                     assert_eq!(events.len(), if idle { 2 } else { 1 });
                     let session = self
                         .store
@@ -349,10 +349,10 @@ impl Fixture {
                             .unwrap();
                         let snapshot: swarmy_harness::Snapshot =
                             swarmy_core::decode(&bytes).unwrap();
-                        let Event::InferenceCompleted { message, .. } = event else {
+                        let Event::InferenceCompleted { completion, .. } = event else {
                             unreachable!()
                         };
-                        assert_eq!(snapshot.messages().last(), Some(message));
+                        assert_eq!(snapshot.messages().last(), Some(&completion.message));
                         assert_eq!(
                             &snapshot.messages()[..snapshot.messages().len() - 1],
                             job.request.messages
@@ -1014,7 +1014,7 @@ async fn two_providers_share_one_gateway_and_record_selection_and_cost() {
             f.bus.publish_work(&queue, &InferenceJobRef::from(&second)).await.unwrap();
             for job in [&first, &second] {
                 let event = f.terminal(job).await;
-                assert!(matches!(event, Event::InferenceCompleted { provider, model: used_model, effort_used: Some(swarmy_core::ReasoningEffort::Low), effort_requested: Some(swarmy_core::ReasoningEffort::Max), effort_clamped: true, cost_micros: 84, usage, .. } if provider == job.provider && used_model == model.id && usage.output_tokens == 42));
+                assert!(matches!(event, Event::InferenceCompleted { completion, .. } if completion.provider == job.provider && completion.model == model.id && completion.effort_used == Some(swarmy_core::ReasoningEffort::Low) && completion.effort_requested == Some(swarmy_core::ReasoningEffort::Max) && completion.effort_clamped && completion.cost_micros == 84 && completion.usage.output_tokens == 42));
                 let total = f.store.session_usage(job.session_id).await.unwrap();
                 assert_eq!(total.cost_micros, 84);
             }
@@ -1217,18 +1217,19 @@ async fn switch_turns(f: &mut Fixture, model: &swarmy_config::CustomModel) {
         .await;
     first.provider = "fake".into();
     f.publish(&first).await;
-    let Event::InferenceCompleted { message, .. } = f.terminal(&first).await else {
+    let Event::InferenceCompleted { completion, .. } = f.terminal(&first).await else {
         panic!("first turn did not complete");
     };
     assert!(
-        message
+        completion
+            .message
             .parts
             .iter()
             .any(|p| matches!(p, swarmy_core::Part::ToolCall { .. }))
     );
     let history = vec![
         switch_user(),
-        message.clone(),
+        completion.message.clone(),
         switch_notice(),
         switch_tool_result(),
     ];

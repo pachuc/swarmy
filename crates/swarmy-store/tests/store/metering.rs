@@ -90,17 +90,19 @@ fn completion_event(
     Event::InferenceCompleted {
         seq: 0,
         request_id: request,
-        message,
-        provider: provider.into(),
-        model: model.into(),
-        effort_used: None,
-        usage: usage.clone(),
-        cost_micros: cost,
-        effort_requested: None,
-        effort_clamped: false,
-        entry: None,
-        route: None,
-        route_step: None,
+        completion: swarmy_core::InferenceCompletion {
+            message,
+            provider: provider.into(),
+            model: model.into(),
+            effort_used: None,
+            usage: usage.clone(),
+            cost_micros: cost,
+            effort_requested: None,
+            effort_clamped: false,
+            entry: None,
+            route: None,
+            route_step: None,
+        },
     }
 }
 

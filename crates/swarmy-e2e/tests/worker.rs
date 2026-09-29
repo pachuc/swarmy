@@ -983,12 +983,11 @@ async fn first_entry_breaker_fails_over_to_second_entry_implicitly() {
                 }
             )));
             let completed = events.iter().find_map(|event| match event {
-                Event::InferenceCompleted {
-                    entry,
-                    route,
-                    route_step,
-                    ..
-                } => Some((entry.clone(), route.clone(), *route_step)),
+                Event::InferenceCompleted { completion, .. } => Some((
+                    completion.entry.clone(),
+                    completion.route.clone(),
+                    completion.route_step,
+                )),
                 _ => None,
             });
             assert_eq!(
@@ -1042,12 +1041,15 @@ async fn route_fails_over_across_providers_and_records_entry_and_step() {
             assert_requests(id, &events, 2);
             let completed = events.iter().find_map(|event| match event {
                 Event::InferenceCompleted {
-                    entry,
-                    route,
-                    route_step,
+                    completion,
                     request_id,
                     ..
-                } => Some((entry.clone(), route.clone(), *route_step, *request_id)),
+                } => Some((
+                    completion.entry.clone(),
+                    completion.route.clone(),
+                    completion.route_step,
+                    *request_id,
+                )),
                 _ => None,
             });
             let (entry, route, step, request_id) =
@@ -1681,7 +1683,7 @@ async fn check_overflow_recovery(second_overflow: bool) {
         if second_overflow {
             assert!(successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model."))));
         } else {
-            assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered")))));
+            assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { completion, .. } if completion.message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered")))));
         }
     })).await;
 }
@@ -1722,7 +1724,7 @@ async fn clean_tool_completion_reenables_overflow_recovery() {
         let second = wait_successor(f, first).await;
         let events = f.idle(second).await;
         assert_eq!(f.calls(), 8, "a clean tool reply resets the recovery guard");
-        assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered again")))));
+        assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { completion, .. } if completion.message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered again")))));
     })).await;
 }
 
@@ -1795,9 +1797,9 @@ async fn early_length_stop_compacts_without_replaying_truncated_reply() {
         let successor = wait_successor(f, id).await;
         let events = f.idle(successor).await;
         assert_eq!(f.calls(), 3);
-        assert!(read_all_events(f, id).await.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "TRUNCATED_ATTEMPT")))));
+        assert!(read_all_events(f, id).await.iter().any(|event| matches!(event, Event::InferenceCompleted { completion, .. } if completion.message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "TRUNCATED_ATTEMPT")))));
         assert!(!successor_messages(&events).iter().any(|message| message.parts.iter().any(|part| matches!(part, Part::Text { text } if text.contains("TRUNCATED_ATTEMPT")))));
-        assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered")))));
+        assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { completion, .. } if completion.message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Recovered")))));
     })).await;
 }
 
@@ -2082,7 +2084,7 @@ async fn no_head_recovery_survives_crash_before_release() {
             assert!(f.store.next_session(id).await.unwrap().is_none());
             // The archived event remains durable, but the idle snapshot omits it.
             assert!(events.iter().any(|event| matches!(event,
-                Event::InferenceCompleted { message, .. } if message.parts.iter().any(
+                Event::InferenceCompleted { completion, .. } if completion.message.parts.iter().any(
                     |part| matches!(part, Part::ToolCall { call_id, .. } if call_id.0 == "abandoned")
                 )
             )));
@@ -2150,7 +2152,7 @@ async fn rejected_summary_preserves_session(summary: &'static str, stop_reason: 
         let events = f.idle(id).await;
         assert_eq!(f.calls(), 2);
         assert!(f.store.next_session(id).await.unwrap().is_none());
-        assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { message, .. } if message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Original answer")))));
+        assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { completion, .. } if completion.message.parts.iter().any(|part| matches!(part, Part::Text { text } if text == "Original answer")))));
         f.user_message(id).await;
         f.wake(id).await;
         f.idle(id).await;
@@ -2412,9 +2414,8 @@ fn successor_messages(events: &[Event]) -> Vec<Message> {
     events
         .iter()
         .filter_map(|event| match event {
-            Event::MessageAppended { message, .. } | Event::InferenceCompleted { message, .. } => {
-                Some(message.clone())
-            }
+            Event::MessageAppended { message, .. } => Some(message.clone()),
+            Event::InferenceCompleted { completion, .. } => Some(completion.message.clone()),
             _ => None,
         })
         .collect()
@@ -2764,12 +2765,11 @@ async fn failover_survives_worker_restart_without_second_advance() {
             f.start("swarmy-worker", None);
             let events = f.idle(id).await;
             let completed = events.iter().find_map(|event| match event {
-                Event::InferenceCompleted {
-                    entry,
-                    route,
-                    route_step,
-                    ..
-                } => Some((entry.clone(), route.clone(), *route_step)),
+                Event::InferenceCompleted { completion, .. } => Some((
+                    completion.entry.clone(),
+                    completion.route.clone(),
+                    completion.route_step,
+                )),
                 _ => None,
             });
             assert_eq!(

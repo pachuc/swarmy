@@ -3,7 +3,8 @@ use jiff::Timestamp;
 use swarmy_core::{Lease, LeaseOwnerId, RunnableEntry, SessionId, SessionState, can_transition};
 
 use crate::{
-    Result, Store, StoreError, StoredSession, check_limit, keys::session_id, read, scan, write,
+    MAX_SCAN_LIMIT, Result, Store, StoreError, StoredSession, check_limit, keys::session_id, read,
+    scan, write,
 };
 
 impl Store {
@@ -27,25 +28,21 @@ impl Store {
         .await
     }
 
-    fn lease_key(&self, id: SessionId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).lease(id)
-    }
-
-    fn expiry_key(&self, id: SessionId, expires: Timestamp) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).lease_by_expiry(expires, id)
-    }
-
     async fn clear_lease(&self, trx: &Transaction, id: SessionId) -> Result<()> {
-        if let Some(lease) = read::<Lease>(trx, &self.lease_key(id)).await? {
-            trx.clear(&self.expiry_key(id, lease.expires_at));
-            trx.clear(&self.lease_key(id));
+        if let Some(lease) = read::<Lease>(trx, &self.keys().lease(id)).await? {
+            trx.clear(&self.keys().lease_by_expiry(lease.expires_at, id));
+            trx.clear(&self.keys().lease(id));
         }
         Ok(())
     }
 
     fn store_lease(&self, trx: &Transaction, id: SessionId, lease: &Lease) -> Result<()> {
-        write(trx, &self.lease_key(id), lease)?;
-        write(trx, &self.expiry_key(id, lease.expires_at), lease)
+        write(trx, &self.keys().lease(id), lease)?;
+        write(
+            trx,
+            &self.keys().lease_by_expiry(lease.expires_at, id),
+            lease,
+        )
     }
 
     /// Claim only a Runnable session and atomically transition it to Leased.
@@ -101,17 +98,20 @@ impl Store {
     )> {
         let (lease, session, snapshot, turn, values) = self
             .transaction(|trx| async move {
-                let turn_key = self.turn_key(id);
+                let turn_key = self.keys().turn(id);
                 let ((lease, session), turn) = futures::try_join!(
                     self.claim(&trx, id, owner, expires_at),
                     read(&trx, &turn_key),
                 )?;
-                let space = self.event_space(id);
-                let mut begin = self.event_key(id, session.snapshot_seq.unwrap_or(0));
-                begin.push(0);
+                let space = self.keys().event_space(id);
+                let begin =
+                    crate::next_cursor(&self.keys().event(id, session.snapshot_seq.unwrap_or(0)));
+                // One bounded page inside the claim transaction: the claim
+                // must stay a small write, and the worker reads later pages
+                // with `read_events` up to the returned session head.
                 let (snapshot, values) = futures::try_join!(
                     self.snapshot_for_session_in(&trx, &session),
-                    scan(&trx, (begin, space.range().1), crate::MAX_SCAN_LIMIT),
+                    scan(&trx, (begin, space.range().1), MAX_SCAN_LIMIT),
                 )?;
                 Ok((lease, session, snapshot, turn, values))
             })
@@ -166,7 +166,7 @@ impl Store {
         id: SessionId,
         expected: &Lease,
     ) -> Result<Lease> {
-        let lease = read::<Lease>(trx, &self.lease_key(id))
+        let lease = read::<Lease>(trx, &self.keys().lease(id))
             .await?
             .ok_or(StoreError::Fence(crate::FenceError::LeaseMismatch))?;
         if &lease != expected {
@@ -271,16 +271,12 @@ impl Store {
     ) -> Result<Vec<(SessionId, Lease)>> {
         check_limit(limit)?;
         self.transaction(|trx| async move {
-            let space = crate::keys::Keys::new(&self.root).lease_by_expiry_space_root();
+            let space = self.keys().lease_by_expiry_space_root();
             let mut begin = space.range().0;
             if let Some((id, lease)) = after {
-                begin = self.expiry_key(*id, lease.expires_at);
-                begin.push(0);
+                begin = crate::next_cursor(&self.keys().lease_by_expiry(lease.expires_at, *id));
             }
-            let end = crate::keys::Keys::new(&self.root)
-                .lease_by_expiry_space(now)
-                .range()
-                .1;
+            let end = self.keys().lease_by_expiry_space(now).range().1;
             if begin >= end {
                 return Ok(Vec::new());
             }

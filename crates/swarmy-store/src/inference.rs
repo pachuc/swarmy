@@ -47,10 +47,6 @@ struct PreparedCompletion {
 }
 
 impl Store {
-    pub(crate) fn inference_request_key(&self, id: RequestId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).inference_request(id)
-    }
-
     /// Store the gateway payload for a request published before requests were
     /// stored separately from their inputs, so a republished reference resolves.
     /// # Errors
@@ -60,7 +56,7 @@ impl Store {
         id: RequestId,
         request: &T,
     ) -> Result<()> {
-        self.put_payload(self.inference_request_key(id), request)
+        self.put_payload(self.keys().inference_request(id), request)
             .await
     }
 
@@ -71,8 +67,7 @@ impl Store {
         &self,
         id: RequestId,
     ) -> Result<Option<T>> {
-        self.get_payload(crate::keys::Keys::new(&self.root).inference_request(id))
-            .await
+        self.get_payload(self.keys().inference_request(id)).await
     }
 
     /// Claim a request or renew the same owner's claim and record it as started.
@@ -94,9 +89,9 @@ impl Store {
         self.transaction(|trx| {
             let requested = &requested;
             async move {
-                let idem_key = crate::keys::Keys::new(&self.root).idem(claim.request_id);
-                let key = crate::keys::Keys::new(&self.root).inference_claim(claim.request_id);
-                let inflight_key = crate::keys::Keys::new(&self.root).inflight(claim.request_id);
+                let idem_key = self.keys().idem(claim.request_id);
+                let key = self.keys().inference_claim(claim.request_id);
+                let inflight_key = self.keys().inflight(claim.request_id);
                 let (idem, old, session, inflight) = futures::try_join!(
                     async { Ok::<_, StoreError>(trx.get(&idem_key, false).await?) },
                     read::<InferenceClaim>(&trx, &key),
@@ -112,12 +107,9 @@ impl Store {
                 // A newly published reference must not bypass the backoff of an
                 // earlier delivery of the same request.
                 if old.as_ref().is_none_or(|old| old.owner != claim.owner)
-                    && read::<InferenceRetry>(
-                        &trx,
-                        &crate::keys::Keys::new(&self.root).inference_retry(claim.request_id),
-                    )
-                    .await?
-                    .is_some_and(|retry| retry.next_at > now)
+                    && read::<InferenceRetry>(&trx, &self.keys().inference_retry(claim.request_id))
+                        .await?
+                        .is_some_and(|retry| retry.next_at > now)
                 {
                     return Ok(false);
                 }
@@ -151,7 +143,7 @@ impl Store {
     /// Returns storage failures.
     pub async fn release_inference(&self, claim: &InferenceClaim) -> Result<()> {
         self.transaction(|trx| async move {
-            let key = crate::keys::Keys::new(&self.root).inference_claim(claim.request_id);
+            let key = self.keys().inference_claim(claim.request_id);
             if read::<InferenceClaim>(&trx, &key)
                 .await?
                 .is_some_and(|old| old.owner == claim.owner)
@@ -174,7 +166,7 @@ impl Store {
         now: Timestamp,
     ) -> Result<u32> {
         self.transaction(|trx| async move {
-            let keys = crate::keys::Keys::new(&self.root);
+            let keys = self.keys();
             let claim_key = keys.inference_claim(claim.request_id);
             if read::<InferenceClaim>(&trx, &claim_key)
                 .await?
@@ -223,9 +215,9 @@ impl Store {
         response: &T,
         snapshot: &swarmy_core::SnapshotRef,
     ) -> Result<bool> {
-        if !matches!(&completion.event, Event::InferenceCompleted { message, .. }
-            if message.role == swarmy_core::MessageRole::Assistant
-                && !message.parts.iter().any(|part| matches!(part, swarmy_core::Part::ToolCall { .. })))
+        if !matches!(&completion.event, Event::InferenceCompleted { completion, .. }
+            if completion.message.role == swarmy_core::MessageRole::Assistant
+                && !completion.message.parts.iter().any(|part| matches!(part, swarmy_core::Part::ToolCall { .. })))
             || completion.expected_head.checked_add(2) != Some(snapshot.seq)
             || RequestId::for_step(completion.claim.session_id, completion.expected_head)
                 != completion.claim.request_id
@@ -314,8 +306,8 @@ impl Store {
                 idle,
             } = prepared;
             let now = snapshot.map_or(completion.now, |_| completion.now.max(self.now()));
-            let idem_key = crate::keys::Keys::new(&self.root).idem(claim.request_id);
-            let claim_key = crate::keys::Keys::new(&self.root).inference_claim(claim.request_id);
+            let idem_key = self.keys().idem(claim.request_id);
+            let claim_key = self.keys().inference_claim(claim.request_id);
             let (idem, current, mut session) = futures::try_join!(
                 async { Ok::<_, StoreError>(trx.get(&idem_key, false).await?) },
                 read::<InferenceClaim>(&trx, &claim_key),
@@ -334,12 +326,7 @@ impl Store {
             {
                 return Err(StoreError::Fence(crate::FenceError::LeaseMismatch));
             }
-            if session.head_seq != completion.expected_head {
-                return Err(StoreError::Fence(crate::FenceError::StaleSequence {
-                    expected: completion.expected_head,
-                    actual: session.head_seq,
-                }));
-            }
+            crate::check_head(session.head_seq, completion.expected_head)?;
             if session.state != SessionState::WaitingInference {
                 return Err(StoreError::Domain(
                     crate::DomainError::UnexpectedSessionState,
@@ -355,27 +342,24 @@ impl Store {
                 )
                 .await?;
             }
-            trx.set(&self.event_key(claim.session_id, head), event);
-            trx.set(
-                &crate::keys::Keys::new(&self.root).inference_result(claim.request_id),
-                response,
-            );
+            trx.set(&self.keys().event(claim.session_id, head), event);
+            trx.set(&self.keys().inference_result(claim.request_id), response);
             trx.set(&idem_key, completed);
-            trx.clear(&crate::keys::Keys::new(&self.root).inflight(claim.request_id));
+            trx.clear(&self.keys().inflight(claim.request_id));
             // The completed request id is never retried. Retryable failures
             // create a new step after the worker's wait.
-            trx.clear(&crate::keys::Keys::new(&self.root).inference_request(claim.request_id));
+            trx.clear(&self.keys().inference_request(claim.request_id));
             trx.clear(&claim_key);
-            trx.clear(&crate::keys::Keys::new(&self.root).inference_retry(claim.request_id));
+            trx.clear(&self.keys().inference_retry(claim.request_id));
             session.head_seq = head;
             let interrupt_requested =
                 session.interrupt_requested || self.has_queued_in(&trx, claim.session_id).await?;
             let state = if let (false, Some(snapshot), Some((event, reference))) =
                 (interrupt_requested, snapshot, idle)
             {
-                trx.set(&self.event_key(claim.session_id, snapshot.seq), event);
+                trx.set(&self.keys().event(claim.session_id, snapshot.seq), event);
                 trx.set(
-                    &self.snapshot_key(claim.session_id, snapshot.seq),
+                    &self.keys().snapshot(claim.session_id, snapshot.seq),
                     reference,
                 );
                 session.head_seq = snapshot.seq;
@@ -398,8 +382,7 @@ impl Store {
         &self,
         id: RequestId,
     ) -> Result<Option<T>> {
-        self.get_payload(crate::keys::Keys::new(&self.root).inference_result(id))
-            .await
+        self.get_payload(self.keys().inference_result(id)).await
     }
 
     async fn record_completion_metering(
@@ -411,6 +394,12 @@ impl Store {
         now: Timestamp,
     ) -> Result<()> {
         let Event::InferenceCompleted {
+            completion: fields, ..
+        } = &completion.event
+        else {
+            return Ok(());
+        };
+        let swarmy_core::InferenceCompletion {
             usage,
             cost_micros,
             provider,
@@ -418,10 +407,7 @@ impl Store {
             route,
             route_step,
             ..
-        } = &completion.event
-        else {
-            return Ok(());
-        };
+        } = fields;
         self.record_usage(
             trx,
             session_id,
@@ -482,16 +468,8 @@ impl Store {
                 self.check_worker_lease(&trx, session_id, lease, now)
                     .await?;
                 let session = self.session(&trx, session_id).await?;
-                if session.head_seq != expected_head {
-                    return Err(StoreError::Fence(crate::FenceError::StaleSequence {
-                        expected: expected_head,
-                        actual: session.head_seq,
-                    }));
-                }
-                trx.set(
-                    &crate::keys::Keys::new(&self.root).inference_input(request_id),
-                    value,
-                );
+                crate::check_head(session.head_seq, expected_head)?;
+                trx.set(&self.keys().inference_input(request_id), value);
                 Ok(())
             }
         })
@@ -505,8 +483,7 @@ impl Store {
         &self,
         id: RequestId,
     ) -> Result<Option<T>> {
-        self.get_payload(crate::keys::Keys::new(&self.root).inference_input(id))
-            .await
+        self.get_payload(self.keys().inference_input(id)).await
     }
 
     /// Scan in-flight requests in request-id order, strictly after the cursor.
@@ -521,11 +498,10 @@ impl Store {
         crate::check_limit(limit)?;
         let values = self
             .transaction(|trx| async move {
-                let space = crate::keys::Keys::new(&self.root).inflight_space();
+                let space = self.keys().inflight_space();
                 let mut begin = space.range().0;
                 if let Some(id) = after {
-                    begin = crate::keys::Keys::new(&self.root).inflight(id);
-                    begin.push(0);
+                    begin = crate::next_cursor(&self.keys().inflight(id));
                 }
                 crate::scan(&trx, (begin, space.range().1), limit).await
             })
@@ -534,7 +510,8 @@ impl Store {
         for (key, value) in values {
             let record: InflightRecord = self.hydrate(&value).await?;
             if key
-                != crate::keys::Keys::new(&self.root)
+                != self
+                    .keys()
                     .inflight(RequestId::for_step(record.session_id, record.seq))
             {
                 return Err(StoreError::Storage(crate::StorageError::Corrupt));
@@ -567,7 +544,7 @@ impl Store {
             async move {
                 self.check_worker_lease(&trx, record.session_id, lease, now)
                     .await?;
-                trx.set(&crate::keys::Keys::new(&self.root).inflight(id), value);
+                trx.set(&self.keys().inflight(id), value);
                 Ok(())
             }
         })

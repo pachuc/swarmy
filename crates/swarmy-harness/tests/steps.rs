@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use futures::{StreamExt, future::BoxFuture};
 use serde_json::{Value, json};
 use swarmy_core::{
-    AgentId, Event, Message, MessageId, MessageRole, Part, RequestId, SessionId, SessionRecord,
-    SessionState, ToolCallId, ToolCallRecord, ToolResult,
+    AgentId, Event, InferenceCompletion, Message, MessageId, MessageRole, Part, RequestId,
+    SessionId, SessionRecord, SessionState, ToolCallId, ToolCallRecord, ToolResult,
 };
 use swarmy_harness::{
     Action, GetTime, Harness, Snapshot, Tool, ToolRegistry, assemble_prompt, execution_result,
@@ -74,29 +74,31 @@ fn user_event() -> Event {
 
 fn inference_event(calls: &[ToolCallRecord]) -> Event {
     Event::InferenceCompleted {
-        provider: String::new(),
-        model: String::new(),
-        effort_used: None,
-        usage: swarmy_core::TokenUsage::default(),
-        cost_micros: 0,
-        effort_requested: None,
-        effort_clamped: false,
-        entry: None,
-        route: None,
-        route_step: None,
         seq: 3,
         request_id: RequestId::for_step(session().session_id, 2),
-        message: Message {
-            id: message_id(4),
-            role: MessageRole::Assistant,
-            parts: calls
-                .iter()
-                .map(|call| Part::ToolCall {
-                    call_id: call.call_id.clone(),
-                    tool: call.tool.clone(),
-                    input: call.arguments.clone(),
-                })
-                .collect(),
+        completion: InferenceCompletion {
+            message: Message {
+                id: message_id(4),
+                role: MessageRole::Assistant,
+                parts: calls
+                    .iter()
+                    .map(|call| Part::ToolCall {
+                        call_id: call.call_id.clone(),
+                        tool: call.tool.clone(),
+                        input: call.arguments.clone(),
+                    })
+                    .collect(),
+            },
+            provider: String::new(),
+            model: String::new(),
+            effort_used: None,
+            usage: swarmy_core::TokenUsage::default(),
+            cost_micros: 0,
+            effort_requested: None,
+            effort_clamped: false,
+            entry: None,
+            route: None,
+            route_step: None,
         },
     }
 }
@@ -248,8 +250,8 @@ fn errors_and_success_metadata_survive_folding() {
 #[test]
 fn model_without_tool_calls_ends_turn() {
     let mut reply = inference_event(&[]);
-    if let Event::InferenceCompleted { message, .. } = &mut reply {
-        message.parts.push(Part::Text {
+    if let Event::InferenceCompleted { completion, .. } = &mut reply {
+        completion.message.parts.push(Part::Text {
             text: "It is noon.".into(),
         });
     }
@@ -446,22 +448,24 @@ async fn fake_provider_and_worker_tool_complete_a_turn() {
             }
         }
         events.push(Event::InferenceCompleted {
-            provider: String::new(),
-            model: String::new(),
-            effort_used: None,
-            usage: swarmy_core::TokenUsage::default(),
-            cost_micros: 0,
-            effort_requested: None,
-            effort_clamped: false,
-            entry: None,
-            route: None,
-            route_step: None,
             seq: seq + 1,
             request_id,
-            message: Message {
-                id: message_id(10 + turn),
-                role: MessageRole::Assistant,
-                parts: completed.unwrap().parts,
+            completion: InferenceCompletion {
+                message: Message {
+                    id: message_id(10 + turn),
+                    role: MessageRole::Assistant,
+                    parts: completed.unwrap().parts,
+                },
+                provider: String::new(),
+                model: String::new(),
+                effort_used: None,
+                usage: swarmy_core::TokenUsage::default(),
+                cost_micros: 0,
+                effort_requested: None,
+                effort_clamped: false,
+                entry: None,
+                route: None,
+                route_step: None,
             },
         });
         if turn == 1 {

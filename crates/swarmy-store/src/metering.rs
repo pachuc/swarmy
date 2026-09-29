@@ -20,7 +20,6 @@ use std::collections::BTreeMap;
 
 use foundationdb::Transaction;
 use foundationdb::options::MutationType;
-use foundationdb::tuple::Subspace;
 use jiff::{Timestamp, ToSpan, civil::Weekday};
 use serde::{Deserialize, Serialize};
 use swarmy_core::{TokenUsage, UsageTotals};
@@ -196,28 +195,6 @@ fn counter(bytes: &[u8]) -> u64 {
 }
 
 impl Store {
-    pub(crate) fn metering_bucket_key_single(
-        &self,
-        dimension: &str,
-        hour: i64,
-        key: &str,
-        field: &str,
-    ) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).metering_hour_single(dimension, hour, key, field)
-    }
-
-    pub(crate) fn metering_bucket_key_combined(
-        &self,
-        dimension: &str,
-        owner: &str,
-        hour: i64,
-        entry: &str,
-        field: &str,
-    ) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root)
-            .metering_hour_combined(dimension, owner, hour, entry, field)
-    }
-
     pub(crate) fn metering_add_single(
         &self,
         trx: &Transaction,
@@ -227,7 +204,9 @@ impl Store {
         for (field, delta) in bucket_deltas(write.usage, write.cost_micros) {
             add(
                 trx,
-                &self.metering_bucket_key_single(write.dimension, write.hour, key, field),
+                &self
+                    .keys()
+                    .metering_hour_single(write.dimension, write.hour, key, field),
                 delta,
             );
         }
@@ -243,7 +222,7 @@ impl Store {
         for (field, delta) in bucket_deltas(write.usage, write.cost_micros) {
             add(
                 trx,
-                &self.metering_bucket_key_combined(
+                &self.keys().metering_hour_combined(
                     write.dimension,
                     owner,
                     write.hour,
@@ -263,7 +242,7 @@ impl Store {
         from_hour: i64,
         to_hour: i64,
     ) -> (Vec<u8>, Vec<u8>) {
-        single_hour_range(&self.root, dimension.as_str(), from_hour, to_hour)
+        single_hour_range(&self.keys(), dimension.as_str(), from_hour, to_hour)
     }
 
     /// One owner's slice of a combined dimension, optionally narrowed to an
@@ -275,7 +254,7 @@ impl Store {
         owner: &str,
         hours: Option<(i64, i64)>,
     ) -> (Vec<u8>, Vec<u8>) {
-        owner_hour_range(&self.root, dimension.as_str(), owner, hours)
+        owner_hour_range(&self.keys(), dimension.as_str(), owner, hours)
     }
 }
 
@@ -283,14 +262,14 @@ impl Store {
 /// `[from_hour, to_hour]` inclusive. A free function so unit tests prove
 /// the range holds exactly the queried rows without a database.
 fn single_hour_range(
-    root: &Subspace,
+    keys: &crate::keys::Keys<'_>,
     dimension: &str,
     from_hour: i64,
     to_hour: i64,
 ) -> (Vec<u8>, Vec<u8>) {
-    let begin = crate::keys::Keys::new(root).metering_hour_from(dimension, from_hour);
+    let begin = keys.metering_hour_from(dimension, from_hour);
     let end_hour = to_hour.checked_add(3_600).unwrap_or(to_hour);
-    let end = crate::keys::Keys::new(root).metering_hour_from(dimension, end_hour);
+    let end = keys.metering_hour_from(dimension, end_hour);
     (begin, end)
 }
 
@@ -298,19 +277,17 @@ fn single_hour_range(
 /// inclusive hour window. The owner is a tuple element, so the range holds
 /// exactly that owner's rows and nothing else's.
 fn owner_hour_range(
-    root: &Subspace,
+    keys: &crate::keys::Keys<'_>,
     dimension: &str,
     owner: &str,
     hours: Option<(i64, i64)>,
 ) -> (Vec<u8>, Vec<u8>) {
     let Some((from_hour, to_hour)) = hours else {
-        return crate::keys::Keys::new(root)
-            .metering_hour_space_owner(dimension, owner)
-            .range();
+        return keys.metering_hour_space_owner(dimension, owner).range();
     };
-    let begin = crate::keys::Keys::new(root).metering_hour_owner_from(dimension, owner, from_hour);
+    let begin = keys.metering_hour_owner_from(dimension, owner, from_hour);
     let end_hour = to_hour.checked_add(3_600).unwrap_or(to_hour);
-    let end = crate::keys::Keys::new(root).metering_hour_owner_from(dimension, owner, end_hour);
+    let end = keys.metering_hour_owner_from(dimension, owner, end_hour);
     (begin, end)
 }
 
@@ -323,29 +300,7 @@ impl Store {
         begin: Vec<u8>,
         end: Vec<u8>,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        let mut cursor = begin.clone();
-        let mut rows = Vec::new();
-        loop {
-            let batch = self
-                .transaction(|trx| {
-                    let range = (cursor.clone(), end.clone());
-                    async move { scan(&trx, range, crate::MAX_SCAN_LIMIT).await }
-                })
-                .await?;
-            if batch.is_empty() {
-                break;
-            }
-            let full = batch.len() >= crate::MAX_SCAN_LIMIT;
-            for (raw_key, _) in &batch {
-                cursor.clone_from(raw_key);
-                cursor.push(0);
-            }
-            rows.extend(batch);
-            if !full {
-                break;
-            }
-        }
-        Ok(rows)
+        self.scan_all_pages(begin, end).await
     }
 }
 
@@ -530,7 +485,8 @@ impl Store {
         let rows = self.scan_bucket_range(begin, end).await?;
         let mut hours: BTreeMap<i64, BTreeMap<String, u64>> = BTreeMap::new();
         if is_combined(dimension) {
-            let prefix = crate::keys::Keys::new(&self.root)
+            let prefix = self
+                .keys()
                 .metering_hour_space_owner(dimension.as_str(), owner.as_str());
             for (raw_key, value) in &rows {
                 let (hour, row_entry, field): (i64, String, String) = prefix
@@ -544,7 +500,7 @@ impl Store {
                 }
             }
         } else {
-            let prefix = crate::keys::Keys::new(&self.root).metering_hour_space(dimension.as_str());
+            let prefix = self.keys().metering_hour_space(dimension.as_str());
             for (raw_key, value) in &rows {
                 let (hour, row_key, field): (i64, String, String) = prefix
                     .unpack(raw_key)
@@ -611,7 +567,7 @@ impl Store {
         }
         let (begin, end) = self.single_hour_range(dimension, from_hour, to_hour);
         let rows = self.scan_bucket_range(begin, end).await?;
-        let prefix = crate::keys::Keys::new(&self.root).metering_hour_space(dimension.as_str());
+        let prefix = self.keys().metering_hour_space(dimension.as_str());
         // Each (hour, key, field) coordinate holds one atomic counter, so
         // every row in the slice folds exactly once.
         let mut folded: BTreeMap<i64, BTreeMap<String, u64>> = BTreeMap::new();
@@ -657,8 +613,9 @@ impl Store {
         }
         let (begin, end) = self.owner_hour_range(dimension, owner, window);
         let rows = self.scan_bucket_range(begin, end).await?;
-        let prefix =
-            crate::keys::Keys::new(&self.root).metering_hour_space_owner(dimension.as_str(), owner);
+        let prefix = self
+            .keys()
+            .metering_hour_space_owner(dimension.as_str(), owner);
         let mut folded: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
         for (raw_key, value) in &rows {
             let (_hour, entry, field): (i64, String, String) = prefix
@@ -701,9 +658,9 @@ impl Store {
         if limit == 0 {
             return Ok(0);
         }
-        let prefix = crate::keys::Keys::new(&self.root).usage_record_by_time_space();
+        let prefix = self.keys().usage_record_by_time_space();
         let (range_start, _) = prefix.range();
-        let range_end = crate::keys::Keys::new(&self.root).usage_record_by_time_from(cutoff_hour);
+        let range_end = self.keys().usage_record_by_time_from(cutoff_hour);
         let rows = self
             .transaction(|trx| {
                 let range = (range_start.clone(), range_end.clone());
@@ -718,13 +675,11 @@ impl Store {
             let (_, request): (i64, Vec<u8>) = prefix
                 .unpack(index_key)
                 .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-            let record_key = crate::keys::Keys::new(&self.root).usage_record(
-                swarmy_core::RequestId::from_bytes(
-                    request
-                        .try_into()
-                        .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
-                ),
-            );
+            let record_key = self.keys().usage_record(swarmy_core::RequestId::from_bytes(
+                request
+                    .try_into()
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
+            ));
             stale.push(index_key.clone());
             stale.push(record_key);
         }
@@ -751,10 +706,10 @@ impl Store {
         if limit == 0 {
             return Ok(0);
         }
-        let prefix = crate::keys::Keys::new(&self.root).usage_record_by_time_space();
-        let range_start = crate::keys::Keys::new(&self.root).usage_record_by_time_from(cutoff_hour);
+        let prefix = self.keys().usage_record_by_time_space();
+        let range_start = self.keys().usage_record_by_time_from(cutoff_hour);
         let next_hour = cutoff_hour.checked_add(3_600).unwrap_or(cutoff_hour);
-        let range_end = crate::keys::Keys::new(&self.root).usage_record_by_time_from(next_hour);
+        let range_end = self.keys().usage_record_by_time_from(next_hour);
         let rows = self
             .transaction(|trx| {
                 let range = (range_start.clone(), range_end.clone());
@@ -769,13 +724,11 @@ impl Store {
             let (_, request): (i64, Vec<u8>) = prefix
                 .unpack(index_key)
                 .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-            let record_key = crate::keys::Keys::new(&self.root).usage_record(
-                swarmy_core::RequestId::from_bytes(
-                    request
-                        .try_into()
-                        .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
-                ),
-            );
+            let record_key = self.keys().usage_record(swarmy_core::RequestId::from_bytes(
+                request
+                    .try_into()
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
+            ));
             pairs.push((index_key.clone(), record_key));
         }
         let keys: Vec<Vec<u8>> = pairs.iter().map(|(_, key)| key.clone()).collect();
@@ -831,12 +784,13 @@ mod tests {
     #[test]
     fn single_hour_slice_excludes_rows_outside_its_hours() {
         let root = Subspace::all();
+        let keys = crate::keys::Keys::new(&root);
         let row = |dimension: &str, hour: i64, key: &str| {
-            crate::keys::Keys::new(&root).metering_hour_single(dimension, hour, key, "input")
+            keys.metering_hour_single(dimension, hour, key, "input")
         };
         // Row hours are always multiples of 3_600, so the end bound one hour
         // past the last queried hour excludes exactly the hours after it.
-        let (begin, end) = single_hour_range(&root, "agent", 3_600, 7_200);
+        let (begin, end) = single_hour_range(&keys, "agent", 3_600, 7_200);
         for hour in [3_600, 7_200] {
             for key in ["a", "z"] {
                 let packed = row("agent", hour, key);
@@ -852,7 +806,7 @@ mod tests {
             assert!(packed < begin || packed >= end, "{dimension}");
         }
         // Growing history outside the window never enters the slice.
-        let (again, _) = single_hour_range(&root, "agent", 3_600, 7_200);
+        let (again, _) = single_hour_range(&keys, "agent", 3_600, 7_200);
         assert_eq!(begin, again);
     }
 
@@ -862,16 +816,11 @@ mod tests {
     #[test]
     fn owner_hour_slice_excludes_other_owners_and_hours() {
         let root = Subspace::all();
+        let keys = crate::keys::Keys::new(&root);
         let row = |owner: &str, hour: i64, entry: &str| {
-            crate::keys::Keys::new(&root).metering_hour_combined(
-                "agent_entry",
-                owner,
-                hour,
-                entry,
-                "cost",
-            )
+            keys.metering_hour_combined("agent_entry", owner, hour, entry, "cost")
         };
-        let (begin, end) = owner_hour_range(&root, "agent_entry", "owner-a", Some((3_600, 7_200)));
+        let (begin, end) = owner_hour_range(&keys, "agent_entry", "owner-a", Some((3_600, 7_200)));
         for hour in [3_600, 7_200] {
             for entry in ["openai/main", "openai/-"] {
                 let packed = row("owner-a", hour, entry);
@@ -887,7 +836,7 @@ mod tests {
             assert!(packed < begin || packed >= end, "{hour}");
         }
         // Without a window the slice is still exactly one owner's rows.
-        let (all_begin, all_end) = owner_hour_range(&root, "agent_entry", "owner-a", None);
+        let (all_begin, all_end) = owner_hour_range(&keys, "agent_entry", "owner-a", None);
         for hour in [0, 1_000, 10_000_000] {
             let packed = row("owner-a", hour, "openai/main");
             assert!(all_begin <= packed && packed < all_end, "{hour}");

@@ -4245,7 +4245,6 @@ dependencies = [
 name = "swarmy-cloud"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "aws-config",
  "aws-sdk-ec2",
  "aws-sdk-iam",

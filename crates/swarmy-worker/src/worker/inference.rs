@@ -69,11 +69,7 @@ impl Worker {
                 .store
                 .agent_and_route_snapshot(
                     agent_id,
-                    session.route.as_deref(),
-                    session.inference.provider.as_deref(),
-                    self.config.default_route.as_deref(),
-                    &self.config.provider,
-                    Timestamp::now(),
+                    super::route_selection(session, &self.config, Timestamp::now()),
                 )
                 .await?;
             if let Some(record) = record.as_ref() {
@@ -103,11 +99,7 @@ impl Worker {
                 .store
                 .route_snapshot(
                     session.agent_id,
-                    session.route.as_deref(),
-                    session.inference.provider.as_deref(),
-                    self.config.default_route.as_deref(),
-                    &self.config.provider,
-                    Timestamp::now(),
+                    super::route_selection(session, &self.config, Timestamp::now()),
                 )
                 .await?;
             warn_on_route_fallback(session, snapshot.name.as_deref(), &snapshot.skipped);

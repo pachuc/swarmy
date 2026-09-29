@@ -1,7 +1,7 @@
 //! In-place upgrades keep the remote state and all instance identities intact.
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, ensure};
+use crate::Result;
 use serde::{Deserialize, Serialize};
 use swarmy_config::RemoteNode;
 
@@ -124,11 +124,13 @@ pub async fn run(
     primary: &RemoteNode,
     options: Options,
 ) -> Result<Vec<Summary>> {
-    ensure!(
+    crate::Error::ensure(
         options.dirty_paths.is_empty() || options.allow_dirty,
-        "checkout has uncommitted paths ({}); commit or ignore them, or pass --allow-dirty",
-        options.dirty_paths.join(", ")
-    );
+        format!(
+            "checkout has uncommitted paths ({}); commit or ignore them, or pass --allow-dirty",
+            options.dirty_paths.join(", ")
+        ),
+    )?;
     let mut nodes = Vec::new();
     visit(primary, &mut nodes);
     print_version(

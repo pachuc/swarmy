@@ -1,5 +1,5 @@
 use super::{connect, ssh, state::State};
-use anyhow::{Result, ensure};
+use crate::Result;
 use std::path::Path;
 use swarmy_config::{RemoteProfile, remote_path};
 
@@ -13,11 +13,11 @@ pub async fn run(state_dir: &Path, state: &State, name: &str) -> Result<()> {
     let profile = RemoteProfile::read(state_dir, name)?;
     if ssh::control(&profile, "check").await?.status.success() {
         let output = ssh::control(&profile, "exit").await?;
-        ensure!(
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        crate::Error::ensure(
             output.status.success(),
-            "cannot stop tunnel: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+            format!("cannot stop tunnel: {stderr}"),
+        )?;
     }
     connect::cleanup(&profile)?;
     std::fs::remove_file(path)?;

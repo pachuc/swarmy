@@ -296,8 +296,8 @@ async fn verify_events(f: &Fixture, events: &[Event]) -> Result<()> {
                     .context("inference missing")?;
                 instructions |= job.request.system_prompt.contains(RULE);
             }
-            Event::InferenceCompleted { message, .. } => {
-                finished |= message.parts == [Part::Text { text: DONE.into() }];
+            Event::InferenceCompleted { completion, .. } => {
+                finished |= completion.message.parts == [Part::Text { text: DONE.into() }];
             }
             Event::MessageAppended { message, .. } if message.role == MessageRole::System => {
                 notices += 1;

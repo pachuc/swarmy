@@ -2,16 +2,12 @@ use crate::{Result, Store, check_limit, read, scan, write};
 use swarmy_core::{NodeId, NodeRecord, decode};
 
 impl Store {
-    pub(crate) fn node_key(&self, id: NodeId) -> Vec<u8> {
-        crate::keys::Keys::new(&self.root).node(id)
-    }
-
     /// Register or refresh a node's advertised capacity and heartbeat.
     /// # Errors
     /// Returns storage or encoding errors.
     pub async fn put_node(&self, record: &NodeRecord) -> Result<()> {
         self.transaction(|trx| async move {
-            let key = self.node_key(record.node_id);
+            let key = self.keys().node(record.node_id);
             // A delayed heartbeat must not move liveness backwards.
             if read::<NodeRecord>(&trx, &key)
                 .await?
@@ -27,7 +23,7 @@ impl Store {
     /// # Errors
     /// Returns storage or decoding errors.
     pub async fn get_node(&self, id: NodeId) -> Result<Option<NodeRecord>> {
-        self.transaction(|trx| async move { read(&trx, &self.node_key(id)).await })
+        self.transaction(|trx| async move { read(&trx, &self.keys().node(id)).await })
             .await
     }
 
@@ -44,10 +40,9 @@ impl Store {
     ) -> Result<(Vec<NodeRecord>, Option<NodeId>)> {
         check_limit(limit)?;
         self.transaction(|trx| async move {
-            let (mut begin, end) = crate::keys::Keys::new(&self.root).node_space().range();
+            let (mut begin, end) = self.keys().node_space().range();
             if let Some(id) = after {
-                begin = self.node_key(id);
-                begin.push(0);
+                begin = crate::next_cursor(&self.keys().node(id));
             }
             let mut live = Vec::new();
             let mut cursor = None;

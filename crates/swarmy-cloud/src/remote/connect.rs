@@ -2,14 +2,14 @@ use super::{
     ssh,
     state::{self, State},
 };
-use anyhow::{Context, Result, bail, ensure};
+use crate::Result;
 use std::{
     net::TcpListener,
     path::Path,
     process::Stdio,
     time::{Duration, Instant},
 };
-use swarmy_config::{RemotePorts, RemoteProfile, remote_path};
+use swarmy_config::{RemoteNode, RemotePorts, RemoteProfile, remote_path};
 use tokio::{
     process::Child,
     time::{sleep, timeout},
@@ -67,55 +67,34 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
     command.kill_on_drop(false);
     drop(reservations);
     let mut tunnel = StartingTunnel {
-        child: command.spawn().context("start SSH tunnel")?,
+        child: command
+            .spawn()
+            .map_err(crate::Error::ssh("start SSH tunnel"))?,
         published: false,
     };
     let mut profile = profile;
     profile.pid = tunnel
         .child
         .id()
-        .context("SSH exited before recording pid")?;
+        .ok_or_else(|| crate::Error::other("SSH exited before recording pid"))?;
     let result = timeout(Duration::from_secs(15), async {
         loop {
             if let Some(exit) = tunnel.child.try_wait()? {
-                bail!("SSH exited ({exit}); inspect {}", log_path.display());
+                return Err(crate::Error::other(format!(
+                    "SSH exited ({exit}); inspect {}",
+                    log_path.display()
+                )));
             }
             if ssh::healthy(&profile).await {
                 break;
             }
             sleep(Duration::from_millis(50)).await;
         }
-        // Use the forwarding connection for this session too. OpenSSH enables
-        // TCP_NODELAY on its server transport when a session is opened; a bare
-        // -N connection otherwise adds delayed-ACK stalls to small store replies.
-        let output = ssh::command(&node)?
-            .arg("-S")
-            .arg(&profile.socket_path)
-            .arg(&address)
-            .arg(if node.launch_settings.is_some() {
-                "cat swarmy/.dev/fdb.cluster"
-            } else {
-                "true"
-            })
-            .output()
-            .await?;
-        ensure!(
-            output.status.success(),
-            "initialize SSH forwarding session failed"
-        );
-        let cluster = if node.launch_settings.is_some() {
-            rewrite_address(&String::from_utf8(output.stdout)?, ports.fdb)?
-        } else {
-            // Old single-node remotes used this fixed cluster identity and loopback listener.
-            format!("dev:dev@127.0.0.1:{}\n", ports.fdb)
-        };
-        state::write(&profile.fdb_cluster_file, cluster.as_bytes())?;
-        profile.api_token = read_remote_api_token(&node, &profile, &address).await?;
-        state::write(&path, &serde_json::to_vec_pretty(&profile)?)?;
-        Ok::<_, anyhow::Error>(())
+        forward_session(&node, &mut profile, &address, ports, &path).await?;
+        Ok::<_, crate::Error>(())
     })
     .await
-    .context("SSH tunnel startup timed out")
+    .map_err(|source| crate::Error::context(source, "SSH tunnel startup timed out"))
     .and_then(std::convert::identity);
     if let Err(error) = result {
         let _ = tunnel.child.kill().await;
@@ -152,29 +131,75 @@ async fn read_remote_api_token(
     if !remote_api(node) {
         return Ok(None);
     }
+    let command = "read remote API configuration".to_owned();
     let output = ssh::command(node)?
         .arg("-S")
         .arg(&profile.socket_path)
         .arg(address)
         .arg("cat swarmy/.swarmy/config.toml")
         .output()
-        .await?;
-    ensure!(
-        output.status.success(),
-        "read remote API configuration failed"
-    );
+        .await
+        .map_err(crate::Error::ssh(&command))?;
+    if !output.status.success() {
+        return Err(crate::Error::SshStatus {
+            command,
+            status: output.status,
+        });
+    }
     let remote: toml::Value = toml::from_str(&String::from_utf8(output.stdout)?)?;
     let token = remote
         .get("api")
         .and_then(|api| api.get("token"))
         .and_then(toml::Value::as_str)
         .unwrap_or("");
-    ensure!(
+    crate::Error::ensure(
         !token.is_empty(),
-        "remote API has no token; run swarmy dev up on the node"
-    );
+        "remote API has no token; run swarmy dev up on the node",
+    )?;
     Ok(Some(token.to_owned()))
 }
+/// Open one session over the forwarding connection and record the cluster
+/// and API token. `OpenSSH` enables `TCP_NODELAY` on its server transport when
+/// a session is opened; a bare -N connection otherwise adds delayed-ACK
+/// stalls to small store replies.
+async fn forward_session(
+    node: &RemoteNode,
+    profile: &mut RemoteProfile,
+    address: &str,
+    ports: RemotePorts,
+    path: &Path,
+) -> Result<()> {
+    let command = "initialize SSH forwarding session".to_owned();
+    let output = ssh::command(node)?
+        .arg("-S")
+        .arg(&profile.socket_path)
+        .arg(address)
+        .arg(if node.launch_settings.is_some() {
+            "cat swarmy/.dev/fdb.cluster"
+        } else {
+            "true"
+        })
+        .output()
+        .await
+        .map_err(crate::Error::ssh(&command))?;
+    if !output.status.success() {
+        return Err(crate::Error::SshStatus {
+            command,
+            status: output.status,
+        });
+    }
+    let cluster = if node.launch_settings.is_some() {
+        rewrite_address(&String::from_utf8(output.stdout)?, ports.fdb)?
+    } else {
+        // Old single-node remotes used this fixed cluster identity and loopback listener.
+        format!("dev:dev@127.0.0.1:{}\n", ports.fdb)
+    };
+    state::write(&profile.fdb_cluster_file, cluster.as_bytes())?;
+    profile.api_token = read_remote_api_token(node, profile, address).await?;
+    state::write(path, &serde_json::to_vec_pretty(profile)?)?;
+    Ok(())
+}
+
 fn remote_api(node: &swarmy_config::RemoteNode) -> bool {
     node.launch_settings
         .as_ref()
@@ -255,7 +280,7 @@ fn tunnel_command(
         .chain((profile.s3_bucket.is_none()).then_some((ports.s3, node.ports.s3)))
         .chain(remote_api(node).then_some((api_port, 8742)))
     {
-        ensure!(remote != 0, "remote ports must be nonzero");
+        crate::Error::ensure(remote != 0, "remote ports must be nonzero")?;
         command
             .arg("-L")
             .arg(format!("127.0.0.1:{local}:127.0.0.1:{remote}"));
@@ -272,16 +297,20 @@ fn tunnel_command(
 
 // Keep the cluster identity from the server while connecting through the local tunnel.
 fn rewrite_address(cluster: &str, port: u16) -> Result<String> {
-    let line = cluster
+    let Some(line) = cluster
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty() && !line.starts_with('#'))
-        .context("empty cluster file")?;
-    let (identity, address) = line.split_once('@').context("invalid cluster file")?;
-    ensure!(
+    else {
+        return Err(crate::Error::other("empty cluster file"));
+    };
+    let Some((identity, address)) = line.split_once('@') else {
+        return Err(crate::Error::other("invalid cluster file"));
+    };
+    crate::Error::ensure(
         identity.contains(':') && address.parse::<std::net::SocketAddr>().is_ok(),
-        "expected one coordinator address in remote cluster file"
-    );
+        "expected one coordinator address in remote cluster file",
+    )?;
     Ok(format!("{identity}@127.0.0.1:{port}\n"))
 }
 

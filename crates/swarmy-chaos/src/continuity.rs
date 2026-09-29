@@ -296,9 +296,9 @@ async fn verify_recall(f: &Fixture, main: SessionId) -> Result<()> {
         .find_map(|event| match event {
             Event::InferenceCompleted {
                 request_id,
-                message,
+                completion,
                 ..
-            } if message.parts
+            } if completion.message.parts
                 == [Part::Text {
                     text: ANSWER.into(),
                 }] =>
