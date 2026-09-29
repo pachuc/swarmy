@@ -233,80 +233,110 @@ impl RuncRuntime {
             };
             let id = AgentId::from_ulid(ulid);
             if active.contains(&id) {
-                std::fs::write(entry.path().join(".hosted"), b"")?;
-                if !self.config.store.is_computer_deleted(id).await? {
-                    let bytes = directory_bytes(&entry.path())?;
-                    if let Err(error) = self
-                        .config
-                        .store
-                        .report_scratch(
-                            id,
-                            &ScratchRecord {
-                                node_id: self.config.node,
-                                bytes,
-                            },
-                        )
-                        .await
-                    {
-                        tracing::warn!(%id, %error, "scratch size report failed");
-                    }
-                }
+                self.refresh_hosted(id, &entry.path()).await?;
                 continue;
             }
-            let marker = entry.path().join(".hosted");
-            let modified = std::fs::metadata(&marker)
-                .or_else(|_| entry.metadata())?
-                .modified()?;
-            let bytes = directory_bytes(&entry.path())?;
-            let deleted = self.config.store.is_computer_deleted(id).await?;
-            let moved = self
-                .config
-                .store
-                .get_by_agent(id)
-                .await?
-                .is_some_and(|placement| placement.node_id != self.config.node);
-            let idle = modified.elapsed().unwrap_or_default()
-                > Duration::from_secs(self.scratch_policy.idle_days.saturating_mul(86_400));
-            if deleted || moved || idle {
-                self.evict_scratch(id, bytes)?;
-                self.config
-                    .store
-                    .clear_scratch(id, self.config.node)
-                    .await?;
-            } else {
-                self.config
-                    .store
-                    .report_scratch(
-                        id,
-                        &ScratchRecord {
-                            node_id: self.config.node,
-                            bytes,
-                        },
-                    )
-                    .await?;
-                if pressure_eligible(modified) {
-                    candidates.push((modified, id, bytes));
-                }
+            if let Some(candidate) = self.reap_stale(id, &entry.path()).await? {
+                candidates.push(candidate);
             }
         }
-        let total = fs2::total_space(&self.scratch_root)?;
-        if total > 0
-            && fs2::available_space(&self.scratch_root)?
-                <= total.saturating_mul(u64::from(100 - self.scratch_policy.high_water)) / 100
+        self.evict_under_pressure(candidates).await?;
+        Ok(())
+    }
+
+    /// Refresh the hosted marker and usage report for a scratch directory
+    /// whose sandbox still runs on this node.
+    async fn refresh_hosted(&self, id: AgentId, path: &std::path::Path) -> Result<()> {
+        std::fs::write(path.join(".hosted"), b"")?;
+        if self.config.store.is_computer_deleted(id).await? {
+            return Ok(());
+        }
+        let bytes = directory_bytes(path)?;
+        if let Err(error) = self
+            .config
+            .store
+            .report_scratch(
+                id,
+                &ScratchRecord {
+                    node_id: self.config.node,
+                    bytes,
+                },
+            )
+            .await
         {
-            candidates.sort_by_key(|item| item.0);
-            for (_, id, bytes) in candidates {
-                if fs2::available_space(&self.scratch_root)?
-                    > total.saturating_mul(u64::from(100 - self.scratch_policy.low_water)) / 100
-                {
-                    break;
-                }
-                self.evict_scratch(id, bytes)?;
-                self.config
-                    .store
-                    .clear_scratch(id, self.config.node)
-                    .await?;
+            tracing::warn!(%id, %error, "scratch size report failed");
+        }
+        Ok(())
+    }
+
+    /// Evict a stale scratch directory that is deleted, moved, or idle, or
+    /// refresh its report and nominate it for pressure eviction. Returns the
+    /// pressure candidate when the directory survives this sweep.
+    async fn reap_stale(
+        &self,
+        id: AgentId,
+        path: &std::path::Path,
+    ) -> Result<Option<(std::time::SystemTime, AgentId, u64)>> {
+        let marker = path.join(".hosted");
+        let modified = std::fs::metadata(&marker)
+            .or_else(|_| std::fs::metadata(path))?
+            .modified()?;
+        let bytes = directory_bytes(path)?;
+        let deleted = self.config.store.is_computer_deleted(id).await?;
+        let moved = self
+            .config
+            .store
+            .get_by_agent(id)
+            .await?
+            .is_some_and(|placement| placement.node_id != self.config.node);
+        let idle = modified.elapsed().unwrap_or_default()
+            > Duration::from_secs(self.scratch_policy.idle_days.saturating_mul(86_400));
+        if deleted || moved || idle {
+            self.evict_scratch(id, bytes)?;
+            self.config
+                .store
+                .clear_scratch(id, self.config.node)
+                .await?;
+            return Ok(None);
+        }
+        self.config
+            .store
+            .report_scratch(
+                id,
+                &ScratchRecord {
+                    node_id: self.config.node,
+                    bytes,
+                },
+            )
+            .await?;
+        Ok(pressure_eligible(modified).then_some((modified, id, bytes)))
+    }
+
+    /// Evict the oldest surviving scratch directories while free space stays
+    /// below the low-water mark.
+    async fn evict_under_pressure(
+        &self,
+        mut candidates: Vec<(std::time::SystemTime, AgentId, u64)>,
+    ) -> Result<()> {
+        let total = fs2::total_space(&self.scratch_root)?;
+        if total == 0
+            || fs2::available_space(&self.scratch_root)?
+                > total.saturating_mul(u64::from(100 - self.scratch_policy.high_water)) / 100
+        {
+            return Ok(());
+        }
+        candidates.sort_by_key(|item| item.0);
+        for (_, id, bytes) in candidates {
+            if fs2::available_space(&self.scratch_root)?
+                > total.saturating_mul(u64::from(100 - self.scratch_policy.low_water)) / 100
+            {
+                break;
             }
+            self.evict_scratch(id, bytes)?;
+            self.config
+                .store
+                .clear_scratch(id, self.config.node)
+                .await?;
         }
         Ok(())
     }
@@ -670,28 +700,34 @@ impl RuncRuntime {
         let _lifecycle = self.lifecycle.lock().await;
         let entry = self.running(id).await?;
         let mut running = entry.lock().await;
-        if let Some(mut network) = running.network.take() {
-            ignore_best_effort(network.kill().await, "kill child process");
-        }
-        // A delayed cancellation signal must finish before this id can be reused.
-        while running
-            .cancellations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .any(|task| !task.is_finished())
-        {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        for task in std::mem::take(
-            &mut *running
-                .cancellations
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        ) {
-            ignore_best_effort(task.join(), "join background thread");
-        }
+        stop_tasks(&mut running).await;
         unmount(&self.bundle(id).join("rootfs")).await?;
+        let forced = self.shutdown_server(&mut running, publish).await?;
+        if forced {
+            let device = std::fs::read_to_string(self.bundle(id).join("device"))?;
+            swarmy_volume::kernel::cleanup_stale(Path::new(&device)).map_err(|error| {
+                Error::Operation(format!("clear discarded attachment {device}: {error}"))
+            })?;
+        }
+        let handle = PauseHandle {
+            spec: running.journal.spec.clone(),
+            disk: running.journal.disk,
+        };
+        let marker = self.scratch_root.join(id.to_string()).join(".hosted");
+        if marker.exists() {
+            std::fs::write(marker, b"")?;
+        }
+        std::fs::remove_dir_all(self.bundle(id))
+            .map_err(|error| Error::Operation(format!("remove sandbox bundle {id}: {error}")))?;
+        self.sandboxes.lock().await.remove(&id);
+        Ok(handle)
+    }
+
+    /// Shut down one sandbox's attachment server, publishing or discarding
+    /// its journal. A detach error may arrive after the device disconnected;
+    /// the server is aborted and local cleanup continues. Returns whether
+    /// the caller must clear a discarded attachment from the kernel.
+    async fn shutdown_server(&self, running: &mut Running, publish: bool) -> Result<bool> {
         let mut forced = false;
         if running
             .server
@@ -725,24 +761,7 @@ impl RuncRuntime {
         } else if let Err(error) = outcome {
             tracing::warn!(%error, "discarded failed attachment");
         }
-        if forced {
-            let device = std::fs::read_to_string(self.bundle(id).join("device"))?;
-            swarmy_volume::kernel::cleanup_stale(Path::new(&device)).map_err(|error| {
-                Error::Operation(format!("clear discarded attachment {device}: {error}"))
-            })?;
-        }
-        let handle = PauseHandle {
-            spec: running.journal.spec.clone(),
-            disk: running.journal.disk,
-        };
-        let marker = self.scratch_root.join(id.to_string()).join(".hosted");
-        if marker.exists() {
-            std::fs::write(marker, b"")?;
-        }
-        std::fs::remove_dir_all(self.bundle(id))
-            .map_err(|error| Error::Operation(format!("remove sandbox bundle {id}: {error}")))?;
-        self.sandboxes.lock().await.remove(&id);
-        Ok(handle)
+        Ok(forced)
     }
 
     /// Stop local processes and background disk activity without publication.
@@ -1240,6 +1259,31 @@ async fn output(command: &mut Command) -> Result<Vec<u8>> {
             "{command:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         )))
+    }
+}
+
+/// Stop a sandbox's local processes and reap its background threads. A
+/// delayed cancellation signal must finish before the sandbox id is reused.
+async fn stop_tasks(running: &mut Running) {
+    if let Some(mut network) = running.network.take() {
+        ignore_best_effort(network.kill().await, "kill stale network process");
+    }
+    while running
+        .cancellations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .any(|task| !task.is_finished())
+    {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    for task in std::mem::take(
+        &mut *running
+            .cancellations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    ) {
+        ignore_best_effort(task.join(), "join background thread");
     }
 }
 
