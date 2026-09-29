@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 use swarmy_api_types as api;
-use swarmy_chat::client_conversation::Conversation;
+use swarmy_chat::client_conversation::{Conversation, OutputMode};
 use swarmy_client::{Client, EventStream};
 use swarmy_core::{MessageId, RequestId, SessionId, ToolResult, TurnEvent, TurnStage};
 
@@ -156,7 +156,7 @@ async fn measure(
     let mut idle = false;
     let mut client_elapsed = Duration::ZERO;
     {
-        let done = conversation.until_idle(false, true, true);
+        let done = conversation.until_idle(OutputMode::Silent, &mut |_| {});
         tokio::pin!(done);
         loop {
             tokio::select! {

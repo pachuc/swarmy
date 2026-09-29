@@ -48,8 +48,8 @@ pub enum Command {
         #[arg(long)]
         entry: Option<String>,
         /// Calendar grouping for the entry's usage rows
-        #[arg(long, default_value = "day", value_parser = ["day", "week", "month", "year"])]
-        group: String,
+        #[arg(long, default_value = "day", value_enum)]
+        group: crate::cost_command::UsageGroup,
         /// Range start: an absolute date or timestamp, a relative span like 7d, 3mo, or 1y,
         /// or a calendar word like month or 2months for the start of this or last month
         #[arg(long)]

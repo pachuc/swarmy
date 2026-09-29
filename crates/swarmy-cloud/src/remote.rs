@@ -127,7 +127,7 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
             logs::run(&state, &name).await?;
             Ok(RunOutcome::Completed)
         }
-        Command::Status => {
+        Command::Ls => {
             status::run(json).await?;
             Ok(RunOutcome::Completed)
         }

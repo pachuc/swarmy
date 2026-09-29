@@ -53,7 +53,7 @@ async fn reachable(node: &RemoteNode) -> bool {
     ssh::reachable_address(node).await.is_ok()
 }
 
-/// Token status for `remote status`. Only control nodes serve the API, so only
+/// Token status for `remote ls`. Only control nodes serve the API, so only
 /// they report whether the connected profile carries its token. Sandbox-only
 /// nodes and laptop-service remotes never use a node API token. After
 /// `remote upgrade` fills a missing node token, reconnect to refresh it here.

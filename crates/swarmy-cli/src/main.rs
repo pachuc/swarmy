@@ -1,5 +1,4 @@
 mod agent_command;
-use swarmy_client::api_client;
 mod api_commands;
 mod auth_command;
 mod bench_command;
@@ -27,7 +26,7 @@ use std::path::PathBuf;
 #[command(
     name = "swarmy",
     version,
-    about = "Operate a Swarmy cluster: agents, sessions, volumes, images, channels"
+    about = "Operate a Swarmy cluster: agents, sessions, volumes, images"
 )]
 struct Cli {
     /// Emit compact machine-readable JSON
@@ -142,10 +141,6 @@ enum Command {
 
 fn main() -> anyhow::Result<()> {
     let cli = swarmy_version::parse::<Cli>("swarmy")?;
-    #[cfg(not(feature = "remote"))]
-    if matches!(cli.command, Command::Remote { .. }) {
-        anyhow::bail!("swarmy was built without remote support");
-    }
     swarmy_cloud::set_output_sink(|message, stderr| {
         if stderr {
             eprintln!("{message}");
@@ -166,46 +161,36 @@ fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .init();
-    if let Command::Dev { command } = cli.command {
-        return tokio::runtime::Runtime::new()?.block_on(dev::run(command));
-    }
-    if matches!(
-        &cli.command,
-        Command::Auth {
-            command: auth_command::Command::Login { .. } | auth_command::Command::Import { .. },
-            ..
-        }
-    ) {
-        let Command::Auth { command, auth_file } = cli.command else {
-            unreachable!()
-        };
-        return run_auth_tool(command, auth_file, cli.json);
-    }
-    // Every database-backed command runs through the control-plane API, so
-    // the client links no database, message bus, or object store library.
-    if matches!(
-        &cli.command,
-        Command::Session { .. }
-            | Command::Agent { .. }
-            | Command::Cost { .. }
-            | Command::Image {
-                command: image_command::Command::Ls | image_command::Command::Show { .. }
-            }
-            | Command::Auth { .. }
-    ) {
-        return tokio::runtime::Runtime::new()?.block_on(api_commands::run(cli.command, cli.json));
-    }
-    tokio::runtime::Runtime::new()?.block_on(run(cli))
-}
-
-async fn run(cli: Cli) -> anyhow::Result<()> {
+    // One match owns every command and calls into its module. Each arm
+    // connects on its own path, except the local `dev` and `swarmy-auth`
+    // helpers which never touch the API.
+    let runtime = tokio::runtime::Runtime::new()?;
+    let json = cli.json;
     match cli.command {
-        Command::Models { command } => models::run(command, cli.json).await?,
-        Command::Bench { command } => {
-            let (client, endpoint) = api_client::connect()?;
-            api_client::call(&endpoint, client.health()).await?;
-            client_bench::run(client, command, cli.json).await?;
-        }
+        Command::Dev { command } => runtime.block_on(dev::run(command, json)),
+        Command::Auth { command, auth_file } => match command {
+            auth_command::Command::Login { .. } | auth_command::Command::Import { .. } => {
+                run_auth_tool(command, auth_file, json)
+            }
+            command => runtime.block_on(api_commands::auth_command(command, json)),
+        },
+        Command::Session { command } => runtime.block_on(api_commands::session_command(command, json)),
+        Command::Agent { command } => runtime.block_on(api_commands::agent_command(command, json)),
+        Command::Cost { args } => runtime.block_on(api_commands::cost_command(args, json)),
+        Command::Image { command } => match command {
+            image_command::Command::Build {
+                recipe,
+                tag,
+                name,
+                output,
+            } => runtime.block_on(image::build(recipe, tag, name, output, json)),
+            command => runtime.block_on(api_commands::image_command(command, json)),
+        },
+        Command::Models { command } => runtime.block_on(models::run(command, json)),
+        Command::Bench { command } => runtime.block_on(async {
+            let (client, _) = connect_client().await?;
+            client_bench::run(client, command, json).await
+        }),
         Command::Run {
             prompt,
             image,
@@ -214,73 +199,83 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             session,
             queue,
             selection,
-        } => {
-            let (client, endpoint) = api_client::connect()?;
-            api_client::call(&endpoint, client.health()).await?;
+        } => runtime.block_on(async {
+            let (client, _) = connect_client().await?;
             client_commands::run(
-                client, prompt, image, agent, new, session, queue, selection, cli.json,
+                client, prompt, image, agent, new, session, queue, selection, json,
             )
-            .await?;
-        }
+            .await
+        }),
         Command::Chat {
             session_id,
             image,
             agent,
             new,
             selection,
-        } => {
-            let (client, endpoint) = api_client::connect()?;
-            api_client::call(&endpoint, client.health()).await?;
+        } => runtime.block_on(async {
+            let (client, endpoint) = connect_client().await?;
             client_conversation::wait_healthy(&client, &endpoint, selection.provider.as_deref())
-                .await?;
-            if cli.json {
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            if json {
                 client_commands::chat(client, session_id, image, agent, new, selection, true)
-                    .await?;
+                    .await
             } else {
                 #[cfg(feature = "chat")]
-                swarmy_chat::client_chat::run(
-                    client,
-                    session_id,
-                    image,
-                    agent,
-                    new,
-                    selection.clone().into(),
-                    selection.route,
-                )
-                .await?;
+                {
+                    swarmy_chat::client_chat::run(
+                        client,
+                        session_id,
+                        image,
+                        agent,
+                        new,
+                        selection.clone().into(),
+                        selection.route,
+                    )
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                    Ok(())
+                }
                 #[cfg(not(feature = "chat"))]
-                anyhow::bail!(
-                    "interactive chat is unavailable in this headless build; use --json or install with --features chat"
-                );
+                {
+                    anyhow::bail!(
+                        "interactive chat is unavailable in this headless build; use --json or install with --features chat"
+                    );
+                }
             }
-        }
+        }),
         #[cfg(feature = "remote")]
-        Command::Remote { command } => remote(command, cli.json).await?,
+        Command::Remote { command } => runtime.block_on(remote(command, json)),
         #[cfg(not(feature = "remote"))]
-        Command::Remote { .. } => unreachable!("remote commands are rejected before dispatch"),
-        Command::Dev { .. } => unreachable!("dev commands run without the database network"),
-        Command::Agent { .. } | Command::Session { .. } | Command::Cost { .. } => {
-            unreachable!()
+        Command::Remote { .. } => {
+            anyhow::bail!("swarmy was built without remote support");
         }
-        Command::Image { command } => image::run(command, cli.json).await?,
         Command::Gc {
             dry_run,
             grace_seconds,
-        } => gc::run(dry_run, grace_seconds, cli.json).await?,
-        Command::Doctor => {
-            if !doctor::run(cli.json).await? {
+        } => runtime.block_on(gc::run(dry_run, grace_seconds, json)),
+        Command::Doctor => runtime.block_on(async {
+            if !doctor::run(json).await? {
                 std::process::exit(1);
             }
-        }
-        Command::Auth { .. } => unreachable!("auth commands run through the API"),
-        Command::Version => swarmy_version::print("swarmy", cli.json)?,
+            Ok(())
+        }),
+        Command::Version => swarmy_version::print("swarmy", json),
     }
-    Ok(())
 }
 
-// `run` and `chat` exist only in this binary: `swarmy-session` shares
-// `auth_command` but serves database commands instead, so the session-route
-// parse test lives here rather than in the shared module.
+/// Connect to the API and wait for a healthy response. Every database-backed
+/// command runs through the control plane, so the client links no database,
+/// message bus, or object store library.
+async fn connect_client() -> anyhow::Result<(swarmy_client::Client, String)> {
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    swarmy_client::api_client::call(&endpoint, client.health()).await?;
+    Ok((client, endpoint))
+}
+
+// `login` and `import` shell out to the `swarmy-auth` helper so terminal
+// OAuth flows stay out of this binary; every other auth command goes through
+// the control-plane API in the dispatch above.
 fn run_auth_tool(
     command: auth_command::Command,
     file: Option<PathBuf>,
@@ -326,7 +321,14 @@ fn run_auth_tool(
                 process.arg("--scope").arg(scope);
             }
         }
-        _ => unreachable!("only interactive auth commands use the helper"),
+        auth_command::Command::Set { .. }
+        | auth_command::Command::Ls
+        | auth_command::Command::Rm { .. }
+        | auth_command::Command::Check { .. }
+        | auth_command::Command::Routes { .. }
+        | auth_command::Command::Quota { .. } => {
+            anyhow::bail!("credential reads and writes run through the API, not the helper");
+        }
     }
     let status = process.status().map_err(|error| {
         anyhow::anyhow!("swarmy-auth helper unavailable; run make install-client or cargo install --path crates/swarmy-devtools: {error}")
@@ -355,10 +357,11 @@ async fn remote(command: swarmy_cloud::Command, json: bool) -> anyhow::Result<()
             Ok(())
         }
         swarmy_cloud::RunOutcome::NeedsTagConfirmation { targets } => {
-            let swarmy_cloud::Command::Tag { name: node } = &retry else {
-                unreachable!("tag confirmation reruns remote tag");
+            let node = match &retry {
+                swarmy_cloud::Command::Tag { name: node } => node.clone(),
+                _ => anyhow::bail!("tag confirmation reruns remote tag"),
             };
-            confirm_tag(&targets, node)?;
+            confirm_tag(&targets, &node)?;
             run_once(retry, json, true, name, advises).await?;
             Ok(())
         }
@@ -401,7 +404,7 @@ fn remote_name(command: &swarmy_cloud::Command) -> &'static str {
         swarmy_cloud::Command::Connect { .. } => "connect",
         swarmy_cloud::Command::Disconnect { .. } => "disconnect",
         swarmy_cloud::Command::Logs { .. } => "logs",
-        swarmy_cloud::Command::Status => "status",
+        swarmy_cloud::Command::Ls => "ls",
     }
 }
 

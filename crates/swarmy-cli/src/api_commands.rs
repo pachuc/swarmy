@@ -5,7 +5,7 @@ use swarmy_client::Client;
 
 use ulid::Ulid;
 
-use crate::{Command, agent_command, auth_command, cost_command, image_command, session_command};
+use crate::{agent_command, auth_command, cost_command, image_command, session_command};
 
 use swarmy_client::api_client::call as request;
 // Keep the volume image label rule here so the client does not link libfdb_c.
@@ -31,23 +31,20 @@ fn print<T: serde::Serialize>(value: &T, text: &str, json: bool) {
         println!("{text}");
     }
 }
-pub async fn run(command: Command, json: bool) -> Result<()> {
-    if let Command::Image {
-        command: image_command::Command::Show { image },
-    } = &command
-    {
-        let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
-        validate_label(name)?;
-        validate_label(tag)?;
-    }
-    if let Command::Agent {
-        command:
-            agent_command::Command::Set {
-                inference,
-                github_token,
-                clear_github_token,
-                ..
-            },
+/// Run one control-plane API command. Each entry connects on its own so the
+/// top-level dispatch owns every CLI variant without a shared dispatcher.
+pub async fn session_command(command: session_command::Command, json: bool) -> Result<()> {
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    session(&client, &endpoint, command, json).await
+}
+
+/// Run one agent API command, validating `set` flags before connecting.
+pub async fn agent_command(command: agent_command::Command, json: bool) -> Result<()> {
+    if let agent_command::Command::Set {
+        inference,
+        github_token,
+        clear_github_token,
+        ..
     } = &command
     {
         ensure!(
@@ -66,15 +63,26 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         );
     }
     let (client, endpoint) = swarmy_client::api_client::connect()?;
-    match command {
-        Command::Session { command } => session(&client, &endpoint, command, json).await?,
-        Command::Agent { command } => agent(&client, &endpoint, command, json).await?,
-        Command::Cost { args } => cost(&client, &endpoint, args, json).await?,
-        Command::Image { command } => image(&client, &endpoint, command, json).await?,
-        Command::Auth { command, .. } => auth(&client, &endpoint, command, json).await?,
-        _ => unreachable!("only API commands reach this dispatcher"),
-    }
-    Ok(())
+    agent(&client, &endpoint, command, json).await
+}
+
+/// Run one cost API command.
+pub async fn cost_command(args: cost_command::Args, json: bool) -> Result<()> {
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    cost(&client, &endpoint, args, json).await
+}
+
+/// Run one image read through the API. Builds run locally in `crate::image`.
+pub async fn image_command(command: image_command::Command, json: bool) -> Result<()> {
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    image(&client, &endpoint, command, json).await
+}
+
+/// Run one credential API command. Logins and imports run through the
+/// `swarmy-auth` helper instead.
+pub async fn auth_command(command: auth_command::Command, json: bool) -> Result<()> {
+    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    auth(&client, &endpoint, command, json).await
 }
 /// Parse a `--since` or `--until` bound, defaulting to `default` when the
 /// flag is absent. The client resolves relative spans and calendar words
@@ -128,10 +136,10 @@ async fn cost_series(
         .iter()
         .filter_map(|(dimension, value)| value.map(|value| (*dimension, value)))
         .collect();
-    match (args.by.as_deref(), present.as_slice()) {
-        (Some(by), []) => Ok((by.into(), None)),
-        (Some(by), [(dimension, value)]) if *dimension == by => Ok((
-            by.into(),
+    match (args.by, present.as_slice()) {
+        (Some(by), []) => Ok((by.as_str().into(), None)),
+        (Some(by), [(dimension, value)]) if *dimension == by.as_str() => Ok((
+            by.as_str().into(),
             Some(cost_key(client, endpoint, dimension, value).await?),
         )),
         (Some(_), _) => anyhow::bail!(
@@ -237,7 +245,7 @@ async fn cost(client: &Client, endpoint: &str, args: cost_command::Args, json: b
             key.as_deref(),
             &since.to_string(),
             &until.to_string(),
-            &args.group,
+            args.group.as_str(),
         ),
     )
     .await?;
@@ -567,7 +575,9 @@ async fn image(
                 json,
             );
         }
-        image_command::Command::Build { .. } => unreachable!(),
+        image_command::Command::Build { .. } => {
+            anyhow::bail!("image build runs locally, not through the API");
+        }
     }
     Ok(())
 }
@@ -624,12 +634,7 @@ fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<AgentFl
     } else {
         args.system_prompt
     };
-    let gpu = args.gpu.as_deref().map(|value| match value {
-        "none" => swarmy_api_types::GpuMode::None,
-        "shared" => swarmy_api_types::GpuMode::Shared,
-        "dedicated" => swarmy_api_types::GpuMode::Dedicated,
-        _ => unreachable!("GPU mode validated by clap"),
-    });
+    let gpu = args.gpu.map(crate::agent_command::GpuArg::into_api);
     Ok(AgentFlags {
         provider,
         model,
@@ -1263,14 +1268,16 @@ async fn auth(
                 client,
                 endpoint,
                 entry.as_deref(),
-                &group,
+                group,
                 since.as_deref(),
                 until.as_deref(),
                 json,
             )
             .await?;
         }
-        _ => unreachable!("login and import remain local"),
+        auth_command::Command::Login { .. } | auth_command::Command::Import { .. } => {
+            anyhow::bail!("login and import run through the swarmy-auth helper");
+        }
     }
     Ok(())
 }
@@ -1312,7 +1319,7 @@ async fn quota(
     client: &Client,
     endpoint: &str,
     entry: Option<&str>,
-    group: &str,
+    group: crate::cost_command::UsageGroup,
     since: Option<&str>,
     until: Option<&str>,
     json: bool,
@@ -1337,7 +1344,7 @@ async fn quota(
                 Some(entry),
                 &start.to_string(),
                 &end.to_string(),
-                group,
+                group.as_str(),
             ),
         )
         .await?;

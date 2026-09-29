@@ -2,8 +2,8 @@
 
 use crate::client_conversation::Conversation;
 use crate::client_conversation::ConversationItem;
+use crate::client_conversation::{Error, terminal_error};
 use crate::input::Input;
-use anyhow::{Context, Result, ensure};
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
@@ -22,6 +22,8 @@ use swarmy_api_types as api;
 use swarmy_client::{Client, StreamItem};
 use swarmy_core::InferenceSelection;
 
+type Result<T, E = Error> = std::result::Result<T, E>;
+
 struct RestoreTerminal;
 impl Drop for RestoreTerminal {
     fn drop(&mut self) {
@@ -31,11 +33,13 @@ impl Drop for RestoreTerminal {
 }
 
 fn terminal() -> Result<(DefaultTerminal, RestoreTerminal)> {
-    enable_raw_mode()?;
+    enable_raw_mode().map_err(terminal_error)?;
     let restore = RestoreTerminal;
-    execute!(io::stdout(), EnterAlternateScreen)?;
-    let mut terminal = DefaultTerminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
-    terminal.clear()?;
+    execute!(io::stdout(), EnterAlternateScreen).map_err(terminal_error)?;
+    let mut terminal =
+        DefaultTerminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))
+            .map_err(terminal_error)?;
+    terminal.clear().map_err(terminal_error)?;
     Ok((terminal, restore))
 }
 
@@ -91,8 +95,11 @@ async fn picker(
                 frame.area(),
                 &mut selection,
             );
-        })?;
-        if let Event::Key(key) = keys.next().await.context("terminal input closed")??
+        }).map_err(terminal_error)?;
+        let Some(event) = keys.next().await else {
+            return Err(terminal_error("terminal input closed"));
+        };
+        if let Event::Key(key) = event.map_err(Error::Io)?
             && key.kind != KeyEventKind::Release
         {
             if quit(key) {
@@ -124,10 +131,9 @@ pub async fn run(
     selection: InferenceSelection,
     route: Option<String>,
 ) -> Result<()> {
-    ensure!(
-        io::stdin().is_terminal() && io::stdout().is_terminal(),
-        "chat requires an interactive terminal"
-    );
+    if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
+        return Err(terminal_error("chat requires an interactive terminal"));
+    }
     let (mut terminal, _restore) = terminal()?;
     let mut keys = EventStream::new();
     let choice = if id.is_none()
@@ -146,14 +152,14 @@ pub async fn run(
     let mut conversation =
         Conversation::open(client.clone(), choice, image, agent, new, selection, route).await?;
     // Health warnings belong on the ordinary terminal, not behind the alternate screen.
-    disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen)?;
+    disable_raw_mode().map_err(terminal_error)?;
+    execute!(io::stdout(), LeaveAlternateScreen).map_err(terminal_error)?;
     conversation
         .wait_healthy(conversation.provider.as_deref())
         .await?;
-    enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
-    terminal.clear()?;
+    enable_raw_mode().map_err(terminal_error)?;
+    execute!(io::stdout(), EnterAlternateScreen).map_err(terminal_error)?;
+    terminal.clear().map_err(terminal_error)?;
     let mut view = View::new(&conversation);
     // History is read after subscribing, so a concurrent append cannot be lost.
     let mut after = 0;
@@ -193,14 +199,17 @@ pub async fn run(
             if rows[2].width > 0 {
                 frame.set_cursor_position((rows[2].x + cursor, rows[2].y));
             }
-        })?;
+        }).map_err(terminal_error)?;
         tokio::select! {
             event = conversation.next() => {
                 view.event(event?);
                 flush_queued(&mut view, &mut conversation).await?;
             }
             key = keys.next() => {
-                if let Event::Key(key) = key.context("terminal input closed")??
+                let Some(event) = key else {
+                    return Err(terminal_error("terminal input closed"));
+                };
+                if let Event::Key(key) = event.map_err(Error::Io)?
                     && key.kind != KeyEventKind::Release {
                     if quit(key) {
                         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) { conversation.interrupt().await?; }
@@ -282,13 +291,12 @@ async fn send_or_queue(
 }
 
 /// Requeue only an idle guard or an API append conflict known to be transient.
-fn is_busy_send_error(error: &anyhow::Error) -> bool {
-    error
-        .downcast_ref::<super::client_conversation::SessionNotIdle>()
-        .is_some()
-        || error
-            .downcast_ref::<swarmy_client::Error>()
-            .is_some_and(is_busy_client_error)
+fn is_busy_send_error(error: &Error) -> bool {
+    match error {
+        Error::SessionNotIdle(_) => true,
+        Error::Client(client) => is_busy_client_error(client),
+        _ => false,
+    }
 }
 
 fn is_busy_client_error(error: &swarmy_client::Error) -> bool {
@@ -670,16 +678,15 @@ mod tests {
         assert!(input.text.is_empty());
     }
 
-    fn api_error(status: reqwest::StatusCode, code: &str) -> anyhow::Error {
-        swarmy_client::Error::Api {
+    fn api_error(status: reqwest::StatusCode, code: &str) -> Error {
+        Error::Client(swarmy_client::Error::Api {
             status,
             body: swarmy_api_types::ApiError {
                 code: code.into(),
                 message: code.into(),
                 provider_text: None,
             },
-        }
-        .into()
+        })
     }
 
     #[test]
@@ -698,23 +705,10 @@ mod tests {
             reqwest::StatusCode::CONFLICT,
             "main_session_close"
         )));
-        assert!(is_busy_send_error(
-            &crate::client_conversation::SessionNotIdle.into()
-        ));
-        // The API wrapper retains the typed source through context.
-        let wrapped = swarmy_client::api_client::api_error(
-            swarmy_client::Error::Api {
-                status: reqwest::StatusCode::CONFLICT,
-                body: swarmy_api_types::ApiError {
-                    code: "stale_head".into(),
-                    message: "stale head".into(),
-                    provider_text: None,
-                },
-            },
-            "test endpoint",
-        );
-        assert!(is_busy_send_error(&wrapped));
-        assert!(!is_busy_send_error(&anyhow::anyhow!("409 Conflict")));
+        assert!(is_busy_send_error(&Error::SessionNotIdle(
+            crate::client_conversation::SessionNotIdle
+        )));
+        assert!(!is_busy_send_error(&Error::Terminal("409 Conflict".into())));
         // Permanent failures propagate so the client exits with the message
         // instead of waiting forever on `input locked (queued)`.
         assert!(!is_busy_send_error(&api_error(
@@ -725,8 +719,8 @@ mod tests {
             reqwest::StatusCode::UNAUTHORIZED,
             "unauthorized"
         )));
-        assert!(!is_busy_send_error(&anyhow::anyhow!(
-            "API at http://example: request timed out"
-        )));
+        assert!(!is_busy_send_error(&Error::ApiTimeout {
+            endpoint: "http://example".into()
+        }));
     }
 }

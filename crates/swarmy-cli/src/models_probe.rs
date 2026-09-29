@@ -64,8 +64,15 @@ async fn server_probe(
     if json {
         println!(
             "{}",
-            serde_json::json!({"event":"probe_summary", "provider":answer.provider, "model":answer.model,
-            "usage":answer.usage, "cost_micros":answer.cost_micros, "effort":answer.effort, "elapsed_seconds":started.elapsed().as_secs_f64()})
+            serde_json::to_string(&ProbeSummary {
+                event: "probe_summary",
+                provider: &answer.provider,
+                model: &answer.model,
+                usage: &answer.usage,
+                cost_micros: answer.cost_micros,
+                effort: answer.effort,
+                elapsed_seconds: started.elapsed().as_secs_f64(),
+            })?
         );
     } else {
         println!("\nUsage: {}", serde_json::to_string(&answer.usage)?);
@@ -81,4 +88,16 @@ async fn server_probe(
         );
     }
     Ok(())
+}
+
+/// The typed `probe_summary` line for a live probe answer.
+#[derive(serde::Serialize)]
+struct ProbeSummary<'a> {
+    event: &'static str,
+    provider: &'a str,
+    model: &'a str,
+    usage: &'a serde_json::Value,
+    cost_micros: u64,
+    effort: swarmy_api_types::ReasoningEffort,
+    elapsed_seconds: f64,
 }

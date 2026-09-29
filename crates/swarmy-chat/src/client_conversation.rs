@@ -1,12 +1,187 @@
 //! Human-facing conversation commands use only the public API.
-use std::{
-    io::{self, Write},
-    time::{Duration, Instant},
-};
+//!
+//! This crate never prints: [`Conversation::until_idle`] hands each
+//! [`TurnOutput`] to the caller's emitter as it arrives, so streaming text
+//! still renders incrementally while the CLI owns every `println!`.
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail, ensure};
 use swarmy_api_types as api;
 use swarmy_client::{Client, EventStream, StreamItem};
+
+/// Failures from opening a conversation and driving one turn to idle.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// The `--image` value was not `NAME:TAG`.
+    #[error("image must be NAME:TAG")]
+    InvalidImage,
+    /// The requested image is not registered; lists what is.
+    #[error("image {requested} not found; registered images: {known}")]
+    ImageNotFound { requested: String, known: String },
+    /// A CLI flag combination the conversation rejects.
+    #[error("{0}")]
+    InvalidArgs(&'static str),
+    /// An appended message was empty.
+    #[error("message is empty")]
+    EmptyMessage,
+    /// The session was busy and the caller did not ask to queue.
+    #[error("session is not idle")]
+    SessionNotIdle(#[from] SessionNotIdle),
+    /// The worker did not pick up the session before the pickup deadline.
+    #[error("worker did not pick up session within 30 seconds")]
+    PickupTimeout,
+    /// The operator interrupted the turn.
+    #[error("interrupted")]
+    Interrupted,
+    /// The session archived without a successor to follow.
+    #[error("session completed")]
+    SessionCompleted,
+    /// The turn ended with a tool, inference, or missing-reply failure.
+    #[error("{0}")]
+    TurnFailed(String),
+    /// The API did not answer before the client timeout.
+    #[error("API at {endpoint}: request timed out")]
+    ApiTimeout { endpoint: String },
+    /// Local configuration or endpoint resolution failed.
+    #[error("{0}")]
+    Config(String),
+    /// A control-plane request failed.
+    #[error(transparent)]
+    Client(#[from] swarmy_client::Error),
+    /// Terminal setup or input failed (interactive chat only).
+    #[error("terminal error: {0}")]
+    Terminal(String),
+    /// A turn payload did not serialize.
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    /// A terminal or pipe write failed.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+/// A local idle guard failed before the append reached the API.
+#[derive(Debug)]
+pub struct SessionNotIdle;
+
+impl std::fmt::Display for SessionNotIdle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("session is not idle")
+    }
+}
+
+impl std::error::Error for SessionNotIdle {}
+
+/// How one turn's progress is reported. One variant replaces the old
+/// `until_idle(json, run, quiet)` booleans: the shape selects JSON or text
+/// rendering, the `Run` suffix requires an assistant reply, and `Silent`
+/// emits nothing for benchmarks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputMode {
+    /// Human-readable streaming text; the turn fails without a reply.
+    TextRun,
+    /// Human-readable streaming text for an interactive session.
+    TextChat,
+    /// Machine-readable JSON lines; the turn fails without a reply.
+    JsonRun,
+    /// Machine-readable JSON lines for an interactive session.
+    JsonChat,
+    /// No output; the turn still fails without a reply.
+    Silent,
+}
+
+impl OutputMode {
+    /// Whether the CLI renders each output as a JSON line.
+    #[must_use]
+    pub fn is_json(self) -> bool {
+        matches!(self, Self::JsonRun | Self::JsonChat)
+    }
+
+    /// Whether the turn emits nothing.
+    #[must_use]
+    pub fn is_silent(self) -> bool {
+        matches!(self, Self::Silent)
+    }
+
+    /// Whether an idle turn without an assistant reply fails.
+    #[must_use]
+    pub fn requires_reply(self) -> bool {
+        matches!(self, Self::TextRun | Self::JsonRun | Self::Silent)
+    }
+}
+
+/// One renderable turn event, in arrival order. The conversation produces
+/// these; the CLI prints them.
+#[derive(Debug, Clone)]
+pub enum TurnOutput {
+    /// Raw streamed text. Text mode prints it verbatim; JSON mode wraps it
+    /// in a `model_delta` line.
+    TokenText(String),
+    /// The raw store record, printed only in JSON mode.
+    Record(api::RecordBody),
+    /// A delivered queued message, printed only in text mode.
+    QueueDelivered,
+    /// A requested tool call, printed only in text mode.
+    ToolCall {
+        call_id: String,
+        tool: String,
+        arguments: String,
+    },
+    /// A completed tool call result, printed only in text mode.
+    ToolResult {
+        call_id: String,
+        result: serde_json::Value,
+    },
+    /// An assistant reply with the already-streamed prefix removed.
+    AssistantMessage(String),
+    /// The idle marker that ends a turn, printed only in JSON mode.
+    SessionIdle { session_id: String },
+    /// A summarization successor switch, printed in both modes.
+    Summarized {
+        previous_session_id: String,
+        session_id: String,
+    },
+}
+
+/// How long `until_idle` waits for the first streamed item before reporting
+/// the session as unpicked. Covers scheduler, worker, and gateway startup.
+const PICKUP_DEADLINE: Duration = Duration::from_secs(30);
+
+/// One API call with the standard client timeout, preserving the typed
+/// client error for the caller.
+async fn call<T>(
+    endpoint: &str,
+    future: impl std::future::Future<Output = Result<T, swarmy_client::Error>>,
+) -> Result<T, Error> {
+    tokio::time::timeout(Duration::from_secs(10), future)
+        .await
+        .map_err(|_| Error::ApiTimeout {
+            endpoint: endpoint.to_owned(),
+        })?
+        .map_err(Error::Client)
+}
+
+/// The configured API endpoint, without the anyhow wrapper the binary client uses.
+fn api_endpoint() -> Result<String> {
+    let settings = swarmy_config::Settings::load()
+        .map_err(|error| Error::Config(error.to_string()))?
+        .settings;
+    if settings.api.token.is_empty() {
+        return Err(Error::Config(
+            "no [api] token configured; run swarmy dev up".into(),
+        ));
+    }
+    Ok(settings
+        .api
+        .url
+        .clone()
+        .unwrap_or_else(|| format!("http://{}", settings.api.listen)))
+}
+
+type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// Format a terminal failure without pulling anyhow into this crate.
+pub(crate) fn terminal_error(error: impl std::fmt::Display) -> Error {
+    Error::Terminal(error.to_string())
+}
 
 /// Client-side stream item: server events plus the CLI-synthesized notice
 /// that a summarized session continues elsewhere. The server never sends
@@ -48,11 +223,10 @@ pub struct Conversation {
 }
 
 fn image_ref(text: &str) -> Result<api::ImageRef> {
-    let (name, tag) = text.split_once(':').context("image must be NAME:TAG")?;
-    ensure!(
-        !name.is_empty() && !tag.is_empty(),
-        "image must be NAME:TAG"
-    );
+    let (name, tag) = text.split_once(':').ok_or(Error::InvalidImage)?;
+    if name.is_empty() || tag.is_empty() {
+        return Err(Error::InvalidImage);
+    }
     Ok(api::ImageRef {
         name: name.into(),
         tag: tag.into(),
@@ -88,25 +262,27 @@ async fn create_session(
                 .map(|image| format!("{}:{}", image.name, image.tag))
                 .collect::<Vec<_>>()
                 .join(", ");
-            anyhow::bail!(
-                "image {} not found; registered images: {known}",
-                image
-                    .as_ref()
-                    .map_or_else(|| "default".into(), |i| format!("{}:{}", i.name, i.tag))
-            );
+            Err(Error::ImageNotFound {
+                requested: image.as_ref().map_or_else(
+                    || "default".into(),
+                    |i| format!("{}:{}", i.name, i.tag),
+                ),
+                known,
+            })
         }
         other => Ok(other?),
     }
 }
 
-/// Wait until required services report healthy.
+/// Wait until required services report healthy. Progress is logged, never
+/// printed, so terminal renderers keep control of the screen.
 ///
 /// # Errors
 /// Returns an error if the API call or event stream fails.
 pub async fn wait_healthy(client: &Client, endpoint: &str, provider: Option<&str>) -> Result<()> {
     let mut last = String::new();
     loop {
-        let health = crate::api_client::call(endpoint, client.health()).await?;
+        let health = call(endpoint, client.health()).await?;
         let provider = provider.or(Some(health.default_provider.as_str()));
         let problem = service_problem(&health.services, provider);
         if problem.is_empty() {
@@ -117,29 +293,30 @@ pub async fn wait_healthy(client: &Client, endpoint: &str, provider: Option<&str
             provider.map_or(String::new(), |p| format!(" ({p})"))
         );
         if message != last {
-            eprintln!("{message}");
+            tracing::info!("{message}");
             last = message;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
 
-fn print_tools(record: &swarmy_core::Event) -> Result<()> {
+/// Describe one tool event as renderable outputs. The caller prints them;
+/// this helper only translates.
+fn tool_outputs(record: &swarmy_core::Event) -> Vec<TurnOutput> {
     match record {
-        swarmy_core::Event::ToolCallRequested { call, .. } => println!(
-            "Tool call {} {} {}",
-            call.call_id.0, call.tool, call.arguments
-        ),
+        swarmy_core::Event::ToolCallRequested { call, .. } => vec![TurnOutput::ToolCall {
+            call_id: call.call_id.0.clone(),
+            tool: call.tool.clone(),
+            arguments: call.arguments.clone(),
+        }],
         swarmy_core::Event::ToolCallCompleted {
             call_id, result, ..
-        } => println!(
-            "Tool result {} {}",
-            call_id.0,
-            serde_json::to_string(result)?
-        ),
-        _ => {}
+        } => vec![TurnOutput::ToolResult {
+            call_id: call_id.0.clone(),
+            result: serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
+        }],
+        _ => Vec::new(),
     }
-    Ok(())
 }
 
 /// Assign an explicit `--route` to the opened session only; the agent and
@@ -151,7 +328,7 @@ async fn apply_session_route(
     route: Option<&str>,
 ) -> Result<api::Session> {
     if route.is_some() && session.route.as_deref() != route {
-        return crate::api_client::call(
+        return call(
             endpoint,
             client.set_session_route(
                 &session.id,
@@ -165,18 +342,6 @@ async fn apply_session_route(
     }
     Ok(session)
 }
-
-/// A local idle guard failed before the append reached the API.
-#[derive(Debug)]
-pub struct SessionNotIdle;
-
-impl std::fmt::Display for SessionNotIdle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("session is not idle")
-    }
-}
-
-impl std::error::Error for SessionNotIdle {}
 
 impl Conversation {
     /// Open or resume a conversation.
@@ -192,15 +357,17 @@ impl Conversation {
         selection: swarmy_core::InferenceSelection,
         route: Option<String>,
     ) -> Result<Self> {
-        ensure!(!new || agent.is_some(), "--new requires --agent");
-        ensure!(
-            id.is_none() || (image.is_none() && agent.is_none() && !new),
-            "session id cannot be combined with --image, --agent, or --new"
-        );
-        ensure!(
-            agent.is_none() || image.is_none(),
-            "--agent cannot be combined with --image"
-        );
+        if new && agent.is_none() {
+            return Err(Error::InvalidArgs("--new requires --agent"));
+        }
+        if id.is_some() && (image.is_some() || agent.is_some() || new) {
+            return Err(Error::InvalidArgs(
+                "session id cannot be combined with --image, --agent, or --new",
+            ));
+        }
+        if agent.is_some() && image.is_some() {
+            return Err(Error::InvalidArgs("--agent cannot be combined with --image"));
+        }
         let provider = selection.provider.clone();
         let agent_record = if let Some(name) = &agent {
             Some(client.agent(name).await?)
@@ -259,7 +426,7 @@ impl Conversation {
             .clone()
             .or(provider)
             .or_else(|| agent_record.as_ref().and_then(|a| a.provider.clone()));
-        let endpoint = crate::api_client::endpoint()?;
+        let endpoint = api_endpoint()?;
         session = apply_session_route(&client, &endpoint, session, route.as_deref()).await?;
         let head = session.head_sequence;
         Ok(Self {
@@ -298,7 +465,9 @@ impl Conversation {
     /// # Errors
     /// Returns API and transport errors or an invalid message error.
     pub async fn send_with_queue(&mut self, text: String, queue: bool) -> Result<String> {
-        ensure!(!text.trim().is_empty(), "message is empty");
+        if text.trim().is_empty() {
+            return Err(Error::EmptyMessage);
+        }
         self.last_text.clear();
         self.tool_count = 0;
         self.tool_result = None;
@@ -319,13 +488,12 @@ impl Conversation {
                 body: error,
             }) if status.as_u16() == 409 && error.code == "stale_head" => {
                 self.session =
-                    crate::api_client::call(&self.endpoint, self.client.session(&self.id)).await?;
+                    call(&self.endpoint, self.client.session(&self.id)).await?;
                 if !queue && self.session.state != api::SessionState::Idle {
                     return Err(SessionNotIdle.into());
                 }
                 body.expected_head = self.session.head_sequence;
-                crate::api_client::call(&self.endpoint, self.client.append_message(&self.id, &body))
-                    .await?
+                call(&self.endpoint, self.client.append_message(&self.id, &body)).await?
             }
             other => other?,
         };
@@ -476,7 +644,7 @@ impl Conversation {
     /// Returns an error if the API call or event stream fails.
     pub async fn interrupt(&mut self) -> Result<()> {
         if self.current_turn.is_some() {
-            crate::api_client::call(
+            call(
                 &self.endpoint,
                 self.client.interrupt(
                     &self.id,
@@ -553,20 +721,31 @@ impl Conversation {
         wait_healthy(&self.client, &self.endpoint, provider).await
     }
 
-    /// Render the stream until the session is idle.
+    /// Drive the stream until the session is idle, handing each renderable
+    /// output to `emit` as it arrives. The caller prints; this method never
+    /// writes to the terminal.
     ///
     /// # Errors
-    /// Returns an error if the API call or event stream fails.
-    pub async fn until_idle(&mut self, json: bool, run: bool, quiet: bool) -> Result<()> {
+    /// Returns API and transport errors, an interruption, or the turn failure.
+    pub async fn until_idle(
+        &mut self,
+        mode: OutputMode,
+        emit: &mut impl FnMut(TurnOutput),
+    ) -> Result<()> {
         let mut progress = TurnProgress::default();
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut emit = |output: TurnOutput| {
+            if !mode.is_silent() {
+                emit(output);
+            }
+        };
+        let deadline = Instant::now() + PICKUP_DEADLINE;
         loop {
             let next = async {
-                if run && !progress.started {
+                if mode.requires_reply() && !progress.started {
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     Ok(tokio::time::timeout(remaining, self.next())
                         .await
-                        .context("worker did not pick up session within 30 seconds")??)
+                        .map_err(|_| Error::PickupTimeout)??)
                 } else {
                     self.next().await
                 }
@@ -577,30 +756,20 @@ impl Conversation {
             };
             let Some(item) = item else {
                 self.interrupt().await?;
-                bail!("interrupted");
+                return Err(Error::Interrupted);
             };
             match item {
                 ConversationItem::Stream(StreamItem::TokenDelta {
                     payload: api::EventPayload::TokenDelta { text, .. },
                     ..
                 }) => {
-                    if !quiet {
-                        if json {
-                            println!(
-                                "{}",
-                                serde_json::json!({"event":"model_delta","delta":{"Text":{"output_index":0,"text":text}}})
-                            );
-                        } else {
-                            print!("{text}");
-                            io::stdout().flush()?;
-                        }
-                    }
+                    emit(TurnOutput::TokenText(text.clone()));
                     progress.streamed.push_str(&text);
                 }
                 ConversationItem::Stream(StreamItem::Event(event)) => {
                     let sequence = event.sequence;
                     if let api::EventPayload::StoreRecord { record } = event.payload
-                        && self.record_event(&record, sequence, json, run, quiet, &mut progress)?
+                        && self.record_event(&record, sequence, mode, &mut progress, &mut emit)?
                     {
                         return Ok(());
                     }
@@ -610,7 +779,10 @@ impl Conversation {
                     previous_session_id,
                     session_id,
                 } => {
-                    report_summary(quiet, json, &previous_session_id, &session_id);
+                    emit(TurnOutput::Summarized {
+                        previous_session_id,
+                        session_id,
+                    });
                     // Preserve the existing successor-switch behavior: a summary
                     // notice marks the turn started and disables the pickup deadline.
                     progress.started = true;
@@ -623,19 +795,15 @@ impl Conversation {
         &mut self,
         record: &api::RecordBody,
         sequence: u64,
-        json: bool,
-        run: bool,
-        quiet: bool,
+        mode: OutputMode,
         progress: &mut TurnProgress,
+        emit: &mut impl FnMut(TurnOutput),
     ) -> Result<bool> {
         if sequence < self.min_sequence {
             return Ok(false);
         }
-        if !quiet && json {
-            println!(
-                "{}",
-                serde_json::to_string(record).expect("record serializes")
-            );
+        if mode.is_json() {
+            emit(TurnOutput::Record(record.clone()));
         }
         let api::RecordBody::Event(event) = record else {
             return Ok(false);
@@ -645,15 +813,15 @@ impl Conversation {
                 swarmy_core::SessionState::Leased | swarmy_core::SessionState::WaitingInference => {
                     progress.started = true;
                 }
-                swarmy_core::SessionState::Completed => bail!("session completed"),
+                swarmy_core::SessionState::Completed => return Err(Error::SessionCompleted),
                 swarmy_core::SessionState::Idle => {
-                    return self.finish_idle(sequence, json, quiet, run, progress);
+                    return self.finish_idle(sequence, mode, progress, emit);
                 }
                 _ => {}
             },
             swarmy_core::Event::InferenceRequested { .. } => progress.started = true,
-            swarmy_core::Event::MessageQueued { .. } if !quiet && !json => {
-                println!("[queued message delivered]");
+            swarmy_core::Event::MessageQueued { .. } if !mode.is_json() => {
+                emit(TurnOutput::QueueDelivered);
             }
             swarmy_core::Event::ToolCallCompleted { result, .. } => {
                 self.tool_count += 1;
@@ -668,15 +836,17 @@ impl Conversation {
                 progress.error = Some(inference_error(error, *failure_kind));
             }
             swarmy_core::Event::MessageAppended { message, .. } => {
-                self.render_message(message, json, quiet, progress)?;
+                self.render_message(message, mode, progress, emit)?;
             }
             swarmy_core::Event::InferenceCompleted { completion, .. } => {
-                self.render_message(&completion.message, json, quiet, progress)?;
+                self.render_message(&completion.message, mode, progress, emit)?;
             }
             _ => {}
         }
-        if !quiet && !json {
-            print_tools(event)?;
+        if !mode.is_json() {
+            for output in tool_outputs(event) {
+                emit(output);
+            }
         }
         Ok(false)
     }
@@ -684,19 +854,18 @@ impl Conversation {
     fn finish_idle(
         &mut self,
         sequence: u64,
-        json: bool,
-        quiet: bool,
-        run: bool,
+        mode: OutputMode,
         progress: &mut TurnProgress,
+        emit: &mut impl FnMut(TurnOutput),
     ) -> Result<bool> {
-        if !quiet && !json && !progress.streamed.is_empty() && !progress.streamed.ends_with('\n') {
-            println!();
+        if !mode.is_json() && !progress.streamed.is_empty() && !progress.streamed.ends_with('\n')
+        {
+            emit(TurnOutput::TokenText("\n".into()));
         }
-        if !quiet && json {
-            println!(
-                "{}",
-                serde_json::json!({"event":"session_idle","session_id":self.id})
-            );
+        if mode.is_json() {
+            emit(TurnOutput::SessionIdle {
+                session_id: self.id.clone(),
+            });
         }
         self.min_sequence = sequence;
         self.session.head_sequence = sequence;
@@ -705,9 +874,9 @@ impl Conversation {
         if let Some(sender) = &self.observer {
             let _ = sender.send(swarmy_core::TurnStage::InputEnabled);
         }
-        if let Some(outcome) = turn_outcome(progress, run) {
+        if let Some(outcome) = turn_outcome(progress, mode.requires_reply()) {
             progress.error.take();
-            bail!("{outcome}");
+            return Err(Error::TurnFailed(outcome));
         }
         Ok(true)
     }
@@ -715,9 +884,9 @@ impl Conversation {
     fn render_message(
         &mut self,
         message: &swarmy_core::Message,
-        json: bool,
-        quiet: bool,
+        mode: OutputMode,
         progress: &mut TurnProgress,
+        emit: &mut impl FnMut(TurnOutput),
     ) -> Result<()> {
         let Some(text) = assistant_reply_text(message) else {
             return Ok(());
@@ -728,21 +897,18 @@ impl Conversation {
         if let Some(sender) = &self.observer {
             let _ = sender.send(swarmy_core::TurnStage::FinalTextRendered);
         }
-        if quiet {
+        if mode.is_silent() {
             return Ok(());
         }
-        if json {
-            println!(
-                "{}",
-                serde_json::json!({"event":"assistant_message","text":text})
-            );
+        if mode.is_json() {
+            emit(TurnOutput::AssistantMessage(text));
         } else {
             let remaining = text.strip_prefix(&progress.streamed).unwrap_or(&text);
-            print!("{remaining}");
+            let mut line = remaining.to_owned();
             if !text.ends_with('\n') {
-                println!();
+                line.push('\n');
             }
-            io::stdout().flush()?;
+            emit(TurnOutput::AssistantMessage(line));
             progress.streamed.clear();
         }
         Ok(())
@@ -826,22 +992,6 @@ fn is_completed_event(payload: &api::EventPayload) -> bool {
             })
         }
     )
-}
-
-pub fn report_summary(quiet: bool, json: bool, previous_session_id: &str, session_id: &str) {
-    if quiet {
-        return;
-    }
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({"event":"session_summarized","previous_session_id":previous_session_id,"session_id":session_id})
-        );
-    } else {
-        eprintln!(
-            "Conversation summarized. Session {previous_session_id} archived; continuing in {session_id}."
-        );
-    }
 }
 
 // Select the events a poll tick must queue: only what the stream has not

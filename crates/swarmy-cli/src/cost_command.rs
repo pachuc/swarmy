@@ -6,11 +6,11 @@
 #[derive(clap::Args)]
 pub struct Args {
     /// Rollup dimension to read: session, agent, provider, entry, kind, or model
-    #[arg(long, value_parser = ["session", "agent", "provider", "entry", "kind", "model"])]
-    pub by: Option<String>,
+    #[arg(long, value_enum)]
+    pub by: Option<CostDimension>,
     /// Calendar grouping for the rows
-    #[arg(long, default_value = "day", value_parser = ["day", "week", "month", "year"])]
-    pub group: String,
+    #[arg(long, default_value = "day", value_enum)]
+    pub group: UsageGroup,
     /// Range start: an absolute date or timestamp, a relative span like 7d, 3mo, or 1y,
     /// or a calendar word like month or 2months for the start of this or last month
     #[arg(long)]
@@ -36,6 +36,59 @@ pub struct Args {
     /// Restrict the series to one model
     #[arg(long)]
     pub model: Option<String>,
+}
+
+/// Rollup dimension for `swarmy cost --by`, parsed once by clap.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CostDimension {
+    Session,
+    Agent,
+    Provider,
+    Entry,
+    Kind,
+    Model,
+}
+
+impl CostDimension {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::Agent => "agent",
+            Self::Provider => "provider",
+            Self::Entry => "entry",
+            Self::Kind => "kind",
+            Self::Model => "model",
+        }
+    }
+}
+
+/// Calendar grouping for usage rows, parsed once by clap.
+#[derive(Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum UsageGroup {
+    #[default]
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+impl UsageGroup {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::Year => "year",
+        }
+    }
+}
+
+impl std::fmt::Display for UsageGroup {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 #[cfg(test)]
