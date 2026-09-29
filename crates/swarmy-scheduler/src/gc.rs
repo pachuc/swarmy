@@ -14,16 +14,21 @@ pub(crate) async fn run(
 ) {
     loop {
         tokio::time::sleep(policy.interval_secs).await;
-        match swarmy_volume::gc::collect(store, objects.clone(), policy, false).await {
-            Ok(run) => tracing::info!(?run, "chunk collection finished"),
-            Err(VolumeError::Store(StoreError::Fence(
-                swarmy_store::FenceError::GcLeaseMismatch,
-            ))) => {
-                tracing::debug!("collector lease busy or lost; retry next interval");
-            }
-            Err(error) => tracing::error!(%error, "chunk collection failed; retry next interval"),
-        }
+        let result = swarmy_volume::gc::collect(store, objects.clone(), policy, false).await;
+        report_collection(result);
         prune_metering(store, metering).await;
+    }
+}
+
+/// Log one collection outcome. A lost lease is routine (another scheduler
+/// holds it); any other failure is an error the next interval retries.
+fn report_collection(result: Result<swarmy_core::GcRun, VolumeError>) {
+    match result {
+        Ok(run) => tracing::info!(?run, "chunk collection finished"),
+        Err(VolumeError::Store(StoreError::Fence(swarmy_store::FenceError::GcLeaseMismatch))) => {
+            tracing::debug!("collector lease busy or lost; retry next interval");
+        }
+        Err(error) => tracing::error!(%error, "chunk collection failed; retry next interval"),
     }
 }
 

@@ -164,40 +164,58 @@ impl Scheduler {
 
     async fn scan_timers(&self) -> Result<(), StoreError> {
         let now = Timestamp::now();
+        self.wake_due_waits(now).await?;
+        self.fire_due_timers(now).await
+    }
+
+    /// Wake every inference wait whose deadline passed. A lost race with the
+    /// gateway just nudges a session the worker will find already complete.
+    async fn wake_due_waits(&self, now: Timestamp) -> Result<(), StoreError> {
         for id in self.store.scan_due_inference_waits(now).await? {
             if self.store.wake_inference_wait(id, now).await? {
                 self.nudge(id, false, &mut RouteCache::default()).await;
             }
         }
+        Ok(())
+    }
+
+    /// Fire due timers page by page until a short page ends the scan.
+    async fn fire_due_timers(&self, now: Timestamp) -> Result<(), StoreError> {
         let mut cursor = None;
         loop {
             let page = self.store.scan_due_timers(now, cursor.as_ref()).await?;
             for timer in &page {
-                match self
-                    .store
-                    .fire_timer(timer.agent_id, timer.timer_id, now)
-                    .await
-                {
-                    Ok(Some((id, event))) => {
-                        if let Err(error) = self
-                            .bus
-                            .publish_live(swarmy_bus::LiveFeed::SessionEvents(id), &event)
-                            .await
-                        {
-                            tracing::warn!(%error, "timer event notification failed");
-                        }
-                        self.nudge(id, false, &mut RouteCache::default()).await;
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        tracing::warn!(timer_id = %timer.timer_id, %error, "timer append failed; will retry");
-                    }
-                }
+                self.fire_timer(timer, now).await;
             }
             if page.len() < MAX_SCAN_LIMIT {
                 return Ok(());
             }
             cursor = page.last().cloned();
+        }
+    }
+
+    /// Fire one due timer: append its event, notify live clients, and nudge
+    /// the session. A failed append only warns; the next scan retries.
+    async fn fire_timer(&self, timer: &swarmy_core::TimerRecord, now: Timestamp) {
+        match self
+            .store
+            .fire_timer(timer.agent_id, timer.timer_id, now)
+            .await
+        {
+            Ok(Some((id, event))) => {
+                if let Err(error) = self
+                    .bus
+                    .publish_live(swarmy_bus::LiveFeed::SessionEvents(id), &event)
+                    .await
+                {
+                    tracing::warn!(%error, "timer event notification failed");
+                }
+                self.nudge(id, false, &mut RouteCache::default()).await;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(timer_id = %timer.timer_id, %error, "timer append failed; will retry");
+            }
         }
     }
 
