@@ -1,6 +1,7 @@
-# Fixture copied from a real master-rendered node config (crates/swarmy-cloud
-# services.rs on master builds a full flat Settings via to_toml with placeholder
-# values). Every old flat key appears here so the migration test covers it.
+# Hand-written fixture covering every old flat key from master's Settings
+# (same shape as crates/swarmy-cloud services.rs output, with placeholder
+# values). The migration test covers each rename, plus quoting, escaping,
+# and unknown-key handling below.
 state_dir = ".swarmy"
 ephemeral_retention_seconds = 86400
 sandbox_idle_seconds = 1800
@@ -31,7 +32,7 @@ worker_recovery_interval_ms = 5000
 bus_ack_wait_ms = 30000
 bus_max_deliver = 5
 gateway_concurrency = 4
-system_prompt = "test prompt"
+system_prompt = "line one\r\nline two"
 memory_dir = "/home/agent/memory"
 memory_max_bytes = 32768
 worker_kill_point = "after_claim"
@@ -64,6 +65,7 @@ interval_seconds = 3600
 filter_bytes = 67108864
 batch_size = 256
 delete_concurrency = 32
+future_gc_opt = "keep-me"
 
 [inference]
 max_wait_seconds = 3600
@@ -81,6 +83,10 @@ sandboxes = 1
 
 [custom_providers.openai]
 base_url = "https://example.com"
+
+[custom_providers."z.ai"]
+base_url = "https://z.ai/api"
+api = "OpenAiCompletions"
 
 [[models]]
 provider = "openai"

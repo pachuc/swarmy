@@ -7,37 +7,12 @@ use swarmy_core::RUNNABLE_PARTITIONS;
 /// Invalid partition selection, naming the offending component.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum PartitionsError {
-    /// A component is not a number or range.
+    /// A component is not a number or range, or is outside the runnable space.
     #[error("invalid partition component: {component}")]
     Invalid {
-        /// The comma-separated piece that failed to parse.
-        component: String,
-        /// The underlying integer parse failure.
-        #[source]
-        source: std::num::ParseIntError,
-    },
-    /// A range is descending or outside the runnable space.
-    #[error("partition out of range in component: {component}")]
-    OutOfRange {
-        /// The comma-separated piece that is out of range.
+        /// The comma-separated piece that failed to parse or is out of range.
         component: String,
     },
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn typed_partitions_display_compact_ranges_and_round_trip() {
-        let full = Partitions::default();
-        assert_eq!(full.0.len(), 256);
-        assert_eq!(full.to_string(), "0-255");
-        let parsed: Partitions = " 0, 2-4, 3,255 ".parse().unwrap();
-        assert_eq!(parsed.0, BTreeSet::from([0, 2, 3, 4, 255]));
-        assert_eq!(parsed.to_string(), "0, 2-4, 255");
-        assert!("256".parse::<Partitions>().is_err());
-    }
 }
 
 /// A validated set of runnable partitions, serialized as compact ranges.
@@ -61,14 +36,13 @@ impl FromStr for Partitions {
             let parse = |part: &str| {
                 part.trim()
                     .parse::<u16>()
-                    .map_err(|source| PartitionsError::Invalid {
+                    .map_err(|_| PartitionsError::Invalid {
                         component: component.into(),
-                        source,
                     })
             };
             let (first, last) = (parse(first)?, parse(last)?);
             if first > last || last >= RUNNABLE_PARTITIONS {
-                return Err(PartitionsError::OutOfRange {
+                return Err(PartitionsError::Invalid {
                     component: component.into(),
                 });
             }
@@ -116,5 +90,21 @@ impl Display for Partitions {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_partitions_display_compact_ranges_and_round_trip() {
+        let full = Partitions::default();
+        assert_eq!(full.0.len(), 256);
+        assert_eq!(full.to_string(), "0-255");
+        let parsed: Partitions = " 0, 2-4, 3,255 ".parse().unwrap();
+        assert_eq!(parsed.0, BTreeSet::from([0, 2, 3, 4, 255]));
+        assert_eq!(parsed.to_string(), "0, 2-4, 255");
+        assert!("256".parse::<Partitions>().is_err());
     }
 }

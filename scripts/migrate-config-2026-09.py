@@ -22,8 +22,12 @@ The MOVES table below is the single source of truth for the rename list.
 """
 
 import copy
+import os
+import re
 import shutil
+import stat
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -106,6 +110,94 @@ KNOWN_TOP = {
     "image",
 }
 
+# Fixed leaf paths in the new layout. Anything under a known top-level table
+# but not listed here (and not under a dynamic prefix below) is an unknown
+# nested key: kept and reported, never dropped.
+KNOWN_LEAVES = {
+    "state_dir",
+    "api.listen",
+    "api.url",
+    "api.token",
+    "remote.provider",
+    "remote.services",
+    "remote.region",
+    "remote.bucket",
+    "remote.disk_gb",
+    "remote.managed_by_tag",
+    "remote.profile",
+    "remote.aws.subnet",
+    "remote.aws.security_group",
+    "remote.aws.instance_type",
+    "remote.aws.image",
+    "remote.aws.iam_role",
+    "volume_snapshots.period_secs",
+    "volume_snapshots.retention",
+    "sandbox.idle_secs",
+    "sandbox.scratch_idle_days",
+    "sandbox.scratch_high_water",
+    "sandbox.scratch_low_water",
+    "gc.grace_secs",
+    "gc.interval_secs",
+    "gc.filter_bytes",
+    "gc.batch_size",
+    "gc.delete_concurrency",
+    "inference.max_wait_secs",
+    "inference.max_backoff_secs",
+    "inference.gateway_wait_secs",
+    "inference.default_route",
+    "metering.raw_retention_days",
+    "node.id",
+    "node.roles",
+    "node.capacity.cpu_millis",
+    "node.capacity.memory_bytes",
+    "node.capacity.disk_bytes",
+    "node.capacity.sandboxes",
+    "node.memory_reserve_mib",
+    "node.heartbeat_interval_ms",
+    "store.cluster_file",
+    "store.directory",
+    "s3.endpoint",
+    "s3.access_key",
+    "s3.secret_key",
+    "s3.bucket",
+    "s3.prefix",
+    "s3.region",
+    "bus.nats_url",
+    "bus.prefix",
+    "bus.ack_wait_ms",
+    "bus.max_deliver",
+    "selection.provider",
+    "selection.providers",
+    "selection.model",
+    "selection.effort",
+    "selection.default_image",
+    "selection.credential_file",
+    "scheduler.partitions",
+    "scheduler.scan_interval_ms",
+    "scheduler.resend_interval_ms",
+    "scheduler.ephemeral_retention_secs",
+    "scheduler.placement_lease_secs",
+    "worker.partitions",
+    "worker.lease_ms",
+    "worker.recovery_interval_ms",
+    "worker.kill_point",
+    "gateway.concurrency",
+    "context.summarize_at",
+    "context.context_window",
+    "context.system_prompt",
+    "memory.dir",
+    "memory.max_bytes",
+    "fake.script",
+    "fake.call_log",
+    "image.upload_max_bytes",
+}
+
+# Dynamic subtrees whose keys are user data, not config keys.
+KNOWN_PREFIXES = (
+    "selection.custom_providers.",
+    "selection.models",
+)
+
 
 def _get(data, dotted):
     parts = dotted.split(".")
@@ -162,6 +254,37 @@ def needs_migration(data):
     return False
 
 
+def _walk_unknown(node, prefix, out):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            dotted = f"{prefix}.{key}" if prefix else key
+            if dotted.startswith(KNOWN_PREFIXES):
+                continue
+            if isinstance(value, dict):
+                _walk_unknown(value, dotted, out)
+            elif isinstance(value, list) and value and all(
+                isinstance(item, dict) for item in value
+            ):
+                for item in value:
+                    _walk_unknown(item, dotted, out)
+            elif dotted not in KNOWN_LEAVES:
+                out.append(dotted)
+    elif isinstance(node, list):
+        for item in node:
+            _walk_unknown(item, prefix, out)
+
+
+def find_unknown(data):
+    """Top-level unknown keys plus unknown leaves inside known tables."""
+    unknown = []
+    for key, value in data.items():
+        if key not in KNOWN_TOP:
+            unknown.append(key)
+        else:
+            _walk_unknown(value, key, unknown)
+    return unknown
+
+
 def migrate(data):
     data = copy.deepcopy(data)
     moved = []
@@ -170,17 +293,46 @@ def migrate(data):
         if found:
             _set(data, new, value)
             moved.append((old, new))
-    unknown = [key for key in data if key not in KNOWN_TOP]
-    return data, moved, unknown
+    return data, moved, find_unknown(data)
+
+
+_BARE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _escape(value):
-    return (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\t", "\\t")
-    )
+    out = []
+    for char in value:
+        code = ord(char)
+        if char == "\\":
+            out.append("\\\\")
+        elif char == '"':
+            out.append('\\"')
+        elif char == "\n":
+            out.append("\\n")
+        elif char == "\r":
+            out.append("\\r")
+        elif char == "\t":
+            out.append("\\t")
+        elif char == "\u0008":
+            out.append("\\b")
+        elif char == "\u000c":
+            out.append("\\f")
+        elif code < 0x20 or code == 0x7F:
+            out.append(f"\\u{code:04X}")
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def _quote_key(key):
+    if _BARE.match(key):
+        return key
+    return f'"{_escape(key)}"'
+
+
+def _join(path, key):
+    quoted = _quote_key(key)
+    return f"{path}.{quoted}" if path else quoted
 
 
 def _format_value(value):
@@ -195,39 +347,34 @@ def _format_value(value):
     if isinstance(value, list):
         return "[" + ", ".join(_format_value(item) for item in value) + "]"
     if isinstance(value, dict):
-        parts = ", ".join(f"{key} = {_format_value(item)}" for key, item in value.items())
+        parts = ", ".join(
+            f"{_quote_key(key)} = {_format_value(item)}" for key, item in value.items()
+        )
         return "{ " + parts + " }"
     raise TypeError(f"unsupported TOML value: {value!r}")
 
 
 def _emit_table(lines, path, table):
     scalars = [(k, v) for k, v in table.items() if not isinstance(v, dict)]
-    subtables = [(k, v) for k, v in table.items() if isinstance(v, dict)]
+    plain_subtables = [(k, v) for k, v in table.items() if isinstance(v, dict)]
     array_tables = []
-    plain_subtables = []
-    for key, value in subtables:
-        if isinstance(value, list):
-            array_tables.append((key, value))
-        else:
-            plain_subtables.append((key, value))
     # Lists of tables are emitted as [[path]] blocks; other lists stay inline.
     for key, value in scalars:
-        if isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
+        if isinstance(value, list) and value and all(
+            isinstance(item, dict) for item in value
+        ):
             array_tables.append((key, value))
         else:
-            lines.append(f"{key} = {_format_value(value)}")
+            lines.append(f"{_quote_key(key)} = {_format_value(value)}")
     for key, value in plain_subtables:
-        dotted = f"{path}.{key}" if path else key
+        dotted = _join(path, key)
         lines.append(f"[{dotted}]")
         _emit_table(lines, dotted, value)
     for key, value in array_tables:
-        dotted = f"{path}.{key}" if path else key
-        if value and all(isinstance(item, dict) for item in value):
-            for item in value:
-                lines.append(f"[[{dotted}]]")
-                _emit_table(lines, dotted, item)
-        else:
-            lines.append(f"{key} = {_format_value(value)}")
+        dotted = _join(path, key)
+        for item in value:
+            lines.append(f"[[{dotted}]]")
+            _emit_table(lines, dotted, item)
 
 
 def dump(data):
@@ -258,18 +405,44 @@ def main(argv):
         return 1
     if not needs_migration(data):
         print(f"{path}: already in the new layout")
-        return 0 if check_only else 0
+        return 0
     if check_only:
         print(f"{path}: needs migration")
         return 1
     migrated, moved, unknown = migrate(data)
+    text = dump(migrated)
+    try:
+        reparsed = tomllib.loads(text)
+    except Exception as error:
+        print(f"refusing to write corrupt output: {error}", file=sys.stderr)
+        return 1
+    if reparsed != migrated:
+        print("refusing to write corrupt output: round trip mismatch", file=sys.stderr)
+        return 1
     backup = path.with_suffix(path.suffix + ".bak")
-    shutil.copyfile(path, backup)
-    path.write_text(dump(migrated))
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    shutil.copy2(path, backup)
+    os.chmod(backup, mode)
+    # Atomic write: a temp file in the same directory keeps the original mode,
+    # then replaces the config so a crash never leaves a half-written file.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w") as tmp:
+            tmp.write(text)
+        os.chmod(tmp_name, mode)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
     for old, new in moved:
         print(f"moved {old} -> {new}")
     for key in unknown:
-        print(f"kept unknown top-level key: {key}", file=sys.stderr)
+        print(f"kept unknown key: {key}", file=sys.stderr)
     print(f"wrote {path} (backup at {backup})")
     return 0
 

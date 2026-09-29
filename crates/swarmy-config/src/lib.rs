@@ -56,6 +56,8 @@ pub enum Error {
 mod duration {
     use std::time::Duration;
 
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
     #[derive(Clone, Copy)]
     pub(crate) enum Unit {
         Secs,
@@ -69,49 +71,65 @@ mod duration {
         Ok(value)
     }
 
-    pub(crate) mod secs {
-        use super::ensure_positive;
-        use std::time::Duration;
-
-        use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-        pub(crate) fn serialize<S: Serializer>(
-            value: &Duration,
-            serializer: S,
-        ) -> Result<S::Ok, S::Error> {
-            value.as_secs().serialize(serializer)
-        }
-
-        pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
-            deserializer: D,
-        ) -> Result<Duration, D::Error> {
-            let secs = u64::deserialize(deserializer)?;
-            ensure_positive(secs).map_err(serde::de::Error::custom)?;
-            Ok(Duration::from_secs(secs))
+    fn as_u64(value: Duration, unit: Unit) -> Result<u64, String> {
+        match unit {
+            Unit::Secs => Ok(value.as_secs()),
+            Unit::Millis => {
+                u64::try_from(value.as_millis()).map_err(|_| "duration too large".to_owned())
+            }
         }
     }
 
-    pub(crate) mod ms {
-        use super::ensure_positive;
-        use std::time::Duration;
-
-        use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-        pub(crate) fn serialize<S: Serializer>(
-            value: &Duration,
-            serializer: S,
-        ) -> Result<S::Ok, S::Error> {
-            let millis = u64::try_from(value.as_millis()).map_err(serde::ser::Error::custom)?;
-            millis.serialize(serializer)
+    fn from_u64(raw: u64, unit: Unit) -> Duration {
+        match unit {
+            Unit::Secs => Duration::from_secs(raw),
+            Unit::Millis => Duration::from_millis(raw),
         }
+    }
 
-        pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
-            deserializer: D,
-        ) -> Result<Duration, D::Error> {
-            let millis = u64::deserialize(deserializer)?;
-            ensure_positive(millis).map_err(serde::de::Error::custom)?;
-            Ok(Duration::from_millis(millis))
-        }
+    fn serialize_with_unit<S: Serializer>(
+        value: &Duration,
+        serializer: S,
+        unit: Unit,
+    ) -> Result<S::Ok, S::Error> {
+        as_u64(*value, unit)
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
+
+    fn deserialize_with_unit<'de, D: Deserializer<'de>>(
+        deserializer: D,
+        unit: Unit,
+    ) -> Result<Duration, D::Error> {
+        let raw = u64::deserialize(deserializer)?;
+        ensure_positive(raw).map_err(serde::de::Error::custom)?;
+        Ok(from_u64(raw, unit))
+    }
+
+    pub(crate) fn serialize_secs<S: Serializer>(
+        value: &Duration,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serialize_with_unit(value, serializer, Unit::Secs)
+    }
+
+    pub(crate) fn deserialize_secs<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Duration, D::Error> {
+        deserialize_with_unit(deserializer, Unit::Secs)
+    }
+
+    pub(crate) fn serialize_ms<S: Serializer>(
+        value: &Duration,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serialize_with_unit(value, serializer, Unit::Millis)
+    }
+
+    pub(crate) fn deserialize_ms<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Duration, D::Error> {
+        deserialize_with_unit(deserializer, Unit::Millis)
     }
 
     /// Parse an environment value in the given unit, rejecting zero.
@@ -169,7 +187,10 @@ const DEFAULT_NODE_CAPACITY: swarmy_core::NodeCapacity = swarmy_core::NodeCapaci
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct VolumeSnapshots {
-    #[serde(with = "duration::secs")]
+    #[serde(
+        serialize_with = "duration::serialize_secs",
+        deserialize_with = "duration::deserialize_secs"
+    )]
     pub period_secs: Duration,
     pub retention: std::num::NonZeroUsize,
 }
@@ -186,9 +207,15 @@ impl Default for VolumeSnapshots {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GarbageCollection {
-    #[serde(with = "duration::secs")]
+    #[serde(
+        serialize_with = "duration::serialize_secs",
+        deserialize_with = "duration::deserialize_secs"
+    )]
     pub grace_secs: Duration,
-    #[serde(with = "duration::secs")]
+    #[serde(
+        serialize_with = "duration::serialize_secs",
+        deserialize_with = "duration::deserialize_secs"
+    )]
     pub interval_secs: Duration,
     pub filter_bytes: std::num::NonZeroUsize,
     pub batch_size: std::num::NonZeroUsize,
@@ -198,11 +225,20 @@ pub struct GarbageCollection {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Inference {
-    #[serde(with = "duration::secs")]
+    #[serde(
+        serialize_with = "duration::serialize_secs",
+        deserialize_with = "duration::deserialize_secs"
+    )]
     pub max_wait_secs: Duration,
-    #[serde(with = "duration::secs")]
+    #[serde(
+        serialize_with = "duration::serialize_secs",
+        deserialize_with = "duration::deserialize_secs"
+    )]
     pub max_backoff_secs: Duration,
-    #[serde(with = "duration::secs")]
+    #[serde(
+        serialize_with = "duration::serialize_secs",
+        deserialize_with = "duration::deserialize_secs"
+    )]
     pub gateway_wait_secs: Duration,
     pub default_route: Option<String>,
 }
@@ -292,7 +328,10 @@ impl Default for S3Settings {
 pub struct BusSettings {
     pub nats_url: String,
     pub prefix: String,
-    #[serde(with = "duration::ms")]
+    #[serde(
+        serialize_with = "duration::serialize_ms",
+        deserialize_with = "duration::deserialize_ms"
+    )]
     pub ack_wait_ms: Duration,
     pub max_deliver: u64,
 }
@@ -329,9 +368,15 @@ impl BusSettings {
 #[serde(default, deny_unknown_fields)]
 pub struct WorkerSettings {
     pub partitions: Partitions,
-    #[serde(with = "duration::ms")]
+    #[serde(
+        serialize_with = "duration::serialize_ms",
+        deserialize_with = "duration::deserialize_ms"
+    )]
     pub lease_ms: Duration,
-    #[serde(with = "duration::ms")]
+    #[serde(
+        serialize_with = "duration::serialize_ms",
+        deserialize_with = "duration::deserialize_ms"
+    )]
     pub recovery_interval_ms: Duration,
     pub kill_point: Option<String>,
 }
@@ -351,13 +396,25 @@ impl Default for WorkerSettings {
 #[serde(default, deny_unknown_fields)]
 pub struct SchedulerSettings {
     pub partitions: Partitions,
-    #[serde(with = "duration::ms")]
+    #[serde(
+        serialize_with = "duration::serialize_ms",
+        deserialize_with = "duration::deserialize_ms"
+    )]
     pub scan_interval_ms: Duration,
-    #[serde(with = "duration::ms")]
+    #[serde(
+        serialize_with = "duration::serialize_ms",
+        deserialize_with = "duration::deserialize_ms"
+    )]
     pub resend_interval_ms: Duration,
-    #[serde(with = "duration::secs")]
+    #[serde(
+        serialize_with = "duration::serialize_secs",
+        deserialize_with = "duration::deserialize_secs"
+    )]
     pub ephemeral_retention_secs: Duration,
-    #[serde(with = "duration::secs")]
+    #[serde(
+        serialize_with = "duration::serialize_secs",
+        deserialize_with = "duration::deserialize_secs"
+    )]
     pub placement_lease_secs: Duration,
 }
 impl Default for SchedulerSettings {
@@ -393,7 +450,10 @@ pub struct NodeSettings {
     pub capacity: swarmy_core::NodeCapacity,
     /// When set, advertise RAM minus this reserve as sandbox memory.
     pub memory_reserve_mib: Option<u64>,
-    #[serde(with = "duration::ms")]
+    #[serde(
+        serialize_with = "duration::serialize_ms",
+        deserialize_with = "duration::deserialize_ms"
+    )]
     pub heartbeat_interval_ms: Duration,
 }
 impl Default for NodeSettings {
@@ -532,7 +592,10 @@ pub struct Settings {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SandboxSettings {
-    #[serde(with = "duration::secs")]
+    #[serde(
+        serialize_with = "duration::serialize_secs",
+        deserialize_with = "duration::deserialize_secs"
+    )]
     pub idle_secs: Duration,
     pub scratch_idle_days: u64,
     pub scratch_high_water: u8,
