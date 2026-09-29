@@ -341,7 +341,7 @@ async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnapshot>
 /// Registered nodes with committed sandbox memory for the doctor snapshot.
 async fn registered_nodes(
     state: &AppState,
-) -> Result<Vec<api::DoctorNode>, (http::StatusCode, Json<api::ApiError>)> {
+) -> Result<Vec<api::DoctorNode>, (StatusCode, Json<api::ApiError>)> {
     let mut nodes = Vec::new();
     let mut after = None;
     loop {

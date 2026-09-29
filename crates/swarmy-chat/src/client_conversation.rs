@@ -106,7 +106,7 @@ const PICKUP_DEADLINE: Duration = Duration::from_secs(30);
 /// endpoint the binary resolved so every client error names it.
 pub(crate) async fn call<T>(
     endpoint: &str,
-    future: impl std::future::Future<Output = Result<T, swarmy_client::Error>>,
+    future: impl Future<Output = Result<T, swarmy_client::Error>>,
 ) -> Result<T, Error> {
     swarmy_client::timed_call(future)
         .await
