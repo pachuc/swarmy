@@ -516,9 +516,12 @@ async fn failover(
             lease,
             seq,
             error,
-            swarmy_core::FailureKind::Unknown,
-            retry_at,
-            step,
+            swarmy_store::RouteFailure {
+                failure_kind: swarmy_core::FailureKind::Unknown,
+                retry_at,
+                route_step: step,
+                max_wait: Duration::from_secs(3600),
+            },
             swarmy_store::RouteSelection {
                 session_route: Some("fallback"),
                 session_provider: Some("openai"),
@@ -526,7 +529,6 @@ async fn failover(
                 default_provider: "openai",
                 now,
             },
-            Duration::from_secs(3600),
         )
         .await
         .unwrap()
@@ -675,9 +677,12 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
                 &stale,
                 9,
                 "openai/primary: quota reached",
-                swarmy_core::FailureKind::Unknown,
-                retry_at,
-                0,
+                swarmy_store::RouteFailure {
+                    failure_kind: swarmy_core::FailureKind::Unknown,
+                    retry_at: retry_at,
+                    route_step: 0,
+                    max_wait: Duration::from_secs(3600),
+                },
                 swarmy_store::RouteSelection {
                     session_route: Some("fallback"),
                     session_provider: Some("openai"),
@@ -685,7 +690,6 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
                     default_provider: "openai",
                     now
                 },
-                Duration::from_secs(3600)
             )
             .await,
         Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
@@ -816,9 +820,12 @@ async fn failover_resume_after_advance_is_a_noop() {
             &lease,
             seq,
             "openai/primary: quota reached",
-            swarmy_core::FailureKind::Unknown,
-            retry_at,
-            route_step,
+            swarmy_store::RouteFailure {
+                failure_kind: swarmy_core::FailureKind::Unknown,
+                retry_at: retry_at,
+                route_step: route_step,
+                max_wait: Duration::from_secs(3600),
+            },
             swarmy_store::RouteSelection {
                 session_route: Some("fallback"),
                 session_provider: Some("openai"),
@@ -826,7 +833,6 @@ async fn failover_resume_after_advance_is_a_noop() {
                 default_provider: "openai",
                 now: Timestamp::now(),
             },
-            Duration::from_secs(3600),
         )
     };
     // The first handling advances past the failed step in one transaction.
@@ -886,9 +892,12 @@ async fn failover_and_park_cost_one_transaction_each() {
             &lease,
             7,
             "openai/primary: quota reached",
-            swarmy_core::FailureKind::Unknown,
-            retry_at,
-            0,
+            swarmy_store::RouteFailure {
+                failure_kind: swarmy_core::FailureKind::Unknown,
+                retry_at: retry_at,
+                route_step: 0,
+                max_wait: Duration::from_secs(3600),
+            },
             swarmy_store::RouteSelection {
                 session_route: Some("fallback"),
                 session_provider: Some("openai"),
@@ -896,7 +905,6 @@ async fn failover_and_park_cost_one_transaction_each() {
                 default_provider: "openai",
                 now,
             },
-            Duration::from_secs(3600),
         )
         .await
         .unwrap();
@@ -922,9 +930,12 @@ async fn failover_and_park_cost_one_transaction_each() {
             &lease,
             8,
             "openai/backup: quota reached",
-            swarmy_core::FailureKind::Unknown,
-            retry_at,
-            1,
+            swarmy_store::RouteFailure {
+                failure_kind: swarmy_core::FailureKind::Unknown,
+                retry_at: retry_at,
+                route_step: 1,
+                max_wait: Duration::from_secs(3600),
+            },
             swarmy_store::RouteSelection {
                 session_route: Some("fallback"),
                 session_provider: Some("openai"),
@@ -932,7 +943,6 @@ async fn failover_and_park_cost_one_transaction_each() {
                 default_provider: "openai",
                 now,
             },
-            Duration::from_secs(3600),
         )
         .await
         .unwrap();

@@ -119,6 +119,17 @@ pub struct RouteCache {
     breakers: HashMap<BreakerKey, BreakerState>,
 }
 
+/// The failure inputs for one atomic failover step: what failed, when to
+/// retry it, where the session was in the chain, and how long parking may
+/// wait. Grouped so the step takes five arguments instead of nine.
+#[derive(Clone, Copy, Debug)]
+pub struct RouteFailure {
+    pub failure_kind: swarmy_core::FailureKind,
+    pub retry_at: Timestamp,
+    pub route_step: u32,
+    pub max_wait: std::time::Duration,
+}
+
 /// The five route-selection inputs shared by every snapshot and failover
 /// call: the session override, the swarm default, and the clock. The agent
 /// override is read inside the transaction, so it is not part of this group.
@@ -763,21 +774,14 @@ impl Store {
     /// failure or parks the session with the successor's request in flight.
     /// # Errors
     /// Rejects stale leases or returns storage failures.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one atomic failover step needs its fence, failure, and route inputs together"
-    )]
     pub async fn failover_route_step(
         &self,
         id: SessionId,
         lease: &Lease,
         seq: u64,
         error: &str,
-        failure_kind: swarmy_core::FailureKind,
-        retry_at: Timestamp,
-        route_step: u32,
+        failure: RouteFailure,
         selection: RouteSelection<'_>,
-        max_wait: std::time::Duration,
     ) -> Result<FailoverOutcome> {
         let now = selection.now;
         self.transaction(|trx| async move {
@@ -811,7 +815,7 @@ impl Store {
                 )
                 .await?;
             let route = snapshot.name.clone();
-            if failure_kind == swarmy_core::FailureKind::GatewayUnserved {
+            if failure.failure_kind == swarmy_core::FailureKind::GatewayUnserved {
                 self.park_leased_in(
                     &trx,
                     id,
@@ -819,10 +823,10 @@ impl Store {
                     &InferenceFailureWait {
                         seq,
                         reason: error,
-                        wake_at: retry_at,
+                        wake_at: failure.retry_at,
                     },
                     now,
-                    max_wait,
+                    failure.max_wait,
                 )
                 .await?;
                 return Ok(FailoverOutcome {
@@ -831,10 +835,10 @@ impl Store {
                     skipped: snapshot.skipped.clone(),
                 });
             }
-            if let Some(target) = snapshot.pick(route_step.saturating_add(1)) {
+            if let Some(target) = snapshot.pick(failure.route_step.saturating_add(1)) {
                 let target = u32::try_from(target).unwrap_or(u32::MAX);
-                if target != route_step {
-                    let reasons = failover_reasons(&snapshot, route_step, target, error);
+                if target != failure.route_step {
+                    let reasons = failover_reasons(&snapshot, failure.route_step, target, error);
                     self.write_route_step_in(&trx, id, target, seq, &reasons, now)
                         .await?;
                     return Ok(FailoverOutcome {
@@ -848,7 +852,7 @@ impl Store {
                 // failure's retry time is safer than retrying the same step
                 // in a tight loop.
             }
-            let earliest = Self::earliest_retry(&snapshot.steps, retry_at);
+            let earliest = Self::earliest_retry(&snapshot.steps, failure.retry_at);
             self.park_leased_in(
                 &trx,
                 id,
@@ -859,7 +863,7 @@ impl Store {
                     wake_at: earliest,
                 },
                 now,
-                max_wait,
+                failure.max_wait,
             )
             .await?;
             let mut session = self.session(&trx, id).await?;

@@ -501,17 +501,13 @@ impl Worker {
                     lease_ref,
                     seq,
                     error,
-                    failure_kind,
-                    retry_at,
-                    session.route_step,
-                    swarmy_store::RouteSelection {
-                        session_route: session.route.as_deref(),
-                        session_provider: session.inference.provider.as_deref(),
-                        default_route: self.config.default_route.as_deref(),
-                        default_provider: &self.config.provider,
-                        now,
+                    swarmy_store::RouteFailure {
+                        failure_kind,
+                        retry_at,
+                        route_step: session.route_step,
+                        max_wait: self.config.max_inference_wait,
                     },
-                    self.config.max_inference_wait,
+                    super::route_selection(session, &self.config, now),
                 )
                 .await?
         };
