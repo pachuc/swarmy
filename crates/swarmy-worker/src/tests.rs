@@ -52,12 +52,11 @@ impl Tool for SlowTool {
     }
 }
 
-fn config(cluster: String, url: String, prefix: &str, calls: Arc<AtomicUsize>) -> Config {
+fn config(url: String, prefix: &str, calls: Arc<AtomicUsize>) -> Config {
     let mut tools = ToolRegistry::default();
     tools.register(Box::new(SlowTool(calls)));
     Config {
-        cluster,
-        directory: vec![prefix.into()],
+        settings: swarmy_config::Settings::default(),
         nats: url,
         bus: BusConfig {
             prefix: Some(SubjectToken::new(prefix).unwrap()),
@@ -156,9 +155,9 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
     NETWORK.get_or_init(swarmy_store::boot);
     let prefix = format!("worker_slow_{}", Ulid::generate());
     let calls = Arc::new(AtomicUsize::new(0));
-    let config = config(cluster.clone(), url.clone(), &prefix, calls.clone());
+    let config = config(url.clone(), &prefix, calls.clone());
     let blobs = Arc::new(MemoryBlobStore::default());
-    let store = Store::open(Some(&cluster), Some(&config.directory), blobs.clone())
+    let store = Store::open(Some(&cluster), Some(&[prefix.to_owned()]), blobs.clone())
         .await
         .unwrap();
     let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
@@ -346,9 +345,9 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
     NETWORK.get_or_init(swarmy_store::boot);
     let prefix = format!("worker_slow_{}", Ulid::generate());
     let calls = Arc::new(AtomicUsize::new(0));
-    let config = config(cluster.clone(), url.clone(), &prefix, calls.clone());
+    let config = config(url.clone(), &prefix, calls.clone());
     let blobs = Arc::new(MemoryBlobStore::default());
-    let store = Store::open(Some(&cluster), Some(&config.directory), blobs.clone())
+    let store = Store::open(Some(&cluster), Some(&[prefix.to_owned()]), blobs.clone())
         .await
         .unwrap();
     let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();

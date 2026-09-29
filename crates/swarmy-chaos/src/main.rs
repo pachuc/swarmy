@@ -41,12 +41,7 @@ use config::Config;
 use process::{Kind, Process};
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    swarmy_config::init_tracing("info");
     let config = swarmy_version::parse::<Config>("swarmy-chaos")?;
     config.validate()?;
     if !config.no_start_stack {
@@ -81,14 +76,16 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Result<Self> {
         let prefix = format!("chaos_{}", Ulid::generate());
+        let settings = swarmy_config::Settings::load()?.settings;
+        let cluster = settings.fdb_cluster_file.to_string_lossy().into_owned();
         let store = Store::open(
-            Some(&swarmy_config::Settings::load()?.settings.fdb_cluster_file),
+            Some(&cluster),
             Some(std::slice::from_ref(&prefix)),
             Arc::new(ObjectBlobStore::from_env()?),
         )
         .await?;
         let bus = Bus::connect(
-            &swarmy_config::Settings::load()?.settings.nats_url,
+            &settings.bus.nats_url,
             BusConfig {
                 prefix: Some(SubjectToken::new(&prefix)?),
                 ack_wait: Duration::from_millis(1200),
@@ -111,17 +108,7 @@ impl Fixture {
     async fn import_image(&mut self, image: &str) -> Result<()> {
         let (name, tag) = image.split_once(':').context("expected image NAME:TAG")?;
         let settings = swarmy_config::Settings::load()?.settings;
-        let directory: Vec<_> = settings
-            .store_directory
-            .split('/')
-            .map(str::to_owned)
-            .collect();
-        let images = Store::open(
-            Some(&settings.fdb_cluster_file),
-            Some(&directory),
-            Arc::new(ObjectBlobStore::from_env()?),
-        )
-        .await?;
+        let (images, _) = Store::open_store(&settings).await?;
         let manifest = images
             .get_image(name, &swarmy_core::ImageTag(tag.into()))
             .await?
@@ -446,9 +433,9 @@ impl Fixture {
             }
         }
         // Like the service integration fixtures, remove only this run's directory and streams.
-        let db = Database::new(Some(
-            &swarmy_config::Settings::load()?.settings.fdb_cluster_file,
-        ))?;
+        let settings = swarmy_config::Settings::load()?.settings;
+        let cluster = settings.fdb_cluster_file.to_string_lossy().into_owned();
+        let db = Database::new(Some(&cluster))?;
         let path = vec![self.prefix.clone()];
         db.run(|trx, _| {
             let path = &path;
@@ -461,7 +448,7 @@ impl Fixture {
         })
         .await?;
         let context = async_nats::jetstream::new(
-            async_nats::connect(swarmy_config::Settings::load()?.settings.nats_url).await?,
+            async_nats::connect(settings.bus.nats_url).await?,
         );
         for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
             context

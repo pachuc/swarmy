@@ -111,11 +111,11 @@ mod tests {
             return;
         }
         let mut settings = swarmy_config::Settings::load().unwrap().settings;
-        settings.s3_prefix = format!("prefix-test-{}", ulid::Ulid::generate())
+        settings.s3.prefix = format!("prefix-test-{}", ulid::Ulid::generate())
             .parse()
             .unwrap();
         let root = ObjectBlobStore::from_settings(&settings).unwrap();
-        settings.s3_prefix = format!("{}/inside", settings.s3_prefix.as_str())
+        settings.s3.prefix = format!("{}/inside", settings.s3.prefix.as_str())
             .parse()
             .unwrap();
         let scoped = ObjectBlobStore::from_settings(&settings).unwrap();

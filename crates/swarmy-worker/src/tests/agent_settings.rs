@@ -24,13 +24,13 @@ impl Fixture {
         };
         NETWORK.get_or_init(swarmy_store::boot);
         let prefix = format!("agent_inference_{}", Ulid::generate());
-        let mut config = config(cluster.clone(), url.clone(), &prefix, Arc::default());
+        let mut config = config(url.clone(), &prefix, Arc::default());
         config.lease_duration = Duration::from_secs(5);
         config.harness.system_prompt_template = "Default system prompt.\n".into();
         config.harness.settings.model = "default-model".into();
         config.harness.settings.reasoning_effort = Some(ReasoningEffort::Medium);
         let blobs = Arc::new(MemoryBlobStore::default());
-        let store = Store::open(Some(&cluster), Some(&config.directory), blobs.clone())
+        let store = Store::open(Some(&cluster), Some(&[prefix.to_owned()]), blobs.clone())
             .await
             .unwrap();
         image_fixture::image(&store).await;

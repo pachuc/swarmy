@@ -437,6 +437,24 @@ impl Store {
         })
     }
 
+    /// Open the store described by `settings`: its cluster file, directory
+    /// namespace, and object namespace. Every service starts here instead of
+    /// splitting `store_directory` and building a blob client by hand.
+    /// # Errors
+    /// Returns configuration, client, directory, or transaction errors.
+    pub async fn open_store(
+        settings: &swarmy_config::Settings,
+    ) -> Result<(Self, std::sync::Arc<crate::blob::ObjectBlobStore>)> {
+        let directory = settings
+            .store_directory_path()
+            .map_err(crate::blob::BlobError::from)?;
+        let cluster = settings.fdb_cluster_file.to_string_lossy().into_owned();
+        let objects = crate::objects::from_settings(settings)?;
+        let blobs = Arc::new(crate::blob::ObjectBlobStore::new(objects));
+        let store = Self::open(Some(&cluster), Some(&directory), blobs.clone()).await?;
+        Ok((store, blobs))
+    }
+
     /// Use an explicitly allocated root prefix, primarily for isolated tests.
     #[must_use]
     pub fn with_subspace(db: Arc<Database>, root: Subspace, blobs: Arc<dyn BlobStore>) -> Self {

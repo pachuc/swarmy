@@ -1,12 +1,11 @@
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use std::{collections::BTreeSet, time::Duration};
 use swarmy_bus::{Config as BusConfig, SubjectToken};
 use swarmy_harness::{GetTime, Harness, ToolRegistry};
-use swarmy_llm::{GenerationSettings, ReasoningEffort};
+use swarmy_llm::GenerationSettings;
 
 pub struct Config {
-    pub cluster: String,
-    pub directory: Vec<String>,
+    pub settings: swarmy_config::Settings,
     pub nats: String,
     pub bus: BusConfig,
     pub partitions: BTreeSet<u16>,
@@ -31,26 +30,14 @@ impl Config {
     pub fn from_env() -> Result<Self> {
         let settings = swarmy_config::Settings::load()?.settings;
         let catalog = settings.catalog()?;
-        let provider = settings.provider;
+        let provider = settings.selection.provider.clone();
         ensure!(
             catalog.provider(&provider).is_some(),
             "unsupported SWARMY_PROVIDER"
         );
-        let directory: Vec<_> = settings
-            .store_directory
-            .split('/')
-            .map(str::to_owned)
-            .collect();
-        ensure!(
-            directory.iter().all(|part| !part.is_empty()),
-            "empty store directory component"
-        );
-        let prefix = settings.bus_prefix;
-        let effort = settings
-            .reasoning_effort
-            .parse::<ReasoningEffort>()
-            .context("invalid SWARMY_REASONING_EFFORT")?;
-        let kill_point = settings.worker_kill_point;
+        let prefix = settings.bus.prefix.clone();
+        let effort = settings.selection.effort;
+        let kill_point = settings.worker.kill_point.clone();
         ensure!(
             kill_point.as_deref().is_none_or(|value| matches!(
                 value,
@@ -67,45 +54,48 @@ impl Config {
         swarmy_tools::register(&mut tools);
         swarmy_tools::register_display(&mut tools);
         Ok(Self {
-            cluster: settings.fdb_cluster_file,
-            directory,
-            nats: settings.nats_url,
+            nats: settings.bus.nats_url.clone(),
             bus: BusConfig {
                 prefix: if prefix.is_empty() {
                     None
                 } else {
                     Some(SubjectToken::new(prefix)?)
                 },
-                ack_wait: duration(settings.bus_ack_wait_ms)?,
-                max_deliver: settings.bus_max_deliver,
+                ack_wait: duration(settings.bus.ack_wait)?,
+                max_deliver: settings.bus.max_deliver_i64(),
             },
-            partitions: swarmy_config::parse_partitions(&settings.worker_partitions)
-                .map_err(|error| anyhow::anyhow!("SWARMY_WORKER_PARTITIONS: {error}"))?,
+            partitions: settings.worker.partitions.0.clone(),
             provider,
-            lease_duration: duration(settings.worker_lease_ms)?,
-            placement_lease: Duration::from_secs(settings.placement_lease_seconds.get()),
-            recovery_interval: duration(settings.worker_recovery_interval_ms)?,
+            lease_duration: duration(settings.worker.lease)?,
+            placement_lease: settings.placement_lease,
+            recovery_interval: duration(settings.worker.recovery_interval)?,
             harness: Harness {
-                system_prompt_template: settings.system_prompt,
+                system_prompt_template: settings.context.system_prompt.clone(),
                 settings: GenerationSettings {
-                    model: settings.model,
+                    model: settings.selection.model.clone(),
                     reasoning_effort: Some(effort),
                     ..Default::default()
                 },
                 tools,
             },
-            summarize_at_tokens: settings.summarize_at_tokens.map(std::num::NonZeroU64::get),
+            summarize_at_tokens: settings.context.summarize_at.map(std::num::NonZeroU64::get),
             model_context_window_tokens: settings
-                .model_context_window_tokens
+                .context
+                .context_window
                 .map(std::num::NonZeroU64::get),
             catalog,
-            memory_dir: settings.memory_dir,
-            memory_max_bytes: settings.memory_max_bytes.get(),
+            memory_dir: settings
+                .memory
+                .dir
+                .to_string_lossy()
+                .into_owned(),
+            memory_max_bytes: settings.memory.max_bytes.get(),
             kill_point,
-            max_inference_wait: Duration::from_secs(settings.inference.max_wait_seconds.get()),
-            gateway_wait: Duration::from_secs(settings.inference.gateway_wait_seconds.get()),
-            allowed_providers: settings.providers,
-            default_route: settings.inference.default_route,
+            max_inference_wait: settings.inference.max_wait,
+            gateway_wait: settings.inference.gateway_wait,
+            allowed_providers: settings.selection.providers.clone(),
+            default_route: settings.inference.default_route.clone(),
+            settings,
         })
     }
 }
@@ -126,7 +116,10 @@ impl Config {
     }
 }
 
-fn duration(millis: u64) -> Result<Duration> {
-    ensure!(millis >= 30, "worker duration must be at least 30 ms");
-    Ok(Duration::from_millis(millis))
+fn duration(value: Duration) -> Result<Duration> {
+    ensure!(
+        value >= Duration::from_millis(30),
+        "worker duration must be at least 30 ms"
+    );
+    Ok(value)
 }

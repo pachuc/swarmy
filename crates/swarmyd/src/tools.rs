@@ -27,8 +27,8 @@ pub fn spawn(
         store.clone(),
         node,
         hosting.clone(),
-        Duration::from_millis(settings.bus_ack_wait_ms),
-        Duration::from_millis(settings.scheduler_resend_interval_ms),
+        settings.bus.ack_wait,
+        settings.scheduler.resend_interval,
     ))
 }
 

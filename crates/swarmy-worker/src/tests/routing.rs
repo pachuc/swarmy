@@ -109,7 +109,7 @@ impl Fixture {
         };
         NETWORK.get_or_init(swarmy_store::boot);
         let prefix = format!("routing_{}", Ulid::generate());
-        let mut config = config(cluster.clone(), url.clone(), &prefix, Arc::default());
+        let mut config = config(url.clone(), &prefix, Arc::default());
         config.harness.tools.register(Box::new(swarmy_tools::Bash));
         config
             .harness
@@ -118,7 +118,7 @@ impl Fixture {
         config.partitions = (0..256).collect();
         config.bus.ack_wait = Duration::from_millis(200);
         let blobs = Arc::new(MemoryBlobStore::default());
-        let store = Store::open(Some(&cluster), Some(&config.directory), blobs.clone())
+        let store = Store::open(Some(&cluster), Some(&[prefix.to_owned()]), blobs.clone())
             .await
             .unwrap();
         let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();

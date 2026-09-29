@@ -7,42 +7,28 @@ use std::sync::Arc;
 
 use jiff::Timestamp;
 use swarmy_bus::{Bus, SubjectToken};
-use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::ObjectBlobStore};
+use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store};
 use tokio::time::{Duration, interval};
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-scheduler")?;
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
+    swarmy_config::init_tracing("info");
     let config = config::Config::from_env()?;
     let settings = swarmy_config::Settings::load()?.settings;
-    let cluster = settings.fdb_cluster_file;
-    let url = settings.nats_url;
-    let directory: Vec<String> = settings
-        .store_directory
-        .split('/')
-        .map(str::to_owned)
-        .collect();
-    anyhow::ensure!(
-        directory.iter().all(|part| !part.is_empty()),
-        "empty store directory component"
-    );
+    let url = settings.bus.nats_url.clone();
     let bus_config = swarmy_bus::Config {
-        prefix: if settings.bus_prefix.is_empty() {
+        prefix: if settings.bus.prefix.is_empty() {
             None
         } else {
-            Some(SubjectToken::new(settings.bus_prefix)?)
+            Some(SubjectToken::new(settings.bus.prefix.clone())?)
         },
-        ack_wait: std::time::Duration::from_millis(settings.bus_ack_wait_ms),
-        max_deliver: settings.bus_max_deliver,
+        ack_wait: settings.bus.ack_wait,
+        max_deliver: settings.bus.max_deliver_i64(),
     };
-    let blobs = Arc::new(ObjectBlobStore::from_env()?);
+    let (store, blobs) = Store::open_store(&settings).await?;
     let objects = blobs.object_store();
     let _network = swarmy_store::boot();
-    let store = Store::open(Some(&cluster), Some(&directory), blobs).await?;
     let bus = Bus::connect(&url, bus_config).await?;
     // Workers create consumers for their routes; the scheduler only needs streams.
     bus.setup(&[]).await?;
@@ -76,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
         result = scheduler.run() => result?,
         () = health => {},
         () = gc::run(&store, objects, settings.gc, settings.metering) => {},
-        () = ephemeral::run(&store, settings.ephemeral_retention_seconds) => {},
+        () = ephemeral::run(&store, settings.ephemeral_retention) => {},
         result = tokio::signal::ctrl_c() => result?,
     }
     Ok(())

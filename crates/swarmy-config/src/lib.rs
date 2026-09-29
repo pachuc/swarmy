@@ -288,6 +288,13 @@ impl Default for BusSettings {
         }
     }
 }
+impl BusSettings {
+    /// `max_deliver` for `swarmy_bus::Config`, saturating on absurd values.
+    #[must_use]
+    pub fn max_deliver_i64(&self) -> i64 {
+        i64::try_from(self.max_deliver).unwrap_or(i64::MAX)
+    }
+}
 
 /// Step worker progress: owned partitions, lease timing, and failure injection.
 #[derive(Clone, Debug, Serialize, Deserialize)]
