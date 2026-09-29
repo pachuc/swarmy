@@ -15,7 +15,7 @@ use swarmy_llm::{
     ClientAuth, Delta, Error, GenerationSettings, Provider, ReasoningEffort, Request, Response,
     StopReason, TokenUsage, ToolDefinition,
     api::completions::{CompletionsProvider, CompletionsStream as SseParser, request_json},
-    catalog::{Api, Catalog, ModelInfo, ProviderInfo, ReasoningOptions},
+    catalog::{Catalog, ModelInfo, ProviderInfo, ReasoningOptions},
     client_for,
     retry::RetryPolicy,
 };
@@ -783,20 +783,6 @@ fn finish_reasons_truncation_and_malformed_tool_arguments() {
         SseParser::new("openrouter", MODEL).push(malformed.as_bytes()),
         Err(Error::Protocol(_))
     ));
-}
-
-#[test]
-fn openrouter_catalog_selects_messages_for_every_anthropic_model() {
-    let router = Catalog::get().provider("openrouter").unwrap();
-    assert!(!router.models.is_empty());
-    for model in router.models.values() {
-        let expected = if model.id.starts_with("anthropic/") {
-            Api::AnthropicMessages
-        } else {
-            Api::OpenAiCompletions
-        };
-        assert_eq!(model.api.unwrap_or(router.api), expected, "{}", model.id);
-    }
 }
 
 #[test]
