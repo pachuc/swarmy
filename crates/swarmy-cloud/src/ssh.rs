@@ -400,13 +400,10 @@ impl Ssh {
                 })?;
         let mode = if let Some(primary) = primary {
             let source = wait_ssh(primary).await?;
-            let primary_repo = service_repo(primary)?;
-            let primary_cluster = format!("{primary_repo}/.dev/fdb.cluster");
-            let cluster_file = shell_words::quote(&primary_cluster);
             let cluster = run_output(
                 base(primary)?
                     .arg(&source)
-                    .arg(format!("cat {cluster_file}")),
+                    .arg(read_cluster_command(primary)?),
                 "read primary cluster file",
             )
             .await?;
@@ -415,16 +412,10 @@ impl Ssh {
                 cluster.trim().ends_with("@127.0.0.1:4500"),
                 "primary cluster file does not advertise loopback port 4500; recreate this remote",
             )?;
-            let repo = service_repo(node)?;
-            let dev_path = format!("{repo}/.dev");
-            let dev_dir = shell_words::quote(&dev_path);
-            let cluster_path = format!("{repo}/.dev/fdb.cluster");
-            let cluster_file = shell_words::quote(&cluster_path);
             checked(
-                base(node)?.arg(&address).arg(format!(
-                    "mkdir -p {dev_dir} && printf %s {} > {cluster_file}",
-                    shell_words::quote(&cluster)
-                )),
+                base(node)?
+                    .arg(&address)
+                    .arg(copy_cluster_command(node, &cluster)?),
                 "copy primary cluster file",
             )
             .await?;
@@ -502,9 +493,11 @@ fn provisioning_command(
 /// Reports SSH failures and image build failures on the node.
 pub async fn build_image(node: &RemoteNode, address: &str, recipe: &Path) -> Result<()> {
     checked(
-        base(node)?
-            .arg(address)
-            .arg(image_build_command(&service_repo(node)?, recipe, &node.name)?),
+        base(node)?.arg(address).arg(image_build_command(
+            &service_repo(node)?,
+            recipe,
+            &node.name,
+        )?),
         "build and register remote image",
     )
     .await
@@ -533,6 +526,50 @@ fn image_build_command(repo: &str, recipe: &Path, tag: &str) -> Result<String> {
     ))
 }
 
+/// Remote commands built synchronously so their temporaries never inflate
+/// the provisioning futures. Each validates the service user first, keeping
+/// the derived paths data, never shell.
+fn read_cluster_command(primary: &RemoteNode) -> Result<String> {
+    let repo = service_repo(primary)?;
+    Ok(format!(
+        "cat {}",
+        shell_words::quote(&format!("{repo}/.dev/fdb.cluster"))
+    ))
+}
+
+fn copy_cluster_command(node: &RemoteNode, cluster: &str) -> Result<String> {
+    let repo = service_repo(node)?;
+    Ok(format!(
+        "mkdir -p {} && printf %s {} > {}",
+        shell_words::quote(&format!("{repo}/.dev")),
+        shell_words::quote(cluster),
+        shell_words::quote(&format!("{repo}/.dev/fdb.cluster")),
+    ))
+}
+
+fn tunnel_key_command(node: &RemoteNode) -> Result<String> {
+    let repo = service_repo(node)?;
+    let dot = format!("{repo}/.swarmy");
+    let dot_quoted = shell_words::quote(&dot);
+    let key = format!("{dot}/tunnel-key");
+    let key_quoted = shell_words::quote(&key);
+    let pub_key = format!("{key}.pub");
+    let pub_quoted = shell_words::quote(&pub_key);
+    Ok(format!(
+        "umask 077; mkdir -p {dot_quoted}; test -f {key_quoted} || ssh-keygen -q -t ed25519 -N '' -f {key_quoted}; cat {pub_quoted}",
+    ))
+}
+
+fn pin_primary_key_command(node: &RemoteNode, known_host: &str) -> Result<String> {
+    let repo = service_repo(node)?;
+    let dot = format!("{repo}/.swarmy");
+    Ok(format!(
+        "umask 077; printf '%s\\n' {} > {}",
+        shell_words::quote(known_host),
+        shell_words::quote(&format!("{dot}/tunnel-known-hosts")),
+    ))
+}
+
 // Generate the forwarding key on its owner; the primary login key never leaves the client.
 async fn install_tunnel(
     node: &RemoteNode,
@@ -540,19 +577,8 @@ async fn install_tunnel(
     primary: &RemoteNode,
     source: &str,
 ) -> Result<()> {
-    let repo = service_repo(node)?;
-    let dot = format!("{repo}/.swarmy");
-    let dot_quoted = shell_words::quote(&dot);
-    let key_path = format!("{dot}/tunnel-key");
-    let key_quoted = shell_words::quote(&key_path);
-    let pub_path = format!("{dot}/tunnel-key.pub");
-    let pub_quoted = shell_words::quote(&pub_path);
-    let known_path = format!("{dot}/tunnel-known-hosts");
-    let known_quoted = shell_words::quote(&known_path);
     let output = run_output(
-        base(node)?.arg(address).arg(format!(
-        "umask 077; mkdir -p {dot_quoted}; test -f {key_quoted} || ssh-keygen -q -t ed25519 -N '' -f {key_quoted}; cat {pub_quoted}",
-    )),
+        base(node)?.arg(address).arg(tunnel_key_command(node)?),
         "generate joining node tunnel key",
     )
     .await?;
@@ -573,11 +599,9 @@ async fn install_tunnel(
     let host_key = String::from_utf8(host_key.stdout)?;
     let known_host = format!("{} {}", primary.private_ip, host_key.trim());
     checked(
-        base(node)?.arg(address).arg(format!(
-            "umask 077; printf '%s\\n' {} > {}",
-            shell_words::quote(&known_host),
-            known_quoted
-        )),
+        base(node)?
+            .arg(address)
+            .arg(pin_primary_key_command(node, &known_host)?),
         "pin primary SSH host key",
     )
     .await

@@ -550,6 +550,46 @@ mod tests {
     }
 
     #[test]
+    fn service_user_and_local_storage_defaults_and_paths() {
+        let settings = Settings::default();
+        assert_eq!(settings.remote.service_user, "swarmy");
+        assert!(settings.remote.local_storage.is_empty());
+        let parsed: Settings =
+            toml::from_str("[remote]\nservice_user = 'ubuntu'\nlocal_storage = 'dir:/srv/local'")
+                .unwrap();
+        assert_eq!(parsed.remote.service_user, "ubuntu");
+        assert_eq!(parsed.remote.local_storage, "dir:/srv/local");
+        let round_trip: Settings = toml::from_str(&parsed.to_toml().unwrap()).unwrap();
+        assert_eq!(round_trip.remote.service_user, "ubuntu");
+        assert_eq!(round_trip.remote.local_storage, "dir:/srv/local");
+
+        // Records saved before the setting existed keep their SSH login.
+        let legacy: RemoteNode = serde_json::from_str(r#"{"name":"old","region":"us-east-1","instance_id":"i-old","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","launch_attempted":true,"created_at":"2026-09-16T00:00:00Z"}"#).unwrap();
+        assert_eq!(legacy.service_user(), "ubuntu");
+        assert_eq!(legacy.local_storage(), "");
+        assert_eq!(legacy.service_home(), "/home/ubuntu");
+        assert_eq!(legacy.service_repo(), "/home/ubuntu/swarmy");
+
+        // New records resolve through their saved launch settings.
+        let node: RemoteNode = serde_json::from_str(
+            r#"{"name":"new","region":"us-east-1","instance_id":"i-new","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","ssh_user":"root","launch_settings":{"service_user":"swarmy","local_storage":"/dev/md0"},"launch_attempted":true,"created_at":"2026-09-16T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(node.service_user(), "swarmy");
+        assert_eq!(node.local_storage(), "/dev/md0");
+        assert_eq!(node.service_home(), "/home/swarmy");
+        assert_eq!(node.service_repo(), "/home/swarmy/swarmy");
+
+        assert_eq!(super::service_home_for("root"), "/root");
+        assert_eq!(super::service_home_for("swarmy"), "/home/swarmy");
+        assert!(super::validate_service_user("swarmy").is_ok());
+        assert!(super::validate_service_user("deploy-1").is_ok());
+        for invalid in ["", "has space", "semi;colon", "$(injected)", "dq\"quote"] {
+            assert!(super::validate_service_user(invalid).is_err());
+        }
+    }
+
+    #[test]
     fn selected_profile_overrides_discovered_config_and_endpoint_environment() {
         let root = tempfile::tempdir().unwrap();
         let state = root.path().join(".swarmy");

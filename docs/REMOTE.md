@@ -31,6 +31,14 @@ region = "us-east-1"
 disk_gb = 100
 managed_by_tag = "swarmy"
 # bucket = "NAME"
+# Login owning the checkout and the node units. Plain servers use the
+# default `swarmy`; EC2 configurations keep `ubuntu` by setting it here.
+service_user = "ubuntu"
+# Local disk for sandbox data: a block device to format and mount at
+# /mnt/swarmy-local, dir:/path for an existing directory, or empty to
+# pick an unused disk automatically (sandbox nodes) or use none
+# (control-only nodes).
+# local_storage = "/dev/nvme1n1"
 
 [remote.aws]
 subnet = "subnet-..."
@@ -55,14 +63,21 @@ provider needs them.
 
 The image defaults to Canonical's current Ubuntu 24.04 amd64 image, resolved
 through SSM in the configured region. Custom images must be compatible with
-Ubuntu 24.04, the `ubuntu` SSH user, cloud-init, and passwordless sudo.
-Sandbox nodes need an instance type with local NVMe instance storage. A
-control-only first node (`--sandboxes 0`) can start on an m6i.large without
-local NVMe; its volume server and scratch directories remain on its EBS root
-disk. Provisioning mounts an unused instance-store
-disk at `/mnt/swarmy-local` for sandbox nodes and puts their volume caches and
-dirty data there. EBS holds the repository, backing databases, and node identity.
-The script refuses to format EBS disks or reuse unrecognized filesystems.
+Ubuntu 24.04 and grant the service user passwordless sudo; cloud-init is
+waited on only where it is installed, so plain servers boot without it.
+Provisioning creates the service user when it is missing, so a plain server
+arriving with only a root login can be adopted.
+Sandbox nodes need local storage for their volume caches and dirty data: set
+`local_storage` to a block device to format and mount at `/mnt/swarmy-local`
+(on a single instance-store type this is the NVMe disk beside the root disk;
+confirm with `lsblk`), or to `dir:/path` for an existing directory when the
+server's disks are already partitioned. Empty picks an unused disk
+automatically and fails with a message when every disk is partitioned, in
+which case set the device or directory explicitly. A control-only first node
+(`--sandboxes 0`) needs no local storage; its volume server and scratch
+directories remain on its root disk. The repository, backing databases, and
+node identity stay on the root disk. The script refuses the root disk and
+refuses to reuse unrecognized filesystems.
 
 ```sh
 swarmy remote up demo --services node --instance-type m6i.large --disk-gb 40 --sandboxes 0
@@ -166,9 +181,10 @@ On the node, `sudo systemctl status swarmy-stack swarmyd` shows the services,
 and `sudo journalctl -u swarmyd -f` follows node logs. The provisioning script
 writes `/etc/swarmy/node.env`, enables both units at boot, and configures
 `Restart=always` for swarmyd. To rerun provisioning, use
-`cd ~/swarmy && bash scripts/remote-provision.sh stack PRIVATE_IP BUCKET REGION SANDBOXES` on the first
-node. Joining nodes run swarmyd and `swarmy-tunnel.service`; rerun their
-provisioning with `node FIRST_NODE_PRIVATE_IP BUCKET REGION SANDBOXES` instead. Their cluster file is
+`cd ~/swarmy && bash scripts/remote-provision.sh stack PRIVATE_IP BUCKET REGION SANDBOXES SERVICE_USER LOCAL_STORAGE` on the first
+node (`SERVICE_USER` defaults to `swarmy`, `LOCAL_STORAGE` to automatic; pass
+a block device or `dir:/path` for an explicitly chosen disk). Joining nodes run swarmyd and `swarmy-tunnel.service`; rerun their
+provisioning with `node FIRST_NODE_PRIVATE_IP BUCKET REGION SANDBOXES SERVICE_USER LOCAL_STORAGE` instead. Their cluster file is
 copied from the first node, preserving its cluster identity and loopback
 coordinator address. `add-node` generates a dedicated tunnel key on the joining
 node and authorizes it for service forwards on the first node. It pins the first
@@ -611,6 +627,41 @@ can be written directly:
   "ssh_user": "ubuntu",
   "ports": { "fdb": 4500, "nats": 4222, "s3": 8333 },
   "nodes": [],
+  "created_at": "2026-09-16T00:00:00Z"
+}
+```
+
+A plain Ubuntu 24.04 server (no cloud-init, root login, already partitioned
+disks) is adopted the same way: write the state with the bootstrap login as
+`ssh_user` and the desired owner and disk in `launch_settings`, copy the
+checkout to the service home, and run the provisioning script on the server
+as root, for example `bash /home/swarmy/swarmy/scripts/remote-provision.sh
+stack <private-address> "" <region> 64 swarmy dir:/srv/swarmy-local`. The
+script creates the service user with passwordless sudo, waits for cloud-init
+only where it is installed, and uses the configured device or directory.
+`remote down` terminates cloud instances, so it does not apply to an adopted
+server: decommission the server itself, then remove its state file.
+
+```json
+{
+  "name": "plain",
+  "region": "us-east-1",
+  "instance_id": "plain",
+  "public_ip": "<public-address>",
+  "private_ip": "<private-address>",
+  "key_path": "<path-to-test-key>",
+  "ssh_user": "root",
+  "ports": { "fdb": 4500, "nats": 4222, "s3": 8333 },
+  "nodes": [],
+  "launch_settings": {
+    "provider": "aws",
+    "services": "laptop",
+    "region": "us-east-1",
+    "disk_gb": 100,
+    "managed_by_tag": "swarmy",
+    "service_user": "swarmy",
+    "local_storage": "dir:/srv/swarmy-local"
+  },
   "created_at": "2026-09-16T00:00:00Z"
 }
 ```
