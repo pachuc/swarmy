@@ -399,6 +399,27 @@ async fn session_metrics(
 fn ms_or_dash(value: Option<f64>) -> String {
     value.map_or_else(|| "-".into(), |ms| format!("{ms:.1}"))
 }
+/// Read a session's full history across event pages. The API clamps one
+/// page to its scan limit, so `session show` follows the sequence cursor to
+/// the empty page instead of printing a truncated log.
+async fn session_events(
+    client: &Client,
+    endpoint: &str,
+    id: &str,
+) -> Result<Vec<swarmy_api_types::Event>> {
+    let mut events = Vec::new();
+    let mut after = 0;
+    loop {
+        let page = request(endpoint, client.events(id, after, 256)).await?;
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().map_or(after, |event| event.sequence);
+        events.extend(page);
+    }
+    Ok(events)
+}
+
 async fn show_session(
     client: &Client,
     endpoint: &str,
@@ -481,17 +502,7 @@ async fn show_session(
             );
         }
     }
-    let mut events = Vec::new();
-    let mut after = 0;
-    loop {
-        let page = request(endpoint, client.events(&id, after, 256)).await?;
-        if page.is_empty() {
-            break;
-        }
-        after = page.last().map_or(after, |event| event.sequence);
-        events.extend(page);
-    }
-    for event in &events {
+    for event in &session_events(client, endpoint, &id).await? {
         let swarmy_api_types::EventPayload::StoreRecord {
             record: swarmy_api_types::RecordBody::Event(inner),
         } = &event.payload
