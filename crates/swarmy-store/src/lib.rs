@@ -401,6 +401,14 @@ pub struct Store {
     /// so tests can compare per-operation transaction costs.
     transactions: Arc<AtomicU64>,
     session_record_reads: Arc<AtomicU64>,
+    metrics_tx: tokio::sync::mpsc::Sender<crate::metrics::MetricMsg>,
+}
+
+fn metrics_channel() -> (
+    tokio::sync::mpsc::Sender<crate::metrics::MetricMsg>,
+    tokio::sync::mpsc::Receiver<crate::metrics::MetricMsg>,
+) {
+    tokio::sync::mpsc::channel(crate::metrics::METRICS_CHANNEL_BOUND)
 }
 
 impl Store {
@@ -426,7 +434,8 @@ impl Store {
                 }
             })
             .await?;
-        Ok(Self {
+        let (metrics_tx, metrics_rx) = metrics_channel();
+        let store = Self {
             db,
             root: Subspace::from_bytes(prefix),
             clock: Arc::new(jiff::Timestamp::now),
@@ -434,13 +443,17 @@ impl Store {
             blobs,
             transactions: Arc::default(),
             session_record_reads: Arc::default(),
-        })
+            metrics_tx,
+        };
+        crate::metrics::spawn_metrics_drain(store.clone(), metrics_rx);
+        Ok(store)
     }
 
     /// Use an explicitly allocated root prefix, primarily for isolated tests.
     #[must_use]
     pub fn with_subspace(db: Arc<Database>, root: Subspace, blobs: Arc<dyn BlobStore>) -> Self {
-        Self {
+        let (metrics_tx, metrics_rx) = metrics_channel();
+        let store = Self {
             db,
             root,
             clock: Arc::new(jiff::Timestamp::now),
@@ -448,7 +461,18 @@ impl Store {
             images: Arc::default(),
             transactions: Arc::default(),
             session_record_reads: Arc::default(),
+            metrics_tx,
+        };
+        // Tests construct stores inside a runtime; production always has one.
+        // If no runtime exists, observability drops with a warning until a
+        // runtime is available. This only triggers in non-async contexts that
+        // never observe metrics.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            crate::metrics::spawn_metrics_drain(store.clone(), metrics_rx);
+        } else {
+            std::mem::forget(metrics_rx);
         }
+        store
     }
 
     /// Use a deterministic clock for lease and expiry tests.

@@ -500,10 +500,7 @@ impl Gateway {
                         Some(job.request_id),
                     );
                     self.store.observe_turn_stage(event.clone());
-                    let bus = self.bus.clone();
-                    tokio::spawn(async move {
-                        bus.record_turn(&event).await;
-                    });
+                    self.bus.record_turn(&event).await;
                 }
             }
             if response.is_some() {

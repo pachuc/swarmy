@@ -228,7 +228,7 @@ pub struct AgentMetrics {
     pub cost_micros: u64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum MetricPatch {
     Stage(TurnEvent),
     Inference(InferenceMetric),
@@ -238,12 +238,72 @@ pub enum MetricPatch {
     Wait { request_id: String, kind: WaitKind },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum WaitKind {
     Retry,
     RateLimit,
     MissingGateway,
     ProviderFailure,
+}
+
+/// One queued observability write. Patches that share a turn are batched by
+/// the drain task so concurrent stages do not contend on the summary key.
+#[derive(Debug)]
+pub(crate) struct MetricJob {
+    pub(crate) session: SessionId,
+    pub(crate) turn: MessageId,
+    pub(crate) patches: Vec<MetricPatch>,
+}
+
+pub(crate) enum MetricMsg {
+    Job(MetricJob),
+    Flush(tokio::sync::oneshot::Sender<()>),
+}
+
+/// Bound for the per-store metric queue. The hot path never blocks on
+/// observability; a full queue drops with a warning and `flush` waits.
+pub(crate) const METRICS_CHANNEL_BOUND: usize = 1024;
+
+pub(crate) fn spawn_metrics_drain(store: Store, mut rx: tokio::sync::mpsc::Receiver<MetricMsg>) {
+    tokio::spawn(async move {
+        use std::collections::HashMap;
+        loop {
+            let first = rx.recv().await;
+            let Some(first) = first else {
+                break;
+            };
+            let mut batches: HashMap<(SessionId, MessageId), Vec<MetricPatch>> = HashMap::new();
+            let mut flushes = Vec::new();
+            match first {
+                MetricMsg::Job(job) => {
+                    batches
+                        .entry((job.session, job.turn))
+                        .or_default()
+                        .extend(job.patches);
+                }
+                MetricMsg::Flush(ack) => flushes.push(ack),
+            }
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    MetricMsg::Job(job) => {
+                        batches
+                            .entry((job.session, job.turn))
+                            .or_default()
+                            .extend(job.patches);
+                    }
+                    MetricMsg::Flush(ack) => flushes.push(ack),
+                }
+            }
+            for ((session, turn), patches) in batches {
+                if let Err(error) = store.record_turn_metrics(session, turn, patches).await {
+                    tracing::warn!(%error, %session, %turn, "turn metric write failed");
+                }
+            }
+            for ack in flushes {
+                let _ = ack.send(());
+            }
+        }
+    });
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1228,29 +1288,50 @@ impl Store {
         Ok(())
     }
 
-    /// Spawn observability after the stage, without waiting on a turn's hot path.
+    /// Queue observability without waiting on a turn's hot path. The drain
+    /// task batches by turn; `flush_turn_metrics` waits for the queue.
     pub fn observe_turn_stage(&self, event: TurnEvent) {
         self.observe_turn_metric(event.session_id, event.turn_id, MetricPatch::Stage(event));
     }
 
-    /// Spawn observability after the stage, without waiting on a turn's hot path.
+    /// Queue observability without waiting on a turn's hot path.
     pub fn observe_turn_metric(&self, session: SessionId, turn: MessageId, patch: MetricPatch) {
         self.observe_turn_metrics(session, turn, vec![patch]);
     }
 
-    /// Spawn one transaction for several patches that share a turn.
+    /// Queue one transaction's patches that share a turn. The write is
+    /// bounded and non-blocking; a full queue drops with a warning and is
+    /// recovered by `flush_turn_metrics` on shutdown.
     pub fn observe_turn_metrics(
         &self,
         session: SessionId,
         turn: MessageId,
         patches: Vec<MetricPatch>,
     ) {
-        let store = self.clone();
-        tokio::spawn(async move {
-            if let Err(error) = store.record_turn_metrics(session, turn, patches).await {
-                tracing::warn!(%error, %session, %turn, "turn metric write failed");
-            }
-        });
+        let job = MetricJob {
+            session,
+            turn,
+            patches,
+        };
+        if let Err(error) = self.metrics_tx.try_send(MetricMsg::Job(job)) {
+            tracing::warn!(%error, %session, %turn, "turn metric queue full; dropping");
+        }
+    }
+
+    /// Wait for queued observability to commit. Hosts call this on shutdown
+    /// so detached metric writes are not lost; tests that need a queued
+    /// write to be visible await this before reading.
+    /// # Errors
+    /// Returns storage failures from the drain task.
+    pub async fn flush_turn_metrics(&self) -> Result<()> {
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        // A closed drain means no queued writes remain.
+        if self.metrics_tx.send(MetricMsg::Flush(ack)).await.is_err() {
+            return Ok(());
+        }
+        rx.await
+            .map_err(|_| StoreError::Storage(crate::StorageError::CommitUnknown))?;
+        Ok(())
     }
 
     async fn turn_rows(
