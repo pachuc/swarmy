@@ -58,20 +58,20 @@ GET /v1/sessions/{id}/events removes legacy_context_notice from notice kind valu
 # 2026-09-29: Remove stream event variants that had no producer. Clients cannot receive them.
 GET /v1/events removes turn_started, turn_finished, inference_error, service_status_changed, and node_status_changed payload variants
 
-# 2026-09-29: Duplicate CLI route resources removed; callers use /v1/routes and /v1/sessions/{id}/route. The compatibility surface had no separate ownership or semantics.
-GET /v1/cli/routes removed duplicate route list
-POST /v1/cli/routes removed duplicate route mutation
-GET /v1/cli/routes/{name} removed duplicate route detail
-DELETE /v1/cli/routes/{name} removed duplicate route deletion
-PATCH /v1/cli/sessions/{id}/route removed duplicate session route mutation
-GET /v1/cli/sessions/{id} removed duplicate session detail; use GET /v1/sessions/{id}/detail
-GET /v1/cli/sessions removed duplicate session list; use GET /v1/sessions
-GET /v1/cli/credentials removed duplicate credential list; use GET /v1/credentials
-POST /v1/cli/credentials removed duplicate credential import; use POST /v1/credentials/records
-GET /v1/cli/credentials/{provider} removed duplicate credential detail; use GET /v1/credentials/{provider}
-GET /v1/cli/images/{name}/{tag} removed duplicate image detail; use GET /v1/images/{name}/{tag}
-GET /v1/cli/doctor moved to GET /v1/doctor
-GET /v1/cli/agents removed duplicate agent list; use GET /v1/agents/details
-GET /v1/cli/agents/{name} removed duplicate agent detail; use GET /v1/agents/{id}/detail
-POST /v1/cli/agents removed duplicate agent creation; use POST /v1/agents
-PATCH /v1/cli/agents/{name}/settings removed duplicate agent settings update; use PATCH /v1/agents/{id}
+# 2026-09-29: Duplicate /v1/cli routes were internal compatibility projections. All clients now use typed /v1 resource routes; no external client depends on the removed paths.
+GET /v1/cli/agents api path removed without deprecation
+POST /v1/cli/agents api path removed without deprecation
+GET /v1/cli/agents/{name} api path removed without deprecation
+PATCH /v1/cli/agents/{name}/settings api path removed without deprecation
+GET /v1/cli/credentials api path removed without deprecation
+POST /v1/cli/credentials api path removed without deprecation
+GET /v1/cli/credentials/{provider} api path removed without deprecation
+GET /v1/cli/doctor api path removed without deprecation
+GET /v1/cli/images/{name}/{tag} api path removed without deprecation
+GET /v1/cli/routes api path removed without deprecation
+POST /v1/cli/routes api path removed without deprecation
+DELETE /v1/cli/routes/{name} api path removed without deprecation
+GET /v1/cli/routes/{name} api path removed without deprecation
+GET /v1/cli/sessions api path removed without deprecation
+GET /v1/cli/sessions/{id} api path removed without deprecation
+PATCH /v1/cli/sessions/{id}/route api path removed without deprecation
