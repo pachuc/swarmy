@@ -33,7 +33,6 @@ macro_rules! cloud_out {
 macro_rules! cloud_err {
     ($($arg:tt)*) => { $crate::emit(format!($($arg)*), true) };
 }
-pub(crate) use {cloud_err, cloud_out};
 
 mod command;
 pub mod ssh;
@@ -43,6 +42,33 @@ mod remote;
 mod services;
 #[cfg(feature = "remote")]
 pub use remote::{Aws, ServiceOptions, for_settings, run};
+
+/// Failures returned to clients of the remote provisioning entry point.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("unknown cloud provider '{0}': only 'aws' is supported")]
+    UnsupportedProvider(String),
+    #[error("remote node '{0}' was not found")]
+    NotFound(String),
+    #[error("remote node '{0}' already exists")]
+    AlreadyExists(String),
+    #[error("missing permission {permission}: {source}")]
+    Permission {
+        permission: String,
+        #[source]
+        source: anyhow::Error,
+    },
+    #[error("SSH failed: {0}")]
+    Ssh(#[source] anyhow::Error),
+    #[error("AWS {operation} failed: {source}")]
+    Aws {
+        operation: &'static str,
+        #[source]
+        source: anyhow::Error,
+    },
+    #[error(transparent)]
+    Operation(#[from] anyhow::Error),
+}
 
 use std::future::Future;
 

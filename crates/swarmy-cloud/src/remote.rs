@@ -40,12 +40,10 @@ pub use aws::Aws;
 /// # Errors
 ///
 /// Rejects unknown providers. Only `aws` exists today.
-pub async fn for_settings(settings: &RemoteSettings) -> Result<Aws> {
-    anyhow::ensure!(
-        settings.provider == "aws",
-        "unknown cloud provider '{}': only 'aws' is supported",
-        settings.provider
-    );
+pub async fn for_settings(settings: &RemoteSettings) -> std::result::Result<Aws, crate::Error> {
+    if settings.provider != "aws" {
+        return Err(crate::Error::UnsupportedProvider(settings.provider.clone()));
+    }
     Ok(Aws::new(&settings.region).await)
 }
 
@@ -55,7 +53,11 @@ pub async fn for_settings(settings: &RemoteSettings) -> Result<Aws> {
 ///
 /// Returns errors for invalid configuration, state, provisioning, and tunnel
 /// failures.
-pub async fn run(command: Command, json: bool) -> Result<()> {
+pub async fn run(command: Command, json: bool) -> std::result::Result<(), crate::Error> {
+    run_inner(command, json).await.map_err(crate::Error::from)
+}
+
+async fn run_inner(command: Command, json: bool) -> Result<()> {
     // The base settings are enough here: provisioning does not use the selected tunnel profile.
     let loaded = Settings::load_base()?;
     let state_dir = PathBuf::from(&loaded.settings.state_dir);
