@@ -9,12 +9,8 @@
 /// Panics when the setting is unavailable in CI.
 pub fn stack_env(name: &str) -> Result<String, std::env::VarError> {
     let value = std::env::var(name);
-    assert!(
-        std::env::var_os("CI").is_none() || value.is_ok(),
-        "CI requires {name} for integration tests"
-    );
     if value.is_err() {
-        eprintln!("skipping integration test: {name} unavailable");
+        missing_stack(name);
     }
     value
 }
@@ -26,12 +22,8 @@ pub fn stack_env(name: &str) -> Result<String, std::env::VarError> {
 #[must_use = "check whether the stack is configured before running the test"]
 pub fn stack_env_os(name: &str) -> Option<std::ffi::OsString> {
     let value = std::env::var_os(name);
-    assert!(
-        std::env::var_os("CI").is_none() || value.is_some(),
-        "CI requires {name} for integration tests"
-    );
     if value.is_none() {
-        eprintln!("skipping integration test: {name} unavailable");
+        missing_stack(name);
     }
     value
 }
@@ -47,4 +39,12 @@ pub fn optional_env(name: &str) -> Result<String, std::env::VarError> {
         eprintln!("skipping integration test: optional {name} unavailable");
     }
     value
+}
+
+fn missing_stack(name: &str) {
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "CI requires {name} for integration tests"
+    );
+    eprintln!("skipping integration test: {name} unavailable");
 }
