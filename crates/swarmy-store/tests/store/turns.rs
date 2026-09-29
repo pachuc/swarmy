@@ -794,3 +794,148 @@ async fn queued_input_is_delivered_in_bounded_ordered_batches() {
     );
     test.cleanup().await;
 }
+
+async fn live_lease(store: &Store, id: SessionId) -> swarmy_core::Lease {
+    store
+        .claim_lease(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn drain_transferred_once(store: &Store, id: SessionId, expected: &Message) {
+    // The successor carries waiting input as runnable state; draining it must
+    // yield the queued marker plus the user message exactly once, then nothing.
+    let session = store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(session.state, SessionState::Runnable);
+    let lease = live_lease(store, id).await;
+    let head = session.head_seq;
+    let delivered = store.deliver_queued(id, head, &lease, &[]).await.unwrap();
+    assert_eq!(delivered.len(), 2, "{delivered:?}");
+    let (
+        Event::MessageQueued {
+            message: queued, ..
+        },
+        Event::MessageAppended {
+            message: appended, ..
+        },
+    ) = (&delivered[0], &delivered[1])
+    else {
+        panic!("expected queued marker plus user message: {delivered:?}");
+    };
+    assert_eq!(queued, expected);
+    assert_eq!(appended, expected);
+    assert!(
+        store
+            .deliver_queued(id, head + 2, &lease, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn queued_message_survives_main_and_side_rollover_exactly_once() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    // Main rollover: waiting input queued while leased must move to the fresh
+    // main, wake it runnable, and drain exactly once.
+    let image = image_fixture::image(store).await;
+    let agent = store
+        .create_agent("rollover", image, "", timestamp(0), None)
+        .await
+        .unwrap()
+        .agent_id;
+    let (main, _) = store.open_main_session(agent, timestamp(1)).await.unwrap();
+    store.wake_session(main, timestamp(2)).await.unwrap();
+    let lease = live_lease(store, main).await;
+    let Event::MessageAppended {
+        message: waiting, ..
+    } = event("waiting during summary")
+    else {
+        unreachable!()
+    };
+    // A leased session files input in the queue instead of appending it: the
+    // queue call returns the unchanged head, reports a new entry, and reports
+    // no idle append.
+    assert_eq!(
+        store
+            .queue_user_message_idempotent(main, &waiting, "rollover-once")
+            .await
+            .unwrap(),
+        (0, true, false)
+    );
+    let Event::MessageAppended {
+        message: summary, ..
+    } = event("main summary")
+    else {
+        unreachable!()
+    };
+    let (next_main, _) = store
+        .summarize_main_session(main, 0, &lease, &summary, &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        store.fetch_session(main).await.unwrap().unwrap().state,
+        SessionState::Completed
+    );
+    // Exactly once means the successor delivers the message and the archived
+    // session never can: delivery needs a worker lease, which a Completed
+    // session cannot hold.
+    assert!(matches!(
+        store.deliver_queued(main, 1, &lease, &[]).await,
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+    ));
+    drain_transferred_once(store, next_main, &waiting).await;
+    // Side rollover: the same transfer runs for side sessions without moving
+    // the main pointer, and also drains exactly once.
+    let side_id = SessionId::from_ulid(Ulid::generate());
+    store
+        .create_agent_session(side_id, Some(agent), timestamp(3), None)
+        .await
+        .unwrap();
+    store.wake_session(side_id, timestamp(4)).await.unwrap();
+    let side_lease = live_lease(store, side_id).await;
+    let Event::MessageAppended {
+        message: side_waiting,
+        ..
+    } = event("side waiting during summary")
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        store
+            .queue_user_message_idempotent(side_id, &side_waiting, "side-rollover-once")
+            .await
+            .unwrap(),
+        (0, true, false)
+    );
+    let Event::MessageAppended {
+        message: side_summary,
+        ..
+    } = event("side summary")
+    else {
+        unreachable!()
+    };
+    let (next_side, _) = store
+        .summarize_side_session(side_id, 0, &side_lease, &side_summary, &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        store.fetch_session(side_id).await.unwrap().unwrap().state,
+        SessionState::Completed
+    );
+    assert!(matches!(
+        store.deliver_queued(side_id, 1, &side_lease, &[]).await,
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
+    ));
+    drain_transferred_once(store, next_side, &side_waiting).await;
+    test.cleanup().await;
+}
