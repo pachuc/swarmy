@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 use swarmy_api_types as api;
-use swarmy_chat::client_conversation::{Conversation, OutputMode};
+use swarmy_chat::client_conversation::{Conversation, OpenArgs, OutputMode};
 use swarmy_client::{Client, EventStream};
 use swarmy_core::{MessageId, RequestId, SessionId, ToolResult, TurnEvent, TurnStage};
 
@@ -76,16 +76,18 @@ pub async fn run(client: Client, endpoint: String, command: Command, json: bool)
         let mut conversation = Conversation::open(
             client.clone(),
             endpoint.clone(),
-            None,
-            Some(image.clone()),
-            None,
-            false,
-            swarmy_core::InferenceSelection {
-                provider: Some("fake".into()),
-                model: Some("scripted".into()),
-                effort: None,
+            OpenArgs {
+                id: None,
+                image: Some(image.clone()),
+                agent: None,
+                new: false,
+                selection: swarmy_core::InferenceSelection {
+                    provider: Some("fake".into()),
+                    model: Some("scripted".into()),
+                    effort: None,
+                },
+                route: None,
             },
-            None,
         )
         .await?;
         let mut timeline = timeline_stream(&client, &conversation.id).await?;

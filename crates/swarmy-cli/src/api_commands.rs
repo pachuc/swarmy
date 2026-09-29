@@ -240,9 +240,9 @@ async fn cost_series(
         .filter_map(|(dimension, value)| value.map(|value| (*dimension, value)))
         .collect();
     match (args.by, present.as_slice()) {
-        (Some(by), []) => Ok((cost_command::value_name(by), None)),
-        (Some(by), [(dimension, value)]) if *dimension == cost_command::value_name(by) => Ok((
-            cost_command::value_name(by),
+        (Some(by), []) => Ok((cost_command::value_name(&by), None)),
+        (Some(by), [(dimension, value)]) if *dimension == cost_command::value_name(&by) => Ok((
+            cost_command::value_name(&by),
             Some(cost_key(client, endpoint, dimension, value).await?),
         )),
         (Some(_), _) => anyhow::bail!(
@@ -348,7 +348,7 @@ async fn cost(client: &Client, endpoint: &str, args: cost_command::Args, json: b
             key.as_deref(),
             &since.to_string(),
             &until.to_string(),
-            &cost_command::value_name(args.group),
+            &cost_command::value_name(&args.group),
         ),
     )
     .await?;
@@ -1472,7 +1472,7 @@ async fn quota(
                 Some(entry),
                 &start.to_string(),
                 &end.to_string(),
-                &cost_command::value_name(group),
+                &cost_command::value_name(&group),
             ),
         )
         .await?;

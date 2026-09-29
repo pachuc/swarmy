@@ -2,7 +2,9 @@ use crate::selection_command::SelectionArgs;
 use anyhow::Result;
 use std::io::Write;
 use swarmy_api_types as api;
-use swarmy_chat::client_conversation::{Conversation, ConversationItem, OutputMode, TurnOutput};
+use swarmy_chat::client_conversation::{
+    Conversation, ConversationItem, OpenArgs, OutputMode, TurnOutput,
+};
 use swarmy_client::Client;
 
 /// Flags for `swarmy run`, sharing one struct from parsing to execution so
@@ -47,27 +49,36 @@ pub struct ChatArgs {
 }
 
 pub async fn run(client: Client, endpoint: String, args: RunArgs, json: bool) -> Result<()> {
-    let route = args.selection.route.clone();
+    let RunArgs {
+        prompt,
+        image,
+        agent,
+        new,
+        session,
+        queue,
+        selection,
+    } = args;
+    let route = selection.route.clone();
     let mut conversation = Conversation::open(
         client,
         endpoint,
-        args.session.map(|id| id.to_string()),
-        args.image,
-        args.agent,
-        args.new,
-        args.selection.into(),
-        route,
+        OpenArgs {
+            id: session.map(|id| id.to_string()),
+            image,
+            agent,
+            new,
+            selection: selection.into(),
+            route,
+        },
     )
     .await?;
     announce(&conversation, json);
     report_followed(&conversation, json);
     let busy = conversation.session.state != api::SessionState::Idle;
-    conversation
-        .send_with_queue(args.prompt, args.queue)
-        .await?;
-    if args.queue && busy {
+    conversation.send_with_queue(prompt, queue).await?;
+    if queue && busy {
         if json {
-            print_event(Event::MessageQueued {
+            print_event(&Event::MessageQueued {
                 session_id: &conversation.id,
             });
         } else {
@@ -85,11 +96,11 @@ pub async fn run(client: Client, endpoint: String, args: RunArgs, json: bool) ->
         .await;
     if json {
         match &result {
-            Ok(()) => print_event(Event::RunOutcome {
+            Ok(()) => print_event(&Event::RunOutcome {
                 outcome: "completed",
                 reason: None,
             }),
-            Err(error) => print_event(Event::RunOutcome {
+            Err(error) => print_event(&Event::RunOutcome {
                 outcome: "failed",
                 reason: Some(&error.to_string()),
             }),
@@ -100,7 +111,7 @@ pub async fn run(client: Client, endpoint: String, args: RunArgs, json: bool) ->
 
 fn announce(conversation: &Conversation, json: bool) {
     if json {
-        print_event(if conversation.created {
+        print_event(&if conversation.created {
             Event::SessionCreated {
                 session_id: &conversation.id,
                 agent_name: &conversation.agent_name,
@@ -128,7 +139,7 @@ fn report_followed(conversation: &Conversation, json: bool) {
 
 fn print_summary(json: bool, previous_session_id: &str, session_id: &str) {
     if json {
-        print_event(Event::SessionSummarized {
+        print_event(&Event::SessionSummarized {
             previous_session_id,
             session_id,
         });
@@ -145,7 +156,7 @@ fn print_turn_output(output: TurnOutput, json: bool) {
     match output {
         TurnOutput::TokenText(text) => {
             if json {
-                print_event(Event::ModelDelta {
+                print_event(&Event::ModelDelta {
                     delta: ModelDeltaInner {
                         text: ModelDeltaText {
                             output_index: 0,
@@ -182,14 +193,14 @@ fn print_turn_output(output: TurnOutput, json: bool) {
         }
         TurnOutput::AssistantMessage(text) => {
             if json {
-                print_event(Event::AssistantMessage { text: &text });
+                print_event(&Event::AssistantMessage { text: &text });
             } else {
                 print!("{text}");
                 std::io::stdout().flush().expect("stdout flushes");
             }
         }
         TurnOutput::SessionIdle { session_id } => {
-            print_event(Event::SessionIdle {
+            print_event(&Event::SessionIdle {
                 session_id: &session_id,
             });
         }
@@ -269,39 +280,48 @@ impl<'a> Event<'a> {
 
 /// Print one event line. Serialization of these shapes cannot fail, so the
 /// helper owns the `expect` instead of repeating it at every call site.
-pub(crate) fn print_event(event: Event) {
+pub(crate) fn print_event(event: &Event) {
     println!(
         "{}",
-        serde_json::to_string(&event).expect("event serializes")
+        serde_json::to_string(event).expect("event serializes")
     );
 }
 
 /// The `delta` wrapper keeps the `Text` discriminant name the fleet reads.
 #[derive(serde::Serialize)]
-struct ModelDeltaInner<'a> {
+pub(crate) struct ModelDeltaInner<'a> {
     #[serde(rename = "Text")]
     text: ModelDeltaText<'a>,
 }
 
 /// One streamed text delta.
 #[derive(serde::Serialize)]
-struct ModelDeltaText<'a> {
+pub(crate) struct ModelDeltaText<'a> {
     output_index: u32,
     text: &'a str,
 }
 
 pub async fn chat(client: Client, endpoint: String, args: ChatArgs, json: bool) -> Result<()> {
     use tokio::io::AsyncBufReadExt;
-    let route = args.selection.route.clone();
+    let ChatArgs {
+        session_id,
+        image,
+        agent,
+        new,
+        selection,
+    } = args;
+    let route = selection.route.clone();
     let mut conversation = Conversation::open(
         client,
         endpoint,
-        args.session_id.map(|id| id.to_string()),
-        args.image,
-        args.agent,
-        args.new,
-        args.selection.into(),
-        route,
+        OpenArgs {
+            id: session_id.map(|id| id.to_string()),
+            image,
+            agent,
+            new,
+            selection: selection.into(),
+            route,
+        },
     )
     .await?;
     announce(&conversation, json);

@@ -2,7 +2,7 @@
 
 use crate::client_conversation::Conversation;
 use crate::client_conversation::ConversationItem;
-use crate::client_conversation::{Error, terminal_error};
+use crate::client_conversation::{Error, OpenArgs, terminal_error};
 use crate::input::Input;
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -20,7 +20,6 @@ use std::{
 };
 use swarmy_api_types as api;
 use swarmy_client::{Client, StreamItem};
-use swarmy_core::InferenceSelection;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -40,6 +39,27 @@ fn terminal() -> Result<(DefaultTerminal, RestoreTerminal)> {
         .map_err(terminal_error)?;
     terminal.clear().map_err(terminal_error)?;
     Ok((terminal, restore))
+}
+
+/// Pick the session to resume. The picker shows only when no flag pins the
+/// target; otherwise the flag-selected id (if any) is used as is. `None`
+/// means the operator quit the picker, and `Some(None)` starts a session.
+async fn pick_session(
+    client: &Client,
+    terminal: &mut DefaultTerminal,
+    keys: &mut EventStream,
+    args: &OpenArgs,
+) -> Result<Option<Option<String>>> {
+    if args.id.is_none()
+        && args.agent.is_none()
+        && args.selection.provider.is_none()
+        && args.selection.model.is_none()
+        && args.selection.effort.is_none()
+    {
+        picker(client, terminal, keys).await
+    } else {
+        Ok(Some(args.id.clone()))
+    }
 }
 
 fn quit(key: KeyEvent) -> bool {
@@ -125,12 +145,7 @@ async fn picker(
 pub async fn run(
     client: Client,
     endpoint: String,
-    id: Option<ulid::Ulid>,
-    image: Option<String>,
-    agent: Option<String>,
-    new: bool,
-    selection: InferenceSelection,
-    route: Option<String>,
+    args: OpenArgs,
     on_problem: &mut impl FnMut(&str),
 ) -> Result<()> {
     if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
@@ -138,30 +153,11 @@ pub async fn run(
     }
     let (mut terminal, _restore) = terminal()?;
     let mut keys = EventStream::new();
-    let choice = if id.is_none()
-        && agent.is_none()
-        && selection.provider.is_none()
-        && selection.model.is_none()
-        && selection.effort.is_none()
-    {
-        let Some(choice) = picker(&client, &mut terminal, &mut keys).await? else {
-            return Ok(());
-        };
-        choice
-    } else {
-        id.map(|value| value.to_string())
+    let Some(choice) = pick_session(&client, &mut terminal, &mut keys, &args).await? else {
+        return Ok(());
     };
-    let mut conversation = Conversation::open(
-        client.clone(),
-        endpoint,
-        choice,
-        image,
-        agent,
-        new,
-        selection,
-        route,
-    )
-    .await?;
+    let mut conversation =
+        Conversation::open(client.clone(), endpoint, OpenArgs { id: choice, ..args }).await?;
     // Health warnings belong on the ordinary terminal, not behind the alternate screen.
     disable_raw_mode().map_err(terminal_error)?;
     execute!(io::stdout(), LeaveAlternateScreen).map_err(terminal_error)?;

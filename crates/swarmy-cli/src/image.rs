@@ -58,7 +58,7 @@ pub async fn build(
         }
     }
     if json {
-        crate::client_commands::print_event(crate::client_commands::Event::image_built(&uploaded));
+        crate::client_commands::print_event(&crate::client_commands::Event::image_built(&uploaded));
     } else {
         println!(
             "{}:{} {}\nsize={} bytes chunks_stored={} chunks_uploaded={} chunks_total={}",

@@ -62,7 +62,7 @@ pub enum UsageGroup {
 /// The clap name for a value-enum flag. One helper replaces the hand-written
 /// `as_str` methods each flag enum used to carry.
 #[must_use]
-pub fn value_name(value: impl clap::ValueEnum) -> String {
+pub fn value_name(value: &impl clap::ValueEnum) -> String {
     value
         .to_possible_value()
         .map(|possible| possible.get_name().to_owned())

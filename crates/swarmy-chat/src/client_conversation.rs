@@ -166,6 +166,23 @@ pub enum ConversationItem {
     },
 }
 
+/// Arguments for opening a conversation, shared by `run`, `chat`, and the
+/// benchmark so those paths pass one struct instead of six flags.
+pub struct OpenArgs {
+    /// Existing session id, if resuming.
+    pub id: Option<String>,
+    /// Base image in NAME:TAG form for a new ephemeral session.
+    pub image: Option<String>,
+    /// Named agent whose main session (or a new side session) to use.
+    pub agent: Option<String>,
+    /// Create a side conversation on the named agent.
+    pub new: bool,
+    /// Inference overrides for a new session.
+    pub selection: swarmy_core::InferenceSelection,
+    /// Inference failover route for this session only.
+    pub route: Option<String>,
+}
+
 pub struct Conversation {
     pub id: String,
     pub agent_name: Option<String>,
@@ -198,6 +215,29 @@ fn image_ref(text: &str) -> Result<api::ImageRef> {
         name: name.into(),
         tag: tag.into(),
     })
+}
+
+/// Reject flag combinations no conversation can open, before any API call.
+fn check_open_args(
+    id: Option<&str>,
+    image: Option<&str>,
+    agent: Option<&str>,
+    new: bool,
+) -> Result<()> {
+    if new && agent.is_none() {
+        return Err(Error::InvalidArgs("--new requires --agent"));
+    }
+    if id.is_some() && (image.is_some() || agent.is_some() || new) {
+        return Err(Error::InvalidArgs(
+            "session id cannot be combined with --image, --agent, or --new",
+        ));
+    }
+    if agent.is_some() && image.is_some() {
+        return Err(Error::InvalidArgs(
+            "--agent cannot be combined with --image",
+        ));
+    }
+    Ok(())
 }
 
 async fn create_session(
@@ -321,29 +361,16 @@ impl Conversation {
     ///
     /// # Errors
     /// Returns an error if the API call or event stream fails.
-    pub async fn open(
-        client: Client,
-        endpoint: String,
-        id: Option<String>,
-        image: Option<String>,
-        agent: Option<String>,
-        new: bool,
-        selection: swarmy_core::InferenceSelection,
-        route: Option<String>,
-    ) -> Result<Self> {
-        if new && agent.is_none() {
-            return Err(Error::InvalidArgs("--new requires --agent"));
-        }
-        if id.is_some() && (image.is_some() || agent.is_some() || new) {
-            return Err(Error::InvalidArgs(
-                "session id cannot be combined with --image, --agent, or --new",
-            ));
-        }
-        if agent.is_some() && image.is_some() {
-            return Err(Error::InvalidArgs(
-                "--agent cannot be combined with --image",
-            ));
-        }
+    pub async fn open(client: Client, endpoint: String, args: OpenArgs) -> Result<Self> {
+        let OpenArgs {
+            id,
+            image,
+            agent,
+            new,
+            selection,
+            route,
+        } = args;
+        check_open_args(id.as_deref(), image.as_deref(), agent.as_deref(), new)?;
         let provider = selection.provider.clone();
         let agent_record = if let Some(name) = &agent {
             Some(client.agent(name).await?)

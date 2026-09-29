@@ -161,7 +161,9 @@ pub async fn run(command: Command, json: bool) -> Result<()> {
         Command::Logs { service } => {
             logs(
                 &layout.state,
-                service.map(crate::cost_command::value_name).as_deref(),
+                service
+                    .map(|service| crate::cost_command::value_name(&service))
+                    .as_deref(),
             )
             .await
         }

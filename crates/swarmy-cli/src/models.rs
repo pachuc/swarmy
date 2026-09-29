@@ -30,7 +30,9 @@ pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
     // total; every listing arm connects through the client above.
     match command {
         // Handled before connecting; repeated here so every variant is owned.
-        Command::Probe(args) => crate::models_probe::run(args, json).await,
+        Command::Probe(args) => {
+            crate::models_probe::run(args, json).await?;
+        }
         Command::Ls {
             provider,
             reasoning,

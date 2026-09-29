@@ -203,17 +203,18 @@ async fn run_chat(args: client_commands::ChatArgs, json: bool) -> anyhow::Result
     } else {
         #[cfg(feature = "chat")]
         {
-            swarmy_chat::client_chat::run(
-                client,
-                endpoint,
-                args.session_id,
-                args.image,
-                args.agent,
-                args.new,
-                args.selection.clone().into(),
-                args.selection.route,
-                &mut |message| eprintln!("{message}"),
-            )
+            let route = args.selection.route.clone();
+            let open = swarmy_chat::client_conversation::OpenArgs {
+                id: args.session_id.map(|id| id.to_string()),
+                image: args.image,
+                agent: args.agent,
+                new: args.new,
+                selection: args.selection.into(),
+                route,
+            };
+            swarmy_chat::client_chat::run(client, endpoint, open, &mut |message| {
+                eprintln!("{message}");
+            })
             .await?;
             Ok(())
         }
