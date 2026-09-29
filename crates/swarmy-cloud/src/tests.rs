@@ -792,7 +792,7 @@ async fn up_skip_custom_recipe_and_failed_image_preserve_correct_default() {
         assert_eq!(profile.default_image.as_deref(), expected);
         let mut settings = swarmy_config::Settings::default();
         profile.apply(&mut settings);
-        assert_eq!(settings.default_image.as_deref(), expected);
+        assert_eq!(settings.selection.default_image.as_deref(), expected);
         assert_eq!(node.instance_id, "i-test");
         assert_eq!(
             host.images
@@ -818,9 +818,12 @@ async fn node_services_copy_credentials_only_with_explicit_acknowledgement() {
                 services: swarmy_config::RemoteServices::Node,
                 ..settings()
             },
-            credential_file: auth.to_string_lossy().into_owned(),
+            selection: swarmy_config::SelectionSettings {
+                credential_file: auth.clone(),
+                ..Default::default()
+            },
             fake: swarmy_config::Fake {
-                script: script.to_string_lossy().into_owned(),
+                script: script.clone(),
                 ..Default::default()
             },
             ..Default::default()
@@ -874,7 +877,7 @@ async fn node_services_copy_credentials_only_with_explicit_acknowledgement() {
             swarmy_config::RemoteServices::Node
         );
         let mut chatgpt = settings;
-        chatgpt.provider = "chatgpt".into();
+        chatgpt.selection.provider = "chatgpt".into();
         assert!(super::services::Options::new(&chatgpt, false, None).is_err());
         chatgpt.remote.services = swarmy_config::RemoteServices::Laptop;
         assert!(super::services::Options::new(&chatgpt, true, None).is_err());
@@ -932,7 +935,10 @@ async fn add_node_copies_both_secrets_only_when_requested() {
             services: swarmy_config::RemoteServices::Node,
             ..settings()
         },
-        credential_file: auth.to_string_lossy().into_owned(),
+        selection: swarmy_config::SelectionSettings {
+            credential_file: auth.clone(),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let options =

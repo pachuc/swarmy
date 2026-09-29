@@ -61,7 +61,7 @@ fn reports_missing_and_invalid_config_without_leaking_values() {
             .unwrap()
             .contains("swarmy dev up")
     );
-    fixture.config("s3_secret_key = 'DO_NOT_PRINT'\ngateway_concurrency = 'DO_NOT_PRINT'");
+    fixture.config("[s3]\nsecret_key = 'DO_NOT_PRINT'\n[gateway]\nconcurrency = 'DO_NOT_PRINT'");
     let output = fixture.doctor(false);
     assert_eq!(output.status.code(), Some(1));
     assert!(!String::from_utf8_lossy(&output.stdout).contains("DO_NOT_PRINT"));
@@ -72,7 +72,7 @@ fn reports_missing_and_invalid_config_without_leaking_values() {
 #[test]
 fn no_api_fails_without_service_lines_and_does_not_leak_secrets() {
     let fixture = Fixture::new();
-    fixture.config("provider = 'fake'\n[api]\nurl = 'http://127.0.0.1:1'\ntoken = 'fixture'");
+    fixture.config("[selection]\nprovider = 'fake'\n[api]\nurl = 'http://127.0.0.1:1'\ntoken = 'fixture'");
     let output = fixture
         .command(true)
         .env("OPENAI_API_KEY", "DO_NOT_PRINT")
@@ -96,7 +96,7 @@ fn doctor_reports_no_client_library_check() {
     // The client links no database library, so doctor must not report a
     // libfdb_c check at all, even with an unloadable library on the path.
     let fixture = Fixture::new();
-    fixture.config("provider = 'fake'");
+    fixture.config("[selection]\nprovider = 'fake'");
     fs::write(
         fixture.0.path().join("libfdb_c.so"),
         "invalid client library",
@@ -120,7 +120,7 @@ fn doctor_reports_no_client_library_check() {
 
 fn remote_fixture(cluster: &str, nats_url: &str) -> Fixture {
     let fixture = Fixture::new();
-    fixture.config("provider = 'fake'");
+    fixture.config("[selection]\nprovider = 'fake'");
     let remote = fixture.0.path().join(".swarmy/remote");
     fs::create_dir_all(&remote).unwrap();
     let cluster_path = remote.join("test.cluster");
@@ -169,7 +169,7 @@ fn remote_doctor_requires_api_even_with_healthy_tunnel() {
 #[test]
 fn reports_keyring_presence_and_permissions() {
     let fixture = Fixture::new();
-    fixture.config("provider = 'fake'");
+    fixture.config("[selection]\nprovider = 'fake'");
     let absent: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
     assert!(
         check(&absent, "keyring")["detail"]
@@ -197,7 +197,7 @@ fn api_fixture(scheduler_alive: bool) -> (Fixture, std::thread::JoinHandle<()>) 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = Fixture::new();
     fixture.config(&format!(
-        "provider = 'fake'\n[api]\nurl = 'http://{}'\ntoken = 'fixture'\n",
+        "[selection]\nprovider = 'fake'\n[api]\nurl = 'http://{}'\ntoken = 'fixture'\n",
         listener.local_addr().unwrap()
     ));
     let handle = std::thread::spawn(move || {
@@ -257,7 +257,7 @@ fn api_check_accepts_same_major_api_despite_binary_drift() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let fixture = Fixture::new();
         fixture.config(&format!(
-            "provider = 'fake'\n[api]\nurl = 'http://{}'\ntoken = 'fixture'\n",
+            "[selection]\nprovider = 'fake'\n[api]\nurl = 'http://{}'\ntoken = 'fixture'\n",
             listener.local_addr().unwrap()
         ));
         let server = std::thread::spawn(move || {
