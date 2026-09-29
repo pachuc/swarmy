@@ -14,3 +14,5 @@ bash scripts/test-remote-upgrade.sh
 bash scripts/test-remote-s3-env.sh
 bash scripts/test-dev-stack.sh
 bash scripts/remote-provision-test.sh
+# test-bash.sh needs root and NBD; test-remote.sh needs an SSH fixture.
+# Both remain manual acceptance tests, not hosted-runner script tests.
