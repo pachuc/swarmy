@@ -195,7 +195,7 @@ impl Store {
             scan(&trx, (begin, end), limit)
                 .await?
                 .into_iter()
-                .map(|(_, value)| decode_agent(&value))
+                .map(|(_, value)| Ok(decode::<AgentRecord>(&value)?))
                 .collect()
         })
         .await
@@ -785,7 +785,7 @@ impl Store {
     ) -> Result<Option<AgentRecord>> {
         trx.get(&self.agent_key(id), false)
             .await?
-            .map(|value| decode_agent(&value))
+            .map(|value| Ok(decode::<AgentRecord>(&value)?))
             .transpose()
     }
 
@@ -848,18 +848,13 @@ fn side_messages(
     messages
 }
 
-/// Decode the current agent record without accepting retired postcard layouts.
-pub(crate) fn decode_agent(bytes: &[u8]) -> Result<AgentRecord> {
-    Ok(decode(bytes)?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use swarmy_core::{ManifestId, encode};
 
     #[test]
-    fn current_agent_record_round_trips() {
+    fn current_agent_record_has_fixed_bytes() {
         let record = AgentRecord {
             agent_id: AgentId::from_ulid(ulid::Ulid::from(0_u128)),
             name: "current".into(),
@@ -879,7 +874,17 @@ mod tests {
             requirements: swarmy_core::SandboxRequirements::default(),
         };
         let bytes = encode(&record).unwrap();
-        assert_eq!(decode_agent(&bytes).unwrap(), record);
-        assert_eq!(encode(&decode_agent(&bytes).unwrap()).unwrap(), bytes);
+        assert_eq!(
+            bytes,
+            [
+                1, 26, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
+                48, 48, 48, 48, 48, 48, 48, 7, 99, 117, 114, 114, 101, 110, 116, 4, 98, 97, 115,
+                101, 4, 116, 101, 115, 116, 26, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
+                48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 0, 20, 49, 57, 55, 48, 45, 48,
+                49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90, 0, 0, 0, 0, 0, 128, 6, 0,
+                0
+            ]
+        );
+        assert_eq!(decode::<AgentRecord>(&bytes).unwrap(), record);
     }
 }

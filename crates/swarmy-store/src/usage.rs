@@ -228,3 +228,32 @@ struct BucketInput<'a> {
     usage: &'a TokenUsage,
     cost: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_record_has_fixed_bytes() {
+        let record = UsageRecord {
+            provider: "p".into(),
+            entry: None,
+            usage: TokenUsage::default(),
+            cost_micros: 0,
+            session: None,
+            agent: None,
+            model: "m".into(),
+            entry_kind: None,
+            recorded_at: None,
+            route: None,
+            route_step: None,
+        };
+        let bytes = swarmy_core::encode(&record).unwrap();
+        assert_eq!(
+            bytes,
+            [1, 1, 112, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 109, 0, 0, 0, 0]
+        );
+        let decoded: UsageRecord = swarmy_core::decode(&bytes).unwrap();
+        assert_eq!(decoded.provider, "p");
+    }
+}

@@ -302,14 +302,14 @@ enum StoredValue {
 
 const SESSION_RECORD_VERSION: u8 = 2;
 // Postcard encodes a session id with a 26-byte prefix, so this marker cannot
-// collide with an inline V2 record. Oversized records need bounded chunks.
+// collide with an inline session record. Oversized records need bounded chunks.
 const SESSION_CHUNK_MARKER: u8 = 0xff;
 const SESSION_MAX_BYTES: usize = 10 * INLINE_LIMIT;
 
-/// Version two owns all session-local metadata. Add future fields only with
+/// The current format owns all session-local metadata. Add future fields only with
 /// `swarmy_core::trailing`; never change the shape of existing fields.
 #[derive(Serialize, Deserialize)]
-struct StoredSessionV2 {
+struct StoredSessionCurrent {
     session_id: SessionId,
     agent_id: swarmy_core::AgentId,
     state: SessionState,
@@ -346,8 +346,8 @@ struct StoredSession {
     state_since: Option<jiff::Timestamp>,
 }
 
-impl From<StoredSessionV2> for StoredSession {
-    fn from(v: StoredSessionV2) -> Self {
+impl From<StoredSessionCurrent> for StoredSession {
+    fn from(v: StoredSessionCurrent) -> Self {
         Self {
             session_id: v.session_id,
             agent_id: v.agent_id,
@@ -367,7 +367,7 @@ impl From<StoredSessionV2> for StoredSession {
         }
     }
 }
-impl From<&StoredSession> for StoredSessionV2 {
+impl From<&StoredSession> for StoredSessionCurrent {
     fn from(v: &StoredSession) -> Self {
         Self {
             session_id: v.session_id,
@@ -585,7 +585,8 @@ impl Store {
         } else {
             bytes[1..].to_vec()
         };
-        let v: StoredSessionV2 = postcard::from_bytes(&payload).map_err(EncodingError::Payload)?;
+        let v: StoredSessionCurrent =
+            postcard::from_bytes(&payload).map_err(EncodingError::Payload)?;
         let mut session: StoredSession = v.into();
         // The agent tombstone is authoritative for every named side session.
         // Deleting a computer cannot atomically rewrite an unbounded set
@@ -636,7 +637,7 @@ impl Store {
     pub(crate) fn write_session(&self, trx: &Transaction, session: &StoredSession) -> Result<()> {
         let mut bytes = vec![SESSION_RECORD_VERSION];
         bytes.extend(
-            postcard::to_allocvec(&StoredSessionV2::from(session))
+            postcard::to_allocvec(&StoredSessionCurrent::from(session))
                 .map_err(EncodingError::Payload)?,
         );
         if bytes.len() > SESSION_MAX_BYTES {
@@ -1119,7 +1120,7 @@ mod stored_format_tests {
     fn fixed_versioned_session_bytes() {
         let id = SessionId::from_ulid(ulid::Ulid::from(0_u128));
         let agent = swarmy_core::AgentId::from_ulid(ulid::Ulid::from(0_u128));
-        let v2 = StoredSessionV2 {
+        let v2 = StoredSessionCurrent {
             session_id: id,
             agent_id: agent,
             state: SessionState::Idle,
@@ -1145,7 +1146,7 @@ mod stored_format_tests {
         v2_bytes.extend([0, 0, 0]);
         v2_bytes.extend([0; 12]); // Kind through state-since are empty defaults.
         assert_eq!(bytes, v2_bytes);
-        let decoded: StoredSessionV2 = postcard::from_bytes(&bytes[1..]).unwrap();
+        let decoded: StoredSessionCurrent = postcard::from_bytes(&bytes[1..]).unwrap();
         assert_eq!(decoded.session_id, id);
         assert_eq!(decoded.route_step, 0);
     }
@@ -1153,7 +1154,7 @@ mod stored_format_tests {
     #[test]
     fn fixed_nondefault_v2_session_bytes() {
         let id = SessionId::from_ulid(ulid::Ulid::from(0_u128));
-        let v2 = StoredSessionV2 {
+        let v2 = StoredSessionCurrent {
             session_id: id,
             agent_id: swarmy_core::AgentId::from_ulid(ulid::Ulid::from(0_u128)),
             state: SessionState::Runnable,
@@ -1179,7 +1180,7 @@ mod stored_format_tests {
         let mut actual = vec![SESSION_RECORD_VERSION];
         actual.extend(postcard::to_allocvec(&v2).unwrap());
         assert_eq!(actual, expected);
-        let decoded: StoredSessionV2 = postcard::from_bytes(&expected[1..]).unwrap();
+        let decoded: StoredSessionCurrent = postcard::from_bytes(&expected[1..]).unwrap();
         assert!(decoded.interrupt_requested);
         assert_eq!(decoded.route_step, 3);
     }

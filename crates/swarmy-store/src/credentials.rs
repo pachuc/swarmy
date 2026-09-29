@@ -72,11 +72,9 @@ pub(crate) struct EntryValue {
     /// Plaintext copy of the record's login state, so the scheduler can skip
     /// entries needing login without decrypting. The flag is stable: unlike
     /// expiry it never changes with time.
-    #[serde(default)]
     pub(crate) needs_login: bool,
     /// Plaintext OAuth expiry, so the scheduler can skip expired entries
     /// without decrypting. Absent for API keys, which do not expire.
-    #[serde(default)]
     pub(crate) expires_at: Option<Timestamp>,
 }
 
@@ -797,6 +795,28 @@ fn decrypt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entry_value_has_fixed_bytes() {
+        let entry = EntryValue {
+            created_at: Timestamp::UNIX_EPOCH,
+            last_used_at: None,
+            ciphertext: vec![1, 2],
+            needs_login: false,
+            expires_at: None,
+        };
+        let bytes = encode(&entry).unwrap();
+        assert_eq!(
+            bytes,
+            [
+                1, 20, 49, 57, 55, 48, 45, 48, 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48,
+                90, 0, 2, 1, 2, 0, 0
+            ]
+        );
+        let decoded: EntryValue = decode(&bytes).unwrap();
+        assert_eq!(decoded.ciphertext, vec![1, 2]);
+    }
+
     #[test]
     fn authenticated_round_trip() {
         let key = Keyring::from_bytes([1; 32]);

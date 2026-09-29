@@ -247,75 +247,48 @@ pub enum WaitKind {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-struct StoredTurnSummaryV2 {
+struct StoredTurnSummaryCurrent {
     session_id: String,
     turn_id: String,
-    #[serde(default)]
     submitted_ns: Option<i64>,
-    #[serde(default)]
     appended_ns: Option<i64>,
-    #[serde(default)]
     first_token_ns: Option<i64>,
-    #[serde(default)]
     first_tool_ns: Option<i64>,
-    #[serde(default)]
     idle_ns: Option<i64>,
-    #[serde(default)]
     inference_started_ns: Option<i64>,
-    #[serde(default)]
     inference_finished_ns: Option<i64>,
-    #[serde(default)]
     computer: Option<ComputerMetric>,
-    #[serde(default)]
     append_to_first_token_ms: Option<f64>,
-    #[serde(default)]
     inference_duration_ms: Option<f64>,
-    #[serde(default)]
     append_to_idle_ms: Option<f64>,
-    #[serde(default)]
     error: Option<String>,
-    #[serde(default)]
     input_tokens: u64,
-    #[serde(default)]
     cached_input_tokens: u64,
-    #[serde(default)]
     output_tokens: u64,
-    #[serde(default)]
     reasoning_tokens: u64,
-    #[serde(default)]
     cost_micros: u64,
-    #[serde(default)]
     retries: u64,
-    #[serde(default)]
     rate_limit_waits: u64,
-    #[serde(default)]
     gateway_waits: u64,
-    #[serde(default)]
     provider_failures: u64,
-    #[serde(default)]
     inference_errors: u64,
-    #[serde(default)]
     throughput_sum: f64,
-    #[serde(default)]
     throughput_count: u64,
     /// Paging counters. New turns store zero until a response is paginated.
-    #[serde(default)]
     dropped_stages: u64,
-    #[serde(default)]
     dropped_inference: u64,
-    #[serde(default)]
     dropped_tools: u64,
 }
 
-/// Frozen inference fields for one `V2` request row. This mirrors
-/// [`InferenceMetric`] at the `V2` layout revision: postcard is positional, so
+/// Frozen inference fields for one current request row. This mirrors
+/// [`InferenceMetric`] at the current layout revision: postcard is positional, so
 /// the API type cannot be embedded directly (the next field added to the API
 /// type would make every stored row undecodable). Convert to and from the API
 /// type with the helpers below, and add any future stored fields as trailing
 /// fields through `swarmy_core::trailing` (see `swarmy_core::usage`), never by
 /// inserting mid-struct.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-struct StoredInferenceMetricV2 {
+struct StoredInferenceMetricCurrent {
     request_id: String,
     provider: String,
     model: String,
@@ -326,9 +299,7 @@ struct StoredInferenceMetricV2 {
     cost_micros: u64,
     time_to_first_token_ms: Option<f64>,
     streaming_duration_ms: Option<f64>,
-    #[serde(default)]
     request_duration_ms: Option<f64>,
-    #[serde(default)]
     streamed: Option<bool>,
     output_tokens_per_second: Option<f64>,
     retries: u32,
@@ -338,7 +309,7 @@ struct StoredInferenceMetricV2 {
     error: Option<String>,
 }
 
-impl StoredInferenceMetricV2 {
+impl StoredInferenceMetricCurrent {
     fn into_public(self) -> InferenceMetric {
         InferenceMetric {
             request_id: self.request_id,
@@ -363,12 +334,12 @@ impl StoredInferenceMetricV2 {
     }
 }
 
-/// Frozen tool fields for one `V2` tool row. Mirrors [`ToolMetric`] at the
-/// `V2` layout revision for the same positional-encoding reason as
-/// [`StoredInferenceMetricV2`]; future stored fields go last through
+/// Frozen tool fields for one current tool row. Mirrors [`ToolMetric`] at the
+/// current layout revision for the same positional-encoding reason as
+/// [`StoredInferenceMetricCurrent`]; future stored fields go last through
 /// `swarmy_core::trailing`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-struct StoredToolMetricV2 {
+struct StoredToolMetricCurrent {
     request_id: String,
     name: String,
     dispatched_ns: Option<i64>,
@@ -380,7 +351,7 @@ struct StoredToolMetricV2 {
     process_wall_ms: Option<f64>,
 }
 
-impl StoredToolMetricV2 {
+impl StoredToolMetricCurrent {
     fn into_public(self) -> ToolMetric {
         ToolMetric {
             request_id: self.request_id,
@@ -400,26 +371,22 @@ impl StoredToolMetricV2 {
 /// the terminal patch; the stage path fills the wall-clock anchors that
 /// throughput derives from.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-struct StoredTurnInferenceV2 {
-    #[serde(default)]
-    metric: StoredInferenceMetricV2,
-    #[serde(default)]
+struct StoredTurnInferenceCurrent {
+    metric: StoredInferenceMetricCurrent,
     started_ns: Option<i64>,
-    #[serde(default)]
     first_token_ns: Option<i64>,
-    #[serde(default)]
     finished_ns: Option<i64>,
 }
 
 /// Stored summary and detail rows. Each keyspace accepts only its own variant.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 enum StoredTurnMetrics {
-    Summary(Box<StoredTurnSummaryV2>),
-    Inference(StoredTurnInferenceV2),
-    Tool(StoredToolMetricV2),
+    Summary(Box<StoredTurnSummaryCurrent>),
+    Inference(StoredTurnInferenceCurrent),
+    Tool(StoredToolMetricCurrent),
 }
 
-fn decode_summary(bytes: &[u8]) -> Result<StoredTurnSummaryV2> {
+fn decode_summary(bytes: &[u8]) -> Result<StoredTurnSummaryCurrent> {
     match decode::<StoredTurnMetrics>(bytes)? {
         StoredTurnMetrics::Summary(summary) => Ok(*summary),
         StoredTurnMetrics::Inference(_) | StoredTurnMetrics::Tool(_) => {
@@ -428,18 +395,22 @@ fn decode_summary(bytes: &[u8]) -> Result<StoredTurnSummaryV2> {
     }
 }
 
-fn decode_inference(bytes: &[u8]) -> Result<StoredTurnInferenceV2> {
-    if let Ok(StoredTurnMetrics::Inference(row)) = decode::<StoredTurnMetrics>(bytes) {
-        return Ok(row);
+fn decode_inference(bytes: &[u8]) -> Result<StoredTurnInferenceCurrent> {
+    match decode::<StoredTurnMetrics>(bytes)? {
+        StoredTurnMetrics::Inference(row) => Ok(row),
+        StoredTurnMetrics::Summary(_) | StoredTurnMetrics::Tool(_) => {
+            Err(StoreError::Storage(crate::StorageError::Corrupt))
+        }
     }
-    Err(StoreError::Storage(crate::StorageError::Corrupt))
 }
 
-fn decode_tool(bytes: &[u8]) -> Result<StoredToolMetricV2> {
-    if let Ok(StoredTurnMetrics::Tool(row)) = decode::<StoredTurnMetrics>(bytes) {
-        return Ok(row);
+fn decode_tool(bytes: &[u8]) -> Result<StoredToolMetricCurrent> {
+    match decode::<StoredTurnMetrics>(bytes)? {
+        StoredTurnMetrics::Tool(row) => Ok(row),
+        StoredTurnMetrics::Summary(_) | StoredTurnMetrics::Inference(_) => {
+            Err(StoreError::Storage(crate::StorageError::Corrupt))
+        }
     }
-    Err(StoreError::Storage(crate::StorageError::Corrupt))
 }
 
 /// One worker dispatch folds the tool name into the dispatch stage it already
@@ -497,7 +468,7 @@ fn unix_ns(event: &TurnEvent) -> i64 {
     i64::try_from(event.unix_ns).unwrap_or(i64::MAX)
 }
 
-fn derive_summary(summary: &mut StoredTurnSummaryV2) {
+fn derive_summary(summary: &mut StoredTurnSummaryCurrent) {
     summary.append_to_first_token_ms = wall_ms(summary.appended_ns, summary.first_token_ns);
     summary.inference_duration_ms =
         wall_ms(summary.inference_started_ns, summary.inference_finished_ns);
@@ -509,7 +480,7 @@ fn derive_summary(summary: &mut StoredTurnSummaryV2) {
 /// Throughput covers the whole request. A provider that delivers the entire
 /// response in one chunk would otherwise report tens of thousands of tokens
 /// per second over a millisecond streaming interval.
-fn derive_inference(row: &mut StoredTurnInferenceV2) {
+fn derive_inference(row: &mut StoredTurnInferenceCurrent) {
     let metric = &mut row.metric;
     metric.time_to_first_token_ms = wall_ms(row.started_ns, row.first_token_ns);
     metric.streaming_duration_ms = wall_ms(row.first_token_ns, row.finished_ns);
@@ -520,7 +491,7 @@ fn derive_inference(row: &mut StoredTurnInferenceV2) {
         .and_then(|ms| InferenceMetric::tokens_per_second(metric.output_tokens, ms));
 }
 
-fn apply_computer(summary: &mut StoredTurnSummaryV2, value: &ComputerMetric) {
+fn apply_computer(summary: &mut StoredTurnSummaryCurrent, value: &ComputerMetric) {
     let current = summary.computer.get_or_insert_with(ComputerMetric::default);
     if value.placement_ms.is_some() {
         current.placement_ms = value.placement_ms;
@@ -560,12 +531,12 @@ fn apply_computer(summary: &mut StoredTurnSummaryV2, value: &ComputerMetric) {
 /// Per-turn mutable state held inside one transaction: the summary plus only
 /// the inference and tool rows this batch touches.
 struct TurnWrite {
-    summary: StoredTurnSummaryV2,
-    inference: BTreeMap<String, StoredTurnInferenceV2>,
-    tools: BTreeMap<String, StoredToolMetricV2>,
+    summary: StoredTurnSummaryCurrent,
+    inference: BTreeMap<String, StoredTurnInferenceCurrent>,
+    tools: BTreeMap<String, StoredToolMetricCurrent>,
 }
 
-fn adjust_throughput(summary: &mut StoredTurnSummaryV2, old: Option<f64>, new: Option<f64>) {
+fn adjust_throughput(summary: &mut StoredTurnSummaryCurrent, old: Option<f64>, new: Option<f64>) {
     match (old, new) {
         (Some(previous), Some(current)) => {
             summary.throughput_sum += current - previous;
@@ -583,29 +554,29 @@ fn adjust_throughput(summary: &mut StoredTurnSummaryV2, old: Option<f64>, new: O
 }
 
 fn inference_entry<'a>(
-    inference: &'a mut BTreeMap<String, StoredTurnInferenceV2>,
+    inference: &'a mut BTreeMap<String, StoredTurnInferenceCurrent>,
     request_id: &str,
-) -> &'a mut StoredTurnInferenceV2 {
+) -> &'a mut StoredTurnInferenceCurrent {
     inference
         .entry(request_id.to_owned())
-        .or_insert_with(|| StoredTurnInferenceV2 {
-            metric: StoredInferenceMetricV2 {
+        .or_insert_with(|| StoredTurnInferenceCurrent {
+            metric: StoredInferenceMetricCurrent {
                 request_id: request_id.to_owned(),
-                ..StoredInferenceMetricV2::default()
+                ..StoredInferenceMetricCurrent::default()
             },
-            ..StoredTurnInferenceV2::default()
+            ..StoredTurnInferenceCurrent::default()
         })
 }
 
 fn tool_entry<'a>(
-    tools: &'a mut BTreeMap<String, StoredToolMetricV2>,
+    tools: &'a mut BTreeMap<String, StoredToolMetricCurrent>,
     request_id: &str,
-) -> &'a mut StoredToolMetricV2 {
+) -> &'a mut StoredToolMetricCurrent {
     tools
         .entry(request_id.to_owned())
-        .or_insert_with(|| StoredToolMetricV2 {
+        .or_insert_with(|| StoredToolMetricCurrent {
             request_id: request_id.to_owned(),
-            ..StoredToolMetricV2::default()
+            ..StoredToolMetricCurrent::default()
         })
 }
 
@@ -613,8 +584,8 @@ fn tool_entry<'a>(
 // would separate the delta bookkeeping from the row it deltas against.
 #[allow(clippy::too_many_lines)]
 fn apply_inference_update(
-    summary: &mut StoredTurnSummaryV2,
-    inference: &mut BTreeMap<String, StoredTurnInferenceV2>,
+    summary: &mut StoredTurnSummaryCurrent,
+    inference: &mut BTreeMap<String, StoredTurnInferenceCurrent>,
     update: &InferenceMetric,
 ) {
     let row = inference_entry(inference, &update.request_id);
@@ -725,7 +696,7 @@ fn apply_inference_update(
     adjust_throughput(summary, old_throughput, new_throughput);
 }
 
-fn apply_tool_update(tools: &mut BTreeMap<String, StoredToolMetricV2>, update: &ToolMetric) {
+fn apply_tool_update(tools: &mut BTreeMap<String, StoredToolMetricCurrent>, update: &ToolMetric) {
     let row = tool_entry(tools, &update.request_id);
     if !update.name.is_empty() {
         row.name = clipped(&update.name, 80);
@@ -754,9 +725,9 @@ fn apply_tool_update(tools: &mut BTreeMap<String, StoredToolMetricV2>, update: &
 }
 
 fn apply_stage(
-    summary: &mut StoredTurnSummaryV2,
-    inference: &mut BTreeMap<String, StoredTurnInferenceV2>,
-    tools: &mut BTreeMap<String, StoredToolMetricV2>,
+    summary: &mut StoredTurnSummaryCurrent,
+    inference: &mut BTreeMap<String, StoredTurnInferenceCurrent>,
+    tools: &mut BTreeMap<String, StoredToolMetricCurrent>,
     event: &TurnEvent,
 ) {
     let wall = unix_ns(event);
@@ -852,8 +823,8 @@ fn apply_stage(
 }
 
 fn apply_wait(
-    summary: &mut StoredTurnSummaryV2,
-    inference: &mut BTreeMap<String, StoredTurnInferenceV2>,
+    summary: &mut StoredTurnSummaryCurrent,
+    inference: &mut BTreeMap<String, StoredTurnInferenceCurrent>,
     request_id: &str,
     kind: WaitKind,
 ) {
@@ -945,7 +916,7 @@ fn request_stage(name: &str, request_id: &str, unix_ns: Option<i64>) -> Option<S
 }
 
 /// Turn anchors in the unbounded summary.
-fn anchor_stages(summary: &StoredTurnSummaryV2) -> Vec<StageTiming> {
+fn anchor_stages(summary: &StoredTurnSummaryCurrent) -> Vec<StageTiming> {
     let mut stages = Vec::new();
     for (name, stamp) in [
         ("submitted", summary.submitted_ns),
@@ -965,7 +936,7 @@ fn anchor_stages(summary: &StoredTurnSummaryV2) -> Vec<StageTiming> {
 /// Chronological order for per-request rows. Request ids are blake3 hashes,
 /// so id order is arbitrary; the per-row start timestamp restores the order
 /// the turn executed in, with the id only breaking ties.
-fn sort_inference_rows(rows: &mut [StoredTurnInferenceV2]) {
+fn sort_inference_rows(rows: &mut [StoredTurnInferenceCurrent]) {
     rows.sort_by(|a, b| {
         (a.started_ns.unwrap_or(i64::MAX), &a.metric.request_id)
             .cmp(&(b.started_ns.unwrap_or(i64::MAX), &b.metric.request_id))
@@ -973,7 +944,7 @@ fn sort_inference_rows(rows: &mut [StoredTurnInferenceV2]) {
 }
 
 /// Chronological order for per-tool rows by dispatch, then start, then id.
-fn sort_tool_rows(rows: &mut [StoredToolMetricV2]) {
+fn sort_tool_rows(rows: &mut [StoredToolMetricCurrent]) {
     rows.sort_by(|a, b| {
         (
             a.dispatched_ns.unwrap_or(i64::MAX),
@@ -992,9 +963,9 @@ fn sort_tool_rows(rows: &mut [StoredToolMetricV2]) {
 /// Paging truncates the chronologically sorted arrays and reports the
 /// remainder in `dropped_*`; a complete read reports zero.
 fn assemble_turn(
-    summary: &StoredTurnSummaryV2,
-    mut inference_rows: Vec<StoredTurnInferenceV2>,
-    mut tool_rows: Vec<StoredToolMetricV2>,
+    summary: &StoredTurnSummaryCurrent,
+    mut inference_rows: Vec<StoredTurnInferenceCurrent>,
+    mut tool_rows: Vec<StoredToolMetricCurrent>,
     inference_limit: Option<usize>,
     tools_limit: Option<usize>,
 ) -> TurnMetrics {
@@ -1003,11 +974,11 @@ fn assemble_turn(
     sort_tool_rows(&mut tool_rows);
     let total_inference = inference_rows.len();
     let total_tools = tool_rows.len();
-    let inference_page: Vec<StoredTurnInferenceV2> = match inference_limit {
+    let inference_page: Vec<StoredTurnInferenceCurrent> = match inference_limit {
         Some(limit) => inference_rows.into_iter().take(limit).collect(),
         None => inference_rows,
     };
-    let tools_page: Vec<StoredToolMetricV2> = match tools_limit {
+    let tools_page: Vec<StoredToolMetricCurrent> = match tools_limit {
         Some(limit) => tool_rows.into_iter().take(limit).collect(),
         None => tool_rows,
     };
@@ -1040,7 +1011,7 @@ fn assemble_turn(
             .collect(),
         tools: tools_page
             .into_iter()
-            .map(StoredToolMetricV2::into_public)
+            .map(StoredToolMetricCurrent::into_public)
             .collect(),
         computer: summary.computer.clone(),
         append_to_first_token_ms: None,
@@ -1157,10 +1128,10 @@ impl Store {
                     async move {
                         let mut state = TurnWrite {
                             summary: match trx.get(summary_key, false).await? {
-                                None => StoredTurnSummaryV2 {
+                                None => StoredTurnSummaryCurrent {
                                     session_id: session.to_string(),
                                     turn_id: turn.to_string(),
-                                    ..StoredTurnSummaryV2::default()
+                                    ..StoredTurnSummaryCurrent::default()
                                 },
                                 Some(value) => decode_summary(&value)?,
                             },
@@ -1257,7 +1228,10 @@ impl Store {
         &self,
         session: SessionId,
         turn: MessageId,
-    ) -> Result<(Vec<StoredTurnInferenceV2>, Vec<StoredToolMetricV2>)> {
+    ) -> Result<(
+        Vec<StoredTurnInferenceCurrent>,
+        Vec<StoredToolMetricCurrent>,
+    )> {
         let (inference_begin, inference_end) = crate::keys::Keys::new(&self.root)
             .turn_inference_space(session, turn)
             .range();
@@ -1329,7 +1303,7 @@ impl Store {
     /// pseudo-stages so the shared derive computes whole-request throughput.
     async fn assemble_from_summary(
         &self,
-        summary: StoredTurnSummaryV2,
+        summary: StoredTurnSummaryCurrent,
         inference_limit: Option<usize>,
         tools_limit: Option<usize>,
     ) -> Result<TurnMetrics> {
@@ -1423,7 +1397,7 @@ impl Store {
         session: SessionId,
         since: Option<MessageId>,
         limit: usize,
-    ) -> Result<Vec<StoredTurnSummaryV2>> {
+    ) -> Result<Vec<StoredTurnSummaryCurrent>> {
         let mut summaries = Vec::new();
         let mut end = crate::keys::Keys::new(&self.root)
             .turn_metrics_space(session)
@@ -1565,47 +1539,47 @@ mod tests {
             .collect()
     }
 
-    /// Checked-in `V2` summary bytes. Generated with
+    /// Checked-in current summary bytes. Generated with
     /// `swarmy_core::encode(&StoredTurnMetrics::Summary(fixture_summary()))`;
     /// decoding them pins the unbounded layout.
     /// the capped record.
-    const V2_SUMMARY_HEX: &str = "010001730174000180897a00000180b6dc050000000000000000000000000000000000000000000000000000000000";
-    /// Checked-in `V2` inference-row bytes for a single-chunk request.
-    const V2_INFERENCE_HEX: &str = "010101720466616b6508736372697074656400000400000000000100000000000000018092f401000180ade204";
-    /// Checked-in `V2` tool-row bytes.
-    const V2_TOOL_HEX: &str = "01020163046261736800000000000000";
+    const CURRENT_SUMMARY_HEX: &str = "010001730174000180897a00000180b6dc050000000000000000000000000000000000000000000000000000000000";
+    /// Checked-in current inference-row bytes for a single-chunk request.
+    const CURRENT_INFERENCE_HEX: &str = "010101720466616b6508736372697074656400000400000000000100000000000000018092f401000180ade204";
+    /// Checked-in current tool-row bytes.
+    const CURRENT_TOOL_HEX: &str = "01020163046261736800000000000000";
 
-    fn fixture_summary() -> StoredTurnSummaryV2 {
-        StoredTurnSummaryV2 {
+    fn fixture_summary() -> StoredTurnSummaryCurrent {
+        StoredTurnSummaryCurrent {
             session_id: "s".into(),
             turn_id: "t".into(),
             appended_ns: Some(1_000_000),
             idle_ns: Some(6_000_000),
-            ..StoredTurnSummaryV2::default()
+            ..StoredTurnSummaryCurrent::default()
         }
     }
 
-    fn fixture_inference() -> StoredTurnInferenceV2 {
-        StoredTurnInferenceV2 {
-            metric: StoredInferenceMetricV2 {
+    fn fixture_inference() -> StoredTurnInferenceCurrent {
+        StoredTurnInferenceCurrent {
+            metric: StoredInferenceMetricCurrent {
                 request_id: "r".into(),
                 provider: "fake".into(),
                 model: "scripted".into(),
                 output_tokens: 4,
                 streamed: Some(false),
-                ..StoredInferenceMetricV2::default()
+                ..StoredInferenceMetricCurrent::default()
             },
             started_ns: Some(2_000_000),
             finished_ns: Some(5_000_000),
-            ..StoredTurnInferenceV2::default()
+            ..StoredTurnInferenceCurrent::default()
         }
     }
 
-    fn fixture_tool() -> StoredToolMetricV2 {
-        StoredToolMetricV2 {
+    fn fixture_tool() -> StoredToolMetricCurrent {
+        StoredToolMetricCurrent {
             request_id: "c".into(),
             name: "bash".into(),
-            ..StoredToolMetricV2::default()
+            ..StoredToolMetricCurrent::default()
         }
     }
 
@@ -1620,33 +1594,33 @@ mod tests {
 
     #[test]
     fn versioned_envelope_decodes_checked_in_v2_bytes() {
-        let summary = decode::<StoredTurnMetrics>(&hex_to_bytes(V2_SUMMARY_HEX)).unwrap();
+        let summary = decode::<StoredTurnMetrics>(&hex_to_bytes(CURRENT_SUMMARY_HEX)).unwrap();
         let StoredTurnMetrics::Summary(decoded) = summary else {
-            panic!("expected V2Summary");
+            panic!("expected currentSummary");
         };
         assert_eq!(*decoded, fixture_summary());
-        let inference = decode::<StoredTurnMetrics>(&hex_to_bytes(V2_INFERENCE_HEX)).unwrap();
+        let inference = decode::<StoredTurnMetrics>(&hex_to_bytes(CURRENT_INFERENCE_HEX)).unwrap();
         let StoredTurnMetrics::Inference(row) = inference else {
-            panic!("expected V2Inference");
+            panic!("expected currentInference");
         };
         assert_eq!(row, fixture_inference());
         assert_eq!(row.metric.streamed, Some(false));
-        let tool = decode::<StoredTurnMetrics>(&hex_to_bytes(V2_TOOL_HEX)).unwrap();
+        let tool = decode::<StoredTurnMetrics>(&hex_to_bytes(CURRENT_TOOL_HEX)).unwrap();
         let StoredTurnMetrics::Tool(row) = tool else {
-            panic!("expected V2Tool");
+            panic!("expected currentTool");
         };
         assert_eq!(row, fixture_tool());
     }
 
     #[test]
     fn detail_rows_sort_chronologically_not_by_hash() {
-        let row = |id: &str, started: Option<i64>| StoredTurnInferenceV2 {
-            metric: StoredInferenceMetricV2 {
+        let row = |id: &str, started: Option<i64>| StoredTurnInferenceCurrent {
+            metric: StoredInferenceMetricCurrent {
                 request_id: id.into(),
-                ..StoredInferenceMetricV2::default()
+                ..StoredInferenceMetricCurrent::default()
             },
             started_ns: started,
-            ..StoredTurnInferenceV2::default()
+            ..StoredTurnInferenceCurrent::default()
         };
         // Ids chosen so hash order disagrees with time order; the later
         // request must still sort first when its start is earlier.
@@ -1658,10 +1632,10 @@ mod tests {
         let mut rows = vec![row("b", None), row("a", None)];
         sort_inference_rows(&mut rows);
         assert_eq!(rows[0].metric.request_id, "a");
-        let tool = |id: &str, dispatched: Option<i64>| StoredToolMetricV2 {
+        let tool = |id: &str, dispatched: Option<i64>| StoredToolMetricCurrent {
             request_id: id.into(),
             dispatched_ns: dispatched,
-            ..StoredToolMetricV2::default()
+            ..StoredToolMetricCurrent::default()
         };
         let mut tools = vec![tool("zzz", Some(5)), tool("aaa", Some(1))];
         sort_tool_rows(&mut tools);
@@ -1670,28 +1644,28 @@ mod tests {
 
     #[test]
     fn v2_summary_and_rows_round_trip() {
-        let summary = StoredTurnSummaryV2 {
+        let summary = StoredTurnSummaryCurrent {
             session_id: "s".into(),
             turn_id: "t".into(),
             appended_ns: Some(1_000_000),
             idle_ns: Some(6_000_000),
-            ..StoredTurnSummaryV2::default()
+            ..StoredTurnSummaryCurrent::default()
         };
         for value in [
             StoredTurnMetrics::Summary(Box::new(summary)),
-            StoredTurnMetrics::Inference(StoredTurnInferenceV2 {
-                metric: StoredInferenceMetricV2 {
+            StoredTurnMetrics::Inference(StoredTurnInferenceCurrent {
+                metric: StoredInferenceMetricCurrent {
                     request_id: "r".into(),
-                    ..StoredInferenceMetricV2::default()
+                    ..StoredInferenceMetricCurrent::default()
                 },
                 started_ns: Some(2_000_000),
                 finished_ns: Some(5_000_000),
-                ..StoredTurnInferenceV2::default()
+                ..StoredTurnInferenceCurrent::default()
             }),
-            StoredTurnMetrics::Tool(StoredToolMetricV2 {
+            StoredTurnMetrics::Tool(StoredToolMetricCurrent {
                 request_id: "c".into(),
                 name: "bash".into(),
-                ..StoredToolMetricV2::default()
+                ..StoredToolMetricCurrent::default()
             }),
         ] {
             let bytes = swarmy_core::encode(&value).unwrap();
@@ -1705,10 +1679,10 @@ mod tests {
         let session = SessionId::from_ulid(ulid::Ulid::nil());
         let turn = MessageId::from_ulid(ulid::Ulid::nil());
         let mut state = TurnWrite {
-            summary: StoredTurnSummaryV2 {
+            summary: StoredTurnSummaryCurrent {
                 session_id: session.to_string(),
                 turn_id: turn.to_string(),
-                ..StoredTurnSummaryV2::default()
+                ..StoredTurnSummaryCurrent::default()
             },
             inference: BTreeMap::new(),
             tools: BTreeMap::new(),
@@ -1855,12 +1829,12 @@ mod tests {
             }
         };
         let mut batched = TurnWrite {
-            summary: StoredTurnSummaryV2::default(),
+            summary: StoredTurnSummaryCurrent::default(),
             inference: BTreeMap::new(),
             tools: BTreeMap::new(),
         };
         let mut sequential = TurnWrite {
-            summary: StoredTurnSummaryV2::default(),
+            summary: StoredTurnSummaryCurrent::default(),
             inference: BTreeMap::new(),
             tools: BTreeMap::new(),
         };

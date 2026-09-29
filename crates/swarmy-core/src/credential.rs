@@ -25,7 +25,6 @@ impl std::fmt::Display for CredentialScope {
 pub struct CredentialRecord {
     pub kind: CredentialKind,
     pub updated_at: Timestamp,
-    #[serde(default, with = "crate::trailing")]
     pub bookkeeping: CredentialBookkeeping,
 }
 
@@ -102,6 +101,27 @@ impl CredentialRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_record_has_fixed_bytes() {
+        let record = CredentialRecord {
+            kind: CredentialKind::ApiKey {
+                key: "k".into(),
+                extra: BTreeMap::new(),
+            },
+            updated_at: Timestamp::UNIX_EPOCH,
+            bookkeeping: CredentialBookkeeping::default(),
+        };
+        let bytes = crate::encode(&record).unwrap();
+        assert_eq!(
+            bytes,
+            [
+                1, 0, 1, 107, 0, 20, 49, 57, 55, 48, 45, 48, 49, 45, 48, 49, 84, 48, 48, 58, 48,
+                48, 58, 48, 48, 90, 0, 0, 0, 0
+            ]
+        );
+        assert!(crate::decode::<CredentialRecord>(&bytes).unwrap() == record);
+    }
 
     #[test]
     fn status_and_refresh_margin() {

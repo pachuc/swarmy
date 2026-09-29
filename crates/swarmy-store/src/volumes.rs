@@ -519,7 +519,11 @@ impl Store {
                     }
                     for (key, value) in page {
                         if kind == "agent" {
-                            live.insert(crate::agents::decode_agent(&value)?.image.manifest_id);
+                            live.insert(
+                                swarmy_core::decode::<swarmy_core::AgentRecord>(&value)?
+                                    .image
+                                    .manifest_id,
+                            );
                         } else if kind == "image" {
                             live.insert(swarmy_core::decode::<ManifestId>(&value)?);
                         } else {

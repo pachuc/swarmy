@@ -53,6 +53,7 @@ impl Store {
 
     /// # Errors
     /// Returns database or encoding errors.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn gateway_entry(
         &self,
         provider: &str,

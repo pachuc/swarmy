@@ -335,14 +335,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    fn load_with_remote(
-        cwd: &Path,
-        environment: &BTreeMap<String, String>,
-    ) -> Result<crate::Loaded, Error> {
-        let mut loaded = Settings::load_base_from(cwd, environment)?;
-        loaded.settings.apply_remote()?;
-        Ok(loaded)
-    }
+    use crate::tests::load_with_remote;
 
     #[test]
     fn defaults_and_overrides() {

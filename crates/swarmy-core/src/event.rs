@@ -142,7 +142,7 @@ pub fn interrupted_event(seq: u64, request_id: crate::RequestId) -> Event {
 pub(crate) mod tests {
     use super::*;
     use crate::{
-        SessionId, decode, encode,
+        SessionId, encode,
         encoding::tests::assert_round_trip,
         message::tests::{message, tool_call, tool_result},
     };

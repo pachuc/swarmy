@@ -120,6 +120,7 @@ impl Store {
     /// Insert or reschedule a Runnable session, replacing its previous index entry.
     /// # Errors
     /// Rejects missing or non-Runnable sessions and transaction failures.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn insert_runnable(&self, entry: &RunnableEntry) -> Result<()> {
         self.transaction(|trx| async move {
             if self.session(&trx, entry.session_id).await?.state != SessionState::Runnable {

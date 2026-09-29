@@ -1067,7 +1067,7 @@ impl Settings {
 mod tests {
     use super::*;
 
-    fn load_with_remote(
+    pub(crate) fn load_with_remote(
         cwd: &Path,
         environment: &BTreeMap<String, String>,
     ) -> Result<Loaded, Error> {
