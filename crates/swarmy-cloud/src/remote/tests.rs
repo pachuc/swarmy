@@ -37,6 +37,10 @@ fn denied(operation: &str) -> crate::Error {
     }
 }
 
+/// What `ensure_bucket` recorded: name, region, owner, endpoint, prefix, and
+/// whether static keys were present (never the values).
+type BucketEnsure = (String, String, String, Option<String>, String, bool);
+
 #[derive(Default)]
 struct FakeCloud {
     requests: RefCell<Vec<MachineSpec>>,
@@ -52,7 +56,7 @@ struct FakeCloud {
     tagged: RefCell<Vec<String>>,
     foreign_bucket: Cell<bool>,
     foreign_role: Cell<bool>,
-    bucket_ensures: RefCell<Vec<(String, String, String, Option<String>, String, bool)>>,
+    bucket_ensures: RefCell<Vec<BucketEnsure>>,
     bucket_creates: RefCell<Vec<String>>,
     role_creates: RefCell<Vec<String>>,
     policy_roles: RefCell<Vec<String>>,
@@ -1309,18 +1313,18 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     assert_eq!(cloud.profile_creates.borrow().len(), 1);
 }
 
-#[tokio::test]
-async fn static_bucket_skips_roles_and_keeps_keys_out_of_logs() {
+struct StaticSetup {
+    dir: tempfile::TempDir,
+    state: State,
+    cloud: FakeCloud,
+    host: FakeHost,
+    settings: RemoteSettings,
+}
+
+fn static_setup() -> StaticSetup {
     use swarmy_config::{BucketCredentials, BucketSpec};
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(&dir.path().join("remote")).unwrap();
-    let cloud = FakeCloud::default();
-    observe_running(&cloud);
-    let host = FakeHost::default();
-    let request = up::NewNode {
-        name: "static-test",
-        sandboxes: 0,
-    };
     let settings = RemoteSettings {
         region: "eu-west-1".into(),
         bucket: Some(BucketSpec {
@@ -1335,17 +1339,38 @@ async fn static_bucket_skips_roles_and_keeps_keys_out_of_logs() {
         }),
         ..settings()
     };
+    StaticSetup {
+        dir,
+        state,
+        cloud: FakeCloud::default(),
+        host: FakeHost::default(),
+        settings,
+    }
+}
+
+async fn static_up(setup: &StaticSetup) {
+    observe_running(&setup.cloud);
     up::run(
-        &cloud,
-        &host,
-        &state,
-        &settings,
-        request,
+        &setup.cloud,
+        &setup.host,
+        &setup.state,
+        &setup.settings,
+        up::NewNode {
+            name: "static-test",
+            sandboxes: 0,
+        },
         None.into(),
         Duration::ZERO,
     )
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn static_bucket_up_skips_roles_and_redacts_logs() {
+    let setup = static_setup();
+    static_up(&setup).await;
+    let cloud = &setup.cloud;
     // The endpoint, prefix, and key presence (never the values) reach the
     // provider; no IAM profile is attached to the machine.
     assert_eq!(
@@ -1363,10 +1388,10 @@ async fn static_bucket_skips_roles_and_keeps_keys_out_of_logs() {
     assert!(cloud.role_creates.borrow().is_empty());
     assert!(cloud.profile_creates.borrow().is_empty());
     // Saved state carries the description; formatter output never does.
-    let node = state.require("static-test").unwrap();
+    let node = setup.state.require("static-test").unwrap();
     assert_eq!(
         std::os::unix::fs::PermissionsExt::mode(
-            &std::fs::metadata(state.directory.join("static-test.json"))
+            &std::fs::metadata(setup.state.directory.join("static-test.json"))
                 .unwrap()
                 .permissions()
         ) & 0o777,
@@ -1393,11 +1418,11 @@ async fn static_bucket_skips_roles_and_keeps_keys_out_of_logs() {
     }
     // The connect profile carries keys into service settings for the laptop.
     let profile = super::connect::new_profile(
-        dir.path(),
+        setup.dir.path(),
         &node,
         node.ports,
         8742,
-        dir.path().join("socket"),
+        setup.dir.path().join("socket"),
     )
     .unwrap();
     let mut applied = swarmy_config::Settings::default();
@@ -1406,28 +1431,40 @@ async fn static_bucket_skips_roles_and_keeps_keys_out_of_logs() {
     assert_eq!(applied.s3.access_key, "static-access");
     assert_eq!(applied.s3.secret_key, "static-secret");
     assert_eq!(applied.s3.prefix.as_str(), "runs/team");
+}
+
+#[tokio::test]
+async fn static_bucket_tag_and_down_touch_only_the_bucket() {
+    let setup = static_setup();
+    static_up(&setup).await;
+    let node = setup.state.require("static-test").unwrap();
     // Tag adopts only the bucket; down deletes it without touching roles.
     assert_eq!(
-        down::adoption_targets(&state, &node).unwrap(),
+        down::adoption_targets(&setup.state, &node).unwrap(),
         [("bucket".to_owned(), "test-bucket".to_owned())]
     );
-    tag_confirmed(&cloud, &state, &node, |_, _| Ok(()))
+    tag_confirmed(&setup.cloud, &setup.state, &node, |_, _| Ok(()))
         .await
         .unwrap();
-    assert_eq!(cloud.tagged.borrow().as_slice(), ["bucket test-bucket"]);
-    cloud.observations.borrow_mut().extend([None, None]);
-    down::run(&cloud, &state, &node, Duration::ZERO, false)
+    assert_eq!(
+        setup.cloud.tagged.borrow().as_slice(),
+        ["bucket test-bucket"]
+    );
+    setup.cloud.observations.borrow_mut().extend([None, None]);
+    down::run(&setup.cloud, &setup.state, &node, Duration::ZERO, false)
         .await
         .unwrap();
     assert!(
-        cloud
+        setup
+            .cloud
             .teardown
             .borrow()
             .iter()
             .any(|entry| entry == "bucket test-bucket")
     );
     assert!(
-        !cloud
+        !setup
+            .cloud
             .teardown
             .borrow()
             .iter()

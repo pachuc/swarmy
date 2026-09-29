@@ -1265,11 +1265,11 @@ impl Cloud for Aws {
     }
 
     async fn delete_bucket(&self, bucket: &ObjectBucket) -> Result<bool> {
+        use aws_sdk_s3::types::{Delete, ObjectIdentifier};
         if bucket.is_static() {
             return self.delete_static_bucket(bucket).await;
         }
         let name = &bucket.name;
-        use aws_sdk_s3::types::{Delete, ObjectIdentifier};
         let ownership = self.bucket_ownership(bucket).await?;
         if ownership == Ownership::Absent {
             return Ok(false);

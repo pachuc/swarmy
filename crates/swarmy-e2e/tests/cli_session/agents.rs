@@ -697,8 +697,7 @@ async fn new_commands_use_the_selected_remote_profile() {
                 .endpoint,
             api_url: Some(fixture.api_url.clone()),
             api_token: Some(fixture.api_token.clone()),
-            s3_bucket: None,
-            s3_region: None,
+            bucket: None,
             default_image: Some("fixture:test".into()),
         };
         std::fs::write(

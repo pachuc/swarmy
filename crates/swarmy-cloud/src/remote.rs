@@ -248,6 +248,8 @@ async fn run_add_node(state: &State, mut settings: Settings, command: Command) -
         )
     })?;
     let cloud = for_settings(&launch).await?;
+    // Box the join future: it holds saved launch state across awaits and
+    // would otherwise exceed the large-future budget.
     guard(
         &name,
         // Pin the join so service-user paths and disk state do not inflate

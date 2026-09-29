@@ -76,10 +76,11 @@ pub(crate) fn resolve(
     }
     if let Some(access_key) = &options.access_key {
         set_access_key(&mut spec, access_key.clone());
-    } else if let Some(access_key) = &options.env_access_key {
-        if !access_key.is_empty() && !spec.needs_static_keys() {
-            set_access_key(&mut spec, access_key.clone());
-        }
+    } else if let Some(access_key) = &options.env_access_key
+        && !access_key.is_empty()
+        && !spec.needs_static_keys()
+    {
+        set_access_key(&mut spec, access_key.clone());
     }
     let secret = secret_from(options)?;
     if let Some(secret) = secret {
@@ -91,7 +92,7 @@ pub(crate) fn resolve(
             !spec.endpoint.is_empty(),
             "static S3 keys need --s3-endpoint URL",
         )?;
-        let (access_key, secret_key) = static_parts(&spec)?;
+        let (access_key, secret_key) = static_parts(&spec);
         crate::Error::ensure(
             !access_key.is_empty(),
             "static S3 keys need --s3-access-key or AWS_ACCESS_KEY_ID",
@@ -151,13 +152,13 @@ fn set_secret_key(spec: &mut BucketSpec, secret_key: String) {
     }
 }
 
-fn static_parts(spec: &BucketSpec) -> Result<(String, String)> {
+fn static_parts(spec: &BucketSpec) -> (String, String) {
     match &spec.credentials {
         BucketCredentials::StaticKeys {
             access_key,
             secret_key,
-        } => Ok((access_key.clone(), secret_key.clone())),
-        BucketCredentials::InstanceRole => Ok((String::new(), String::new())),
+        } => (access_key.clone(), secret_key.clone()),
+        BucketCredentials::InstanceRole => (String::new(), String::new()),
     }
 }
 
@@ -174,10 +175,10 @@ fn secret_from(options: &BucketOptions) -> Result<Option<String>> {
         crate::Error::ensure(!secret.is_empty(), "stdin secret must not be empty")?;
         return Ok(Some(secret.clone()));
     }
-    if let Some(secret) = &options.env_secret_key {
-        if !secret.is_empty() {
-            return Ok(Some(secret.clone()));
-        }
+    if let Some(secret) = &options.env_secret_key
+        && !secret.is_empty()
+    {
+        return Ok(Some(secret.clone()));
     }
     Ok(None)
 }
@@ -191,8 +192,9 @@ fn secret_from(options: &BucketOptions) -> Result<Option<String>> {
 /// or multi-line contents.
 pub(crate) fn read_secret_file(path: &Path) -> Result<String> {
     let mode = std::fs::metadata(path)?.permissions().mode();
+    // No group or other permission bits: the low six mode bits must be zero.
     crate::Error::ensure(
-        mode & 0o077 == 0,
+        mode.trailing_zeros() >= 6,
         format!(
             "secret file {} must not be readable by group or others (chmod 600)",
             path.display()

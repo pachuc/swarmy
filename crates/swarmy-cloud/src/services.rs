@@ -260,7 +260,7 @@ async fn upload_with(node: &RemoteNode, address: &str, script: &str, bytes: &[u8
     let command = "copy node service file".to_owned();
     let mut child = super::ssh::command(node)?
         .arg(address)
-        .arg(format!("sudo -n sh -c {}", shell_words::quote(&script)))
+        .arg(format!("sudo -n sh -c {}", shell_words::quote(script)))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()

@@ -175,7 +175,7 @@ impl BucketSpec {
     /// records always carry a concrete region.
     pub fn resolve_region(&mut self, fallback: &str) {
         if self.region.is_empty() {
-            self.region = fallback.to_owned();
+            fallback.clone_into(&mut self.region);
         }
     }
 
@@ -567,7 +567,7 @@ pub struct RemoteProfile {
     pub remote_ports: RemotePorts,
     pub fdb_cluster_file: PathBuf,
     pub nats_url: String,
-    /// Local tunnel endpoint for the SeaweedFS object store. Empty when the
+    /// Local tunnel endpoint for the `SeaweedFS` object store. Empty when the
     /// remote uses an object bucket (see `bucket`); bucket coordinates,
     /// including a static-key endpoint, live in the bucket description.
     pub s3_endpoint: String,
@@ -744,7 +744,7 @@ mod tests {
     #[test]
     fn bucket_specs_parse_shorthand_table_and_validate() {
         let shorthand: Settings = toml::from_str("[remote]\nbucket = 'test-bucket'").unwrap();
-        let spec = shorthand.remote.bucket.clone().unwrap();
+        let spec = shorthand.remote.bucket.unwrap();
         assert_eq!(spec.bucket, "test-bucket");
         assert!(spec.is_aws());
         assert!(!spec.needs_static_keys());
@@ -899,28 +899,6 @@ mod tests {
         assert!(regional_settings.s3.endpoint.is_empty());
         assert!(regional_settings.s3.access_key.is_empty());
         assert!(regional_settings.s3.secret_key.is_empty());
-        // A static-key profile carries the endpoint and keys into settings.
-        let mut static_profile = profile.clone();
-        static_profile.bucket = Some(BucketSpec {
-            endpoint: "https://objects.example.invalid".into(),
-            region: "eu-west-1".into(),
-            bucket: "bucket".into(),
-            prefix: "runs/team".parse().unwrap(),
-            credentials: BucketCredentials::StaticKeys {
-                access_key: "test-access".into(),
-                secret_key: "test-secret".into(),
-            },
-        });
-        static_profile.s3_endpoint.clear();
-        let mut static_settings = Settings::default();
-        static_profile.apply(&mut static_settings);
-        assert_eq!(
-            static_settings.s3.endpoint,
-            "https://objects.example.invalid"
-        );
-        assert_eq!(static_settings.s3.access_key, "test-access");
-        assert_eq!(static_settings.s3.secret_key, "test-secret");
-        assert_eq!(static_settings.s3.prefix.as_str(), "runs/team");
         std::fs::write(
             remote_path(&state, "test", "profile.json").unwrap(),
             serde_json::to_vec(&profile).unwrap(),
@@ -969,5 +947,47 @@ mod tests {
         assert!(load_with_remote(root.path(), &env).is_err());
         env.insert("SWARMY_REMOTE".into(), "../test".into());
         assert!(load_with_remote(root.path(), &env).is_err());
+    }
+
+    #[test]
+    fn static_key_profile_carries_endpoint_and_keys() {
+        let profile = RemoteProfile {
+            name: "test".into(),
+            socket_path: "socket".into(),
+            pid: 1,
+            ports: RemotePorts::default(),
+            remote_ports: RemotePorts::default(),
+            fdb_cluster_file: "cluster".into(),
+            nats_url: "nats://127.0.0.1:14222".into(),
+            s3_endpoint: String::new(),
+            api_url: None,
+            api_token: None,
+            bucket: Some(BucketSpec {
+                endpoint: "https://objects.example.invalid".into(),
+                region: "eu-west-1".into(),
+                bucket: "bucket".into(),
+                prefix: "runs/team".parse().unwrap(),
+                credentials: BucketCredentials::StaticKeys {
+                    access_key: "test-access".into(),
+                    secret_key: "test-secret".into(),
+                },
+            }),
+            default_image: None,
+        };
+        let mut settings = Settings::default();
+        profile.apply(&mut settings);
+        assert_eq!(settings.s3.endpoint, "https://objects.example.invalid");
+        assert_eq!(settings.s3.bucket, "bucket");
+        assert_eq!(settings.s3.region, "eu-west-1");
+        assert_eq!(settings.s3.access_key, "test-access");
+        assert_eq!(settings.s3.secret_key, "test-secret");
+        assert_eq!(settings.s3.prefix.as_str(), "runs/team");
+        // The serialized profile keeps the keys; its debug form does not.
+        let encoded = serde_json::to_vec(&profile).unwrap();
+        let decoded: RemoteProfile = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.bucket, profile.bucket);
+        let debug = format!("{profile:?}");
+        assert!(!debug.contains("test-access"), "{debug}");
+        assert!(!debug.contains("test-secret"), "{debug}");
     }
 }

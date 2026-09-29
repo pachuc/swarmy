@@ -549,12 +549,10 @@ impl Ssh {
                 provisioning_command(
                     mode,
                     service_ip,
-                    spec.as_ref().map(|spec| spec.bucket.as_str()).unwrap_or(""),
+                    spec.as_ref().map_or("", |spec| spec.bucket.as_str()),
                     &node.region,
-                    spec.as_ref()
-                        .map(|spec| spec.endpoint.as_str())
-                        .unwrap_or(""),
-                    spec.as_ref().map(|spec| spec.prefix.as_str()).unwrap_or(""),
+                    spec.as_ref().map_or("", |spec| spec.endpoint.as_str()),
+                    spec.as_ref().map_or("", |spec| spec.prefix.as_str()),
                     node.sandboxes,
                     node,
                 )?

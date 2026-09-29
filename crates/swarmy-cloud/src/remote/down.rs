@@ -55,7 +55,7 @@ pub(super) async fn plan(
     state: &State,
     node: &RemoteNode,
 ) -> Result<Option<DeletionPlan>> {
-    let Some(bucket) = object_bucket(node)? else {
+    let Some(bucket) = object_bucket(node) else {
         return Ok(None);
     };
     let bucket_status = cloud.bucket_ownership(&bucket).await?;
@@ -87,18 +87,16 @@ pub(super) async fn plan(
 }
 
 /// Provider-neutral bucket for teardown, or `None` when the remote uses the
-/// local SeaweedFS object store instead of an object bucket.
-fn object_bucket(node: &RemoteNode) -> Result<Option<ObjectBucket>> {
-    let Some(spec) = node.bucket_spec() else {
-        return Ok(None);
-    };
+/// local `SeaweedFS` object store instead of an object bucket.
+fn object_bucket(node: &RemoteNode) -> Option<ObjectBucket> {
+    let spec = node.bucket_spec()?;
     let settings = node.cloud_settings();
-    Ok(Some(ObjectBucket::from_spec(
+    Some(ObjectBucket::from_spec(
         &node.name,
         &spec,
         &settings.region,
         settings.instance_profile(&node.name),
-    )))
+    ))
 }
 
 /// Adoption targets `remote tag` would adopt. The CLI prints the wording
@@ -136,7 +134,7 @@ pub(super) fn adoption_targets(state: &State, node: &RemoteNode) -> Result<Vec<(
 /// every exact resource name. Confirmation lives in the CLI; this applies.
 /// Static-key buckets adopt only the bucket.
 pub(super) async fn apply_tag(cloud: &impl Cloud, node: &RemoteNode) -> Result<()> {
-    let Some(bucket) = object_bucket(node)? else {
+    let Some(bucket) = object_bucket(node) else {
         return Err(crate::Error::other("remote has no bucket"));
     };
     cloud.tag_bucket(&bucket).await?;
@@ -206,12 +204,12 @@ async fn cleanup_bucket_and_role(
     node: &RemoteNode,
     keep_bucket: bool,
 ) -> Result<()> {
-    if let Some(bucket) = object_bucket(node)? {
+    if let Some(bucket) = object_bucket(node) {
         let name = bucket.name.clone();
         if keep_bucket {
             match node.cloud_settings().instance_profile(&node.name) {
                 Some(role) => {
-                    cloud_out!("Kept bucket {name} and guarding role and instance profile {role}")
+                    cloud_out!("Kept bucket {name} and guarding role and instance profile {role}");
                 }
                 None => cloud_out!("Kept bucket {name}"),
             }
