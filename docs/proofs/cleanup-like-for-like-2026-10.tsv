@@ -38,3 +38,8 @@ test_clippy	baseline	2	test_unchanged	1	0
 test_clippy	baseline	2	clippy_first	385	0
 test_clippy	baseline	2	clippy_unchanged	1	0
 test_clippy	baseline	2	clippy_core_touch	52	0
+test_clippy	master	2	test_cold	1151	0
+test_clippy	master	2	test_unchanged	0	0
+test_clippy	master	2	clippy_first	265	0
+test_clippy	master	2	clippy_unchanged	1	0
+test_clippy	master	2	clippy_core_touch	57	0
