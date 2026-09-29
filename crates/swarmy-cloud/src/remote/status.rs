@@ -269,6 +269,13 @@ where
 
 /// Read node registrations, images, and services through the control-plane
 /// API reached over the remote tunnel. The client opens no database.
+fn client_error(endpoint: &str, source: swarmy_client::Error) -> crate::Error {
+    crate::Error::Client {
+        endpoint: endpoint.to_owned(),
+        source,
+    }
+}
+
 async fn inventory(
     base: &Settings,
     name: &str,
@@ -290,20 +297,12 @@ async fn inventory(
             "no [api] token configured for remote {name}"
         )));
     }
-    let client =
-        swarmy_client::Client::new(&endpoint, settings.api.token.clone()).map_err(|source| {
-            crate::Error::Client {
-                endpoint: endpoint.clone(),
-                source,
-            }
-        })?;
+    let client = swarmy_client::Client::new(&endpoint, settings.api.token.clone())
+        .map_err(|source| client_error(&endpoint, source))?;
     let snapshot = tokio::time::timeout(Duration::from_secs(10), client.doctor())
         .await
         .map_err(|_| crate::Error::other(format!("API at {endpoint}: request timed out")))?
-        .map_err(|source| crate::Error::Client {
-            endpoint: endpoint.clone(),
-            source,
-        })?;
+        .map_err(|source| client_error(&endpoint, source))?;
     let mut images = Vec::new();
     let mut after = None;
     loop {
@@ -313,10 +312,7 @@ async fn inventory(
         )
         .await
         .map_err(|_| crate::Error::other(format!("API at {endpoint}: request timed out")))?
-        .map_err(|source| crate::Error::Client {
-            endpoint: endpoint.clone(),
-            source,
-        })?;
+        .map_err(|source| client_error(&endpoint, source))?;
         if page.is_empty() {
             break;
         }
