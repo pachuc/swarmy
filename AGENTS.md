@@ -265,7 +265,7 @@ locally the same way CI does:
 - `scripts/check-anyhow-in-libraries.sh`: library crates use `thiserror`,
   never `anyhow` in `[dependencies]` (`swarmyd` counts as a binary: its
   `lib.rs` declares no modules). Blocking, milliseconds.
-- `npx --yes @ast-grep/cli@0.45.3 scan --config ast-grep/sgconfig.yml`
+- `npx --yes --package @ast-grep/cli@0.45.3 ast-grep scan --config ast-grep/sgconfig.yml`
   (or `npm install --global @ast-grep/cli@0.45.3` once): the exact,
   path-scoped `no-spawn-in-libraries` and `no-stringified-errors` rules in
   `ast-grep/rules/`. Blocking, under a second. A new `tokio::spawn` or
