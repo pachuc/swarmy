@@ -151,7 +151,6 @@ impl Store {
                 self.fail_lost_tool(&trx, job, explanation).await?;
                 return Ok(false);
             }
-            // Jobs written by older workers acquire their first dispatch fence here.
             write(&trx, &key, placement)?;
             Ok(true)
         })

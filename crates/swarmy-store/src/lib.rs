@@ -564,37 +564,34 @@ impl Store {
         if bytes.first() != Some(&SESSION_RECORD_VERSION) {
             return Err(StoreError::Storage(crate::StorageError::Corrupt));
         }
-        {
-            let payload = if bytes.get(1) == Some(&SESSION_CHUNK_MARKER) {
-                if bytes.len() != 20 {
-                    return Err(StoreError::Storage(crate::StorageError::Corrupt));
-                }
-                let id = keys::session_id(bytes[2..18].to_vec())?;
-                let count = u16::from_be_bytes([bytes[18], bytes[19]]);
-                if count == 0 || usize::from(count) > SESSION_MAX_BYTES.div_ceil(INLINE_LIMIT) {
-                    return Err(StoreError::Storage(crate::StorageError::Corrupt));
-                }
-                let mut payload = Vec::new();
-                for index in 0..count {
-                    let chunk = trx
-                        .get(&self.session_chunk_key(id, index), false)
-                        .await?
-                        .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
-                    payload.extend_from_slice(&chunk);
-                }
-                payload
-            } else {
-                bytes[1..].to_vec()
-            };
-            let v: StoredSessionV2 =
-                postcard::from_bytes(&payload).map_err(EncodingError::Payload)?;
-            let mut session: StoredSession = v.into();
-            // The agent tombstone is authoritative for every named side session.
-            // Deleting a computer cannot atomically rewrite an unbounded set
-            // of conversations, so keep this one shared fence until queried.
-            session.computer_deleted |= self.computer_deleted(trx, session.agent_id).await?;
-            Ok(session)
-        }
+        let payload = if bytes.get(1) == Some(&SESSION_CHUNK_MARKER) {
+            if bytes.len() != 20 {
+                return Err(StoreError::Storage(crate::StorageError::Corrupt));
+            }
+            let id = keys::session_id(bytes[2..18].to_vec())?;
+            let count = u16::from_be_bytes([bytes[18], bytes[19]]);
+            if count == 0 || usize::from(count) > SESSION_MAX_BYTES.div_ceil(INLINE_LIMIT) {
+                return Err(StoreError::Storage(crate::StorageError::Corrupt));
+            }
+            let mut payload = Vec::new();
+            for index in 0..count {
+                let chunk = trx
+                    .get(&self.session_chunk_key(id, index), false)
+                    .await?
+                    .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
+                payload.extend_from_slice(&chunk);
+            }
+            payload
+        } else {
+            bytes[1..].to_vec()
+        };
+        let v: StoredSessionV2 = postcard::from_bytes(&payload).map_err(EncodingError::Payload)?;
+        let mut session: StoredSession = v.into();
+        // The agent tombstone is authoritative for every named side session.
+        // Deleting a computer cannot atomically rewrite an unbounded set
+        // of conversations, so keep this one shared fence until queried.
+        session.computer_deleted |= self.computer_deleted(trx, session.agent_id).await?;
+        Ok(session)
     }
 
     pub(crate) async fn fetch_session_in(

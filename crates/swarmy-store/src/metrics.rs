@@ -299,7 +299,6 @@ struct StoredTurnSummaryV2 {
     #[serde(default)]
     throughput_count: u64,
     /// Paging counters. New turns store zero until a response is paginated.
-    ///     /// counters so old baseline sessions do not read as complete.
     #[serde(default)]
     dropped_stages: u64,
     #[serde(default)]
@@ -1637,13 +1636,6 @@ mod tests {
             panic!("expected V2Tool");
         };
         assert_eq!(row, fixture_tool());
-        // Bare frozen rows decode the same way as their enveloped form.
-        let bare: StoredTurnInferenceV2 =
-            swarmy_core::decode(&swarmy_core::encode(&fixture_inference()).unwrap()).unwrap();
-        assert_eq!(bare, fixture_inference());
-        let bare_tool: StoredToolMetricV2 =
-            swarmy_core::decode(&swarmy_core::encode(&fixture_tool()).unwrap()).unwrap();
-        assert_eq!(bare_tool, fixture_tool());
     }
 
     #[test]

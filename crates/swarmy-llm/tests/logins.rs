@@ -130,7 +130,6 @@ async fn azure_process_helper() {
         kind: kind.clone(),
         updated_at: jiff::Timestamp::now(),
     };
-    assert!(record.bookkeeping.azure_cli);
     assert_eq!(
         record.status(jiff::Timestamp::now()),
         swarmy_core::CredentialStatus::Ready

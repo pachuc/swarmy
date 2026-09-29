@@ -290,10 +290,6 @@ impl CredentialStore {
         label: &str,
         record: &CredentialRecord,
     ) -> Result<()> {
-        let mut record = record.clone();
-        if provider == "azure" && matches!(record.kind, CredentialKind::OAuth { .. }) {
-            record.bookkeeping.azure_cli = true;
-        }
         let ciphertext = encrypt(
             &self.keyring,
             scope,
