@@ -211,25 +211,22 @@ async fn inspect_agents(
     assert_eq!(rows[0]["main"], true);
     let stored_session = fixture.store.fetch_session(first).await.unwrap().unwrap();
     let expected_session = serde_json::json!({
-        "session_id": first, "state": stored_session.state,
-        "head_seq": stored_session.head_seq, "agent_name": "tommy",
+        "id": first, "state": stored_session.state,
+        "head_sequence": stored_session.head_seq, "agent_name": "tommy",
         "main": true, "archived": false,
-        "resolved_inference": {"provider": "fake", "model": "scripted", "effort": "medium"},
+        "resolved": {"provider": "fake", "model": "scripted", "effort": "medium"},
     });
     let actual_session = serde_json::json!({
-        "session_id": rows[0]["session_id"], "state": rows[0]["state"],
-        "head_seq": rows[0]["head_seq"], "agent_name": rows[0]["agent_name"],
+        "id": rows[0]["id"], "state": rows[0]["state"],
+        "head_sequence": rows[0]["head_sequence"], "agent_name": rows[0]["agent_name"],
         "main": rows[0]["main"], "archived": rows[0]["archived"],
-        "resolved_inference": rows[0]["resolved_inference"],
+        "resolved": rows[0]["resolved"],
     });
     assert_eq!(actual_session, expected_session);
 
     assert_eq!(rows[1]["main"], false);
     assert_eq!(rows[2]["main"], false);
-    assert_eq!(
-        rows[0]["kind"]["named"]["agent_id"],
-        agent.agent_id.to_string()
-    );
+    assert_eq!(rows[0]["kind"], "named");
 }
 
 async fn close_and_delete(

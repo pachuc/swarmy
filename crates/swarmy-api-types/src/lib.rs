@@ -197,18 +197,14 @@ pub struct Session {
     pub route: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved: Option<ResolvedInference>,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub archived: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub main: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_session: Option<String>,
-}
-
-fn is_false(value: &bool) -> bool {
-    !value
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1381,8 +1377,8 @@ mod tests {
         check!(WaitingReason, {"wake_at":"2026-09-23T12:00:00Z","reasons":["provider rate limit"]});
         check!(ImageRef, {"name":"base","tag":"dev"});
         check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s"});
-        check!(Session, {"id":"s","agent_id":"a","kind":"named","state":"sleeping","log_id":{"kind":"session","id":"s"},"head_sequence":2,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":{"wake_at":null,"reasons":["timer"]}});
-        check!(Session, {"id":"archived","agent_id":"a","kind":"named","state":"completed","log_id":{"kind":"session","id":"archived"},"head_sequence":7,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":null,"provider":"fake","model":"scripted","effort":"medium","next_session":"successor"});
+        check!(Session, {"id":"s","agent_id":"a","kind":"named","state":"sleeping","log_id":{"kind":"session","id":"s"},"head_sequence":2,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":{"wake_at":null,"reasons":["timer"]},"archived":false,"main":false});
+        check!(Session, {"id":"archived","agent_id":"a","kind":"named","state":"completed","log_id":{"kind":"session","id":"archived"},"head_sequence":7,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":null,"archived":false,"main":false,"provider":"fake","model":"scripted","effort":"medium","next_session":"successor"});
         check!(Turn, {"id":"t","session_id":"s","status":"running","started_at":"2026-09-23T12:00:00Z","finished_at":null});
         for role in ["user", "assistant", "tool", "system"] {
             check!(MessageRole, role);

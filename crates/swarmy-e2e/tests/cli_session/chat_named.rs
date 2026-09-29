@@ -316,7 +316,7 @@ async fn open_chat_follows_a_summarized_main_with_a_notice() {
         let listing = fixture.output(&["session", "list", "--json"]).await;
         assert!(listing.status.success());
         let listing = String::from_utf8(listing.stdout).unwrap();
-        let archived: serde_json::Value = listing.lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()).find(|value| value["session_id"] == old.to_string()).unwrap();
+        let archived: serde_json::Value = listing.lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()).find(|value| value["id"] == old.to_string()).unwrap();
         assert_eq!(archived["archived"], true);
         assert_eq!(archived["next_session"], new.to_string());
         assert!(fixture.output(&["session", "show", &old.to_string(), "--json"]).await.status.success());

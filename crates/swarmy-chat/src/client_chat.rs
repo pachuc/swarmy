@@ -548,10 +548,13 @@ mod tests {
     #[test]
     fn delivered_queued_input_has_a_transcript_marker_once() {
         let mut view = view_busy();
-        let message = serde_json::json!({
-            "id": "queued-id", "role": "user",
-            "parts": [{"text": {"text": "push when ready"}}]
-        });
+        let message = swarmy_core::Message {
+            id: swarmy_core::MessageId::from_ulid(ulid::Ulid::generate()),
+            role: swarmy_core::MessageRole::User,
+            parts: vec![swarmy_core::Part::Text {
+                text: "push when ready".into(),
+            }],
+        };
         view.message(&message, "session", true);
         view.message(&message, "session", false);
         assert_eq!(view.entries, ["You (queued): push when ready"]);
