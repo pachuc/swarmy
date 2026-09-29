@@ -34,7 +34,7 @@ pub async fn run(
             );
             return Ok(());
         }
-        anyhow::bail!("remote node {name} already exists; run swarmy remote down {name} first");
+        return Err(crate::Error::AlreadyExists(name.to_owned()).into());
     }
     validate(settings, name)?;
     let started = Instant::now();

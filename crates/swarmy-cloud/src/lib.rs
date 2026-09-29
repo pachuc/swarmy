@@ -48,9 +48,9 @@ pub use remote::{Aws, ServiceOptions, for_settings, run};
 pub enum Error {
     #[error("unknown cloud provider '{0}': only 'aws' is supported")]
     UnsupportedProvider(String),
-    #[error("remote node '{0}' was not found")]
+    #[error("no remote node named {0}; run swarmy remote up {0}")]
     NotFound(String),
-    #[error("remote node '{0}' already exists")]
+    #[error("remote node {0} already exists; run swarmy remote down {0} first")]
     AlreadyExists(String),
     #[error("missing permission {permission}: {source}")]
     Permission {
@@ -67,7 +67,15 @@ pub enum Error {
         source: anyhow::Error,
     },
     #[error(transparent)]
-    Operation(#[from] anyhow::Error),
+    Operation(anyhow::Error),
+}
+
+impl From<anyhow::Error> for Error {
+    fn from(error: anyhow::Error) -> Self {
+        // Preserve a typed failure through the private provisioning helpers,
+        // which still attach contextual information to transport errors.
+        error.downcast::<Self>().unwrap_or_else(Self::Operation)
+    }
 }
 
 use std::future::Future;

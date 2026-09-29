@@ -827,7 +827,7 @@ impl RuncRuntime {
         {
             self.sweep_scratch().await?;
         }
-        let _lifecycle = self.lifecycle.lock().await;
+        let lifecycle = self.lifecycle.lock().await;
         let (id, scratch, memory_mib) = (
             spec.agent_id,
             spec.scratch.clone(),
@@ -921,7 +921,7 @@ impl RuncRuntime {
         .await;
         if let Err(error) = setup {
             // Release the lifecycle gate before the common teardown takes it.
-            drop(_lifecycle);
+            drop(lifecycle);
             self.remove(id, false).await?;
             return Err(error);
         }
