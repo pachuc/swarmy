@@ -34,10 +34,11 @@ unwrap_used = "deny"
 todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
-# Printing: only the output modules of binaries that own user output may
-# print, each with an `expect` reason. Libraries print nothing.
-print_stdout = "deny"
-print_stderr = "deny"
+# Printing (TEMPORARILY OFF for enumeration; final decision pending test-file
+# fallout counts): only the output modules of binaries that own user output
+# may print, each with an `expect` reason. Libraries print nothing.
+# print_stdout = "deny"
+# print_stderr = "deny"
 
 [workspace.dependencies]
 swarmy-version = { path = "crates/swarmy-version" }
