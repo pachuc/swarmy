@@ -153,8 +153,8 @@ jobs:
   clone-report:
     # Advisory only: clone detectors are fuzzy, so a threshold gate would get
     # gamed. Reviewers use the published numbers with REVIEWER.md's
-    # duplication checklist. Runs in parallel and finishes in about a minute,
-    # far inside the longest CI job.
+    # duplication checklist. Runs in parallel in seconds, far inside the
+    # longest CI job.
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20

@@ -16,6 +16,9 @@ fixture() {
     if [ "$1" != "none" ]; then
         printf '%s\n' "$1" >"$work/crates/mylib/src/lib.rs"
     fi
+    if [ "${2:-}" = "bin" ]; then
+        printf 'fn main() {}\n' >"$work/crates/mylib/src/main.rs"
+    fi
 }
 
 check() {
@@ -56,12 +59,27 @@ anyhow.workspace = true
 EOF
 check "binary without lib passes" 0
 
-# A lib.rs declaring no modules counts as a binary (the swarmyd shape).
+# A lib.rs declaring no modules next to a binary counts as a binary (the
+# swarmyd shape).
+fixture 'pub struct Token(String);' bin <<'EOF'
+[dependencies]
+anyhow.workspace = true
+EOF
+check "module-less lib with a binary passes" 0
+
+# A single-file library with no binary is still a library.
 fixture 'pub struct Token(String);' <<'EOF'
 [dependencies]
 anyhow.workspace = true
 EOF
-check "module-less lib passes" 0
+check "single-file library with anyhow fails" 1
+
+# The table form of the dependency is caught too.
+fixture 'mod worker;' <<'EOF'
+[dependencies.anyhow]
+workspace = true
+EOF
+check "table-form anyhow fails" 1
 
 # A clean library passes.
 fixture 'mod worker;' <<'EOF'

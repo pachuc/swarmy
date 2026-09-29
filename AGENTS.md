@@ -264,14 +264,14 @@ locally the same way CI does:
 
 - `scripts/check-anyhow-in-libraries.sh`: library crates use `thiserror`,
   never `anyhow` in `[dependencies]` (`swarmyd` counts as a binary: its
-  `lib.rs` declares no modules). Blocking, milliseconds.
+  `lib.rs` declares no modules and it has a binary target). Blocking, milliseconds.
 - `npx --yes --package @ast-grep/cli@0.45.3 ast-grep scan --config ast-grep/sgconfig.yml`
   (or `npm install --global @ast-grep/cli@0.45.3` once): the exact,
   path-scoped `no-spawn-in-libraries` and `no-stringified-errors` rules in
   `ast-grep/rules/`. Blocking, under a second. A new `tokio::spawn` or
   `.map_err(|error| error.to_string())` in a library file fails unless its
-  file's listed exception genuinely applies; fix the code rather than
-  extending the list.
+  file's listed exception genuinely applies. Prefer fixing the code; a new
+  exception is only for a genuinely owned, bounded task, with a why-comment.
 - Clone report (`clone-report` CI job; locally
   `npx --yes jscpd@5.3.3 --config .jscpd.json`): advisory numbers in the job
   summary for `REVIEWER.md`'s duplication checklist, never a gate.

@@ -68,7 +68,7 @@ pub async fn call_with_timeout<T>(
 ) -> Result<T, Error> {
     tokio::time::timeout(timeout, future)
         .await
-        .map_err(|_| Error::Timeout)?
+        .map_err(|_| api_error(Error::Timeout, endpoint))?
         .map_err(|error| api_error(error, endpoint))
 }
 

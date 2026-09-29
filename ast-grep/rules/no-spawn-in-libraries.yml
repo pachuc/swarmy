@@ -1,9 +1,9 @@
 # Library crates must not spawn fire-and-forget background tasks: every
 # `tokio::spawn` below is an owned, bounded task whose handle aborts it on
 # drop (or whose lifetime is tied to a connection, run, or single flight).
-# A new spawn in any other library file fails CI; either own the task the
-# same way and list its file here with a why-comment, or restructure so the
-# caller drives the work. Binaries and tests are out of scope: a binary owns
+# A new spawn in any other library file fails CI. Prefer restructuring so
+# the caller drives the work; list a file here only for a genuinely owned,
+# bounded task, with a why-comment. Binaries and tests are out of scope: a binary owns
 # its process, and tests drive servers in-process.
 id: no-spawn-in-libraries
 language: rust
