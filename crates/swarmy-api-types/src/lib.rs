@@ -72,11 +72,21 @@ pub enum TurnStatus {
     Failed,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionKind {
     Ephemeral,
     Named,
+}
+
+impl SessionKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ephemeral => "ephemeral",
+            Self::Named => "named",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -341,6 +351,37 @@ pub struct ImageHeader {
     pub root_hash: String,
 }
 
+/// Wire protocol a model answers on: its own override or the provider
+/// default. Variant names are the wire names, matching the catalog, so the
+/// JSON form is unchanged from the previous free-form string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum ProviderApi {
+    AnthropicMessages,
+    OpenAiResponses,
+    OpenAiCodexResponses,
+    OpenAiCompletions,
+    GoogleGenerativeAi,
+    GoogleVertex,
+    BedrockConverse,
+    Fake,
+}
+
+impl ProviderApi {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AnthropicMessages => "AnthropicMessages",
+            Self::OpenAiResponses => "OpenAiResponses",
+            Self::OpenAiCodexResponses => "OpenAiCodexResponses",
+            Self::OpenAiCompletions => "OpenAiCompletions",
+            Self::GoogleGenerativeAi => "GoogleGenerativeAi",
+            Self::GoogleVertex => "GoogleVertex",
+            Self::BedrockConverse => "BedrockConverse",
+            Self::Fake => "Fake",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct Model {
     pub id: String,
@@ -352,7 +393,7 @@ pub struct Model {
     pub cost: ModelCost,
     pub supported_efforts: Vec<ReasoningEffort>,
     /// Wire protocol the model answers on: its own override or the provider default.
-    pub effective_api: String,
+    pub effective_api: ProviderApi,
     /// Base URL the model answers on: its own override or the provider default.
     pub effective_base_url: String,
     /// Provider quirk flags from the catalog; readers ignore unknown keys.
@@ -375,9 +416,7 @@ pub struct ModelCost {
 pub struct Provider {
     pub id: String,
     pub name: String,
-    pub status: String,
-    pub api: String,
-    pub credential: String,
+    pub api: ProviderApi,
     pub auth_kinds: Vec<String>,
     pub env_keys: Vec<String>,
     pub credential_env_keys: Vec<String>,
@@ -1410,7 +1449,7 @@ pub mod api_paths {
     ),
     components(schemas(
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
-    WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, ImageUpload, Model,
+    WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, ImageUpload, Model, ProviderApi,
     Provider, ProbeModel, ProbeResult, CredentialKind, CredentialStatus, Credential, PutCredentialRecord, NodeRole, NodeCapacity,
     Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode,
     StageTiming, InferenceMetric, ToolMetric, ComputerMetric, TurnMetrics, LatencyPercentiles,
@@ -1481,8 +1520,20 @@ mod tests {
         }
         check!(Message, {"id":"m","session_id":"s","role":"user","text":"hello"});
         check!(Image, {"id":"i","name":"base","tag":"dev"});
+        for api in [
+            "AnthropicMessages",
+            "OpenAiResponses",
+            "OpenAiCodexResponses",
+            "OpenAiCompletions",
+            "GoogleGenerativeAi",
+            "GoogleVertex",
+            "BedrockConverse",
+            "Fake",
+        ] {
+            check!(ProviderApi, api);
+        }
         check!(Model, {"id":"m","provider":"p","context_window":100,"key":"p/m","name":"model","limit":{"context":100,"output":null},"cost":{"input":0.0,"output":0.0},"supported_efforts":[],"effective_api":"Fake","effective_base_url":"http://localhost:8000/v1","compat":{}});
-        check!(Provider, {"id":"p","name":"provider","status":"available","api":"Fake","credential":"unknown","auth_kinds":[],"env_keys":[],"credential_env_keys":[]});
+        check!(Provider, {"id":"p","name":"provider","api":"Fake","auth_kinds":[],"env_keys":[],"credential_env_keys":[]});
         for kind in ["subscription", "api_key", "cloud"] {
             check!(CredentialKind, kind);
         }

@@ -287,11 +287,7 @@ async fn session(
                         .resolved
                         .as_ref()
                         .context("session resolution missing")?;
-                    let kind = if row.kind == swarmy_api_types::SessionKind::Ephemeral {
-                        "ephemeral"
-                    } else {
-                        "named"
-                    };
+                    let kind = row.kind.as_str();
                     let state = row.state.as_str().to_owned();
                     print(
                         &row,
@@ -646,8 +642,11 @@ fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<AgentFl
     })
 }
 fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
+    // List rows are summaries without usage, placement, or sessions; the
+    // session count renders in detail only, so `agent ls` never prints a
+    // zero from an unhydrated row.
     let mut text = format!(
-        "{} {} image={}:{} node={} scratch_node={} scratch_bytes={} sessions={} created={} main_session={}",
+        "{} {} image={}:{} node={} scratch_node={} scratch_bytes={} created={} main_session={}",
         agent.name,
         agent.id,
         agent.image.name,
@@ -658,7 +657,6 @@ fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
             .as_ref()
             .map_or("-", |scratch| scratch.node_id.as_str()),
         agent.scratch.as_ref().map_or(0, |scratch| scratch.bytes),
-        agent.session_count,
         agent.created_at,
         agent.main_session_id.as_deref().unwrap_or("-"),
     );
@@ -728,6 +726,7 @@ fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
                 session.next_session.is_some()
             );
         }
+        let _ = write!(text, "\nsessions={}", agent.session_count);
     }
     text
 }
@@ -748,8 +747,7 @@ async fn update_agent(
             anyhow::anyhow!("the agent's computer is placed; retry after it is released")
         }
         _ => swarmy_client::api_client::api_error(error, endpoint),
-    })?;
-    request(endpoint, client.agent(name)).await
+    })
 }
 
 async fn agent_create(
@@ -805,7 +803,7 @@ async fn agent_create(
         }),
     )
     .await?;
-    let created = request(endpoint, client.agent(&created.id)).await?;
+    // Create returns the detail shape, so render it without a second fetch.
     print(
         &created,
         &format!(

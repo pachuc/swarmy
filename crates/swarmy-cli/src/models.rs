@@ -74,10 +74,7 @@ pub async fn run(command: Command, json: bool) -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string(&rows)?);
             } else {
                 for row in rows {
-                    line(&format!(
-                        "{}  {}  credential: {}",
-                        row.id, row.api, row.credential
-                    ));
+                    line(&format!("{}  {}", row.id, row.api.as_str()));
                     line(&format!("  Auth: {}", row.auth_kinds.join(", ")));
                     let env = row.env_keys.join(", ");
                     line(&format!(
@@ -124,7 +121,7 @@ fn print_models(rows: &[swarmy_api_types::Model], json: bool) -> anyhow::Result<
             "  Efforts: {}",
             row.supported_efforts
                 .iter()
-                .map(|effort| format!("{effort:?}").to_lowercase())
+                .map(|effort| effort.as_str().to_owned())
                 .collect::<Vec<_>>()
                 .join(", ")
         ));

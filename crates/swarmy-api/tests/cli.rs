@@ -95,17 +95,28 @@ async fn assert_resource_projections(
 ) {
     let rows = client.agents(None, 10).await.unwrap();
     assert_eq!(rows[0].id, agent.agent_id.to_string());
-    assert_eq!(rows[0].session_count, 1);
+    // List rows are summaries: no session scan, usage, or placement reads.
+    assert_eq!(rows[0].session_count, 0);
+    assert!(rows[0].sessions.is_empty());
+    assert!(rows[0].usage.is_none());
+    assert!(rows[0].placement.is_none());
     let detailed = client.agent("fixture-agent").await.unwrap();
     assert_eq!(detailed.name, agent.name);
     assert_eq!(detailed.sessions.len(), 1);
     assert_eq!(detailed.sessions[0].id, session.to_string());
+    assert!(detailed.usage.is_some());
     let rows = client.sessions(None, 10).await.unwrap();
     let stored = store.fetch_session(session).await.unwrap().unwrap();
     assert_eq!(rows[0].id, session.to_string());
     assert_eq!(rows[0].state, stored.state.into());
+    // Session list rows carry the fleet fields but no detail hydration.
+    assert!(rows[0].state_since.is_some());
+    assert!(rows[0].usage.is_none());
+    assert!(rows[0].requirements.is_none());
     let detail = client.session(&session.to_string()).await.unwrap();
     assert_eq!(detail.id, session.to_string());
+    assert!(detail.usage.is_some());
+    assert!(detail.requirements.is_some());
     assert_eq!(
         client.image("fixture", "test").await.unwrap().name,
         "fixture"
@@ -214,6 +225,18 @@ async fn agent_management_uses_api_and_preserves_requirements() {
     };
     let created = client.create_agent(&create).await.unwrap();
     assert_eq!(created.name, "worker");
+    // Create and show share the detail conversion, so the rows match apart
+    // from the snapshot age, which is computed from the current time.
+    let shown = client.agent("worker").await.unwrap();
+    let mut created_value = serde_json::to_value(&created).unwrap();
+    let mut shown_value = serde_json::to_value(&shown).unwrap();
+    for value in [&mut created_value, &mut shown_value] {
+        value
+            .as_object_mut()
+            .expect("agent serializes to an object")
+            .remove("last_snapshot_age_seconds");
+    }
+    assert_eq!(created_value, shown_value);
     assert!(
         !serde_json::to_string(&created)
             .unwrap()

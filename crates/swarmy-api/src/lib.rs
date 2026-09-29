@@ -396,7 +396,7 @@ async fn agents(
         .map_err(storage)?;
     let mut result = Vec::with_capacity(records.len());
     for record in records {
-        result.push(views::agent_value(&state, record).await?);
+        result.push(views::agent(record));
     }
     Ok(Json(result))
 }
@@ -533,6 +533,7 @@ async fn update_agent(
     )
     .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
     let store = state.store.clone();
+    let detail = state.clone();
     replay(
         &state,
         &body.idempotency_key,
@@ -548,7 +549,9 @@ async fn update_agent(
                     .await
                     .map_err(storage)?;
             }
-            Ok(Json(views::agent(updated)))
+            // Update returns the same detail shape as create and show, so the
+            // CLI renders the response without a second fetch.
+            views::agent_value(&detail, updated).await.map(Json)
         },
     )
     .await
@@ -589,12 +592,10 @@ async fn sessions(
     let mut result = Vec::with_capacity(records.len());
     let mut agents = std::collections::HashMap::new();
     for record in &records {
-        let mut item = views::session_with_next(&state, record, &mut agents).await?;
-        let agent = agents
-            .get(&record.agent_id)
-            .and_then(|entry| entry.as_ref());
-        views::populate_session_detail(&state, &mut item, record, agent).await?;
-        result.push(item);
+        // List rows stay light: no usage, placement, or scratch reads per
+        // row, so a full page costs about three store reads per session plus
+        // one cached agent fetch. Show hydrates the rest.
+        result.push(views::session_with_next(&state, record, &mut agents).await?);
     }
     Ok(Json(result))
 }
@@ -856,9 +857,7 @@ async fn providers(State(state): State<AppState>) -> Json<Vec<api::Provider>> {
             .map(|p| api::Provider {
                 id: p.id.clone(),
                 name: p.name.clone(),
-                status: "available".into(),
-                api: format!("{:?}", p.api),
-                credential: "unknown".into(),
+                api: views::provider_api(p.api),
                 auth_kinds: p.auth_kinds.clone(),
                 env_keys: p.env_keys.clone(),
                 credential_env_keys: swarmy_llm::auth::provider_env_keys(&p.id)

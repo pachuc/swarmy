@@ -139,19 +139,16 @@ async fn inspect_agents(
     second: SessionId,
 ) {
     let text = success(fixture.output(&["agent", "ls"]).await);
-    assert!(
-        text.contains("tommy")
-            && text.contains("sessions=2")
-            && text.contains("node=-")
-            && text.contains("created=")
-    );
+    assert!(text.contains("tommy") && text.contains("node=-") && text.contains("created="));
     let listed = success(fixture.output(&["agent", "ls", "--json"]).await);
     let rows: Vec<serde_json::Value> = listed
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0]["session_count"], 2);
+    // List rows are summaries: the count and sessions hydrate on show.
+    assert_eq!(rows[0]["session_count"], 0);
+    assert!(rows[0]["sessions"].as_array().unwrap().is_empty());
     assert!(rows[0]["node_id"].is_null());
     let text = success(fixture.output(&["agent", "show", "tommy"]).await);
     for expected in [
@@ -159,6 +156,7 @@ async fn inspect_agents(
         &format!("main_session={first}"),
         &format!("session={first} state=idle computer_deleted=false main=true"),
         &format!("session={second} state=idle computer_deleted=false main=false"),
+        "sessions=2",
         "placement_epoch=-",
         "sandbox_state=unknown",
         "last_snapshot=-",
@@ -560,7 +558,10 @@ async fn agent_listing_and_session_counts_cross_store_pages() {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(rows.len(), 66);
-        assert_eq!(rows[0]["session_count"], 66);
+        // List rows are summaries: the count hydrates on show, so one page
+        // of 66 agents costs one scan, not 66 session scans.
+        assert_eq!(rows[0]["session_count"], 0);
+        assert!(rows[0]["sessions"].as_array().unwrap().is_empty());
         assert_eq!(rows.last().unwrap()["name"], "agent-65");
         let shown: serde_json::Value = serde_json::from_str(&success(
             fixture
@@ -568,6 +569,7 @@ async fn agent_listing_and_session_counts_cross_store_pages() {
                 .await,
         ))
         .unwrap();
+        assert_eq!(shown["session_count"], 66);
         assert_eq!(shown["sessions"].as_array().unwrap().len(), 66);
     })
     .await;

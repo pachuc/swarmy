@@ -81,7 +81,8 @@ pub use timer::{
 
 pub mod credential;
 pub use credential::{
-    CredentialBookkeeping, CredentialKind, CredentialRecord, CredentialScope, CredentialStatus,
+    CredentialBookkeeping, CredentialEntryKind, CredentialKind, CredentialRecord, CredentialScope,
+    CredentialStatus,
 };
 
 pub mod quota;

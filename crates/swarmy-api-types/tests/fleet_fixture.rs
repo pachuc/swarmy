@@ -28,8 +28,10 @@ fn fleet_fixture_matches_typed_structs() {
     assert_eq!(listed.state, swarmy_api_types::SessionState::Sleeping);
     assert_eq!(listed.agent_name.as_deref(), Some("worker-1"));
     assert!(listed.state_since.is_some());
+    // The fleet driver follows this link to the successor session.
+    assert_eq!(listed.next_session.as_deref(), Some("01BBBB"));
     let listed_value = serde_json::to_value(&listed).expect("session serializes");
-    for key in ["id", "state", "state_since", "agent_name"] {
+    for key in ["id", "state", "state_since", "agent_name", "next_session"] {
         assert!(
             listed_value.get(key).is_some(),
             "typed Session keeps key {key}"

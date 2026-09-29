@@ -278,10 +278,10 @@ pub(crate) fn service_capacity(detail: &store::ServiceDetail) -> Option<api::Nod
 pub(crate) fn credential(value: store::credentials::CredentialSummary) -> api::Credential {
     api::Credential {
         provider: value.provider,
-        kind: match value.kind.as_str() {
-            "api-key" => api::CredentialKind::ApiKey,
-            "cloud" => api::CredentialKind::Cloud,
-            _ => api::CredentialKind::Subscription,
+        kind: match value.kind {
+            swarmy_core::CredentialEntryKind::Subscription => api::CredentialKind::Subscription,
+            swarmy_core::CredentialEntryKind::ApiKey => api::CredentialKind::ApiKey,
+            swarmy_core::CredentialEntryKind::Cloud => api::CredentialKind::Cloud,
         },
         label: value.label,
         status: match value.status {
@@ -360,6 +360,22 @@ pub(crate) fn entry_breakdown(
     (entries, providers)
 }
 
+/// One catalog wire protocol behind both `Provider.api` and
+/// `Model.effective_api`, so a new protocol fails to compile here.
+#[must_use]
+pub(crate) fn provider_api(value: swarmy_llm::catalog::Api) -> api::ProviderApi {
+    match value {
+        swarmy_llm::catalog::Api::AnthropicMessages => api::ProviderApi::AnthropicMessages,
+        swarmy_llm::catalog::Api::OpenAiResponses => api::ProviderApi::OpenAiResponses,
+        swarmy_llm::catalog::Api::OpenAiCodexResponses => api::ProviderApi::OpenAiCodexResponses,
+        swarmy_llm::catalog::Api::OpenAiCompletions => api::ProviderApi::OpenAiCompletions,
+        swarmy_llm::catalog::Api::GoogleGenerativeAi => api::ProviderApi::GoogleGenerativeAi,
+        swarmy_llm::catalog::Api::GoogleVertex => api::ProviderApi::GoogleVertex,
+        swarmy_llm::catalog::Api::BedrockConverse => api::ProviderApi::BedrockConverse,
+        swarmy_llm::catalog::Api::Fake => api::ProviderApi::Fake,
+    }
+}
+
 #[must_use]
 pub(crate) fn model(
     provider: &swarmy_llm::catalog::ProviderInfo,
@@ -384,11 +400,7 @@ pub(crate) fn model(
             .into_iter()
             .map(Into::into)
             .collect(),
-        effective_api: serde_json::to_value(entry.api.unwrap_or(provider.api))
-            .expect("catalog api serializes")
-            .as_str()
-            .expect("catalog api is a string")
-            .to_owned(),
+        effective_api: provider_api(entry.api.unwrap_or(provider.api)),
         effective_base_url: entry
             .base_url
             .clone()
@@ -545,9 +557,11 @@ pub(crate) async fn populate_session_detail(
     Ok(())
 }
 
-/// The one agent conversion behind list, create, and show, so a freshly
-/// created row reads back identical. The session scan hydrates the session
-/// list the detail view carries; the count comes from the scanned rows.
+/// The one agent conversion behind create, show, and update, so a freshly
+/// created or updated row reads back identical to a fetched one. The session
+/// scan hydrates the session list the detail view carries; the count comes
+/// from the scanned rows. List rows use the light `agent` conversion
+/// instead: no per-agent store reads.
 pub(crate) async fn agent_value(
     state: &AppState,
     record: swarmy_core::AgentRecord,

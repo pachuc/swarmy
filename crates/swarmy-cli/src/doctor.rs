@@ -537,7 +537,7 @@ fn snapshot_checks(
     if let Some(credentials) = snapshot.credentials {
         for credential in credentials {
             let name = format!("credential {}", credential.provider);
-            let status = format!("{:?}", credential.status).to_lowercase();
+            let status = credential.status.as_str();
             checks.push(
                 if credential.status == swarmy_api_types::CredentialStatus::Ready {
                     Check::new(&name, Ok(format!("present; {status}")), "")
