@@ -52,7 +52,7 @@ struct FakeCloud {
     tagged: RefCell<Vec<String>>,
     foreign_bucket: Cell<bool>,
     foreign_role: Cell<bool>,
-    bucket_ensures: RefCell<Vec<(String, String, String)>>,
+    bucket_ensures: RefCell<Vec<(String, String, String, Option<String>, String, bool)>>,
     bucket_creates: RefCell<Vec<String>>,
     role_creates: RefCell<Vec<String>>,
     policy_roles: RefCell<Vec<String>>,
@@ -77,6 +77,9 @@ impl Cloud for FakeCloud {
             bucket.name.clone(),
             bucket.region.clone(),
             bucket.owner.clone(),
+            bucket.endpoint.clone(),
+            bucket.prefix.clone(),
+            bucket.static_keys.is_some(),
         ));
         if !self
             .bucket_creates
@@ -1275,8 +1278,8 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
         dir.path().join("socket"),
     )
     .unwrap();
-    assert_eq!(profile.s3_bucket.as_deref(), Some("test-bucket"));
-    assert_eq!(profile.s3_region.as_deref(), Some("us-east-1"));
+    assert_eq!(profile.bucket.as_ref().unwrap().bucket, "test-bucket");
+    assert_eq!(profile.bucket.as_ref().unwrap().region, "us-east-1");
     assert!(profile.s3_endpoint.is_empty());
     cloud.observations.borrow_mut().extend([None, None]);
     down::run(&cloud, &state, &node, Duration::ZERO, true)
@@ -1300,6 +1303,115 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     assert_eq!(cloud.bucket_creates.borrow().len(), 1);
     assert_eq!(cloud.role_creates.borrow().len(), 1);
     assert_eq!(cloud.profile_creates.borrow().len(), 1);
+}
+
+#[tokio::test]
+async fn static_bucket_skips_roles_and_keeps_keys_out_of_logs() {
+    use swarmy_config::{BucketCredentials, BucketSpec};
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    let host = FakeHost::default();
+    let request = up::NewNode {
+        name: "static-test",
+        sandboxes: 0,
+    };
+    let settings = RemoteSettings {
+        region: "eu-west-1".into(),
+        bucket: Some(BucketSpec {
+            endpoint: "https://objects.example.invalid".into(),
+            region: "eu-west-1".into(),
+            bucket: "test-bucket".into(),
+            prefix: "runs/team".parse().unwrap(),
+            credentials: BucketCredentials::StaticKeys {
+                access_key: "static-access".into(),
+                secret_key: "static-secret".into(),
+            },
+        }),
+        ..settings()
+    };
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings,
+        request,
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    // The endpoint, prefix, and key presence (never the values) reach the
+    // provider; no IAM profile is attached to the machine.
+    assert_eq!(
+        cloud.bucket_ensures.borrow().as_slice(),
+        [(String::from("test-bucket"), String::from("eu-west-1"), String::from("static-test"),
+            Some(String::from("https://objects.example.invalid")), String::from("runs/team"), true)]
+    );
+    assert!(cloud.requests.borrow()[0].profile.is_none());
+    assert!(cloud.role_creates.borrow().is_empty());
+    assert!(cloud.profile_creates.borrow().is_empty());
+    // Saved state carries the description; formatter output never does.
+    let node = state.require("static-test").unwrap();
+    let spec = node.bucket_spec().unwrap();
+    assert_eq!(spec.prefix.as_str(), "runs/team");
+    for rendered in [
+        format!("{node:?}"),
+        format!("{:?}", node.cloud_settings().bucket),
+        format!(
+            "{:?}",
+            ObjectBucket::from_spec(
+                "static-test",
+                &spec,
+                "eu-west-1",
+                node.cloud_settings().instance_profile("static-test"),
+            )
+        ),
+    ] {
+        assert!(!rendered.contains("static-access"), "{rendered}");
+        assert!(!rendered.contains("static-secret"), "{rendered}");
+    }
+    // The connect profile carries keys into service settings for the laptop.
+    let profile = super::connect::new_profile(
+        dir.path(),
+        &node,
+        node.ports,
+        8742,
+        dir.path().join("socket"),
+    )
+    .unwrap();
+    let mut applied = swarmy_config::Settings::default();
+    profile.apply(&mut applied);
+    assert_eq!(applied.s3.endpoint, "https://objects.example.invalid");
+    assert_eq!(applied.s3.access_key, "static-access");
+    assert_eq!(applied.s3.secret_key, "static-secret");
+    assert_eq!(applied.s3.prefix.as_str(), "runs/team");
+    // Tag adopts only the bucket; down deletes it without touching roles.
+    assert_eq!(
+        down::adoption_targets(&state, &node).unwrap(),
+        [("bucket".to_owned(), "test-bucket".to_owned())]
+    );
+    tag_confirmed(&cloud, &state, &node, |_, _| Ok(())).await.unwrap();
+    assert_eq!(cloud.tagged.borrow().as_slice(), ["bucket test-bucket"]);
+    cloud.observations.borrow_mut().extend([None, None]);
+    down::run(&cloud, &state, &node, Duration::ZERO, false)
+        .await
+        .unwrap();
+    assert!(
+        cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|entry| entry == "bucket test-bucket")
+    );
+    assert!(
+        !cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|entry| entry.starts_with("role"))
+    );
 }
 
 #[tokio::test]

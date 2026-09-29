@@ -619,7 +619,7 @@ impl Aws {
             .put_object()
             .bucket(&bucket.name)
             .key(marker_key(bucket))
-            .body(format!("{}\n", bucket.owner).into())
+            .body(format!("{}\n", bucket.owner).into_bytes().into())
             .send()
             .await
             .aws_context("s3:PutObject")?;
@@ -1274,7 +1274,6 @@ impl Cloud for Aws {
             return self.delete_static_bucket(bucket).await;
         }
         let name = &bucket.name;
-        let owner = &bucket.owner;
         use aws_sdk_s3::types::{Delete, ObjectIdentifier};
         let ownership = self.bucket_ownership(bucket).await?;
         if ownership == Ownership::Absent {
