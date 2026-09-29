@@ -24,6 +24,10 @@ mod inference;
 mod inference_wait;
 mod interrupt;
 mod metrics;
+mod metrics_codec;
+mod metrics_model;
+#[cfg(test)]
+mod metrics_tests;
 pub use interrupt::InterruptResult;
 pub use metrics::{
     AgentMetrics, ComputerMetric, InferenceMetric, LatencyPercentiles, MetricPatch, StageTiming,
