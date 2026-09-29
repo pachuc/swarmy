@@ -460,6 +460,42 @@ pub struct ImageUpload {
     pub chunks_uploaded: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuMode {
+    None,
+    Shared,
+    Dedicated,
+}
+impl From<GpuMode> for swarmy_core::GpuRequirement {
+    fn from(value: GpuMode) -> Self {
+        match value {
+            GpuMode::None => Self::None,
+            GpuMode::Shared => Self::Shared,
+            GpuMode::Dedicated => Self::Dedicated,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentReset {
+    Provider,
+    Model,
+    Effort,
+    Route,
+}
+impl From<AgentReset> for swarmy_core::InferenceField {
+    fn from(value: AgentReset) -> Self {
+        match value {
+            AgentReset::Provider => Self::Provider,
+            AgentReset::Model => Self::Model,
+            AgentReset::Effort => Self::Effort,
+            AgentReset::Route => Self::Route,
+        }
+    }
+}
+
 /// Every client mutation has a key that survives retries of the same intent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateAgent {
@@ -473,6 +509,12 @@ pub struct CreateAgent {
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub route: Option<String>,
+    #[serde(default)]
+    pub memory_mib: Option<u64>,
+    #[serde(default)]
+    pub gpu: Option<GpuMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_token: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct UpdateAgent {
@@ -484,6 +526,16 @@ pub struct UpdateAgent {
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub route: Option<String>,
+    #[serde(default)]
+    pub memory_mib: Option<u64>,
+    #[serde(default)]
+    pub gpu: Option<GpuMode>,
+    #[serde(default)]
+    pub resets: Vec<AgentReset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_token: Option<String>,
+    #[serde(default)]
+    pub clear_github_token: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateSession {
@@ -1303,7 +1355,7 @@ pub mod api_paths {
     Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode,
     StageTiming, InferenceMetric, ToolMetric, ComputerMetric, TurnMetrics, LatencyPercentiles,
     AgentMetrics, StartGcRun, GcRun,
-    CreateAgent, UpdateAgent, DeleteRequest,
+    CreateAgent, UpdateAgent, AgentReset, GpuMode, DeleteRequest,
     CreateSession, UpdateSession,
     CreateTurn, CreateMessage, AppendMessage, AppendedMessage, InterruptSession, CloseSession,
     InterruptStatus, InterruptOutcome, SessionClosed,

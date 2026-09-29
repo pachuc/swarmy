@@ -146,6 +146,10 @@ async fn assert_agent_routes(client: &Client) {
             effort: None,
             system_prompt: None,
             route: None,
+
+            memory_mib: None,
+            gpu: None,
+            github_token: None,
         })
         .await
         .unwrap();
@@ -163,6 +167,12 @@ async fn assert_agent_routes(client: &Client) {
                     effort: None,
                     route: None,
                     system_prompt: None,
+
+                    memory_mib: None,
+                    gpu: None,
+                    resets: Vec::new(),
+                    github_token: None,
+                    clear_github_token: false,
                 }
             )
             .await

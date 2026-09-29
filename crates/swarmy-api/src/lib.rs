@@ -482,9 +482,8 @@ async fn create_agent(
         model: body.model,
         reasoning_effort: body.effort.map(Into::into),
         system_prompt: body.system_prompt,
-        // Sandbox sizing is not part of the v1 API types yet; the image default applies.
-        memory_mib: None,
-        gpu: None,
+        memory_mib: body.memory_mib,
+        gpu: body.gpu.map(Into::into),
         route: body.route,
     };
     if body.idempotency_key.is_empty() || body.idempotency_key.len() > 256 {
@@ -500,7 +499,7 @@ async fn create_agent(
             Some(CreateAgentOptions {
                 settings: Some(&settings),
                 replay_key: Some(&format!("agents:create:{}", body.idempotency_key)),
-                ..Default::default()
+                github_token: body.github_token.as_deref(),
             }),
         )
         .await
@@ -523,23 +522,41 @@ async fn update_agent(
         model: body.model,
         reasoning_effort: body.effort.map(Into::into),
         system_prompt: body.system_prompt,
-        // Sandbox sizing is not part of the v1 API types yet; the image default applies.
-        memory_mib: None,
-        gpu: None,
+        memory_mib: body.memory_mib,
+        gpu: body.gpu.map(Into::into),
         route: body.route,
     };
+    let resets: Vec<swarmy_core::InferenceField> =
+        body.resets.into_iter().map(Into::into).collect();
+    let mut merged = record.clone();
+    settings.apply_to(&mut merged, &resets);
+    swarmy_llm::selection::validate(
+        &state.catalog,
+        &swarmy_core::InferenceSelection {
+            provider: merged.provider,
+            model: merged.model,
+            effort: merged.reasoning_effort,
+        },
+        &state.default_selection,
+    )
+    .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
     let store = state.store.clone();
     replay(
         &state,
         &body.idempotency_key,
         &format!("agents:{name}:update"),
         async move {
-            Ok(Json(agent(
+            let updated = store
+                .set_agent_with_resets(record.agent_id, &settings, &resets)
+                .await
+                .map_err(storage)?;
+            if body.github_token.is_some() || body.clear_github_token {
                 store
-                    .set_agent(record.agent_id, &settings)
+                    .set_agent_github_token(record.agent_id, body.github_token.as_deref())
                     .await
-                    .map_err(storage)?,
-            )))
+                    .map_err(storage)?;
+            }
+            Ok(Json(agent(updated)))
         },
     )
     .await

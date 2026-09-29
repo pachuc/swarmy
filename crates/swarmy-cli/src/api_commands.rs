@@ -1,6 +1,6 @@
 //! Commands whose state is read or mutated through the control-plane API.
 use anyhow::{Context, Result, ensure};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::fmt::Write as _;
 use swarmy_client::Client;
 
@@ -9,13 +9,6 @@ use ulid::Ulid;
 use crate::{Command, agent_command, auth_command, cost_command, image_command, session_command};
 
 use swarmy_client::api_client::call as request;
-async fn projection<T: serde::Serialize>(
-    endpoint: &str,
-    future: impl std::future::Future<Output = Result<T, swarmy_client::Error>>,
-) -> Result<Value> {
-    Ok(serde_json::to_value(request(endpoint, future).await?)?)
-}
-
 // Keep the volume image label rule here so the client does not link libfdb_c.
 fn validate_label(value: &str) -> Result<()> {
     ensure!(
@@ -39,21 +32,6 @@ fn print<T: serde::Serialize>(value: &T, text: &str, json: bool) {
         println!("{text}");
     }
 }
-fn str_field<'a>(value: &'a Value, key: &str) -> &'a str {
-    value[key].as_str().unwrap_or("-")
-}
-fn display_state(value: &Value) -> String {
-    str_field(value, "state")
-        .split('_')
-        .map(|word| {
-            let mut chars = word.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_uppercase().collect::<String>() + chars.as_str()
-            })
-        })
-        .collect()
-}
-
 pub async fn run(command: Command, json: bool) -> Result<()> {
     if let Command::Image {
         command: image_command::Command::Show { image },
@@ -595,30 +573,39 @@ fn settings_text(agent: &swarmy_api_types::AgentView) -> String {
         record.requirements.gpu,
     )
 }
-fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<Value> {
-    let mut value = json!({});
-    for (name, setting) in [
-        ("provider", args.provider),
-        ("model", args.model),
-        ("effort", args.effort),
-        ("route", args.route),
-    ] {
-        if let Some(setting) = setting {
-            if setting == "default" {
-                ensure!(update, "default clears an override only with agent set");
-                if !value["resets"].is_array() {
-                    value["resets"] = json!([]);
-                }
-                value["resets"]
-                    .as_array_mut()
-                    .expect("array initialized")
-                    .push(json!(name));
-            } else {
-                value[name] = json!(setting);
-            }
+struct AgentFlags {
+    provider: Option<String>,
+    model: Option<String>,
+    effort: Option<swarmy_api_types::ReasoningEffort>,
+    route: Option<String>,
+    system_prompt: Option<String>,
+    memory_mib: Option<u64>,
+    gpu: Option<swarmy_api_types::GpuMode>,
+    resets: Vec<swarmy_api_types::AgentReset>,
+}
+fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<AgentFlags> {
+    use swarmy_api_types::AgentReset;
+    let mut resets = Vec::new();
+    let mut override_or_reset = |value: Option<String>, field| -> Result<Option<String>> {
+        if value.as_deref() == Some("default") {
+            ensure!(update, "default clears an override only with agent set");
+            resets.push(field);
+            Ok(None)
+        } else {
+            Ok(value)
         }
-    }
-    let prompt = if let Some(path) = args.system_prompt_file {
+    };
+    let provider = override_or_reset(args.provider, AgentReset::Provider)?;
+    let model = override_or_reset(args.model, AgentReset::Model)?;
+    let effort = override_or_reset(args.effort, AgentReset::Effort)?
+        .map(|value| {
+            value
+                .parse::<swarmy_core::ReasoningEffort>()
+                .map(Into::into)
+        })
+        .transpose()?;
+    let route = override_or_reset(args.route, AgentReset::Route)?;
+    let system_prompt = if let Some(path) = args.system_prompt_file {
         Some(
             std::fs::read_to_string(&path)
                 .with_context(|| format!("read system prompt {}", path.display()))?,
@@ -626,32 +613,23 @@ fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<Value> 
     } else {
         args.system_prompt
     };
-    if let Some(prompt) = prompt {
-        value["system_prompt"] = json!(prompt);
-    }
-    if let Some(memory) = args.memory {
-        value["memory"] = json!(memory);
-    }
-    if let Some(gpu) = args.gpu {
-        value["gpu"] = json!(gpu);
-    }
-    Ok(value)
+    let gpu = args.gpu.as_deref().map(|value| match value {
+        "none" => swarmy_api_types::GpuMode::None,
+        "shared" => swarmy_api_types::GpuMode::Shared,
+        "dedicated" => swarmy_api_types::GpuMode::Dedicated,
+        _ => unreachable!("GPU mode validated by clap"),
+    });
+    Ok(AgentFlags {
+        provider,
+        model,
+        effort,
+        route,
+        system_prompt,
+        memory_mib: args.memory,
+        gpu,
+        resets,
+    })
 }
-fn text_value(value: &Value) -> String {
-    value
-        .as_str()
-        .map_or_else(|| value.to_string(), str::to_owned)
-}
-fn text_value_or_dash(value: &Value) -> String {
-    if value.is_null() {
-        "-".into()
-    } else {
-        text_value(value)
-    }
-}
-/// Render one owner's per-entry cost shares with the providers involved.
-/// The server reads these from the entry rollups, so they survive the raw
-/// completion record retention window.
 fn agent_text(agent: &swarmy_api_types::AgentView, detail: bool) -> String {
     let record = &agent.record;
     let mut text = format!(
@@ -748,11 +726,11 @@ async fn update_agent(
     client: &Client,
     endpoint: &str,
     name: &str,
-    body: Value,
+    body: &swarmy_api_types::UpdateAgent,
 ) -> Result<swarmy_api_types::AgentView> {
-    let updated = tokio::time::timeout(
+    tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        client.cli_update_agent(name, &serde_json::from_value(body)?),
+        client.update_agent(name, body),
     )
     .await
     .context("agent update timed out")?
@@ -762,7 +740,7 @@ async fn update_agent(
         }
         _ => swarmy_client::api_client::api_error(error, endpoint),
     })?;
-    Ok(updated)
+    request(endpoint, client.agent_view(name)).await
 }
 
 async fn agent(
@@ -805,19 +783,40 @@ async fn agent(
             } else {
                 github_token
             };
-            let mut body = inference(flags, false)?;
-            body["name"] = json!(name);
-            body["description"] = json!(description);
-            body["image"] = json!(
-                image.or_else(|| swarmy_config::Settings::load().ok()?.settings.default_image)
-            );
-            body["github_token"] = json!(token);
-            body["idempotency_key"] = json!(Ulid::generate().to_string());
+            let flags = inference(flags, false)?;
+            let image =
+                image.or_else(|| swarmy_config::Settings::load().ok()?.settings.default_image);
+            let image = match image {
+                Some(image) => image,
+                None => request(endpoint, client.doctor())
+                    .await?
+                    .default_image
+                    .context("no default image configured")?,
+            };
+            let (image_name, image_tag) =
+                image.split_once(':').context("expected image NAME:TAG")?;
             let created = request(
                 endpoint,
-                client.cli_create_agent(&serde_json::from_value(body)?),
+                client.create_agent(&swarmy_api_types::CreateAgent {
+                    idempotency_key: Ulid::generate().to_string(),
+                    name: name.clone(),
+                    description,
+                    image: swarmy_api_types::ImageRef {
+                        name: image_name.into(),
+                        tag: image_tag.into(),
+                    },
+                    provider: flags.provider,
+                    model: flags.model,
+                    effort: flags.effort,
+                    system_prompt: flags.system_prompt,
+                    route: flags.route,
+                    memory_mib: flags.memory_mib,
+                    gpu: flags.gpu,
+                    github_token: token,
+                }),
             )
             .await?;
+            let created = request(endpoint, client.agent_view(&created.id)).await?;
             print(
                 &created,
                 &format!(
@@ -837,11 +836,27 @@ async fn agent(
             github_token,
             clear_github_token,
         } => {
-            let mut body = inference(flags, true)?;
-            body["github_token"] = json!(github_token.clone());
-            body["clear_github_token"] = json!(clear_github_token);
-            body["idempotency_key"] = json!(Ulid::generate().to_string());
-            let updated = update_agent(client, endpoint, &name, body).await?;
+            let flags = inference(flags, true)?;
+            let updated = update_agent(
+                client,
+                endpoint,
+                &name,
+                &swarmy_api_types::UpdateAgent {
+                    idempotency_key: Ulid::generate().to_string(),
+                    description: None,
+                    provider: flags.provider,
+                    model: flags.model,
+                    effort: flags.effort,
+                    system_prompt: flags.system_prompt,
+                    route: flags.route,
+                    memory_mib: flags.memory_mib,
+                    gpu: flags.gpu,
+                    resets: flags.resets,
+                    github_token,
+                    clear_github_token,
+                },
+            )
+            .await?;
             print(
                 &updated,
                 &format!(
@@ -1226,14 +1241,6 @@ async fn auth(
         _ => unreachable!("login and import remain local"),
     }
     Ok(())
-}
-
-fn optional_text(value: &Value) -> String {
-    if value.is_null() {
-        "-".into()
-    } else {
-        text_value(value)
-    }
 }
 
 fn quota_line(entry: &swarmy_api_types::QuotaEntry) -> String {
