@@ -84,22 +84,11 @@ impl CompletionsProvider {
         }
         let retry_after = crate::retry::retry_after_header(response.headers());
         let body = response.text().await?;
-        let error = serde_json::from_str::<Value>(&body).map_or_else(
-            |_| crate::error::message_error(body.clone()),
-            |value| error_from_json(&value),
-        );
-        if matches!(error, Error::ContextOverflow(_)) {
-            return Err(error);
-        }
-        if retryable(status) {
-            return Err(Error::ProviderResponse {
-                status,
-                reason: crate::classify_provider_failure(&body),
-                message: body,
-                retry_after,
-            });
-        }
-        Err(error)
+        Err(crate::error::classify_http_failure(
+            status,
+            &body,
+            retry_after,
+        ))
     }
 }
 

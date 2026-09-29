@@ -9,7 +9,7 @@ use crate::{
     ClientAuth, Error, Provider, ProviderStream, Request,
     auth::{CredentialStore, Credentials, OAuthClient},
     catalog::{Api, Catalog, Compat, ModelInfo, ProviderInfo},
-    responses::{ResponsesStream, is_context_overflow, request_json_for},
+    responses::{ResponsesStream, request_json_for},
     retry::{RetryPolicy, with_retry},
 };
 
@@ -319,15 +319,11 @@ async fn check_response(response: reqwest::Response) -> Result<reqwest::Response
     }
     let retry_after = crate::retry::retry_after_header(response.headers());
     let body = response.text().await?;
-    if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE || is_context_overflow(&body) {
-        return Err(Error::ContextOverflow(body));
-    }
-    Err(Error::ProviderResponse {
+    Err(crate::error::classify_http_failure(
         status,
-        reason: crate::classify_provider_failure(&body),
-        message: body,
+        &body,
         retry_after,
-    })
+    ))
 }
 
 #[cfg(test)]
@@ -336,6 +332,8 @@ mod tests {
 
     #[test]
     fn context_overflow_classification() {
-        assert!(!is_context_overflow("rate limit: too many tokens"));
+        assert!(!crate::error::is_context_overflow(
+            "rate limit: too many tokens"
+        ));
     }
 }

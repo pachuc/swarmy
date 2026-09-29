@@ -143,3 +143,17 @@ fn repair_completions(messages: Vec<Value>) -> Vec<Value> {
     }
     output
 }
+
+/// Keep valid wire IDs and hash unsupported ones without collisions.
+pub(crate) fn sanitize_tool_id(id: &str, prefix: &str, max_len: usize) -> String {
+    if !id.is_empty()
+        && id.len() <= max_len
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return id.to_owned();
+    }
+    let hash = blake3::hash(id.as_bytes()).to_hex();
+    format!("{prefix}{}", &hash[..(max_len - prefix.len()).min(64)])
+}

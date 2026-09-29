@@ -235,14 +235,8 @@ fn normalize_calls(input: &mut Vec<Value>) {
     // Hash unsupported ids so replacements remain stable across calls and results
     // without colliding with another id after punctuation is removed.
     for item in input.iter_mut() {
-        if let Some(id) = item["call_id"].as_str()
-            && (id.len() > 64
-                || id.is_empty()
-                || !id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')))
-        {
-            item["call_id"] = json!(blake3::hash(id.as_bytes()).to_hex().to_string());
+        if let Some(id) = item["call_id"].as_str() {
+            item["call_id"] = json!(crate::protocol::sanitize_tool_id(id, "", 64));
         }
     }
     // Pair each result with its call by id wherever the call sits, so every
@@ -580,37 +574,6 @@ fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
     value[key]
         .as_str()
         .ok_or_else(|| Error::Protocol(format!("missing string field {key}")))
-}
-
-/// Vendor error codes and phrases used for context-window failures.
-pub(crate) fn is_context_overflow(message: &str) -> bool {
-    let message = message.to_ascii_lowercase();
-    if ["rate limit", "rate_limit", "too many requests", "throttl"]
-        .iter()
-        .any(|phrase| message.contains(phrase))
-    {
-        return false;
-    }
-    [
-        "context_length_exceeded",
-        "context length exceeded",
-        "maximum context length",
-        "exceeds the context window",
-        "maximum prompt length",
-        "prompt is too long",
-        "prompt too long",
-        "input is too long",
-        "request_too_large",
-        "too many tokens",
-        "token limit exceeded",
-        "exceeded model token limit",
-        "reduce the length of the messages",
-        "exceeds the available context size",
-        "greater than the context length",
-        "maximum allowed input length",
-    ]
-    .iter()
-    .any(|phrase| message.contains(phrase))
 }
 
 fn item_parts(item: &Value) -> Result<Vec<Part>, Error> {

@@ -146,18 +146,11 @@ impl AnthropicProvider {
         }
         let retry_after = crate::retry::retry_after_header(response.headers());
         let body = response.text().await?;
-        if context_overflow(&body) {
-            return Err(Error::ContextOverflow(body));
-        }
-        if retryable(status) {
-            return Err(Error::ProviderResponse {
-                status,
-                reason: crate::classify_provider_failure(&body),
-                message: body,
-                retry_after,
-            });
-        }
-        Err(crate::error::provider_error(status, &body))
+        Err(crate::error::classify_http_failure(
+            status,
+            &body,
+            retry_after,
+        ))
     }
 }
 
@@ -333,16 +326,7 @@ fn cache_last(blocks: &mut [Value]) {
 }
 
 fn tool_id(id: &str) -> String {
-    if !id.is_empty()
-        && id.len() <= 64
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    {
-        id.to_owned()
-    } else {
-        format!("toolu_{}", &blake3::hash(id.as_bytes()).to_hex()[..32])
-    }
+    crate::protocol::sanitize_tool_id(id, "toolu_", 38)
 }
 
 fn content(part: &Part, request: &Request, endpoint: &Endpoint) -> Option<Value> {
@@ -443,11 +427,6 @@ fn messages(request: &Request, endpoint: &Endpoint) -> Result<Vec<Value>, Error>
     Ok(messages)
 }
 
-fn context_overflow(body: &str) -> bool {
-    let lower = body.to_ascii_lowercase();
-    lower.contains("prompt is too long") || lower.contains("request_too_large")
-}
-
 fn string<'a>(value: &'a Value, field: &str) -> Result<&'a str, Error> {
     value[field]
         .as_str()
@@ -546,7 +525,7 @@ impl AnthropicStream {
         let kind = string(event, "type")?;
         if kind == "error" {
             let body = event["error"].to_string();
-            return Err(if context_overflow(&body) {
+            return Err(if crate::error::is_context_overflow(&body) {
                 Error::ContextOverflow(body)
             } else {
                 Error::Protocol(body)
