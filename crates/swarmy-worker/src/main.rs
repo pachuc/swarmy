@@ -8,31 +8,23 @@ use anyhow::{Result, bail};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, WorkQueue};
 use swarmy_core::Nudge;
-use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::ObjectBlobStore};
+use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store};
 use tokio::time::{Duration, interval};
 use tokio::{sync::mpsc, task::JoinSet};
 
 fn main() -> Result<()> {
     swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-worker")?;
-    tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
-    let config = config::Config::from_env()?;
+    swarmy_config::init_tracing();
+    let settings = swarmy_config::Settings::load()?.settings;
+    let config = config::Config::from_settings(&settings)?;
     let _network = swarmy_store::boot();
-    tokio::runtime::Runtime::new()?.block_on(run(config))
+    tokio::runtime::Runtime::new()?.block_on(run(config, settings))
 }
 
-async fn run(config: config::Config) -> Result<()> {
-    let blobs = Arc::new(ObjectBlobStore::from_env()?);
-    let store = Store::open(
-        Some(&config.cluster),
-        Some(&config.directory),
-        blobs.clone(),
-    )
-    .await?;
+async fn run(config: config::Config, settings: swarmy_config::Settings) -> Result<()> {
+    let opened = Store::open_store(&settings).await?;
+    let store = opened.store;
+    let blobs: Arc<dyn swarmy_store::blob::BlobStore> = opened.blobs;
     let bus = Bus::connect(&config.nats, config.bus.clone()).await?;
     bus.setup(&[]).await?;
     let (send, mut receive) = mpsc::channel(1);

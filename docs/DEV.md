@@ -184,15 +184,25 @@ The generated file contains every setting. This partial example shows the
 common choices (store directories are FoundationDB directory names):
 
 ```toml
-store_directory = "swarmy"
-bus_prefix = ""
+[store]
+directory = "swarmy"
+cluster_file = ".dev/fdb.cluster"
+
+[bus]
+prefix = ""
+
+[selection]
 provider = "fake"
 model = "gpt-5"
 default_image = "base-ubuntu:dev"
-reasoning_effort = "medium"
+effort = "medium"
 credential_file = "/home/me/.swarmy/auth.json"
-worker_partitions = "0-255"
-scheduler_partitions = "0-255"
+
+[worker]
+partitions = "0-255"
+
+[scheduler]
+partitions = "0-255"
 
 [fake]
 script = ".swarmy/dev/fake.json"
@@ -200,30 +210,38 @@ call_log = ".swarmy/dev/calls.log"
 ```
 
 Every new ephemeral session needs a registered image, including sessions that only use
-remote tools. Set `default_image = "NAME:TAG"` or `SWARMY_DEFAULT_IMAGE`, or pass
-`--image NAME:TAG` to `swarmy run` or `swarmy chat`. The flag overrides the
-setting, which has no built-in default. Unknown images fail before a session is
+remote tools. Set `[selection] default_image = "NAME:TAG"` or
+`SWARMY_DEFAULT_IMAGE`, or pass `--image NAME:TAG` to `swarmy run` or
+`swarmy chat`. The flag overrides the setting, which has no built-in default. Unknown images fail before a session is
 created and the error lists registered images; `swarmy image ls` also lists them.
 Image construction requires root. The computer is materialized on first sandbox
 tool use, so a fake-provider conversation without sandbox tools needs no node.
 Resuming an existing session keeps its pinned image.
 
-The connection keys are `fdb_cluster_file`, `nats_url`, `s3_endpoint`,
-`s3_access_key`, `s3_secret_key`, `s3_bucket`, `s3_prefix`, and `s3_region`.
-`s3_prefix` defaults to empty. Use it to select a namespace within the bucket;
-see the [namespace and migration rules](../crates/swarmy-store/src/objects.rs). Additional settings
-are `scheduler_scan_interval_ms`, `scheduler_resend_interval_ms`,
-`worker_lease_ms`, `worker_recovery_interval_ms`, `bus_ack_wait_ms`,
-`bus_max_deliver`, `gateway_concurrency`, and `system_prompt`. The optional
-`worker_kill_point` retains the worker failure-injection setting. Existing
-`SWARMY_*` names still work: uppercase the key and add `SWARMY_`. Exceptions
-are `credential_file` (`SWARMY_CHATGPT_AUTH`), `[fake].script`
-(`SWARMY_FAKE_SCRIPT`), and `[fake].call_log` (`SWARMY_FAKE_CALL_LOG`).
+The connection keys are `[store] cluster_file`, `[bus] nats_url`, `[s3] endpoint`,
+`[s3] access_key`, `[s3] secret_key`, `[s3] bucket`, `[s3] prefix`, and
+`[s3] region`. `[s3] prefix` defaults to empty. Use it to select a namespace
+within the bucket; see the [namespace and migration
+rules](../crates/swarmy-store/src/objects.rs). Additional settings are
+`[scheduler] scan_interval_ms`, `[scheduler] resend_interval_ms`,
+`[scheduler] ephemeral_retention_secs`, `[scheduler] placement_lease_secs`,
+`[worker] lease_ms`, `[worker] recovery_interval_ms`, `[bus] ack_wait_ms`,
+`[bus] max_deliver`, `[gateway] concurrency`, `[node] heartbeat_interval_ms`,
+`[sandbox] idle_secs`, `[gc] grace_secs`, `[gc] interval_secs`,
+`[inference] max_wait_secs`, `[inference] max_backoff_secs`,
+`[inference] gateway_wait_secs`, `[volume_snapshots] period_secs`, and
+`[context] system_prompt`. The optional `[worker] kill_point` retains the
+worker failure-injection setting. The documented `SWARMY_*` names still work;
+TOML keys live in the tables above.
+Exceptions are `[selection] credential_file` (`SWARMY_CHATGPT_AUTH`),
+`[fake].script` (`SWARMY_FAKE_SCRIPT`), and `[fake].call_log`
+(`SWARMY_FAKE_CALL_LOG`).
 
-To use ChatGPT, set `provider = "chatgpt"`, choose the model and effort, and set
-`credential_file` to a dedicated credential file. `swarmy auth login` and the
-gateway read that same path. `swarmy auth --auth-file PATH login` overrides it
-for a login. Never share a refresh writer with a running Codex login.
+To use ChatGPT, set `[selection] provider = "chatgpt"`, choose the model and
+effort, and set `[selection] credential_file` to a dedicated credential file.
+`swarmy auth login` and the gateway read that same path. `swarmy auth
+--auth-file PATH login` overrides it for a login. Never share a refresh
+writer with a running Codex login.
 
 ## Backing service installation
 
@@ -572,11 +590,11 @@ notice and follow the chain, including after a missed live notification.
 `run --session OLD` follows to the successor and prints the same notice.
 
 The worker includes memory files in every named-agent inference, including
-turns in side sessions. `memory_dir` (`SWARMY_MEMORY_DIR`) defaults to
-`/home/agent/memory`; `memory_max_bytes` (`SWARMY_MEMORY_MAX_BYTES`) defaults to
-32768. The node reads regular files directly in that directory in filename
-order, includes their names, and adds a note when the byte budget truncates
-content. Subdirectories, symbolic links, and special files are skipped. Use an
+turns in side sessions. `[memory] dir` (`SWARMY_MEMORY_DIR`) defaults to
+`/home/agent/memory`; `[memory] max_bytes` (`SWARMY_MEMORY_MAX_BYTES`)
+defaults to 32768. The node reads regular files directly in that directory in
+filename order, includes their names, and adds a note when the byte budget
+truncates content. Subdirectories, symbolic links, and special files are skipped. Use an
 absolute directory path without symbolic-link components. A computer that has
 not been placed contributes empty memory.
 

@@ -94,20 +94,17 @@ impl Providers {
                 Err("cluster credential store unavailable; check keyring and database")
             }
         };
-        let scripted = if std::path::Path::new(&settings.fake.script).is_file() {
-            swarmy_llm::fake::FileFake::from_files(
-                std::path::Path::new(&settings.fake.script),
-                std::path::Path::new(&settings.fake.call_log),
-            )
-            .map(|provider| Arc::new(provider) as Arc<dyn Provider>)
-            .map_err(|_| "fake script is unreadable or invalid")
+        let scripted = if settings.fake.script.is_file() {
+            swarmy_llm::fake::FileFake::from_files(&settings.fake.script, &settings.fake.call_log)
+                .map(|provider| Arc::new(provider) as Arc<dyn Provider>)
+                .map_err(|_| "fake script is unreadable or invalid")
         } else {
             Err("fake script is absent")
         };
         let result = Self {
             catalog,
             state: RwLock::new(ProviderState::default()),
-            selected: settings.providers.clone(),
+            selected: settings.selection.providers.clone(),
             store,
             resolver,
             scripted,

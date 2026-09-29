@@ -1,6 +1,6 @@
 use crate::vol_command::Command;
 use anyhow::{Context, Result};
-use std::{fmt::Write, sync::Arc};
+use std::fmt::Write;
 use swarmy_core::{ImageTag, VolumeId};
 use swarmy_store::{MAX_SCAN_LIMIT, Store};
 
@@ -165,16 +165,5 @@ pub fn output(value: &serde_json::Value, text: &str, json: bool) -> Result<()> {
 /// Open the cluster store for volume commands.
 pub(crate) async fn store() -> Result<swarmy_store::Store> {
     let settings = swarmy_config::Settings::load()?.settings;
-    let cluster = settings.fdb_cluster_file;
-    let directory: Vec<_> = settings
-        .store_directory
-        .split('/')
-        .map(str::to_owned)
-        .collect();
-    Ok(swarmy_store::Store::open(
-        Some(&cluster),
-        Some(&directory),
-        Arc::new(swarmy_store::blob::ObjectBlobStore::from_env()?),
-    )
-    .await?)
+    Ok(swarmy_store::Store::open_store(&settings).await?.store)
 }

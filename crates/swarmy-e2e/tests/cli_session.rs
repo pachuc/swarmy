@@ -234,7 +234,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
     let prefix = Ulid::generate().to_string();
     let directory = format!("cli-test-{prefix}");
     let store = Store::open(
-        Some(&cluster),
+        Some(std::path::Path::new(&cluster)),
         Some(std::slice::from_ref(&directory)),
         Arc::new(MemoryBlobStore::default()),
     )
