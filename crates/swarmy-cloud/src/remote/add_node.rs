@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{Context, Result, ensure};
+use crate::{ErrorContext as _, Result, cloud_ensure as ensure};
 use swarmy_config::RemoteNode;
 
 use super::{Cloud, Host, MachineSpec, NodeShape, key_name, state::State, wait_running};
@@ -100,7 +100,7 @@ pub async fn run(
         }
         cloud_out!("Remote node {} joined {name}", node.name);
         cloud_out!("{}", super::ssh::command_line(&node, &address)?);
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, crate::Error>(())
     }
     .await;
     result

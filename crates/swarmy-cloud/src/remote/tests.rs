@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Result;
+use crate::{Result, cloud_bail as bail};
 use swarmy_config::{RemoteNode, RemoteSettings};
 
 use super::{
@@ -14,7 +14,7 @@ use super::{
     state::State, up, wait_running,
 };
 
-fn denied(operation: &str) -> anyhow::Error {
+fn denied(operation: &str) -> crate::Error {
     crate::Error::MissingPermission {
         operation: operation.to_owned(),
         source: Box::new(std::io::Error::new(
@@ -22,7 +22,6 @@ fn denied(operation: &str) -> anyhow::Error {
             "AccessDenied",
         )),
     }
-    .into()
 }
 
 #[derive(Default)]
@@ -115,8 +114,7 @@ impl Cloud for FakeCloud {
                 source: Box::new(std::io::Error::other(
                     "InvalidParameterValue: Invalid IAM Instance Profile name",
                 )),
-            }
-            .into()));
+            }));
         }
         std::future::ready(Ok(self
             .launch_ids
@@ -176,14 +174,16 @@ impl Cloud for FakeCloud {
     }
     fn tag_bucket(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
         if self.foreign_bucket.get() {
-            return std::future::ready(Err(anyhow::anyhow!("bucket belongs to another remote")));
+            return std::future::ready(Err(crate::cloud_error!(
+                "bucket belongs to another remote"
+            )));
         }
         self.tagged.borrow_mut().push(format!("bucket {name}"));
         std::future::ready(Ok(()))
     }
     fn tag_node_role(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
         if self.foreign_role.get() {
-            return std::future::ready(Err(anyhow::anyhow!("role belongs to another remote")));
+            return std::future::ready(Err(crate::cloud_error!("role belongs to another remote")));
         }
         self.tagged
             .borrow_mut()
@@ -253,7 +253,7 @@ impl Host for FakeHost {
             .borrow_mut()
             .push((node.name.clone(), address.into(), recipe.to_owned()));
         std::future::ready(if self.fail_image {
-            Err(anyhow::anyhow!("image build failed"))
+            Err(crate::cloud_error!("image build failed"))
         } else {
             Ok(())
         })
@@ -272,10 +272,10 @@ impl Host for FakeHost {
         self.provisioned.borrow_mut().push(node.clone());
         self.primaries.borrow_mut().push(primary.cloned());
         if self.fail {
-            return std::future::ready(Err(anyhow::anyhow!("SSH failed")));
+            return std::future::ready(Err(crate::cloud_error!("SSH failed")));
         }
         if self.nvme_failure {
-            return std::future::ready(Err(anyhow::anyhow!(
+            return std::future::ready(Err(crate::cloud_error!(
                 "An instance with local NVMe storage is required"
             )));
         }
@@ -1898,7 +1898,7 @@ async fn tag_requires_exact_resource_names_and_calls_cloud_only_after_all_confir
         ["bucket test-bucket", "role and profile swarmy-cleanup"]
     );
     assert!(
-        down::tag_with_confirmation(&cloud, &state, &node, |_, _| anyhow::bail!("no"))
+        down::tag_with_confirmation(&cloud, &state, &node, |_, _| bail!("no"))
             .await
             .is_err()
     );

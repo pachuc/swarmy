@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, ensure};
+use crate::{ErrorContext as _, Result, cloud_ensure as ensure};
 use swarmy_config::{RemoteNode, validate_remote_name};
 
 /// The `remote` directory under the state directory: node records, keys, and the lock.
@@ -14,10 +14,13 @@ pub struct State {
 
 impl State {
     pub fn open(directory: &Path) -> Result<Self> {
-        fs::create_dir_all(directory)?;
-        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+        fs::create_dir_all(directory).map_err(crate::Error::LocalStateIo)?;
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+            .map_err(crate::Error::LocalStateIo)?;
         Ok(Self {
-            directory: directory.canonicalize()?,
+            directory: directory
+                .canonicalize()
+                .map_err(crate::Error::LocalStateIo)?,
         })
     }
 
@@ -28,7 +31,8 @@ impl State {
             .truncate(false)
             .write(true)
             .mode(0o600)
-            .open(self.directory.join(".lock"))?;
+            .open(self.directory.join(".lock"))
+            .map_err(crate::Error::LocalStateIo)?;
         fs2::FileExt::try_lock_exclusive(&file).context("another remote command is running")?;
         Ok(file)
     }
@@ -49,19 +53,19 @@ impl State {
                 Ok(Some(node))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.into()),
+            Err(error) => Err(crate::Error::LocalStateIo(error)),
         }
     }
 
     pub fn require(&self, name: &str) -> Result<RemoteNode> {
         self.read(name)?
-            .ok_or_else(|| crate::Error::NotFound(name.to_owned()).into())
+            .ok_or_else(|| crate::Error::NotFound(name.to_owned()))
     }
 
     /// Only remote records are inspected; tunnel profiles also use JSON here.
     fn shared(&self, owner: &str, matches: impl Fn(&RemoteNode) -> bool) -> Result<bool> {
-        for entry in fs::read_dir(&self.directory)? {
-            let entry = entry?;
+        for entry in fs::read_dir(&self.directory).map_err(crate::Error::LocalStateIo)? {
+            let entry = entry.map_err(crate::Error::LocalStateIo)?;
             let path = entry.path();
             if path.extension().is_none_or(|ext| ext != "json")
                 || path
@@ -71,8 +75,9 @@ impl State {
             {
                 continue;
             }
-            let other: RemoteNode = serde_json::from_slice(&fs::read(&path)?)
-                .with_context(|| format!("reading remote state {}", path.display()))?;
+            let other: RemoteNode =
+                serde_json::from_slice(&fs::read(&path).map_err(crate::Error::LocalStateIo)?)
+                    .with_context(|| format!("reading remote state {}", path.display()))?;
             if other.name != owner && matches(&other) {
                 return Ok(true);
             }
@@ -99,14 +104,20 @@ impl State {
         let mut bytes = serde_json::to_vec_pretty(node)?;
         bytes.push(b'\n');
         write(&path, &bytes)?;
-        File::open(&self.directory)?.sync_all()?;
+        File::open(&self.directory)
+            .map_err(crate::Error::LocalStateIo)?
+            .sync_all()
+            .map_err(crate::Error::LocalStateIo)?;
         Ok(())
     }
 
     pub fn remove(&self, node: &RemoteNode) -> Result<()> {
         self.remove_key(node)?;
-        fs::remove_file(self.path(&node.name, "json")?)?;
-        File::open(&self.directory)?.sync_all()?;
+        fs::remove_file(self.path(&node.name, "json")?).map_err(crate::Error::LocalStateIo)?;
+        File::open(&self.directory)
+            .map_err(crate::Error::LocalStateIo)?
+            .sync_all()
+            .map_err(crate::Error::LocalStateIo)?;
         Ok(())
     }
 
@@ -124,10 +135,13 @@ impl State {
             match fs::remove_file(path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(crate::Error::LocalStateIo(error)),
             }
         }
-        File::open(&self.directory)?.sync_all()?;
+        File::open(&self.directory)
+            .map_err(crate::Error::LocalStateIo)?
+            .sync_all()
+            .map_err(crate::Error::LocalStateIo)?;
         Ok(())
     }
 }
@@ -135,9 +149,13 @@ impl State {
 /// Replace a file atomically; the temporary file is private to this user.
 pub fn write(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
-    let mut file = tempfile::NamedTempFile::new_in(path.parent().context("path has no parent")?)?;
-    file.write_all(bytes)?;
-    file.as_file().sync_all()?;
-    file.persist(path)?;
+    let mut file = tempfile::NamedTempFile::new_in(path.parent().context("path has no parent")?)
+        .map_err(crate::Error::LocalStateIo)?;
+    file.write_all(bytes).map_err(crate::Error::LocalStateIo)?;
+    file.as_file()
+        .sync_all()
+        .map_err(crate::Error::LocalStateIo)?;
+    file.persist(path)
+        .map_err(|error| crate::Error::LocalStateIo(error.error))?;
     Ok(())
 }

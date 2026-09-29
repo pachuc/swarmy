@@ -1,5 +1,5 @@
 use super::{ssh, state::State};
-use anyhow::{Result, ensure};
+use crate::{Result, cloud_ensure as ensure};
 
 pub async fn run(state: &State, name: &str) -> Result<()> {
     let node = state.require(name)?;

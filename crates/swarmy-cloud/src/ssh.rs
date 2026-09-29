@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, bail, ensure};
+use crate::{ErrorContext as _, Result, cloud_bail as bail, cloud_ensure as ensure};
 use swarmy_config::{RemoteNode, RemoteProfile};
 use tokio::{process::Command, time::timeout};
 
@@ -132,8 +132,16 @@ async fn checked(command: &mut Command, action: &str) -> Result<()> {
         .stdin(Stdio::null())
         .status()
         .await
-        .with_context(|| action.to_owned())?;
-    ensure!(status.success(), "{action} failed with {status}");
+        .map_err(|source| crate::Error::Ssh {
+            command: action.to_owned(),
+            source: Box::new(source),
+        })?;
+    if !status.success() {
+        return Err(crate::Error::SshStatus {
+            command: action.to_owned(),
+            status,
+        });
+    }
     Ok(())
 }
 

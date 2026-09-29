@@ -1,7 +1,7 @@
 //! In-place upgrades keep the remote state and all instance identities intact.
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, ensure};
+use crate::{Result, cloud_ensure as ensure};
 use serde::{Deserialize, Serialize};
 use swarmy_config::RemoteNode;
 

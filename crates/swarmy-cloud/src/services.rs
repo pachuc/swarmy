@@ -4,7 +4,7 @@ use std::{
     process::Stdio,
 };
 
-use anyhow::{Context, Result, ensure};
+use crate::{ErrorContext as _, Result, cloud_ensure as ensure};
 use swarmy_config::{RemoteNode, RemoteServices, Settings};
 use tokio::io::AsyncWriteExt;
 

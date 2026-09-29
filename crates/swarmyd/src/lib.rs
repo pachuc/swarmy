@@ -70,7 +70,7 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error("{message}")]
+    #[error("{message}: {source}")]
     Context {
         message: String,
         #[source]

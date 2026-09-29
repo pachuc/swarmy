@@ -1,5 +1,5 @@
 use super::{connect, ssh, state::State};
-use anyhow::{Result, ensure};
+use crate::{Result, cloud_ensure as ensure};
 use std::path::Path;
 use swarmy_config::{RemoteProfile, remote_path};
 

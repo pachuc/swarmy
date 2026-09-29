@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, ensure};
+use crate::{ErrorContext as _, Result, cloud_ensure as ensure};
 use swarmy_config::{RemoteNode, RemotePorts, RemoteSettings};
 
 use super::{Cloud, Host, MachineSpec, ObjectBucket, key_name, state::State, wait_running};
@@ -34,7 +34,7 @@ pub async fn run(
             );
             return Ok(());
         }
-        return Err(crate::Error::AlreadyExists(name.to_owned()).into());
+        return Err(crate::Error::AlreadyExists(name.to_owned()));
     }
     validate(settings, name)?;
     let started = Instant::now();
@@ -98,7 +98,7 @@ pub async fn run(
         } else {
             cloud_out!("Skipping image build (--no-image)");
         }
-        Ok::<_, anyhow::Error>(address)
+        Ok::<_, crate::Error>(address)
     }
     .await;
     let address = result

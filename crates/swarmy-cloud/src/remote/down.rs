@@ -3,18 +3,17 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Result, bail};
+use crate::{Result, cloud_bail as bail, cloud_ensure as ensure};
 use swarmy_config::RemoteNode;
 
 use super::{Cloud, Ownership, key_name, state::State};
 
-pub(crate) fn actionable_error(error: anyhow::Error) -> anyhow::Error {
-    if error.chain().any(|cause| {
-        cause
-            .downcast_ref::<crate::Error>()
-            .is_some_and(|cause| matches!(cause, crate::Error::MissingPermission { .. }))
-    }) {
-        error.context("AWS denied the named permission; nothing was deleted by this operation. Grant it and retry; local remote state is retained")
+pub(crate) fn actionable_error(error: crate::Error) -> crate::Error {
+    if error.permission().is_some() {
+        crate::Error::Context {
+            message: "AWS denied the named permission; nothing was deleted by this operation. Grant it and retry; local remote state is retained".into(),
+            source: Box::new(error),
+        }
     } else {
         error
     }
@@ -27,7 +26,7 @@ struct Report {
 }
 
 impl Report {
-    fn failed(&mut self, resource: &str, permission: &str, error: &anyhow::Error) {
+    fn failed(&mut self, resource: &str, permission: &str, error: &crate::Error) {
         self.failures.push(format!(
             "Skipped {resource}: requires {permission}; {error:#}"
         ));
@@ -40,8 +39,8 @@ impl Report {
     }
 }
 
-fn permission<'a>(error: &anyhow::Error, default: &'a str, alternate: &'a str) -> &'a str {
-    if error.chain().any(|cause| cause.downcast_ref::<crate::Error>().is_some_and(|cause| matches!(cause, crate::Error::MissingPermission { operation, .. } if operation == alternate))) {
+fn permission<'a>(error: &crate::Error, default: &'a str, alternate: &'a str) -> &'a str {
+    if error.permission() == Some(alternate) {
         alternate
     } else {
         default
@@ -65,7 +64,7 @@ pub async fn confirm(
     let role = node
         .cloud_settings()
         .instance_profile(&node.name)
-        .ok_or_else(|| anyhow::anyhow!("bucket has no node role"))?;
+        .ok_or_else(|| crate::cloud_error!("bucket has no node role"))?;
     let bucket_status = cloud.bucket_ownership(bucket, &node.name).await?;
     let bucket_owned =
         !state.bucket_shared(&node.name, bucket)? && bucket_status == Ownership::Owned;
@@ -128,16 +127,16 @@ pub(crate) async fn tag_with_confirmation(
 ) -> Result<()> {
     let bucket = node
         .bucket()
-        .ok_or_else(|| anyhow::anyhow!("remote has no bucket"))?;
+        .ok_or_else(|| crate::cloud_error!("remote has no bucket"))?;
     let role = node
         .cloud_settings()
         .instance_profile(&node.name)
-        .ok_or_else(|| anyhow::anyhow!("bucket has no node role"))?;
-    anyhow::ensure!(
+        .ok_or_else(|| crate::cloud_error!("bucket has no node role"))?;
+    ensure!(
         !state.bucket_shared(&node.name, bucket)?,
         "bucket is also recorded by another remote"
     );
-    anyhow::ensure!(
+    ensure!(
         !state.role_shared(&node.name, &role)?,
         "role is also recorded by another remote"
     );
@@ -215,7 +214,7 @@ async fn cleanup_bucket_and_role(
         let role = node
             .cloud_settings()
             .instance_profile(&node.name)
-            .ok_or_else(|| anyhow::anyhow!("bucket has no node role"))?;
+            .ok_or_else(|| crate::cloud_error!("bucket has no node role"))?;
         if keep_bucket {
             cloud_out!("Kept bucket {bucket} and guarding role and instance profile {role}");
         } else {

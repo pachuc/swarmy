@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use crate::{ErrorContext as _, Result, cloud_bail as bail, cloud_ensure as ensure};
 use aws_sdk_ec2::{
     error::ProvideErrorMetadata,
     primitives::Blob,
@@ -28,14 +28,12 @@ where
                     operation: operation.to_owned(),
                     source: Box::new(error),
                 }
-                .into()
             } else {
                 crate::Error::Aws {
                     operation: operation.to_owned(),
                     code: error.code().map(str::to_owned),
                     source: Box::new(error),
                 }
-                .into()
             }
         })
     }
@@ -161,7 +159,7 @@ impl Aws {
         match location {
             Ok(output) => {
                 let found = bucket_region(output.location_constraint());
-                anyhow::ensure!(
+                ensure!(
                     found == region,
                     "bucket {bucket} is in {found}, not {region}"
                 );
@@ -363,16 +361,12 @@ fn warn_untagged(permission: &str, resource: &str, owner: &str) {
 }
 
 fn warn_tag_denied(
-    error: anyhow::Error,
+    error: crate::Error,
     permission: &str,
     resource: &str,
     owner: &str,
 ) -> Result<()> {
-    if !error.chain().any(|cause| {
-        cause
-            .downcast_ref::<crate::Error>()
-            .is_some_and(|cause| matches!(cause, crate::Error::MissingPermission { .. }))
-    }) {
+    if error.permission().is_none() {
         return Err(error);
     }
     warn_untagged(permission, resource, owner);
@@ -412,7 +406,7 @@ fn ensure_not_another_remote<'a>(
     tags: impl Iterator<Item = (&'a str, &'a str)>,
     owner: &str,
 ) -> Result<()> {
-    anyhow::ensure!(
+    ensure!(
         !tags
             .into_iter()
             .any(|(key, value)| key == REMOTE_TAG && value != owner),
@@ -519,7 +513,13 @@ impl Cloud for Aws {
     }
 
     async fn base_image(&self) -> Result<String> {
-        let output = self.ssm.get_parameter().name(UBUNTU_IMAGE).send().await?;
+        let output = self
+            .ssm
+            .get_parameter()
+            .name(UBUNTU_IMAGE)
+            .send()
+            .await
+            .aws_context("ssm:GetParameter")?;
         Ok(output
             .parameter()
             .and_then(|p| p.value())
@@ -534,7 +534,8 @@ impl Cloud for Aws {
             .public_key_material(Blob::new(public_key))
             .tag_specifications(tags(ResourceType::KeyPair, name, owner))
             .send()
-            .await?;
+            .await
+            .aws_context("ec2:ImportKeyPair")?;
         Ok(())
     }
 
@@ -544,7 +545,8 @@ impl Cloud for Aws {
             .describe_images()
             .image_ids(&spec.image)
             .send()
-            .await?;
+            .await
+            .aws_context("ec2:DescribeImages")?;
         let root = images
             .images()
             .first()
@@ -784,7 +786,7 @@ impl Cloud for Aws {
         use aws_sdk_s3::types::{Delete, ObjectIdentifier};
         match self.bucket_ownership(name, owner).await? {
             Ownership::Absent => return Ok(false),
-            Ownership::Unmanaged => anyhow::bail!("bucket ownership tags do not match"),
+            Ownership::Unmanaged => bail!("bucket ownership tags do not match"),
             Ownership::Owned => {}
         }
         let mut count = 0usize;
@@ -838,7 +840,7 @@ impl Cloud for Aws {
                 .send()
                 .await
                 .aws_context("s3:DeleteObjects")?;
-            anyhow::ensure!(
+            ensure!(
                 result.errors().is_empty(),
                 "s3:DeleteObjects failed for {} objects",
                 result.errors().len()
@@ -864,7 +866,7 @@ impl Cloud for Aws {
 
     async fn delete_node_role(&self, name: &str, owner: &str) -> Result<(bool, bool)> {
         let (profile_status, role_status) = self.role_ownership(name, owner).await?;
-        anyhow::ensure!(
+        ensure!(
             profile_status != Ownership::Unmanaged && role_status != Ownership::Unmanaged,
             "IAM ownership tags do not match"
         );
@@ -1124,8 +1126,7 @@ mod tag_denial_tests {
                 crate::Error::MissingPermission {
                     operation: "s3:PutBucketTagging".into(),
                     source: Box::new(std::io::Error::other("AccessDenied"))
-                }
-                .into(),
+                },
                 "s3:PutBucketTagging",
                 "swarmy-NAME",
                 "NAME"
@@ -1134,7 +1135,7 @@ mod tag_denial_tests {
         );
         assert!(
             warn_tag_denied(
-                anyhow::anyhow!("s3:PutBucketTagging: network failure"),
+                crate::cloud_error!("s3:PutBucketTagging: network failure"),
                 "s3:PutBucketTagging",
                 "swarmy-NAME",
                 "NAME"

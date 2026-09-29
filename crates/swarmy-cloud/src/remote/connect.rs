@@ -2,7 +2,7 @@ use super::{
     ssh,
     state::{self, State},
 };
-use anyhow::{Context, Result, bail, ensure};
+use crate::{ErrorContext as _, Result, cloud_bail as bail, cloud_ensure as ensure};
 use std::{
     net::TcpListener,
     path::Path,
@@ -112,7 +112,7 @@ pub async fn run(state_dir: &Path, state: &State, name: &str, json: bool) -> Res
         state::write(&profile.fdb_cluster_file, cluster.as_bytes())?;
         profile.api_token = read_remote_api_token(&node, &profile, &address).await?;
         state::write(&path, &serde_json::to_vec_pretty(&profile)?)?;
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, crate::Error>(())
     })
     .await
     .context("SSH tunnel startup timed out")

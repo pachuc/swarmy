@@ -3,7 +3,7 @@ use super::{
     Cloud, Command, Host, Machine, MachineSpec, ObjectBucket, Ownership, RemoteNode,
     RemoteSettings, Result, services, ssh,
 };
-use anyhow::bail;
+use crate::{cloud_bail as bail, cloud_ensure as ensure};
 use state::State;
 use std::{future::Future, path::PathBuf, time::Duration};
 use swarmy_config::Settings;
@@ -43,7 +43,7 @@ pub async fn for_settings(settings: &RemoteSettings) -> std::result::Result<Aws,
 /// Returns errors for invalid configuration, state, provisioning, and tunnel
 /// failures.
 pub async fn run(command: Command, json: bool) -> std::result::Result<(), crate::Error> {
-    run_inner(command, json).await.map_err(crate::Error::from)
+    run_inner(command, json).await
 }
 
 async fn run_inner(command: Command, json: bool) -> Result<()> {
@@ -180,7 +180,7 @@ async fn run_add_node(state: &State, mut settings: Settings, command: Command) -
     let node = state.require(&name)?;
     let host = ssh::Ssh::discover()?;
     let launch = node.launch_settings.clone().ok_or_else(|| {
-        anyhow::anyhow!(
+        crate::cloud_error!(
             "remote has no saved launch configuration; recreate it with remote up before adding nodes"
         )
     })?;
@@ -231,11 +231,11 @@ impl NodeShape {
         if let Some(disk_gb) = self.disk_gb {
             settings.disk_gb = disk_gb;
         }
-        anyhow::ensure!(
+        ensure!(
             !settings.aws.instance_type.is_empty(),
             "instance type must not be empty"
         );
-        anyhow::ensure!(settings.disk_gb > 0, "root disk size must be positive");
+        ensure!(settings.disk_gb > 0, "root disk size must be positive");
         Ok(())
     }
 }
@@ -274,14 +274,14 @@ where
     }
 }
 
-fn profile_not_propagated(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| cause.downcast_ref::<crate::Error>().is_some_and(|cause| matches!(cause, crate::Error::Aws { operation, code: Some(code), .. } if operation == "ec2:RunInstances" && code == "InvalidParameterValue")))
+fn profile_not_propagated(error: &crate::Error) -> bool {
+    error.aws_code("ec2:RunInstances") == Some("InvalidParameterValue")
 }
 
 pub(crate) async fn wait_running(cloud: &impl Cloud, id: &str, delay: Duration) -> Result<Machine> {
     for _ in 0..120 {
         if let Some(machine) = cloud.get(id).await? {
-            anyhow::ensure!(machine.id == id, "provider returned a different machine");
+            ensure!(machine.id == id, "provider returned a different machine");
             match machine.state.as_str() {
                 "running" if !machine.public_ip.is_empty() && !machine.private_ip.is_empty() => {
                     return Ok(machine);
@@ -299,5 +299,5 @@ pub(crate) fn key_name(node: &RemoteNode) -> Result<&str> {
     node.key_path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("invalid key path in remote state"))
+        .ok_or_else(|| crate::cloud_error!("invalid key path in remote state"))
 }
