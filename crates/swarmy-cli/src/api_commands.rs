@@ -250,7 +250,7 @@ async fn close_session(
     id: &str,
 ) -> Result<swarmy_api_types::SessionClosed> {
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        swarmy_client::API_TIMEOUT,
         client.close_session(
             id,
             &swarmy_api_types::CloseSession {
@@ -743,7 +743,7 @@ async fn update_agent(
     body: &swarmy_api_types::UpdateAgent,
 ) -> Result<swarmy_api_types::Agent> {
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        swarmy_client::API_TIMEOUT,
         client.update_agent(name, body),
     )
     .await

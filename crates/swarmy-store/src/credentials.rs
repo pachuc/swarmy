@@ -203,7 +203,7 @@ impl Store {
                     if record.open_until > now {
                         Some(record.open_until)
                     } else if record.probe_until.is_some_and(|until| until > now) {
-                        now.checked_add(Duration::from_secs(1)).ok()
+                        now.checked_add(crate::inference_wait::BREAKER_PROBE_GRACE).ok()
                     } else {
                         None
                     }

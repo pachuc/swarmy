@@ -65,6 +65,11 @@ pub fn upload_timeout(size_bytes: u64) -> Duration {
     Duration::from_secs(UPLOAD_BASE_SECS + size_bytes / UPLOAD_BYTES_PER_SEC)
 }
 
+/// Timeout for one API request. Image uploads use [`upload_timeout`],
+/// sized from the body on disk, because the server chunks and stores the
+/// whole image before answering.
+pub const API_TIMEOUT: Duration = Duration::from_secs(10);
+
 impl Client {
     /// The base URL is the server origin, not a `/v1` URL.
     ///

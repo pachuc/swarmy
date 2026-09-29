@@ -11,6 +11,9 @@ fn main() -> Result<()> {
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(run())
 }
+
+/// How often the API reports health while serving.
+const HEALTH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 async fn run() -> Result<()> {
     let settings = Settings::load()?.settings;
     let token = std::env::var("SWARMY_API_TOKEN").unwrap_or(settings.api.token.clone());
@@ -18,13 +21,19 @@ async fn run() -> Result<()> {
     let opened = Store::open_store(&settings).await?;
     let store = opened.store;
     let objects = opened.blobs.object_store();
-    let keyring = swarmy_config::Keyring::load().ok();
+    let keyring = match swarmy_config::Keyring::load() {
+        Ok(keyring) => Some(keyring),
+        Err(error) => {
+            tracing::warn!(%error, "keyring unavailable; doctor omits credentials");
+            None
+        }
+    };
     let bus = Bus::connect(&settings.bus.nats_url, settings.bus.bus_config()?).await?;
     let heartbeat_store = store.clone();
     let started = Timestamp::now();
     let instance_id = ulid::Ulid::generate().to_string();
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut tick = tokio::time::interval(HEALTH_INTERVAL);
         loop {
             tick.tick().await;
             let record = ServiceHeartbeat {

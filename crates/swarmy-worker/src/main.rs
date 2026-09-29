@@ -12,6 +12,9 @@ use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store};
 use tokio::time::{Duration, interval};
 use tokio::{sync::mpsc, task::JoinSet};
 
+/// How often the worker reports health while stepping sessions.
+const HEALTH_INTERVAL: Duration = Duration::from_secs(30);
+
 fn main() -> Result<()> {
     swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-worker")?;
     swarmy_config::init_tracing();
@@ -48,7 +51,7 @@ async fn run(config: config::Config, settings: swarmy_config::Settings) -> Resul
     let worker = worker::Worker::new(store, bus, blobs, config);
     let started = Timestamp::now();
     let health = async {
-        let mut ticks = interval(Duration::from_secs(30));
+        let mut ticks = interval(HEALTH_INTERVAL);
         loop {
             ticks.tick().await;
             let record = ServiceHeartbeat {
