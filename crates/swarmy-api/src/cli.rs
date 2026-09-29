@@ -88,11 +88,6 @@ pub async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnaps
         default_image: state.default_image,
         credentials,
         nodes,
-        legacy_credential_rows: state
-            .store
-            .legacy_credential_count()
-            .await
-            .map_err(storage)?,
     }))
 }
 
