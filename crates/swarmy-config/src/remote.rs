@@ -157,10 +157,7 @@ impl BucketSpec {
     /// Whether nodes need static keys uploaded to reach this bucket.
     #[must_use]
     pub fn needs_static_keys(&self) -> bool {
-        matches!(
-            self.credentials,
-            BucketCredentials::StaticKeys { .. }
-        )
+        matches!(self.credentials, BucketCredentials::StaticKeys { .. })
     }
 
     /// The region to use, falling back to the remote's configured region when
@@ -746,8 +743,7 @@ mod tests {
 
     #[test]
     fn bucket_specs_parse_shorthand_table_and_validate() {
-        let shorthand: Settings =
-            toml::from_str("[remote]\nbucket = 'test-bucket'").unwrap();
+        let shorthand: Settings = toml::from_str("[remote]\nbucket = 'test-bucket'").unwrap();
         let spec = shorthand.remote.bucket.clone().unwrap();
         assert_eq!(spec.bucket, "test-bucket");
         assert!(spec.is_aws());

@@ -412,10 +412,7 @@ pub trait Cloud {
     /// success.
     fn destroy(&self, id: &str) -> impl Future<Output = Result<()>>;
     /// Check both ownership tags before destructive operations.
-    fn bucket_ownership(
-        &self,
-        bucket: &ObjectBucket,
-    ) -> impl Future<Output = Result<Ownership>>;
+    fn bucket_ownership(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<Ownership>>;
     /// Check profile and role separately; an unowned profile must never be altered.
     fn role_ownership(
         &self,

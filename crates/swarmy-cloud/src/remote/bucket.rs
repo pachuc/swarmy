@@ -70,9 +70,9 @@ pub(crate) fn resolve(
         spec.region.clone_from(region);
     }
     if let Some(prefix) = &options.prefix {
-        spec.prefix = prefix.parse().map_err(|source| {
-            crate::Error::context(source, "invalid --s3-prefix")
-        })?;
+        spec.prefix = prefix
+            .parse()
+            .map_err(|source| crate::Error::context(source, "invalid --s3-prefix"))?;
     }
     if let Some(access_key) = &options.access_key {
         set_access_key(&mut spec, access_key.clone());
@@ -113,7 +113,10 @@ fn secret_was_given(options: &BucketOptions) -> bool {
     options.secret_file.is_some()
         || options.secret_stdin
         || options.stdin_secret.is_some()
-        || options.env_secret_key.as_deref().is_some_and(|key| !key.is_empty())
+        || options
+            .env_secret_key
+            .as_deref()
+            .is_some_and(|key| !key.is_empty())
 }
 
 fn set_access_key(spec: &mut BucketSpec, access_key: String) {
@@ -133,7 +136,10 @@ fn set_access_key(spec: &mut BucketSpec, access_key: String) {
 
 fn set_secret_key(spec: &mut BucketSpec, secret_key: String) {
     match &mut spec.credentials {
-        BucketCredentials::StaticKeys { secret_key: current, .. } => {
+        BucketCredentials::StaticKeys {
+            secret_key: current,
+            ..
+        } => {
             *current = secret_key;
         }
         BucketCredentials::InstanceRole => {

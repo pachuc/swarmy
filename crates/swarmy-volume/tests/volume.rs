@@ -56,9 +56,8 @@ async fn unconditional_writes_still_dedupe_and_verify() {
     // `conditional_create = false`. Content addressing keeps that safe: a
     // repeat upload of identical bytes dedupes, and reads still verify.
     let memory: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let store: Arc<dyn ObjectStore> = Arc::new(
-        swarmy_store::objects::UnconditionalStore::new(memory),
-    );
+    let store: Arc<dyn ObjectStore> =
+        Arc::new(swarmy_store::objects::UnconditionalStore::new(memory));
     let chunks = ChunkStore::new(store.clone());
     let data = vec![11; CHUNK_SIZE as usize];
     let first = chunks.put_chunk(&data).await.unwrap();

@@ -176,7 +176,9 @@ async fn run_up(state: &State, mut settings: Settings, command: Command) -> Resu
     if let Some(services) = services {
         settings.remote.services = services;
     }
-    let stdin_secret = s3_secret_stdin.then(bucket::read_secret_stdin).transpose()?;
+    let stdin_secret = s3_secret_stdin
+        .then(bucket::read_secret_stdin)
+        .transpose()?;
     let resolved = bucket::resolve(
         settings.remote.bucket.clone(),
         &bucket::BucketOptions {

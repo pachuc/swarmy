@@ -11,8 +11,8 @@ use futures::stream::BoxStream;
 use object_store::aws::AmazonS3ConfigKey;
 use object_store::{
     GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMode,
-    PutMultipartOptions, PutOptions, PutPayload, PutResult, aws::AmazonS3Builder,
-    path::Path, prefix::PrefixStore,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, aws::AmazonS3Builder, path::Path,
+    prefix::PrefixStore,
 };
 use swarmy_config::{BucketSpec, Settings};
 
@@ -189,10 +189,7 @@ impl ObjectStore for UnconditionalStore {
         self.inner.list(prefix)
     }
 
-    async fn list_with_delimiter(
-        &self,
-        prefix: Option<&Path>,
-    ) -> object_store::Result<ListResult> {
+    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
         self.inner.list_with_delimiter(prefix).await
     }
 
@@ -360,8 +357,7 @@ mod tests {
             },
         };
         for conditional_create in [true, false] {
-            let store =
-                from_bucket_spec(&spec, &loaded.s3.region, conditional_create).unwrap();
+            let store = from_bucket_spec(&spec, &loaded.s3.region, conditional_create).unwrap();
             let scope = format!("bucket-spec-test-{}", ulid::Ulid::generate());
             let path = object_store::path::Path::from(format!("{scope}/object"));
             store.put(&path, "payload".into()).await.unwrap();
@@ -372,18 +368,11 @@ mod tests {
             assert_eq!(store.head(&path).await.unwrap().location, path);
             // A create-only PUT of identical bytes stays safe in both modes.
             let result = store
-                .put_opts(
-                    &path,
-                    "payload".into(),
-                    PutMode::Create.into(),
-                )
+                .put_opts(&path, "payload".into(), PutMode::Create.into())
                 .await;
             if conditional_create {
                 assert!(
-                    matches!(
-                        result,
-                        Err(object_store::Error::AlreadyExists { .. })
-                    ),
+                    matches!(result, Err(object_store::Error::AlreadyExists { .. })),
                     "unexpected {result:?}"
                 );
             } else {

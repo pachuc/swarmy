@@ -551,7 +551,9 @@ impl Ssh {
                     service_ip,
                     spec.as_ref().map(|spec| spec.bucket.as_str()).unwrap_or(""),
                     &node.region,
-                    spec.as_ref().map(|spec| spec.endpoint.as_str()).unwrap_or(""),
+                    spec.as_ref()
+                        .map(|spec| spec.endpoint.as_str())
+                        .unwrap_or(""),
                     spec.as_ref().map(|spec| spec.prefix.as_str()).unwrap_or(""),
                     node.sandboxes,
                     node,

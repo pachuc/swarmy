@@ -97,6 +97,10 @@ impl Cloud for FakeCloud {
         if self.deny_create_tags.get() {
             self.untagged.set(true);
         }
+        if bucket.is_static() {
+            // Static-key buckets have no IAM role or instance profile.
+            return std::future::ready(Ok(()));
+        }
         // The AWS provider writes the bucket policy to this role even on reuse.
         self.policy_roles.borrow_mut().push(role.clone());
         if !self.profile_present.replace(true) {
@@ -1346,14 +1350,29 @@ async fn static_bucket_skips_roles_and_keeps_keys_out_of_logs() {
     // provider; no IAM profile is attached to the machine.
     assert_eq!(
         cloud.bucket_ensures.borrow().as_slice(),
-        [(String::from("test-bucket"), String::from("eu-west-1"), String::from("static-test"),
-            Some(String::from("https://objects.example.invalid")), String::from("runs/team"), true)]
+        [(
+            String::from("test-bucket"),
+            String::from("eu-west-1"),
+            String::from("static-test"),
+            Some(String::from("https://objects.example.invalid")),
+            String::from("runs/team"),
+            true
+        )]
     );
     assert!(cloud.requests.borrow()[0].profile.is_none());
     assert!(cloud.role_creates.borrow().is_empty());
     assert!(cloud.profile_creates.borrow().is_empty());
     // Saved state carries the description; formatter output never does.
     let node = state.require("static-test").unwrap();
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(state.directory.join("static-test.json"))
+                .unwrap()
+                .permissions()
+        ) & 0o777,
+        0o600,
+        "remote state holding static keys must stay private"
+    );
     let spec = node.bucket_spec().unwrap();
     assert_eq!(spec.prefix.as_str(), "runs/team");
     for rendered in [
@@ -1392,7 +1411,9 @@ async fn static_bucket_skips_roles_and_keeps_keys_out_of_logs() {
         down::adoption_targets(&state, &node).unwrap(),
         [("bucket".to_owned(), "test-bucket".to_owned())]
     );
-    tag_confirmed(&cloud, &state, &node, |_, _| Ok(())).await.unwrap();
+    tag_confirmed(&cloud, &state, &node, |_, _| Ok(()))
+        .await
+        .unwrap();
     assert_eq!(cloud.tagged.borrow().as_slice(), ["bucket test-bucket"]);
     cloud.observations.borrow_mut().extend([None, None]);
     down::run(&cloud, &state, &node, Duration::ZERO, false)
@@ -2293,7 +2314,8 @@ async fn down_ignores_tunnel_profile_and_keeps_shared_role() {
     assert!(!state.bucket_shared("cleanup", "test-bucket").unwrap());
     let mut other = node.clone();
     other.name = "other".into();
-    other.launch_settings.as_mut().unwrap().bucket = Some(swarmy_config::BucketSpec::aws("different-bucket"));
+    other.launch_settings.as_mut().unwrap().bucket =
+        Some(swarmy_config::BucketSpec::aws("different-bucket"));
     // The other remote uses the same IAM override, but not the same bucket.
     other.launch_settings.as_mut().unwrap().aws.iam_role = Some("swarmy-cleanup".into());
     state.save(&other).unwrap();

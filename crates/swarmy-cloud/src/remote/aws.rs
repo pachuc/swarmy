@@ -505,9 +505,7 @@ impl Aws {
                 output.tag_set().iter().map(|tag| (tag.key(), tag.value())),
                 &bucket.owner,
             )),
-            Err(error) if is_no_such_tag_set(&error) => {
-                self.marker_ownership(client, bucket).await
-            }
+            Err(error) if is_no_such_tag_set(&error) => self.marker_ownership(client, bucket).await,
             Err(error) if tagging_unsupported(error_code(&error)) => {
                 self.marker_ownership(client, bucket).await
             }
@@ -530,13 +528,9 @@ impl Aws {
             .await
         {
             Ok(output) => {
-                let body = output
-                    .body
-                    .collect()
-                    .await
-                    .map_err(|source| {
-                        crate::Error::context(source, "s3:GetObject ownership marker")
-                    })?;
+                let body = output.body.collect().await.map_err(|source| {
+                    crate::Error::context(source, "s3:GetObject ownership marker")
+                })?;
                 let owner = String::from_utf8(body.into_bytes().to_vec())?;
                 Ok(if owner.trim() == bucket.owner {
                     Ownership::Owned
@@ -562,10 +556,7 @@ impl Aws {
         client: &aws_sdk_s3::Client,
         bucket: &ObjectBucket,
     ) -> Result<bool> {
-        let mut request = client
-            .list_objects_v2()
-            .bucket(&bucket.name)
-            .max_keys(1);
+        let mut request = client.list_objects_v2().bucket(&bucket.name).max_keys(1);
         if !bucket.prefix.is_empty() {
             request = request.prefix(format!("{}/", bucket.prefix));
         }
@@ -602,7 +593,12 @@ impl Aws {
                 match mapped {
                     Ok(()) => Ok(()),
                     Err(mapped) => {
-                        warn_tag_denied(mapped, "s3:PutBucketTagging", &bucket.name, &bucket.owner)?;
+                        warn_tag_denied(
+                            mapped,
+                            "s3:PutBucketTagging",
+                            &bucket.name,
+                            &bucket.owner,
+                        )?;
                         self.write_marker(client, bucket).await
                     }
                 }
@@ -610,11 +606,7 @@ impl Aws {
         }
     }
 
-    async fn write_marker(
-        &self,
-        client: &aws_sdk_s3::Client,
-        bucket: &ObjectBucket,
-    ) -> Result<()> {
+    async fn write_marker(&self, client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -> Result<()> {
         client
             .put_object()
             .bucket(&bucket.name)
@@ -634,19 +626,14 @@ impl Aws {
         match self.static_ownership(&client, bucket).await? {
             Ownership::Absent => return Ok(false),
             Ownership::Unmanaged => {
-                return Err(crate::Error::other(
-                    "bucket ownership tags do not match",
-                ));
+                return Err(crate::Error::other("bucket ownership tags do not match"));
             }
             Ownership::Owned => {}
         }
         let mut count = 0usize;
         let mut continuation: Option<String> = None;
         loop {
-            let mut request = client
-                .list_objects_v2()
-                .bucket(&bucket.name)
-                .max_keys(1000);
+            let mut request = client.list_objects_v2().bucket(&bucket.name).max_keys(1000);
             if !bucket.prefix.is_empty() {
                 request = request.prefix(format!("{}/", bucket.prefix));
             }
@@ -727,9 +714,9 @@ impl Aws {
             }
             Err(error) if tagging_unsupported(error_code(&error)) => {
                 match self.marker_ownership(&client, bucket).await? {
-                    Ownership::Unmanaged => Err(crate::Error::other(
-                        "resource is tagged for another remote",
-                    )),
+                    Ownership::Unmanaged => {
+                        Err(crate::Error::other("resource is tagged for another remote"))
+                    }
                     Ownership::Absent | Ownership::Owned => {
                         self.write_marker(&client, bucket).await
                     }
@@ -775,7 +762,9 @@ fn error_code<E>(error: &aws_sdk_s3::error::SdkError<E>) -> Option<&str>
 where
     E: ProvideErrorMetadata + std::fmt::Debug + Send + Sync + 'static,
 {
-    error.as_service_error().and_then(ProvideErrorMetadata::code)
+    error
+        .as_service_error()
+        .and_then(ProvideErrorMetadata::code)
 }
 
 fn is_no_such_bucket<E>(error: &aws_sdk_s3::error::SdkError<E>) -> bool
@@ -1135,7 +1124,13 @@ impl Cloud for Aws {
             let client = self.static_client(bucket)?;
             return self.static_ownership(&client, bucket).await;
         }
-        let output = match self.s3.get_bucket_tagging().bucket(&bucket.name).send().await {
+        let output = match self
+            .s3
+            .get_bucket_tagging()
+            .bucket(&bucket.name)
+            .send()
+            .await
+        {
             Ok(output) => output,
             Err(error) => {
                 return match error

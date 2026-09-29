@@ -210,9 +210,9 @@ async fn cleanup_bucket_and_role(
         let name = bucket.name.clone();
         if keep_bucket {
             match node.cloud_settings().instance_profile(&node.name) {
-                Some(role) => cloud_out!(
-                    "Kept bucket {name} and guarding role and instance profile {role}"
-                ),
+                Some(role) => {
+                    cloud_out!("Kept bucket {name} and guarding role and instance profile {role}")
+                }
                 None => cloud_out!("Kept bucket {name}"),
             }
         } else {
