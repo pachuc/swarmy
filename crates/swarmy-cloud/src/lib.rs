@@ -95,23 +95,9 @@ pub enum Error {
     Other(Box<dyn std::error::Error + Send + Sync>),
 }
 
-/// Render an error with its source chain, as anyhow's `{:#}` would. A
-/// variant with `#[source]` must not also print the source in its message;
-/// the chain here supplies the causes.
-#[cfg(feature = "remote")]
-pub(crate) fn render(error: &(dyn std::error::Error + 'static)) -> String {
-    let mut out = error.to_string();
-    let mut next = error.source();
-    while let Some(source) = next {
-        out.push_str(": ");
-        out.push_str(&source.to_string());
-        next = source.source();
-    }
-    out
-}
-
 /// A site message paired with its cause. `Display` shows the message so
-/// logs read the same with or without the chain; `render` appends the cause.
+/// logs read the same with or without the chain; [`swarmy_core::error_chain`]
+/// appends the cause.
 #[derive(Debug)]
 struct WithCause {
     message: String,
@@ -300,20 +286,53 @@ pub struct Machine {
 
 /// Provider-neutral description of the object bucket backing a remote.
 ///
-/// The node credentials guard this bucket until teardown.
+/// The bucket description is [`swarmy_config::BucketSpec`]: endpoint, region,
+/// bucket name, prefix, and a credential source that is either the instance
+/// role or static keys. There is one description everywhere; no parallel AWS
+/// and non-AWS copies. [`std::fmt::Debug`] redacts static keys through the
+/// description.
 #[derive(Clone, Debug)]
 pub struct ObjectBucket {
-    /// Bucket name.
-    pub name: String,
-    /// Bucket region.
-    pub region: String,
+    /// The one bucket description, with the region filled from the remote's
+    /// configured region.
+    pub spec: swarmy_config::BucketSpec,
     /// Owning remote; AWS derives the default IAM role from this.
     pub owner: String,
-    /// Storage endpoint override for S3-compatible providers. AWS leaves
-    /// this unset and uses its regional endpoints.
-    pub endpoint: Option<String>,
     /// Credentials attached to nodes; the IAM instance profile on AWS.
     pub node_credentials: Option<String>,
+}
+
+impl ObjectBucket {
+    /// Build the provider-neutral bucket from one bucket description.
+    /// `profile` carries the node credentials (the `swarmy-{remote}` instance
+    /// profile for AWS buckets, nothing for static-key buckets).
+    #[must_use]
+    pub fn from_spec(
+        owner: &str,
+        spec: &swarmy_config::BucketSpec,
+        fallback_region: &str,
+        profile: Option<String>,
+    ) -> Self {
+        let mut spec = spec.clone();
+        spec.resolve_region(fallback_region);
+        Self {
+            spec,
+            owner: owner.into(),
+            node_credentials: profile,
+        }
+    }
+}
+
+/// Whether `remote down` removed the bucket itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BucketRemoval {
+    /// The bucket itself was deleted.
+    Removed,
+    /// The bucket was already absent.
+    Absent,
+    /// The swarm's prefix scope was deleted but the bucket remains because
+    /// it retains content outside that scope.
+    Retained,
 }
 
 /// Whether a cloud resource belongs to this remote.
@@ -350,7 +369,7 @@ pub trait Cloud {
     /// success.
     fn destroy(&self, id: &str) -> impl Future<Output = Result<()>>;
     /// Check both ownership tags before destructive operations.
-    fn bucket_ownership(&self, name: &str, owner: &str) -> impl Future<Output = Result<Ownership>>;
+    fn bucket_ownership(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<Ownership>>;
     /// Check profile and role separately; an unowned profile must never be altered.
     fn role_ownership(
         &self,
@@ -358,10 +377,11 @@ pub trait Cloud {
         owner: &str,
     ) -> impl Future<Output = Result<(Ownership, Ownership)>>;
     /// Explicitly adopt resources after the operator confirms their names.
-    fn tag_bucket(&self, name: &str, owner: &str) -> impl Future<Output = Result<()>>;
+    fn tag_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<()>>;
     fn tag_node_role(&self, name: &str, owner: &str) -> impl Future<Output = Result<()>>;
-    /// Empty and delete an owned bucket; return false if it was already absent.
-    fn delete_bucket(&self, name: &str, owner: &str) -> impl Future<Output = Result<bool>>;
+    /// Empty and delete an owned bucket. Static-key buckets delete only their
+    /// prefix scope and remove the bucket itself when nothing else remains.
+    fn delete_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<BucketRemoval>>;
     /// Delete the instance profile and its role; return whether the profile and role were present.
     fn delete_node_role(
         &self,

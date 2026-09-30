@@ -1,6 +1,6 @@
 //! Store error taxonomy: storage, fence, and domain failures.
 use foundationdb::{FdbBindingError, FdbError};
-use swarmy_core::EncodingError;
+use swarmy_core::{EncodingError, SandboxArgumentError};
 
 use crate::blob::BlobError;
 
@@ -150,6 +150,11 @@ pub enum DomainError {
     InvalidSnapshot,
     #[error("invalid tool call: {0}")]
     InvalidToolCall(String),
+    /// A model-issued tool call failed to decode or validate. The message
+    /// stays fixed because the source text contains fragments of
+    /// model-generated arguments; the chain carries the codec detail.
+    #[error("invalid tool call")]
+    InvalidToolCallArguments(#[source] SandboxArgumentError),
     #[error("invalid transition")]
     InvalidTransition,
     #[error("missing inference wait")]

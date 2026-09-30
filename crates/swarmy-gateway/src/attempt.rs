@@ -169,7 +169,7 @@ impl DeltaFold {
             .publish_live(LiveFeed::ModelDeltas(job.session_id), delta)
             .await
         {
-            warn!(%error, "live delta publication failed");
+            warn!(error = %swarmy_core::error_chain(&error), "live delta publication failed");
         }
         if let Delta::Text { text, .. } = delta {
             let live = swarmy_core::LiveTokenDelta {
@@ -183,7 +183,7 @@ impl DeltaFold {
                 .publish_live(LiveFeed::ApiTokenDeltas(job.session_id), &live)
                 .await
             {
-                warn!(%error, "api token publication failed");
+                warn!(error = %swarmy_core::error_chain(&error), "api token publication failed");
             }
         }
     }

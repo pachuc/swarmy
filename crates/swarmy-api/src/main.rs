@@ -42,7 +42,7 @@ async fn run() -> Result<()> {
     let keyring = match swarmy_config::Keyring::load() {
         Ok(keyring) => Some(keyring),
         Err(error) => {
-            tracing::warn!(%error, "keyring unavailable; doctor omits credentials");
+            tracing::warn!(error = %swarmy_core::error_chain(&error), "keyring unavailable; doctor omits credentials");
             None
         }
     };

@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
 # Provision the checkout copied to the service user's home. Safe to rerun.
-# Arguments: MODE SERVICE_ADDRESS [BUCKET] [BUCKET_REGION] [SANDBOXES]
-#   [SERVICE_USER] [LOCAL_STORAGE]. SERVICE_USER owns the checkout and the
+# Arguments: MODE SERVICE_ADDRESS [BUCKET] [BUCKET_REGION] [BUCKET_ENDPOINT]
+#   [BUCKET_PREFIX] [CONDITIONAL_CREATE] [STATIC] [SANDBOXES] [SERVICE_USER]
+#   [LOCAL_STORAGE]. SERVICE_USER owns the checkout and the
 #   units (default swarmy); LOCAL_STORAGE is a block device to format and
 #   mount at /mnt/swarmy-local or dir:/path for an existing directory.
 #   Sandbox nodes require it; control-only nodes use the root disk.
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
-mode=${1:-stack}
-service_address=${2:-127.0.0.1}
-bucket=${3:-}
-bucket_region=${4:-}
-sandboxes=$(parse_sandbox_count "${5-64}")
-service_user=${6:-swarmy}
-local_storage=${7:-}
+parse_provision_args "$@"
 validate_service_user "$service_user"
 ensure_service_user "$service_user"
 # Privileged setup runs as any sudoer, but the build and the units belong to
@@ -35,6 +30,12 @@ if [[ -n $bucket ]] && [[ ! $bucket =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ || ! $b
     echo 'Invalid bucket name or region: use a 3-63 character lowercase DNS name without dots and a region.' >&2
     exit 1
 fi
+if [[ -n $bucket_endpoint ]] && [[ -z $bucket ]]; then
+    echo 'A bucket endpoint without a bucket is not a remote object store.' >&2
+    exit 1
+fi
+[[ $bucket_conditional_create == true || $bucket_conditional_create == false ]] || { echo 'Expected bucket conditional_create true or false' >&2; exit 1; }
+[[ $bucket_static == true || $bucket_static == false ]] || { echo 'Expected bucket static true or false' >&2; exit 1; }
 [[ $mode == stack || $mode == node ]] || { echo 'Expected stack or node mode' >&2; exit 1; }
 [[ $service_address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
 storage=$(parse_local_storage "$local_storage")
@@ -133,7 +134,17 @@ fi
 printf 'Release build took %s seconds\n' "$((SECONDS - build_started))"
 sudo install -d -m 0755 /etc/swarmy
 sudo install -m 0600 /dev/null /etc/swarmy/node.env
-node_environment "$repo_dir" "$sandboxes" "$local_mount" "$bucket" "$bucket_region" | sudo tee /etc/swarmy/node.env >/dev/null
+node_environment "$repo_dir" "$sandboxes" "$local_mount" "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix" "$bucket_conditional_create" "$bucket_static" | sudo tee /etc/swarmy/node.env >/dev/null
+# Static S3 keys arrive over SSH stdin in a root-owned staging file the
+# provisioning user cannot read. Append it verbatim as root in one step and
+# delete it: sourcing the file would expand `$`, backticks and spaces in key
+# material. Without static keys, delete any staging file left from an earlier
+# static provisioning instead of merging stale keys.
+if [[ $bucket_static == true ]]; then
+    merge_static_s3_keys /etc/swarmy/s3-keys.env /etc/swarmy/node.env
+else
+    sudo rm -f /etc/swarmy/s3-keys.env
+fi
 if [[ $mode == stack ]]; then
 sudo tee /etc/systemd/system/swarmy-stack.service >/dev/null <<UNIT
 [Unit]

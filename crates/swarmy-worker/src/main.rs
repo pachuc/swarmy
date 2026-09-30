@@ -86,7 +86,7 @@ async fn supervise(
         () = swarmy_config::shutdown_signal() => Ok(()),
     };
     if let Err(error) = store.flush_turn_metrics().await {
-        tracing::warn!(%error, "worker metric flush failed");
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "worker metric flush failed");
     }
     outcome
 }
@@ -125,10 +125,12 @@ async fn consume_nudges(
         match delivery {
             Ok(message) => {
                 if let Err(error) = worker.handle(&message).await {
-                    tracing::warn!(%error, "step left for recovery");
+                    tracing::warn!(error = %swarmy_core::error_chain(&*error), "step left for recovery");
                 }
             }
-            Err(error) => tracing::warn!(%error, "invalid nudge"),
+            Err(error) => {
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "invalid nudge");
+            }
         }
     }
     Err(anyhow!("runnable streams ended"))

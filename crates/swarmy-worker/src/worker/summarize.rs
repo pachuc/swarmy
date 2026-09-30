@@ -515,7 +515,7 @@ impl Worker {
             tracing::warn!(
                 session_id = %previous,
                 successor_id = %successor,
-                %error,
+                error = %swarmy_core::error_chain(&error),
                 "successor wake failed; the scheduler scan still picks it up"
             );
             return;
@@ -533,7 +533,7 @@ impl Worker {
             tracing::warn!(
                 session_id = %previous,
                 successor_id = %successor,
-                %error,
+                error = %swarmy_core::error_chain(&error),
                 "successor wake failed; the scheduler scan still picks it up"
             );
         }

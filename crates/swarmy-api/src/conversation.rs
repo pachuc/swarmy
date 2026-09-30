@@ -285,7 +285,7 @@ pub(crate) async fn append(
         state.store.observe_turn_stage(submitted);
         state.store.observe_turn_stage(appended);
         if let Err(failure) = nudged {
-            tracing::warn!(%failure, "message nudge failed; scheduler will recover");
+            tracing::warn!(failure = %swarmy_core::error_chain(&failure), "message nudge failed; scheduler will recover");
         } else {
             state.store.observe_turn_stage(Bus::turn_event(
                 session_id,
@@ -333,7 +333,7 @@ pub(crate) async fn interrupt(
                         .publish_live(LiveFeed::SessionEvents(session_id), &event)
                         .await
                 {
-                    tracing::warn!(%error, "interrupt event publication failed; client will catch up");
+                    tracing::warn!(error = %swarmy_core::error_chain(&error), "interrupt event publication failed; client will catch up");
                 }
             }
             Ok(Json(api::InterruptOutcome {
@@ -392,7 +392,7 @@ pub(crate) async fn wait_idle(
             failure(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "event_feed_unavailable",
-                cause,
+                &cause,
             )
         })?;
     let deadline =
@@ -425,7 +425,7 @@ pub(crate) async fn wait_idle(
                     Some(Ok(swarmy_core::Event::StateChanged { to: SessionState::Idle | SessionState::Completed, .. })) => break,
                     Some(Ok(_)) => {},
                     Some(Err(error)) => {
-                        tracing::warn!(%error, "live feed decode failed; falling back to polling");
+                        tracing::warn!(error = %swarmy_core::error_chain(&error), "live feed decode failed; falling back to polling");
                     }
                     None => live_open = false,
                 },
