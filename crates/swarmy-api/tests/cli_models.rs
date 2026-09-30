@@ -42,7 +42,7 @@ impl Fixture {
         swarmy_testkit::boot_fdb();
         let prefix = stack.prefix.clone();
         let cluster = stack.cluster.clone();
-        let nats = stack.nats_url.clone();
+        let nats = stack.nats_url;
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
         let (ready, started) = std::sync::mpsc::channel();
         let fake_dir = directory.path().to_path_buf();

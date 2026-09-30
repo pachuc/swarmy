@@ -61,9 +61,9 @@ impl Fixture {
         )
         .unwrap();
         swarmy_testkit::boot_fdb();
-        let directory = settings.store.directory.clone();
+        let directory = settings.store.directory;
         let cluster = stack.cluster.clone();
-        let nats = stack.nats_url.clone();
+        let nats = stack.nats_url;
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
         let (ready, started) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {

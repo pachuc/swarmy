@@ -183,42 +183,42 @@ impl Drop for StackGuard {
 }
 
 async fn cleanup(cluster: &str, url: &str, prefixes: &[String]) {
-    let Ok(database) = Database::new(Some(cluster)) else {
-        return;
-    };
-    for prefix in prefixes {
-        let path = vec![prefix.clone()];
-        let subspace = Subspace::all().subspace(&(prefix.clone(),));
-        swarmy_core::ignore_best_effort(
-            database
-                .run(|trx, _| {
-                    let path = &path;
-                    let subspace = &subspace;
-                    async move {
-                        DirectoryLayer::default()
-                            .remove_if_exists(&trx, path)
-                            .await?;
-                        // Fixtures that probe raw keys isolate under a tuple
-                        // subspace instead of a directory; clear it too.
-                        let (begin, end) = subspace.range();
-                        trx.clear_range(&begin, &end);
-                        Ok(())
-                    }
-                })
-                .await,
-            "remove test directory prefix",
-        );
-    }
-    let Ok(client) = async_nats::connect(url).await else {
-        return;
-    };
-    let context = async_nats::jetstream::new(client);
-    for prefix in prefixes {
-        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
+    // The two phases are independent: a wedged cluster must not skip the
+    // stream deletes, and a missing bus must not skip the key removal.
+    if let Ok(database) = Database::new(Some(cluster)) {
+        for prefix in prefixes {
+            let path = vec![prefix.clone()];
+            let subspace = Subspace::all().subspace(&(prefix.clone(),));
             swarmy_core::ignore_best_effort(
-                context.delete_stream(format!("{prefix}_{stream}")).await,
-                "delete test bus stream",
+                database
+                    .run(|trx, _| {
+                        let path = &path;
+                        let subspace = &subspace;
+                        async move {
+                            DirectoryLayer::default()
+                                .remove_if_exists(&trx, path)
+                                .await?;
+                            // Fixtures that probe raw keys isolate under a tuple
+                            // subspace instead of a directory; clear it too.
+                            let (begin, end) = subspace.range();
+                            trx.clear_range(&begin, &end);
+                            Ok(())
+                        }
+                    })
+                    .await,
+                "remove test directory prefix",
             );
+        }
+    }
+    if let Ok(client) = async_nats::connect(url).await {
+        let context = async_nats::jetstream::new(client);
+        for prefix in prefixes {
+            for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
+                swarmy_core::ignore_best_effort(
+                    context.delete_stream(format!("{prefix}_{stream}")).await,
+                    "delete test bus stream",
+                );
+            }
         }
     }
 }

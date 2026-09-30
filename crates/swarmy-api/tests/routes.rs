@@ -14,9 +14,7 @@ async fn authenticated_routes_and_create_replay() {
     let Some(stack) = swarmy_testkit::Stack::load("api") else {
         return;
     };
-    let (store, _guard) = stack
-        .open_store(Arc::new(MemoryBlobStore::default()))
-        .await;
+    let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
     swarmy_testkit::image(&store).await;
     register_services(&store).await;
     let bus = Bus::connect(&stack.nats_url, Config::default())
@@ -462,9 +460,7 @@ async fn route_server() -> Option<(
     swarmy_testkit::StackGuard,
 )> {
     let stack = swarmy_testkit::Stack::load("api")?;
-    let (store, guard) = stack
-        .open_store(Arc::new(MemoryBlobStore::default()))
-        .await;
+    let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
     swarmy_testkit::image(&store).await;
     register_services(&store).await;
     let bus = Bus::connect(&stack.nats_url, Config::default())

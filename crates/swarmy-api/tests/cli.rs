@@ -12,9 +12,7 @@ async fn fixture() -> Option<(
     swarmy_testkit::StackGuard,
 )> {
     let stack = swarmy_testkit::Stack::load("cli")?;
-    let (store, guard) = stack
-        .open_store(Arc::new(MemoryBlobStore::default()))
-        .await;
+    let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
     swarmy_testkit::image(&store).await;
     let bus = Bus::connect(&stack.nats_url, Config::default())
         .await

@@ -435,7 +435,6 @@ impl Fixture {
             .unwrap()
             .unwrap()
     }
-
 }
 
 #[tokio::test]
