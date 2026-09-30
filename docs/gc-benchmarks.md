@@ -6,7 +6,7 @@ Cargo debug profile, with dependencies optimized according to the workspace
 configuration.
 
 `scripts/benchmarks/gc.sh` creates an isolated metadata directory and S3 bucket,
-builds a sparse 512 MiB image, attaches it through `swarmy vol`, and performs
+builds a sparse 512 MiB image, attaches it through `swarmyd vol`, and performs
 22 rounds of 256 MiB fresh random block writes followed by CLI checkpoints.
 Retention is three snapshots. This creates 22,528 unique workload chunks plus
 six base-image chunks. The attached writer has no pending writes during

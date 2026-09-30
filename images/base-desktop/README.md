@@ -25,9 +25,9 @@ disk (12,884,901,888 bytes), compared with base-ubuntu's 8 GiB
 node with sudo, debootstrap, and the development object store; it cannot be
 inferred from the virtual size.
 
-To add another program, copy this recipe directory to `images/my-desktop`, add
-the Ubuntu package to `packages` in `recipe.toml` (or install it in `setup.sh`),
-and run `swarmy image build images/my-desktop`. Change `disk_size` if the
+To add another program, copy this recipe directory to a new directory under
+`images/`, add the Ubuntu package to `packages` in `recipe.toml` (or install
+it in `setup.sh`), and run `swarmy image build` on the copy. Change `disk_size` if the
 program exceeds the available disk; the value must be a multiple of 256 KiB.
 
 On a node with sudo and NBD support, validate in a session on this image:

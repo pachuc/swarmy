@@ -153,8 +153,8 @@ attempt is limited to one compact-and-retry per turn; a second failure is
 reported as a session notice, where Pi emits a compaction event. Swarmy retains
 its successor-session rollover instead of Pi's in-session compaction.
 
-The prompts and cut handling come from Pi's
-`packages/coding-agent/src/core/compaction/compaction.ts` and `utils.ts`;
+The prompts and cut handling come from Pi's `compaction.ts` and `utils.ts`
+in its coding-agent package;
 see [worker/summarize.rs](../crates/swarmy-worker/src/worker/summarize.rs) and
 [harness prompts](../crates/swarmy-harness/src/lib.rs) for the implementation.
 
