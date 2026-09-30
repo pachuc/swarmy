@@ -571,11 +571,7 @@ async fn invalid_effort_uses_cli_selection_error() {
 
 /// Emit the gateway/worker/node stages for one turn through the production
 /// observation path with real clocks, then attach usage and tool data.
-async fn emit_observed_turn(
-    f: &Fixture,
-    session: SessionId,
-    turn: swarmy_core::MessageId,
-) {
+async fn emit_observed_turn(f: &Fixture, session: SessionId, turn: swarmy_core::MessageId) {
     let request = swarmy_core::RequestId::for_step(session, 2);
     for stage in [
         swarmy_core::TurnStage::InferenceStarted,

@@ -159,7 +159,10 @@ impl Worker {
     /// lease expiry instead of sleeping out real leases; production keeps the
     /// default wall clock.
     #[cfg(test)]
-    pub(crate) fn with_clock(mut self, clock: impl Fn() -> Timestamp + Send + Sync + 'static) -> Self {
+    pub(crate) fn with_clock(
+        mut self,
+        clock: impl Fn() -> Timestamp + Send + Sync + 'static,
+    ) -> Self {
         self.clock = Arc::new(clock);
         self
     }

@@ -82,9 +82,7 @@ impl Fixture {
         let api_token = Ulid::generate().to_string();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let api_url = format!("http://{}", listener.local_addr().unwrap());
-        let objects = ObjectBlobStore::from_env()
-            .unwrap()
-            .object_store();
+        let objects = ObjectBlobStore::from_env().unwrap().object_store();
         let api = swarmy_api::AppState::new(
             store.clone(),
             bus.clone(),
