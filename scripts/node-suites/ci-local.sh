@@ -82,8 +82,11 @@ for _ in $(seq 60); do
   sleep 1
 done
 
-# script-tests (runs without the dev stack, as in CI; some scripts start their own)
-step scripts/test-scripts.sh
+# script-tests. CI runs these without the dev stack's environment; a leftover
+# SWARMY_DEV_FDB_PORT, for example, stops the stack script choosing a free
+# port. Unset every variable .dev/env exported before running them.
+mapfile -t stack_vars < <(sed -n 's/^export \([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' .dev/env)
+step env "${stack_vars[@]/#/--unset=}" scripts/test-scripts.sh
 
 echo "SUITES_EXIT=$rc"
 exit "$rc"
