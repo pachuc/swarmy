@@ -31,6 +31,21 @@ allow_attributes_without_reason = "deny"
 todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
+# Part 2 (task kkr5bd): size, shape, and swallowed errors. Kept in one block
+# so the parallel lint task's rebase is trivial.
+# Complexity and nesting are nursery lints Clippy leaves off; the thresholds
+# in clippy.toml are measured in the task pull request and only real
+# offenders fail. `too_many_lines` (100) and `too_many_arguments` (7) ride
+# along with pedantic at the owners' defaults.
+cognitive_complexity = "deny"
+excessive_nesting = "deny"
+# Swallowed errors: best-effort ignores go through
+# `swarmy_core::ignore_best_effort`, which logs the failure at debug.
+# `map_err_ignore` stays allowed: its 155 sites translate a low-level error
+# into a domain error, and naming the discarded source at each site would be
+# noise, not information (see the task pull request).
+let_underscore_must_use = "deny"
+unused_result_ok = "deny"
 
 [workspace.dependencies]
 swarmy-version = { path = "crates/swarmy-version" }

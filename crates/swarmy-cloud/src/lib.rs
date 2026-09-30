@@ -13,7 +13,7 @@ static OUTPUT: std::sync::OnceLock<fn(&str, bool)> = std::sync::OnceLock::new();
 
 /// Install the CLI's output handler before starting provisioning.
 pub fn set_output_sink(sink: fn(&str, bool)) {
-    let _ = OUTPUT.set(sink);
+    ignore_best_effort(OUTPUT.set(sink), "install log sink");
 }
 
 fn emit(message: &str, stderr: bool) {
@@ -208,6 +208,7 @@ other_from!(aws_sdk_s3::error::BuildError,);
 pub type Result<T> = std::result::Result<T, Error>;
 
 use std::future::Future;
+use swarmy_core::ignore_best_effort;
 
 use swarmy_config::{RemoteNode, RemoteSettings};
 

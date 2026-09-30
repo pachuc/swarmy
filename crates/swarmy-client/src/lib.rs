@@ -794,6 +794,15 @@ struct PendingUpdate {
     next: api::Subscription,
     task: tokio::task::JoinHandle<Result<(), Error>>,
 }
+
+/// What one drained frame decides: deliver an item, restart the receive
+/// loop after a gap reset, or keep draining the buffer.
+enum FrameOutcome {
+    Deliver(Box<StreamItem>),
+    Restart,
+    Drained,
+}
+
 impl EventStream {
     #[must_use]
     pub fn subscription_handle(&self) -> SubscriptionHandle {
@@ -946,6 +955,46 @@ impl EventStream {
             }
         }
     }
+    /// Drain one complete frame at `end` and decide what it means. A gap
+    /// resets the connection for replay from the delivered cursor; a
+    /// duplicate or cursorless frame just drains; anything else delivers.
+    async fn drain_frame(&mut self, end: usize) -> Result<FrameOutcome, Error> {
+        let frame = self.buffer.drain(..end + 2).collect::<Vec<_>>();
+        let frame = String::from_utf8(frame)?;
+        let parsed = parse_frame(&frame)?;
+        if let Some(retry) = parsed.retry {
+            self.retry_floor = retry;
+        }
+        let Some(item) = parsed.item else {
+            return Ok(FrameOutcome::Drained);
+        };
+        let StreamItem::Event(event) = item else {
+            return Ok(FrameOutcome::Deliver(Box::new(item)));
+        };
+        let Some(cursor) = self
+            .subscription
+            .cursors
+            .iter_mut()
+            .find(|c| c.log_id == event.log_id)
+        else {
+            return Ok(FrameOutcome::Drained);
+        };
+        if event.sequence <= cursor.sequence {
+            return Ok(FrameOutcome::Drained);
+        }
+        if event.sequence != cursor.sequence + 1 {
+            // Discard queued data and request replay from the delivered cursor.
+            self.response = None;
+            self.connection_id = None;
+            self.buffer.clear();
+            self.backoff().await;
+            return Ok(FrameOutcome::Restart);
+        }
+        cursor.sequence = event.sequence;
+        self.retry_attempt = 1;
+        Ok(FrameOutcome::Deliver(Box::new(StreamItem::Event(event))))
+    }
+
     /// Receive durable events or opt-in live token deltas.
     ///
     /// # Errors
@@ -968,37 +1017,10 @@ impl EventStream {
             }
             // Drain complete frames before reading again; one network chunk may contain many events.
             while let Some(end) = self.buffer.windows(2).position(|part| part == b"\n\n") {
-                let frame = self.buffer.drain(..end + 2).collect::<Vec<_>>();
-                let frame = String::from_utf8(frame)?;
-                let parsed = parse_frame(&frame)?;
-                if let Some(retry) = parsed.retry {
-                    self.retry_floor = retry;
-                }
-                if let Some(item) = parsed.item {
-                    let StreamItem::Event(event) = item else {
-                        return Ok(item);
-                    };
-                    if let Some(cursor) = self
-                        .subscription
-                        .cursors
-                        .iter_mut()
-                        .find(|c| c.log_id == event.log_id)
-                    {
-                        if event.sequence <= cursor.sequence {
-                            continue;
-                        }
-                        if event.sequence != cursor.sequence + 1 {
-                            // Discard queued data and request replay from the delivered cursor.
-                            self.response = None;
-                            self.connection_id = None;
-                            self.buffer.clear();
-                            self.backoff().await;
-                            continue 'receive;
-                        }
-                        cursor.sequence = event.sequence;
-                        self.retry_attempt = 1;
-                        return Ok(StreamItem::Event(event));
-                    }
+                match self.drain_frame(end).await? {
+                    FrameOutcome::Deliver(item) => return Ok(*item),
+                    FrameOutcome::Restart => continue 'receive,
+                    FrameOutcome::Drained => {}
                 }
             }
             tokio::select! {
@@ -1125,6 +1147,7 @@ mod tests {
             atomic::{AtomicU64, Ordering},
         },
     };
+    use swarmy_core::ignore_best_effort;
 
     async fn stream_handler(
         State(head): State<Arc<AtomicU64>>,
@@ -1160,6 +1183,51 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         })
     }
+
+    /// One idle session event as an SSE data frame.
+    fn idle_sse_event(sequence: u64) -> SseEvent {
+        let event = api::Event {
+            log_id: api::LogId::Session("s".into()),
+            sequence,
+            payload: api::EventPayload::Idle {
+                session_id: "s".into(),
+            },
+        };
+        SseEvent::default()
+            .event("event")
+            .data(serde_json::to_string(&event).unwrap())
+    }
+
+    /// First attempt skips sequence 1 so the client must reconnect from the
+    /// delivered cursor; later attempts serve the full feed.
+    async fn gap_handler(State(attempts): State<Arc<AtomicU64>>) -> impl IntoResponse {
+        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+        let numbers = if attempt == 0 { vec![2] } else { vec![1, 2] };
+        Sse::new(futures_util::stream::iter(
+            numbers
+                .into_iter()
+                .map(|sequence| Ok::<_, Infallible>(idle_sse_event(sequence))),
+        ))
+    }
+
+    /// First attempt fails transiently with a retry floor; later attempts
+    /// serve the connected frame and one event.
+    async fn flaky_handler(State(attempts): State<Arc<AtomicU64>>) -> impl IntoResponse {
+        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            return (HttpStatus::SERVICE_UNAVAILABLE, "unavailable").into_response();
+        }
+        let events = futures_util::stream::iter([
+            Ok::<_, Infallible>(
+                SseEvent::default()
+                    .event("connected")
+                    .retry(Duration::from_millis(200))
+                    .data("{}"),
+            ),
+            Ok(idle_sse_event(1)),
+        ]);
+        Sse::new(events).into_response()
+    }
+
     #[tokio::test]
     async fn resumes_after_server_restart_without_duplicate() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1263,7 +1331,10 @@ mod tests {
             token_deltas: true,
         };
         handle.set(updated.clone());
-        let _ = tokio::time::timeout(Duration::from_millis(100), stream.next()).await;
+        ignore_best_effort(
+            tokio::time::timeout(Duration::from_millis(100), stream.next()).await,
+            "settle the notification stream",
+        );
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(2), received.recv())
                 .await
@@ -1468,34 +1539,9 @@ mod tests {
     #[tokio::test]
     async fn gap_reconnects_from_delivered_cursor() {
         let attempts = Arc::new(AtomicU64::new(0));
-        let app = Router::new().route(
-            "/v1/events",
-            get({
-                let attempts = attempts.clone();
-                move || {
-                    let attempts = attempts.clone();
-                    async move {
-                        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
-                        let numbers = if attempt == 0 { vec![2] } else { vec![1, 2] };
-                        let events = numbers.into_iter().map(|sequence| {
-                            let event = api::Event {
-                                log_id: api::LogId::Session("s".into()),
-                                sequence,
-                                payload: api::EventPayload::Idle {
-                                    session_id: "s".into(),
-                                },
-                            };
-                            Ok::<_, Infallible>(
-                                SseEvent::default()
-                                    .event("event")
-                                    .data(serde_json::to_string(&event).unwrap()),
-                            )
-                        });
-                        Sse::new(futures_util::stream::iter(events))
-                    }
-                }
-            }),
-        );
+        let app = Router::new()
+            .route("/v1/events", get(gap_handler))
+            .with_state(attempts.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -1556,40 +1602,9 @@ mod tests {
     #[tokio::test]
     async fn stream_retries_transient_status_and_obeys_retry_floor() {
         let attempts = Arc::new(AtomicU64::new(0));
-        let app = Router::new().route(
-            "/v1/events",
-            get({
-                let attempts = attempts.clone();
-                move || {
-                    let attempts = attempts.clone();
-                    async move {
-                        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-                            return (HttpStatus::SERVICE_UNAVAILABLE, "unavailable")
-                                .into_response();
-                        }
-                        let event = api::Event {
-                            log_id: api::LogId::Session("s".into()),
-                            sequence: 1,
-                            payload: api::EventPayload::Idle {
-                                session_id: "s".into(),
-                            },
-                        };
-                        let events = futures_util::stream::iter([
-                            Ok::<_, Infallible>(
-                                SseEvent::default()
-                                    .event("connected")
-                                    .retry(Duration::from_millis(200))
-                                    .data("{}"),
-                            ),
-                            Ok(SseEvent::default()
-                                .event("event")
-                                .data(serde_json::to_string(&event).unwrap())),
-                        ]);
-                        Sse::new(events).into_response()
-                    }
-                }
-            }),
-        );
+        let app = Router::new()
+            .route("/v1/events", get(flaky_handler))
+            .with_state(attempts.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move {

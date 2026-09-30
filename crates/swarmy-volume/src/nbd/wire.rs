@@ -122,57 +122,103 @@ pub(super) async fn transmission(
     device: &Arc<VolumeDevice>,
 ) -> io::Result<()> {
     loop {
-        // EOF at a request boundary is a normal peer disconnect, but a truncated
-        // header or payload is an error and cannot be resumed safely.
-        let mut first = [0];
-        if stream.read(&mut first).await? == 0 {
+        let Some(request) = read_request(stream).await? else {
             return Ok(());
-        }
-        let mut rest = [0; 3];
-        stream.read_exact(&mut rest).await?;
-        if u32::from_be_bytes([first[0], rest[0], rest[1], rest[2]]) != REQUEST_MAGIC {
-            return Err(invalid("invalid request magic"));
-        }
-        let flags = stream.read_u16().await?;
-        let command = stream.read_u16().await?;
-        let handle = stream.read_u64().await?;
-        let offset = stream.read_u64().await?;
-        let length = stream.read_u32().await? as usize;
-        if command == 2 {
-            return Ok(());
-        }
-        if command != 4 && length > MAX_REQUEST {
-            return Err(invalid("request too large"));
-        }
-        // Consume even invalid writes so the following request stays aligned.
-        let mut payload = vec![0; if command == 1 { length } else { 0 }];
-        stream.read_exact(&mut payload).await?;
-        let result = if flags != 0 {
-            Err(VolumeError::InvalidRequest)
-        } else {
-            match command {
-                0 => device.read(offset, length).await,
-                1 => device.write(offset, &payload).await.map(|()| Vec::new()),
-                3 if offset == 0 && length == 0 => device.flush().await.map(|()| Vec::new()),
-                4 => device.trim(offset, length).await.map(|()| Vec::new()),
-                _ => Err(VolumeError::InvalidRequest),
-            }
         };
-        let errno = match &result {
-            Ok(_) => 0,
-            Err(VolumeError::InvalidRequest) => 22,
-            Err(error) => {
-                tracing::warn!(%error, command, offset, length, "NBD request failed");
-                5
-            }
-        };
-        stream.write_u32(REPLY_MAGIC).await?;
-        stream.write_u32(errno).await?;
-        stream.write_u64(handle).await?;
-        if let Ok(data) = result {
-            stream.write_all(&data).await?;
-        }
+        let result = execute(device, &request).await;
+        write_reply(stream, &request, result).await?;
     }
+}
+
+/// One decoded transmission-phase request with its write payload attached.
+struct NbdRequest {
+    flags: u16,
+    command: u16,
+    handle: u64,
+    offset: u64,
+    length: usize,
+    payload: Vec<u8>,
+}
+
+/// Read and validate one request header plus its payload. Returns `None` on
+/// a clean EOF at a request boundary (a normal peer disconnect) or on the
+/// disconnect command; a truncated header or payload is an error and cannot
+/// be resumed safely.
+async fn read_request(stream: &mut UnixStream) -> io::Result<Option<NbdRequest>> {
+    let mut first = [0];
+    if stream.read(&mut first).await? == 0 {
+        return Ok(None);
+    }
+    let mut rest = [0; 3];
+    stream.read_exact(&mut rest).await?;
+    if u32::from_be_bytes([first[0], rest[0], rest[1], rest[2]]) != REQUEST_MAGIC {
+        return Err(invalid("invalid request magic"));
+    }
+    let flags = stream.read_u16().await?;
+    let command = stream.read_u16().await?;
+    let handle = stream.read_u64().await?;
+    let offset = stream.read_u64().await?;
+    let length = stream.read_u32().await? as usize;
+    if command == 2 {
+        return Ok(None);
+    }
+    if command != 4 && length > MAX_REQUEST {
+        return Err(invalid("request too large"));
+    }
+    // Consume even invalid writes so the following request stays aligned.
+    let mut payload = vec![0; if command == 1 { length } else { 0 }];
+    stream.read_exact(&mut payload).await?;
+    Ok(Some(NbdRequest {
+        flags,
+        command,
+        handle,
+        offset,
+        length,
+        payload,
+    }))
+}
+
+async fn execute(device: &Arc<VolumeDevice>, request: &NbdRequest) -> Result<Vec<u8>, VolumeError> {
+    if request.flags != 0 {
+        return Err(VolumeError::InvalidRequest);
+    }
+    match request.command {
+        0 => device.read(request.offset, request.length).await,
+        1 => device
+            .write(request.offset, &request.payload)
+            .await
+            .map(|()| Vec::new()),
+        3 if request.offset == 0 && request.length == 0 => {
+            device.flush().await.map(|()| Vec::new())
+        }
+        4 => device
+            .trim(request.offset, request.length)
+            .await
+            .map(|()| Vec::new()),
+        _ => Err(VolumeError::InvalidRequest),
+    }
+}
+
+async fn write_reply(
+    stream: &mut UnixStream,
+    request: &NbdRequest,
+    result: Result<Vec<u8>, VolumeError>,
+) -> io::Result<()> {
+    let errno = match &result {
+        Ok(_) => 0,
+        Err(VolumeError::InvalidRequest) => 22,
+        Err(error) => {
+            tracing::warn!(%error, command = request.command, offset = request.offset, length = request.length, "NBD request failed");
+            5
+        }
+    };
+    stream.write_u32(REPLY_MAGIC).await?;
+    stream.write_u32(errno).await?;
+    stream.write_u64(request.handle).await?;
+    if let Ok(data) = result {
+        stream.write_all(&data).await?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn negotiate_kernel(stream: &mut UnixStream, size: u64) -> io::Result<()> {

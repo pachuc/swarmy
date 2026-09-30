@@ -7,7 +7,9 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, OnceLock},
 };
-use swarmy_core::{CredentialEntryKind, CredentialKind, CredentialRecord, CredentialStatus};
+use swarmy_core::{
+    CredentialEntryKind, CredentialKind, CredentialRecord, CredentialStatus, ignore_best_effort,
+};
 
 /// The gateway supplies persistence so protocol clients do not link `FoundationDB`.
 #[async_trait]
@@ -145,7 +147,10 @@ impl Resolver {
         if provider == "chatgpt" {
             let credentials = Credentials::from_record(&record)?;
             let account = OnceLock::new();
-            let _ = account.set(credentials.account_id().into());
+            ignore_best_effort(
+                account.set(credentials.account_id().into()),
+                "cache account id",
+            );
             return Ok(ResolvedAuth {
                 auth: ClientAuth::ChatGpt(Arc::new(ChatGptCredentials {
                     resolver: self.clone(),
@@ -181,7 +186,10 @@ impl Resolver {
             let record = record.ok_or_else(|| Error::NeedsLogin(provider.into()))?;
             let credentials = Credentials::from_record(&record)?;
             let account = OnceLock::new();
-            let _ = account.set(credentials.account_id().into());
+            ignore_best_effort(
+                account.set(credentials.account_id().into()),
+                "cache account id",
+            );
             return Ok(ResolvedAuth {
                 auth: ClientAuth::ChatGpt(Arc::new(ChatGptCredentials {
                     resolver: self.clone(),

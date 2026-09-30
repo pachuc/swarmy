@@ -56,25 +56,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(failure) = record.get("inference_failed") {
                 return Err(format!("inference failed: {failure}").into());
             }
-            if let Some(message) = record
-                .get("inference_completed")
-                .and_then(|value| value.get("message"))
-            {
-                if let Some(parts) = message.get("parts").and_then(serde_json::Value::as_array) {
-                    for part in parts {
-                        if let Some(text) = part
-                            .get("text")
-                            .and_then(|part| part.get("text"))
-                            .and_then(serde_json::Value::as_str)
-                        {
-                            print!("{text}");
-                        }
-                    }
-                    println!();
-                }
+            if print_if_completed(&record) {
                 break;
             }
         }
     }
     Ok(())
+}
+
+/// Print the text parts when the record carries a completed inference.
+/// Returns whether the turn is done.
+fn print_if_completed(record: &serde_json::Value) -> bool {
+    let Some(message) = record
+        .get("inference_completed")
+        .and_then(|value| value.get("message"))
+    else {
+        return false;
+    };
+    let Some(parts) = message.get("parts").and_then(serde_json::Value::as_array) else {
+        return false;
+    };
+    for part in parts {
+        if let Some(text) = part
+            .get("text")
+            .and_then(|part| part.get("text"))
+            .and_then(serde_json::Value::as_str)
+        {
+            print!("{text}");
+        }
+    }
+    println!();
+    true
 }

@@ -163,37 +163,11 @@ async fn run(
     let sandbox = Sandbox {
         agent_id: claim.placement.agent_id,
     };
-    if claim.job.arguments.is_display_tool() {
-        let agent = store
-            .get_agent(claim.placement.agent_id)
-            .await?
-            .context("agent missing")?;
-        anyhow::ensure!(
-            store.image_display(&agent.image).await?,
-            "display tool requires a display image"
-        );
-    }
+    require_display(store, claim).await?;
     let outcome = run_command(store, &runtime, &sandbox, claim).await?;
     let mut result = outcome.result;
-    if let ToolResult::Completed { metadata, .. } = &mut result
-        && let Some(encoded) = metadata.remove("image_base64")
-    {
-        let encoded = encoded.as_str().context("image payload must be base64")?;
-        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
-        let key = store.put_tool_blob(bytes).await?;
-        metadata.insert("image_object_key".into(), serde_json::json!(key));
-    }
-    if let ToolResult::Completed { output, title, .. } = &mut result {
-        let capped = cap_output(
-            &runtime,
-            &sandbox,
-            title,
-            &claim.job.call_id.0,
-            std::mem::take(output),
-        )
-        .await;
-        *output = capped;
-    }
+    extract_image_blob(store, &mut result).await?;
+    cap_completed_output(&runtime, &sandbox, claim, &mut result).await;
     if store.interrupt_requested(claim.job.session_id).await? {
         stop_result_process(&runtime, &sandbox, claim.placement.epoch, &result).await?;
     }
@@ -217,6 +191,59 @@ async fn run(
     );
     tracing::info!(request_id = %claim.job.request_id, "committed sandbox tool output");
     Ok(())
+}
+
+/// Reject display tools when the agent's image has no display. Display
+/// support varies only by image manifest, so this check runs before the
+/// sandbox starts.
+async fn require_display(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
+    if !claim.job.arguments.is_display_tool() {
+        return Ok(());
+    }
+    let agent = store
+        .get_agent(claim.placement.agent_id)
+        .await?
+        .context("agent missing")?;
+    anyhow::ensure!(
+        store.image_display(&agent.image).await?,
+        "display tool requires a display image"
+    );
+    Ok(())
+}
+
+/// Move an inline base64 screenshot out of the result metadata into blob
+/// storage, replacing it with the object key the worker downloads.
+async fn extract_image_blob(store: &Store, result: &mut ToolResult) -> Result<()> {
+    if let ToolResult::Completed { metadata, .. } = result
+        && let Some(encoded) = metadata.remove("image_base64")
+    {
+        let encoded = encoded.as_str().context("image payload must be base64")?;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+        let key = store.put_tool_blob(bytes).await?;
+        metadata.insert("image_object_key".into(), serde_json::json!(key));
+    }
+    Ok(())
+}
+
+/// Cap completed-call output through the runtime so the stored size matches
+/// what the worker recorded.
+async fn cap_completed_output(
+    runtime: &Arc<RuncRuntime>,
+    sandbox: &Sandbox,
+    claim: &PlacedToolClaim,
+    result: &mut ToolResult,
+) {
+    if let ToolResult::Completed { output, title, .. } = result {
+        let capped = cap_output(
+            runtime,
+            sandbox,
+            title,
+            &claim.job.call_id.0,
+            std::mem::take(output),
+        )
+        .await;
+        *output = capped;
+    }
 }
 
 async fn commit_result(store: &Store, claim: &PlacedToolClaim, result: &ToolResult) -> Result<()> {
@@ -630,7 +657,9 @@ async fn heartbeat(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::placement_refusal;
-    use swarmy_core::{AgentId, NodeId, PlacementChangeReason, PlacementRecord};
+    use swarmy_core::{
+        AgentId, NodeId, PlacementChangeReason, PlacementRecord, ignore_best_effort,
+    };
 
     #[test]
     fn rejected_claim_explains_other_nodes_placement() {
@@ -737,11 +766,14 @@ mod tests {
             for entry in std::fs::read_dir(self.0.path()).unwrap().flatten() {
                 if let Ok(bytes) = std::fs::read(entry.path().join("record.json")) {
                     let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                    let _ = std::process::Command::new("kill")
-                        .args(["-KILL", "--", &format!("-{}", record["pid"])])
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status();
+                    ignore_best_effort(
+                        std::process::Command::new("kill")
+                            .args(["-KILL", "--", &format!("-{}", record["pid"])])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status(),
+                        "kill stale sandbox process",
+                    );
                 }
             }
         }

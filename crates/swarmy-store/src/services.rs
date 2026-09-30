@@ -46,6 +46,20 @@ pub struct ServiceHealth {
     pub alive: bool,
 }
 
+/// Identity and behaviour for [`Store::heartbeat_loop`]: what this instance
+/// reports, and whether its tick also expires stale service rows. Only the
+/// scheduler expires; the worker, API, and gateway only report themselves,
+/// so a bare `bool` at the call site would hide which service cleans up.
+#[derive(Clone, Debug)]
+pub struct HeartbeatSpec {
+    pub role: ServiceRole,
+    pub instance_id: String,
+    pub version: String,
+    pub started_at: Timestamp,
+    pub detail: ServiceDetail,
+    pub expire_stale: bool,
+}
+
 impl Store {
     fn service_key(&self, role: &ServiceRole, id: &str) -> Vec<u8> {
         self.keys().service_heartbeat(&format!("{role:?}"), id)
@@ -170,31 +184,25 @@ impl Store {
     /// Heartbeat and expiry failures only warn; the next tick retries. The
     /// worker, API, and scheduler share this instead of repeating the loop;
     /// the scheduler also expires stale rows on each tick.
-    pub async fn heartbeat_loop(
-        &self,
-        role: ServiceRole,
-        instance_id: String,
-        version: String,
-        started_at: Timestamp,
-        detail: ServiceDetail,
-        expire_stale: bool,
-    ) {
+    pub async fn heartbeat_loop(&self, spec: HeartbeatSpec) {
         let mut ticks = tokio::time::interval(swarmy_config::SERVICE_HEALTH_INTERVAL);
         loop {
             ticks.tick().await;
             let record = ServiceHeartbeat {
-                role: role.clone(),
-                instance_id: instance_id.clone(),
-                version: version.clone(),
+                role: spec.role.clone(),
+                instance_id: spec.instance_id.clone(),
+                version: spec.version.clone(),
                 host: swarmy_config::service_hostname(),
-                started_at,
+                started_at: spec.started_at,
                 last_seen: Timestamp::now(),
-                detail: detail.clone(),
+                detail: spec.detail.clone(),
             };
             if let Err(error) = self.put_service_heartbeat(&record).await {
-                tracing::warn!(%error, role = ?role, "service health heartbeat failed");
+                tracing::warn!(%error, role = ?spec.role, "service health heartbeat failed");
             }
-            if expire_stale && let Err(error) = self.expire_services().await {
+            if spec.expire_stale
+                && let Err(error) = self.expire_services().await
+            {
                 tracing::warn!(%error, "service health expiry failed");
             }
         }

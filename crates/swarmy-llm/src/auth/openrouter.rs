@@ -6,7 +6,7 @@ use rand::RngCore;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, time::Duration};
-use swarmy_core::CredentialKind;
+use swarmy_core::{CredentialKind, ignore_best_effort};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -139,7 +139,7 @@ async fn callback_code(listener: &TcpListener) -> Result<String, Error> {
         } else {
             b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         };
-        let _ = stream.write_all(reply).await;
+        ignore_best_effort(stream.write_all(reply).await, "write login reply");
         if let Some(code) = code {
             return Ok(code);
         }

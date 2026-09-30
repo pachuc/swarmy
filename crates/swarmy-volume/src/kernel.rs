@@ -9,6 +9,7 @@ use std::{
     sync::Arc,
     thread::JoinHandle,
 };
+use swarmy_core::ignore_best_effort;
 use tokio::net::UnixStream;
 
 const SET_SOCK: libc::c_ulong = 0xab00;
@@ -178,7 +179,10 @@ impl Attachment {
             server.abort();
         }
         // Also close the transport if DO_IT failed or has not entered yet.
-        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+        ignore_best_effort(
+            self.socket.shutdown(std::net::Shutdown::Both),
+            "shut down kernel socket",
+        );
         // Clear queued requests before joining: a failed request can hold the
         // block device open while DO_IT waits to reset its capacity.
         let clear = ioctl(&self.file, CLEAR_SOCK, 0);

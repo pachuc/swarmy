@@ -5,6 +5,7 @@ use std::{
     io::{Read, Write},
     path::PathBuf,
 };
+use swarmy_core::ignore_best_effort;
 
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::mpsc;
@@ -242,8 +243,8 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        ignore_best_effort(self.child.kill(), "kill child process");
+        ignore_best_effort(self.child.wait(), "reap child process");
     }
 }
 
@@ -282,7 +283,10 @@ async fn session_events(fixture: &Fixture, session: Option<SessionId>) -> String
         Ok(Ok(events)) => {
             let mut summary = format!("session events for {id} (last {} events):\n", events.len());
             for event in events {
-                let _ = writeln!(summary, "  seq {} {}", event.seq(), event_name(&event));
+                ignore_best_effort(
+                    writeln!(summary, "  seq {} {}", event.seq(), event_name(&event)),
+                    "append event summary line",
+                );
             }
             summary
         }
@@ -386,7 +390,10 @@ impl Services {
     fn log_tails(&self) -> String {
         let mut tails = String::new();
         for name in ["scheduler", "worker", "gateway"] {
-            let _ = writeln!(tails, "--- {name}.log (last 20 lines) ---");
+            ignore_best_effort(
+                writeln!(tails, "--- {name}.log (last 20 lines) ---"),
+                "append log tail line",
+            );
             match std::fs::read_to_string(self.files.path().join(format!("{name}.log"))) {
                 Ok(contents) => {
                     let lines: Vec<&str> = contents.lines().collect();
@@ -397,7 +404,10 @@ impl Services {
                     for line in &lines[start..] {
                         let truncated: String = line.chars().take(500).collect();
                         if truncated.len() < line.len() {
-                            let _ = writeln!(tails, "{truncated}… (truncated)");
+                            ignore_best_effort(
+                                writeln!(tails, "{truncated}… (truncated)"),
+                                "append log tail line",
+                            );
                         } else {
                             tails.push_str(line);
                             tails.push('\n');
@@ -405,7 +415,10 @@ impl Services {
                     }
                 }
                 Err(error) => {
-                    let _ = writeln!(tails, "(unreadable: {error})");
+                    ignore_best_effort(
+                        writeln!(tails, "(unreadable: {error})"),
+                        "append log tail line",
+                    );
                 }
             }
         }
@@ -669,7 +682,7 @@ async fn chat_converses_resumes_and_survives_worker_and_gateway_death() {
         terminal.type_text("\x1b");
         terminal.exit(true).await;
         for child in &mut services.children {
-            let _ = child.kill().await;
+            ignore_best_effort(child.kill().await, "kill child process");
         }
     })
     .await;
@@ -929,9 +942,12 @@ struct Node {
 
 impl Drop for Node {
     fn drop(&mut self) {
-        let _ = std::process::Command::new("kill")
-            .args(["-TERM", &self.child.id().to_string()])
-            .status();
+        ignore_best_effort(
+            std::process::Command::new("kill")
+                .args(["-TERM", &self.child.id().to_string()])
+                .status(),
+            "terminate node child",
+        );
         let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while matches!(self.child.try_wait(), Ok(None)) {
             if std::time::Instant::now() >= deadline {
@@ -939,32 +955,40 @@ impl Drop for Node {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        ignore_best_effort(self.child.kill(), "kill child process");
+        ignore_best_effort(self.child.wait(), "reap child process");
         // Also clean an interrupted boot whose node could not shut down normally.
         if let Ok(bundles) = std::fs::read_dir(self.root.join("bundles")) {
             for bundle in bundles.flatten() {
-                let _ = std::process::Command::new("runc")
-                    .arg("--root")
-                    .arg(self.root.join("runc"))
-                    .args(["delete", "--force"])
-                    .arg(bundle.file_name())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-                let _ = std::process::Command::new("umount")
-                    .arg(bundle.path().join("rootfs"))
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+                ignore_best_effort(
+                    std::process::Command::new("runc")
+                        .arg("--root")
+                        .arg(self.root.join("runc"))
+                        .args(["delete", "--force"])
+                        .arg(bundle.file_name())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status(),
+                    "force-remove leftover bundle",
+                );
+                ignore_best_effort(
+                    std::process::Command::new("umount")
+                        .arg(bundle.path().join("rootfs"))
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status(),
+                    "unmount leftover rootfs",
+                );
                 if let Ok(device) = std::fs::read_to_string(bundle.path().join("device"))
                     && device
                         .trim()
                         .strip_prefix("/dev/nbd")
                         .is_some_and(|suffix| suffix.parse::<u32>().is_ok())
                 {
-                    let _ =
-                        swarmy_volume::kernel::cleanup_stale(std::path::Path::new(device.trim()));
+                    ignore_best_effort(
+                        swarmy_volume::kernel::cleanup_stale(std::path::Path::new(device.trim())),
+                        "clean up stale kernel state",
+                    );
                 }
             }
         }
@@ -1005,28 +1029,50 @@ async fn root_chat_default_image_executes_pwd() {
         let session = fixture.store.fetch_session(id).await.unwrap().unwrap();
         assert!(fixture.store.get_by_agent(session.agent_id).await.unwrap().is_none());
         terminal.type_text("Run pwd\r");
-        timeout(Duration::from_secs(120), async {
-            loop {
-                let events = fixture.store.read_events(id, 0, 64).await.unwrap();
-                if let Some(result) = events.iter().find_map(|event| match event {
-                    Event::ToolCallCompleted { result, .. } => Some(result),
-                    _ => None,
-                }) {
-                    let ToolResult::Completed { output, .. } = result else { panic!("pwd failed: {result:?}"); };
-                    let result: swarmy_core::BashResult = serde_json::from_str(output).unwrap();
-                    assert_eq!(result.exit_code, 0);
-                    assert!(result.stdout.trim().starts_with('/'), "pwd output: {}", result.stdout);
-                    assert!(!result.timed_out);
-                    break;
-                }
-                sleep(Duration::from_millis(100)).await;
-            }
-        }).await.unwrap_or_else(|_| panic!("pwd did not finish: {}", std::fs::read_to_string(services.files.path().join("node.log")).unwrap()));
+        wait_for_pwd(&fixture, id, &services).await;
         assert!(fixture.store.get_by_agent(session.agent_id).await.unwrap().is_some());
         assert!(fixture.store.get_volume(swarmy_core::VolumeId::from_ulid(session.agent_id.as_ulid())).await.unwrap().is_some());
         terminal.type_text("\x1b");
         terminal.exit(true).await;
     }).await;
+}
+
+/// Wait for the pwd tool call to complete and check its output names a path.
+async fn wait_for_pwd(fixture: &Fixture, id: SessionId, services: &Services) {
+    timeout(Duration::from_secs(120), async {
+        loop {
+            let events = fixture.store.read_events(id, 0, 64).await.unwrap();
+            if let Some(result) = events.iter().find_map(|event| match event {
+                Event::ToolCallCompleted { result, .. } => Some(result),
+                _ => None,
+            }) {
+                check_pwd_output(result);
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "pwd did not finish: {}",
+            std::fs::read_to_string(services.files.path().join("node.log")).unwrap()
+        )
+    });
+}
+
+fn check_pwd_output(result: &ToolResult) {
+    let ToolResult::Completed { output, .. } = result else {
+        panic!("pwd failed: {result:?}")
+    };
+    let result: swarmy_core::BashResult = serde_json::from_str(output).unwrap();
+    assert_eq!(result.exit_code, 0);
+    assert!(
+        result.stdout.trim().starts_with('/'),
+        "pwd output: {}",
+        result.stdout
+    );
+    assert!(!result.timed_out);
 }
 
 async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Services, Node) {

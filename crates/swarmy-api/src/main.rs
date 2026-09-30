@@ -1,7 +1,7 @@
 use swarmy_api::{AppState, router};
 use swarmy_bus::Bus;
 use swarmy_config::Settings;
-use swarmy_store::{ServiceDetail, ServiceRole, Store};
+use swarmy_store::{HeartbeatSpec, ServiceDetail, ServiceRole, Store};
 
 /// Startup failures: the binary only assembles the service, so every
 /// error names the connection or socket that failed.
@@ -52,14 +52,14 @@ async fn run() -> Result<()> {
     let instance_id = ulid::Ulid::generate().to_string();
     tokio::spawn(async move {
         heartbeat_store
-            .heartbeat_loop(
-                ServiceRole::Api,
+            .heartbeat_loop(HeartbeatSpec {
+                role: ServiceRole::Api,
                 instance_id,
-                env!("CARGO_PKG_VERSION").into(),
-                started,
-                ServiceDetail::None,
-                false,
-            )
+                version: env!("CARGO_PKG_VERSION").into(),
+                started_at: started,
+                detail: ServiceDetail::None,
+                expire_stale: false,
+            })
             .await;
     });
     let mut state = AppState::new(store, bus, token, settings.catalog()?, objects);

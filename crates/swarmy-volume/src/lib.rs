@@ -82,8 +82,13 @@ impl ChunkStore {
     }
 
     pub(crate) fn protect_uploads(&self, metadata: swarmy_store::Store) {
-        // An attachment binds once, before its uploader starts. Clones share it.
-        let _ = self.metadata.set(metadata);
+        // An attachment binds once, before its uploader starts. Clones share
+        // the first store; a repeat bind drops the newcomer. `Store` has no
+        // `Debug` impl, so this names the benign outcome instead of routing
+        // through the best-effort helper.
+        if self.metadata.set(metadata).is_err() {
+            tracing::debug!("volume metadata already bound; keeping the first store");
+        }
     }
 
     async fn protect_reuse(&self, hash: ContentHash) -> Result<()> {

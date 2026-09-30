@@ -6,7 +6,7 @@ use std::{
 
 use foundationdb::{Database, RangeOption, Transaction, tuple::Subspace};
 use futures::TryStreamExt;
-use swarmy_core::{AgentId, MessageId, SessionId, TurnEvent};
+use swarmy_core::{AgentId, MessageId, SessionId, TurnEvent, ignore_best_effort};
 
 use crate::{
     MAX_SCAN_LIMIT, Result, StoreError,
@@ -113,7 +113,7 @@ pub(crate) fn spawn_metrics_drain(
                 }
             }
             for ack in flushes {
-                let _ = ack.send(());
+                ignore_best_effort(ack.send(()), "acknowledge metric flush");
             }
         }
     })
