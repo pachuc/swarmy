@@ -132,6 +132,14 @@ impl Fixture {
         serde_json::from_slice(&output.stdout).unwrap()
     }
     fn attach(&self, node: &str, id: &str, name: &str) -> Server {
+        self.try_attach(node, id, name)
+            .expect("attach server did not become ready")
+    }
+
+    /// Attach once, returning `None` when the volume is still fenced instead
+    /// of panicking: the crash-recovery test polls this until the crashed
+    /// writer's lease becomes reclaimable.
+    fn try_attach(&self, node: &str, id: &str, name: &str) -> Option<Server> {
         let mount = self.root.path().join(name);
         std::fs::create_dir_all(&mount).unwrap();
         let child = self
@@ -150,11 +158,13 @@ impl Fixture {
         BufReader::new(server.child.stdout.take().unwrap())
             .read_line(&mut line)
             .unwrap();
-        let ready: Value = serde_json::from_str(&line).expect("attach server did not become ready");
-        server.device = ready["device"].as_str().unwrap().into();
+        // A fenced attach prints nothing before exiting; EOF here means the
+        // lease is still held. Dropping the server reaps the child.
+        let ready: Value = serde_json::from_str(&line).ok()?;
+        server.device = ready["device"].as_str()?.into();
         system("mount", &[&server.device, server.mount.to_str().unwrap()]);
         server.mounted = true;
-        server
+        Some(server)
     }
 }
 
@@ -288,17 +298,18 @@ async fn root_volume_durability_clone_crash_fencing_and_history() {
         .unwrap()
         .expires_at;
     eprintln!("waiting for the crashed writer's lease to expire");
-    swarmy_testkit::eventually(
-        "crashed writer lease expires",
+    // Poll the observable outcome: attach succeeds once the crashed
+    // writer's lease is reclaimable, whenever the clocks agree it expired.
+    let mut recovered = swarmy_testkit::eventually(
+        "crashed writer lease becomes reclaimable",
         expiry
             .duration_since(jiff::Timestamp::now())
             .try_into()
             .unwrap_or(Duration::ZERO)
-            + Duration::from_secs(30),
-        async || (jiff::Timestamp::now() >= expiry).then_some(()),
+            + Duration::from_secs(60),
+        async || fixture.try_attach(&fixture.node_a, volume, "recovered"),
     )
     .await;
-    let mut recovered = fixture.attach(&fixture.node_a, volume, "recovered");
     assert_eq!(
         recovered.read("durable"),
         b"committed on A",

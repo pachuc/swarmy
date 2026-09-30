@@ -1526,12 +1526,13 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(applied, updated);
-        // Let the applied selection settle before asserting the stream stays
-        // quiet: the following timeout is the assertion, and without a beat
-        // between them the test races the client's bookkeeping.
+        // The applied selection is recorded inside the next next_item()
+        // call, and the stored PUT task's JoinHandle is private to the
+        // stream: no external signal marks it done. Beat once before the
+        // quiet assertion so it does not race the task's final poll.
         #[expect(
             clippy::disallowed_methods,
-            reason = "settling before the quiet-stream assertion avoids racing client bookkeeping"
+            reason = "no external signal marks the stored PUT task done; the beat precedes the quiet assertion"
         )]
         tokio::time::sleep(Duration::from_millis(100)).await;
         // The next update finishes the stored task instead of sending the

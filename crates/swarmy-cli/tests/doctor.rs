@@ -201,26 +201,25 @@ fn reports_keyring_presence_and_permissions() {
 /// because the CLI made fewer requests than the hard-coded body list.
 fn serve_one(listener: &std::net::TcpListener, body: &str) {
     use std::io::{Read, Write};
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let (mut stream, _) = loop {
-        match listener.accept() {
-            Ok(pair) => break pair,
-            Err(error)
-                if error.kind() == std::io::ErrorKind::WouldBlock
-                    && std::time::Instant::now() < deadline =>
-            {
-                // The blocking fixture socket has no readiness signal and
-                // this helper runs on a plain thread, so poll to the
-                // deadline instead of awaiting.
-                #[expect(
-                    clippy::disallowed_methods,
-                    reason = "blocking accept-poll with a deadline on a non-async fixture thread"
-                )]
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+    // The fixture thread has no async runtime, so block a private one on
+    // the shared poll helper: WouldBlock keeps polling to the deadline,
+    // anything else fails fast instead of hanging server.join() forever.
+    // (The hang that held CI runners was the join waiting on an accept
+    // that never arrived because the CLI made fewer requests than the
+    // hard-coded body list.)
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (mut stream, _) = runtime.block_on(swarmy_testkit::eventually(
+        "fixture API accepts",
+        std::time::Duration::from_secs(10),
+        async || match listener.accept() {
+            Ok(pair) => Some(pair),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => None,
             Err(error) => panic!("fixture accept failed: {error}"),
-        }
-    };
+        },
+    ));
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();

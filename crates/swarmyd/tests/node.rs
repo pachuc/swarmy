@@ -1065,8 +1065,20 @@ async fn crash_recovery(node: &mut Node, store: &Store, volume: VolumeId) {
     drop(reader);
     node.start();
     node.ready(store, before).await;
-    assert!(!Path::new("/run/netns").join(&network_name).exists());
-    assert!(!Path::new(&format!("/proc/{}", old_pasta.trim())).exists());
+    // The killed pasta process and its netns disappear on reaping, which
+    // races the restart: poll for both instead of asserting immediately.
+    swarmy_testkit::eventually(
+        "killed pasta netns disappears",
+        Duration::from_secs(10),
+        async || (!Path::new("/run/netns").join(&network_name).exists()).then_some(()),
+    )
+    .await;
+    swarmy_testkit::eventually(
+        "killed pasta process is reaped",
+        Duration::from_secs(10),
+        async || (!Path::new(&format!("/proc/{}", old_pasta.trim())).exists()).then_some(()),
+    )
+    .await;
     let expiry = store
         .get_volume(volume)
         .await

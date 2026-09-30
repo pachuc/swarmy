@@ -1466,10 +1466,26 @@ fn assert_bucket_retained(cloud: &FakeCloud) {
 }
 
 fn assert_bucket_recreated_once(cloud: &FakeCloud) {
-    assert_eq!(cloud.bucket_ensures.borrow().len(), 2);
-    assert_eq!(cloud.bucket_creates.borrow().len(), 1);
-    assert_eq!(cloud.role_creates.borrow().len(), 1);
-    assert_eq!(cloud.profile_creates.borrow().len(), 1);
+    assert_eq!(
+        cloud.bucket_ensures.borrow().len(),
+        2,
+        "third up ensures the bucket again"
+    );
+    assert_eq!(
+        cloud.bucket_creates.borrow().len(),
+        1,
+        "bucket created once across three ups"
+    );
+    assert_eq!(
+        cloud.role_creates.borrow().len(),
+        1,
+        "role created once across three ups"
+    );
+    assert_eq!(
+        cloud.profile_creates.borrow().len(),
+        1,
+        "instance profile created once across three ups"
+    );
 }
 
 struct StaticSetup {

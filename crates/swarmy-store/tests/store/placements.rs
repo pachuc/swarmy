@@ -119,7 +119,6 @@ async fn placement_claim_and_renew_keep_identity_and_fence_stale_expiry() {
         test,
         first,
         live: renewed,
-        ..
     } = &state;
     assert_eq!(renewed.epoch, 1, "renew keeps the epoch");
     assert_eq!(
@@ -241,10 +240,9 @@ async fn placement_expiry_hands_takeover_to_waiting_node_and_fences_stale_record
         vec![next.clone()],
         "new node lists the takeover"
     );
-    let superseded = renewed.clone();
     assert!(
         matches!(
-            test.store.renew(&superseded, future(180)).await,
+            test.store.renew(renewed, future(180)).await,
             Err(StoreError::Fence(
                 swarmy_store::FenceError::PlacementMismatch
             ))
@@ -253,7 +251,7 @@ async fn placement_expiry_hands_takeover_to_waiting_node_and_fences_stale_record
     );
     assert!(
         matches!(
-            test.store.release(&superseded).await,
+            test.store.release(renewed).await,
             Err(StoreError::Fence(
                 swarmy_store::FenceError::PlacementMismatch
             ))
