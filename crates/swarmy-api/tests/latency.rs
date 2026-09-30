@@ -1,6 +1,9 @@
 #![deny(clippy::disallowed_methods)]
-//! Run on a real node with a registered image and the fake development stack.
-//! The sandbox fleet lacks NBD, so the benchmark is opt-in there.
+//! Latency acceptance against the fake development stack. The fixture
+//! registers a metadata-only image and spawns its own scheduler, worker,
+//! and gateway, so the tests need no root and no registered image. The
+//! fifty-turn p95 comparison stays opt-in behind `SWARMY_API_FAKE_BENCH=1`
+//! because a 5 ms comparison is noise on shared runners.
 use std::time::{Duration, Instant};
 use swarmy_api::{AppState, router};
 use swarmy_api_types::{AppendMessage, AppendedMessage, CreateSession, ImageRef, Session};
@@ -22,13 +25,14 @@ struct BenchFixture {
     direct_id: SessionId,
     server: tokio::task::JoinHandle<Result<(), std::io::Error>>,
     resend: Duration,
+    // Held for their Drop: the script directory outlives the spawned
+    // services, and the guards kill the services even on panic.
+    files: tempfile::TempDir,
+    children: Vec<swarmy_testkit::ChildGuard>,
 }
 
 #[tokio::test]
 async fn api_first_fake_token_stays_within_five_ms_of_direct_append() {
-    let Some(image) = swarmy_core::test_support::optional_env("SWARMY_TEST_IMAGE") else {
-        return;
-    };
     let Some(_) = swarmy_core::test_support::opt_in_env(
         "SWARMY_API_FAKE_BENCH",
         "set SWARMY_API_FAKE_BENCH=1 to run the opt-in API fake benchmark",
@@ -41,7 +45,7 @@ async fn api_first_fake_token_stays_within_five_ms_of_direct_append() {
     if swarmy_testkit::require_stack("SWARMY_NATS_URL").is_none() {
         return;
     }
-    let fixture = setup(&image).await;
+    let fixture = setup().await;
     let mut api = Vec::with_capacity(TURNS);
     let mut direct = Vec::with_capacity(TURNS);
     for turn in 0..TURNS {
@@ -59,7 +63,7 @@ async fn api_first_fake_token_stays_within_five_ms_of_direct_append() {
     fixture.server.abort();
 }
 
-async fn setup(image: &str) -> BenchFixture {
+async fn setup() -> BenchFixture {
     swarmy_testkit::boot_fdb();
     // The benchmark reads no host configuration: provider, model, and store
     // location come from compiled defaults over the named stack variables.
@@ -77,6 +81,29 @@ async fn setup(image: &str) -> BenchFixture {
     settings.bus.prefix = format!("latency-bench-{}", Ulid::generate());
     let opened = Store::open_store(&settings).await.unwrap();
     let store = opened.store;
+    // Sessions need an image reference but never boot a computer from it,
+    // so register the metadata-only fixture image instead of requiring a
+    // built image from the environment.
+    let image = swarmy_testkit::image(&store).await;
+    // The fixture runs its own scheduler, worker, and gateway against its
+    // randomized store directory and bus prefix, so no running service ever
+    // needs to see its turns. The fake script answers every turn with text.
+    let files = tempfile::tempdir().unwrap();
+    swarmy_testkit::Script::new("done").write_to(&files.path().join("script.json"));
+    let mut children = Vec::new();
+    for name in ["swarmy-scheduler", "swarmy-worker", "swarmy-gateway"] {
+        children.push(swarmy_testkit::ChildGuard::new(
+            tokio::process::Command::new(swarmy_testkit::bin(name))
+                .env("SWARMY_PROVIDER", "fake")
+                .env("SWARMY_MODEL", settings.selection.model.clone())
+                .env("SWARMY_STORE_DIRECTORY", &settings.store.directory)
+                .env("SWARMY_BUS_PREFIX", &settings.bus.prefix)
+                .env("SWARMY_FAKE_SCRIPT", files.path().join("script.json"))
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap(),
+        ));
+    }
     let bus = Bus::connect(&settings.bus.nats_url, settings.bus.bus_config().unwrap())
         .await
         .unwrap();
@@ -93,7 +120,7 @@ async fn setup(image: &str) -> BenchFixture {
     let client = reqwest::Client::new();
     let (name, tag) = image
         .split_once(':')
-        .expect("SWARMY_TEST_IMAGE must be NAME:TAG");
+        .expect("fixture image must be NAME:TAG");
     let created = client
         .post(format!("{base}/v1/sessions"))
         .bearer_auth("bench-token")
@@ -143,6 +170,8 @@ async fn setup(image: &str) -> BenchFixture {
         direct_id,
         server,
         resend: settings.scheduler.resend_interval_ms,
+        files,
+        children,
     }
 }
 
@@ -291,25 +320,23 @@ async fn assert_first_token_metrics(fixture: &BenchFixture, session: SessionId, 
 }
 
 /// A real fake-provider turn must land a first-token stage and derived
-/// latencies in the durable record. Runs on the fake stack with a registered
-/// image, like the other fixture tests.
+/// latencies in the durable record. The fixture spawns its own scheduler,
+/// worker, and gateway against the dev stack, so this runs on every PR.
 #[tokio::test]
 async fn fake_turn_records_first_token_metrics() {
-    let Some(image) = swarmy_core::test_support::optional_env("SWARMY_TEST_IMAGE") else {
-        return;
-    };
     if swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").is_none() {
         return;
     }
     if swarmy_testkit::require_stack("SWARMY_NATS_URL").is_none() {
         return;
     }
-    let fixture = setup(&image).await;
+    let fixture = setup().await;
+    let image = swarmy_testkit::image(&fixture.store).await;
     let agent = fixture
         .store
         .create_agent(
             &format!("metrics-{}", Ulid::generate()),
-            &image,
+            image,
             "",
             jiff::Timestamp::now(),
             None,
