@@ -4,7 +4,7 @@ swarmy is infrastructure for running very large numbers of long-lived coding
 agents on ordinary cloud compute. The promise: no single machine failure loses
 an agent, its conversation, or its disk; turns feel immediate; agents keep
 working for weeks with memory, timers, and a persistent computer; any model
-provider can serve them. Written in Rust, organized as sixteen crates in one
+provider can serve them. Written in Rust, organized as twenty-six crates in one
 workspace.
 
 Read `docs/ARCHITECTURE.md` before changing anything: it explains the concepts, the
@@ -25,7 +25,7 @@ measured numbers with raw samples.
   every write that matters checks its lease or epoch in the same transaction.
   NATS JetStream carries work queues and live feeds (`swarmy-bus`); acking
   never means owning the work. Scheduler, worker, and gateway run the step
-  loop; p95 for a text turn is 18 ms locally and 26 ms over SSH tunnels. The
+  loop; measured turn timings live in `docs/volume-benchmarks.md`. The
   chaos suite (`swarmy-chaos`) kills processes mid-turn and checks every
   session log stays contiguous with exactly one inference per step.
 - **Disks and computers.** Every agent disk is 256 KiB blake3-addressed
@@ -36,7 +36,7 @@ measured numbers with raw samples.
   base-ubuntu` is the one image every agent uses. The collector marks with a
   Bloom filter and sweeps 256 prefixes under a run lease
   (`docs/gc-benchmarks.md`). Nodes (`swarmyd`) host runc containers from the
-  mounted device, sixteen slots, idle eviction after thirty minutes, rebuild
+  mounted device, up to node capacity, idle eviction after thirty minutes, rebuild
   on another node after failure. Every session has a computer: ephemeral
   sessions own a throwaway one, named agents share one persistent one.
 - **Agents.** Named agents with a main conversation and side sessions,
@@ -50,8 +50,8 @@ measured numbers with raw samples.
   cloned this repository and opened a pull request through a node kill in
   146 s (`docs/proofs/`).
 - **Inference providers** (`swarmy-llm`, `docs/providers.md`). A catalog
-  generated from models.dev and OpenRouter (770 models, eleven providers)
-  with one shared effort scale; clients for Anthropic Messages, OpenAI
+  generated from models.dev and OpenRouter (roughly 790 models, eleven providers
+  plus a fake) with one shared effort scale; clients for Anthropic Messages, OpenAI
   Responses, Chat Completions, Gemini, and Bedrock Converse; encrypted
   credentials in the store with fenced refresh; `--provider`, `--model`,
   `--effort` everywhere; usage and cost recorded per completion. Verified
@@ -74,8 +74,8 @@ measured numbers with raw samples.
   each with what, why, why not now, what it would take, and the trigger that
   brings it back. `backlog/README.md` is the index. When an item is picked
   up it becomes a tasky goal and the file is deleted.
-- **Execution.** Tasks are executed by Codex agents on their own EC2
-  instances through `~/code/codex-daytona`, one pull request per task, three
+- **Execution.** Tasks run on long-lived swarmy worker agents driven by
+  `scripts/fleet/fleet` (see `docs/DEV.md`), one pull request per task, three
   to five in parallel. The orchestrator reviews, reconciles conflicts (one
   subagent per pull request in its own git worktree, with explicit per-file
   rules), merges on green CI, and marks the task done. Parallel tasks on
@@ -85,22 +85,26 @@ measured numbers with raw samples.
 
 ## The plan, September 2026
 
+Tasky holds the live plan: `tasky --json goal list --project swarmy` for the
+goals with their active, done, and draft states, `tasky --json task ready
+--project swarmy` for what can start. Activate the next goal only when the one
+before it is merged. The table below is a snapshot checked against the tree on
+2026-09-30; when it disagrees with tasky, tasky wins.
+
 Completed goals: immortal-echo-agent, block-level-disk, disk-follow-ups,
 persistent-computers, persistent-follow-ups, remote-node,
 sessions-have-computers, turn-latency, named-agents, real-coding-agent,
-persistent-agent, inference-providers, model-selection.
+persistent-agent, inference-providers, model-selection, operability-batch,
+dev-fleet, perf-baseline. The last three landed with their proofs in
+`docs/proofs/`: collector batching with the manual root-suite rule, the
+long-lived swarm with its runbook and fleet driver, and durable per-turn
+metrics with the swarm and codex-daytona comparison.
 
 The current plan, in dependency order. Each goal's spec in tasky is the
-agreed design. The two active goals come first because the Codex fleet that
-executes tasks shares one ChatGPT subscription and is the bottleneck; once
-dev-fleet lands, the rest of the plan is executed by swarmy agents on
-OpenRouter models and the subscription side by side.
+agreed design.
 
 | Goal | Delivers |
 |---|---|
-| operability-batch (active) | Collector batching, `run` exit code, NATS test flake; the nightly root-suite job was dropped in favour of the manual rule in Building and testing |
-| dev-fleet (active) | Swarmy as its own development fleet: the `swarmy-dev` image, rate limits as waits with a circuit breaker, a fleet driver over the CLI with tasky integration, a sized long-lived swarm with a runbook and a proof on real tasks over OpenRouter and ChatGPT |
-| perf-baseline (active) | Durable per-turn metrics (latency, tokens per second, tool and placement timing, waits and errors) exposed through CLI and API, a `fleet report` aggregator, a fixed three-task benchmark set with swarm and codex-daytona runners, and a written comparison of `dev`, `dev2`, and codex-daytona before building further on the split deployment |
 | control-plane-api | The swarmy API (HTTP, JSON, SSE) as the only thing a client talks to; the CLI as a thin client; doctor and chat read live service health |
 | one-binary-install | `swarmy` client and `swarmy-core` multi-call binary; signed releases; the client fetches and ships the core; install script, Homebrew, cargo-binstall |
 | swarm-model | Swarms as the unit of deployment: registry, `swarm create/up/down/stop/start/status/ls/use`, local and split topologies, sudo sandboxes on Linux, docs rewrite |
@@ -190,6 +194,11 @@ agents, model selection flags.
   `backlog/kubernetes-packaging.md`.
 - **One client binary, one core binary.** The client never links the
   FoundationDB library; it fetches and ships the matching `swarmy-core`.
+- **Swarmy is in development, so format changes are clean breaks, not
+  migrations.** Stored formats, APIs, and configuration may change
+  incompatibly; delete the legacy code rather than carry it. Record each break
+  in `docs/api-breaks.txt` and wipe the development store before deploying
+  past one.
 - **Root-only tests run on real machines, not CI.** A nightly job on a real
   node was built and then dropped in September 2026: automation plus AWS
   secrets was not worth it at this size. The rule is that whoever changes the
@@ -231,16 +240,15 @@ on a weekly schedule rather than blocking pull requests.
 
 Clippy runs with the `all` and `pedantic` groups denied, so write code that
 satisfies it rather than silencing it. `unsafe_code` is denied
-workspace-wide; the one place that needs it opts in on a single function with
-a SAFETY comment.
+workspace-wide; the two places that need it (the FoundationDB boot and the
+NBD ioctl wrapper) opt in per function with a reason and a SAFETY comment.
 
 ### Enforced by tools
 
 The authoritative list of mechanical checks; REVIEWER.md does not repeat it.
 The workspace lint table lives in the root `Cargo.toml` `[workspace.lints]`
 (every crate sets `[lints] workspace = true`); numeric thresholds and
-test-only exemptions would live in the root `clippy.toml` (neither exists
-right now). Run them locally with:
+test-only exemptions live in the root `clippy.toml`. Run them locally with:
 
 ```sh
 cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -260,9 +268,8 @@ cargo clippy --locked -p swarmy-llm --no-default-features --all-targets -- -D wa
   Fix mechanically with the compiler suggestion.
 - `clippy::todo`, `clippy::unimplemented`, `clippy::dbg_macro`: none of
   these land in the tree.
-- `unsafe_code` (rustc): denied workspace-wide; the kernel and
-  FoundationDB boundaries opt out per function with a reason and a SAFETY
-  comment.
+- `unsafe_code` (rustc): denied workspace-wide; the FoundationDB boot and the
+  NBD ioctl wrapper opt in per function with a reason and a SAFETY comment.
 
 These structural checks fail CI rather than asking for exceptions. Run them
 locally the same way CI does:
@@ -291,9 +298,9 @@ locally the same way CI does:
 
 Deliberately not enforced by Clippy: `unwrap_used`, `print_stdout`, and
 `print_stderr`. `allow-unwrap-in-tests` covers only `#[cfg(test)]` code, so
-denying `unwrap_used` would need a per-file exception in each of the 65
+denying `unwrap_used` would need a per-file exception in each of the 67
 integration-test files that idiomatically panic on failure; the print denies
-would need one in each of the 21 test and 6 example files that log skip
+would need one in each of the 15 test and 7 example files that log skip
 diagnostics and progress, plus the same boilerplate in every new test file.
 The production half is enforced instead by the `no-unwrap-in-libraries` and
 `no-print-in-libraries` ast-grep rules above, which exclude test modules and
@@ -350,11 +357,10 @@ Complexity, nesting, and swallowed errors fail the build through
   stays under 96 lines through one shared checked constructor for TOML and
   environment inputs.
 
-Integration tests that need FoundationDB, NATS, or SeaweedFS get them from
-`scripts/dev-stack.sh start`, which writes connection settings to `.dev/env`.
-Source that file before running such tests. Tests must skip cleanly, not
-fail, when the relevant environment variable is absent locally; CI must fail
-when a required stack setting is missing.
+Integration tests get FoundationDB, NATS, and SeaweedFS from
+`scripts/dev-stack.sh start` (see `docs/DEV.md`, "Environment and tests").
+Tests must skip cleanly, not fail, when the relevant environment variable is
+absent locally; CI must fail when a required stack setting is missing.
 
 Some suites need root and a real kernel, so they skip on CI's hosted runners
 and are never run automatically. They are run by hand, by whoever changes the
@@ -464,7 +470,7 @@ keep its own disk in order. The rules, which the task prompt repeats:
   To update the laptop CLI, build it on the dev node with full features and
   copy the binary back, or use a CI-built binary.
 
-- The Codex fleet's lanes share one ChatGPT usage limit; when it trips every
+- The fleet's lanes share one ChatGPT usage limit; when it trips every
   running agent stops at once and the instances are retained for resume. The
   provider quota goal removes this.
 - After switching branches, run `cargo build --workspace` before trusting a
@@ -477,14 +483,7 @@ keep its own disk in order. The rules, which the task prompt repeats:
 2. `tasky --json goal list --project swarmy` for the goals, then
    `tasky --json task ready --project swarmy` for what can start. Activate the
    next goal only when the one before it is merged.
-3. Locally: `make install`, `make dev-tools`, `swarmy dev up`, `swarmy doctor`.
-   `swarmy auth ls` shows which providers have credentials in the local store.
-   (These commands change under the swarm-model goal; its docs task updates
-   this section.)
-4. Against a node: `swarmy remote up NAME`, `swarmy remote connect NAME`,
-   `swarmy dev up --remote NAME`, then `swarmy remote down NAME` when done;
-   it terminates the instance and deletes its key pair.
-5. To check providers end to end: `scripts/providers/smoke.sh` with
-   `SWARMY_DEFAULT_IMAGE` set to a registered image and model overrides for
-   Bedrock (`us.` inference profile ids), Azure (deployment name), and Google
-   (a Gemini 3 model).
+3. Local bring-up, remotes, and provider checks live in `docs/DEV.md`,
+   `docs/REMOTE.md`, and `docs/providers.md` and are not repeated here.
+   (Those commands change under the swarm-model goal; its docs task updates
+   those documents.)
