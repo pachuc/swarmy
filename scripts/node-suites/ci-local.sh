@@ -18,8 +18,17 @@ export CI=true
 cd ~/chaos
 git fetch -q origin master "$branch" && git checkout -q -B suite "${REV:-origin/$branch}" || { echo "checkout failed"; echo "SUITES_EXIT=1"; exit 2; }
 echo "== branch $branch at $(git rev-parse --short HEAD)"
+# This node also runs swarmyd and a tunnel that forwards the fleet's NATS on
+# port 4222; stop both so the dev stack owns its ports, as root-suites.sh does.
+sudo systemctl stop swarmyd swarmy-tunnel
+src=$(mktemp -u -d)
+cleanup() { git worktree remove --force "$src" 2>/dev/null; scripts/dev-stack.sh stop >/dev/null 2>&1; sudo systemctl start swarmy-tunnel swarmyd; }
+trap cleanup EXIT
 # The chaos harness builds under sudo and leaves root-owned files in target/.
 sudo chown -R "$(id -un):$(id -gn)" "$(readlink -f target)"
+# The repository checks run in a clean worktree: this checkout's .dev is a
+# symlink to another disk, which git refuses to inspect.
+git worktree add -q --detach "$src" HEAD
 rc=0
 step() {
   echo "== $*"
@@ -27,10 +36,12 @@ step() {
 }
 
 # lint
+cd "$src"
 step scripts/check-public-ids.sh
 step scripts/check-docs-accuracy.py
 step scripts/check-anyhow-in-libraries.sh
 step ast-grep scan --config ast-grep/sgconfig.yml
+cd ~/chaos
 step cargo fmt --all --check
 step cargo build --locked -p swarmy-cli --no-default-features
 step cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -53,7 +64,10 @@ step cargo test --locked -p swarmy-cli --features remote -- --skip dev_up_run_re
 
 # workspace-tests, e2e-and-chaos and cli-session need the dev stack.
 scripts/dev-stack.sh stop >/dev/null 2>&1 || true
-scripts/dev-stack.sh start 2>&1 | tail -2
+if ! scripts/dev-stack.sh start > ~/ci-local-stack.log 2>&1; then
+  tail -5 ~/ci-local-stack.log; echo "CI_STEP_FAIL: dev stack did not start"; echo "SUITES_EXIT=1"; exit 1
+fi
+tail -2 ~/ci-local-stack.log
 set -a; . .dev/env; set +a
 step cargo build --workspace --locked
 step cargo test --workspace --locked --exclude swarmy-e2e
