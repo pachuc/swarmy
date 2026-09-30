@@ -541,8 +541,9 @@ mod retry_tests {
 
     /// Drive `Gateway::stream` with the fake provider's scripted response:
     /// it yields only `PartDone` plus completion (zero incremental chunks),
-    /// so the response reports `streamed == Some(false)`. Counting
-    /// `PartDone` as a chunk would report `Some(true)` here.
+    /// so the response reports `streamed == Some(false)`. This pins the
+    /// scripted shape the services see; `one_text_delta_plus_part_done_is_single_chunk`
+    /// beside it fails if `PartDone` ever counts as a chunk.
     #[tokio::test]
     async fn fake_provider_response_is_unstreamed() {
         let Some(gateway) = stream_test_gateway().await else {
