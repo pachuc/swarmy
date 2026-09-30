@@ -15,23 +15,24 @@ struct Fixture {
     directory: std::path::PathBuf,
     db: Arc<Database>,
     root: Subspace,
+    // Held for its Drop: removes the test subspace even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 impl Fixture {
     fn new() -> Option<Self> {
-        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
-        swarmy_testkit::boot_fdb();
-        let name = format!("swarmy-snapshot-test-{}", Ulid::generate());
-        let db = Arc::new(Database::new(Some(&cluster)).unwrap());
-        let root = Subspace::all().subspace(&(name.clone(),));
+        let stack = swarmy_testkit::Stack::load("volumes")?;
+        let db = Arc::new(Database::new(Some(&stack.cluster)).unwrap());
+        let root = Subspace::all().subspace(&(stack.prefix.clone(),));
         Some(Self {
             store: Store::with_subspace(
                 db.clone(),
                 root.clone(),
                 Arc::new(MemoryBlobStore::default()),
             ),
-            directory: std::env::temp_dir().join(name),
+            directory: std::env::temp_dir().join(&stack.prefix),
             db,
             root,
+            _guard: swarmy_testkit::StackGuard::new(&stack),
         })
     }
 

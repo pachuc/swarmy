@@ -24,14 +24,14 @@ struct Fixture {
     credentials: CredentialStore,
     db: Arc<Database>,
     root: Subspace,
+    // Held for its Drop: removes the test subspace even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 impl Fixture {
     fn new() -> Option<Self> {
-        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
-        swarmy_testkit::boot_fdb();
-        let db = Arc::new(Database::new(Some(&cluster)).unwrap());
-        let root =
-            Subspace::all().subspace(&("credential-tests", ulid::Ulid::generate().to_string()));
+        let stack = swarmy_testkit::Stack::load("credentials")?;
+        let db = Arc::new(Database::new(Some(&stack.cluster)).unwrap());
+        let root = Subspace::all().subspace(&(stack.prefix.clone(),));
         let store = Store::with_subspace(
             db.clone(),
             root.clone(),
@@ -41,6 +41,7 @@ impl Fixture {
             credentials: store.credentials(Keyring::from_bytes([7; 32])),
             db,
             root,
+            _guard: swarmy_testkit::StackGuard::new(&stack),
         })
     }
 }

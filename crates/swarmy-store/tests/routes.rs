@@ -14,18 +14,20 @@ use swarmy_store::{AgentSessionOptions, CredentialKey, Store, StoreError, blob::
 struct Fixture {
     store: Store,
     keyring: Keyring,
+    // Held for its Drop: removes the test subspace even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 
 impl Fixture {
     fn new() -> Option<Self> {
-        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
-        swarmy_testkit::boot_fdb();
-        let db = Arc::new(Database::new(Some(&cluster)).unwrap());
-        let root = Subspace::all().subspace(&("route-tests", ulid::Ulid::generate().to_string()));
+        let stack = swarmy_testkit::Stack::load("routes")?;
+        let db = Arc::new(Database::new(Some(&stack.cluster)).unwrap());
+        let root = Subspace::all().subspace(&(stack.prefix.clone(),));
         let store = Store::with_subspace(db, root, Arc::new(MemoryBlobStore::default()));
         Some(Self {
             store,
             keyring: Keyring::from_bytes([13; 32]),
+            _guard: swarmy_testkit::StackGuard::new(&stack),
         })
     }
 

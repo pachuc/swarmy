@@ -222,7 +222,14 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
     let Some(bucket) = swarmy_core::test_support::optional_env("SWARMY_S3_TEST_BUCKET") else {
         return;
     };
-    let mut settings = Settings::load().unwrap().settings;
+    let mut settings = swarmy_testkit::test_settings(&[
+        "SWARMY_FDB_CLUSTER_FILE",
+        "SWARMY_S3_ENDPOINT",
+        "SWARMY_S3_ACCESS_KEY",
+        "SWARMY_S3_SECRET_KEY",
+        "SWARMY_S3_BUCKET",
+        "SWARMY_S3_REGION",
+    ]);
     settings.s3.bucket = bucket;
     settings.s3.prefix = swarmy_config::ObjectPrefix::default();
     assert!(

@@ -8,10 +8,6 @@ use std::{
     time::Duration,
 };
 
-use foundationdb::{
-    Database,
-    directory::{Directory, DirectoryLayer},
-};
 use futures::future::BoxFuture;
 use jiff::Timestamp;
 use serde_json::{Value, json};
@@ -148,25 +144,24 @@ fn partial_batch(id: SessionId) -> Vec<Event> {
 
 #[tokio::test]
 async fn partial_tool_batch_resumes_with_lease_renewal() {
-    let (Some(cluster), Some(url)) = (
-        swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE"),
-        swarmy_testkit::require_stack("SWARMY_NATS_URL"),
-    ) else {
+    let Some(stack) = swarmy_testkit::Stack::load("worker") else {
         return;
     };
-    swarmy_testkit::boot_fdb();
-    let prefix = format!("worker_slow_{}", Ulid::generate());
+    let _guard = swarmy_testkit::StackGuard::new(&stack);
+    let prefix = stack.prefix.clone();
     let calls = Arc::new(AtomicUsize::new(0));
-    let config = config(url.clone(), &prefix, calls.clone());
+    let config = config(stack.nats_url.clone(), &prefix, calls.clone());
     let blobs = Arc::new(MemoryBlobStore::default());
     let store = Store::open(
-        Some(std::path::Path::new(&cluster)),
+        Some(std::path::Path::new(&stack.cluster)),
         Some(std::slice::from_ref(&prefix)),
         blobs.clone(),
     )
     .await
     .unwrap();
-    let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
+    let bus = Bus::connect(&stack.nats_url, config.bus.clone())
+        .await
+        .unwrap();
     let queue = WorkQueue::Runnable(7);
     bus.setup(std::slice::from_ref(&queue)).await.unwrap();
     let mut messages = bus.consume::<Nudge>(&queue).await.unwrap();
@@ -240,7 +235,6 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
     assert!(queued, "tool never reached the queue point");
     assert!(expiries.len() >= 3, "lease was not renewed repeatedly");
     assert_queued_tool_round(&store, id, &calls).await;
-    cleanup(&cluster, &url, &prefix).await;
 }
 
 async fn assert_queued_tool_round(store: &Store, id: SessionId, calls: &AtomicUsize) {
@@ -318,52 +312,28 @@ async fn assert_queued_tool_round(store: &Store, id: SessionId, calls: &AtomicUs
     );
 }
 
-async fn cleanup(cluster: &str, url: &str, prefix: &str) {
-    let db = Database::new(Some(cluster)).unwrap();
-    let path = vec![prefix.to_owned()];
-    db.run(|trx, _| {
-        let path = &path;
-        async move {
-            DirectoryLayer::default()
-                .remove_if_exists(&trx, path)
-                .await?;
-            Ok(())
-        }
-    })
-    .await
-    .unwrap();
-    let context = async_nats::jetstream::new(async_nats::connect(url).await.unwrap());
-    for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
-        context
-            .delete_stream(format!("{prefix}_{stream}"))
-            .await
-            .unwrap();
-    }
-}
-
 mod routing;
 
 #[tokio::test]
 async fn deleted_computer_refuses_remote_tools_with_durable_message() {
-    let (Some(cluster), Some(url)) = (
-        swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE"),
-        swarmy_testkit::require_stack("SWARMY_NATS_URL"),
-    ) else {
+    let Some(stack) = swarmy_testkit::Stack::load("worker") else {
         return;
     };
-    swarmy_testkit::boot_fdb();
-    let prefix = format!("worker_slow_{}", Ulid::generate());
+    let _guard = swarmy_testkit::StackGuard::new(&stack);
+    let prefix = stack.prefix.clone();
     let calls = Arc::new(AtomicUsize::new(0));
-    let config = config(url.clone(), &prefix, calls.clone());
+    let config = config(stack.nats_url.clone(), &prefix, calls.clone());
     let blobs = Arc::new(MemoryBlobStore::default());
     let store = Store::open(
-        Some(std::path::Path::new(&cluster)),
+        Some(std::path::Path::new(&stack.cluster)),
         Some(std::slice::from_ref(&prefix)),
         blobs.clone(),
     )
     .await
     .unwrap();
-    let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
+    let bus = Bus::connect(&stack.nats_url, config.bus.clone())
+        .await
+        .unwrap();
     let queue = WorkQueue::Runnable(7);
     bus.setup(std::slice::from_ref(&queue)).await.unwrap();
     let mut messages = bus.consume::<Nudge>(&queue).await.unwrap();
@@ -434,7 +404,6 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
         Event::ToolCallCompleted { result: swarmy_core::ToolResult::Error { error }, .. }
         if error == "this session's computer has been deleted; create a new session to run tools"))
     );
-    cleanup(&cluster, &url, &prefix).await;
 }
 
 mod agent_settings;

@@ -49,7 +49,6 @@ async fn placement_prefers_scratch_node_then_falls_back_when_full() {
     assert_eq!(fallback.node_id, f.nodes[0]);
     f.store.release(&fallback).await.unwrap();
     f.store.release(&occupied).await.unwrap();
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -86,20 +85,18 @@ async fn unrouted_ephemeral_first_attempt_keeps_gateway_pool_selection() {
     );
     assert_eq!(attempt.provider, "fake");
     assert_eq!(attempt.entry, None, "gateway must choose the pool entry");
-    f.cleanup().await;
 }
 
 struct Fixture {
     store: Store,
     bus: Bus,
     worker: Worker,
-    cluster: String,
-    url: String,
-    prefix: String,
     agent: AgentId,
     nodes: [NodeId; 2],
     manifest: ManifestId,
     clock: Arc<TestClock>,
+    // Held for its Drop: removes the test keys and streams even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 
 /// A shared manual clock for the store and the worker. Lease-expiry tests
@@ -146,11 +143,10 @@ impl Fixture {
     }
 
     async fn new() -> Option<Self> {
-        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
-        let url = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
-        swarmy_testkit::boot_fdb();
-        let prefix = format!("routing_{}", Ulid::generate());
-        let mut config = config(url.clone(), &prefix, Arc::default());
+        let stack = swarmy_testkit::Stack::load("routing")?;
+        let guard = swarmy_testkit::StackGuard::new(&stack);
+        let prefix = stack.prefix.clone();
+        let mut config = config(stack.nats_url.clone(), &prefix, Arc::default());
         config.harness.tools.register(Box::new(swarmy_tools::Bash));
         config
             .harness
@@ -162,14 +158,16 @@ impl Fixture {
         let clock = Arc::new(TestClock::new());
         let tick = clock.clone();
         let store = Store::open(
-            Some(std::path::Path::new(&cluster)),
+            Some(std::path::Path::new(&stack.cluster)),
             Some(std::slice::from_ref(&prefix)),
             blobs.clone(),
         )
         .await
         .unwrap()
         .with_clock(move || tick.now());
-        let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
+        let bus = Bus::connect(&stack.nats_url, config.bus.clone())
+            .await
+            .unwrap();
         bus.setup(&[]).await.unwrap();
         let nodes = [
             NodeId::from_ulid(Ulid::from_parts(1, 1)),
@@ -215,13 +213,11 @@ impl Fixture {
             store,
             bus,
             worker,
-            cluster,
-            url,
-            prefix,
             agent: AgentId::from_ulid(Ulid::generate()),
             clock,
             nodes,
             manifest,
+            _guard: guard,
         })
     }
 
@@ -440,9 +436,6 @@ impl Fixture {
             .unwrap()
     }
 
-    async fn cleanup(self) {
-        cleanup(&self.cluster, &self.url, &self.prefix).await;
-    }
 }
 
 #[tokio::test]
@@ -490,7 +483,6 @@ async fn two_nodes_share_agent_placement_across_sessions_and_skip_full_nodes() {
             .iter()
             .any(is_notice)
     );
-    f.cleanup().await;
 }
 
 fn is_notice(event: &Event) -> bool {
@@ -557,7 +549,6 @@ async fn recovery_waits_for_writer_lease_before_granting_new_epoch() {
     let claim = f.claim(delivery.value.clone(), current).await;
     f.complete(&claim).await.unwrap();
     delivery.acknowledge().await.unwrap();
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -602,7 +593,6 @@ async fn expired_lease_moves_next_call_and_eviction_has_distinct_durable_notice(
     let claim = f.claim(delivery.value.clone(), placement).await;
     f.complete(&claim).await.unwrap();
     delivery.acknowledge().await.unwrap();
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -707,7 +697,6 @@ async fn node_lost_mid_call_fails_once_and_delayed_retry_has_no_second_notice() 
     assert!(events.iter().any(|event| matches!(event,
         Event::ToolCallCompleted { request_id, result: ToolResult::Completed { .. }, .. }
         if *request_id == claim.job.request_id)));
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -802,7 +791,6 @@ async fn named_agent_node_loss_notifies_every_session_once() {
         let events = f.store.read_events(id, 0, 64).await.unwrap();
         assert_eq!(events.iter().filter(|event| is_notice(event)).count(), 1);
     }
-    f.cleanup().await;
 }
 
 async fn assert_failure_notice(
@@ -910,7 +898,6 @@ async fn unclaimed_dispatch_expires_without_a_rebuild_notice_or_stuck_job() {
     let claim = f.claim(delivery.value.clone(), current).await;
     f.complete(&claim).await.unwrap();
     delivery.acknowledge().await.unwrap();
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -977,7 +964,6 @@ async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
         .await
         .unwrap();
     assert!(after_expiry.epoch > short.epoch);
-    fixture.cleanup().await;
 }
 
 #[tokio::test]
@@ -1020,7 +1006,6 @@ async fn deleted_computer_fails_pending_sandbox_call_without_replacement() {
         f.store.fetch_session(id).await.unwrap().unwrap().state,
         SessionState::Runnable
     );
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -1073,7 +1058,6 @@ async fn agent_call_status_expires_and_rejects_replaced_epochs() {
             swarmy_store::FenceError::PlacementMismatch
         ))
     ));
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -1132,5 +1116,4 @@ async fn update_plan_runs_in_store_without_placing_a_computer() {
         Event::ToolCallCompleted { result: ToolResult::Completed { title, output, .. }, .. }
         if title == "update_plan" && serde_json::from_str::<Value>(output).unwrap() == plan
     )));
-    fixture.cleanup().await;
 }

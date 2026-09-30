@@ -31,6 +31,8 @@ struct Fixture {
     directory: tempfile::TempDir,
     db: Arc<Database>,
     root: Subspace,
+    // Held for its Drop: removes the test subspace even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 
 #[derive(Debug)]
@@ -90,12 +92,11 @@ impl ObjectStore for FailOneDelete {
 }
 impl Fixture {
     fn new() -> Option<Self> {
-        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
-        swarmy_testkit::boot_fdb();
+        let stack = swarmy_testkit::Stack::load("gc")?;
         let directory = tempfile::tempdir().unwrap();
         let objects = Arc::new(LocalFileSystem::new_with_prefix(directory.path()).unwrap());
-        let db = Arc::new(Database::new(Some(&cluster)).unwrap());
-        let root = Subspace::all().subspace(&(format!("swarmy-gc-test-{}", Ulid::generate()),));
+        let db = Arc::new(Database::new(Some(&stack.cluster)).unwrap());
+        let root = Subspace::all().subspace(&(stack.prefix.clone(),));
         let store = Store::with_subspace(
             db.clone(),
             root.clone(),
@@ -107,6 +108,7 @@ impl Fixture {
             directory,
             db,
             root,
+            _guard: swarmy_testkit::StackGuard::new(&stack),
         })
     }
 

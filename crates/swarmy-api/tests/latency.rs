@@ -61,11 +61,20 @@ async fn api_first_fake_token_stays_within_five_ms_of_direct_append() {
 
 async fn setup(image: &str) -> BenchFixture {
     swarmy_testkit::boot_fdb();
-    let settings = swarmy_config::Settings::load().unwrap().settings;
+    // The benchmark reads no host configuration: provider, model, and store
+    // location come from compiled defaults over the named stack variables.
+    let mut settings = swarmy_testkit::test_settings(&[
+        "SWARMY_FDB_CLUSTER_FILE",
+        "SWARMY_STORE_DIRECTORY",
+        "SWARMY_NATS_URL",
+        "SWARMY_MODEL",
+    ]);
     assert_eq!(
         settings.selection.provider, "fake",
         "benchmark needs the fake provider stack"
     );
+    settings.store.directory = format!("latency-bench-{}", Ulid::generate());
+    settings.bus.prefix = format!("latency-bench-{}", Ulid::generate());
     let opened = Store::open_store(&settings).await.unwrap();
     let store = opened.store;
     let bus = Bus::connect(&settings.bus.nats_url, settings.bus.bus_config().unwrap())
