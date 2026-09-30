@@ -671,8 +671,7 @@ impl Store {
             let (_, request): (i64, Vec<u8>) = prefix
                 .unpack(index_key)?;
             let record_key = self.keys().usage_record(swarmy_core::RequestId::from_bytes(
-                request
-                    .try_into()?,
+                request.as_slice().try_into()?,
             ));
             stale.push(index_key.clone());
             stale.push(record_key);
@@ -718,8 +717,7 @@ impl Store {
             let (_, request): (i64, Vec<u8>) = prefix
                 .unpack(index_key)?;
             let record_key = self.keys().usage_record(swarmy_core::RequestId::from_bytes(
-                request
-                    .try_into()?,
+                request.as_slice().try_into()?,
             ));
             pairs.push((index_key.clone(), record_key));
         }
