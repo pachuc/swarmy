@@ -376,6 +376,7 @@ async fn inventory(
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     // Tested directly because `run` needs saved state, a tunnel, and SSH to a node.
     #[test]

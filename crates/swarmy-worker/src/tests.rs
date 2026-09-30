@@ -1,19 +1,13 @@
-#[path = "../../swarmy-store/tests/support/mod.rs"]
-mod image_fixture;
-
+#![deny(clippy::disallowed_methods)]
 use std::{
     collections::BTreeSet,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
-use foundationdb::{
-    Database,
-    directory::{Directory, DirectoryLayer},
-};
 use futures::future::BoxFuture;
 use jiff::Timestamp;
 use serde_json::{Value, json};
@@ -30,8 +24,6 @@ use ulid::Ulid;
 
 use crate::{config::Config, worker::Worker};
 
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-
 struct SlowTool(Arc<AtomicUsize>);
 impl Tool for SlowTool {
     fn name(&self) -> &'static str {
@@ -46,6 +38,12 @@ impl Tool for SlowTool {
     fn execute(&self, _: Value) -> BoxFuture<'_, Result<String, String>> {
         Box::pin(async {
             self.0.fetch_add(1, Ordering::SeqCst);
+            // The tool must genuinely outlast the 600 ms step lease several
+            // times over, or there is no renewal to observe.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the slow tool duration is the renewal under test"
+            )]
             sleep(Duration::from_millis(1600)).await;
             Ok("done".into())
         })
@@ -146,25 +144,24 @@ fn partial_batch(id: SessionId) -> Vec<Event> {
 
 #[tokio::test]
 async fn partial_tool_batch_resumes_with_lease_renewal() {
-    let (Some(cluster), Some(url)) = (
-        swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
-        swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
-    ) else {
+    let Some(stack) = swarmy_testkit::Stack::load("worker") else {
         return;
     };
-    NETWORK.get_or_init(swarmy_store::boot);
-    let prefix = format!("worker_slow_{}", Ulid::generate());
+    let _guard = swarmy_testkit::StackGuard::new(&stack);
+    let prefix = stack.prefix.clone();
     let calls = Arc::new(AtomicUsize::new(0));
-    let config = config(url.clone(), &prefix, calls.clone());
+    let config = config(stack.nats_url.clone(), &prefix, calls.clone());
     let blobs = Arc::new(MemoryBlobStore::default());
     let store = Store::open(
-        Some(std::path::Path::new(&cluster)),
+        Some(std::path::Path::new(&stack.cluster)),
         Some(std::slice::from_ref(&prefix)),
         blobs.clone(),
     )
     .await
     .unwrap();
-    let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
+    let bus = Bus::connect(&stack.nats_url, config.bus.clone())
+        .await
+        .unwrap();
     let queue = WorkQueue::Runnable(7);
     bus.setup(std::slice::from_ref(&queue)).await.unwrap();
     let mut messages = bus.consume::<Nudge>(&queue).await.unwrap();
@@ -186,7 +183,7 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
                 plan: Vec::new(),
             },
             Timestamp::now(),
-            image_fixture::image(&store).await,
+            swarmy_testkit::image(&store).await,
         )
         .await
         .unwrap();
@@ -209,9 +206,13 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
     let mut queued = false;
     timeout(Duration::from_secs(10), async {
         loop {
+            // The tick keeps driving the step future while renewal is
+            // observed; yielding without a bound would busy-loop.
+            #[expect(clippy::disallowed_methods, reason = "select tick drives the step future while renewals are observed")]
+            let tick = sleep(Duration::from_millis(50));
             tokio::select! {
                 result = &mut work => { result.unwrap(); break; }
-                () = sleep(Duration::from_millis(50)) => {
+                () = tick => {
                     if !queued && calls.load(Ordering::SeqCst) > 0 {
                         let message = Message {
                             id: MessageId::from_ulid(Ulid::generate()),
@@ -234,7 +235,6 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
     assert!(queued, "tool never reached the queue point");
     assert!(expiries.len() >= 3, "lease was not renewed repeatedly");
     assert_queued_tool_round(&store, id, &calls).await;
-    cleanup(&cluster, &url, &prefix).await;
 }
 
 async fn assert_queued_tool_round(store: &Store, id: SessionId, calls: &AtomicUsize) {
@@ -312,52 +312,28 @@ async fn assert_queued_tool_round(store: &Store, id: SessionId, calls: &AtomicUs
     );
 }
 
-async fn cleanup(cluster: &str, url: &str, prefix: &str) {
-    let db = Database::new(Some(cluster)).unwrap();
-    let path = vec![prefix.to_owned()];
-    db.run(|trx, _| {
-        let path = &path;
-        async move {
-            DirectoryLayer::default()
-                .remove_if_exists(&trx, path)
-                .await?;
-            Ok(())
-        }
-    })
-    .await
-    .unwrap();
-    let context = async_nats::jetstream::new(async_nats::connect(url).await.unwrap());
-    for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
-        context
-            .delete_stream(format!("{prefix}_{stream}"))
-            .await
-            .unwrap();
-    }
-}
-
 mod routing;
 
 #[tokio::test]
 async fn deleted_computer_refuses_remote_tools_with_durable_message() {
-    let (Some(cluster), Some(url)) = (
-        swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
-        swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
-    ) else {
+    let Some(stack) = swarmy_testkit::Stack::load("worker") else {
         return;
     };
-    NETWORK.get_or_init(swarmy_store::boot);
-    let prefix = format!("worker_slow_{}", Ulid::generate());
+    let _guard = swarmy_testkit::StackGuard::new(&stack);
+    let prefix = stack.prefix.clone();
     let calls = Arc::new(AtomicUsize::new(0));
-    let config = config(url.clone(), &prefix, calls.clone());
+    let config = config(stack.nats_url.clone(), &prefix, calls.clone());
     let blobs = Arc::new(MemoryBlobStore::default());
     let store = Store::open(
-        Some(std::path::Path::new(&cluster)),
+        Some(std::path::Path::new(&stack.cluster)),
         Some(std::slice::from_ref(&prefix)),
         blobs.clone(),
     )
     .await
     .unwrap();
-    let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
+    let bus = Bus::connect(&stack.nats_url, config.bus.clone())
+        .await
+        .unwrap();
     let queue = WorkQueue::Runnable(7);
     bus.setup(std::slice::from_ref(&queue)).await.unwrap();
     let mut messages = bus.consume::<Nudge>(&queue).await.unwrap();
@@ -379,7 +355,7 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
                 plan: Vec::new(),
             },
             Timestamp::now(),
-            image_fixture::image(&store).await,
+            swarmy_testkit::image(&store).await,
         )
         .await
         .unwrap();
@@ -428,7 +404,6 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
         Event::ToolCallCompleted { result: swarmy_core::ToolResult::Error { error }, .. }
         if error == "this session's computer has been deleted; create a new session to run tools"))
     );
-    cleanup(&cluster, &url, &prefix).await;
 }
 
 mod agent_settings;

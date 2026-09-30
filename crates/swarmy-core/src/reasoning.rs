@@ -56,6 +56,7 @@ impl std::str::FromStr for ReasoningEffort {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     #[test]

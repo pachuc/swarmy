@@ -13,7 +13,7 @@ async fn turn_boundaries_are_atomic_and_fence_expired_and_replaced_workers() {
         .create_session(
             &session,
             Timestamp::now(),
-            image_fixture::image(store).await,
+            swarmy_testkit::image(store).await,
         )
         .await
         .unwrap();
@@ -83,7 +83,6 @@ async fn turn_boundaries_are_atomic_and_fence_expired_and_replaced_workers() {
         .set_state(id, SessionState::Runnable, Some(&live), Timestamp::now())
         .await
         .unwrap();
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -170,7 +169,6 @@ async fn submission_and_idle_commit_all_records_together() {
             .await,
         Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -189,7 +187,7 @@ async fn concurrent_user_appends_admit_one_message_and_index_it_atomically() {
         .create_session(
             &session,
             Timestamp::now(),
-            image_fixture::image(store).await,
+            swarmy_testkit::image(store).await,
         )
         .await
         .unwrap();
@@ -242,7 +240,6 @@ async fn concurrent_user_appends_admit_one_message_and_index_it_atomically() {
     assert_eq!(turn, Some(winner.id));
     assert_eq!(tail, store.read_events(id, 0, 64).await.unwrap());
     assert!(store.append_user_message(id, 1, &winner).await.is_err());
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -323,7 +320,6 @@ async fn tool_fold_and_inference_share_the_lease_fence_and_commit() {
             .as_deref(),
         Some("input")
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -422,7 +418,6 @@ async fn terminal_inference_commits_response_snapshot_and_idle_under_its_claim()
         }
     ));
     assert!(store.scan_inflight(None, 64).await.unwrap().is_empty());
-    test.cleanup().await;
 }
 
 async fn terminal_completion(store: &Store, id: SessionId) -> swarmy_store::InferenceCompletion {
@@ -506,7 +501,7 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
         .create_session(
             &session,
             Timestamp::now(),
-            image_fixture::image(store).await,
+            swarmy_testkit::image(store).await,
         )
         .await
         .unwrap();
@@ -587,7 +582,6 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
             .unwrap()
             .is_empty()
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -650,7 +644,6 @@ async fn queued_during_terminal_inference_starts_next_step_in_order() {
             .unwrap()
             .is_empty()
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -689,7 +682,6 @@ async fn queued_rows_do_not_corrupt_session_listing_and_large_bodies_use_blobs()
     assert!(
         matches!(&delivered[1], Event::MessageAppended { message: next, .. } if next == &message)
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -727,7 +719,6 @@ async fn queued_input_survives_an_interrupt_before_newer_input() {
         .await
         .unwrap();
     assert!(matches!(&events[1], Event::MessageAppended { message: next, .. } if next == &message));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -792,7 +783,6 @@ async fn queued_input_is_delivered_in_bounded_ordered_batches() {
             .unwrap()
             .is_empty()
     );
-    test.cleanup().await;
 }
 
 async fn live_lease(store: &Store, id: SessionId) -> swarmy_core::Lease {
@@ -847,7 +837,7 @@ async fn queued_message_survives_main_and_side_rollover_exactly_once() {
     let store = &test.store;
     // Main rollover: waiting input queued while leased must move to the fresh
     // main, wake it runnable, and drain exactly once.
-    let image = image_fixture::image(store).await;
+    let image = swarmy_testkit::image(store).await;
     let agent = store
         .create_agent("rollover", image, "", timestamp(0), None)
         .await
@@ -937,5 +927,4 @@ async fn queued_message_survives_main_and_side_rollover_exactly_once() {
         Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     drain_transferred_once(store, next_side, &side_waiting).await;
-    test.cleanup().await;
 }

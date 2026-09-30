@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use object_store::{ObjectStore, memory::InMemory};
 use std::sync::Arc;
 use swarmy_core::CHUNK_SIZE;
@@ -119,13 +120,12 @@ async fn read_all_chunks(device: &Arc<VolumeDevice>, ahead: u32) {
             vec![index + 1; CHUNK_SIZE as usize]
         );
         if ahead != 0 && index > 0 && index < 15 {
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                while device.stats().readahead_fetches < u64::from(index) {
-                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                }
-            })
-            .await
-            .unwrap();
+            swarmy_testkit::eventually(
+                "readahead catches up",
+                std::time::Duration::from_secs(5),
+                async || (device.stats().readahead_fetches >= u64::from(index)).then_some(()),
+            )
+            .await;
         }
     }
 }

@@ -222,6 +222,7 @@ pub fn vertex_auth_with(
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use jsonwebtoken::{DecodingKey, Validation};
     use rsa::{

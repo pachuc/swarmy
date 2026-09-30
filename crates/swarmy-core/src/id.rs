@@ -115,6 +115,7 @@ impl fmt::Display for RequestId {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     #[test]

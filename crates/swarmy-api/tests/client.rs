@@ -1,20 +1,16 @@
+#![deny(clippy::disallowed_methods)]
 //! Exercise the public client against the real HTTP router and development services.
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use swarmy_api::{AppState, router};
 use swarmy_api_types as api;
 use swarmy_bus::{Bus, Config, LiveFeed};
 use swarmy_client::{Client, Error, StreamItem};
 use swarmy_core::{
-    CHUNK_SIZE, ContentHash, Event as StoredEvent, ImageTag, LiveTokenDelta, ManifestHeader,
-    ManifestId, Message, MessageId, MessageRole, Part, SessionId, ignore_best_effort,
+    Event as StoredEvent, LiveTokenDelta, Message, MessageId, MessageRole, Part, SessionId,
+    ignore_best_effort,
 };
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use ulid::Ulid;
-
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 
 struct Fixture {
     client: Client,
@@ -22,6 +18,8 @@ struct Fixture {
     bus: Bus,
     address: std::net::SocketAddr,
     server: tokio::task::JoinHandle<Result<(), std::io::Error>>,
+    // Held for its Drop: removes the test keys and streams even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -84,33 +82,12 @@ impl Fixture {
 }
 
 async fn fixture() -> Option<Fixture> {
-    let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-    let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-    NETWORK.get_or_init(swarmy_store::boot);
-    let store = Store::open(
-        Some(std::path::Path::new(&cluster)),
-        Some(&["client-api-test".into(), Ulid::generate().to_string()]),
-        Arc::new(MemoryBlobStore::default()),
-    )
-    .await
-    .unwrap();
-    let manifest = ManifestId::from_ulid(Ulid::generate());
-    store
-        .put_manifest(
-            manifest,
-            &ManifestHeader {
-                size: u64::from(CHUNK_SIZE),
-                chunk_size: CHUNK_SIZE,
-                root_hash: ContentHash::ZERO,
-            },
-        )
+    let stack = swarmy_testkit::Stack::load("client")?;
+    let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    swarmy_testkit::image(&store).await;
+    let bus = Bus::connect(&stack.nats_url, Config::default())
         .await
         .unwrap();
-    store
-        .put_image("fixture", &ImageTag("test".into()), manifest, None)
-        .await
-        .unwrap();
-    let bus = Bus::connect(&nats, Config::default()).await.unwrap();
     let state = AppState::new(
         store.clone(),
         bus.clone(),
@@ -128,6 +105,7 @@ async fn fixture() -> Option<Fixture> {
         bus,
         address,
         server,
+        _guard: guard,
     })
 }
 
@@ -381,7 +359,14 @@ async fn multiplexed_stream_resumes_and_rejects_rewind() {
         (api::LogId::Session(b.to_string()), 2)
     );
     f.append(a, "a3").await;
-    // Let the server's producer move ahead of the client's delivered cursor.
+    // Let the server's producer deliver the third event before the
+    // subscription changes: the rewind must be detected against a cursor
+    // the producer already advanced, and delivery has no read signal that
+    // does not consume the event the assertions below read.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "orders the subscription change after producer delivery with no peekable signal"
+    )]
     tokio::time::sleep(Duration::from_millis(200)).await;
     let handle = stream.subscription_handle();
     handle.set(sub(&[a, b], true));
@@ -399,6 +384,12 @@ async fn multiplexed_stream_resumes_and_rejects_rewind() {
     handle.set(desired.clone());
     let bus = f.bus.clone();
     tokio::spawn(async move {
+        // The delta must arrive after the subscription change is applied
+        // server-side; no acknowledgment exists, so the delay is the point.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "orders the delta after the subscription change across an async boundary with no ack"
+        )]
         tokio::time::sleep(Duration::from_millis(300)).await;
         bus.publish_live(
             LiveFeed::ApiTokenDeltas(a),

@@ -6,7 +6,7 @@ async fn setup(store: &Store) -> (AgentId, SessionId, Lease) {
     let agent = store
         .create_agent(
             "tommy",
-            image_fixture::image(store).await,
+            swarmy_testkit::image(store).await,
             "",
             Timestamp::now(),
             None,
@@ -145,7 +145,6 @@ async fn timer_tools_set_list_cancel_and_fence_retries() {
         ToolResult::Error { .. }
     ));
     assert!(store.list_timers(agent).await.unwrap().is_empty());
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -243,7 +242,6 @@ async fn due_timer_retries_busy_append_and_follows_summary_after_reopening_store
             .unwrap()
             .is_empty()
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -299,7 +297,6 @@ async fn failed_append_leaves_no_receipt_and_next_tick_retries() {
             .is_some()
     );
     assert_eq!(store.read_events(id, 0, 64).await.unwrap().len(), 2);
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -386,7 +383,6 @@ async fn timers_are_bounded_agent_scoped_and_retired_on_deletion() {
             .unwrap()
             .is_empty()
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -398,7 +394,7 @@ async fn side_conversation_timer_opens_missing_main_conversation() {
     let agent = store
         .create_agent(
             "side-only",
-            image_fixture::image(store).await,
+            swarmy_testkit::image(store).await,
             "",
             Timestamp::now(),
             None,
@@ -448,7 +444,6 @@ async fn side_conversation_timer_opens_missing_main_conversation() {
         SessionState::Runnable
     );
     assert!(store.get_by_agent(agent).await.unwrap().is_none());
-    test.cleanup().await;
 }
 
 async fn open_side(store: &Store, agent: AgentId) -> (SessionId, Lease) {
@@ -520,7 +515,6 @@ async fn idle_side_session_receives_its_own_timer() {
             seq: 2
         }
     );
-    test.cleanup().await;
 }
 
 /// A busy origin cannot take the note, so delivery falls back to the idle
@@ -550,7 +544,6 @@ async fn busy_origin_falls_back_to_the_idle_main_conversation() {
         store.fetch_session(side).await.unwrap().unwrap().state,
         SessionState::Leased
     );
-    test.cleanup().await;
 }
 
 async fn assert_delivery(store: &Store, main: SessionId, timer: &TimerRecord) {

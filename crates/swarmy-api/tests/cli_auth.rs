@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use serde_json::Value;
 use std::{
     fs,
@@ -5,16 +6,12 @@ use std::{
 };
 use swarmy_core::ignore_best_effort;
 
-#[path = "support/cli_bin.rs"]
-mod cli_bin;
-
-static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
-    std::sync::OnceLock::new();
-
 struct Fixture {
     dir: tempfile::TempDir,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     server: Option<std::thread::JoinHandle<()>>,
+    // Held for its Drop: removes the test keys and streams even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -28,8 +25,8 @@ impl Drop for Fixture {
 }
 impl Fixture {
     fn new() -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
+        let stack = swarmy_testkit::Stack::load("auth")?;
+        let guard = swarmy_testkit::StackGuard::new(&stack);
         let dir = tempfile::tempdir().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -37,8 +34,8 @@ impl Fixture {
         fs::create_dir(dir.path().join(".swarmy")).unwrap();
         let settings = swarmy_config::Settings {
             store: swarmy_config::StoreSettings {
-                cluster_file: cluster.clone().into(),
-                directory: format!("auth-test-{}", ulid::Ulid::generate()),
+                cluster_file: stack.cluster.clone().into(),
+                directory: stack.prefix.clone(),
             },
             api: swarmy_config::ApiSettings {
                 url: Some(endpoint),
@@ -63,8 +60,10 @@ impl Fixture {
             include_bytes!("../../swarmy-llm/tests/fixtures/auth.json"),
         )
         .unwrap();
-        NETWORK.get_or_init(swarmy_store::boot);
+        swarmy_testkit::boot_fdb();
         let directory = settings.store.directory;
+        let cluster = stack.cluster.clone();
+        let nats = stack.nats_url;
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
         let (ready, started) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
@@ -105,10 +104,12 @@ impl Fixture {
             dir,
             shutdown: Some(shutdown),
             server: Some(server),
+            // Held for its Drop: removes the test keys and streams even on panic.
+            _guard: guard,
         })
     }
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(cli_bin::bin("swarmy"));
+        let mut command = Command::new(swarmy_testkit::bin("swarmy"));
         for (name, _) in std::env::vars_os() {
             if name.to_string_lossy().starts_with("SWARMY_") {
                 command.env_remove(name);

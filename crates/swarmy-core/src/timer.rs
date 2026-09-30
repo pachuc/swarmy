@@ -56,6 +56,7 @@ pub struct CancelTimerArguments {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use serde_json::json;
 

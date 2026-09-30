@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -34,10 +35,14 @@ async fn tool_activity_caps_node_uploads_and_restores_idle_priority() {
     let start = Instant::now();
     let uploading = device.clone();
     let task = tokio::spawn(async move { uploading.upload_dirty().await });
-    while !task.is_finished() {
-        assert!(device.stats().uploads_in_flight <= 4);
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
+    swarmy_testkit::eventually("upload drains", Duration::from_secs(30), async || {
+        assert!(
+            device.stats().uploads_in_flight <= 4,
+            "upload concurrency stays within the tool-priority limit"
+        );
+        task.is_finished().then_some(())
+    })
+    .await;
     task.await.unwrap().unwrap();
     assert!(start.elapsed() >= Duration::from_millis(980));
     assert_eq!(device.stats().tool_priority_uploads, 64);

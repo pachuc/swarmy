@@ -12,25 +12,29 @@ use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError};
 pub(crate) struct Cache(Mutex<HashMap<AgentId, PlacementRecord>>);
 
 impl Cache {
-    pub(crate) async fn resolve(
+    /// Resolve against an explicit clock. Tests advance the shared store
+    /// clock past lease expiry instead of sleeping out the real lease; the
+    /// worker passes its own clock at every call site.
+    pub(crate) async fn resolve_at(
         &self,
         store: &Store,
         agent: AgentId,
         lease: Duration,
+        now: Timestamp,
     ) -> Result<PlacementRecord> {
         {
             let entries = self.0.lock().await;
             if let Some(placement) = entries.get(&agent)
-                && placement.expires_at > Timestamp::now()
+                && placement.expires_at > now
             {
                 return Ok(placement.clone());
             }
         }
-        let placement = resolve(store, agent, lease).await?;
+        let placement = resolve_at(store, agent, lease, now).await?;
         let mut entries = self.0.lock().await;
         // Bound memory even when many short-lived agents pass through a worker.
         if entries.len() >= 4096 {
-            entries.retain(|_, entry| entry.expires_at > Timestamp::now());
+            entries.retain(|_, entry| entry.expires_at > now);
             if entries.len() >= 4096 {
                 entries.clear();
             }
@@ -44,10 +48,13 @@ impl Cache {
     }
 }
 
-pub(crate) async fn resolve(
+/// Resolve against an explicit clock; see [`Cache::resolve_at`] for why the
+/// clock is a parameter instead of a wall-clock read.
+pub(crate) async fn resolve_at(
     store: &Store,
     agent: AgentId,
     lease: Duration,
+    now: Timestamp,
 ) -> Result<PlacementRecord> {
     // The last rejection explains a placement that never succeeds.
     let mut rejection = None;
@@ -56,7 +63,7 @@ pub(crate) async fn resolve(
     for _ in 0..8 {
         let old = store.get_by_agent(agent).await?;
         if let Some(current) = &old
-            && current.expires_at > Timestamp::now()
+            && current.expires_at > now
         {
             return Ok(current.clone());
         }
@@ -67,13 +74,13 @@ pub(crate) async fn resolve(
             .await?
             && volume
                 .writer_lease
-                .is_some_and(|writer| writer.expires_at > Timestamp::now())
+                .is_some_and(|writer| writer.expires_at > now)
         {
             bail!("waiting for the previous computer's volume writer lease to expire");
         }
         let mut nodes = Vec::new();
         let mut cursor = None;
-        let since = Timestamp::now().checked_sub(Duration::from_secs(30))?;
+        let since = now.checked_sub(Duration::from_secs(30))?;
         loop {
             let (page, next) = store.scan_live_nodes(cursor, since, MAX_SCAN_LIMIT).await?;
             nodes.extend(page);
@@ -85,7 +92,7 @@ pub(crate) async fn resolve(
         let scratch_node = store.scratch(agent).await?.map(|record| record.node_id);
         order_candidates(&mut nodes, scratch_node, old.as_ref());
         for node in nodes {
-            let expiry = Timestamp::now().checked_add(lease)?;
+            let expiry = now.checked_add(lease)?;
             let result = if let Some(old) = &old {
                 store.take_over(old, node.node_id, expiry).await
             } else {

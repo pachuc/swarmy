@@ -758,6 +758,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use foundationdb::tuple::Subspace;
 

@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::{AtomicI64, Ordering};
 use swarmy_bus::WorkMessage;
 use swarmy_core::{
     BashResult, CHUNK_SIZE, ContentHash, ImageTag, LeaseOwnerId, ManifestHeader, ManifestId,
@@ -24,7 +25,7 @@ async fn placement_prefers_scratch_node_then_falls_back_when_full() {
         )
         .await
         .unwrap();
-    let first = crate::placement::resolve(&f.store, f.agent, Duration::from_secs(30))
+    let first = crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
         .await
         .unwrap();
     assert_eq!(first.node_id, f.nodes[1]);
@@ -40,13 +41,13 @@ async fn placement_prefers_scratch_node_then_falls_back_when_full() {
         )
         .await
         .unwrap();
-    let fallback = crate::placement::resolve(&f.store, f.agent, Duration::from_secs(30))
-        .await
-        .unwrap();
+    let fallback =
+        crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
+            .await
+            .unwrap();
     assert_eq!(fallback.node_id, f.nodes[0]);
     f.store.release(&fallback).await.unwrap();
     f.store.release(&occupied).await.unwrap();
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -83,28 +84,68 @@ async fn unrouted_ephemeral_first_attempt_keeps_gateway_pool_selection() {
     );
     assert_eq!(attempt.provider, "fake");
     assert_eq!(attempt.entry, None, "gateway must choose the pool entry");
-    f.cleanup().await;
 }
 
 struct Fixture {
     store: Store,
     bus: Bus,
     worker: Worker,
-    cluster: String,
-    url: String,
-    prefix: String,
     agent: AgentId,
     nodes: [NodeId; 2],
     manifest: ManifestId,
+    clock: Arc<TestClock>,
+    // Held for its Drop: removes the test keys and streams even on panic.
+    _guard: swarmy_testkit::StackGuard,
+}
+
+/// A shared manual clock for the store and the worker. Lease-expiry tests
+/// advance it past the expiry instead of sleeping out real time; both the
+/// store's transactional checks and the worker's resolution read the same
+/// instant, so expiry is deterministic.
+struct TestClock {
+    start: Timestamp,
+    offset_ms: AtomicI64,
+}
+
+impl TestClock {
+    fn new() -> Self {
+        Self {
+            start: Timestamp::now(),
+            offset_ms: AtomicI64::new(0),
+        }
+    }
+
+    fn now(&self) -> Timestamp {
+        let offset_ms = self.offset_ms.load(Ordering::SeqCst).max(0);
+        self.start
+            .checked_add(Duration::from_millis(u64::try_from(offset_ms).unwrap()))
+            .unwrap()
+    }
+
+    fn advance(&self, duration: Duration) {
+        self.offset_ms.fetch_add(
+            i64::try_from(duration.as_millis()).unwrap(),
+            Ordering::SeqCst,
+        );
+    }
 }
 
 impl Fixture {
+    /// The shared test instant both the store and the worker observe.
+    fn now(&self) -> Timestamp {
+        self.clock.now()
+    }
+
+    /// Move the shared instant forward instead of sleeping out a real lease.
+    fn advance(&self, duration: Duration) {
+        self.clock.advance(duration);
+    }
+
     async fn new() -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        let url = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-        NETWORK.get_or_init(swarmy_store::boot);
-        let prefix = format!("routing_{}", Ulid::generate());
-        let mut config = config(url.clone(), &prefix, Arc::default());
+        let stack = swarmy_testkit::Stack::load("routing")?;
+        let guard = swarmy_testkit::StackGuard::new(&stack);
+        let prefix = stack.prefix.clone();
+        let mut config = config(stack.nats_url.clone(), &prefix, Arc::default());
         config.harness.tools.register(Box::new(swarmy_tools::Bash));
         config
             .harness
@@ -113,14 +154,19 @@ impl Fixture {
         config.partitions = (0..256).collect();
         config.bus.ack_wait = Duration::from_millis(200);
         let blobs = Arc::new(MemoryBlobStore::default());
+        let clock = Arc::new(TestClock::new());
+        let tick = clock.clone();
         let store = Store::open(
-            Some(std::path::Path::new(&cluster)),
+            Some(std::path::Path::new(&stack.cluster)),
             Some(std::slice::from_ref(&prefix)),
             blobs.clone(),
         )
         .await
-        .unwrap();
-        let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
+        .unwrap()
+        .with_clock(move || tick.now());
+        let bus = Bus::connect(&stack.nats_url, config.bus.clone())
+            .await
+            .unwrap();
         bus.setup(&[]).await.unwrap();
         let nodes = [
             NodeId::from_ulid(Ulid::from_parts(1, 1)),
@@ -159,17 +205,18 @@ impl Fixture {
             .put_image("routing", &ImageTag("test".into()), manifest, None)
             .await
             .unwrap();
-        let worker = Worker::new(store.clone(), bus.clone(), blobs, config);
+        let tick = clock.clone();
+        let worker =
+            Worker::new(store.clone(), bus.clone(), blobs, config).with_clock(move || tick.now());
         Some(Self {
             store,
             bus,
             worker,
-            cluster,
-            url,
-            prefix,
             agent: AgentId::from_ulid(Ulid::generate()),
+            clock,
             nodes,
             manifest,
+            _guard: guard,
         })
     }
 
@@ -387,10 +434,6 @@ impl Fixture {
             .unwrap()
             .unwrap()
     }
-
-    async fn cleanup(self) {
-        cleanup(&self.cluster, &self.url, &self.prefix).await;
-    }
 }
 
 #[tokio::test]
@@ -438,7 +481,6 @@ async fn two_nodes_share_agent_placement_across_sessions_and_skip_full_nodes() {
             .iter()
             .any(is_notice)
     );
-    f.cleanup().await;
 }
 
 fn is_notice(event: &Event) -> bool {
@@ -456,17 +498,15 @@ async fn recovery_waits_for_writer_lease_before_granting_new_epoch() {
             f.agent,
             f.nodes[0],
             // Leases long enough that setup and the first step cannot outlive
-            // them on a slow machine; the sleeps below then expire each in turn.
-            Timestamp::now()
-                .checked_add(Duration::from_millis(2000))
-                .unwrap(),
+            // them on a slow machine; the advances below then expire each in turn.
+            f.now().checked_add(Duration::from_millis(2000)).unwrap(),
         )
         .await
         .unwrap();
     let id = f.session().await;
     f.store.claim_placement(&placement).await.unwrap();
     let volume = f.store.agent_volume(id, &placement).await.unwrap();
-    let now = Timestamp::now();
+    let now = f.now();
     f.store
         .acquire_writer_lease(
             volume,
@@ -478,7 +518,7 @@ async fn recovery_waits_for_writer_lease_before_granting_new_epoch() {
         .unwrap();
     f.step(id).await;
     let delivery = f.delivery(f.nodes[0]).await;
-    sleep(Duration::from_millis(2100)).await;
+    f.advance(Duration::from_millis(2100));
     f.worker.recover_tools().await.unwrap();
     assert_eq!(
         f.store.get_by_agent(f.agent).await.unwrap(),
@@ -490,7 +530,7 @@ async fn recovery_waits_for_writer_lease_before_granting_new_epoch() {
             .await
             .unwrap()
     );
-    sleep(Duration::from_millis(2200)).await;
+    f.advance(Duration::from_millis(2200));
     f.worker.recover_tools().await.unwrap();
     let current = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
     assert_eq!(current.node_id, f.nodes[1]);
@@ -507,7 +547,6 @@ async fn recovery_waits_for_writer_lease_before_granting_new_epoch() {
     let claim = f.claim(delivery.value.clone(), current).await;
     f.complete(&claim).await.unwrap();
     delivery.acknowledge().await.unwrap();
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -521,17 +560,15 @@ async fn expired_lease_moves_next_call_and_eviction_has_distinct_durable_notice(
             f.agent,
             f.nodes[0],
             // Long enough that the session and volume setup below cannot
-            // outlive the lease on a slow machine; the sleep then expires it.
-            Timestamp::now()
-                .checked_add(Duration::from_millis(2000))
-                .unwrap(),
+            // outlive the lease on a slow machine; the advance then expires it.
+            f.now().checked_add(Duration::from_millis(2000)).unwrap(),
         )
         .await
         .unwrap();
     let id = f.session().await;
     f.store.claim_placement(&old).await.unwrap();
     f.store.agent_volume(id, &old).await.unwrap();
-    sleep(Duration::from_millis(2100)).await;
+    f.advance(Duration::from_millis(2100));
     f.step(id).await;
     let placement = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
     assert_eq!(placement.node_id, f.nodes[1]);
@@ -554,7 +591,6 @@ async fn expired_lease_moves_next_call_and_eviction_has_distinct_durable_notice(
     let claim = f.claim(delivery.value.clone(), placement).await;
     f.complete(&claim).await.unwrap();
     delivery.acknowledge().await.unwrap();
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -568,9 +604,7 @@ async fn node_lost_mid_call_fails_once_and_delayed_retry_has_no_second_notice() 
             f.agent,
             f.nodes[0],
             // Long enough that setup cannot outlive the lease on a slow machine.
-            Timestamp::now()
-                .checked_add(Duration::from_millis(2000))
-                .unwrap(),
+            f.now().checked_add(Duration::from_millis(2000)).unwrap(),
         )
         .await
         .unwrap();
@@ -594,8 +628,10 @@ async fn node_lost_mid_call_fails_once_and_delayed_retry_has_no_second_notice() 
     f.step(id).await;
     let delivery = f.delivery(f.nodes[0]).await;
     let claim = f.claim(delivery.value.clone(), placement.clone()).await;
-    // Leave the first delivery unacknowledged, as a dead node would.
-    sleep(Duration::from_millis(2100)).await;
+    // Leave the first delivery unacknowledged, as a dead node would. Expire
+    // the placement on the test clock; the redelivery itself still arrives
+    // on bus time when the next consume blocks past its deadline.
+    f.advance(Duration::from_millis(2100));
     let redelivery = f.delivery(f.nodes[0]).await;
     assert!(redelivery.delivery_count().unwrap() > 1);
     let current = f
@@ -603,9 +639,7 @@ async fn node_lost_mid_call_fails_once_and_delayed_retry_has_no_second_notice() 
         .take_over(
             &placement,
             f.nodes[1],
-            Timestamp::now()
-                .checked_add(Duration::from_secs(2))
-                .unwrap(),
+            f.now().checked_add(Duration::from_secs(2)).unwrap(),
         )
         .await
         .unwrap();
@@ -641,7 +675,7 @@ async fn node_lost_mid_call_fails_once_and_delayed_retry_has_no_second_notice() 
     redelivery.acknowledge().await.unwrap();
     // No node ever claimed epoch 2. A later user retry must be able to start
     // epoch 3 without describing another computer loss.
-    sleep(Duration::from_millis(2100)).await;
+    f.advance(Duration::from_millis(2100));
     f.request(id).await;
     f.step(id).await;
     let retry = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
@@ -661,7 +695,6 @@ async fn node_lost_mid_call_fails_once_and_delayed_retry_has_no_second_notice() 
     assert!(events.iter().any(|event| matches!(event,
         Event::ToolCallCompleted { request_id, result: ToolResult::Completed { .. }, .. }
         if *request_id == claim.job.request_id)));
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -687,9 +720,7 @@ async fn named_agent_node_loss_notifies_every_session_once() {
         .place(
             f.agent,
             f.nodes[0],
-            Timestamp::now()
-                .checked_add(Duration::from_secs(2))
-                .unwrap(),
+            f.now().checked_add(Duration::from_secs(2)).unwrap(),
         )
         .await
         .unwrap();
@@ -698,15 +729,13 @@ async fn named_agent_node_loss_notifies_every_session_once() {
     let delivery = f.delivery(old.node_id).await;
     let claim = f.claim(delivery.value.clone(), old.clone()).await;
     f.store.agent_volume(first, &old).await.unwrap();
-    sleep(Duration::from_millis(2100)).await;
+    f.advance(Duration::from_millis(2100));
     let current = f
         .store
         .take_over(
             &old,
             f.nodes[1],
-            Timestamp::now()
-                .checked_add(Duration::from_secs(30))
-                .unwrap(),
+            f.now().checked_add(Duration::from_secs(30)).unwrap(),
         )
         .await
         .unwrap();
@@ -760,7 +789,6 @@ async fn named_agent_node_loss_notifies_every_session_once() {
         let events = f.store.read_events(id, 0, 64).await.unwrap();
         assert_eq!(events.iter().filter(|event| is_notice(event)).count(), 1);
     }
-    f.cleanup().await;
 }
 
 async fn assert_failure_notice(
@@ -828,9 +856,7 @@ async fn unclaimed_dispatch_expires_without_a_rebuild_notice_or_stuck_job() {
         .place(
             f.agent,
             f.nodes[0],
-            Timestamp::now()
-                .checked_add(Duration::from_secs(2))
-                .unwrap(),
+            f.now().checked_add(Duration::from_secs(2)).unwrap(),
         )
         .await
         .unwrap();
@@ -838,7 +864,7 @@ async fn unclaimed_dispatch_expires_without_a_rebuild_notice_or_stuck_job() {
     f.step(id).await;
     let delivery = f.delivery(old.node_id).await;
     // The durable dispatch exists, but no node claimed the placement or the call.
-    sleep(Duration::from_millis(2100)).await;
+    f.advance(Duration::from_millis(2100));
     f.worker.recover_tools().await.unwrap();
     f.worker.recover_tools().await.unwrap();
     let current = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
@@ -870,7 +896,6 @@ async fn unclaimed_dispatch_expires_without_a_rebuild_notice_or_stuck_job() {
     let claim = f.claim(delivery.value.clone(), current).await;
     f.complete(&claim).await.unwrap();
     delivery.acknowledge().await.unwrap();
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -881,7 +906,7 @@ async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
     let cache = crate::placement::Cache::default();
     let duration = Duration::from_secs(30);
     let old = cache
-        .resolve(&fixture.store, fixture.agent, duration)
+        .resolve_at(&fixture.store, fixture.agent, duration, fixture.now())
         .await
         .unwrap();
     let renewed = fixture
@@ -892,7 +917,7 @@ async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
     // A cached route does not borrow a renewal it has not observed.
     assert_eq!(
         cache
-            .resolve(&fixture.store, fixture.agent, duration)
+            .resolve_at(&fixture.store, fixture.agent, duration, fixture.now())
             .await
             .unwrap(),
         old
@@ -901,7 +926,7 @@ async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
     assert!(fixture.store.validate_placement(&old).await.is_err());
     cache.invalidate(fixture.agent).await;
     let replacement = cache
-        .resolve(&fixture.store, fixture.agent, duration)
+        .resolve_at(&fixture.store, fixture.agent, duration, fixture.now())
         .await
         .unwrap();
     assert!(replacement.epoch > old.epoch);
@@ -913,33 +938,30 @@ async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
         .place(
             fixture.agent,
             fixture.nodes[0],
-            Timestamp::now()
-                .checked_add(Duration::from_secs(2))
-                .unwrap(),
+            fixture.now().checked_add(Duration::from_secs(2)).unwrap(),
         )
         .await
         .unwrap();
     cache.invalidate(fixture.agent).await;
     assert_eq!(
         cache
-            .resolve(&fixture.store, fixture.agent, duration)
+            .resolve_at(&fixture.store, fixture.agent, duration, fixture.now())
             .await
             .unwrap(),
         short
     );
-    // Wait until the expiry has passed rather than racing it: the take-over
-    // below requires an expired placement, and elapsed time only grows.
+    // Move the shared clock past the expiry rather than racing it: the
+    // take-over below requires an expired placement, and advanced time only grows.
     let remaining = short
         .expires_at
-        .duration_since(Timestamp::now())
+        .duration_since(fixture.now())
         .unsigned_abs();
-    sleep(remaining + Duration::from_millis(200)).await;
+    fixture.advance(remaining + Duration::from_millis(200));
     let after_expiry = cache
-        .resolve(&fixture.store, fixture.agent, duration)
+        .resolve_at(&fixture.store, fixture.agent, duration, fixture.now())
         .await
         .unwrap();
     assert!(after_expiry.epoch > short.epoch);
-    fixture.cleanup().await;
 }
 
 #[tokio::test]
@@ -982,7 +1004,6 @@ async fn deleted_computer_fails_pending_sandbox_call_without_replacement() {
         f.store.fetch_session(id).await.unwrap().unwrap().state,
         SessionState::Runnable
     );
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -990,7 +1011,7 @@ async fn agent_call_status_expires_and_rejects_replaced_epochs() {
     let Some(f) = Fixture::new().await else {
         return;
     };
-    let now = Timestamp::now();
+    let now = f.now();
     let placement = f
         .store
         .place(
@@ -1011,7 +1032,7 @@ async fn agent_call_status_expires_and_rejects_replaced_epochs() {
     };
     f.store.put_agent_call_status(&status).await.unwrap();
     assert!(f.store.agent_call_status(f.agent).await.unwrap().is_none());
-    status.observed_at = Timestamp::now();
+    status.observed_at = f.now();
     status.expires_at = status
         .observed_at
         .checked_add(Duration::from_secs(30))
@@ -1035,7 +1056,6 @@ async fn agent_call_status_expires_and_rejects_replaced_epochs() {
             swarmy_store::FenceError::PlacementMismatch
         ))
     ));
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -1094,5 +1114,4 @@ async fn update_plan_runs_in_store_without_placing_a_computer() {
         Event::ToolCallCompleted { result: ToolResult::Completed { title, output, .. }, .. }
         if title == "update_plan" && serde_json::from_str::<Value>(output).unwrap() == plan
     )));
-    fixture.cleanup().await;
 }

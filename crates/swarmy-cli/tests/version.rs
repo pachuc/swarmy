@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use std::{
     fs,
     os::unix::fs::PermissionsExt,

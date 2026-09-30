@@ -656,6 +656,7 @@ async fn heartbeat(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::placement_refusal;
     use swarmy_core::{
         AgentId, NodeId, PlacementChangeReason, PlacementRecord, ignore_best_effort,
@@ -748,15 +749,16 @@ mod tests {
             value.as_array().cloned().unwrap_or_default()
         }
 
-        fn start_exited(&self, command: &str, epoch: u64) -> String {
+        async fn start_exited(&self, command: &str, epoch: u64) -> String {
             let id = swarmy_core::ProcessId::from_ulid(ulid::Ulid::generate()).to_string();
             self.call("process_start", &id, command, epoch);
             let exit = self.0.path().join(&id).join("exit.json");
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while !exit.exists() {
-                assert!(std::time::Instant::now() < deadline, "process did not exit");
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+            swarmy_testkit::eventually(
+                "process did not exit",
+                std::time::Duration::from_secs(5),
+                async || exit.exists().then_some(()),
+            )
+            .await;
             id
         }
     }
@@ -812,10 +814,20 @@ mod tests {
         );
     }
 
-    fn seed_exited(processes: &Processes, count: usize, epoch: u64) -> Vec<String> {
+    async fn seed_exited(processes: &Processes, count: usize, epoch: u64) -> Vec<String> {
         let mut ids = Vec::with_capacity(count);
         for index in 0..count {
-            ids.push(processes.start_exited(&format!("true # {index}"), epoch));
+            ids.push(
+                processes
+                    .start_exited(&format!("true # {index}"), epoch)
+                    .await,
+            );
+            // Stagger starts so mtime ordering is deterministic for the
+            // newest-first assertion; the spacing is the point.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "start-time spacing makes mtime ordering deterministic"
+            )]
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         ids
@@ -839,10 +851,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn process_list_is_bounded_newest_first_with_overrides() {
+    #[tokio::test]
+    async fn process_list_is_bounded_newest_first_with_overrides() {
         let processes = Processes(tempfile::tempdir().unwrap());
-        let exited = seed_exited(&processes, 30, 1);
+        let exited = seed_exited(&processes, 30, 1).await;
         let running = swarmy_core::ProcessId::from_ulid(ulid::Ulid::generate()).to_string();
         processes.call("process_start", &running, "sleep 300", 1);
         let default = processes.list(serde_json::json!({}), 1);
@@ -883,6 +895,7 @@ mod tests {
 
 #[cfg(test)]
 mod display_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::display_result;
     use swarmy_core::ToolResult;
 

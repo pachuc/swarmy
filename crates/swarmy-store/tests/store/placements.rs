@@ -59,8 +59,28 @@ async fn expire(test: &TestStore, record: &PlacementRecord) -> PlacementRecord {
     expired
 }
 
+struct Renewed {
+    test: TestStore,
+    first: PlacementRecord,
+    live: PlacementRecord,
+}
+
+async fn placed_renewed() -> Option<Renewed> {
+    let test = TestStore::memory()?;
+    let a = node(&test.store, 1).await.node_id;
+    let agent = session().agent_id;
+    let first = test.store.place(agent, a, future(60)).await.unwrap();
+    test.store.claim_placement(&first).await.unwrap();
+    let renewed = test.store.renew(&first, future(120)).await.unwrap();
+    Some(Renewed {
+        test,
+        first,
+        live: renewed,
+    })
+}
+
 #[tokio::test]
-async fn placement_lifecycle_fences_holders() {
+async fn placement_initial_place_fences_a_second_live_placement() {
     let Some(test) = TestStore::memory() else {
         return;
     };
@@ -68,98 +88,185 @@ async fn placement_lifecycle_fences_holders() {
     let b = node(&test.store, 1).await.node_id;
     let agent = session().agent_id;
     let first = test.store.place(agent, a, future(60)).await.unwrap();
-    assert_eq!(first.epoch, 1);
-    assert_eq!(first.last_change_reason, PlacementChangeReason::Initial);
+    assert_eq!(first.epoch, 1, "initial placement starts at epoch 1");
+    assert_eq!(
+        first.last_change_reason,
+        PlacementChangeReason::Initial,
+        "initial placement reason"
+    );
     assert_eq!(
         test.store.get_by_agent(agent).await.unwrap(),
-        Some(first.clone())
+        Some(first.clone()),
+        "initial placement is readable"
     );
-    assert!(matches!(
-        test.store.place(agent, b, future(60)).await,
-        Err(StoreError::Domain(
-            swarmy_store::DomainError::PlacementExists
-        ))
-    ));
-    test.store.claim_placement(&first).await.unwrap();
-    let renewed = test.store.renew(&first, future(120)).await.unwrap();
-    assert_eq!(renewed.epoch, first.epoch);
-    assert_eq!(renewed.last_changed_at, first.last_changed_at);
-    assert_eq!(renewed.last_change_reason, first.last_change_reason);
-    assert!(matches!(
-        test.store.renew(&renewed, renewed.expires_at).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
+    assert!(
+        matches!(
+            test.store.place(agent, b, future(60)).await,
+            Err(StoreError::Domain(
+                swarmy_store::DomainError::PlacementExists
+            ))
+        ),
+        "second placement while live is rejected"
+    );
+}
+
+#[tokio::test]
+async fn placement_claim_and_renew_keep_identity_and_fence_stale_expiry() {
+    let Some(state) = placed_renewed().await else {
+        return;
+    };
+    let Renewed {
+        test,
+        first,
+        live: renewed,
+    } = &state;
+    assert_eq!(renewed.epoch, 1, "renew keeps the epoch");
+    assert_eq!(
+        renewed.last_changed_at, first.last_changed_at,
+        "renew keeps the change timestamp"
+    );
+    assert_eq!(
+        renewed.last_change_reason, first.last_change_reason,
+        "renew keeps the change reason"
+    );
+    assert!(
+        matches!(
+            test.store.renew(renewed, renewed.expires_at).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "renew at the current expiry is fenced"
+    );
+}
+
+#[tokio::test]
+async fn placement_impostor_node_operations_are_fenced() {
+    let Some(state) = placed_renewed().await else {
+        return;
+    };
+    let Renewed {
+        test,
+        live: renewed,
+        ..
+    } = &state;
+    let b = node(&test.store, 1).await.node_id;
     let impostor = PlacementRecord {
         node_id: b,
         ..renewed.clone()
     };
-    assert!(matches!(
-        test.store.renew(&impostor, future(180)).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
-    assert!(matches!(
-        test.store.release(&impostor).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
-    assert!(matches!(
-        test.store.take_over(&first, b, future(60)).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
-    let expired = expire(&test, &renewed).await;
-    assert!(matches!(
-        test.store.renew(&expired, future(60)).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
-    assert!(matches!(
-        test.store.release(&expired).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
+    assert!(
+        matches!(
+            test.store.renew(&impostor, future(180)).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "impostor node renew is fenced"
+    );
+    assert!(
+        matches!(
+            test.store.release(&impostor).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "impostor node release is fenced"
+    );
+    assert!(
+        matches!(
+            test.store.take_over(renewed, b, future(60)).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "takeover on a live placement is fenced"
+    );
+}
+
+#[tokio::test]
+async fn placement_expiry_hands_takeover_to_waiting_node_and_fences_stale_records() {
+    let Some(state) = placed_renewed().await else {
+        return;
+    };
+    let Renewed {
+        test,
+        live: renewed,
+        ..
+    } = &state;
+    let a = renewed.node_id;
+    let b = node(&test.store, 1).await.node_id;
+    let expired = expire(test, renewed).await;
+    assert!(
+        matches!(
+            test.store.renew(&expired, future(60)).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "renew of an expired placement is fenced"
+    );
+    assert!(
+        matches!(
+            test.store.release(&expired).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "release of an expired placement is fenced"
+    );
     let next = test.store.take_over(&expired, b, future(60)).await.unwrap();
-    assert_eq!(next.epoch, 2);
-    assert_eq!(next.last_change_reason, PlacementChangeReason::Failure);
-    assert!(next.last_changed_at >= first.last_changed_at);
+    assert_eq!(next.epoch, 2, "takeover after expiry starts epoch 2");
+    assert_eq!(
+        next.last_change_reason,
+        PlacementChangeReason::Failure,
+        "takeover reason is failure"
+    );
+    let first_changed_at = state.first.last_changed_at;
+    assert!(
+        next.last_changed_at >= first_changed_at,
+        "takeover timestamp advances"
+    );
     assert!(
         test.store
             .list_by_node(a, None, 64)
             .await
             .unwrap()
-            .is_empty()
+            .is_empty(),
+        "old node lists nothing after takeover"
     );
     assert_eq!(
         test.store.list_by_node(b, None, 64).await.unwrap(),
-        vec![next.clone()]
+        vec![next.clone()],
+        "new node lists the takeover"
     );
-    assert!(matches!(
-        test.store.renew(&first, future(180)).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
-    assert!(matches!(
-        test.store.release(&first).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
-    assert!(matches!(
-        test.store.take_over(&expired, a, future(60)).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
-    test.cleanup().await;
+    assert!(
+        matches!(
+            test.store.renew(renewed, future(180)).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "stale pre-takeover renew is fenced"
+    );
+    assert!(
+        matches!(
+            test.store.release(renewed).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "stale pre-takeover release is fenced"
+    );
+    assert!(
+        matches!(
+            test.store.take_over(&expired, a, future(60)).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "takeover with the superseded record is fenced"
+    );
 }
 
 #[tokio::test]
@@ -204,7 +311,6 @@ async fn placement_address_follows_its_epoch() {
         .unwrap();
     test.store.release(&next).await.unwrap();
     assert_eq!(test.store.placement_address(&next).await.unwrap(), None);
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -239,7 +345,6 @@ async fn placement_release_preserves_epoch_and_rejects_old_tokens() {
             swarmy_store::FenceError::PlacementMismatch
         ))
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -324,7 +429,6 @@ async fn placement_capacity_and_index_are_atomic() {
             swarmy_store::DomainError::NodeNotSandbox
         ))
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -378,7 +482,6 @@ async fn placement_takeover_race_has_exactly_one_winner() {
             .unwrap()
             .is_empty()
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -433,7 +536,6 @@ async fn placement_capacity_race_and_paginated_node_listing() {
         test.store.list_by_node(target, None, 0).await,
         Err(StoreError::Domain(swarmy_store::DomainError::InvalidLimit))
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -512,7 +614,6 @@ async fn hosting_claims_and_renewals_distinguish_loss_from_unstarted_takeover() 
         test.store.placement_failure_estimate(&retry).await.unwrap(),
         None
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -551,7 +652,6 @@ async fn placement_memory_budget_is_atomic_and_released() {
         .place(second_agent, record.node_id, future(60))
         .await
         .unwrap();
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -618,5 +718,4 @@ async fn sixteen_default_or_four_large_sandboxes_fill_standard_budget() {
             swarmy_store::DomainError::NodeAtCapacity { .. }
         ))
     ));
-    test.cleanup().await;
 }

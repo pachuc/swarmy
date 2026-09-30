@@ -1,9 +1,7 @@
+#![deny(clippy::disallowed_methods)]
 //! Run on a real node with a registered image and the fake development stack.
 //! The sandbox fleet lacks NBD, so the benchmark is opt-in there.
-use std::{
-    sync::OnceLock,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 use swarmy_api::{AppState, router};
 use swarmy_api_types::{AppendMessage, AppendedMessage, CreateSession, ImageRef, Session};
 use swarmy_bus::{Bus, LiveFeed};
@@ -13,7 +11,6 @@ use swarmy_core::{
 use swarmy_store::{AgentSessionOptions, Store};
 use ulid::Ulid;
 
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 const TURNS: usize = 50;
 
 struct BenchFixture {
@@ -38,10 +35,10 @@ async fn api_first_fake_token_stays_within_five_ms_of_direct_append() {
     ) else {
         return;
     };
-    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_none() {
+    if swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").is_none() {
         return;
     }
-    if swarmy_core::test_support::stack_env("SWARMY_NATS_URL").is_none() {
+    if swarmy_testkit::require_stack("SWARMY_NATS_URL").is_none() {
         return;
     }
     let fixture = setup(&image).await;
@@ -63,12 +60,21 @@ async fn api_first_fake_token_stays_within_five_ms_of_direct_append() {
 }
 
 async fn setup(image: &str) -> BenchFixture {
-    NETWORK.get_or_init(swarmy_store::boot);
-    let settings = swarmy_config::Settings::load().unwrap().settings;
+    swarmy_testkit::boot_fdb();
+    // The benchmark reads no host configuration: provider, model, and store
+    // location come from compiled defaults over the named stack variables.
+    let mut settings = swarmy_testkit::test_settings(&[
+        "SWARMY_FDB_CLUSTER_FILE",
+        "SWARMY_STORE_DIRECTORY",
+        "SWARMY_NATS_URL",
+        "SWARMY_MODEL",
+    ]);
     assert_eq!(
         settings.selection.provider, "fake",
         "benchmark needs the fake provider stack"
     );
+    settings.store.directory = format!("latency-bench-{}", Ulid::generate());
+    settings.bus.prefix = format!("latency-bench-{}", Ulid::generate());
     let opened = Store::open_store(&settings).await.unwrap();
     let store = opened.store;
     let bus = Bus::connect(&settings.bus.nats_url, settings.bus.bus_config().unwrap())
@@ -191,17 +197,11 @@ async fn measure(f: &BenchFixture, id: SessionId, via_api: bool, turn: usize) ->
             .duration_since(start)
     };
 
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            let record = f.store.fetch_session(id).await.unwrap().unwrap();
-            if record.state == SessionState::Idle && record.head_seq > head {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    swarmy_testkit::eventually("fake turn finishes", Duration::from_secs(30), async || {
+        let record = f.store.fetch_session(id).await.unwrap().unwrap();
+        (record.state == SessionState::Idle && record.head_seq > head).then_some(())
     })
-    .await
-    .expect("fake turn did not finish");
+    .await;
     elapsed
 }
 
@@ -238,17 +238,11 @@ async fn drive_agent_turn(
         .unwrap();
     assert!(response.status().is_success(), "{}", response.status());
     let appended: AppendedMessage = response.json().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            let record = fixture.store.fetch_session(session).await.unwrap().unwrap();
-            if record.state == SessionState::Idle && record.head_seq > head {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    swarmy_testkit::eventually("fake turn finishes", Duration::from_secs(60), async || {
+        let record = fixture.store.fetch_session(session).await.unwrap().unwrap();
+        (record.state == SessionState::Idle && record.head_seq > head).then_some(())
     })
-    .await
-    .expect("fake turn did not finish");
+    .await;
     (session, appended.turn_id)
 }
 
@@ -304,10 +298,10 @@ async fn fake_turn_records_first_token_metrics() {
     let Some(image) = swarmy_core::test_support::optional_env("SWARMY_TEST_IMAGE") else {
         return;
     };
-    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_none() {
+    if swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").is_none() {
         return;
     }
-    if swarmy_core::test_support::stack_env("SWARMY_NATS_URL").is_none() {
+    if swarmy_testkit::require_stack("SWARMY_NATS_URL").is_none() {
         return;
     }
     let fixture = setup(&image).await;

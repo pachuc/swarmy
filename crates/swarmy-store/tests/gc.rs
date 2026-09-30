@@ -1,13 +1,14 @@
+#![deny(clippy::disallowed_methods)]
 use std::{
     num::NonZeroUsize,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
-use foundationdb::{Database, api::NetworkAutoStop, tuple::Subspace};
+use foundationdb::{Database, tuple::Subspace};
 use futures::{TryStreamExt, stream::BoxStream};
 use jiff::Timestamp;
 use object_store::{
@@ -30,6 +31,8 @@ struct Fixture {
     directory: tempfile::TempDir,
     db: Arc<Database>,
     root: Subspace,
+    // Held for its Drop: removes the test subspace even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 
 #[derive(Debug)]
@@ -89,13 +92,11 @@ impl ObjectStore for FailOneDelete {
 }
 impl Fixture {
     fn new() -> Option<Self> {
-        static NETWORK: OnceLock<NetworkAutoStop> = OnceLock::new();
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        NETWORK.get_or_init(swarmy_store::boot);
+        let stack = swarmy_testkit::Stack::load("gc")?;
         let directory = tempfile::tempdir().unwrap();
         let objects = Arc::new(LocalFileSystem::new_with_prefix(directory.path()).unwrap());
-        let db = Arc::new(Database::new(Some(&cluster)).unwrap());
-        let root = Subspace::all().subspace(&(format!("swarmy-gc-test-{}", Ulid::generate()),));
+        let db = Arc::new(Database::new(Some(&stack.cluster)).unwrap());
+        let root = Subspace::all().subspace(&(stack.prefix.clone(),));
         let store = Store::with_subspace(
             db.clone(),
             root.clone(),
@@ -107,6 +108,7 @@ impl Fixture {
             directory,
             db,
             root,
+            _guard: swarmy_testkit::StackGuard::new(&stack),
         })
     }
 
@@ -361,13 +363,10 @@ async fn background_upload_survives_sweep_before_manifest_publication() {
     let uploader = writer.background(Duration::from_millis(5));
     let data = vec![42; CHUNK_SIZE as usize];
     device.write(0, &data).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while device.upload_stats().chunks_uploaded == 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    swarmy_testkit::eventually("chunks upload", Duration::from_secs(5), async || {
+        (device.upload_stats().chunks_uploaded > 0).then_some(())
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(
         test.store
             .get_volume(volume)
@@ -611,7 +610,14 @@ async fn page_claim_skips_hash_reused_after_cutoff() {
         ContentHash([3; 32]),
     ];
     let cutoff = Timestamp::now();
-    tokio::time::sleep(Duration::from_millis(1)).await;
+    // Order the protection strictly after the cutoff without a fixed wait:
+    // the clock usually advances on the first probe.
+    swarmy_testkit::eventually(
+        "clock advances past the cutoff",
+        Duration::from_secs(5),
+        async || (Timestamp::now() > cutoff).then_some(()),
+    )
+    .await;
     test.store.protect_reused_chunk(hashes[1]).await.unwrap();
     let claimed = test
         .store

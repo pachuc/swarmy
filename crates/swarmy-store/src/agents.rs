@@ -845,6 +845,7 @@ fn side_messages(
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::{ManifestId, encode};
 

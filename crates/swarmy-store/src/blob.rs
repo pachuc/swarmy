@@ -101,6 +101,7 @@ impl BlobStore for ObjectBlobStore {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use futures::TryStreamExt;
 

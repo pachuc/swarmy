@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! Uses a dedicated empty bucket because the empty-prefix collector owns the
 //! whole bucket. Set `SWARMY_S3_TEST_BUCKET` in addition to the usual S3/FDB env.
 use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
@@ -17,6 +18,26 @@ fn chunk_path(hash: ContentHash) -> Path {
     Path::from(format!("chunks/{}/{hex}", &hex[..2]))
 }
 
+/// Wait until the orphans age past the collector's grace cutoff. S3
+/// last-modified has second precision, so once the integer second ticks two
+/// past the write the object is a candidate under any truncation of the
+/// one-second grace cutoff.
+async fn wait_orphans_aged(objects: &Arc<dyn ObjectStore>, path: &Path) {
+    swarmy_testkit::eventually(
+        "orphans age past the grace period",
+        Duration::from_secs(30),
+        async || {
+            let modified = objects.head(path).await.unwrap().last_modified.timestamp();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            (now >= u64::try_from(modified).unwrap() + 2).then_some(())
+        },
+    )
+    .await;
+}
+
 async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore) {
     let objects = swarmy_store::objects::from_settings(settings).unwrap();
     let (chunks, live) = seed_live_image(&objects, store).await;
@@ -24,7 +45,10 @@ async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore)
     check_listings(settings, &*objects, &paths).await;
 
     // S3 last-modified has second precision and the collector truncates its cutoff.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Poll the same timestamp source instead of a fixed wait: once the
+    // integer second ticks two past the write, the object is a candidate
+    // under any truncation of the one-second grace cutoff.
+    wait_orphans_aged(&objects, &paths[0]).await;
     let policy = GarbageCollection {
         grace_secs: Duration::from_secs(1),
         ..GarbageCollection::default()
@@ -198,7 +222,14 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
     let Some(bucket) = swarmy_core::test_support::optional_env("SWARMY_S3_TEST_BUCKET") else {
         return;
     };
-    let mut settings = Settings::load().unwrap().settings;
+    let mut settings = swarmy_testkit::test_settings(&[
+        "SWARMY_FDB_CLUSTER_FILE",
+        "SWARMY_S3_ENDPOINT",
+        "SWARMY_S3_ACCESS_KEY",
+        "SWARMY_S3_SECRET_KEY",
+        "SWARMY_S3_BUCKET",
+        "SWARMY_S3_REGION",
+    ]);
     settings.s3.bucket = bucket;
     settings.s3.prefix = swarmy_config::ObjectPrefix::default();
     assert!(

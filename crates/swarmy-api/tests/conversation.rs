@@ -1,20 +1,14 @@
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+#![deny(clippy::disallowed_methods)]
+use std::{sync::Arc, time::Duration};
 use swarmy_api::{AppState, router};
 use swarmy_api_types::{
     AppendMessage, AppendedMessage, CloseSession, CreateSession, ImageRef, InterruptOutcome,
     InterruptSession, InterruptStatus, Session, SessionClosed,
 };
 use swarmy_bus::{Bus, Config, LiveFeed};
-use swarmy_core::{
-    CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId, SessionId, SessionState,
-};
+use swarmy_core::{SessionId, SessionState};
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use ulid::Ulid;
-
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 
 struct Fixture {
     store: Store,
@@ -22,6 +16,8 @@ struct Fixture {
     client: reqwest::Client,
     base: String,
     server: tokio::task::JoinHandle<Result<(), std::io::Error>>,
+    // Held for its Drop: removes the test keys and streams even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -30,34 +26,12 @@ impl Drop for Fixture {
 }
 impl Fixture {
     async fn new() -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-        NETWORK.get_or_init(swarmy_store::boot);
-        let path = vec!["conversation-api-test".into(), Ulid::generate().to_string()];
-        let store = Store::open(
-            Some(std::path::Path::new(&cluster)),
-            Some(&path),
-            Arc::new(MemoryBlobStore::default()),
-        )
-        .await
-        .unwrap();
-        let manifest = ManifestId::from_ulid(Ulid::generate());
-        store
-            .put_manifest(
-                manifest,
-                &ManifestHeader {
-                    size: u64::from(CHUNK_SIZE),
-                    chunk_size: CHUNK_SIZE,
-                    root_hash: ContentHash::ZERO,
-                },
-            )
+        let stack = swarmy_testkit::Stack::load("conversation")?;
+        let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+        swarmy_testkit::image(&store).await;
+        let bus = Bus::connect(&stack.nats_url, Config::default())
             .await
             .unwrap();
-        store
-            .put_image("fixture", &ImageTag("test".into()), manifest, None)
-            .await
-            .unwrap();
-        let bus = Bus::connect(&nats, Config::default()).await.unwrap();
         let state = AppState::new(
             store.clone(),
             bus.clone(),
@@ -74,6 +48,7 @@ impl Fixture {
             client: reqwest::Client::new(),
             base,
             server,
+            _guard: guard,
         })
     }
     async fn create(&self, key: &str, agent_id: Option<String>, new: bool) -> Session {
@@ -523,6 +498,12 @@ async fn wait_idle_wakes_from_live_transition() {
             .await
             .unwrap()
     });
+    // The interrupt must land while the wait-idle request is held server-side;
+    // no registration signal exists, so the ordering delay is the point.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "orders the interrupt after the wait-idle request reaches the server"
+    )]
     tokio::time::sleep(Duration::from_millis(200)).await;
     f.store.interrupt_session(id).await.unwrap();
     assert!(f.store.finish_runnable_interrupt(id).await.unwrap());
@@ -582,12 +563,17 @@ async fn emit_observed_turn(f: &Fixture, session: SessionId, turn: swarmy_core::
         // Await each write: the spawned production path races under
         // millisecond timing and can lose read-modify-write updates, so
         // tests serialize while production staggers stages over seconds.
+        // The pacing itself keeps the spawned writes ordered.
         let event = Bus::turn_event(session, turn, stage, Some(request));
         f.bus.record_turn(&event).await;
         f.store
             .record_turn_metrics(session, turn, vec![swarmy_store::MetricPatch::Stage(event)])
             .await
             .unwrap();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "paces spawned stage writes apart so they land in order"
+        )]
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
     f.store
@@ -672,10 +658,12 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
     // handler, so it can land after the directly awaited stages below. Poll
     // for the derived fields the assertions need, not just the stages, so a
     // fast direct write cannot break the poll before the spawned write lands.
-    let direct = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
+    let direct = swarmy_testkit::eventually(
+        "turn record assembles",
+        Duration::from_secs(10),
+        async || {
             let records = f.store.list_turn_metrics(session, None, 10).await.unwrap();
-            if records.len() == 1
+            (records.len() == 1
                 && records[0].stages.iter().any(|row| row.stage == "idle")
                 && records[0]
                     .stages
@@ -684,15 +672,11 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
                 && records[0].stages.iter().any(|row| row.stage == "appended")
                 && records[0].append_to_first_token_ms.is_some()
                 && records[0].inference_duration_ms.is_some()
-                && records[0].append_to_idle_ms.is_some()
-            {
-                break records;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("turn record did not assemble");
+                && records[0].append_to_idle_ms.is_some())
+            .then_some(records)
+        },
+    )
+    .await;
     assert_eq!(direct[0].turn_id, appended.turn_id);
     assert!(
         direct[0]

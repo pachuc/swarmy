@@ -49,6 +49,7 @@ impl Bus {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     #[test]
     fn clock_domain_and_monotonic_timestamp_survive_encoding() {

@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 #[cfg(not(feature = "remote"))]
 #[test]
 fn remote_command_reports_missing_feature() {

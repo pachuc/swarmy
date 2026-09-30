@@ -1,36 +1,25 @@
-use std::sync::{Arc, OnceLock};
+#![deny(clippy::disallowed_methods)]
+use std::sync::Arc;
 use swarmy_api::{AppState, router};
 use swarmy_api_types::{
     Agent, CreateAgent, CreateCredential, Credential, CredentialKind, Event, Image, ImageRef,
     Model, Provider, Session,
 };
 use swarmy_bus::{Bus, Config};
-use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId};
 use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore};
 use ulid::Ulid;
 
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-
 #[tokio::test]
 async fn authenticated_routes_and_create_replay() {
-    let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
+    let Some(stack) = swarmy_testkit::Stack::load("api") else {
         return;
     };
-    let Some(nats) = swarmy_core::test_support::stack_env("SWARMY_NATS_URL") else {
-        return;
-    };
-    NETWORK.get_or_init(swarmy_store::boot);
-    let path = vec!["swarmy-api-test".to_owned(), Ulid::generate().to_string()];
-    let store = Store::open(
-        Some(std::path::Path::new(&cluster)),
-        Some(&path),
-        Arc::new(MemoryBlobStore::default()),
-    )
-    .await
-    .unwrap();
-    register_fixture_image(&store).await;
+    let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    swarmy_testkit::image(&store).await;
     register_services(&store).await;
-    let bus = Bus::connect(&nats, Config::default()).await.unwrap();
+    let bus = Bus::connect(&stack.nats_url, Config::default())
+        .await
+        .unwrap();
     let mut state = AppState::new(
         store.clone(),
         bus,
@@ -381,26 +370,6 @@ async fn assert_session_routes(store: &Store, client: &reqwest::Client, base: &s
     assert_event(client, base, &session_id.to_string()).await;
 }
 
-async fn register_fixture_image(store: &Store) -> ManifestId {
-    let manifest = ManifestId::from_ulid(Ulid::generate());
-    store
-        .put_manifest(
-            manifest,
-            &ManifestHeader {
-                size: u64::from(CHUNK_SIZE),
-                chunk_size: CHUNK_SIZE,
-                root_hash: ContentHash::ZERO,
-            },
-        )
-        .await
-        .unwrap();
-    store
-        .put_image("fixture", &ImageTag("test".into()), manifest, None)
-        .await
-        .unwrap();
-    manifest
-}
-
 async fn register_services(store: &Store) {
     for role in [
         ServiceRole::Scheduler,
@@ -488,24 +457,15 @@ fn route_input(steps: Vec<swarmy_api_types::RouteStep>) -> swarmy_api_types::Set
 async fn route_server() -> Option<(
     swarmy_client::Client,
     tokio::task::JoinHandle<Result<(), std::io::Error>>,
+    swarmy_testkit::StackGuard,
 )> {
-    let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-    let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-    NETWORK.get_or_init(swarmy_store::boot);
-    let path = vec![
-        "swarmy-api-route-test".to_owned(),
-        Ulid::generate().to_string(),
-    ];
-    let store = Store::open(
-        Some(std::path::Path::new(&cluster)),
-        Some(&path),
-        Arc::new(MemoryBlobStore::default()),
-    )
-    .await
-    .unwrap();
-    register_fixture_image(&store).await;
+    let stack = swarmy_testkit::Stack::load("api")?;
+    let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    swarmy_testkit::image(&store).await;
     register_services(&store).await;
-    let bus = Bus::connect(&nats, Config::default()).await.unwrap();
+    let bus = Bus::connect(&stack.nats_url, Config::default())
+        .await
+        .unwrap();
     let mut state = AppState::new(
         store.clone(),
         bus,
@@ -518,7 +478,7 @@ async fn route_server() -> Option<(
     let base = format!("http://{}", listener.local_addr().unwrap());
     let task = tokio::spawn(axum::serve(listener, router(state)).into_future());
     let client = swarmy_client::Client::new(&base, "test-token").unwrap();
-    Some((client, task))
+    Some((client, task, guard))
 }
 
 async fn assert_route_crud(client: &swarmy_client::Client) {
@@ -672,7 +632,7 @@ async fn assert_route_deletion(client: &swarmy_client::Client) {
 
 #[tokio::test]
 async fn inference_routes_round_trip_through_resource_api() {
-    let Some((client, task)) = route_server().await else {
+    let Some((client, task, _guard)) = route_server().await else {
         return;
     };
     assert_route_crud(&client).await;

@@ -8,7 +8,7 @@ async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
         return;
     };
     let store = &test.store;
-    let image = image_fixture::image(store).await;
+    let image = swarmy_testkit::image(store).await;
     let (a, b) = tokio::join!(
         store.create_agent("tommy", image, "coding", timestamp(0), None),
         store.create_agent("tommy", image, "coding", timestamp(0), None)
@@ -75,7 +75,6 @@ async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
             .agent_id,
         agent.agent_id
     );
-    test.cleanup().await;
 }
 
 async fn assert_named_session_pin(store: &Store, agent: &AgentRecord, image: &str) -> SessionId {
@@ -164,7 +163,7 @@ async fn ephemeral_creation_and_closure() {
         return;
     };
     let store = &test.store;
-    let image = image_fixture::image(store).await;
+    let image = swarmy_testkit::image(store).await;
     let id = SessionId::from_ulid(Ulid::generate());
     assert!(matches!(
         store
@@ -203,7 +202,6 @@ async fn ephemeral_creation_and_closure() {
         store.create_session(&session, timestamp(0), image).await,
         Err(StoreError::Domain(swarmy_store::DomainError::SessionExists))
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -212,7 +210,7 @@ async fn sweep_rechecks_activity_and_protects_named_sessions() {
         return;
     };
     let store = &test.store;
-    let image = image_fixture::image(store).await;
+    let image = swarmy_testkit::image(store).await;
     let mut sessions = Vec::new();
     for _ in 0..3 {
         sessions.push(
@@ -289,7 +287,6 @@ async fn sweep_rechecks_activity_and_protects_named_sessions() {
                 .computer_deleted
         );
     }
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -298,7 +295,7 @@ async fn agent_inference_settings_create_and_independent_updates() {
         return;
     };
     let store = &test.store;
-    let image = image_fixture::image(store).await;
+    let image = swarmy_testkit::image(store).await;
     let settings = AgentSettings {
         system_prompt: Some("  Review carefully.\n".into()),
         model: Some("agent-model".into()),
@@ -365,7 +362,6 @@ async fn agent_inference_settings_create_and_independent_updates() {
         );
     }
     concurrent_settings_and_rejected_updates(store, expected, image).await;
-    test.cleanup().await;
 }
 
 async fn concurrent_settings_and_rejected_updates(
@@ -443,7 +439,7 @@ async fn main_session_creation_replacement_and_close_are_atomic() {
         return;
     };
     let store = &test.store;
-    let image = image_fixture::image(store).await;
+    let image = swarmy_testkit::image(store).await;
     let agent = store
         .create_agent("main", image, "", timestamp(0), None)
         .await
@@ -533,7 +529,6 @@ async fn main_session_creation_replacement_and_close_are_atomic() {
             .unwrap(),
         (side.session_id, false)
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -542,7 +537,7 @@ async fn main_pointer_rejects_foreign_sessions_and_races_with_close() {
         return;
     };
     let store = &test.store;
-    let image = image_fixture::image(store).await;
+    let image = swarmy_testkit::image(store).await;
     let agent = store
         .create_agent("main", image, "", timestamp(0), None)
         .await
@@ -600,7 +595,6 @@ async fn main_pointer_rejects_foreign_sessions_and_races_with_close() {
             Ok(())
         )
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -644,7 +638,6 @@ async fn gateway_advertisements_expire() {
         "credentials resolved"
     );
     assert!(!store.gateway_serves("anthropic").await.unwrap());
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -652,7 +645,7 @@ async fn agent_memory_and_gpu_requirements_are_durable() {
     let Some(test) = TestStore::memory() else {
         return;
     };
-    let image = image_fixture::image(&test.store).await;
+    let image = swarmy_testkit::image(&test.store).await;
     let settings = AgentSettings {
         memory_mib: Some(2048),
         gpu: Some(swarmy_core::GpuRequirement::Shared),
@@ -695,5 +688,4 @@ async fn agent_memory_and_gpu_requirements_are_durable() {
         test.store.get_agent(agent.agent_id).await.unwrap(),
         Some(updated)
     );
-    test.cleanup().await;
 }

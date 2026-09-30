@@ -85,6 +85,7 @@ pub mod json {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use std::fmt::Debug;
 

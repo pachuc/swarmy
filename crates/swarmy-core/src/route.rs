@@ -134,6 +134,7 @@ pub fn validate(name: &str, steps: &[RouteStep]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     #[test]

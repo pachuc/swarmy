@@ -195,10 +195,21 @@ json.dump(times, open(output, 'w'))
         .kill_on_drop(true)
         .spawn()
         .unwrap();
+    // Let the workload emit timestamps before the first flush: the 200 ms
+    // run-up is the measurement window, not a wait for a signal.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the workload run-up window is the gap measurement setup"
+    )]
     tokio::time::sleep(Duration::from_millis(200)).await;
     for _ in 0..4 {
         let result = writer.flush(None).await.unwrap();
         assert_eq!(result.frozen, Duration::ZERO);
+        // Pace the flushes across the run-up so the gap sample spans it.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "flush pacing across the workload run-up window"
+        )]
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     std::fs::write(stop, []).unwrap();
@@ -254,10 +265,22 @@ json.dump(times, open(output, 'w'))
         .kill_on_drop(true)
         .spawn()
         .unwrap();
+    // Let the writer start before the flushes: the run-up is the latency
+    // sample window, not a wait for a signal.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the writer run-up window is the latency sample setup"
+    )]
     tokio::time::sleep(Duration::from_millis(200)).await;
     for _ in 0..4 {
         writer.flush(None).await.unwrap();
     }
+    // Let the last writes land before stopping the workload, so the sample
+    // covers steady state rather than startup.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the steady-state tail window is the latency sample setup"
+    )]
     tokio::time::sleep(Duration::from_millis(200)).await;
     std::fs::write(stop, []).unwrap();
     assert!(workload.wait().await.unwrap().success());

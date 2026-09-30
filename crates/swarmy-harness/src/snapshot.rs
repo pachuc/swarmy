@@ -198,6 +198,7 @@ fn model_phase(message: &Message) -> Phase {
 
 #[cfg(test)]
 mod checkpoint_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::MessageId;
     use ulid::Ulid;

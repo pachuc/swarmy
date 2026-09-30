@@ -1,6 +1,4 @@
-#[path = "../../swarmy-store/tests/support/mod.rs"]
-mod image_fixture;
-
+#![deny(clippy::disallowed_methods)]
 #[path = "cli_session/agents.rs"]
 mod agents;
 
@@ -9,9 +7,6 @@ mod chat;
 
 #[path = "cli_session/cost.rs"]
 mod cost;
-
-#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
-mod cli_bin;
 
 use std::{
     future::Future,
@@ -36,9 +31,10 @@ use swarmy_llm::Delta;
 use swarmy_store::{
     AgentSessionOptions, ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore,
 };
+use swarmy_testkit::{Stack, StackGuard};
 use tokio::{
     process::Command,
-    time::{Instant, sleep, timeout},
+    time::{Instant, timeout},
 };
 use ulid::Ulid;
 
@@ -97,15 +93,15 @@ async fn fetch_session_tolerant(
     id: SessionId,
     deadline: Instant,
 ) -> Option<swarmy_core::SessionRecord> {
-    loop {
+    let budget = deadline.saturating_duration_since(Instant::now());
+    swarmy_testkit::eventually("session fetch succeeds", budget, async || {
         match fixture.store.fetch_session(id).await {
-            Ok(session) => return session,
-            Err(error) if is_retryable_store_error(&error) && Instant::now() < deadline => {
-                sleep(Duration::from_millis(100)).await;
-            }
+            Ok(session) => Some(session),
+            Err(error) if is_retryable_store_error(&error) => None,
             Err(error) => panic!("session fetch failed for {id}: {error}"),
         }
-    }
+    })
+    .await
 }
 
 /// Poll `read_events` until it succeeds or `deadline` passes, retrying
@@ -117,15 +113,15 @@ async fn read_events_tolerant(
     limit: usize,
     deadline: Instant,
 ) -> Vec<Event> {
-    loop {
+    let budget = deadline.saturating_duration_since(Instant::now());
+    swarmy_testkit::eventually("event read succeeds", budget, async || {
         match fixture.store.read_events(id, after, limit).await {
-            Ok(events) => return events,
-            Err(error) if is_retryable_store_error(&error) && Instant::now() < deadline => {
-                sleep(Duration::from_millis(100)).await;
-            }
+            Ok(events) => Some(events),
+            Err(error) if is_retryable_store_error(&error) => None,
             Err(error) => panic!("event read failed for {id}: {error}"),
         }
-    }
+    })
+    .await
 }
 
 /// Poll `list_sessions` until it succeeds or `deadline` passes, retrying
@@ -134,15 +130,15 @@ async fn list_sessions_tolerant(
     fixture: &Fixture,
     deadline: Instant,
 ) -> Vec<swarmy_core::SessionRecord> {
-    loop {
+    let budget = deadline.saturating_duration_since(Instant::now());
+    swarmy_testkit::eventually("session list succeeds", budget, async || {
         match fixture.store.list_sessions(None, 1).await {
-            Ok(sessions) => return sessions,
-            Err(error) if is_retryable_store_error(&error) && Instant::now() < deadline => {
-                sleep(Duration::from_millis(100)).await;
-            }
+            Ok(sessions) => Some(sessions),
+            Err(error) if is_retryable_store_error(&error) => None,
             Err(error) => panic!("session list failed: {error}"),
         }
-    }
+    })
+    .await
 }
 
 #[derive(Clone)]
@@ -155,11 +151,12 @@ struct Fixture {
     url: String,
     api_url: String,
     api_token: String,
+    guard: Arc<tokio::sync::Mutex<StackGuard>>,
 }
 
 impl Fixture {
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(cli_bin::bin("swarmy"));
+        let mut command = Command::new(swarmy_testkit::bin("swarmy"));
         command
             .args(args)
             .env("SWARMY_FDB_CLUSTER_FILE", &self.cluster)
@@ -197,28 +194,7 @@ impl Fixture {
     }
 
     async fn cleanup(&self) {
-        let db = Database::new(Some(&self.cluster)).unwrap();
-        db.run(|trx, _| async move {
-            DirectoryLayer::default()
-                .remove_if_exists(&trx, std::slice::from_ref(&self.directory))
-                .await?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-        let admin = async_nats::connect(&self.url).await.unwrap();
-        let context = async_nats::jetstream::new(admin);
-        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
-            if let Err(error) = context
-                .delete_stream(format!("{}_{stream}", self.prefix))
-                .await
-            {
-                assert!(
-                    matches!(error.kind(), async_nats::jetstream::context::DeleteStreamErrorKind::JetStream(ref error) if error.code() == 404),
-                    "stream cleanup failed: {error}"
-                );
-            }
-        }
+        self.guard.lock().await.cleanup().await;
     }
 }
 
@@ -294,18 +270,22 @@ fn captured_logs_containing(needle: &str) -> Vec<String> {
 }
 
 async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
-    static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
     let (Some(cluster), Some(url)) = (
-        swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
-        swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
+        swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE"),
+        swarmy_testkit::require_stack("SWARMY_NATS_URL"),
     ) else {
         return;
     };
-    NETWORK.get_or_init(swarmy_store::boot);
-    let prefix = Ulid::generate().to_string();
-    let directory = format!("cli-test-{prefix}");
+    swarmy_testkit::boot_fdb();
+    let stack = Stack {
+        cluster,
+        nats_url: url.clone(),
+        prefix: swarmy_testkit::unique_prefix("cli"),
+    };
+    let prefix = stack.prefix.clone();
+    let directory = stack.prefix.clone();
     let store = Store::open(
-        Some(std::path::Path::new(&cluster)),
+        Some(std::path::Path::new(&stack.cluster)),
         Some(std::slice::from_ref(&directory)),
         Arc::new(MemoryBlobStore::default()),
     )
@@ -370,12 +350,13 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         bus: bus.clone(),
         api_url,
         api_token,
-        cluster,
+        cluster: stack.cluster.clone(),
         directory,
         prefix,
         url,
+        guard: Arc::new(tokio::sync::Mutex::new(StackGuard::new(&stack))),
     };
-    image_fixture::image(&fixture.store).await;
+    swarmy_testkit::image(&fixture.store).await;
     let result = AssertUnwindSafe(test(fixture.clone())).catch_unwind().await;
     api_server.abort();
     fixture.cleanup().await;
@@ -595,25 +576,20 @@ async fn nudges(fixture: &Fixture) -> async_nats::Subscriber {
 }
 
 async fn wait_for_scheduler(fixture: &Fixture) {
-    timeout(service_budget(), async {
-        loop {
-            if matches!(
-                fixture
-                    .bus
-                    .request_wake(
-                        SessionId::from_ulid(Ulid::generate()),
-                        Duration::from_millis(100)
-                    )
-                    .await,
-                Ok(WakeReply::NotFound)
-            ) {
-                break;
-            }
-            sleep(Duration::from_millis(20)).await;
-        }
+    swarmy_testkit::eventually("service starts", service_budget(), async || {
+        matches!(
+            fixture
+                .bus
+                .request_wake(
+                    SessionId::from_ulid(Ulid::generate()),
+                    Duration::from_millis(100)
+                )
+                .await,
+            Ok(WakeReply::NotFound)
+        )
+        .then_some(())
     })
-    .await
-    .unwrap();
+    .await;
 }
 
 #[tokio::test]
@@ -668,7 +644,7 @@ async fn idle_event_enables_input_without_polling_and_history_still_paginates() 
                 .create_session(
                     &record,
                     Timestamp::now(),
-                    image_fixture::image(&fixture.store).await,
+                    swarmy_testkit::image(&fixture.store).await,
                 )
                 .await
                 .unwrap();
@@ -809,8 +785,14 @@ async fn delayed_turn(fixture: &Fixture, id: SessionId) {
         .set_state(id, SessionState::Idle, Some(&lease), Timestamp::now())
         .await
         .unwrap();
-    // Let the client's poll tick observe Idle before SSE arrives.
-    sleep(Duration::from_millis(3500)).await;
+    // Let the client's poll tick observe Idle before SSE arrives. The test
+    // forces the three-second tick to fire mid-sequence, so the real delay
+    // is the point.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the test forces the client poll tick to fire before SSE"
+    )]
+    tokio::time::sleep(Duration::from_millis(3500)).await;
     for event in fixture
         .store
         .read_events(id, session.head_seq, 64)
@@ -1173,7 +1155,14 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
         .await
         .unwrap()
         .unwrap();
-        sleep(Duration::from_millis(2)).await;
+        // Stage the writes a tick apart: spawned stage writes race under
+        // millisecond timing while production staggers stages over seconds,
+        // so the pacing itself is the point.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "paces spawned stage writes apart so they land in order"
+        )]
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
     timeout(
         WAIT,
@@ -1196,24 +1185,18 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
     .unwrap()
     .unwrap();
     // The spawned stage writes land shortly after; wait for the record.
-    timeout(WAIT, async {
-        loop {
-            let rows = fixture
-                .store
-                .list_turn_metrics(session, None, 64)
-                .await
-                .unwrap();
-            if rows.len() == 1
-                && rows[0].stages.iter().any(|row| row.stage == "first_token")
-                && rows[0].stages.iter().any(|row| row.stage == "idle")
-            {
-                break;
-            }
-            sleep(Duration::from_millis(20)).await;
-        }
+    swarmy_testkit::eventually("turn metrics record lands", WAIT, async || {
+        let rows = fixture
+            .store
+            .list_turn_metrics(session, None, 64)
+            .await
+            .unwrap();
+        (rows.len() == 1
+            && rows[0].stages.iter().any(|row| row.stage == "first_token")
+            && rows[0].stages.iter().any(|row| row.stage == "idle"))
+        .then_some(())
     })
-    .await
-    .unwrap();
+    .await;
     (session.to_string(), appended.turn_id)
 }
 

@@ -567,6 +567,7 @@ impl View {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     fn view_busy() -> View {

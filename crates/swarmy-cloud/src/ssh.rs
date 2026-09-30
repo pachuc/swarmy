@@ -483,9 +483,7 @@ impl Ssh {
         let mut script = self.piped_env()?;
         // Fail loudly inside the piped script, like decommission does: the
         // query must error when systemctl fails, never look like no units.
-        // Writing to a `String` cannot fail.
-        write!(script, "set -euo pipefail\nlist_installed_control_units\n")
-            .expect("writing to String cannot fail");
+        script.push_str("set -euo pipefail\nlist_installed_control_units\n");
         let output = pipe_script(node, address, "inspect installed service units", &script).await?;
         Ok(!String::from_utf8(output.stdout)?.trim().is_empty())
     }
@@ -899,6 +897,7 @@ async fn wait_ssh_for(node: &RemoteNode, attempts: u32) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::{Ssh, image_build_command, tunnel_authorization};
 
     #[test]
@@ -1070,6 +1069,7 @@ mod tests {
 
 #[cfg(test)]
 mod provisioning_command_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::provisioning_command;
 
     fn node() -> swarmy_config::RemoteNode {

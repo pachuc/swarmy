@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use std::{collections::HashSet, future::Future, panic::AssertUnwindSafe, time::Duration};
 
 use async_nats::jetstream;
@@ -307,6 +308,12 @@ async fn progress_extends_the_deadline() {
             .unwrap();
         let first = next(&mut work).await;
         for _ in 0..4 {
+            // Each sleep must outlast a redelivery window while the deadline
+            // is extended: surviving them without redelivery is the assertion.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "holding the deadline across redelivery windows is the assertion"
+            )]
             sleep(Duration::from_millis(400)).await;
             first.extend_deadline().await.unwrap();
         }
@@ -440,17 +447,14 @@ async fn wake_requests_round_trip_without_persisting_and_bad_requests_are_skippe
                 })
                 .await
         });
-        timeout(WAIT, async {
-            loop {
-                if let Ok(reply) = f.bus.request_wake(session_id, ACK_WAIT).await {
-                    assert_eq!(reply, WakeReply::Runnable);
-                    break;
-                }
-                sleep(Duration::from_millis(10)).await;
-            }
+        swarmy_testkit::eventually("wake server answers", WAIT, async || {
+            f.bus
+                .request_wake(session_id, ACK_WAIT)
+                .await
+                .ok()
+                .filter(|reply| *reply == WakeReply::Runnable)
         })
-        .await
-        .unwrap();
+        .await;
         let malformed = f
             .admin
             .send_request(
@@ -555,6 +559,11 @@ async fn nudges_deduplicate_the_same_head_but_not_fresh_steps_or_reaped_leases()
 
         // Counting persisted deliveries after expiry checks both sides of
         // deduplication without relying on a short absence-of-message timer.
+        // The resend window must actually expire before the re-nudge.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the resend window must expire before the re-nudge"
+        )]
         sleep(resend).await;
         f.bus.nudge(id, 2, None, resend, false).await.unwrap();
         assert_eq!(stream.info().await.unwrap().state.messages, 4);

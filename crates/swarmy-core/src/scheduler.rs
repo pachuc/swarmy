@@ -37,6 +37,7 @@ pub fn runnable_partition(id: SessionId) -> u16 {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use crate::encoding::tests::assert_round_trip;
 

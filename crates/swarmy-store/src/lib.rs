@@ -314,6 +314,9 @@ impl Store {
         keys::Keys::new(&self.root)
     }
 
+    /// Observe the store clock. Production reads the wall clock through the
+    /// default closure; lease and expiry tests inject a shared manual clock
+    /// with [`Store::with_clock`] instead of sleeping out real leases.
     pub(crate) fn now(&self) -> jiff::Timestamp {
         (self.clock)()
     }

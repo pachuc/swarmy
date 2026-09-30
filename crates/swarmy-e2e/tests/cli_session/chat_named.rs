@@ -206,31 +206,37 @@ async fn create_tommy(fixture: &Fixture) -> swarmy_core::AgentRecord {
 }
 
 async fn bash_result(fixture: &Fixture, id: SessionId, services: &Services) -> String {
-    timeout(Duration::from_secs(120), async {
-        loop {
-            let events = fixture.store.read_events(id, 0, 64).await.unwrap();
-            if let Some(result) = events.iter().find_map(|event| match event {
-                Event::ToolCallCompleted { result, .. } => Some(result),
-                _ => None,
-            }) {
-                let ToolResult::Completed { output, .. } = result else {
-                    panic!("bash failed: {result:?}");
-                };
-                let result: swarmy_core::BashResult = serde_json::from_str(output).unwrap();
-                assert_eq!(result.exit_code, 0, "{}", result.stderr);
-                assert!(!result.timed_out);
-                return result.stdout;
-            }
-            sleep(Duration::from_millis(100)).await;
-        }
-    })
+    let result = AssertUnwindSafe(swarmy_testkit::eventually(
+        "bash tool call completes",
+        Duration::from_secs(120),
+        async || {
+            fixture
+                .store
+                .read_events(id, 0, 64)
+                .await
+                .unwrap()
+                .iter()
+                .find_map(|event| match event {
+                    Event::ToolCallCompleted { result, .. } => Some(result.clone()),
+                    _ => None,
+                })
+        },
+    ))
+    .catch_unwind()
     .await
     .unwrap_or_else(|_| {
         panic!(
             "bash did not finish: {}",
             std::fs::read_to_string(services.files.path().join("node.log")).unwrap()
         )
-    })
+    });
+    let ToolResult::Completed { output, .. } = &result else {
+        panic!("bash failed: {result:?}");
+    };
+    let result: swarmy_core::BashResult = serde_json::from_str(output).unwrap();
+    assert_eq!(result.exit_code, 0, "{}", result.stderr);
+    assert!(!result.timed_out);
+    result.stdout
 }
 
 #[tokio::test]
@@ -242,7 +248,7 @@ async fn agent_delete_confirms_and_cancels_in_a_terminal() {
             .await
             .unwrap();
         for (answer, deleted) in [("n\r", false), ("yes\r", true)] {
-            let mut command = CommandBuilder::new(cli_bin::bin("swarmy"));
+            let mut command = CommandBuilder::new(swarmy_testkit::bin("swarmy"));
             command.args(["agent", "delete", "tommy", "--json"]);
             let mut terminal = Terminal::command(&fixture, command, "fixture:test");
             terminal
@@ -319,13 +325,21 @@ async fn open_chat_follows_a_summarized_main_with_a_notice() {
         // Reads retry database timeouts within the budget instead of panicking.
         let budget = WAIT;
         let deadline = Instant::now() + budget;
-        let landed = timeout(budget, async {
-            loop {
-                if read_events_tolerant(&fixture, new, 0, 64, deadline).await.iter().any(|event| matches!(event,
-                    Event::MessageAppended { message, .. } if message.role == MessageRole::User)) { break; }
-                sleep(Duration::from_millis(25)).await;
-            }
-        }).await;
+        let landed = AssertUnwindSafe(swarmy_testkit::eventually(
+            "user message lands",
+            budget,
+            async || {
+                read_events_tolerant(&fixture, new, 0, 64, deadline)
+                    .await
+                    .iter()
+                    .any(|event| {
+                        matches!(event, Event::MessageAppended { message, .. } if message.role == MessageRole::User)
+                    })
+                    .then_some(())
+            },
+        ))
+        .catch_unwind()
+        .await;
         assert!(
             landed.is_ok(),
             "user message did not land within {budget:?}:\n{}",
@@ -400,7 +414,9 @@ async fn root_memory_written_by_tools_is_in_the_next_turn_and_capped() {
         // it in a magic number: the prompt without memory (this agent's template
         // with its directory substituted) plus the bounded memory excerpt plus
         // its truncation notice. Only uncapped memory can exceed this.
-        let settings = swarmy_config::Settings::load().unwrap().settings;
+        // The cap derives from compiled defaults, never the host
+        // configuration, so it holds on every machine.
+        let settings = swarmy_testkit::test_settings(&[]);
         let memory_max = settings.memory.max_bytes.get();
         let tommy = fixture.store.get_agent_by_name("tommy").await.unwrap().unwrap();
         let template = tommy

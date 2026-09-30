@@ -102,7 +102,7 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
         }
     }
     boot_network();
-    let mut settings = swarmy_config::Settings::load().unwrap().settings;
+    let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
     settings.store.directory = format!("swarmy-github-test-{}", ulid::Ulid::generate());

@@ -329,6 +329,7 @@ fn percentile(sorted: &[f64], percentile: usize) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::SessionId;
     #[test]
@@ -397,6 +398,7 @@ mod tests {
 
 #[cfg(test)]
 mod clock_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     #[test]
     fn cross_host_intervals_use_wall_time_and_reject_clock_reversal() {

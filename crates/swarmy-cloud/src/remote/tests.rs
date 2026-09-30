@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::Result;
-use swarmy_config::{RemoteNode, RemoteSettings};
+use swarmy_config::{RemoteNode, RemoteProfile, RemoteSettings};
 
 use super::{
     Cloud, Host, Machine, MachineSpec, ObjectBucket, Ownership, down, retry_profile_propagation,
@@ -411,6 +411,149 @@ fn settings() -> RemoteSettings {
     }
 }
 
+fn assert_demo_node(node: &RemoteNode, host: &FakeHost) {
+    assert_eq!(node.name, "demo", "provisioned node record: name");
+    assert_eq!(
+        node.default_image.as_deref(),
+        Some("base-ubuntu:demo"),
+        "provisioned node record: default image"
+    );
+    assert_eq!(
+        *host.images.borrow(),
+        [(
+            "demo".into(),
+            node.public_ip.clone(),
+            "images/base-ubuntu".into()
+        )],
+        "provisioned node record: image build"
+    );
+    assert_eq!(node.region, "us-east-1", "provisioned node record: region");
+    assert_eq!(
+        node.instance_id, "i-test",
+        "provisioned node record: instance"
+    );
+    assert_eq!(
+        node.public_ip, "203.0.113.10",
+        "provisioned node record: public ip"
+    );
+    assert_eq!(
+        node.private_ip, "10.0.0.10",
+        "provisioned node record: private ip"
+    );
+    assert_eq!(node.ssh_user, "ubuntu", "provisioned node record: ssh user");
+    assert_eq!(
+        (node.ports.fdb, node.ports.nats, node.ports.s3),
+        (4500, 4222, 8333),
+        "provisioned node record: ports"
+    );
+}
+
+fn assert_demo_service(node: &RemoteNode) {
+    // AWS launches write the service login explicitly and resolve the
+    // instance-store device over SSH, so later configuration defaults never
+    // move existing fleet checkouts. The checkout path itself is resolved on
+    // the host (`~ubuntu/swarmy`); see the provisioning command tests.
+    assert_eq!(
+        node.service_user(),
+        "ubuntu",
+        "service login and storage: user"
+    );
+    assert_eq!(
+        node.local_storage(),
+        "/dev/nvme1n1",
+        "service login and storage: device"
+    );
+    assert!(
+        node.nodes.is_empty(),
+        "service login and storage: no join nodes"
+    );
+    assert!(
+        node.created_at.parse::<jiff::Timestamp>().is_ok(),
+        "service login and storage: timestamp"
+    );
+    assert!(
+        node.key_path.is_file(),
+        "service login and storage: key file"
+    );
+}
+
+fn assert_demo_permissions(state: &State) {
+    assert_eq!(
+        std::fs::metadata(state.directory.join("demo.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600,
+        "key file permissions: node record"
+    );
+    assert_eq!(
+        std::fs::metadata(&state.directory)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700,
+        "key file permissions: state directory"
+    );
+}
+
+fn assert_demo_launch(cloud: &FakeCloud, node: &RemoteNode) {
+    let request = cloud.requests.borrow()[0].clone();
+    assert_eq!(request.image, "ami-stock", "launch request: image");
+    assert_eq!(request.disk_gb, 100, "launch request: disk");
+    assert_eq!(
+        request.instance_type, "m6id.xlarge",
+        "launch request: shape"
+    );
+    assert_eq!(request.name, "demo", "launch request: name");
+    assert_eq!(
+        request.subnet.as_deref(),
+        Some("subnet-test"),
+        "launch request: subnet"
+    );
+    assert_eq!(
+        request.security_group.as_deref(),
+        Some("sg-test"),
+        "launch request: security group"
+    );
+    assert_eq!(
+        request.managed_by, "codex-launcher",
+        "launch request: owner tag"
+    );
+    assert_eq!(
+        request.key_name,
+        super::key_name(node).unwrap(),
+        "launch request: key name"
+    );
+    assert!(
+        request.key_name.len() <= 64,
+        "launch request: key name fits AWS limits"
+    );
+}
+
+fn assert_demo_keys(cloud: &FakeCloud, host: &FakeHost, node: &RemoteNode) {
+    let request = cloud.requests.borrow()[0].clone();
+    assert_eq!(
+        cloud.keys.borrow()[0],
+        (
+            request.key_name,
+            b"ssh-ed25519 test".to_vec(),
+            "codex-launcher".into()
+        ),
+        "key and provision records: uploaded key"
+    );
+    assert_eq!(
+        host.provisioned.borrow()[0].public_ip,
+        node.public_ip,
+        "key and provision records: provisioned host"
+    );
+    assert!(
+        cloud.observations.borrow().is_empty(),
+        "key and provision records: observations drained"
+    );
+}
+
 #[tokio::test]
 async fn up_provisions_node_and_persists_launch_record() {
     let dir = tempfile::tempdir().unwrap();
@@ -437,70 +580,11 @@ async fn up_provisions_node_and_persists_launch_record() {
     .await
     .unwrap();
     let node = state.read("demo").unwrap().unwrap();
-    assert_eq!(node.name, "demo");
-    assert_eq!(node.default_image.as_deref(), Some("base-ubuntu:demo"));
-    assert_eq!(
-        *host.images.borrow(),
-        [(
-            "demo".into(),
-            node.public_ip.clone(),
-            "images/base-ubuntu".into()
-        )]
-    );
-    assert_eq!(node.region, "us-east-1");
-    assert_eq!(node.instance_id, "i-test");
-    assert_eq!(node.public_ip, "203.0.113.10");
-    assert_eq!(node.private_ip, "10.0.0.10");
-    assert_eq!(node.ssh_user, "ubuntu");
-    assert_eq!(
-        (node.ports.fdb, node.ports.nats, node.ports.s3),
-        (4500, 4222, 8333)
-    );
-    // AWS launches write the service login explicitly and resolve the
-    // instance-store device over SSH, so later configuration defaults never
-    // move existing fleet checkouts. The checkout path itself is resolved on
-    // the host (`~ubuntu/swarmy`); see the provisioning command tests.
-    assert_eq!(node.service_user(), "ubuntu");
-    assert_eq!(node.local_storage(), "/dev/nvme1n1");
-    assert!(node.nodes.is_empty());
-    assert!(node.created_at.parse::<jiff::Timestamp>().is_ok());
-    assert!(node.key_path.is_file());
-    assert_eq!(
-        std::fs::metadata(state.directory.join("demo.json"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
-    assert_eq!(
-        std::fs::metadata(&state.directory)
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o700
-    );
-    let request = cloud.requests.borrow()[0].clone();
-    assert_eq!(request.image, "ami-stock");
-    assert_eq!(request.disk_gb, 100);
-    assert_eq!(request.instance_type, "m6id.xlarge");
-    assert_eq!(request.name, "demo");
-    assert_eq!(request.subnet.as_deref(), Some("subnet-test"));
-    assert_eq!(request.security_group.as_deref(), Some("sg-test"));
-    assert_eq!(request.managed_by, "codex-launcher");
-    assert_eq!(request.key_name, super::key_name(&node).unwrap());
-    assert!(request.key_name.len() <= 64);
-    assert_eq!(
-        cloud.keys.borrow()[0],
-        (
-            request.key_name,
-            b"ssh-ed25519 test".to_vec(),
-            "codex-launcher".into()
-        )
-    );
-    assert_eq!(host.provisioned.borrow()[0].public_ip, node.public_ip);
-    assert!(cloud.observations.borrow().is_empty());
+    assert_demo_node(&node, &host);
+    assert_demo_service(&node);
+    assert_demo_permissions(&state);
+    assert_demo_launch(&cloud, &node);
+    assert_demo_keys(&cloud, &host, &node);
 }
 
 #[tokio::test]
@@ -892,6 +976,112 @@ async fn termination_failure_keeps_key_and_record_for_retry() {
     assert_eq!(cloud.deleted.borrow().len(), 1);
 }
 
+fn assert_join_records_child(node: &RemoteNode, cloud: &FakeCloud, host: &FakeHost) {
+    assert_eq!(node.nodes.len(), 1, "join records one child node");
+    let child = &node.nodes[0];
+    assert_eq!(
+        serde_json::to_value(node).unwrap()["sandboxes"],
+        0,
+        "join keeps the primary sandbox count"
+    );
+    assert_eq!(
+        serde_json::to_value(node).unwrap()["nodes"][0]["sandboxes"],
+        4,
+        "join records the child sandbox count"
+    );
+    assert_eq!(node.sandboxes, 0, "primary sandbox count");
+    assert_eq!(child.sandboxes, 4, "child sandbox count");
+    assert_eq!(
+        host.provisioned.borrow()[0].sandboxes,
+        0,
+        "primary provisioned with zero sandboxes"
+    );
+    assert_eq!(
+        host.provisioned.borrow()[1].sandboxes,
+        4,
+        "child provisioned with four sandboxes"
+    );
+    assert_eq!(child.name, "demo-2", "child node name");
+    assert_ne!(child.key_path, node.key_path, "child has its own key");
+    assert_eq!(
+        cloud.stock_reads.get(),
+        1,
+        "join reuses the saved launch without re-reading stock"
+    );
+    {
+        let requests = cloud.requests.borrow();
+        let join = &requests[1];
+        assert_eq!(
+            join.image, requests[0].image,
+            "join launch reuses the primary image"
+        );
+        assert_eq!(
+            join.subnet,
+            settings().aws.subnet,
+            "join launch reuses the saved subnet"
+        );
+        assert_eq!(
+            join.security_group,
+            settings().aws.security_group,
+            "join launch reuses the saved security group"
+        );
+        assert_eq!(
+            join.instance_type,
+            settings().aws.instance_type,
+            "join launch reuses the saved shape"
+        );
+        assert_eq!(
+            join.disk_gb,
+            settings().disk_gb,
+            "join launch reuses the saved disk"
+        );
+        assert_eq!(
+            join.managed_by, "codex-launcher",
+            "join launch keeps the owner tag"
+        );
+        assert_eq!(
+            join.key_name,
+            super::key_name(child).unwrap(),
+            "join launch names the child key"
+        );
+        assert_eq!(join.name, child.name, "join launch names the child");
+    }
+    assert_eq!(
+        host.images.borrow().len(),
+        1,
+        "image builds once for primary and child"
+    );
+    assert!(
+        host.primaries.borrow()[0].is_none(),
+        "primary provisions with no upstream"
+    );
+    assert_eq!(
+        host.primaries.borrow()[1].as_ref().unwrap().private_ip,
+        node.private_ip,
+        "child provisions against the primary"
+    );
+}
+
+fn assert_down_removes_both(state: &State, cloud: &FakeCloud, node: &RemoteNode) {
+    let child = &node.nodes[0];
+    assert_eq!(
+        *cloud.terminated.borrow(),
+        ["i-second", "i-test"],
+        "down terminates child before primary"
+    );
+    assert_eq!(
+        cloud.deleted.borrow().len(),
+        2,
+        "down deletes both instances"
+    );
+    assert!(!child.key_path.exists(), "down removes the child key");
+    assert!(!node.key_path.exists(), "down removes the primary key");
+    assert!(
+        state.read("demo").unwrap().is_none(),
+        "down removes the state record"
+    );
+}
+
 #[tokio::test]
 async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both() {
     let dir = tempfile::tempdir().unwrap();
@@ -941,47 +1131,12 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
     .await
     .unwrap();
     let node = state.require("demo").unwrap();
-    assert_eq!(node.nodes.len(), 1);
-    let child = &node.nodes[0];
-    assert_eq!(serde_json::to_value(&node).unwrap()["sandboxes"], 0);
-    assert_eq!(
-        serde_json::to_value(&node).unwrap()["nodes"][0]["sandboxes"],
-        4
-    );
-    assert_eq!(node.sandboxes, 0);
-    assert_eq!(child.sandboxes, 4);
-    assert_eq!(host.provisioned.borrow()[0].sandboxes, 0);
-    assert_eq!(host.provisioned.borrow()[1].sandboxes, 4);
-    assert_eq!(child.name, "demo-2");
-    assert_ne!(child.key_path, node.key_path);
-    assert_eq!(cloud.stock_reads.get(), 1);
-    {
-        let requests = cloud.requests.borrow();
-        let join = &requests[1];
-        assert_eq!(join.image, requests[0].image);
-        assert_eq!(join.subnet, settings().aws.subnet);
-        assert_eq!(join.security_group, settings().aws.security_group);
-        assert_eq!(join.instance_type, settings().aws.instance_type);
-        assert_eq!(join.disk_gb, settings().disk_gb);
-        assert_eq!(join.managed_by, "codex-launcher");
-        assert_eq!(join.key_name, super::key_name(child).unwrap());
-        assert_eq!(join.name, child.name);
-    }
-    assert_eq!(host.images.borrow().len(), 1);
-    assert!(host.primaries.borrow()[0].is_none());
-    assert_eq!(
-        host.primaries.borrow()[1].as_ref().unwrap().private_ip,
-        node.private_ip
-    );
+    assert_join_records_child(&node, &cloud, &host);
     cloud.observations.borrow_mut().extend([None, None]);
     down::run(&cloud, &state, &node, Duration::ZERO, true)
         .await
         .unwrap();
-    assert_eq!(*cloud.terminated.borrow(), ["i-second", "i-test"]);
-    assert_eq!(cloud.deleted.borrow().len(), 2);
-    assert!(!child.key_path.exists());
-    assert!(!node.key_path.exists());
-    assert!(state.read("demo").unwrap().is_none());
+    assert_down_removes_both(&state, &cloud, &node);
 }
 
 #[tokio::test]
@@ -1093,7 +1248,7 @@ async fn up_skip_custom_recipe_and_failed_image_preserve_correct_default() {
             dir.path().join("socket"),
         )
         .unwrap();
-        let profile: swarmy_config::RemoteProfile =
+        let profile: RemoteProfile =
             serde_json::from_slice(&serde_json::to_vec(&profile).unwrap()).unwrap();
         assert_eq!(profile.default_image.as_deref(), expected);
         let mut settings = swarmy_config::Settings::default();
@@ -1273,109 +1428,112 @@ async fn add_node_copies_both_secrets_only_when_requested() {
     assert_eq!(*host.keyrings.borrow(), vec![keyring]);
 }
 
-#[tokio::test]
-async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = State::open(&dir.path().join("remote")).unwrap();
-    let cloud = FakeCloud::default();
-    observe_running(&cloud);
-    let host = FakeHost::default();
-    let request = up::NewNode {
-        name: "bucket-test",
-        sandboxes: 0,
-    };
-    let settings = RemoteSettings {
-        bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
-        ..settings()
-    };
-    up::run(
-        &cloud,
-        &host,
-        &state,
-        &settings,
-        request,
-        None.into(),
-        Duration::ZERO,
-    )
-    .await
-    .unwrap();
+fn assert_bucket_launch_profile(cloud: &FakeCloud) {
     assert_eq!(
         cloud.requests.borrow()[0].profile.as_deref(),
-        Some("swarmy-bucket-test")
+        Some("swarmy-bucket-test"),
+        "up launches with the bucket instance profile"
     );
+}
+
+async fn assert_bucket_reused_without_relaunch(
+    cloud: &FakeCloud,
+    host: &FakeHost,
+    state: &State,
+    settings: &RemoteSettings,
+    request: up::NewNode<'_>,
+) {
     assert!(
         up::run(
-            &cloud,
-            &host,
-            &state,
-            &settings,
+            cloud,
+            host,
+            state,
+            settings,
             request,
             None.into(),
             Duration::ZERO
         )
         .await
-        .is_ok()
+        .is_ok(),
+        "second up reuses the retained bucket without relaunching"
     );
-    assert_eq!(cloud.bucket_ensures.borrow().len(), 1);
-    assert_eq!(cloud.requests.borrow().len(), 1);
-    assert_eq!(cloud.bucket_creates.borrow().len(), 1);
-    assert_eq!(cloud.role_creates.borrow().len(), 1);
-    assert_eq!(cloud.profile_creates.borrow().len(), 1);
-    observe_running(&cloud);
-    super::add_node::run(
-        &cloud,
-        &host,
-        &state,
-        super::add_node::NewNode {
-            name: "bucket-test",
-            sandboxes: 4,
-            shape: super::NodeShape::default(),
-            local_storage: String::new(),
-            existing: None,
-        },
-        Duration::ZERO,
-        None,
-    )
-    .await
-    .unwrap();
+    assert_eq!(
+        cloud.bucket_ensures.borrow().len(),
+        1,
+        "bucket ensured once across both ups"
+    );
+    assert_eq!(
+        cloud.requests.borrow().len(),
+        1,
+        "second up launches no new instance"
+    );
+    assert_eq!(
+        cloud.bucket_creates.borrow().len(),
+        1,
+        "bucket created once"
+    );
+    assert_eq!(cloud.role_creates.borrow().len(), 1, "role created once");
+    assert_eq!(
+        cloud.profile_creates.borrow().len(),
+        1,
+        "instance profile created once"
+    );
+}
+
+fn assert_bucket_join_profile(cloud: &FakeCloud) {
     assert_eq!(
         cloud.requests.borrow()[1].profile.as_deref(),
-        Some("swarmy-bucket-test")
+        Some("swarmy-bucket-test"),
+        "joined node launches with the bucket instance profile"
     );
-    let node = state.require("bucket-test").unwrap();
-    let profile = super::connect::new_profile(
-        dir.path(),
-        &node,
-        node.ports,
-        8742,
-        dir.path().join("socket"),
-    )
-    .unwrap();
-    assert_eq!(profile.bucket.as_ref().unwrap().bucket, "test-bucket");
-    assert_eq!(profile.bucket.as_ref().unwrap().region, "us-east-1");
-    assert!(profile.s3_endpoint.is_empty());
-    cloud.observations.borrow_mut().extend([None, None]);
-    down::run(&cloud, &state, &node, Duration::ZERO, true)
-        .await
-        .unwrap();
-    // The role and profile stay with the bucket; a later up reuses them.
-    assert_eq!(cloud.bucket_ensures.borrow().len(), 1);
-    observe_running(&cloud);
-    up::run(
-        &cloud,
-        &host,
-        &state,
-        &settings,
-        request,
-        None.into(),
-        Duration::ZERO,
-    )
-    .await
-    .unwrap();
-    assert_eq!(cloud.bucket_ensures.borrow().len(), 2);
-    assert_eq!(cloud.bucket_creates.borrow().len(), 1);
-    assert_eq!(cloud.role_creates.borrow().len(), 1);
-    assert_eq!(cloud.profile_creates.borrow().len(), 1);
+}
+
+fn assert_bucket_connect_profile(profile: &RemoteProfile) {
+    assert_eq!(
+        profile.bucket.as_ref().unwrap().bucket,
+        "test-bucket",
+        "connect profile carries the bucket"
+    );
+    assert_eq!(
+        profile.bucket.as_ref().unwrap().region,
+        "us-east-1",
+        "connect profile carries the region"
+    );
+    assert!(
+        profile.s3_endpoint.is_empty(),
+        "AWS bucket needs no endpoint override"
+    );
+}
+
+fn assert_bucket_retained(cloud: &FakeCloud) {
+    assert_eq!(
+        cloud.bucket_ensures.borrow().len(),
+        1,
+        "down retains the bucket ensure"
+    );
+}
+
+fn assert_bucket_recreated_once(cloud: &FakeCloud) {
+    assert_eq!(
+        cloud.bucket_ensures.borrow().len(),
+        2,
+        "third up ensures the bucket again"
+    );
+    assert_eq!(
+        cloud.bucket_creates.borrow().len(),
+        1,
+        "bucket created once across three ups"
+    );
+    assert_eq!(
+        cloud.role_creates.borrow().len(),
+        1,
+        "role created once across three ups"
+    );
+    assert_eq!(
+        cloud.profile_creates.borrow().len(),
+        1,
+        "instance profile created once across three ups"
+    );
 }
 
 struct StaticSetup {
@@ -1435,6 +1593,83 @@ async fn static_up_as(setup: &StaticSetup, name: &str) {
     )
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    let host = FakeHost::default();
+    let request = up::NewNode {
+        name: "bucket-test",
+        sandboxes: 0,
+    };
+    let settings = RemoteSettings {
+        bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
+        ..settings()
+    };
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings,
+        request,
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    assert_bucket_launch_profile(&cloud);
+    assert_bucket_reused_without_relaunch(&cloud, &host, &state, &settings, request).await;
+    observe_running(&cloud);
+    super::add_node::run(
+        &cloud,
+        &host,
+        &state,
+        super::add_node::NewNode {
+            name: "bucket-test",
+            sandboxes: 4,
+            shape: super::NodeShape::default(),
+            local_storage: String::new(),
+            existing: None,
+        },
+        Duration::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_bucket_join_profile(&cloud);
+    let node = state.require("bucket-test").unwrap();
+    let profile = super::connect::new_profile(
+        dir.path(),
+        &node,
+        node.ports,
+        8742,
+        dir.path().join("socket"),
+    )
+    .unwrap();
+    assert_bucket_connect_profile(&profile);
+    cloud.observations.borrow_mut().extend([None, None]);
+    down::run(&cloud, &state, &node, Duration::ZERO, true)
+        .await
+        .unwrap();
+    // The role and profile stay with the bucket; a later up reuses them.
+    assert_bucket_retained(&cloud);
+    observe_running(&cloud);
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings,
+        request,
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    assert_bucket_recreated_once(&cloud);
 }
 
 #[tokio::test]

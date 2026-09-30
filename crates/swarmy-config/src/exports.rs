@@ -82,6 +82,7 @@ fn ansi_string(input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     #[test]

@@ -1,10 +1,7 @@
-use foundationdb::{Database, api::NetworkAutoStop, tuple::Subspace};
+#![deny(clippy::disallowed_methods)]
+use foundationdb::{Database, tuple::Subspace};
 use jiff::Timestamp;
-use std::{
-    collections::BTreeSet,
-    num::NonZeroUsize,
-    sync::{Arc, OnceLock},
-};
+use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
 use swarmy_core::{
     CHUNK_SIZE, ContentHash, ImageTag, Lease, LeaseOwnerId, ManifestHeader, ManifestId, VolumeId,
     ignore_best_effort,
@@ -18,24 +15,24 @@ struct Fixture {
     directory: std::path::PathBuf,
     db: Arc<Database>,
     root: Subspace,
+    // Held for its Drop: removes the test subspace even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 impl Fixture {
     fn new() -> Option<Self> {
-        static NETWORK: OnceLock<NetworkAutoStop> = OnceLock::new();
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        NETWORK.get_or_init(swarmy_store::boot);
-        let name = format!("swarmy-snapshot-test-{}", Ulid::generate());
-        let db = Arc::new(Database::new(Some(&cluster)).unwrap());
-        let root = Subspace::all().subspace(&(name.clone(),));
+        let stack = swarmy_testkit::Stack::load("volumes")?;
+        let db = Arc::new(Database::new(Some(&stack.cluster)).unwrap());
+        let root = Subspace::all().subspace(&(stack.prefix.clone(),));
         Some(Self {
             store: Store::with_subspace(
                 db.clone(),
                 root.clone(),
                 Arc::new(MemoryBlobStore::default()),
             ),
-            directory: std::env::temp_dir().join(name),
+            directory: std::env::temp_dir().join(&stack.prefix),
             db,
             root,
+            _guard: swarmy_testkit::StackGuard::new(&stack),
         })
     }
 

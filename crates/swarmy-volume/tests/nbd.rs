@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 #![cfg(target_os = "linux")]
 
 use object_store::memory::InMemory;
@@ -72,21 +73,19 @@ fn available_device() -> (String, File) {
 
 async fn assert_detached(path: &str) {
     let name = Path::new(path).file_name().unwrap().to_str().unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if !Path::new(&format!("/sys/class/block/{name}/pid")).exists()
+    swarmy_testkit::eventually(
+        "stale NBD attachment detaches",
+        Duration::from_secs(5),
+        async || {
+            (!Path::new(&format!("/sys/class/block/{name}/pid")).exists()
                 && std::fs::read_to_string(format!("/sys/class/block/{name}/size"))
                     .unwrap()
                     .trim()
-                    == "0"
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("stale NBD attachment");
+                    == "0")
+                .then_some(())
+        },
+    )
+    .await;
 }
 
 async fn write_files(mount: &Path) -> Vec<PathBuf> {

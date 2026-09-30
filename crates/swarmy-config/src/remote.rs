@@ -655,6 +655,7 @@ pub fn remote_path(state: &Path, name: &str, extension: &str) -> Result<PathBuf,
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use std::collections::BTreeMap;
 

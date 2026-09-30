@@ -1395,6 +1395,7 @@ async fn delete_route(
 
 #[cfg(test)]
 mod store_error_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_store::StoreError;
 

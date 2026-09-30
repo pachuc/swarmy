@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use serde_json::Value;
 use std::{
     fs,
@@ -10,6 +11,8 @@ struct Fixture {
     endpoint: String,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     server: Option<std::thread::JoinHandle<()>>,
+    // Held for its Drop: removes the test keys and streams even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -21,16 +24,11 @@ impl Drop for Fixture {
         }
     }
 }
-#[path = "support/cli_bin.rs"]
-mod cli_bin;
-
-static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
-    std::sync::OnceLock::new();
 
 impl Fixture {
     fn new(config: &str) -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
+        let stack = swarmy_testkit::Stack::load("models")?;
+        let guard = swarmy_testkit::StackGuard::new(&stack);
         let directory = tempfile::tempdir().unwrap();
         fs::create_dir(directory.path().join(".swarmy")).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -41,7 +39,10 @@ impl Fixture {
         fs::write(&config_path, config).unwrap();
         let settings = swarmy_config::Settings::read(&config_path).unwrap();
         let catalog = settings.catalog().unwrap();
-        NETWORK.get_or_init(swarmy_store::boot);
+        swarmy_testkit::boot_fdb();
+        let prefix = stack.prefix.clone();
+        let cluster = stack.cluster.clone();
+        let nats = stack.nats_url;
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
         let (ready, started) = std::sync::mpsc::channel();
         let fake_dir = directory.path().to_path_buf();
@@ -50,7 +51,7 @@ impl Fixture {
             runtime.block_on(async move {
                 let store = swarmy_store::Store::open(
                     Some(std::path::Path::new(&cluster)),
-                    Some(&[format!("models-test-{}", ulid::Ulid::generate())]),
+                    Some(std::slice::from_ref(&prefix)),
                     std::sync::Arc::new(swarmy_store::blob::MemoryBlobStore::default()),
                 )
                 .await
@@ -89,11 +90,12 @@ impl Fixture {
             endpoint,
             shutdown: Some(shutdown),
             server: Some(server),
+            _guard: guard,
         })
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        let mut command = Command::new(cli_bin::bin("swarmy"));
+        let mut command = Command::new(swarmy_testkit::bin("swarmy"));
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("SWARMY_") {
                 command.env_remove(key);

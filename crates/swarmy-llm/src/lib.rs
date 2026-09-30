@@ -434,6 +434,7 @@ impl Error {
 
 #[cfg(test)]
 mod job_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     #[test]
@@ -677,6 +678,7 @@ mod job_tests {
 
 #[cfg(test)]
 mod provider_failure_reason_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     #[test]

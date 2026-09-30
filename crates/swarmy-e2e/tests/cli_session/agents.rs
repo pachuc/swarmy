@@ -490,7 +490,7 @@ fn agent_options_validate_before_connecting_to_services() {
             "--new",
         ],
     ] {
-        let output = std::process::Command::new(cli_bin::bin("swarmy"))
+        let output = std::process::Command::new(swarmy_testkit::bin("swarmy"))
             .args(args)
             .output()
             .unwrap();
@@ -501,7 +501,7 @@ fn agent_options_validate_before_connecting_to_services() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    for binary in [cli_bin::bin("swarmy")] {
+    for binary in [swarmy_testkit::bin("swarmy")] {
         let binary = binary.as_os_str();
         for args in [
             vec!["agent", "create", "invalid/name"],
@@ -544,7 +544,7 @@ fn agent_options_validate_before_connecting_to_services() {
         vec!["chat", "--agent", "tommy"],
         vec!["run", "hello", "--agent", "tommy"],
     ] {
-        let output = std::process::Command::new(cli_bin::bin("swarmy"))
+        let output = std::process::Command::new(swarmy_testkit::bin("swarmy"))
             .args(args)
             .args(["--json", "--remote", "demo", "--help"])
             .output()
@@ -690,9 +690,7 @@ async fn new_commands_use_the_selected_remote_profile() {
             remote_ports: swarmy_config::RemotePorts::default(),
             fdb_cluster_file: fixture.cluster.clone().into(),
             nats_url: fixture.url.clone(),
-            s3_endpoint: swarmy_config::Settings::load()
-                .unwrap()
-                .settings
+            s3_endpoint: swarmy_testkit::test_settings(&["SWARMY_S3_ENDPOINT"])
                 .s3
                 .endpoint,
             api_url: Some(fixture.api_url.clone()),

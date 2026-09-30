@@ -138,6 +138,7 @@ pub(crate) async fn run(
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::ExecResult;
     use tokio::net::UnixListener;
@@ -181,6 +182,7 @@ mod tests {
 
 #[cfg(test)]
 mod response_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::ExecResult;
     use tokio::net::UnixListener;
@@ -232,6 +234,12 @@ mod response_tests {
             let (read, _write) = stream.into_split();
             let mut line = String::new();
             BufReader::new(read).read_line(&mut line).await.unwrap();
+            // Hold the server past the client's 10 ms timeout: the timeout
+            // firing is the assertion, so the delay is the point.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the slow server response is what the client timeout assertion needs"
+            )]
             tokio::time::sleep(Duration::from_millis(50)).await;
         });
         assert!(

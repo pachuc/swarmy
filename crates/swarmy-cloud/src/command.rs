@@ -183,6 +183,7 @@ pub fn select(name: Option<&str>) -> crate::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::Command;
     use clap::Parser;
 
@@ -195,6 +196,7 @@ mod tests {
 
 #[cfg(test)]
 mod sandbox_limit_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::Command;
     use clap::Parser;
 

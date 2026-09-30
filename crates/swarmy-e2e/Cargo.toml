@@ -15,6 +15,7 @@ workspace = true
 # beside the test profiles before this suite runs.
 [dev-dependencies]
 swarmy-core = { workspace = true, features = ["test-support"] }
+swarmy-testkit.workspace = true
 swarmy-api.workspace = true
 swarmy-client.workspace = true
 swarmy-bus.workspace = true

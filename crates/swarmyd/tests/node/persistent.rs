@@ -149,39 +149,41 @@ fn device(node: &Node, agent: AgentId) -> PathBuf {
     )
 }
 
-fn absent(node: &Node, agent: AgentId, device: &Path) {
-    assert!(
-        !node
-            .root
-            .path()
-            .join(format!(".swarmy/node/runc/{agent}"))
-            .exists()
-    );
-    assert!(
-        !node
+fn is_absent(node: &Node, agent: AgentId, device: &Path) -> bool {
+    let name = device.file_name().unwrap().to_str().unwrap();
+    !node
+        .root
+        .path()
+        .join(format!(".swarmy/node/runc/{agent}"))
+        .exists()
+        && !node
             .root
             .path()
             .join(format!(".swarmy/node/bundles/{agent}"))
             .exists()
-    );
-    let name = device.file_name().unwrap().to_str().unwrap();
-    assert!(!Path::new(&format!("/sys/block/{name}/pid")).exists());
-    assert_eq!(
-        std::fs::read_to_string(format!("/sys/block/{name}/size"))
-            .unwrap()
-            .trim(),
-        "0"
-    );
+        && !Path::new(&format!("/sys/block/{name}/pid")).exists()
+        && std::fs::read_to_string(format!("/sys/block/{name}/size"))
+            .is_ok_and(|size| size.trim() == "0")
+}
+
+fn absent(node: &Node, agent: AgentId, device: &Path) {
+    assert!(is_absent(node, agent, device));
 }
 
 async fn evicted(store: &Store, agent: AgentId) {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        while store.get_by_agent(agent).await.unwrap().is_some() {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("idle placement was not released");
+    swarmy_testkit::eventually(
+        "idle placement was not released",
+        Duration::from_secs(30),
+        async || {
+            store
+                .get_by_agent(agent)
+                .await
+                .unwrap()
+                .is_none()
+                .then_some(())
+        },
+    )
+    .await;
 }
 
 pub(super) async fn start(
@@ -253,10 +255,17 @@ async fn check_durable_background(store: &Store, bus: &Bus, node: &Node, agent: 
         "sleep 300 >/dev/null 2>&1 & echo $! >/background.pid; echo durable >/persistent; sleep 5",
     )
     .await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
     let first = store.get_by_agent(agent).await.unwrap().unwrap();
     completed(store, &job).await;
-    let renewed = store.get_by_agent(agent).await.unwrap().unwrap();
+    let renewed = swarmy_testkit::eventually(
+        "durable background renews the lease",
+        Duration::from_secs(30),
+        async || {
+            let renewed = store.get_by_agent(agent).await.unwrap().unwrap();
+            (renewed.expires_at > first.expires_at).then_some(renewed)
+        },
+    )
+    .await;
     assert_eq!(first.epoch, renewed.epoch);
     assert!(renewed.expires_at > first.expires_at);
     renewed.epoch
@@ -409,8 +418,10 @@ async fn survives_renewals(
     process: &serde_json::Value,
 ) {
     for _ in 0..3 {
-        let next = tokio::time::timeout(Duration::from_secs(15), async {
-            loop {
+        let next = swarmy_testkit::eventually(
+            "placement did not renew",
+            Duration::from_secs(15),
+            async || {
                 let current = store
                     .get_by_agent(placement.agent_id)
                     .await
@@ -419,14 +430,10 @@ async fn survives_renewals(
                 assert_eq!(current.epoch, placement.epoch);
                 assert_eq!(current.node_id, placement.node_id);
                 assert!(current.expires_at >= placement.expires_at);
-                if current.expires_at > placement.expires_at {
-                    break current;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .expect("placement did not renew");
+                (current.expires_at > placement.expires_at).then_some(current)
+            },
+        )
+        .await;
         let listed = invoke(
             node,
             store,
@@ -475,20 +482,30 @@ async fn superseded_process(node: &Node, store: &Store, bus: &Bus, agent: AgentI
         .kill_on_drop(true)
         .spawn()
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !ready.exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    swarmy_testkit::eventually(
+        "listener namespace is ready",
+        Duration::from_secs(5),
+        async || ready.exists().then_some(()),
+    )
+    .await;
     let path = device(node, agent);
     let old = store.get_by_agent(agent).await.unwrap().unwrap();
     store.release(&old).await.unwrap();
     let replacement = store.place(agent, node.id, old.expires_at).await.unwrap();
     assert!(replacement.epoch > old.epoch);
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    swarmy_testkit::eventually(
+        "superseded container detaches",
+        Duration::from_secs(30),
+        async || is_absent(node, agent, &path).then_some(()),
+    )
+    .await;
     absent(node, agent, &path);
+    // Quiescence is the assertion: the superseded process must never reach
+    // its listener, so a real delay is the point here.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "silence from the superseded listener is the assertion"
+    )]
     tokio::time::sleep(Duration::from_secs(4)).await;
     assert!(
         !accepted.exists(),
@@ -523,19 +540,20 @@ async fn crash(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId) {
     node.start();
     node.ready(store, jiff::Timestamp::now()).await;
     absent(node, agent, &path);
-    let wait = head
-        .writer_lease
-        .unwrap()
-        .expires_at
-        .duration_since(jiff::Timestamp::now())
-        .as_secs()
-        .max(0)
-        .unsigned_abs()
-        + 2;
+    let expiry = head.writer_lease.unwrap().expires_at;
     eprintln!(
-        "persistent crash acceptance: startup removed orphan container/device; waiting {wait}s for crashed writer lease"
+        "persistent crash acceptance: startup removed orphan container/device; waiting for crashed writer lease"
     );
-    tokio::time::sleep(Duration::from_secs(wait)).await;
+    swarmy_testkit::eventually(
+        "crashed writer lease expires",
+        expiry
+            .duration_since(jiff::Timestamp::now())
+            .try_into()
+            .unwrap_or(Duration::ZERO)
+            + Duration::from_secs(30),
+        async || (jiff::Timestamp::now() >= expiry).then_some(()),
+    )
+    .await;
     let job = dispatch(
         store,
         bus,
@@ -578,7 +596,14 @@ async fn takeover(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId, dur
             .unwrap()
             .success()
     );
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    // The frozen node must miss heartbeats until its placement expires;
+    // poll the expiry instead of assuming a fixed freeze covers it.
+    swarmy_testkit::eventually(
+        "frozen placement expires",
+        Duration::from_secs(30),
+        async || (jiff::Timestamp::now() >= placement.expires_at).then_some(()),
+    )
+    .await;
     let mut other = store.get_node(node.id).await.unwrap().unwrap();
     other.node_id = NodeId::from_ulid(ulid::Ulid::generate());
     store.put_node(&other).await.unwrap();
@@ -599,13 +624,24 @@ async fn takeover(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId, dur
             .unwrap()
             .success()
     );
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    swarmy_testkit::eventually(
+        "resumed node detaches after takeover",
+        Duration::from_secs(30),
+        async || is_absent(node, agent, &path).then_some(()),
+    )
+    .await;
     absent(node, agent, &path);
     assert_eq!(
         store.tool_completed(active.request_id).await.unwrap(),
         !during_call
     );
     let job = dispatch(store, bus, node.id, agent, "touch /must-not-run").await;
+    // Quiescence is the assertion: the must-not-run job stays pending, so a
+    // real delay is the point here.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the must-not-run job staying pending is the assertion"
+    )]
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(!store.tool_completed(job.request_id).await.unwrap());
     assert_eq!(
@@ -668,23 +704,27 @@ async fn written(node: &Node, agent: AgentId, name: &str) {
         .root
         .path()
         .join(format!(".swarmy/node/bundles/{agent}/rootfs/{name}"));
-    tokio::time::timeout(Duration::from_secs(15), async {
-        while !path.exists() {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .expect("command did not reach its file write");
+    swarmy_testkit::eventually(
+        "command did not reach its file write",
+        Duration::from_secs(15),
+        async || path.exists().then_some(()),
+    )
+    .await;
 }
 
 async fn tool_result(store: &Store, job: &ToolJob) -> ToolResult {
-    tokio::time::timeout(Duration::from_secs(45), async {
-        while !store.tool_completed(job.request_id).await.unwrap() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("tool did not complete");
+    swarmy_testkit::eventually(
+        "tool did not complete",
+        Duration::from_secs(45),
+        async || {
+            store
+                .tool_completed(job.request_id)
+                .await
+                .unwrap()
+                .then_some(())
+        },
+    )
+    .await;
     let events = store.read_events(job.session_id, 1, 20).await.unwrap();
     events
         .iter()
@@ -744,6 +784,13 @@ async fn managed_tools(node: &Node, store: &Store, bus: &Bus) {
     let fetched = invoke(node, store, bus, agent, "bash", json!({"command":format!("curl --retry 10 --retry-connrefused --retry-delay 1 -fsS http://127.0.0.1:{port}/ >/dev/null")})).await;
     assert_eq!(fetched["exit_code"], 0);
     let placement = store.get_by_agent(agent).await.unwrap().unwrap();
+    // Managed processes must prevent idle eviction across the eviction
+    // window: surviving it unchanged is the assertion, so the window itself
+    // is the point.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "surviving the idle-eviction window unchanged is the assertion"
+    )]
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert_eq!(
         store.get_by_agent(agent).await.unwrap().unwrap().epoch,
@@ -911,18 +958,19 @@ pub(super) async fn deleted_computer(node: &Node, store: &Store, bus: &Bus) {
     written(node, agent, "deletion-started").await;
     let path = device(node, agent);
     store.delete_computer(agent).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while node
-            .root
-            .path()
-            .join(format!(".swarmy/node/bundles/{agent}"))
-            .exists()
-        {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("deleted computer was not destroyed on renewal");
+    swarmy_testkit::eventually(
+        "deleted computer was not destroyed on renewal",
+        Duration::from_secs(10),
+        async || {
+            (!node
+                .root
+                .path()
+                .join(format!(".swarmy/node/bundles/{agent}"))
+                .exists())
+            .then_some(())
+        },
+    )
+    .await;
     absent(node, agent, &path);
     assert!(store.get_by_agent(agent).await.unwrap().is_none());
     assert!(
@@ -1054,23 +1102,21 @@ async fn check_stale_sample_and_release(store: &Store, agent: AgentId, first: &T
 }
 
 async fn wait_status(store: &Store, agent: AgentId, holder: Option<SessionId>, queued: u64) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if store
+    swarmy_testkit::eventually(
+        "holder or queue depth was not reported",
+        Duration::from_secs(10),
+        async || {
+            store
                 .agent_call_status(agent)
                 .await
                 .unwrap()
                 .is_some_and(|status| {
                     status.holder_session_id == holder && status.queued_calls == queued
                 })
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .expect("holder or queue depth was not reported");
+                .then_some(())
+        },
+    )
+    .await;
 }
 
 pub(super) async fn file_tools(node: &Node, store: &Store, bus: &Bus) {

@@ -985,6 +985,7 @@ impl Cloud for Aws {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     #[test]
@@ -1106,6 +1107,7 @@ mod tests {
 
 #[cfg(test)]
 mod ownership_tag_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::buckets::{ensure_not_another_remote, merged_bucket_tags, s3_tag};
 
     #[test]
@@ -1139,6 +1141,7 @@ mod ownership_tag_tests {
 
 #[cfg(test)]
 mod tag_denial_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::buckets::warn_tag_denied;
 
     #[test]
@@ -1169,6 +1172,7 @@ mod tag_denial_tests {
 
 #[cfg(test)]
 mod aws_context_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::AwsContext;
 
     fn metadata(code: &str, message: &str) -> aws_sdk_ec2::error::ErrorMetadata {
