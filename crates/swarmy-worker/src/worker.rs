@@ -47,11 +47,11 @@ impl HeldLease {
         &self,
         store: &Store,
         id: SessionId,
+        now: Timestamp,
         duration: std::time::Duration,
     ) -> Result<()> {
         let mut token = self.0.lock().await;
         if let Some(current) = token.as_ref() {
-            let now = Timestamp::now();
             *token = Some(
                 store
                     .renew_lease(id, current, now, now.checked_add(duration)?)
@@ -189,7 +189,7 @@ impl Worker {
             .claim_step_with_tail(
                 id,
                 self.owner,
-                Timestamp::now().checked_add(self.config.lease_duration)?,
+                self.now().checked_add(self.config.lease_duration)?,
             )
             .await
         {
@@ -242,7 +242,7 @@ impl Worker {
             message.extend_deadline().await?;
             if lease.is_held().await {
                 lease
-                    .renew(&self.store, id, self.config.lease_duration)
+                    .renew(&self.store, id, self.now(), self.config.lease_duration)
                     .await?;
             }
         }

@@ -1028,7 +1028,7 @@ async fn agent_call_status_expires_and_rejects_replaced_epochs() {
     let Some(f) = Fixture::new().await else {
         return;
     };
-    let now = Timestamp::now();
+    let now = f.now();
     let placement = f
         .store
         .place(
@@ -1049,7 +1049,7 @@ async fn agent_call_status_expires_and_rejects_replaced_epochs() {
     };
     f.store.put_agent_call_status(&status).await.unwrap();
     assert!(f.store.agent_call_status(f.agent).await.unwrap().is_none());
-    status.observed_at = Timestamp::now();
+    status.observed_at = f.now();
     status.expires_at = status
         .observed_at
         .checked_add(Duration::from_secs(30))
