@@ -85,8 +85,7 @@ fn instance_state(reachable: bool) -> String {
 /// so status never prints a cloud shape that was never selected.
 fn instance_type(node: &RemoteNode) -> Option<String> {
     let settings = node.launch_settings.as_ref()?;
-    (settings.provider == swarmy_config::Provider::Aws)
-        .then(|| settings.aws.instance_type.clone())
+    (settings.provider == swarmy_config::Provider::Aws).then(|| settings.aws.instance_type.clone())
 }
 
 pub(super) async fn run(json: bool) -> Result<()> {

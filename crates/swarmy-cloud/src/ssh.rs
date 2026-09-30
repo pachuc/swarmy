@@ -600,9 +600,7 @@ impl Ssh {
         let address = wait_ssh(node).await?;
         let user = service_user(node)?;
         checked(
-            base(node)?
-                .arg(&address)
-                .arg(decommission_command(&user)),
+            base(node)?.arg(&address).arg(decommission_command(&user)),
             "remove swarmy services",
         )
         .await
@@ -1161,7 +1159,10 @@ mod provisioning_command_tests {
         let command = super::decommission_command("swarmy");
         // Units stop and disable by listed name so an empty match succeeds;
         // every removal forces so a failed `down` can retry.
-        assert!(command.contains("systemctl list-units --all --no-legend --no-pager 'swarmy-*.service'"));
+        assert!(
+            command
+                .contains("systemctl list-units --all --no-legend --no-pager 'swarmy-*.service'")
+        );
         assert!(command.contains("xargs sudo systemctl stop"));
         assert!(command.contains("xargs sudo systemctl disable"));
         assert!(command.contains("sudo rm -f /etc/systemd/system/swarmy-*.service"));
@@ -1206,7 +1207,11 @@ mod provisioning_command_tests {
         .unwrap();
         super::adopt_key(&node, &source).await.unwrap();
         assert_eq!(
-            std::fs::metadata(&node.key_path).unwrap().permissions().mode() & 0o777,
+            std::fs::metadata(&node.key_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
             0o600
         );
         assert_eq!(

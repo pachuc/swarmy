@@ -4,10 +4,7 @@
 //! the shared provisioning tail from [`super::up`] (services, image build)
 //! against its address. No machine is created and no cloud machine call
 //! happens: only the bucket setup touches object-storage APIs.
-use std::{
-    path::Path,
-    time::Instant,
-};
+use std::{path::Path, time::Instant};
 
 use crate::Result;
 use swarmy_config::{RemoteNode, RemotePorts, RemoteSettings};
@@ -111,9 +108,10 @@ fn validate(settings: &RemoteSettings, request: &AdoptNode<'_>) -> Result<()> {
         !settings.region.is_empty(),
         "configure remote.region in config.toml before running swarmy remote adopt",
     )?;
-    let _: std::net::IpAddr = request.host.parse().map_err(|source| {
-        crate::Error::context(source, "adopt --host must be an IP address")
-    })?;
+    let _: std::net::IpAddr = request
+        .host
+        .parse()
+        .map_err(|source| crate::Error::context(source, "adopt --host must be an IP address"))?;
     crate::Error::ensure(
         !request.ssh_user.is_empty()
             && request

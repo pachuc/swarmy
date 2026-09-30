@@ -199,9 +199,10 @@ pub(super) async fn run(
 /// the key file must exist, and the primary override (if any) must be an
 /// IPv4 address for the provisioning script.
 fn validate_existing(join: &ExistingJoin<'_>) -> Result<()> {
-    let _: std::net::IpAddr = join.host.parse().map_err(|source| {
-        crate::Error::context(source, "add-node --host must be an IP address")
-    })?;
+    let _: std::net::IpAddr = join
+        .host
+        .parse()
+        .map_err(|source| crate::Error::context(source, "add-node --host must be an IP address"))?;
     crate::Error::ensure(
         !join.ssh_user.is_empty()
             && join
