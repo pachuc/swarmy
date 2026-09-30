@@ -26,6 +26,17 @@ impl std::str::FromStr for RemoteServices {
     }
 }
 
+/// Cloud substrate backing a remote. `aws` creates and owns EC2 machines;
+/// `existing` provisions operator-owned machines over SSH and never touches
+/// machine APIs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    #[default]
+    Aws,
+    Existing,
+}
+
 /// EC2-only settings.
 #[derive(Clone, Debug, Serialize)]
 pub struct AwsSettings {
@@ -254,8 +265,8 @@ fn valid_bucket_name(bucket: &str) -> bool {
 /// Placement, resource ownership, and the selected tunnel profile.
 #[derive(Clone, Debug, Serialize)]
 pub struct RemoteSettings {
-    /// Cloud provider; only `aws` exists today.
-    pub provider: String,
+    /// Cloud substrate backing the remote.
+    pub provider: Provider,
     pub services: RemoteServices,
     pub region: String,
     /// Object bucket backing the remote, if any. One description covers both
@@ -279,7 +290,7 @@ pub struct RemoteSettings {
 impl Default for RemoteSettings {
     fn default() -> Self {
         Self {
-            provider: "aws".into(),
+            provider: Provider::Aws,
             services: RemoteServices::Laptop,
             region: "us-east-1".into(),
             bucket: None,
@@ -296,7 +307,7 @@ impl Default for RemoteSettings {
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RemoteSettingsHelper {
-    provider: String,
+    provider: Provider,
     services: RemoteServices,
     region: String,
     #[serde(default, deserialize_with = "bucket_spec_from_string_or_table")]
@@ -312,7 +323,7 @@ struct RemoteSettingsHelper {
 impl Default for RemoteSettingsHelper {
     fn default() -> Self {
         Self {
-            provider: "aws".into(),
+            provider: Provider::Aws,
             services: RemoteServices::Laptop,
             region: "us-east-1".into(),
             bucket: None,
