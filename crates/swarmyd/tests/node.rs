@@ -101,12 +101,26 @@ impl Node {
     }
 
     async fn create(&self, volume_id: VolumeId) -> Sandbox {
+        self.create_with(
+            volume_id,
+            Vec::new(),
+            swarmy_core::SandboxRequirements::default(),
+        )
+        .await
+    }
+
+    async fn create_with(
+        &self,
+        volume_id: VolumeId,
+        scratch: Vec<String>,
+        requirements: swarmy_core::SandboxRequirements,
+    ) -> Sandbox {
         match self
             .request(Request::Create {
                 spec: SandboxSpec {
                     agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
-                    scratch: Vec::new(),
-                    requirements: swarmy_core::SandboxRequirements::default(),
+                    scratch,
+                    requirements,
                 },
                 disk: BlockDevice { volume_id },
             })
@@ -918,9 +932,27 @@ async fn root_dev_stack_uses_sandbox_loopback() {
     let mut node = Node::new(settings);
     node.start();
     node.ready(&store, jiff::Timestamp::UNIX_EPOCH).await;
-    let sandbox = node.create(volume).await;
+    // Production sandboxes run with the image's scratch mounts and memory
+    // limit, and the swarmy-dev recipe sizes both for a workspace build,
+    // which peaks at several GiB. The default 768 MiB sandbox without scratch
+    // mounts starves that build and backs its target directory by the volume
+    // instead of the fast local disk, so use the image's values here too.
+    let record = swarmy_core::ImageRecord {
+        name: image_name.to_owned(),
+        tag: ImageTag(image_tag.into()),
+        manifest_id: image,
+    };
+    let scratch = store.image_scratch(&record).await.unwrap();
+    let memory_mib = store.image_memory(&record).await.unwrap().unwrap_or(768);
+    let requirements = swarmy_core::SandboxRequirements {
+        memory_mib,
+        ..Default::default()
+    };
+    let sandbox = node.create_with(volume, scratch, requirements).await;
+    // Four build jobs fit the image's memory limit alongside the dev-stack
+    // services; the default job count scales with host CPUs and exhausts it.
     let command = format!(
-        "set -e; export PATH=/home/agent/.cargo/bin:/home/agent/.local/bin:$PATH CARGO_TARGET_DIR=/home/agent/.cargo-target SWARMY_FDB_LIB_DIR=/home/agent/.local/lib; cd /home/agent/work; git clone --depth 1 --branch {branch} https://github.com/pachuc/swarmy.git stack-test; cd stack-test; trap 'scripts/dev-stack.sh stop' EXIT; scripts/dev-stack.sh start; source .dev/env; cargo test -p swarmy-store --locked"
+        "set -e; export PATH=/home/agent/.cargo/bin:/home/agent/.local/bin:$PATH CARGO_TARGET_DIR=/home/agent/.cargo-target SWARMY_FDB_LIB_DIR=/home/agent/.local/lib CARGO_BUILD_JOBS=4; cd /home/agent/work; git clone --depth 1 --branch {branch} https://github.com/pachuc/swarmy.git stack-test; cd stack-test; trap 'scripts/dev-stack.sh stop' EXIT; scripts/dev-stack.sh start; source .dev/env; cargo test --locked -p swarmy-store -- --test-threads=4"
     );
     let (result, stdout, stderr) = node.exec(&sandbox, &command, 1_800_000).await;
     assert_eq!(
