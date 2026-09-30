@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! Decode failures keep their codec cause instead of collapsing to a bare
 //! corruption report, and validation rejections name their reason.
 use crate::{DomainError, StorageError, StoreError};

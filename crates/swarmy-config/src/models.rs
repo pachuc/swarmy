@@ -203,6 +203,7 @@ fn fake_fixture_model(id: &str) -> ModelInfo {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     fn read(config: &str) -> Result<Settings, Error> {

@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use std::{future::Future, panic::AssertUnwindSafe, sync::Arc, time::Duration};
 
 use futures::FutureExt;

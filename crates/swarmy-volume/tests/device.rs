@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use object_store::{ObjectStore, memory::InMemory};
 use std::sync::Arc;
 use swarmy_core::CHUNK_SIZE;

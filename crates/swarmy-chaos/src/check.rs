@@ -171,6 +171,7 @@ pub(crate) fn calls(actual: usize, steps: usize, gateway_kills: usize) -> Result
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::{Message, MessageId};
     use ulid::Ulid;

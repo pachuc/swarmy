@@ -195,6 +195,7 @@ pub(crate) fn read_secret_stdin() -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     fn empty_options() -> BucketOptions {

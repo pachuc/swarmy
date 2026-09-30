@@ -7,6 +7,7 @@ use super::{
 
 #[cfg(test)]
 mod image_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::{Message, MessageRole, Part};
 
@@ -85,6 +86,7 @@ mod image_tests {
 
 #[cfg(test)]
 mod side_tail_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::{estimate_message_tokens, select_side_tail};
     use std::collections::BTreeMap;
     use swarmy_core::{Message, MessageId, MessageRole, Part, ToolCallId, ToolResult};

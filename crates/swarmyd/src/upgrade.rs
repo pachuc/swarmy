@@ -138,6 +138,7 @@ pub(crate) async fn run(
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::ExecResult;
     use tokio::net::UnixListener;
@@ -181,6 +182,7 @@ mod tests {
 
 #[cfg(test)]
 mod response_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::ExecResult;
     use tokio::net::UnixListener;

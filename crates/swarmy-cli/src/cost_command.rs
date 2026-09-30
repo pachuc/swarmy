@@ -71,6 +71,7 @@ pub(crate) fn value_name(value: &impl clap::ValueEnum) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use clap::Parser;
 
     #[test]

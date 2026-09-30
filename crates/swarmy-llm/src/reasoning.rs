@@ -127,6 +127,7 @@ fn completions_replayable(
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     fn reasoning(text: &str, metadata: BTreeMap<String, Value>) -> Part {

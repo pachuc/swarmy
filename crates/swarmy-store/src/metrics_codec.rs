@@ -131,6 +131,7 @@ pub(crate) fn decode_tool(bytes: &[u8]) -> Result<StoredToolMetricCurrent> {
 
 #[cfg(test)]
 mod codec_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::decode;
     fn hex_to_bytes(hex: &str) -> Vec<u8> {

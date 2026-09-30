@@ -25,6 +25,7 @@ pub fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::error_chain;
 
     #[derive(Debug, thiserror::Error)]

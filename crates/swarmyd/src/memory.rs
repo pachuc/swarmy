@@ -167,6 +167,7 @@ impl Memory {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     fn read(path: &std::path::Path, cap: usize) -> String {
         let output = std::process::Command::new("python3")
             .args(["-c", include_str!("memory.py")])

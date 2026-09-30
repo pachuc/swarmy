@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! Build as an ordinary user, then execute this test binary with sudo -E.
 use std::process::Command;
 

@@ -4130,6 +4130,7 @@ dependencies = [
  "rustix",
  "serde",
  "swarmy-core",
+ "swarmy-testkit",
  "thiserror 2.0.20",
  "tokio",
  "tracing",

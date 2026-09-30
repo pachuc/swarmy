@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use std::process::{Child, Command, Stdio};
 use swarmy_core::ignore_best_effort;
 

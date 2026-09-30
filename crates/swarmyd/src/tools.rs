@@ -656,6 +656,7 @@ async fn heartbeat(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::placement_refusal;
     use swarmy_core::{
         AgentId, NodeId, PlacementChangeReason, PlacementRecord, ignore_best_effort,
@@ -883,6 +884,7 @@ mod tests {
 
 #[cfg(test)]
 mod display_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::display_result;
     use swarmy_core::ToolResult;
 

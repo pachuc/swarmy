@@ -1138,6 +1138,7 @@ fn set_node_id(
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     pub(crate) fn load_with_remote(
@@ -1571,6 +1572,7 @@ mod tests {
 
 #[cfg(test)]
 mod provider_settings_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     #[test]

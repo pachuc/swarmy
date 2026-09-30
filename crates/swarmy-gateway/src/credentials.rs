@@ -218,6 +218,7 @@ impl AuthStore for ClusterCredentials {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use foundationdb::{Database, tuple::Subspace};
     use std::{

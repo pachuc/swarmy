@@ -340,6 +340,7 @@ async fn verify_events(f: &Fixture, events: &[Event]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use futures::StreamExt;
     use swarmy_llm::Provider;

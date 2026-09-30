@@ -388,6 +388,7 @@ impl References {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     // Tested directly because a full sweep needs a store and object storage.

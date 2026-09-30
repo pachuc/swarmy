@@ -1131,6 +1131,7 @@ fn parse_frame(frame: &str) -> Result<ParsedFrame, Error> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use axum::{
         Json, Router,

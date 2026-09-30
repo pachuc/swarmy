@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use swarmy_core::{Message, MessageId, MessageRole, Part, ToolCallId, ToolResult};

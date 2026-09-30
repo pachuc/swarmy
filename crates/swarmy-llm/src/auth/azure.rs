@@ -112,6 +112,7 @@ impl Login for AzureLogin {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     #[test]
     fn epoch_avoids_local_daylight_saving_ambiguity() {

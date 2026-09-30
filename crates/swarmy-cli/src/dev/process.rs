@@ -106,6 +106,7 @@ pub(super) fn uptime(identity: Identity, ticks: u64) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     #[test]

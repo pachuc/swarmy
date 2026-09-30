@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use std::{sync::Arc, time::Duration};
 
 use futures::TryStreamExt;

@@ -369,6 +369,7 @@ impl Gateway {
 
 #[cfg(test)]
 mod retry_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use crate::{dispatch::Gateway, providers::Providers};
     use swarmy_store::Store;

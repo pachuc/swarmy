@@ -43,6 +43,7 @@ pub enum InferenceField {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     #[test]
     fn resolves_each_layer_independently() {

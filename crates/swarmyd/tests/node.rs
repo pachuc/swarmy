@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 #![cfg(target_os = "linux")]
 use std::{
     path::{Path, PathBuf},

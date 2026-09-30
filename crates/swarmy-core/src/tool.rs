@@ -387,6 +387,7 @@ pub fn cap_tool_output(tool: &str, call_id: &str, output: String) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     #[test]

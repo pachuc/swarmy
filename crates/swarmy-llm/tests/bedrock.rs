@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use futures::TryStreamExt as _;
 use swarmy_core::{Message, MessageId, MessageRole, Part};
 use swarmy_llm::{ClientAuth, Delta, GenerationSettings, Request, catalog::Catalog, client_for};

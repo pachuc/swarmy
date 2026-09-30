@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! Run through scripts/test-bash.sh so compilation happens without root.
 use std::process::Command;
 

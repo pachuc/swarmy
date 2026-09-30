@@ -592,6 +592,7 @@ fn snapshot_checks(
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use serde_json::json;
 

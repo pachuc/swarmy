@@ -455,6 +455,7 @@ impl CredentialStore for ChatGptCredentials {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     #[test]
     fn environment_keys_metadata_and_ambient() {

@@ -228,6 +228,7 @@ async fn write_object(store: &dyn ObjectStore, object: &ManifestObject) -> Resul
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     #[test]

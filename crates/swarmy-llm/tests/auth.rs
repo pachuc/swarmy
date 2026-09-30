@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures::TryStreamExt;
 use serde_json::{Value, json};

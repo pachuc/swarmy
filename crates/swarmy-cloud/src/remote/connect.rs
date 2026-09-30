@@ -421,6 +421,7 @@ pub(super) fn cleanup(profile: &RemoteProfile) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     #[test]

@@ -36,6 +36,7 @@ pub fn cost_micros(cost: &Cost, usage: &TokenUsage) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use crate::catalog::Catalog;
 

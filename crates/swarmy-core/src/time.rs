@@ -148,6 +148,7 @@ fn split_span(value: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     fn now() -> Timestamp {
