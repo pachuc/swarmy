@@ -159,7 +159,6 @@ async fn placement_lifecycle_fences_holders() {
             swarmy_store::FenceError::PlacementMismatch
         ))
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -204,7 +203,6 @@ async fn placement_address_follows_its_epoch() {
         .unwrap();
     test.store.release(&next).await.unwrap();
     assert_eq!(test.store.placement_address(&next).await.unwrap(), None);
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -239,7 +237,6 @@ async fn placement_release_preserves_epoch_and_rejects_old_tokens() {
             swarmy_store::FenceError::PlacementMismatch
         ))
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -324,7 +321,6 @@ async fn placement_capacity_and_index_are_atomic() {
             swarmy_store::DomainError::NodeNotSandbox
         ))
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -378,7 +374,6 @@ async fn placement_takeover_race_has_exactly_one_winner() {
             .unwrap()
             .is_empty()
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -433,7 +428,6 @@ async fn placement_capacity_race_and_paginated_node_listing() {
         test.store.list_by_node(target, None, 0).await,
         Err(StoreError::Domain(swarmy_store::DomainError::InvalidLimit))
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -512,7 +506,6 @@ async fn hosting_claims_and_renewals_distinguish_loss_from_unstarted_takeover() 
         test.store.placement_failure_estimate(&retry).await.unwrap(),
         None
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -551,7 +544,6 @@ async fn placement_memory_budget_is_atomic_and_released() {
         .place(second_agent, record.node_id, future(60))
         .await
         .unwrap();
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -618,5 +610,4 @@ async fn sixteen_default_or_four_large_sandboxes_fill_standard_budget() {
             swarmy_store::DomainError::NodeAtCapacity { .. }
         ))
     ));
-    test.cleanup().await;
 }

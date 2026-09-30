@@ -5,6 +5,7 @@ use std::sync::{Arc, OnceLock};
 use foundationdb::{
     Database,
     directory::{Directory, DirectoryLayer},
+    tuple::Subspace,
 };
 use swarmy_store::blob::BlobStore;
 
@@ -187,14 +188,20 @@ async fn cleanup(cluster: &str, url: &str, prefixes: &[String]) {
     };
     for prefix in prefixes {
         let path = vec![prefix.clone()];
+        let subspace = Subspace::all().subspace(&(prefix.clone(),));
         swarmy_core::ignore_best_effort(
             database
                 .run(|trx, _| {
                     let path = &path;
+                    let subspace = &subspace;
                     async move {
                         DirectoryLayer::default()
                             .remove_if_exists(&trx, path)
                             .await?;
+                        // Fixtures that probe raw keys isolate under a tuple
+                        // subspace instead of a directory; clear it too.
+                        let (begin, end) = subspace.range();
+                        trx.clear_range(&begin, &end);
                         Ok(())
                     }
                 })

@@ -75,7 +75,6 @@ async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
             .agent_id,
         agent.agent_id
     );
-    test.cleanup().await;
 }
 
 async fn assert_named_session_pin(store: &Store, agent: &AgentRecord, image: &str) -> SessionId {
@@ -203,7 +202,6 @@ async fn ephemeral_creation_and_closure() {
         store.create_session(&session, timestamp(0), image).await,
         Err(StoreError::Domain(swarmy_store::DomainError::SessionExists))
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -289,7 +287,6 @@ async fn sweep_rechecks_activity_and_protects_named_sessions() {
                 .computer_deleted
         );
     }
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -365,7 +362,6 @@ async fn agent_inference_settings_create_and_independent_updates() {
         );
     }
     concurrent_settings_and_rejected_updates(store, expected, image).await;
-    test.cleanup().await;
 }
 
 async fn concurrent_settings_and_rejected_updates(
@@ -533,7 +529,6 @@ async fn main_session_creation_replacement_and_close_are_atomic() {
             .unwrap(),
         (side.session_id, false)
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -600,7 +595,6 @@ async fn main_pointer_rejects_foreign_sessions_and_races_with_close() {
             Ok(())
         )
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -644,7 +638,6 @@ async fn gateway_advertisements_expire() {
         "credentials resolved"
     );
     assert!(!store.gateway_serves("anthropic").await.unwrap());
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -695,5 +688,4 @@ async fn agent_memory_and_gpu_requirements_are_durable() {
         test.store.get_agent(agent.agent_id).await.unwrap(),
         Some(updated)
     );
-    test.cleanup().await;
 }
