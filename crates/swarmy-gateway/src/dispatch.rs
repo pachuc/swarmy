@@ -450,7 +450,7 @@ impl Gateway {
             message.acknowledge().await?;
             return Ok(());
         }
-        return Err(Error::Internal("inference claim was replaced"));
+        Err(Error::Internal("inference claim was replaced"))
     }
 
     fn turn_id(job: &InferenceJob) -> Option<MessageId> {
