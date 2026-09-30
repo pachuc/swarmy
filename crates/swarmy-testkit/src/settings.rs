@@ -2,6 +2,26 @@
 
 use std::collections::BTreeMap;
 
+/// Build settings from the standard stack variables over defaults.
+///
+/// Root-adjacent suites (node, volume, image acceptance) run against the
+/// same stack: cluster file, store directory, bus, and object storage. One
+/// list instead of a repeated nine-variable literal in every test.
+#[must_use]
+pub fn stack_settings() -> swarmy_config::Settings {
+    test_settings(&[
+        "SWARMY_FDB_CLUSTER_FILE",
+        "SWARMY_STORE_DIRECTORY",
+        "SWARMY_NATS_URL",
+        "SWARMY_S3_ENDPOINT",
+        "SWARMY_S3_ACCESS_KEY",
+        "SWARMY_S3_SECRET_KEY",
+        "SWARMY_S3_BUCKET",
+        "SWARMY_S3_PREFIX",
+        "SWARMY_S3_REGION",
+    ])
+}
+
 /// Build settings from the named test-environment variables over defaults,
 /// without reading any host configuration file.
 ///

@@ -345,17 +345,7 @@ async fn root_node_scratch_is_local_persistent_and_removed_on_delete() {
         return;
     }
     boot_network();
-    let mut settings = swarmy_testkit::test_settings(&[
-        "SWARMY_FDB_CLUSTER_FILE",
-        "SWARMY_STORE_DIRECTORY",
-        "SWARMY_NATS_URL",
-        "SWARMY_S3_ENDPOINT",
-        "SWARMY_S3_ACCESS_KEY",
-        "SWARMY_S3_SECRET_KEY",
-        "SWARMY_S3_BUCKET",
-        "SWARMY_S3_PREFIX",
-        "SWARMY_S3_REGION",
-    ]);
+    let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
     settings.store.directory = format!("swarmy-scratch-test-{}", ulid::Ulid::generate());
@@ -732,17 +722,7 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
         }
     }
     boot_network();
-    let mut settings = swarmy_testkit::test_settings(&[
-        "SWARMY_FDB_CLUSTER_FILE",
-        "SWARMY_STORE_DIRECTORY",
-        "SWARMY_NATS_URL",
-        "SWARMY_S3_ENDPOINT",
-        "SWARMY_S3_ACCESS_KEY",
-        "SWARMY_S3_SECRET_KEY",
-        "SWARMY_S3_BUCKET",
-        "SWARMY_S3_PREFIX",
-        "SWARMY_S3_REGION",
-    ]);
+    let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
     settings.store.directory = format!("swarmy-node-test-{}", ulid::Ulid::generate());
@@ -889,17 +869,7 @@ async fn root_dev_stack_uses_sandbox_loopback() {
     }
     boot_network();
     let (image_name, image_tag) = image_spec.split_once(':').expect("image must be name:tag");
-    let settings = swarmy_testkit::test_settings(&[
-        "SWARMY_FDB_CLUSTER_FILE",
-        "SWARMY_STORE_DIRECTORY",
-        "SWARMY_NATS_URL",
-        "SWARMY_S3_ENDPOINT",
-        "SWARMY_S3_ACCESS_KEY",
-        "SWARMY_S3_SECRET_KEY",
-        "SWARMY_S3_BUCKET",
-        "SWARMY_S3_PREFIX",
-        "SWARMY_S3_REGION",
-    ]);
+    let settings = swarmy_testkit::stack_settings();
     let store = store(&settings).await;
     let image = store
         .get_image(image_name, &ImageTag(image_tag.into()))
@@ -1167,17 +1137,7 @@ async fn root_deleted_computer_stops_call_destroys_sandbox_and_detaches_device()
         }
     }
     boot_network();
-    let mut settings = swarmy_testkit::test_settings(&[
-        "SWARMY_FDB_CLUSTER_FILE",
-        "SWARMY_STORE_DIRECTORY",
-        "SWARMY_NATS_URL",
-        "SWARMY_S3_ENDPOINT",
-        "SWARMY_S3_ACCESS_KEY",
-        "SWARMY_S3_SECRET_KEY",
-        "SWARMY_S3_BUCKET",
-        "SWARMY_S3_PREFIX",
-        "SWARMY_S3_REGION",
-    ]);
+    let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
     settings.store.directory = format!("swarmy-deletion-test-{}", ulid::Ulid::generate());
@@ -1207,17 +1167,7 @@ async fn root_named_agent_calls_serialize_and_report_occupancy() {
         }
     }
     boot_network();
-    let mut settings = swarmy_testkit::test_settings(&[
-        "SWARMY_FDB_CLUSTER_FILE",
-        "SWARMY_STORE_DIRECTORY",
-        "SWARMY_NATS_URL",
-        "SWARMY_S3_ENDPOINT",
-        "SWARMY_S3_ACCESS_KEY",
-        "SWARMY_S3_SECRET_KEY",
-        "SWARMY_S3_BUCKET",
-        "SWARMY_S3_PREFIX",
-        "SWARMY_S3_REGION",
-    ]);
+    let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
     settings.store.directory = format!("swarmy-shared-calls-test-{}", ulid::Ulid::generate());
@@ -1251,17 +1201,7 @@ async fn root_bash_yield_spill_stdin_and_web_fetch() {
         }
     }
     boot_network();
-    let mut settings = swarmy_testkit::test_settings(&[
-        "SWARMY_FDB_CLUSTER_FILE",
-        "SWARMY_STORE_DIRECTORY",
-        "SWARMY_NATS_URL",
-        "SWARMY_S3_ENDPOINT",
-        "SWARMY_S3_ACCESS_KEY",
-        "SWARMY_S3_SECRET_KEY",
-        "SWARMY_S3_BUCKET",
-        "SWARMY_S3_PREFIX",
-        "SWARMY_S3_REGION",
-    ]);
+    let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
     settings.store.directory = format!("swarmy-yield-test-{}", ulid::Ulid::generate());
@@ -1292,17 +1232,7 @@ async fn root_file_tools_run_on_agent_disk() {
         }
     }
     boot_network();
-    let mut settings = swarmy_testkit::test_settings(&[
-        "SWARMY_FDB_CLUSTER_FILE",
-        "SWARMY_STORE_DIRECTORY",
-        "SWARMY_NATS_URL",
-        "SWARMY_S3_ENDPOINT",
-        "SWARMY_S3_ACCESS_KEY",
-        "SWARMY_S3_SECRET_KEY",
-        "SWARMY_S3_BUCKET",
-        "SWARMY_S3_PREFIX",
-        "SWARMY_S3_REGION",
-    ]);
+    let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
     settings.store.directory = format!("swarmy-file-tools-test-{}", ulid::Ulid::generate());
