@@ -50,7 +50,7 @@ impl ClusterCredentials {
 }
 
 fn store_error(error: &StoreError) -> Error {
-    tracing::warn!(%error, "cluster credential operation failed");
+    tracing::warn!(error = %swarmy_core::error_chain(error), "cluster credential operation failed");
     Error::Credentials("cluster credential unavailable; check keyring and database")
 }
 
@@ -194,7 +194,7 @@ impl AuthStore for ClusterCredentials {
                         .refresh(&current.kind)
                         .await
                         .map_err(|error| {
-                            tracing::warn!(%error, "provider token refresh failed");
+                            tracing::warn!(error = %swarmy_core::error_chain(&error), "provider token refresh failed");
                             StoreError::Domain(swarmy_store::DomainError::CredentialRefresh)
                         })?
                         .ok_or(StoreError::Domain(
@@ -210,7 +210,7 @@ impl AuthStore for ClusterCredentials {
             )
             .await
             .map_err(|error| {
-                tracing::warn!(%error, "cluster credential refresh failed");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "cluster credential refresh failed");
                 Error::NeedsLogin(provider.into())
             })
     }

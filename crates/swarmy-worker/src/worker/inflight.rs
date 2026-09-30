@@ -73,10 +73,10 @@ impl Worker {
         loop {
             ticks.tick().await;
             if let Err(error) = self.recover_tools().await {
-                tracing::warn!(%error, "tool recovery scan failed");
+                tracing::warn!(error = %swarmy_core::error_chain(&*error), "tool recovery scan failed");
             }
             if let Err(error) = self.recover().await {
-                tracing::warn!(%error, "inference recovery scan failed");
+                tracing::warn!(error = %swarmy_core::error_chain(&*error), "inference recovery scan failed");
             }
         }
     }
@@ -97,7 +97,7 @@ impl Worker {
                     .contains(&runnable_partition(record.session_id))
                     && let Err(error) = self.republish(&record, request_id).await
                 {
-                    tracing::warn!(%request_id, %error, "request recovery failed");
+                    tracing::warn!(%request_id, error = %swarmy_core::error_chain(&*error), "request recovery failed");
                 }
             }
         }

@@ -91,7 +91,7 @@ impl Keyring {
         let mut key = [0; 32];
         rand::rngs::OsRng
             .try_fill_bytes(&mut key)
-            .map_err(|_| Error::Keyring("randomness unavailable"))?;
+            .map_err(|error| Error::KeyringRandomness(error.into()))?;
         let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
         #[cfg(unix)]
         {
