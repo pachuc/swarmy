@@ -117,8 +117,15 @@ pub const MAX_SCAN_LIMIT: usize = 64;
 #[expect(unsafe_code, reason = "the FoundationDB client requires unsafe boot")]
 #[must_use]
 pub fn boot() -> foundationdb::api::NetworkAutoStop {
-    // The FoundationDB client requires unsafe boot; callers retain the network
-    // guard so its thread outlives all client operations.
+    // SAFETY: foundationdb::boot's documented contract is that the returned
+    // NetworkAutoStop is dropped before the process exits, which stops and
+    // joins the client network thread. This function hands the guard to the
+    // caller unchanged: every service main binds it as `let _network` so it
+    // drops when main returns. Test processes keep it in a static OnceLock
+    // that is never dropped; that is outside the contract and accepted only
+    // in tests, where a crash at exit fails loudly and touches no production
+    // data. A second call panics in the API builder (see `# Panics`) rather
+    // than causing undefined behaviour.
     unsafe { foundationdb::boot() }
 }
 
