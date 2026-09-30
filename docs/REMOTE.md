@@ -391,6 +391,58 @@ service-level setting for local development stacks. The fallback still
 dedupes through the pre-write existence check and reads still verify the
 content hash.
 
+### Object storage compatibility probe
+
+Before the fleet depends on a provider, run the compatibility probe against
+one of its buckets. It exercises every S3 call swarmy makes: bucket existence
+through the provisioning client's `HeadBucket`, then PUT, create-only PUT on
+a new and an existing key, GET, HEAD, prefixed listing with pagination, and
+DELETE through the same object client the volume and blob stores use. Ranged
+GETs are not probed: chunks, manifests, and blobs are always read whole, so
+swarmy never sends a range request. The probe writes only under one
+`probe-<id>/` prefix and deletes it afterwards. Each check prints one JSON
+line naming only the check and whether it passed; the endpoint, bucket,
+prefix, and key material never appear, so the output is safe to paste into a
+pull request.
+
+```sh
+cargo run --locked -p swarmy-volume --example s3-compat-probe -- \
+  --endpoint https://objects.example.invalid --region eu-west-1 \
+  --bucket NAME --access-key KEY --secret-file ~/.swarmy/demo-s3-secret
+```
+
+Coordinates fall back to `SWARMY_S3_ENDPOINT`, `SWARMY_S3_REGION`,
+`SWARMY_S3_BUCKET`, `SWARMY_S3_ACCESS_KEY`, and `SWARMY_S3_SECRET_KEY`, so
+with a sourced `.dev/env` the command takes no flags. The secret key comes
+from `--secret-file` (readable only by its owner), `--secret-stdin` (one
+line), or the environment, in the same precedence `remote up` accepts. When
+the bucket description sets `conditional_create = false`, pass
+`--conditional-create=false` so the second create-only PUT is expected to
+overwrite through the same plain-PUT fallback the nodes use.
+
+Results, measured with the probe (SeaweedFS from the development stack,
+Hetzner Object Storage from the operator run):
+
+| Check | SeaweedFS | Hetzner Object Storage |
+|---|---|---|
+| `bucket_exists` (`HeadBucket`) | pass | pending operator run |
+| `put` | pass | pending operator run |
+| `create_new` (`If-None-Match: *` on a new key) | pass | pending operator run |
+| `create_existing` (second create rejected) | pass | pending operator run |
+| `get` | pass | pending operator run |
+| `head` | pass | pending operator run |
+| `list_prefix` | pass | pending operator run |
+| `list_pagination` (two keys per page, continuation tokens) | pass | pending operator run |
+| `delete` | pass | pending operator run |
+| `conditional_create` stays on | yes | pending operator run |
+
+SeaweedFS supports the create-only PUT, so the development stack keeps
+`conditional_create = true`. If the Hetzner run reports `create_existing` as
+failed with the overwrite detail, set `conditional_create = false` in the
+bucket description and re-run the probe with `--conditional-create=false`
+before provisioning. `scripts/test-s3-compat-probe.sh` runs both modes
+against the development stack in CI.
+
 Rotating static keys is a re-provisioning operation: `remote upgrade` never
 modifies `node.env` or service units for key changes, so run `remote down
 --keep-bucket` followed by `remote up` with the new keys. The kept bucket is
