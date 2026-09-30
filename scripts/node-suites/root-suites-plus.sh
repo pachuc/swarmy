@@ -4,9 +4,10 @@ set -uo pipefail
 branch=$1
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 bash "$here/root-suites.sh" "$branch"
+base=$?
 # Exit 2 means the branch could not be checked out or built; do not run the
 # image suites against whatever was there before.
-[ $? -eq 2 ] && exit 1
+if [ "$base" -eq 2 ]; then echo "PLUS_EXIT=1"; exit 2; fi
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 export SWARMY_FDB_LIB_DIR="$HOME/.local/lib"
 cd ~/chaos
@@ -18,14 +19,14 @@ set -a; . .dev/env; set +a
 # The chaos harness and chaos-ci.sh build under sudo and leave root-owned
 # files in target/, which makes this build fail with permission errors.
 sudo chown -R "$(id -un):$(id -gn)" "$(readlink -f target)"
-rc=0
+rc=0; [ "$base" -eq 0 ] || rc=1
 # Every section below saves its full output to its own file under
 # ~/suite-logs/ and prints only a short summary, so a failure's cause is
 # always recoverable from the section file. This mirrors root-suites.sh.
 mkdir -p ~/suite-logs
 suffix=${branch##*/}
 CARGO_BUILD_JOBS=8 cargo build --locked --tests -p swarmy-cli -p swarmyd -p swarmy-volume --no-default-features > ~/suite-build-plus.log 2>&1 \
-  || { tail -20 ~/suite-build-plus.log; echo "image suite build failed"; exit 1; }
+  || { tail -20 ~/suite-build-plus.log; echo "image suite build failed"; echo "PLUS_EXIT=1"; exit 2; }
 tail -1 ~/suite-build-plus.log
 for suite in "swarmy-cli --test image" "swarmyd --test vol" "swarmy-volume --test image" "swarmy-volume --test nbd"; do
   set -- $suite
@@ -69,7 +70,7 @@ sudo -E ./target/debug/swarmy image build images/swarmy-dev --tag dev 2>&1 | tee
 # The node acceptance and the chat tests refuse headless client binaries, so
 # rebuild default features once, before the sections that need them.
 CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-cli -p swarmyd -p swarmy-scheduler -p swarmy-worker -p swarmy-gateway -p swarmy-api >> ~/suite-build-plus.log 2>&1 \
-  || { tail -20 ~/suite-build-plus.log; echo "chat suite build failed"; exit 1; }
+  || { tail -20 ~/suite-build-plus.log; echo "chat suite build failed"; echo "PLUS_EXIT=1"; exit 2; }
 # Tests that run nowhere without their image variable set. Each skips cleanly
 # when its variable is absent, so wire each up here with the images built
 # above. None duplicates a test that already runs: the node dev-stack
