@@ -39,7 +39,7 @@ struct Fixture {
     bus: Bus,
     admin: async_nats::Client,
     stack: Stack,
-    guard: Arc<Mutex<StackGuard>>,
+    guard: Arc<tokio::sync::Mutex<StackGuard>>,
     prefix: String,
     processes: Arc<Mutex<Vec<Process>>>,
 }
@@ -104,7 +104,7 @@ impl Fixture {
     }
 
     async fn bus_for(&self, prefix: &str) -> Bus {
-        self.guard.lock().unwrap().register(prefix);
+        self.guard.lock().await.register(prefix);
         Bus::connect(
             &self.stack.nats_url,
             Config {
@@ -170,7 +170,7 @@ impl Fixture {
 
     async fn cleanup(&self) {
         self.processes.lock().unwrap().clear();
-        self.guard.lock().unwrap().cleanup().await;
+        self.guard.lock().await.cleanup().await;
     }
 }
 
@@ -210,7 +210,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         .await
         .unwrap(),
         admin: async_nats::connect(&url).await.unwrap(),
-        guard: Arc::new(Mutex::new(StackGuard::new(&stack))),
+        guard: Arc::new(tokio::sync::Mutex::new(StackGuard::new(&stack))),
         stack,
         prefix,
         processes: Arc::default(),

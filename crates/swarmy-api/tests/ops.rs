@@ -16,6 +16,8 @@ struct Fixture {
     bus: Bus,
     server: JoinHandle<Result<(), std::io::Error>>,
     base: String,
+    // Held for its Drop: removes the test keys and streams even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 
 impl Drop for Fixture {
@@ -32,17 +34,11 @@ impl Fixture {
     /// Serve the same routes with an overridden spool ceiling, so size-limit
     /// tests need no multi-gigabyte bodies.
     async fn with_upload_max(upload_max_bytes: u64) -> Option<Self> {
-        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
-        let nats = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
-        swarmy_testkit::boot_fdb();
-        let store = Store::open(
-            Some(std::path::Path::new(&cluster)),
-            Some(&["ops-test".into(), Ulid::generate().to_string()]),
-            Arc::new(MemoryBlobStore::default()),
-        )
-        .await
-        .unwrap();
-        let bus = Bus::connect(&nats, Config::default()).await.unwrap();
+        let stack = swarmy_testkit::Stack::load("ops")?;
+        let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+        let bus = Bus::connect(&stack.nats_url, Config::default())
+            .await
+            .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let mut state = AppState::new(
@@ -61,6 +57,7 @@ impl Fixture {
             bus,
             server,
             base,
+            _guard: guard,
         })
     }
 

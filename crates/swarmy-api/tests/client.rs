@@ -6,8 +6,8 @@ use swarmy_api_types as api;
 use swarmy_bus::{Bus, Config, LiveFeed};
 use swarmy_client::{Client, Error, StreamItem};
 use swarmy_core::{
-    CHUNK_SIZE, ContentHash, Event as StoredEvent, ImageTag, LiveTokenDelta, ManifestHeader,
-    ManifestId, Message, MessageId, MessageRole, Part, SessionId, ignore_best_effort,
+    Event as StoredEvent, LiveTokenDelta, Message, MessageId, MessageRole, Part, SessionId,
+    ignore_best_effort,
 };
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use ulid::Ulid;
@@ -18,7 +18,8 @@ struct Fixture {
     bus: Bus,
     address: std::net::SocketAddr,
     server: tokio::task::JoinHandle<Result<(), std::io::Error>>,
-    guard: swarmy_testkit::StackGuard,
+    // Held for its Drop: removes the test keys and streams even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -104,7 +105,7 @@ async fn fixture() -> Option<Fixture> {
         bus,
         address,
         server,
-        guard,
+        _guard: guard,
     })
 }
 

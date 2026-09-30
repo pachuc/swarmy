@@ -18,6 +18,8 @@ struct Fixture {
     store: Store,
     client: Client,
     server: tokio::task::JoinHandle<Result<(), std::io::Error>>,
+    // Held for its Drop: removes the test keys and streams even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 
 impl Drop for Fixture {
@@ -28,17 +30,9 @@ impl Drop for Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
-        let nats = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
-        swarmy_testkit::boot_fdb();
-        let store = Store::open(
-            Some(std::path::Path::new(&cluster)),
-            Some(&["usage-test".into(), Ulid::generate().to_string()]),
-            Arc::new(MemoryBlobStore::default()),
-        )
-        .await
-        .unwrap();
-        let bus = swarmy_bus::Bus::connect(&nats, swarmy_bus::Config::default())
+        let stack = swarmy_testkit::Stack::load("usage")?;
+        let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+        let bus = swarmy_bus::Bus::connect(&stack.nats_url, swarmy_bus::Config::default())
             .await
             .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -56,6 +50,7 @@ impl Fixture {
             store,
             client: Client::new(&base, "test-token").unwrap(),
             server,
+            _guard: guard,
         })
     }
 }

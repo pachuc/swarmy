@@ -8,13 +8,7 @@ mod chat;
 #[path = "cli_session/cost.rs"]
 mod cost;
 
-use std::{
-    future::Future,
-    panic::AssertUnwindSafe,
-    process::Stdio,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{future::Future, panic::AssertUnwindSafe, process::Stdio, sync::Arc, time::Duration};
 
 use futures_util::{FutureExt, StreamExt};
 use jiff::Timestamp;
@@ -147,7 +141,7 @@ struct Fixture {
     url: String,
     api_url: String,
     api_token: String,
-    guard: Arc<Mutex<StackGuard>>,
+    guard: Arc<tokio::sync::Mutex<StackGuard>>,
 }
 
 impl Fixture {
@@ -190,7 +184,7 @@ impl Fixture {
     }
 
     async fn cleanup(&self) {
-        self.guard.lock().unwrap().cleanup().await;
+        self.guard.lock().await.cleanup().await;
     }
 }
 
@@ -279,7 +273,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         directory,
         prefix,
         url,
-        guard: Arc::new(Mutex::new(StackGuard::new(&stack))),
+        guard: Arc::new(tokio::sync::Mutex::new(StackGuard::new(&stack))),
     };
     swarmy_testkit::image(&fixture.store).await;
     let result = AssertUnwindSafe(test(fixture.clone())).catch_unwind().await;

@@ -3,10 +3,7 @@ use std::{sync::Arc, time::Duration};
 use swarmy_api::{AppState, router};
 use swarmy_api_types::{self as api, Cursor, LogId, Subscription};
 use swarmy_bus::{Bus, Config, LiveFeed};
-use swarmy_core::{
-    CHUNK_SIZE, ContentHash, Event as StoredEvent, ImageTag, ManifestHeader, ManifestId, Message,
-    MessageId, MessageRole, Part, SessionId,
-};
+use swarmy_core::{Event as StoredEvent, Message, MessageId, MessageRole, Part, SessionId};
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
@@ -17,6 +14,8 @@ struct Fixture {
     client: reqwest::Client,
     base: String,
     server: JoinHandle<Result<(), std::io::Error>>,
+    // Held for its Drop: removes the test keys and streams even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -25,34 +24,12 @@ impl Drop for Fixture {
 }
 impl Fixture {
     async fn new() -> Option<Self> {
-        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
-        let nats = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
-        swarmy_testkit::boot_fdb();
-        let path = vec!["sse-test".into(), Ulid::generate().to_string()];
-        let store = Store::open(
-            Some(std::path::Path::new(&cluster)),
-            Some(&path),
-            Arc::new(MemoryBlobStore::default()),
-        )
-        .await
-        .unwrap();
-        let manifest = ManifestId::from_ulid(Ulid::generate());
-        store
-            .put_manifest(
-                manifest,
-                &ManifestHeader {
-                    size: u64::from(CHUNK_SIZE),
-                    chunk_size: CHUNK_SIZE,
-                    root_hash: ContentHash::ZERO,
-                },
-            )
+        let stack = swarmy_testkit::Stack::load("sse")?;
+        let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+        swarmy_testkit::image(&store).await;
+        let bus = Bus::connect(&stack.nats_url, Config::default())
             .await
             .unwrap();
-        store
-            .put_image("fixture", &ImageTag("test".into()), manifest, None)
-            .await
-            .unwrap();
-        let bus = Bus::connect(&nats, Config::default()).await.unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let state = AppState::new(
@@ -69,6 +46,7 @@ impl Fixture {
             client: reqwest::Client::new(),
             base,
             server,
+            _guard: guard,
         })
     }
     async fn session(&self, name: &str) -> SessionId {
