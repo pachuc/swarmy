@@ -377,21 +377,15 @@ async fn multiplexed_stream_resumes_and_rejects_rewind() {
         (api::LogId::Session(b.to_string()), 2)
     );
     f.append(a, "a3").await;
-    // Wait until the server's producer delivers the third event past the
-    // client's cursor before changing the subscription.
-    swarmy_testkit::eventually(
-        "producer delivers the third event",
-        Duration::from_secs(8),
-        async || {
-            stream
-                .cursors()
-                .iter()
-                .find(|cursor| cursor.log_id == api::LogId::Session(a.to_string()))
-                .filter(|cursor| cursor.sequence >= 3)
-                .map(|_| ())
-        },
-    )
-    .await;
+    // Let the server's producer deliver the third event before the
+    // subscription changes: the rewind must be detected against a cursor
+    // the producer already advanced, and delivery has no read signal that
+    // does not consume the event the assertions below read.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "orders the subscription change after producer delivery with no peekable signal"
+    )]
+    tokio::time::sleep(Duration::from_millis(200)).await;
     let handle = stream.subscription_handle();
     handle.set(sub(&[a, b], true));
     let Err(Error::Api { body, .. }) = stream.next_item().await else {
