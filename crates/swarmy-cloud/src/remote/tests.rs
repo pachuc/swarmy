@@ -1349,6 +1349,7 @@ fn static_setup() -> StaticSetup {
                 access_key: "static-access".into(),
                 secret_key: "static-secret".into(),
             },
+            ..BucketSpec::default()
         }),
         ..settings()
     };

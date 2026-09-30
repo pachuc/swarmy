@@ -245,6 +245,7 @@ mod tests {
                 access_key: "old-access".into(),
                 secret_key: "old-secret".into(),
             },
+            ..BucketSpec::default()
         };
         // A repeat run without flags reproduces the saved description.
         assert_eq!(

@@ -974,6 +974,7 @@ mod tests {
                     access_key: "test-access".into(),
                     secret_key: "test-secret".into(),
                 },
+                ..BucketSpec::default()
             }),
             default_image: None,
         };
