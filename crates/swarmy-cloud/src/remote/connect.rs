@@ -107,7 +107,9 @@ pub(super) async fn run(state_dir: &Path, state: &State, name: &str, json: bool)
     }
     // The recorded control socket is the authority for stopping this process.
     tunnel.published = true;
-    let _ = socket_dir.keep();
+    // Keep the socket directory after connect returns; the path itself is
+    // recorded in the profile, so the value needs no use.
+    let _socket_dir = socket_dir.keep();
     print(
         &profile,
         json,
