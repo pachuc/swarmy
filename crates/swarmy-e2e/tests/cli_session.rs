@@ -8,8 +8,18 @@ mod chat;
 #[path = "cli_session/cost.rs"]
 mod cost;
 
-use std::{future::Future, panic::AssertUnwindSafe, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    panic::AssertUnwindSafe,
+    process::Stdio,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
+use foundationdb::{
+    Database,
+    directory::{Directory, DirectoryLayer},
+};
 use futures_util::{FutureExt, StreamExt};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken};
