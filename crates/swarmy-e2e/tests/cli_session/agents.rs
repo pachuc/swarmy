@@ -1403,12 +1403,21 @@ async fn create_agent_with_unknown_model_reports_the_catalog_explanation() {
     .await;
 }
 
-/// Overwrite one agent row with bytes no codec accepts, so the next API
-/// read of that agent fails with a chained decode error.
-async fn corrupt_agent_row(fixture: &Fixture, name: &str) {
+/// Plant a key with trailing garbage inside the image registry subspace, so
+/// the next image listing fails unpacking it with a chained decode error.
+/// The fixture registers ("fixture", "test"), whose packed tail locates the
+/// registry rows without knowing the subspace prefix.
+async fn plant_bogus_image_key(fixture: &Fixture) {
     use futures_util::TryStreamExt as _;
+    let mut suffix = vec![0x02];
+    suffix.extend_from_slice(b"fixture");
+    suffix.push(0x00);
+    suffix.push(0x02);
+    suffix.extend_from_slice(b"test");
+    suffix.push(0x00);
+    let suffix_ref = &suffix;
     let db = Database::new(Some(&fixture.cluster)).unwrap();
-    let key = db
+    let image_key = db
         .run(|transaction, _| async move {
             let prefix = DirectoryLayer::default()
                 .open(&transaction, std::slice::from_ref(&fixture.directory), None)
@@ -1432,17 +1441,19 @@ async fn corrupt_agent_row(fixture: &Fixture, name: &str) {
                 .expect("test directory must scan");
             Ok(rows
                 .into_iter()
-                .find(|(_, value)| {
-                    decode::<AgentRecord>(value).is_ok_and(|record| record.name == name)
+                .find(|(key, value)| {
+                    key.ends_with(suffix_ref) && decode::<swarmy_core::ManifestId>(value).is_ok()
                 })
                 .map(|(key, _)| key))
         })
         .await
         .unwrap()
-        .expect("agent row must exist");
-    let key_ref = &key;
+        .expect("fixture image row must exist");
+    let mut bogus = image_key;
+    bogus.push(0xff);
+    let bogus_ref = &bogus;
     db.run(|transaction, _| async move {
-        transaction.set(key_ref, b"definitely not a valid agent record");
+        transaction.set(bogus_ref, b"bogus");
         Ok(())
     })
     .await
@@ -1450,21 +1461,16 @@ async fn corrupt_agent_row(fixture: &Fixture, name: &str) {
 }
 
 #[tokio::test]
-async fn corrupt_agent_row_logs_the_full_decode_chain() {
+async fn corrupt_image_key_logs_the_full_decode_chain() {
     run(|fixture| async move {
         install_log_capture();
-        fixture
-            .store
-            .create_agent("chain-agent", "fixture:test", "", Timestamp::now(), None)
-            .await
-            .unwrap();
-        corrupt_agent_row(&fixture, "chain-agent").await;
+        plant_bogus_image_key(&fixture).await;
         let client =
             swarmy_client::Client::new(&fixture.api_url, fixture.api_token.clone()).unwrap();
         let error = client
-            .agent("chain-agent")
+            .images(None, 64)
             .await
-            .expect_err("corrupt row must fail");
+            .expect_err("corrupt key must fail");
         match error {
             swarmy_client::Error::Api { status, body } => {
                 assert_eq!(status, 500);
@@ -1476,8 +1482,7 @@ async fn corrupt_agent_row_logs_the_full_decode_chain() {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("stored key or blob is corrupt")
-                    && line.contains("unsupported stored value version")),
+                .any(|line| line.contains("stored key or blob is corrupt: ")),
             "missing full chain in: {lines:?}"
         );
     })
