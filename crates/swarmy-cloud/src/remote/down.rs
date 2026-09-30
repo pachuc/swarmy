@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::Result;
 use swarmy_config::RemoteNode;
 
-use super::{Cloud, ObjectBucket, Ownership, key_name, state::State};
+use super::{Cloud, Host, ObjectBucket, Ownership, key_name, state::State};
 use crate::BucketRemoval;
 
 #[derive(Default)]
@@ -163,12 +163,7 @@ pub(super) async fn run(
     delay: Duration,
     keep_bucket: bool,
 ) -> Result<()> {
-    let mut pending = vec![node];
-    let mut nodes = Vec::new();
-    while let Some(current) = pending.pop() {
-        pending.extend(&current.nodes);
-        nodes.push(current);
-    }
+    let nodes = collect(node);
     let mut report = Report::default();
     // Every operation is attempted even if another AWS permission is denied.
     for current in nodes.iter().rev() {
@@ -194,6 +189,54 @@ pub(super) async fn run(
         report.live.is_empty(),
         format!("instances {live} may still exist; local state retained for retry"),
     )?;
+    finish(cloud, state, node, nodes, keep_bucket).await
+}
+
+/// Tear down an existing-host remote: stop swarmy services and remove
+/// swarmy files and state on every provisioned host, delete the owned
+/// bucket scope, and drop local state. The machines are operator-owned:
+/// they stay running and no cloud machine call happens.
+pub(super) async fn run_existing(
+    cloud: &impl Cloud,
+    host: &impl Host,
+    state: &State,
+    node: &RemoteNode,
+    keep_bucket: bool,
+) -> Result<()> {
+    let nodes = collect(node);
+    cloud_out!(
+        "Remote {} uses existing hosts: the machines stay running; swarmy services, files, and state are removed from the hosts",
+        node.name
+    );
+    for current in nodes.iter().rev() {
+        if !current.launch_attempted {
+            cloud_out!("Nothing was provisioned for {}", current.name);
+            continue;
+        }
+        host.decommission(current).await?;
+    }
+    finish(cloud, state, node, nodes, keep_bucket).await
+}
+
+/// Every node in the remote, primary first.
+fn collect(node: &RemoteNode) -> Vec<&RemoteNode> {
+    let mut pending = vec![node];
+    let mut nodes = Vec::new();
+    while let Some(current) = pending.pop() {
+        pending.extend(&current.nodes);
+        nodes.push(current);
+    }
+    nodes
+}
+
+/// Delete the owned bucket scope, then drop every key file and the record.
+async fn finish(
+    cloud: &impl Cloud,
+    state: &State,
+    node: &RemoteNode,
+    nodes: Vec<&RemoteNode>,
+    keep_bucket: bool,
+) -> Result<()> {
     cleanup_bucket_and_role(cloud, state, node, keep_bucket).await?;
     for current in nodes {
         state.remove_key(current)?;

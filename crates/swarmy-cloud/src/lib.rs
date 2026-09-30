@@ -4,7 +4,8 @@
 //! interface, so a second provider is an implementation, not a rewrite. The
 //! [`Cloud`] trait speaks in provider-neutral types ([`MachineSpec`],
 //! [`Machine`], [`ObjectBucket`]); `Aws` implements it with EC2, SSM, S3,
-//! and IAM. [`Host`] covers the SSH half of provisioning and stays
+//! and IAM, and the existing-host substrate reuses the bucket calls while
+//! failing every machine operation. [`Host`] covers the SSH half of provisioning and stays
 //! provider-independent. See `docs/cloud-substrate.md` for the contract a
 //! second provider must implement.
 // The CLI owns presentation. Provisioning reports lines through this process-level
@@ -35,12 +36,12 @@ macro_rules! cloud_err {
 
 mod command;
 pub mod ssh;
-pub use command::{Command, select};
+pub use command::{BucketArgs, Command, select};
 #[cfg(feature = "remote")]
 mod remote;
 mod services;
 #[cfg(feature = "remote")]
-pub use remote::{Aws, DeletionPlan, RunOutcome, ServiceOptions, for_settings, run};
+pub use remote::{Aws, DeletionPlan, ProviderCloud, RunOutcome, ServiceOptions, for_settings, run};
 
 /// Failures returned to clients of the remote provisioning entry point.
 ///
@@ -52,8 +53,6 @@ pub use remote::{Aws, DeletionPlan, RunOutcome, ServiceOptions, for_settings, ru
 /// as its source for the binary to render with its source chain.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("unknown cloud provider '{0}': only 'aws' is supported")]
-    UnsupportedProvider(String),
     #[error("no remote node named {0}; run swarmy remote up {0}")]
     NotFound(String),
     #[error("remote node {0} already exists; run swarmy remote down {0} first")]
@@ -422,6 +421,14 @@ pub trait Host {
         recipe: &std::path::Path,
     ) -> impl Future<Output = Result<()>>;
     fn block_devices(&self, node: &RemoteNode) -> impl Future<Output = Result<String>>;
+    /// Copy an operator-owned bootstrap key into remote state for adoption.
+    fn adopt_key(
+        &self,
+        node: &RemoteNode,
+        source: &std::path::Path,
+    ) -> impl Future<Output = Result<()>>;
+    /// Stop services and remove swarmy files on an adopted host.
+    fn decommission(&self, node: &RemoteNode) -> impl Future<Output = Result<()>>;
     fn provision(
         &self,
         node: &RemoteNode,
@@ -450,6 +457,14 @@ impl Host for ssh::Ssh {
 
     async fn generate_key(&self, node: &RemoteNode) -> Result<Vec<u8>> {
         ssh::generate_key(node).await
+    }
+
+    async fn adopt_key(&self, node: &RemoteNode, source: &std::path::Path) -> Result<()> {
+        ssh::adopt_key(node, source).await
+    }
+
+    async fn decommission(&self, node: &RemoteNode) -> Result<()> {
+        ssh::Ssh::decommission(self, node).await
     }
 
     async fn block_devices(&self, node: &RemoteNode) -> Result<String> {

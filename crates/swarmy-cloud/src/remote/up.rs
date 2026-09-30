@@ -58,37 +58,54 @@ pub(super) async fn run(
                 .await?;
         }
         let address = provision(cloud, host, state, settings, image, &mut node, delay).await?;
-        if settings.services == swarmy_config::RemoteServices::Node {
-            host.services(&node, &address, &options).await?;
-        }
-        if let Some(recipe) = options.recipe {
-            cloud_out!("Building base-ubuntu:{name} (this takes several minutes)");
-            let build_started = Instant::now();
-            host.build_image(&node, &address, recipe).await?;
-            node.default_image = Some(format!("base-ubuntu:{name}"));
-            state.save(&node)?;
-            cloud_out!(
-                "Image base-ubuntu:{name} built and registered in {:.1}s",
-                build_started.elapsed().as_secs_f64()
-            );
-        } else {
-            cloud_out!("Skipping image build (--no-image)");
-        }
-        Ok::<_, crate::Error>(address)
+        provision_stack(host, state, settings, &mut node, &address, options, started).await?;
+        Ok::<_, crate::Error>(())
     }
     .await;
-    let address = match result {
-        Ok(address) => address,
+    match result {
+        Ok(()) => Ok(()),
         Err(error) => {
             cloud_err!("remote up failed; cleanup with swarmy remote down {name}");
-            return Err(error);
+            Err(error)
         }
-    };
+    }
+}
+
+/// Install node services and build the registered image once an address is
+/// known. Shared by `up` (after its machine is ready) and `adopt` (after its
+/// host is recorded): one implementation, no second copy of these steps.
+pub(super) async fn provision_stack(
+    host: &impl Host,
+    state: &State,
+    settings: &RemoteSettings,
+    node: &mut RemoteNode,
+    address: &str,
+    options: super::services::Options<'_>,
+    started: Instant,
+) -> Result<()> {
+    if settings.services == swarmy_config::RemoteServices::Node {
+        host.services(node, address, &options).await?;
+    }
+    if let Some(recipe) = options.recipe {
+        let name = node.name.clone();
+        cloud_out!("Building base-ubuntu:{name} (this takes several minutes)");
+        let build_started = Instant::now();
+        host.build_image(node, address, recipe).await?;
+        node.default_image = Some(format!("base-ubuntu:{name}"));
+        state.save(node)?;
+        cloud_out!(
+            "Image base-ubuntu:{name} built and registered in {:.1}s",
+            build_started.elapsed().as_secs_f64()
+        );
+    } else {
+        cloud_out!("Skipping image build (--no-image)");
+    }
     cloud_out!(
-        "Remote node {name} ready in {:.1}s",
+        "Remote node {} ready in {:.1}s",
+        node.name,
         started.elapsed().as_secs_f64()
     );
-    cloud_out!("{}", super::ssh::command_line(&node, &address)?);
+    cloud_out!("{}", super::ssh::command_line(node, address)?);
     Ok(())
 }
 

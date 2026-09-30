@@ -81,6 +81,14 @@ fn instance_state(reachable: bool) -> String {
     .into()
 }
 
+/// Instance type only exists for AWS machines; existing hosts report none
+/// so status never prints a cloud shape that was never selected.
+fn instance_type(node: &RemoteNode) -> Option<String> {
+    let settings = node.launch_settings.as_ref()?;
+    (settings.provider == swarmy_config::Provider::Aws)
+        .then(|| settings.aws.instance_type.clone())
+}
+
 pub(super) async fn run(json: bool) -> Result<()> {
     let base = Settings::load_base()?.settings;
     let directory = Path::new(&base.state_dir).join("remote");
@@ -118,10 +126,7 @@ pub(super) async fn run(json: bool) -> Result<()> {
             status.nodes.push(NodeStatus {
                 name: child.name.clone(),
                 instance_id: child.instance_id.clone(),
-                instance_type: child
-                    .launch_settings
-                    .as_ref()
-                    .map(|settings| settings.aws.instance_type.clone()),
+                instance_type: instance_type(child),
                 private_ip: child.private_ip.clone(),
                 sandboxes: child.sandboxes,
                 instance_state: instance_state(reachable(child).await),
@@ -212,10 +217,7 @@ where
         instance_id: node.instance_id.clone(),
         instance_state: instance_state(reachable),
         sandboxes: node.sandboxes,
-        instance_type: node
-            .launch_settings
-            .as_ref()
-            .map(|settings| settings.aws.instance_type.clone()),
+        instance_type: instance_type(node),
         nodes: Vec::new(),
         images: Vec::new(),
         services: Vec::new(),

@@ -5,16 +5,22 @@ use super::{
 };
 
 use state::State;
-use std::{future::Future, path::PathBuf, time::Duration};
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use swarmy_config::Settings;
 
 mod add_node;
+mod adopt;
 mod aws;
 mod bucket;
 mod buckets;
 mod connect;
 mod disconnect;
 mod down;
+mod existing;
 mod logs;
 mod state;
 mod status;
@@ -26,17 +32,112 @@ mod upgrade;
 pub use super::services::Options as ServiceOptions;
 pub use aws::Aws;
 pub use down::DeletionPlan;
+use existing::ExistingHost;
 
-/// Build the provider selected by the remote settings.
-///
-/// # Errors
-///
-/// Rejects unknown providers. Only `aws` exists today.
-pub async fn for_settings(settings: &RemoteSettings) -> std::result::Result<Aws, crate::Error> {
-    if settings.provider != "aws" {
-        return Err(crate::Error::UnsupportedProvider(settings.provider.clone()));
+/// The cloud substrate selected by a remote's provider. AWS owns machines;
+/// existing hosts delegate only bucket lifecycle to object-storage APIs and
+/// fail every machine operation.
+pub enum ProviderCloud {
+    Aws(Aws),
+    Existing(ExistingHost),
+}
+
+impl Cloud for ProviderCloud {
+    async fn ensure_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
+        match self {
+            Self::Aws(aws) => aws.ensure_bucket(bucket).await,
+            Self::Existing(existing) => existing.ensure_bucket(bucket).await,
+        }
     }
-    Ok(Aws::new(&settings.region).await)
+    async fn base_image(&self) -> Result<String> {
+        match self {
+            Self::Aws(aws) => aws.base_image().await,
+            Self::Existing(existing) => existing.base_image().await,
+        }
+    }
+    async fn import_ssh_key(&self, name: &str, public_key: Vec<u8>, owner: &str) -> Result<()> {
+        match self {
+            Self::Aws(aws) => aws.import_ssh_key(name, public_key, owner).await,
+            Self::Existing(existing) => existing.import_ssh_key(name, public_key, owner).await,
+        }
+    }
+    async fn create(&self, spec: &MachineSpec) -> Result<String> {
+        match self {
+            Self::Aws(aws) => aws.create(spec).await,
+            Self::Existing(existing) => existing.create(spec).await,
+        }
+    }
+    async fn get(&self, id: &str) -> Result<Option<Machine>> {
+        match self {
+            Self::Aws(aws) => aws.get(id).await,
+            Self::Existing(existing) => existing.get(id).await,
+        }
+    }
+    async fn find_by_tag(&self, token: &str) -> Result<Option<String>> {
+        match self {
+            Self::Aws(aws) => aws.find_by_tag(token).await,
+            Self::Existing(existing) => existing.find_by_tag(token).await,
+        }
+    }
+    async fn destroy(&self, id: &str) -> Result<()> {
+        match self {
+            Self::Aws(aws) => aws.destroy(id).await,
+            Self::Existing(existing) => existing.destroy(id).await,
+        }
+    }
+    async fn bucket_ownership(&self, bucket: &ObjectBucket) -> Result<Ownership> {
+        match self {
+            Self::Aws(aws) => aws.bucket_ownership(bucket).await,
+            Self::Existing(existing) => existing.bucket_ownership(bucket).await,
+        }
+    }
+    async fn role_ownership(&self, name: &str, owner: &str) -> Result<(Ownership, Ownership)> {
+        match self {
+            Self::Aws(aws) => aws.role_ownership(name, owner).await,
+            Self::Existing(existing) => existing.role_ownership(name, owner).await,
+        }
+    }
+    async fn tag_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
+        match self {
+            Self::Aws(aws) => aws.tag_bucket(bucket).await,
+            Self::Existing(existing) => existing.tag_bucket(bucket).await,
+        }
+    }
+    async fn tag_node_role(&self, name: &str, owner: &str) -> Result<()> {
+        match self {
+            Self::Aws(aws) => aws.tag_node_role(name, owner).await,
+            Self::Existing(existing) => existing.tag_node_role(name, owner).await,
+        }
+    }
+    async fn delete_bucket(&self, bucket: &ObjectBucket) -> Result<BucketRemoval> {
+        match self {
+            Self::Aws(aws) => aws.delete_bucket(bucket).await,
+            Self::Existing(existing) => existing.delete_bucket(bucket).await,
+        }
+    }
+    async fn delete_node_role(&self, name: &str, owner: &str) -> Result<(bool, bool)> {
+        match self {
+            Self::Aws(aws) => aws.delete_node_role(name, owner).await,
+            Self::Existing(existing) => existing.delete_node_role(name, owner).await,
+        }
+    }
+    async fn delete_ssh_key(&self, name: &str) -> Result<()> {
+        match self {
+            Self::Aws(aws) => aws.delete_ssh_key(name).await,
+            Self::Existing(existing) => existing.delete_ssh_key(name).await,
+        }
+    }
+}
+
+/// Build the provider selected by the remote settings: AWS machines, or the
+/// existing-host substrate that only manages buckets.
+pub async fn for_settings(settings: &RemoteSettings) -> ProviderCloud {
+    match settings.provider {
+        swarmy_config::Provider::Aws => ProviderCloud::Aws(Aws::new(&settings.region).await),
+        swarmy_config::Provider::Existing => {
+            ProviderCloud::Existing(ExistingHost::new(&settings.region).await)
+        }
+    }
 }
 
 /// What a `swarmy remote` invocation did. Confirmation variants carry what
@@ -69,6 +170,10 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
             Box::pin(run_up(&state, loaded.settings, command)).await?;
             Ok(RunOutcome::Completed)
         }
+        Command::Adopt { .. } => {
+            Box::pin(run_adopt(&state, loaded.settings, command)).await?;
+            Ok(RunOutcome::Completed)
+        }
         Command::AddNode { .. } => {
             Box::pin(run_add_node(&state, loaded.settings, command)).await?;
             Ok(RunOutcome::Completed)
@@ -99,7 +204,7 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
             };
             let mut cloud_settings = node.cloud_settings();
             cloud_settings.region.clone_from(&node.region);
-            let cloud = for_settings(&cloud_settings).await?;
+            let cloud = for_settings(&cloud_settings).await;
             if !keep_bucket
                 && !yes
                 && !confirmed
@@ -107,7 +212,14 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
             {
                 return Ok(RunOutcome::NeedsConfirmation { plan });
             }
-            down::run(&cloud, &state, &node, Duration::from_secs(5), keep_bucket).await?;
+            // Existing-host remotes need SSH for host teardown; AWS teardown
+            // needs no checkout, so discovery stays lazy.
+            if node.cloud_settings().provider == swarmy_config::Provider::Existing {
+                let host = ssh::Ssh::discover()?;
+                down::run_existing(&cloud, &host, &state, &node, keep_bucket).await?;
+            } else {
+                down::run(&cloud, &state, &node, Duration::from_secs(5), keep_bucket).await?;
+            }
             Ok(RunOutcome::Completed)
         }
         Command::Tag { name } => {
@@ -122,7 +234,7 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
             }
             let mut settings = node.cloud_settings();
             settings.region.clone_from(&node.region);
-            down::apply_tag(&for_settings(&settings).await?, &node).await?;
+            down::apply_tag(&for_settings(&settings).await, &node).await?;
             Ok(RunOutcome::Completed)
         }
         Command::Connect { name } => {
@@ -144,17 +256,52 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
     }
 }
 
+/// Resolve the remote's bucket description from flags, environment, and
+/// config. Shared by `up` (create a machine, then provision it) and `adopt`
+/// (provision an existing machine) so the bucket options never drift apart.
+fn resolve_bucket(settings: &mut RemoteSettings, args: &crate::BucketArgs) -> Result<()> {
+    let stdin_secret = args
+        .s3_secret_stdin
+        .then(bucket::read_secret_stdin)
+        .transpose()?;
+    let resolved = bucket::resolve(
+        settings.bucket.clone(),
+        &bucket::BucketOptions {
+            bucket: args.bucket.clone(),
+            endpoint: args.s3_endpoint.clone(),
+            region: args.s3_region.clone(),
+            prefix: args.s3_prefix.clone(),
+            access_key: args.s3_access_key.clone(),
+            secret_file: args.s3_secret_file.clone(),
+            secret_stdin: args.s3_secret_stdin,
+            stdin_secret,
+            env_access_key: std::env::var("AWS_ACCESS_KEY_ID").ok(),
+            env_secret_key: std::env::var("AWS_SECRET_ACCESS_KEY").ok(),
+        },
+    )?;
+    settings.bucket = resolved;
+    if let Some(spec) = settings.bucket.as_mut() {
+        let region = settings.region.clone();
+        spec.resolve_region(&region);
+    }
+    Ok(())
+}
+
+/// Resolve the image recipe unless `--no-image` skips the registered build.
+/// Shared by `up` and `adopt`: a missing recipe fails before any host changes.
+fn image_recipe(host: &ssh::Ssh, no_image: bool, image_recipe: &Path) -> Result<Option<PathBuf>> {
+    if no_image {
+        Ok(None)
+    } else {
+        Ok(Some(host.image_recipe(image_recipe)?))
+    }
+}
+
 /// Launch and provision the first node of a remote.
 async fn run_up(state: &State, mut settings: Settings, command: Command) -> Result<()> {
     let Command::Up {
         name,
         bucket,
-        s3_endpoint,
-        s3_region,
-        s3_prefix,
-        s3_access_key,
-        s3_secret_file,
-        s3_secret_stdin,
         sandboxes,
         instance_type,
         disk_gb,
@@ -169,44 +316,18 @@ async fn run_up(state: &State, mut settings: Settings, command: Command) -> Resu
     let _lock = state.lock()?;
     swarmy_config::validate_remote_name(&name)?;
     let host = ssh::Ssh::discover()?;
-    let recipe = if no_image {
-        None
-    } else {
-        Some(host.image_recipe(&image_recipe)?)
-    };
+    let recipe = image_recipe(&host, no_image, &image_recipe)?;
     if let Some(services) = services {
         settings.remote.services = services;
     }
-    let stdin_secret = s3_secret_stdin
-        .then(bucket::read_secret_stdin)
-        .transpose()?;
-    let resolved = bucket::resolve(
-        settings.remote.bucket.clone(),
-        &bucket::BucketOptions {
-            bucket,
-            endpoint: s3_endpoint,
-            region: s3_region,
-            prefix: s3_prefix,
-            access_key: s3_access_key,
-            secret_file: s3_secret_file,
-            secret_stdin: s3_secret_stdin,
-            stdin_secret,
-            env_access_key: std::env::var("AWS_ACCESS_KEY_ID").ok(),
-            env_secret_key: std::env::var("AWS_SECRET_ACCESS_KEY").ok(),
-        },
-    )?;
-    settings.remote.bucket = resolved;
-    if let Some(spec) = settings.remote.bucket.as_mut() {
-        let region = settings.remote.region.clone();
-        spec.resolve_region(&region);
-    }
+    resolve_bucket(&mut settings.remote, &bucket)?;
     NodeShape {
         instance_type,
         disk_gb,
     }
     .apply(&mut settings.remote)?;
     let options = services::Options::new(&settings, copy_credential, recipe.as_deref())?;
-    let cloud = for_settings(&settings.remote).await?;
+    let cloud = for_settings(&settings.remote).await;
     guard(
         &name,
         up::run(
@@ -225,6 +346,68 @@ async fn run_up(state: &State, mut settings: Settings, command: Command) -> Resu
     .await
 }
 
+/// Provision an existing SSH-reachable machine as the first node of a
+/// remote. The machine is recorded with the existing-host provider, then the
+/// shared provisioning `up` runs after its machine is ready (services,
+/// image build) runs against its address. No machine is created and no
+/// cloud machine call happens.
+async fn run_adopt(state: &State, mut settings: Settings, command: Command) -> Result<()> {
+    let Command::Adopt {
+        name,
+        host: address,
+        ssh_user,
+        ssh_key,
+        service_user,
+        local_storage,
+        bucket,
+        sandboxes,
+        no_image,
+        image_recipe,
+        services,
+        copy_credential,
+    } = command
+    else {
+        unreachable!("run_adopt handles remote adopt");
+    };
+    let _lock = state.lock()?;
+    swarmy_config::validate_remote_name(&name)?;
+    let host = ssh::Ssh::discover()?;
+    let recipe = image_recipe(&host, no_image, &image_recipe)?;
+    if let Some(services) = services {
+        settings.remote.services = services;
+    }
+    if let Some(service_user) = service_user {
+        settings.remote.service_user = service_user;
+    }
+    if let Some(local_storage) = local_storage {
+        settings.remote.local_storage = local_storage;
+    }
+    // The adopted machine is operator-owned whatever the configured default
+    // substrate is; record it as an existing host throughout.
+    settings.remote.provider = swarmy_config::Provider::Existing;
+    resolve_bucket(&mut settings.remote, &bucket)?;
+    let options = services::Options::new(&settings, copy_credential, recipe.as_deref())?;
+    let cloud = for_settings(&settings.remote).await;
+    guard(
+        &name,
+        adopt::run(
+            &cloud,
+            &host,
+            state,
+            &settings.remote,
+            adopt::AdoptNode {
+                name: &name,
+                host: &address,
+                ssh_user: &ssh_user,
+                ssh_key: &ssh_key,
+                sandboxes: sandboxes.unwrap_or_else(swarmy_config::default_sandboxes),
+            },
+            options,
+        ),
+    )
+    .await
+}
+
 /// Join another node to an existing remote over its private network.
 async fn run_add_node(state: &State, mut settings: Settings, command: Command) -> Result<()> {
     let Command::AddNode {
@@ -232,12 +415,20 @@ async fn run_add_node(state: &State, mut settings: Settings, command: Command) -
         sandboxes,
         instance_type,
         disk_gb,
+        host: join_host,
+        ssh_user,
+        ssh_key,
+        local_storage,
+        primary_address,
         copy_credential,
     } = command
     else {
         unreachable!("run_add_node handles remote add-node");
     };
     settings.remote.services = swarmy_config::RemoteServices::Node;
+    if let Some(local_storage) = local_storage {
+        settings.remote.local_storage = local_storage;
+    }
     let options = if copy_credential {
         Some(services::Options::new(&settings, true, None)?)
     } else {
@@ -251,7 +442,45 @@ async fn run_add_node(state: &State, mut settings: Settings, command: Command) -
             "remote has no saved launch configuration; recreate it with remote up before adding nodes",
         )
     })?;
-    let cloud = for_settings(&launch).await?;
+    let cloud = for_settings(&launch).await;
+    let existing = if launch.provider == swarmy_config::Provider::Existing {
+        let Some(address) = join_host.as_deref() else {
+            return Err(crate::Error::other(format!(
+                "remote {name} uses existing hosts; pass --host ADDRESS to join one"
+            )));
+        };
+        let Some(key) = ssh_key else {
+            return Err(crate::Error::other(
+                "joining an existing host needs --ssh-key PATH".to_owned(),
+            ));
+        };
+        if instance_type.is_some() || disk_gb.is_some() {
+            return Err(crate::Error::other(
+                "--instance-type and --disk-gb select EC2 machines; existing-host joins use --host"
+                    .to_owned(),
+            ));
+        }
+        Some(add_node::ExistingJoin {
+            host: address,
+            ssh_user: ssh_user.as_deref().unwrap_or("root"),
+            ssh_key: &key,
+            primary_address: primary_address.as_deref(),
+        })
+    } else {
+        for (flag, present) in [
+            ("--host", join_host.is_some()),
+            ("--ssh-user", ssh_user.is_some()),
+            ("--ssh-key", ssh_key.is_some()),
+            ("--primary-address", primary_address.is_some()),
+        ] {
+            if present {
+                return Err(crate::Error::other(format!(
+                    "{flag} is only for existing-host remotes; remote {name} is AWS-managed"
+                )));
+            }
+        }
+        None
+    };
     // Box the join future: it holds saved launch state across awaits and
     // would otherwise exceed the large-future budget.
     guard(
@@ -272,6 +501,7 @@ async fn run_add_node(state: &State, mut settings: Settings, command: Command) -
                 // The saved primary settings may carry its resolved device;
                 // the join starts from the explicit configuration instead.
                 local_storage: settings.remote.local_storage.clone(),
+                existing,
             },
             Duration::from_secs(5),
             options.as_ref(),

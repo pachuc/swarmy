@@ -1,6 +1,7 @@
 //! SSH helpers shared by provisioning, tunnel, log, and status commands.
 use std::{
     fmt::Write as _,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -190,6 +191,29 @@ pub async fn generate_key(node: &RemoteNode) -> Result<Vec<u8>> {
     )
     .await?;
     Ok(std::fs::read(node.key_path.with_extension("pub"))?)
+}
+
+/// Copy an operator-owned bootstrap private key into remote state for
+/// adoption and derive its public half for inspection. The state directory
+/// is 0700; the copy is 0600 whatever the source's mode is, and the source
+/// file is left untouched.
+///
+/// # Errors
+///
+/// Reports unreadable sources and keys `ssh-keygen` cannot parse.
+pub async fn adopt_key(node: &RemoteNode, source: &Path) -> Result<()> {
+    let bytes = std::fs::read(source)?;
+    std::fs::write(&node.key_path, &bytes)?;
+    std::fs::set_permissions(&node.key_path, std::fs::Permissions::from_mode(0o600))?;
+    let output = run_output(
+        Command::new("ssh-keygen")
+            .args(["-y", "-f"])
+            .arg(&node.key_path),
+        "read bootstrap public key",
+    )
+    .await?;
+    std::fs::write(node.key_path.with_extension("pub"), output.stdout)?;
+    Ok(())
 }
 
 /// Provisions a fresh node from this repository checkout.
@@ -560,6 +584,29 @@ impl Ssh {
         .await?;
         Ok(address)
     }
+
+    /// Stop swarmy services on an adopted host and remove its units,
+    /// binaries, node environment, and checkout. Units are stopped and
+    /// disabled by listed name so an empty match still succeeds, and every
+    /// removal forces, so a failed `down` can retry. `/etc/swarmy` goes
+    /// because it holds static bucket keys and copied credentials. Local
+    /// sandbox disk data stays: the machine is operator-owned.
+    ///
+    /// # Errors
+    ///
+    /// Reports unreachable hosts and SSH failures.
+    pub async fn decommission(&self, node: &RemoteNode) -> Result<()> {
+        let _ = self;
+        let address = wait_ssh(node).await?;
+        let user = service_user(node)?;
+        checked(
+            base(node)?
+                .arg(&address)
+                .arg(decommission_command(&user)),
+            "remove swarmy services",
+        )
+        .await
+    }
 }
 
 fn is_python_cache(status_line: &str) -> bool {
@@ -621,6 +668,17 @@ fn provisioning_command(
         shell_words::quote(&user),
         shell_words::quote(node.local_storage()),
     ))
+}
+
+/// One idempotent teardown script for `down` on adopted hosts. Units stop
+/// and disable by listed name because a glob matching nothing must still
+/// succeed; every removal forces so a failed `down` can retry. The service
+/// home resolves through `~user` on the host inside a root shell, like the
+/// provisioning paths.
+fn decommission_command(user: &str) -> String {
+    format!(
+        "set -e; units=$(systemctl list-units --all --no-legend --no-pager 'swarmy-*.service' | awk '{{print $1}}' || true); if [ -n \"$units\" ]; then printf '%s\\n' \"$units\" | xargs sudo systemctl stop; printf '%s\\n' \"$units\" | xargs sudo systemctl disable; fi; sudo rm -f /etc/systemd/system/swarmy-*.service; sudo systemctl daemon-reload; sudo rm -f /usr/local/bin/swarmy /usr/local/bin/swarmyd /usr/local/bin/swarmy-scheduler /usr/local/bin/swarmy-gateway /usr/local/bin/swarmy-worker /usr/local/bin/swarmy-api; sudo rm -rf /etc/swarmy; sudo sh -c 'rm -rf ~{user}/swarmy'"
+    )
 }
 
 /// Use the node's service environment, including its native `FoundationDB` library.
