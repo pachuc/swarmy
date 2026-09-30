@@ -271,7 +271,8 @@ impl Fixture {
         if let Some(point) = kill_point {
             command.env("SWARMY_WORKER_KILL_POINT", point);
         }
-        self.children.push(ChildGuard::new(command.spawn().unwrap()));
+        self.children
+            .push(ChildGuard::new(command.spawn().unwrap()));
         index
     }
 
@@ -1026,23 +1027,26 @@ async fn route_failover_drops_previous_provider_reasoning() {
             assert_eq!(histories.len(), 3);
             // The folded retry on the first provider keeps its reasoning.
             assert!(
-                histories[1].iter().any(|message| message.parts.iter().any(
-                    |part| matches!(part, Part::Reasoning { .. })
-                )),
+                histories[1].iter().any(|message| message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, Part::Reasoning { .. }))),
                 "same-provider retries keep reasoning"
             );
             // The failover request carries the thinking as text, never as a
             // replayable reasoning block from the other provider.
             assert!(
-                histories[2].iter().all(|message| message.parts.iter().all(
-                    |part| !matches!(part, Part::Reasoning { .. })
-                )),
+                histories[2].iter().all(|message| message
+                    .parts
+                    .iter()
+                    .all(|part| !matches!(part, Part::Reasoning { .. }))),
                 "failover drops the previous provider's reasoning blocks"
             );
             assert!(
-                histories[2].iter().any(|message| message.parts.iter().any(
-                    |part| matches!(part, Part::Text { text } if text == "Think first.")
-                )),
+                histories[2].iter().any(|message| message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, Part::Text { text } if text == "Think first."))),
                 "downgraded thinking text is preserved"
             );
         })
@@ -1509,11 +1513,53 @@ async fn fresh_appends_and_gateway_completions_finish_without_a_scheduler() {
     .await;
 }
 
+fn write_main_summary_script(fixture: &Fixture, summary: &str) {
+    swarmy_testkit::Script::new("Finished the turn")
+        .usage(0, 101, 0)
+        .parts(
+            1,
+            vec![Part::Text {
+                text: summary.to_owned(),
+            }],
+            StopReason::EndTurn,
+        )
+        .usage(1, 120, 0)
+        .write_to(&fixture.files.path().join("script.json"));
+}
+
+async fn main_summary_session(fixture: &mut Fixture) -> (AgentId, SessionId) {
+    let image = swarmy_testkit::image(&fixture.store).await;
+    let agent = fixture
+        .store
+        .create_agent("tommy", image, "", Timestamp::now(), None)
+        .await
+        .unwrap();
+    let id = loop {
+        let id = SessionId::from_ulid(Ulid::generate());
+        if runnable_partition(id) == 7 {
+            break id;
+        }
+    };
+    fixture
+        .store
+        .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
+        .await
+        .unwrap();
+    fixture
+        .store
+        .set_main_session(agent.agent_id, id)
+        .await
+        .unwrap();
+    fixture.compactable_user_message(id).await;
+    (agent.agent_id, id)
+}
+
 #[tokio::test]
 async fn main_summary_atomically_archives_and_links_a_fresh_session() {
-    run(|f| Box::pin(async move {
-        f.summarize_at_tokens = 100;
-        let summary = "## Goal
+    run(|f| {
+        Box::pin(async move {
+            f.summarize_at_tokens = 100;
+            let summary = "## Goal
 Finish the task
 
 ## Progress
@@ -1521,48 +1567,85 @@ Finish the task
 - [x] Handler done
 
 ## Next Steps
-1. Verify".to_owned();
-        swarmy_testkit::Script::new("Finished the turn")
-            .usage(0, 101, 0)
-            .parts(1, vec![Part::Text { text: summary.clone() }], StopReason::EndTurn)
-            .usage(1, 120, 0)
-            .write_to(&f.files.path().join("script.json"));
-        let image = swarmy_testkit::image(&f.store).await;
-        let agent = f.store.create_agent("tommy", image, "", Timestamp::now(), None).await.unwrap();
-        let id = loop {
-            let id = SessionId::from_ulid(Ulid::generate());
-            if runnable_partition(id) == 7 { break id; }
-        };
-        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
-        f.store.set_main_session(agent.agent_id, id).await.unwrap();
-        f.compactable_user_message(id).await;
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
-        f.wake(id).await;
-        let new = wait_successor(f, id).await;
-        assert_ne!(id, new);
-        assert_eq!(f.store.get_agent(agent.agent_id).await.unwrap().unwrap().main_session, Some(new));
-        assert_eq!(f.store.fetch_session(id).await.unwrap().unwrap().state, SessionState::Completed);
-        assert_eq!(f.store.previous_session(new).await.unwrap(), Some(id));
-        let fresh = f.store.fetch_session(new).await.unwrap().unwrap();
-        assert_eq!(fresh.state, SessionState::Idle);
-        assert_eq!(fresh.agent_id, agent.agent_id);
-        let opening = f.store.read_events(new, 0, 64).await.unwrap();
-        let Event::MessageAppended { message, .. } = &opening[0] else { panic!("opening missing") };
-        assert_eq!(message.role, MessageRole::User);
-        let Part::Text { text } = &message.parts[0] else { panic!("summary missing") };
-        assert!(text.contains(&summary));
-        let old = f.store.read_events(id, 0, 64).await.unwrap();
-        assert_requests(id, &old, 2);
-        assert_eq!(f.calls(), 2);
-        assert_eq!(f.store.list_sessions_by_agent(agent.agent_id, None, 64).await.unwrap().len(), 2);
-        // A duplicate, unfenced rollover cannot create a third session or move the pointer.
-        let stale = swarmy_core::Lease { owner: swarmy_core::LeaseOwnerId::from_ulid(Ulid::generate()), seq: 1, expires_at: Timestamp::now() };
-        assert!(f.store.summarize_main_session(id, 0, &stale, message, &[]).await.is_err());
-        assert_eq!(f.store.get_agent(agent.agent_id).await.unwrap().unwrap().main_session, Some(new));
-        assert_eq!(f.store.list_sessions_by_agent(agent.agent_id, None, 64).await.unwrap().len(), 2);
-    })).await;
+1. Verify"
+                .to_owned();
+            write_main_summary_script(f, &summary);
+            let (agent_id, id) = main_summary_session(f).await;
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-worker", None);
+            f.start("swarmy-gateway", None);
+            f.wake(id).await;
+            let new = wait_successor(f, id).await;
+            assert_ne!(id, new);
+            assert_eq!(
+                f.store
+                    .get_agent(agent_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .main_session,
+                Some(new)
+            );
+            assert_eq!(
+                f.store.fetch_session(id).await.unwrap().unwrap().state,
+                SessionState::Completed
+            );
+            assert_eq!(f.store.previous_session(new).await.unwrap(), Some(id));
+            let fresh = f.store.fetch_session(new).await.unwrap().unwrap();
+            assert_eq!(fresh.state, SessionState::Idle);
+            assert_eq!(fresh.agent_id, agent_id);
+            let opening = f.store.read_events(new, 0, 64).await.unwrap();
+            let Event::MessageAppended { message, .. } = &opening[0] else {
+                panic!("opening missing")
+            };
+            assert_eq!(message.role, MessageRole::User);
+            let Part::Text { text } = &message.parts[0] else {
+                panic!("summary missing")
+            };
+            assert!(text.contains(&summary));
+            let old = f.store.read_events(id, 0, 64).await.unwrap();
+            assert_requests(id, &old, 2);
+            assert_eq!(f.calls(), 2);
+            assert_eq!(
+                f.store
+                    .list_sessions_by_agent(agent_id, None, 64)
+                    .await
+                    .unwrap()
+                    .len(),
+                2
+            );
+            // A duplicate, unfenced rollover cannot create a third session or move the pointer.
+            let stale = swarmy_core::Lease {
+                owner: swarmy_core::LeaseOwnerId::from_ulid(Ulid::generate()),
+                seq: 1,
+                expires_at: Timestamp::now(),
+            };
+            assert!(
+                f.store
+                    .summarize_main_session(id, 0, &stale, message, &[])
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                f.store
+                    .get_agent(agent_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .main_session,
+                Some(new)
+            );
+            assert_eq!(
+                f.store
+                    .list_sessions_by_agent(agent_id, None, 64)
+                    .await
+                    .unwrap()
+                    .len(),
+                2
+            );
+        })
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -2072,26 +2155,42 @@ async fn no_head_recovery_survives_crash_before_release() {
 
 #[tokio::test]
 async fn empty_successful_summary_rolls_over() {
-    run(|f| Box::pin(async move {
-        f.summarize_at_tokens = 100;
-        swarmy_testkit::Script::new("Original answer")
-            .usage(0, 101, 0)
-            .parts(1, vec![Part::Text { text: String::new() }], StopReason::EndTurn)
-            .usage(1, 20, 0)
-            .write_to(&f.files.path().join("script.json"));
-        let image = swarmy_testkit::image(&f.store).await;
-        let agent = f.store.create_agent("empty-summary", image, "", Timestamp::now(), None).await.unwrap();
-        let id = side_id();
-        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
-        f.compactable_user_message(id).await;
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
-        f.wake(id).await;
-        let next = wait_successor(f, id).await;
-        assert_ne!(next, id);
-        assert_eq!(f.calls(), 2);
-    })).await;
+    run(|f| {
+        Box::pin(async move {
+            f.summarize_at_tokens = 100;
+            swarmy_testkit::Script::new("Original answer")
+                .usage(0, 101, 0)
+                .parts(
+                    1,
+                    vec![Part::Text {
+                        text: String::new(),
+                    }],
+                    StopReason::EndTurn,
+                )
+                .usage(1, 20, 0)
+                .write_to(&f.files.path().join("script.json"));
+            let image = swarmy_testkit::image(&f.store).await;
+            let agent = f
+                .store
+                .create_agent("empty-summary", image, "", Timestamp::now(), None)
+                .await
+                .unwrap();
+            let id = side_id();
+            f.store
+                .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
+                .await
+                .unwrap();
+            f.compactable_user_message(id).await;
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-worker", None);
+            f.start("swarmy-gateway", None);
+            f.wake(id).await;
+            let next = wait_successor(f, id).await;
+            assert_ne!(next, id);
+            assert_eq!(f.calls(), 2);
+        })
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -2149,13 +2248,17 @@ fn write_direct_trigger_script(fixture: &Fixture, summary: &str) {
     swarmy_testkit::Script::new("Done in the successor")
         .parts(
             0,
-            vec![Part::Text { text: "Still working".into() }],
+            vec![Part::Text {
+                text: "Still working".into(),
+            }],
             StopReason::EndTurn,
         )
         .usage(0, 150, 0)
         .parts(
             1,
-            vec![Part::Text { text: summary.to_owned() }],
+            vec![Part::Text {
+                text: summary.to_owned(),
+            }],
             StopReason::EndTurn,
         )
         .usage(1, 120, 0)
@@ -2304,22 +2407,42 @@ fn write_fleet_side_script(fixture: &Fixture, summary: &str, split_turn: bool) {
             metadata: BTreeMap::new(),
         });
         script = script
-            .parts(round, tool_parts(&call, round % 5 == 0, extra), StopReason::ToolCalls)
+            .parts(
+                round,
+                tool_parts(&call, round % 5 == 0, extra),
+                StopReason::ToolCalls,
+            )
             .usage(round, 150 + round as u64 * 150, 0);
     }
     let offset = usize::from(split_turn);
     if split_turn {
         script = script
-            .parts(40, vec![Part::Text { text: "## Goal\nEarlier work".into() }], StopReason::EndTurn)
+            .parts(
+                40,
+                vec![Part::Text {
+                    text: "## Goal\nEarlier work".into(),
+                }],
+                StopReason::EndTurn,
+            )
             .usage(40, 6200, 0);
     }
     script = script
-        .parts(40 + offset, vec![Part::Text { text: summary.to_owned() }], StopReason::EndTurn)
+        .parts(
+            40 + offset,
+            vec![Part::Text {
+                text: summary.to_owned(),
+            }],
+            StopReason::EndTurn,
+        )
         .usage(40 + offset, 6200, 0);
     for round in 41..45_usize {
         let call = format!("clock-{round}");
         script = script
-            .parts(round + offset, tool_parts(&call, round % 5 == 0, None), StopReason::ToolCalls)
+            .parts(
+                round + offset,
+                tool_parts(&call, round % 5 == 0, None),
+                StopReason::ToolCalls,
+            )
             .usage(round + offset, 12, 0);
     }
     script
@@ -2410,7 +2533,7 @@ async fn refused_split_prefix_reply_is_not_in_next_prompt() {
         write_fleet_side_script(f, "REFUSED_PREFIX_REPLY", true);
         let path = f.files.path().join("script.json");
         let mut script: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        let patch = swarmy_testkit::Script::new("Next answer")
+        let overlay = swarmy_testkit::Script::new("Next answer")
             .parts(
                 41,
                 vec![Part::Text { text: "REFUSED_PREFIX_REPLY".to_owned() }],
@@ -2419,8 +2542,8 @@ async fn refused_split_prefix_reply_is_not_in_next_prompt() {
             .usage(41, 6200, 0)
             .usage(42, 20, 0)
             .json();
-        script["responses"]["41"] = patch["responses"]["41"].clone();
-        script["responses"]["42"] = patch["responses"]["42"].clone();
+        script["responses"]["41"] = overlay["responses"]["41"].clone();
+        script["responses"]["42"] = overlay["responses"]["42"].clone();
         std::fs::write(&path, serde_json::to_vec(&script).unwrap()).unwrap();
         let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("refused-prefix", image, "", Timestamp::now(), None).await.unwrap();

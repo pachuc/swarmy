@@ -90,7 +90,11 @@ impl Fixture {
     }
 
     fn failure_script(&self, status: u16, retry_after_seconds: Option<u64>) {
-        let message = if status == 429 { "quota reached" } else { "invalid credentials" };
+        let message = if status == 429 {
+            "quota reached"
+        } else {
+            "invalid credentials"
+        };
         swarmy_testkit::Script::new("unused")
             .failure(0, status, message, retry_after_seconds)
             .write_to(&self.files.path().join("script.json"));
@@ -1059,7 +1063,9 @@ fn write_switch_script(files: &TempDir) {
         .parts(
             0,
             vec![
-                Part::Text { text: "Checking.".into() },
+                Part::Text {
+                    text: "Checking.".into(),
+                },
                 Part::ToolCall {
                     call_id: swarmy_core::ToolCallId("clock-0".into()),
                     tool: "get_time".into(),

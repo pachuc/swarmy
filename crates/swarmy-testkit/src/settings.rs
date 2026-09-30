@@ -40,6 +40,7 @@ pub fn stack_settings() -> swarmy_config::Settings {
 /// (the root-suite harness does; a bare local run does not). Fixture setup
 /// has no recovery, and failing here names the missing piece instead of
 /// surfacing the CLI's `no token configured` error after the spawn.
+#[must_use]
 pub fn require_api_endpoint(settings: &swarmy_config::Settings) -> (&str, &str) {
     let url = settings.api.url.as_deref().unwrap_or("");
     assert!(

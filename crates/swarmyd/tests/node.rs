@@ -333,7 +333,7 @@ async fn base_image(settings: &swarmy_config::Settings, store: &Store) -> Manife
     }
     // The CLI inherits the suite API endpoint through settings.environment();
     // fail here with the suite pointer when a bare local run has none.
-    swarmy_testkit::require_api_endpoint(settings);
+    let (_api_url, _api_token) = swarmy_testkit::require_api_endpoint(settings);
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let binary = std::env::var_os("SWARMY_TEST_CLI")
         .map_or_else(|| workspace.join("target/debug/swarmy"), PathBuf::from);

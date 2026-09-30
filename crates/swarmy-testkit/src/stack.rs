@@ -68,6 +68,9 @@ impl Stack {
     /// Open a store isolated under this test's prefix with a cleanup guard.
     /// Hold the guard in the fixture: dropping it removes the keys and
     /// streams even when the test panics.
+    ///
+    /// # Panics
+    /// Panics when the store cannot open; fixture setup has no recovery.
     pub async fn open_store(&self, blobs: Arc<dyn BlobStore>) -> (swarmy_store::Store, StackGuard) {
         let store = swarmy_store::Store::open(
             Some(std::path::Path::new(&self.cluster)),
@@ -151,24 +154,26 @@ impl Drop for StackGuard {
         // test result is recorded. The worker owns its own runtime: the
         // panicking thread may be a runtime worker whose runtime is tearing
         // down, so blocking it on async work directly could hang.
-        let worker =
-            std::thread::spawn(move || {
-                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                else {
-                    return;
-                };
-                runtime.block_on(async {
-                    // Bound the backstop: a wedged cluster or bus must delay
-                    // the suite, never hang it.
-                    let _ = tokio::time::timeout(
+        let worker = std::thread::spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            runtime.block_on(async {
+                // Bound the backstop: a wedged cluster or bus must delay
+                // the suite, never hang it.
+                swarmy_core::ignore_best_effort(
+                    tokio::time::timeout(
                         std::time::Duration::from_secs(60),
                         cleanup(&cluster, &url, &prefixes),
                     )
-                    .await;
-                });
+                    .await,
+                    "bound panic-path test cleanup",
+                );
             });
+        });
         swarmy_core::ignore_best_effort(
             worker.join().map_err(|_| "cleanup thread panicked"),
             "join test cleanup thread",

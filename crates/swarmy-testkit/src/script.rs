@@ -158,7 +158,10 @@ impl Script {
             if let Some((parts, stop)) = self.overrides.get(&turn) {
                 responses.insert(turn, self.response(turn, parts.clone(), stop.clone()));
             } else if let Some(parts) = self.tools.get(&turn) {
-                responses.insert(turn, self.response(turn, parts.clone(), StopReason::ToolCalls));
+                responses.insert(
+                    turn,
+                    self.response(turn, parts.clone(), StopReason::ToolCalls),
+                );
             } else {
                 responses.insert(turn, self.answer(turn, answer));
             }

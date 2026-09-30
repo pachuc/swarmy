@@ -24,15 +24,13 @@ pub async fn eventually<T>(
     let deadline = tokio::time::Instant::now() + budget;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        match tokio::time::timeout(remaining, probe()).await {
-            Ok(Some(value)) => return value,
-            Ok(None) | Err(_) => {
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "timed out waiting for {label}"
-                );
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+        if let Ok(Some(value)) = tokio::time::timeout(remaining, probe()).await {
+            return value;
         }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {label}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
