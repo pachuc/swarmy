@@ -14,7 +14,7 @@ use object_store::{
     PutMultipartOptions, PutOptions, PutPayload, PutResult, aws::AmazonS3Builder, path::Path,
     prefix::PrefixStore,
 };
-use swarmy_config::{BucketSpec, Settings};
+use swarmy_config::Settings;
 
 use crate::blob::BlobError;
 
@@ -193,6 +193,7 @@ impl ObjectStore for UnconditionalStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use swarmy_config::BucketSpec;
 
     fn hostile_env() -> HashMap<String, String> {
         HashMap::from([

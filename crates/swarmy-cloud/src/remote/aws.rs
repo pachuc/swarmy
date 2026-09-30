@@ -437,6 +437,21 @@ impl Aws {
     }
 }
 
+fn access_denied(code: Option<&str>) -> bool {
+    matches!(
+        code,
+        Some("AccessDenied" | "AccessDeniedException" | "UnauthorizedOperation")
+    )
+}
+
+fn iam_tag(key: &str, value: &str) -> aws_sdk_iam::types::Tag {
+    aws_sdk_iam::types::Tag::builder()
+        .key(key)
+        .value(value)
+        .build()
+        .expect("tag fields")
+}
+
 fn tags(resource: ResourceType, name: &str, owner: &str) -> TagSpecification {
     TagSpecification::builder()
         .resource_type(resource)

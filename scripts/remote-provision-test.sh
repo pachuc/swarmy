@@ -27,6 +27,7 @@ zero_bucket=$(node_environment /tmp/checkout 0 /this-mount-does-not-exist exampl
 [[ $zero_bucket == *'SWARMY_S3_BUCKET=example-bucket'* ]]
 [[ $zero_bucket == *'SWARMY_S3_REGION=eu-west-1'* ]]
 [[ $zero_bucket == *'SWARMY_DEV_SKIP_S3=1'* ]]
+[[ $zero_bucket == *'SWARMY_S3_CONDITIONAL_CREATE=true'* ]]
 positive_bucket=$(node_environment /tmp/checkout 4 /tmp example-bucket eu-west-1)
 [[ $positive_bucket == *'SWARMY_NODE_ROLES=sandbox,volume'* ]]
 [[ $positive_bucket == *'SWARMY_NODE_SANDBOXES=4'* ]]
@@ -84,12 +85,14 @@ for invalid in relative dir: device: dir:relative; do
         exit 1
     fi
 done
-static_bucket=$(node_environment /tmp/checkout 4 /tmp example-bucket eu-west-1 https://objects.example.invalid runs/team)
+# Static buckets carry no key lines at all: the keys are merged later by
+# merge_static_s3_keys, and empty lines ahead of the real ones would be stale.
+static_bucket=$(node_environment /tmp/checkout 4 /tmp example-bucket eu-west-1 https://objects.example.invalid runs/team false true)
 [[ $static_bucket == *'SWARMY_S3_ENDPOINT=https://objects.example.invalid'* ]]
 [[ $static_bucket == *'SWARMY_S3_PREFIX=runs/team'* ]]
-[[ $static_bucket == *'SWARMY_S3_CONDITIONAL_CREATE=true'* ]]
-[[ $static_bucket == *$'SWARMY_S3_ACCESS_KEY=\n'* ]]
-[[ $static_bucket == *$'SWARMY_S3_SECRET_KEY=\n'* ]]
+[[ $static_bucket == *'SWARMY_S3_CONDITIONAL_CREATE=false'* ]]
+[[ $static_bucket != *'SWARMY_S3_ACCESS_KEY='* ]]
+[[ $static_bucket != *'SWARMY_S3_SECRET_KEY='* ]]
 # Static keys land in a 0600 file with nothing printed, never on a command line.
 node_keys=$(mktemp)
 trap 'rm -f "$node_keys"' EXIT

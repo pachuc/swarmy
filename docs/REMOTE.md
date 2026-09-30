@@ -374,15 +374,25 @@ are made for non-AWS endpoints. `remote tag` adopts only the bucket.
 
 Volume chunks and manifests are content-addressed and written with a
 create-only PUT (`If-None-Match: *`); overwriting identical bytes is safe.
-Providers that reject that header need the plain-PUT fallback:
+Providers that reject that header need the plain-PUT fallback, which is part
+of the bucket description so it reaches the nodes:
 
 ```toml
-[s3]
+[remote.bucket]
 conditional_create = false
 ```
 
-or `SWARMY_S3_CONDITIONAL_CREATE=false`. The fallback still dedupes through
-the pre-write existence check and reads still verify the content hash.
+The description is carried into `/etc/swarmy/node.env` at provisioning and
+into the connect profile, which is what the node services read. `[s3]
+conditional_create` (or `SWARMY_S3_CONDITIONAL_CREATE=false`) remains the
+service-level setting for local development stacks. The fallback still
+dedupes through the pre-write existence check and reads still verify the
+content hash.
+
+Rotating static keys is a re-provisioning operation: `remote upgrade` never
+modifies `node.env` or service units for key changes, so run `remote down
+--keep-bucket` followed by `remote up` with the new keys. The kept bucket is
+still owned by the remote, so `up` reuses it instead of creating a new one.
 
 ## Costs and recovery
 

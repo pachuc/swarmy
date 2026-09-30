@@ -126,15 +126,19 @@ node_disk_bytes() {
 }
 
 node_environment() {
-    local repo_dir=$1 sandboxes=$2 mount=$3 bucket=${4:-} bucket_region=${5:-} bucket_endpoint=${6:-} bucket_prefix=${7:-} roles=sandbox,volume
+    local repo_dir=$1 sandboxes=$2 mount=$3 bucket=${4:-} bucket_region=${5:-} bucket_endpoint=${6:-} bucket_prefix=${7:-} bucket_conditional_create=${8:-true} bucket_static=${9:-false} roles=sandbox,volume
     local s3_env
-    s3_env=$(swarmy_remote_s3_env "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix")
+    if [[ $bucket_static == true ]]; then
+        s3_env=$(swarmy_remote_s3_env "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix" true)
+    else
+        s3_env=$(swarmy_remote_s3_env "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix")
+    fi
     if (( sandboxes == 0 )); then roles=volume; fi
     cat <<ENV
 SWARMY_FDB_CLUSTER_FILE=$repo_dir/.dev/fdb.cluster
 SWARMY_NATS_URL=nats://127.0.0.1:4222
 $s3_env
-SWARMY_S3_CONDITIONAL_CREATE=${SWARMY_S3_CONDITIONAL_CREATE:-true}
+SWARMY_S3_CONDITIONAL_CREATE=$bucket_conditional_create
 SWARMY_NODE_CPU_MILLIS=$(($(nproc) * 1000))
 SWARMY_NODE_MEMORY_BYTES=$(awk -v reserve="${SWARMY_NODE_MEMORY_RESERVE_MIB:-3072}" '/MemTotal/ {bytes = ($2 - reserve * 1024) * 1024; printf "%.0f", (bytes > 0 ? bytes : 0)}' /proc/meminfo)
 SWARMY_NODE_DISK_BYTES=$(node_disk_bytes "$sandboxes" "$mount")

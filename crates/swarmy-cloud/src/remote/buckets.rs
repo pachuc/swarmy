@@ -215,7 +215,7 @@ pub(super) async fn delete(
         }
         Ownership::Owned => {}
     }
-    delete_prefix_scope(client, &bucket.spec.bucket, scope_prefix(bucket)).await?;
+    delete_prefix_scope(client, &bucket.spec.bucket, &scope_prefix(bucket)).await?;
     match client
         .delete_bucket()
         .bucket(&bucket.spec.bucket)
