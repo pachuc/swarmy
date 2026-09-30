@@ -11,6 +11,7 @@ python3 images/base-desktop/tests/browser-helper.py
 python3 crates/swarmyd/tests/files_test.py
 bash scripts/test-check-openapi-compat.sh
 bash scripts/test-check-anyhow-in-libraries.sh
+bash scripts/test-check-docs-accuracy.sh
 bash scripts/test-remote-upgrade.sh
 bash scripts/test-remote-s3-env.sh
 bash scripts/test-migrate-config.sh
