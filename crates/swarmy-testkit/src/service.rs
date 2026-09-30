@@ -76,6 +76,39 @@ impl ChildGuard {
             swarmy_core::ignore_best_effort(child.wait().await, "reap guarded service process");
         }
     }
+
+    /// Wait for the guarded service to exit and reap it, for kill-point
+    /// tests asserting on the exit status itself.
+    ///
+    /// # Panics
+    /// Panics when the child was already reaped; fixture setup has no
+    /// recovery.
+    pub async fn wait(&mut self) -> std::process::ExitStatus {
+        self.child
+            .take()
+            .expect("guarded service already reaped")
+            .wait()
+            .await
+            .expect("service exit status must report")
+    }
+
+    /// Poll whether the guarded service has exited, for tests that
+    /// synchronize on the death itself instead of a fixed grace period.
+    /// A reaped guard counts as exited.
+    ///
+    /// # Panics
+    /// Panics when the exit status cannot be polled; fixture setup has no
+    /// recovery.
+    #[must_use]
+    pub fn has_exited(&mut self) -> bool {
+        match self.child.as_mut() {
+            Some(child) => child
+                .try_wait()
+                .expect("service exit status must poll")
+                .is_some(),
+            None => true,
+        }
+    }
 }
 
 impl Drop for ChildGuard {
