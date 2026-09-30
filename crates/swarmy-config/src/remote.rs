@@ -540,10 +540,10 @@ mod tests {
         assert_eq!(node.service_user(), "swarmy");
         assert_eq!(node.local_storage(), "/dev/md0");
 
-        assert!(super::validate_service_user("swarmy").is_ok());
-        assert!(super::validate_service_user("deploy-1").is_ok());
+        assert!(validate_service_user("swarmy").is_ok());
+        assert!(validate_service_user("deploy-1").is_ok());
         for invalid in ["", "has space", "semi;colon", "$(injected)", "dq\"quote"] {
-            assert!(super::validate_service_user(invalid).is_err());
+            assert!(validate_service_user(invalid).is_err());
         }
     }
 

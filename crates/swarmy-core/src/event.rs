@@ -146,7 +146,7 @@ impl Event {
 /// An operator interruption is a terminal inference failure, whether appended
 /// by the worker or while the store settles an interrupted session.
 #[must_use]
-pub fn interrupted_event(seq: u64, request_id: crate::RequestId) -> Event {
+pub fn interrupted_event(seq: u64, request_id: RequestId) -> Event {
     Event::InferenceFailed {
         seq,
         request_id,

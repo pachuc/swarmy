@@ -3,7 +3,7 @@ use swarmy_image::{Recipe, validate_label};
 
 /// Run one image command. One match owns every variant: builds run locally
 /// without a prior connection, while reads connect on their own path.
-pub async fn run(command: crate::image_command::Command, json: bool) -> Result<()> {
+pub(crate) async fn run(command: crate::image_command::Command, json: bool) -> Result<()> {
     use crate::image_command::Command;
     match command {
         Command::Build {
@@ -70,7 +70,7 @@ pub async fn run(command: crate::image_command::Command, json: bool) -> Result<(
 }
 
 /// Build a recipe locally and register it through the control plane.
-pub async fn build(
+pub(crate) async fn build(
     path: std::path::PathBuf,
     tag: String,
     name: Option<String>,

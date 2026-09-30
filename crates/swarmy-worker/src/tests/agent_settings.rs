@@ -95,7 +95,7 @@ impl Fixture {
                     message: Message {
                         id: MessageId::from_ulid(Ulid::generate()),
                         role: MessageRole::User,
-                        parts: vec![swarmy_core::Part::Text {
+                        parts: vec![Part::Text {
                             text: "Hello".into(),
                         }],
                     },
@@ -253,8 +253,10 @@ async fn assert_default_settings(f: &Fixture) {
     }
 }
 
-// This integration scenario deliberately exercises all selection layers and the wait path.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "this integration scenario deliberately exercises all selection layers and the wait path"
+)]
 #[tokio::test]
 async fn session_selection_routes_and_missing_gateway_waits() {
     let Some(f) = Fixture::new().await else {

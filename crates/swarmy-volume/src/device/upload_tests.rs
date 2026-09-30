@@ -407,7 +407,7 @@ async fn debounce_defers_active_chunks_but_final_publication_drains_them() {
 async fn process_death_after_uploads_preserves_overlay_and_published_baseline() {
     const CHILD_DIR: &str = "SWARMY_UPLOAD_CRASH_TEST_DIR";
     if let Ok(path) = std::env::var(CHILD_DIR) {
-        let dir = std::path::Path::new(&path);
+        let dir = Path::new(&path);
         let store = ChunkStore::new(Arc::new(
             object_store::local::LocalFileSystem::new_with_prefix(dir.join("objects")).unwrap(),
         ));
@@ -494,7 +494,7 @@ async fn lease_loss_during_flush_rejects_publication_and_keeps_dirty_data() {
     };
     let _network = swarmy_store::boot();
     let store = Store::open(
-        Some(std::path::Path::new(&cluster)),
+        Some(Path::new(&cluster)),
         Some(&[format!("swarmy-upload-fencing-{}", ulid::Ulid::generate())]),
         Arc::new(MemoryBlobStore::default()),
     )

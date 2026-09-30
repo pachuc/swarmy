@@ -35,7 +35,11 @@ impl Drop for Nodes {
     }
 }
 
-pub async fn exercise(fixture: &mut Fixture, binaries: &Path, driver: Option<&Path>) -> Result<()> {
+pub(crate) async fn exercise(
+    fixture: &mut Fixture,
+    binaries: &Path,
+    driver: Option<&Path>,
+) -> Result<()> {
     let mut nodes = Nodes {
         roots: Vec::new(),
         processes: Vec::new(),

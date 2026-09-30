@@ -21,13 +21,13 @@ fn print<T: serde::Serialize>(value: &T, text: &str, json: bool) {
 }
 /// Run one control-plane API command. Each entry connects on its own so the
 /// top-level dispatch owns every CLI variant without a shared dispatcher.
-pub async fn session_command(command: session_command::Command, json: bool) -> Result<()> {
+pub(crate) async fn session_command(command: session_command::Command, json: bool) -> Result<()> {
     let (client, endpoint) = swarmy_client::api_client::connect()?;
     session(&client, &endpoint, command, json).await
 }
 
 /// Run one agent API command, validating `set` flags before connecting.
-pub async fn agent_command(command: agent_command::Command, json: bool) -> Result<()> {
+pub(crate) async fn agent_command(command: agent_command::Command, json: bool) -> Result<()> {
     if let agent_command::Command::Set {
         inference,
         github_token,
@@ -55,7 +55,7 @@ pub async fn agent_command(command: agent_command::Command, json: bool) -> Resul
 }
 
 /// Run one cost API command.
-pub async fn cost_command(args: cost_command::Args, json: bool) -> Result<()> {
+pub(crate) async fn cost_command(args: cost_command::Args, json: bool) -> Result<()> {
     let (client, endpoint) = swarmy_client::api_client::connect()?;
     cost(&client, &endpoint, args, json).await
 }
@@ -336,7 +336,7 @@ async fn session(
 async fn session_metrics(
     client: &Client,
     endpoint: &str,
-    session_id: ulid::Ulid,
+    session_id: Ulid,
     json: bool,
 ) -> Result<()> {
     let mut after: Option<String> = None;
@@ -400,12 +400,7 @@ async fn session_events(
     Ok(events)
 }
 
-async fn show_session(
-    client: &Client,
-    endpoint: &str,
-    session_id: ulid::Ulid,
-    json: bool,
-) -> Result<()> {
+async fn show_session(client: &Client, endpoint: &str, session_id: Ulid, json: bool) -> Result<()> {
     let record = request(endpoint, client.session(&session_id.to_string())).await?;
     let selection = record
         .resolved
@@ -550,7 +545,7 @@ fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<AgentFl
     } else {
         args.system_prompt
     };
-    let gpu = args.gpu.map(crate::agent_command::GpuArg::into_api);
+    let gpu = args.gpu.map(agent_command::GpuArg::into_api);
     Ok(AgentFlags {
         provider,
         model,
@@ -1157,7 +1152,7 @@ pub(crate) async fn quota(
     client: &Client,
     endpoint: &str,
     entry: Option<&str>,
-    group: crate::cost_command::UsageGroup,
+    group: cost_command::UsageGroup,
     since: Option<&str>,
     until: Option<&str>,
     json: bool,

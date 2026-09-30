@@ -18,7 +18,7 @@ use super::{
 async fn tag_confirmed(
     cloud: &FakeCloud,
     state: &State,
-    node: &swarmy_config::RemoteNode,
+    node: &RemoteNode,
     mut confirm: impl FnMut(&str, &str) -> Result<()>,
 ) -> Result<()> {
     for (kind, name) in down::adoption_targets(state, node)? {
@@ -1161,7 +1161,7 @@ async fn add_node_copies_both_secrets_only_when_requested() {
     std::fs::write(&auth, "fixture").unwrap();
     swarmy_config::Keyring::generate_at(&keyring).unwrap();
     let settings = swarmy_config::Settings {
-        remote: swarmy_config::RemoteSettings {
+        remote: RemoteSettings {
             services: swarmy_config::RemoteServices::Node,
             ..settings()
         },

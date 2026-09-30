@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 #[derive(clap::Subcommand)]
-pub enum Command {
+pub(crate) enum Command {
     /// Measure both scripted fake-provider turn shapes on the configured stack
     Turn {
         /// Measured turns per shape, after one excluded warmup each

@@ -64,7 +64,12 @@ fn turn_event(
     }
 }
 
-pub async fn run(client: Client, endpoint: String, command: Command, json: bool) -> Result<()> {
+pub(crate) async fn run(
+    client: Client,
+    endpoint: String,
+    command: Command,
+    json: bool,
+) -> Result<()> {
     let Command::Turn {
         turns,
         image,
@@ -347,7 +352,7 @@ mod tests {
             InputEnabled,
         ]
         .into_iter()
-        .map(|stage| super::turn_event(id, turn, stage, None))
+        .map(|stage| turn_event(id, turn, stage, None))
         .collect();
         assert!(complete(&events, true));
         for stage in [
@@ -395,9 +400,9 @@ mod clock_tests {
     use super::*;
     #[test]
     fn cross_host_intervals_use_wall_time_and_reject_clock_reversal() {
-        let id = swarmy_core::SessionId::from_ulid(ulid::Ulid::generate());
+        let id = SessionId::from_ulid(ulid::Ulid::generate());
         let turn = MessageId::from_ulid(ulid::Ulid::generate());
-        let mut start = super::turn_event(id, turn, TurnStage::Submitted, None);
+        let mut start = turn_event(id, turn, TurnStage::Submitted, None);
         start.monotonic_ns = 100;
         start.unix_ns = 1_000;
         let mut end = start.clone();

@@ -7,13 +7,13 @@ use tokio::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Identity {
+pub(super) struct Identity {
     pub pid: u32,
     pub start: u64,
 }
 
 impl Identity {
-    pub fn current(pid: u32) -> Option<Self> {
+    pub(super) fn current(pid: u32) -> Option<Self> {
         let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         Self::parse(pid, &stat)
     }
@@ -29,7 +29,7 @@ impl Identity {
         Some(Self { pid, start })
     }
 
-    pub fn read(path: &Path) -> Option<Self> {
+    pub(super) fn read(path: &Path) -> Option<Self> {
         let content = fs::read_to_string(path).ok()?;
         let mut words = content.split_whitespace();
         let recorded = Self {
@@ -39,11 +39,11 @@ impl Identity {
         (Self::current(recorded.pid) == Some(recorded)).then_some(recorded)
     }
 
-    pub fn save(self, path: &Path) -> Result<()> {
+    pub(super) fn save(self, path: &Path) -> Result<()> {
         super::write_private(path, &format!("{} {}\n", self.pid, self.start))
     }
 
-    pub async fn signal(self, signal: &str) -> Result<()> {
+    pub(super) async fn signal(self, signal: &str) -> Result<()> {
         if Self::current(self.pid) == Some(self) {
             let status = Command::new("kill")
                 .args([signal, &self.pid.to_string()])
@@ -61,7 +61,7 @@ impl Identity {
     }
 }
 
-pub async fn stop(path: &Path, grace: Duration) -> Result<()> {
+pub(super) async fn stop(path: &Path, grace: Duration) -> Result<()> {
     if let Some(identity) = Identity::read(path) {
         identity.signal("-INT").await?;
         let deadline = Instant::now() + grace;
@@ -89,14 +89,14 @@ pub async fn stop(path: &Path, grace: Duration) -> Result<()> {
     Ok(())
 }
 
-pub async fn clock_ticks() -> Result<u64> {
+pub(super) async fn clock_ticks() -> Result<u64> {
     let output = Command::new("getconf").arg("CLK_TCK").output().await?;
     let ticks = String::from_utf8(output.stdout)?.trim().parse()?;
     ensure!(ticks > 0, "invalid CLK_TCK");
     Ok(ticks)
 }
 
-pub fn uptime(identity: Identity, ticks: u64) -> Result<u64> {
+pub(super) fn uptime(identity: Identity, ticks: u64) -> Result<u64> {
     // Some container runtimes virtualize /proc/uptime separately from process
     // start times. Read the kernel clock that also timestamps /proc/PID/stat.
     let uptime =

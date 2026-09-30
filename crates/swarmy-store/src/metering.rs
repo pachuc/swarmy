@@ -644,7 +644,7 @@ impl Store {
     /// Returns decoding or storage errors.
     pub async fn prune_metering_raw(&self, before: Timestamp, limit: usize) -> Result<usize> {
         crate::check_limit(limit)?;
-        let cutoff_hour = crate::metering::hour_floor(before.as_second());
+        let cutoff_hour = hour_floor(before.as_second());
         let mut pruned = self.prune_index_hours_before(cutoff_hour, limit).await?;
         if pruned < limit {
             pruned += self

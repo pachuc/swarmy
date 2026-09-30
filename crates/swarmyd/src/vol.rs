@@ -8,7 +8,7 @@ use swarmy_store::{MAX_SCAN_LIMIT, Store};
 /// need local devices and the store, neither of which the client links.
 #[derive(clap::Parser)]
 #[command(name = "vol", about = "Create, attach, and snapshot durable volumes")]
-pub struct VolCli {
+pub(crate) struct VolCli {
     /// Emit compact machine-readable JSON
     #[arg(long, global = true)]
     json: bool,
@@ -16,7 +16,7 @@ pub struct VolCli {
     command: Command,
 }
 
-pub async fn run_cli() -> Result<()> {
+pub(crate) async fn run_cli() -> Result<()> {
     let cli = match <VolCli as clap::Parser>::try_parse_from(
         std::iter::once("vol".to_owned()).chain(std::env::args().skip(2)),
     ) {
@@ -27,7 +27,7 @@ pub async fn run_cli() -> Result<()> {
     run(cli.command, cli.json).await
 }
 
-pub async fn run(command: Command, json: bool) -> Result<()> {
+pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
     match command {
         Command::Attach {
             volume,
@@ -151,7 +151,7 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn output(value: &serde_json::Value, text: &str, json: bool) -> Result<()> {
+pub(crate) fn output(value: &serde_json::Value, text: &str, json: bool) -> Result<()> {
     use std::io::Write;
     if json {
         println!("{value}");
@@ -163,7 +163,7 @@ pub fn output(value: &serde_json::Value, text: &str, json: bool) -> Result<()> {
 }
 
 /// Open the cluster store for volume commands.
-pub(crate) async fn store() -> Result<swarmy_store::Store> {
+pub(crate) async fn store() -> Result<Store> {
     let settings = swarmy_config::Settings::load()?.settings;
-    Ok(swarmy_store::Store::open_store(&settings).await?.store)
+    Ok(Store::open_store(&settings).await?.store)
 }

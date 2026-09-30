@@ -32,7 +32,7 @@ use utoipa_swagger_ui::SwaggerUi;
 pub struct AppState {
     pub store: Store,
     pub bus: Bus,
-    pub objects: std::sync::Arc<dyn object_store::ObjectStore>,
+    pub objects: Arc<dyn object_store::ObjectStore>,
     pub token: String,
     pub credential_keyring: Option<Keyring>,
     pub catalog: Catalog,
@@ -62,7 +62,7 @@ impl AppState {
         bus: Bus,
         token: String,
         catalog: Catalog,
-        objects: std::sync::Arc<dyn object_store::ObjectStore>,
+        objects: Arc<dyn object_store::ObjectStore>,
     ) -> Self {
         Self {
             store,
@@ -113,8 +113,10 @@ fn error(status: StatusCode, code: &str) -> (StatusCode, Json<api::ApiError>) {
         }),
     )
 }
-// `map_err` passes the owned error; taking a reference would require closures at every call site.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` passes the owned error; taking a reference would require closures at every call site"
+)]
 fn storage(value: swarmy_store::StoreError) -> (StatusCode, Json<api::ApiError>) {
     use swarmy_store::StoreError;
     match value {
@@ -180,14 +182,8 @@ pub fn router(state: AppState) -> Router {
             "/v1/sessions/{id}",
             get(show_session).delete(conversation::close),
         )
-        .route(
-            "/v1/sessions/{id}/messages",
-            axum::routing::post(conversation::append),
-        )
-        .route(
-            "/v1/sessions/{id}/interrupt",
-            axum::routing::post(conversation::interrupt),
-        )
+        .route("/v1/sessions/{id}/messages", post(conversation::append))
+        .route("/v1/sessions/{id}/interrupt", post(conversation::interrupt))
         .route(
             "/v1/sessions/{id}/route",
             axum::routing::patch(conversation::set_route),
@@ -215,10 +211,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/models/{provider}/{model}", get(show_model))
         .route("/v1/providers", get(providers))
         .route("/v1/credentials", get(credentials).post(set_credential))
-        .route(
-            "/v1/credentials/records",
-            axum::routing::post(put_credential_record),
-        )
+        .route("/v1/credentials/records", post(put_credential_record))
         .route(
             "/v1/credentials/{provider}",
             get(check_credential).delete(remove_credential),
@@ -318,7 +311,7 @@ async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnapshot>
     let credentials = match credential_store(&state) {
         Ok(store) => Some(
             store
-                .list_entries(swarmy_core::CredentialScope::Cluster)
+                .list_entries(CredentialScope::Cluster)
                 .await
                 .map_err(storage)?
                 .into_iter()
@@ -342,13 +335,13 @@ async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnapshot>
 /// Registered nodes with committed sandbox memory for the doctor snapshot.
 async fn registered_nodes(
     state: &AppState,
-) -> Result<Vec<api::DoctorNode>, (axum::http::StatusCode, Json<api::ApiError>)> {
+) -> Result<Vec<api::DoctorNode>, (StatusCode, Json<api::ApiError>)> {
     let mut nodes = Vec::new();
     let mut after = None;
     loop {
         let (page, next) = state
             .store
-            .scan_live_nodes(after, jiff::Timestamp::MIN, MAX_SCAN_LIMIT)
+            .scan_live_nodes(after, Timestamp::MIN, MAX_SCAN_LIMIT)
             .await
             .map_err(storage)?;
         for record in page {
@@ -424,7 +417,7 @@ async fn replay<T: serde::Serialize + serde::de::DeserializeOwned>(
     state: &AppState,
     key: &str,
     scope: &str,
-    operation: impl std::future::Future<Output = ApiResult<T>>,
+    operation: impl Future<Output = ApiResult<T>>,
 ) -> ApiResult<T> {
     if key.is_empty() || key.len() > 256 {
         return Err(error(StatusCode::BAD_REQUEST, "invalid_idempotency_key"));
@@ -654,7 +647,7 @@ async fn session_metrics(
             .await
             .map_err(storage)?
             .into_iter()
-            .map(crate::views::into_api_turn)
+            .map(views::into_api_turn)
             .collect(),
     ))
 }
@@ -681,7 +674,7 @@ async fn agent_metrics(
         .as_deref()
         .map(|value| id(value, swarmy_core::MessageId::from_ulid))
         .transpose()?;
-    Ok(Json(crate::views::into_api_agent(
+    Ok(Json(views::into_api_agent(
         state
             .store
             .agent_turn_metrics(record.agent_id, page.limit.unwrap_or(200), since)

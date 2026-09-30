@@ -5,7 +5,7 @@ use swarmy_config::Settings;
 use swarmy_core::CredentialRecord;
 use swarmy_llm::auth::{CredentialStore as _, FileCredentialStore};
 
-pub async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Result<()> {
+pub(crate) async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Result<()> {
     let settings = Settings::load()?.settings;
     let (client, endpoint) = swarmy_client::api_client::connect()?;
     match command {

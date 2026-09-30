@@ -150,7 +150,7 @@ impl<'a> Options<'a> {
     }
 }
 
-pub async fn install(node: &RemoteNode, address: &str, options: &Options<'_>) -> Result<()> {
+pub(crate) async fn install(node: &RemoteNode, address: &str, options: &Options<'_>) -> Result<()> {
     let user = node.service_user().to_owned();
     swarmy_config::validate_service_user(&user)?;
     // Bash resolves `~user` through the passwd entry; Rust passes only the login.

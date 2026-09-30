@@ -271,8 +271,10 @@ mod tests {
     }
 
     #[tokio::test]
-    // The explicit cache setting adds a line to this end-to-end race fixture.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "this end-to-end race fixture reads as one scenario; the explicit cache setting puts it one line over the limit"
+    )]
     async fn racing_resolvers_refresh_once_and_provider_reloads_imported_store() {
         use futures::TryStreamExt;
         use swarmy_llm::{GenerationSettings, Provider, Request};

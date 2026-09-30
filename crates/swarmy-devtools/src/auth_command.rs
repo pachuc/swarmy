@@ -1,5 +1,5 @@
 /// Only interactive login and file import live in the provider helper.
-pub enum Command {
+pub(crate) enum Command {
     Login {
         provider: String,
         label: Option<String>,

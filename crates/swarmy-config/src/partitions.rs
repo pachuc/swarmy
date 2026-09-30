@@ -22,7 +22,7 @@ pub struct Partitions(pub BTreeSet<u16>);
 
 impl Default for Partitions {
     fn default() -> Self {
-        Self((0..swarmy_core::RUNNABLE_PARTITIONS).collect())
+        Self((0..RUNNABLE_PARTITIONS).collect())
     }
 }
 

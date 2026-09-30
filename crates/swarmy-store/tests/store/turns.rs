@@ -264,7 +264,7 @@ async fn tool_fold_and_inference_share_the_lease_fence_and_commit() {
         .unwrap();
     let mut folded = event("tool output");
     if let Event::MessageAppended { message, .. } = &mut folded {
-        message.role = swarmy_core::MessageRole::Tool;
+        message.role = MessageRole::Tool;
     }
     let record = InflightRecord {
         session_id: id,
@@ -462,7 +462,7 @@ async fn terminal_completion(store: &Store, id: SessionId) -> swarmy_store::Infe
     let Event::MessageAppended { mut message, .. } = event("answer") else {
         unreachable!()
     };
-    message.role = swarmy_core::MessageRole::Assistant;
+    message.role = MessageRole::Assistant;
     swarmy_store::InferenceCompletion {
         expected_head: 1,
         entry: Some("primary".into()),
@@ -782,7 +782,7 @@ async fn queued_input_is_delivered_in_bounded_ordered_batches() {
     assert_eq!(all.len(), 12);
     for (index, message) in all.iter().enumerate() {
         assert!(
-            matches!(&message.parts[0], swarmy_core::Part::Text { text } if text.starts_with(&format!("{index}:")))
+            matches!(&message.parts[0], Part::Text { text } if text.starts_with(&format!("{index}:")))
         );
     }
     assert!(

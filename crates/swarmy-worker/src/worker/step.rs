@@ -419,7 +419,7 @@ impl Worker {
             && wait
                 .since
                 .checked_add(self.config.max_inference_wait)
-                .is_ok_and(|limit| jiff::Timestamp::now() >= limit)
+                .is_ok_and(|limit| Timestamp::now() >= limit)
         {
             let request_id = events
                 .iter()
@@ -465,7 +465,7 @@ impl Worker {
                 Event::InferenceFailed { .. } | Event::InferenceCompleted { .. }
             )
         }) {
-            let now = jiff::Timestamp::now();
+            let now = Timestamp::now();
             let wait = self.store.inference_wait(id).await?;
             if wait
                 .as_ref()

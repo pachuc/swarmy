@@ -12,7 +12,7 @@ impl SnapshotLoop {
     pub fn spawn<F, Fut, E>(period: Duration, mut snapshot: F) -> Self
     where
         F: FnMut() -> Fut + Send + 'static,
-        Fut: Future<Output = std::result::Result<(), E>> + Send,
+        Fut: Future<Output = Result<(), E>> + Send,
         E: std::fmt::Display,
     {
         Self(tokio::spawn(async move {

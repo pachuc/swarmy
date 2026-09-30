@@ -251,7 +251,7 @@ async fn run_probe(
     } else {
         first
     };
-    if answer.stop_reason != swarmy_llm::StopReason::EndTurn
+    if answer.stop_reason != StopReason::EndTurn
         || !answer
             .parts
             .iter()
