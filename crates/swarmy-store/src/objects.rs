@@ -89,11 +89,9 @@ pub fn from_settings(settings: &Settings) -> Result<Arc<dyn ObjectStore>, BlobEr
         Ok(store)
     } else {
         // Parse instead of converting so namespace characters stay exact.
-        let path = Path::parse(prefix.as_str()).map_err(|error| {
-            object_store::Error::Generic {
-                store: "S3 namespace",
-                source: Box::new(error),
-            }
+        let path = Path::parse(prefix.as_str()).map_err(|error| object_store::Error::Generic {
+            store: "S3 namespace",
+            source: Box::new(error),
         })?;
         Ok(Arc::new(PrefixStore::new(store, path)))
     }
