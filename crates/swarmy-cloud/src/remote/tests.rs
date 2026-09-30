@@ -1338,6 +1338,10 @@ struct StaticSetup {
 }
 
 fn static_setup() -> StaticSetup {
+    static_setup_with("test-bucket")
+}
+
+fn static_setup_with(bucket: &str) -> StaticSetup {
     use swarmy_config::{BucketCredentials, BucketSpec};
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(&dir.path().join("remote")).unwrap();
@@ -1346,7 +1350,7 @@ fn static_setup() -> StaticSetup {
         bucket: Some(BucketSpec {
             endpoint: "https://objects.example.invalid".into(),
             region: "eu-west-1".into(),
-            bucket: "test-bucket".into(),
+            bucket: bucket.into(),
             prefix: "runs/team".parse().unwrap(),
             credentials: BucketCredentials::StaticKeys {
                 access_key: "static-access".into(),
@@ -1366,16 +1370,17 @@ fn static_setup() -> StaticSetup {
 }
 
 async fn static_up(setup: &StaticSetup) {
+    static_up_as(setup, "static-test").await;
+}
+
+async fn static_up_as(setup: &StaticSetup, name: &str) {
     observe_running(&setup.cloud);
     up::run(
         &setup.cloud,
         &setup.host,
         &setup.state,
         &setup.settings,
-        up::NewNode {
-            name: "static-test",
-            sandboxes: 0,
-        },
+        up::NewNode { name, sandboxes: 0 },
         None.into(),
         Duration::ZERO,
     )
@@ -1499,12 +1504,14 @@ async fn static_down_reports_a_retained_bucket_as_kept() {
     // for later tests, which never read it.
     crate::set_output_sink(record);
     DOWN_OUTPUT.lock().unwrap().clear();
-    let setup = static_setup();
-    static_up(&setup).await;
+    // Its own bucket keeps its sink messages apart from the other static
+    // tests running in parallel in this process.
+    let setup = static_setup_with("retained-bucket");
+    static_up_as(&setup, "retained-test").await;
     // The swarm's prefix scope is deleted but the bucket itself remains
     // because it retains content outside that scope.
     setup.cloud.retain_bucket.set(true);
-    let node = setup.state.require("static-test").unwrap();
+    let node = setup.state.require("retained-test").unwrap();
     setup.cloud.observations.borrow_mut().extend([None, None]);
     down::run(&setup.cloud, &setup.state, &node, Duration::ZERO, false)
         .await
@@ -1515,19 +1522,22 @@ async fn static_down_reports_a_retained_bucket_as_kept() {
             .teardown
             .borrow()
             .iter()
-            .any(|entry| entry == "bucket test-bucket")
+            .any(|entry| entry == "bucket retained-bucket")
     );
     // A retained bucket is reported as kept, not removed, and teardown
     // still completes and drops the local state.
     let output = DOWN_OUTPUT.lock().unwrap().join("\n");
     assert!(
         output.contains(
-            "Bucket test-bucket: kept (bucket retains content outside the remote's prefix)"
+            "Bucket retained-bucket: kept (bucket retains content outside the remote's prefix)"
         ),
         "{output}"
     );
-    assert!(!output.contains("Bucket test-bucket: removed"), "{output}");
-    assert!(setup.state.require("static-test").is_err());
+    assert!(
+        !output.contains("Bucket retained-bucket: removed"),
+        "{output}"
+    );
+    assert!(setup.state.require("retained-test").is_err());
 }
 
 #[tokio::test]
