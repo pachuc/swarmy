@@ -4,6 +4,7 @@ use crate::Result;
 use swarmy_config::RemoteNode;
 
 use super::{Cloud, ObjectBucket, Ownership, key_name, state::State};
+use crate::BucketRemoval;
 
 #[derive(Default)]
 struct Report {
@@ -60,11 +61,11 @@ pub(super) async fn plan(
     };
     let bucket_status = cloud.bucket_ownership(&bucket).await?;
     let bucket_owned =
-        !state.bucket_shared(&node.name, &bucket.name)? && bucket_status == Ownership::Owned;
+        !state.bucket_shared(&node.name, &bucket.spec.bucket)? && bucket_status == Ownership::Owned;
     // Static-key buckets have no IAM role or instance profile to delete.
     let Some(role) = node.cloud_settings().instance_profile(&node.name) else {
         return Ok(bucket_owned.then(|| DeletionPlan {
-            bucket: Some(bucket.name.clone()),
+            bucket: Some(bucket.spec.bucket.clone()),
             profile: None,
             role: None,
         }));
@@ -80,7 +81,7 @@ pub(super) async fn plan(
         return Ok(None);
     }
     Ok(Some(DeletionPlan {
-        bucket: bucket_owned.then(|| bucket.name.clone()),
+        bucket: bucket_owned.then(|| bucket.spec.bucket.clone()),
         profile: profile_owned.then(|| role.clone()),
         role: role_owned.then(|| role.clone()),
     }))
@@ -139,13 +140,13 @@ pub(super) async fn apply_tag(cloud: &impl Cloud, node: &RemoteNode) -> Result<(
     };
     cloud.tag_bucket(&bucket).await?;
     let Some(role) = node.cloud_settings().instance_profile(&node.name) else {
-        cloud_out!("Tagged bucket {} for remote {}", bucket.name, node.name);
+        cloud_out!("Tagged bucket {} for remote {}", bucket.spec.bucket, node.name);
         return Ok(());
     };
     cloud.tag_node_role(&role, &node.name).await?;
     cloud_out!(
         "Tagged bucket {}, role {role}, and instance profile {role} for remote {}",
-        bucket.name,
+        bucket.spec.bucket,
         node.name
     );
     Ok(())
@@ -205,7 +206,7 @@ async fn cleanup_bucket_and_role(
     keep_bucket: bool,
 ) -> Result<()> {
     if let Some(bucket) = object_bucket(node) {
-        let name = bucket.name.clone();
+        let name = bucket.spec.bucket.clone();
         if keep_bucket {
             match node.cloud_settings().instance_profile(&node.name) {
                 Some(role) => {
@@ -225,11 +226,13 @@ async fn cleanup_bucket_and_role(
             } else {
                 match bucket_status {
                     Ownership::Owned => {
-                        let removed = cloud.delete_bucket(&bucket).await?;
-                        cloud_out!(
-                            "Bucket {name}: {}",
-                            if removed { "removed" } else { "absent" }
-                        );
+                        match cloud.delete_bucket(&bucket).await? {
+                            BucketRemoval::Removed => cloud_out!("Bucket {name}: removed"),
+                            BucketRemoval::Absent => cloud_out!("Bucket {name}: absent"),
+                            BucketRemoval::Retained => cloud_out!(
+                                "Bucket {name}: kept (bucket retains content outside the remote's prefix)"
+                            ),
+                        }
                     }
                     Ownership::Absent => cloud_out!("Bucket {name}: absent"),
                     Ownership::Unmanaged => {

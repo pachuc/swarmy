@@ -14,7 +14,7 @@ pub use object::ObjectPrefix;
 pub use remote::{
     AwsSettings, BucketCredentials, BucketSpec, RemoteNode, RemotePorts, RemoteProfile,
     RemoteServices, RemoteSettings, default_sandboxes, ownership_marker_key, remote_path,
-    valid_bucket_name, validate_remote_name, validate_service_user,
+    validate_remote_name, validate_service_user,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -260,7 +260,7 @@ impl Default for ApiSettings {
 }
 
 /// Object storage namespace shared by every service on one metadata namespace.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct S3Settings {
     pub endpoint: String,
@@ -274,6 +274,21 @@ pub struct S3Settings {
     /// plain PUT. The objects are content-addressed, so overwriting identical
     /// bytes is safe.
     pub conditional_create: bool,
+}
+
+impl std::fmt::Debug for S3Settings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("S3Settings")
+            .field("endpoint", &self.endpoint)
+            .field("access_key", &"..redacted..")
+            .field("secret_key", &"..redacted..")
+            .field("bucket", &self.bucket)
+            .field("prefix", &self.prefix)
+            .field("region", &self.region)
+            .field("conditional_create", &self.conditional_create)
+            .finish()
+    }
 }
 impl Default for S3Settings {
     fn default() -> Self {

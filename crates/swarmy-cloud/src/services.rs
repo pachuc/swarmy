@@ -233,8 +233,9 @@ pub(crate) async fn upload_root(
 }
 
 /// Copy static S3 keys to the node when the remote uses them. Keys travel on
-/// SSH stdin into a root-owned 0600 file; the provisioning script appends
-/// them to the node environment without printing them.
+/// SSH stdin into a root-owned 0600 file; the provisioning script merges them
+/// into the node environment without printing them, and deletes any staging
+/// file left from before when the bucket uses the instance role.
 pub(crate) async fn upload_bucket_keys(node: &RemoteNode, address: &str) -> Result<()> {
     let Some(spec) = node.bucket_spec() else {
         return Ok(());

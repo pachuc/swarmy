@@ -298,7 +298,7 @@ async fn s3_line(settings: &Settings) -> Check {
             "remote S3",
             format!(
                 "bucket {}: object storage is verified on the API host, not from the client",
-                spec.describe(&settings.s3.region)
+                spec.describe()
             ),
             "Check the API host's object storage credentials and region if image or volume operations fail.",
         );

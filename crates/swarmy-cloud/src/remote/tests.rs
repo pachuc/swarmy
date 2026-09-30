@@ -78,20 +78,26 @@ struct FakeCloud {
 impl Cloud for FakeCloud {
     fn ensure_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<()>> {
         self.bucket_ensures.borrow_mut().push((
-            bucket.name.clone(),
-            bucket.region.clone(),
+            bucket.spec.bucket.clone(),
+            bucket.spec.region.clone(),
             bucket.owner.clone(),
-            bucket.endpoint.clone(),
-            bucket.prefix.clone(),
-            bucket.static_keys.is_some(),
+            if bucket.spec.endpoint.is_empty() {
+                None
+            } else {
+                Some(bucket.spec.endpoint.clone())
+            },
+            bucket.spec.prefix.as_str().to_owned(),
+            bucket.spec.needs_static_keys(),
         ));
         if !self
             .bucket_creates
             .borrow()
             .iter()
-            .any(|known| known == &bucket.name)
+            .any(|known| known == &bucket.spec.bucket)
         {
-            self.bucket_creates.borrow_mut().push(bucket.name.clone());
+            self.bucket_creates
+                .borrow_mut()
+                .push(bucket.spec.bucket.clone());
         }
         let role = bucket
             .node_credentials
@@ -101,7 +107,7 @@ impl Cloud for FakeCloud {
         if self.deny_create_tags.get() {
             self.untagged.set(true);
         }
-        if bucket.is_static() {
+        if bucket.spec.needs_static_keys() {
             // Static-key buckets have no IAM role or instance profile.
             return std::future::ready(Ok(()));
         }
@@ -202,7 +208,7 @@ impl Cloud for FakeCloud {
         }
         self.tagged
             .borrow_mut()
-            .push(format!("bucket {}", bucket.name));
+            .push(format!("bucket {}", bucket.spec.bucket));
         std::future::ready(Ok(()))
     }
     fn tag_node_role(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
@@ -214,14 +220,21 @@ impl Cloud for FakeCloud {
             .push(format!("role and profile {name}"));
         std::future::ready(Ok(()))
     }
-    fn delete_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<bool>> {
+    fn delete_bucket(
+        &self,
+        bucket: &ObjectBucket,
+    ) -> impl Future<Output = Result<crate::BucketRemoval>> {
         if self.deny_version_list.get() {
             return std::future::ready(Err(denied("s3:ListBucketVersions")));
         }
         self.teardown
             .borrow_mut()
-            .push(format!("bucket {}", bucket.name));
-        std::future::ready(Ok(!self.absent.get()))
+            .push(format!("bucket {}", bucket.spec.bucket));
+        std::future::ready(Ok(if self.absent.get() {
+            crate::BucketRemoval::Absent
+        } else {
+            crate::BucketRemoval::Removed
+        }))
     }
     fn delete_node_role(&self, name: &str, _: &str) -> impl Future<Output = Result<(bool, bool)>> {
         self.teardown.borrow_mut().push(format!("role {name}"));

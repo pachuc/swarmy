@@ -350,19 +350,31 @@ impl Timing {
     }
 }
 
+/// The `connect --json` document. The profile file carries static keys for
+/// the laptop's services, but stdout must never carry them: the credential
+/// source stays, the key values do not.
+fn redacted_profile(profile: &RemoteProfile) -> Result<serde_json::Value> {
+    let mut output = serde_json::to_value(profile)?;
+    if let Some(credentials) = output
+        .get_mut("bucket")
+        .and_then(|bucket| bucket.get_mut("credentials"))
+        && credentials.get("source").and_then(|source| source.as_str()) == Some("static_keys")
+    {
+        *credentials = serde_json::json!({"source": "static_keys"});
+    }
+    Ok(output)
+}
+
 fn print(profile: &RemoteProfile, json: bool, timing: &Timing) -> Result<()> {
     if json {
-        let mut output = serde_json::to_value(profile)?;
+        let mut output = redacted_profile(profile)?;
         output["timing"] = serde_json::to_value(timing)?;
         cloud_out!("{output}");
     } else {
         // The bucket description prints without secrets; keys stay in the
         // 0600 profile file and never reach terminal output or logs.
         let s3 = match &profile.bucket {
-            Some(spec) if spec.endpoint.is_empty() => {
-                format!("{} ({})", spec.bucket, spec.region)
-            }
-            Some(spec) => format!("{} at {}", spec.bucket, spec.endpoint),
+            Some(spec) => spec.describe(),
             None => profile.s3_endpoint.clone(),
         };
         cloud_out!(
@@ -410,6 +422,40 @@ pub(super) fn cleanup(profile: &RemoteProfile) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_output_carries_no_static_keys() {
+        let profile = RemoteProfile {
+            name: "test".into(),
+            socket_path: "socket".into(),
+            pid: 1,
+            ports: RemotePorts::default(),
+            remote_ports: RemotePorts::default(),
+            fdb_cluster_file: "cluster".into(),
+            nats_url: "nats://127.0.0.1:14222".into(),
+            s3_endpoint: String::new(),
+            api_url: None,
+            api_token: None,
+            bucket: Some(swarmy_config::BucketSpec {
+                endpoint: "https://objects.example.invalid".into(),
+                region: "eu-west-1".into(),
+                bucket: "test-bucket".into(),
+                credentials: swarmy_config::BucketCredentials::StaticKeys {
+                    access_key: "test-access".into(),
+                    secret_key: "test-secret".into(),
+                },
+                ..Default::default()
+            }),
+            default_image: None,
+        };
+        let rendered = redacted_profile(&profile).unwrap().to_string();
+        assert!(!rendered.contains("test-access"), "{rendered}");
+        assert!(!rendered.contains("test-secret"), "{rendered}");
+        // The source stays so output readers know which coordinates apply.
+        assert!(rendered.contains("static_keys"), "{rendered}");
+        assert!(rendered.contains("test-bucket"), "{rendered}");
+    }
+
     #[test]
     fn advertised_address_rewrite_preserves_cluster_identity() {
         assert_eq!(

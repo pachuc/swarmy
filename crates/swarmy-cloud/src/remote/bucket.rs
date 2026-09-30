@@ -88,22 +88,31 @@ pub(crate) fn resolve(
         || explicit_secret
         || spec.needs_static_keys()
     {
-        if let Some(access_key) = &options.access_key {
-            set_access_key(&mut spec, access_key.clone());
-        } else if let Some(access_key) = &options.env_access_key
-            && !access_key.is_empty()
-        {
-            set_access_key(&mut spec, access_key.clone());
-        }
-        if let Some(secret) = secret_from(options)? {
-            set_secret_key(&mut spec, secret);
-        }
         // Static keys need all three coordinates; anything less is a typo.
+        // Saved keys survive when no flag replaces them, so a repeat `up`
+        // without flags reproduces the saved description.
+        let saved = match &spec.credentials {
+            BucketCredentials::StaticKeys {
+                access_key,
+                secret_key,
+            } => (access_key.clone(), secret_key.clone()),
+            BucketCredentials::InstanceRole => (String::new(), String::new()),
+        };
+        let access_key = options
+            .access_key
+            .clone()
+            .or_else(|| {
+                options
+                    .env_access_key
+                    .clone()
+                    .filter(|key| !key.is_empty())
+            })
+            .unwrap_or(saved.0);
+        let secret_key = secret_from(options)?.unwrap_or(saved.1);
         crate::Error::ensure(
             !spec.endpoint.is_empty(),
             "static S3 keys need --s3-endpoint URL",
         )?;
-        let (access_key, secret_key) = static_parts(&spec);
         crate::Error::ensure(
             !access_key.is_empty(),
             "static S3 keys need --s3-access-key or AWS_ACCESS_KEY_ID",
@@ -119,48 +128,6 @@ pub(crate) fn resolve(
     }
     spec.validate_name()?;
     Ok(Some(spec))
-}
-
-fn set_access_key(spec: &mut BucketSpec, access_key: String) {
-    match &mut spec.credentials {
-        BucketCredentials::StaticKeys {
-            access_key: current,
-            ..
-        } => *current = access_key,
-        BucketCredentials::InstanceRole => {
-            spec.credentials = BucketCredentials::StaticKeys {
-                access_key,
-                secret_key: String::new(),
-            };
-        }
-    }
-}
-
-fn set_secret_key(spec: &mut BucketSpec, secret_key: String) {
-    match &mut spec.credentials {
-        BucketCredentials::StaticKeys {
-            secret_key: current,
-            ..
-        } => {
-            *current = secret_key;
-        }
-        BucketCredentials::InstanceRole => {
-            spec.credentials = BucketCredentials::StaticKeys {
-                access_key: String::new(),
-                secret_key,
-            };
-        }
-    }
-}
-
-fn static_parts(spec: &BucketSpec) -> (String, String) {
-    match &spec.credentials {
-        BucketCredentials::StaticKeys {
-            access_key,
-            secret_key,
-        } => (access_key.clone(), secret_key.clone()),
-        BucketCredentials::InstanceRole => (String::new(), String::new()),
-    }
 }
 
 fn secret_from(options: &BucketOptions) -> Result<Option<String>> {
@@ -195,7 +162,7 @@ pub(crate) fn read_secret_file(path: &Path) -> Result<String> {
     let mode = std::fs::metadata(path)?.permissions().mode();
     // No group or other permission bits: the low six mode bits must be zero.
     crate::Error::ensure(
-        mode.trailing_zeros() >= 6,
+        mode & 0o077 == 0,
         format!(
             "secret file {} must not be readable by group or others (chmod 600)",
             path.display()

@@ -82,7 +82,7 @@ impl std::fmt::Debug for BucketCredentials {
 /// by endpoint URL with static keys. `up`, `add-node`, `connect`, `upgrade`,
 /// and the node environment all use this; there are no parallel AWS and
 /// non-AWS copies.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(default)]
 pub struct BucketSpec {
     /// Storage endpoint override for S3-compatible providers. Empty selects
@@ -96,6 +96,29 @@ pub struct BucketSpec {
     pub prefix: ObjectPrefix,
     /// How nodes authenticate to the bucket.
     pub credentials: BucketCredentials,
+    /// Write chunks and manifests with a create-only PUT
+    /// (`If-None-Match: *`). Providers that reject the header need `false`,
+    /// which makes the call a plain PUT. The objects are content-addressed,
+    /// so overwriting identical bytes is safe. Carried into the node
+    /// environment and the connect profile, which is what the nodes read.
+    pub conditional_create: bool,
+}
+
+fn default_conditional_create() -> bool {
+    true
+}
+
+impl Default for BucketSpec {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            region: String::new(),
+            bucket: String::new(),
+            prefix: ObjectPrefix::default(),
+            credentials: BucketCredentials::default(),
+            conditional_create: true,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -114,6 +137,8 @@ struct BucketSpecTable {
     bucket: String,
     prefix: ObjectPrefix,
     credentials: BucketCredentials,
+    #[serde(default = "default_conditional_create")]
+    conditional_create: bool,
 }
 
 impl<'de> Deserialize<'de> for BucketSpec {
@@ -132,6 +157,7 @@ impl<'de> Deserialize<'de> for BucketSpec {
                 bucket: table.bucket,
                 prefix: table.prefix,
                 credentials: table.credentials,
+                conditional_create: table.conditional_create,
             }),
         }
     }
@@ -160,17 +186,6 @@ impl BucketSpec {
         matches!(self.credentials, BucketCredentials::StaticKeys { .. })
     }
 
-    /// The region to use, falling back to the remote's configured region when
-    /// the description leaves it unset.
-    #[must_use]
-    pub fn effective_region<'a>(&'a self, fallback: &'a str) -> &'a str {
-        if self.region.is_empty() {
-            fallback
-        } else {
-            &self.region
-        }
-    }
-
     /// Fill an unset region from the remote's configured region so saved
     /// records always carry a concrete region.
     pub fn resolve_region(&mut self, fallback: &str) {
@@ -179,35 +194,22 @@ impl BucketSpec {
         }
     }
 
-    /// Short description without secrets, for logs and status output.
+    /// Short description without secrets, for logs and status output. The
+    /// region is filled from the remote's configured region when the remote
+    /// is saved, so it is always concrete here.
     #[must_use]
-    pub fn describe(&self, fallback_region: &str) -> String {
+    pub fn describe(&self) -> String {
         if self.endpoint.is_empty() {
-            format!(
-                "{} ({})",
-                self.bucket,
-                self.effective_region(fallback_region)
-            )
+            format!("{} ({})", self.bucket, self.region)
         } else {
-            format!(
-                "{} at {} ({})",
-                self.bucket,
-                self.endpoint,
-                self.effective_region(fallback_region)
-            )
+            format!("{} at {} ({})", self.bucket, self.endpoint, self.region)
         }
-    }
-
-    /// Marker object recording swarm ownership under the prefix, used where
-    /// the provider does not support bucket tags.
-    #[must_use]
-    pub fn ownership_marker(&self) -> String {
-        ownership_marker_key(self.prefix.as_str())
     }
 
     /// Copy the bucket coordinates into service settings. Static keys become
     /// the S3 credentials; the instance-role source clears them so nodes fall
-    /// back to the instance-metadata provider.
+    /// back to the instance-metadata provider. The create-only switch travels
+    /// with the description, which is what the nodes read.
     pub fn apply_to_settings(&self, settings: &mut Settings) {
         settings.s3.endpoint.clone_from(&self.endpoint);
         if !self.region.is_empty() {
@@ -215,6 +217,7 @@ impl BucketSpec {
         }
         settings.s3.bucket.clone_from(&self.bucket);
         settings.s3.prefix.clone_from(&self.prefix);
+        settings.s3.conditional_create = self.conditional_create;
         match &self.credentials {
             BucketCredentials::InstanceRole => {
                 settings.s3.access_key.clear();
@@ -258,8 +261,7 @@ pub fn ownership_marker_key(prefix: &str) -> String {
 
 /// S3 bucket names are lowercase DNS labels; HTTPS virtual-hosted requests
 /// fail otherwise, so reject them before creating cloud resources.
-#[must_use]
-pub fn valid_bucket_name(bucket: &str) -> bool {
+fn valid_bucket_name(bucket: &str) -> bool {
     fn dns(byte: u8) -> bool {
         byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
     }
@@ -406,14 +408,6 @@ impl RemoteSettings {
                 None
             }
         })
-    }
-
-    /// Fill an unset bucket region from the remote's configured region so
-    /// saved records always carry a concrete region.
-    pub fn resolve_bucket_region(&mut self) {
-        if let Some(spec) = self.bucket.as_mut() {
-            spec.resolve_region(&self.region.clone());
-        }
     }
 }
 
@@ -756,20 +750,20 @@ mod tests {
         assert_eq!(spec.bucket, "test-bucket");
         assert!(spec.is_aws());
         assert!(!spec.needs_static_keys());
-        assert_eq!(spec.effective_region("eu-west-1"), "eu-west-1");
+        assert!(spec.conditional_create);
+        assert!(spec.describe().starts_with("test-bucket ("));
         // The table form carries endpoint, region, prefix, and static keys.
         let table: Settings = toml::from_str(
-            "[remote.bucket]\nendpoint = 'https://objects.example.invalid'\nregion = 'eu-west-1'\nbucket = 'test-bucket'\nprefix = 'runs/team'\n[remote.bucket.credentials]\nsource = 'static_keys'\naccess_key = 'test-access'\nsecret_key = 'test-secret'\n",
+            "[remote.bucket]\nendpoint = 'https://objects.example.invalid'\nregion = 'eu-west-1'\nbucket = 'test-bucket'\nprefix = 'runs/team'\nconditional_create = false\n[remote.bucket.credentials]\nsource = 'static_keys'\naccess_key = 'test-access'\nsecret_key = 'test-secret'\n",
         )
         .unwrap();
         let spec = table.remote.bucket.clone().unwrap();
         assert!(!spec.is_aws());
         assert!(spec.needs_static_keys());
-        assert_eq!(spec.effective_region("us-east-1"), "eu-west-1");
+        assert!(!spec.conditional_create);
         assert_eq!(spec.prefix.as_str(), "runs/team");
-        assert_eq!(spec.ownership_marker(), "runs/team/.swarmy-owner");
         assert_eq!(
-            spec.describe("us-east-1"),
+            spec.describe(),
             "test-bucket at https://objects.example.invalid (eu-west-1)"
         );
         spec.validate_name().unwrap();
@@ -785,6 +779,7 @@ mod tests {
         assert_eq!(settings.s3.access_key, "test-access");
         assert_eq!(settings.s3.secret_key, "test-secret");
         assert_eq!(settings.s3.prefix.as_str(), "runs/team");
+        assert!(!settings.s3.conditional_create);
         BucketSpec::aws("test-bucket").apply_to_settings(&mut settings);
         assert!(settings.s3.access_key.is_empty());
         assert!(settings.s3.secret_key.is_empty());

@@ -11,6 +11,7 @@ use swarmy_config::Settings;
 mod add_node;
 mod aws;
 mod bucket;
+mod buckets;
 mod connect;
 mod disconnect;
 mod down;
@@ -195,7 +196,10 @@ async fn run_up(state: &State, mut settings: Settings, command: Command) -> Resu
         },
     )?;
     settings.remote.bucket = resolved;
-    settings.remote.resolve_bucket_region();
+    if let Some(spec) = settings.remote.bucket.as_mut() {
+        let region = settings.remote.region.clone();
+        spec.resolve_region(&region);
+    }
     NodeShape {
         instance_type,
         disk_gb,

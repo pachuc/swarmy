@@ -99,26 +99,6 @@ pub fn from_settings(settings: &Settings) -> Result<Arc<dyn ObjectStore>, BlobEr
     }
 }
 
-/// Build the shared S3 client from one bucket description instead of service
-/// settings. Static keys and the custom endpoint become the client
-/// credentials; the instance-role source falls back to the instance-metadata
-/// provider. Tests exercise the same object operations through this
-/// constructor that the node services reach through settings.
-/// # Errors
-/// Rejects invalid S3 client settings.
-pub fn from_bucket_spec(
-    spec: &BucketSpec,
-    fallback_region: &str,
-    conditional_create: bool,
-) -> Result<Arc<dyn ObjectStore>, BlobError> {
-    let mut owned = spec.clone();
-    owned.resolve_region(fallback_region);
-    let mut settings = Settings::default();
-    owned.apply_to_settings(&mut settings);
-    settings.s3.conditional_create = conditional_create;
-    from_settings(&settings)
-}
-
 /// Downgrade create-only PUTs to plain PUTs for providers that reject the
 /// `If-None-Match: *` header. The objects are content-addressed, so a plain
 /// PUT overwriting identical bytes is safe.
@@ -355,9 +335,17 @@ mod tests {
                 access_key: loaded.s3.access_key.clone(),
                 secret_key: loaded.s3.secret_key.clone(),
             },
+            conditional_create: true,
         };
         for conditional_create in [true, false] {
-            let store = from_bucket_spec(&spec, &loaded.s3.region, conditional_create).unwrap();
+            // The description reaches the client the way the nodes read it:
+            // region filled, coordinates applied to settings.
+            let mut owned = spec.clone();
+            owned.resolve_region(&loaded.s3.region);
+            let mut settings = Settings::default();
+            owned.apply_to_settings(&mut settings);
+            settings.s3.conditional_create = conditional_create;
+            let store = from_settings(&settings).unwrap();
             let scope = format!("bucket-spec-test-{}", ulid::Ulid::generate());
             let path = object_store::path::Path::from(format!("{scope}/object"));
             store.put(&path, "payload".into()).await.unwrap();
