@@ -193,7 +193,7 @@ impl ObjectStore for UnconditionalStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use swarmy_config::BucketSpec;
+    use swarmy_config::{BucketCredentials, BucketSpec, ObjectPrefix};
 
     fn hostile_env() -> HashMap<String, String> {
         HashMap::from([
@@ -326,13 +326,13 @@ mod tests {
         if swarmy_core::test_support::stack_env_os("SWARMY_S3_ENDPOINT").is_none() {
             return;
         }
-        let loaded = swarmy_config::Settings::load().unwrap().settings;
+        let loaded = Settings::load().unwrap().settings;
         let spec = BucketSpec {
             endpoint: loaded.s3.endpoint.clone(),
             region: loaded.s3.region.clone(),
             bucket: loaded.s3.bucket.clone(),
-            prefix: swarmy_config::ObjectPrefix::default(),
-            credentials: swarmy_config::BucketCredentials::StaticKeys {
+            prefix: ObjectPrefix::default(),
+            credentials: BucketCredentials::StaticKeys {
                 access_key: loaded.s3.access_key.clone(),
                 secret_key: loaded.s3.secret_key.clone(),
             },
