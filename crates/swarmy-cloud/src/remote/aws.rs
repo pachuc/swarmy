@@ -1,4 +1,7 @@
-use crate::Result;
+use super::{
+    Cloud, Host, Machine, MachineSpec, ObjectBucket, Ownership, buckets, retry_profile_propagation,
+};
+use crate::{BucketRemoval, Result};
 use aws_sdk_ec2::{
     error::ProvideErrorMetadata,
     primitives::Blob,
@@ -9,14 +12,11 @@ use aws_sdk_ec2::{
 };
 use std::time::Duration;
 
-use super::{
-    Cloud, Host, Machine, MachineSpec, ObjectBucket, Ownership, retry_profile_propagation,
-};
 use swarmy_config::RemoteNode;
 
 // AWS error codes, rather than rendered SDK messages, determine whether an
 // operation can be retried after an operator grants a missing permission.
-trait AwsContext<T> {
+pub(super) trait AwsContext<T> {
     fn aws_context(self, operation: &'static str) -> Result<T>;
 }
 
@@ -50,10 +50,6 @@ where
 
 const UBUNTU_IMAGE: &str =
     "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id";
-
-const REMOTE_TAG: &str = "swarmy-remote";
-const MANAGED_TAG: &str = "managed-by";
-const MANAGER: &str = "swarmy";
 
 /// Model reported by `lsblk` for EC2 instance-store `NVMe` devices. Nitro
 /// instances name `NVMe` disks by attachment order, so an extra EBS volume can
@@ -130,6 +126,7 @@ pub(crate) async fn resolve_instance_store(
 }
 
 pub struct Aws {
+    sdk_config: aws_config::SdkConfig,
     ec2: aws_sdk_ec2::Client,
     ssm: aws_sdk_ssm::Client,
     s3: aws_sdk_s3::Client,
@@ -147,6 +144,7 @@ impl Aws {
             ssm: aws_sdk_ssm::Client::new(&config),
             s3: aws_sdk_s3::Client::new(&config),
             iam: aws_sdk_iam::Client::new(&config),
+            sdk_config: config,
         }
     }
 
@@ -156,7 +154,7 @@ impl Aws {
         owner: &str,
         existing: Vec<aws_sdk_s3::types::Tag>,
     ) -> Result<()> {
-        let tags = merged_bucket_tags(existing, owner);
+        let tags = buckets::merged_bucket_tags(existing, owner);
         self.s3
             .put_bucket_tagging()
             .bucket(name)
@@ -258,7 +256,7 @@ impl Aws {
                 self.create_bucket(bucket, region).await?;
                 created = true;
                 if let Err(error) = self.write_bucket_tags(bucket, owner, Vec::new()).await {
-                    warn_tag_denied(error, "s3:PutBucketTagging", bucket, owner)?;
+                    buckets::warn_tag_denied(error, "s3:PutBucketTagging", bucket, owner)?;
                 }
             }
             Err(error) => {
@@ -345,8 +343,8 @@ impl Aws {
                 .assume_role_policy_document(r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#);
             if let Err(error) = request
                 .clone()
-                .tags(iam_tag(MANAGED_TAG, MANAGER))
-                .tags(iam_tag(REMOTE_TAG, owner))
+                .tags(iam_tag(buckets::MANAGED_TAG, buckets::MANAGER))
+                .tags(iam_tag(buckets::REMOTE_TAG, owner))
                 .send()
                 .await
             {
@@ -358,7 +356,7 @@ impl Aws {
                     .send()
                     .await
                     .aws_context("iam:CreateRole (without tags)")?;
-                warn_untagged("iam:TagRole", role, owner);
+                buckets::warn_untagged("iam:TagRole", role, owner);
             }
             created = true;
         }
@@ -393,8 +391,8 @@ impl Aws {
                     .instance_profile_name(role);
                 if let Err(error) = request
                     .clone()
-                    .tags(iam_tag(MANAGED_TAG, MANAGER))
-                    .tags(iam_tag(REMOTE_TAG, owner))
+                    .tags(iam_tag(buckets::MANAGED_TAG, buckets::MANAGER))
+                    .tags(iam_tag(buckets::REMOTE_TAG, owner))
                     .send()
                     .await
                 {
@@ -405,7 +403,7 @@ impl Aws {
                         .send()
                         .await
                         .aws_context("iam:CreateInstanceProfile (without tags)")?;
-                    warn_untagged("iam:TagInstanceProfile", role, owner);
+                    buckets::warn_untagged("iam:TagInstanceProfile", role, owner);
                 }
                 created = true;
                 false
@@ -439,25 +437,6 @@ fn access_denied(code: Option<&str>) -> bool {
     )
 }
 
-fn warn_untagged(permission: &str, resource: &str, owner: &str) {
-    cloud_err!(
-        "Warning: missing {permission} for {resource}; remote down will leave it in place. Grant {permission} and run swarmy remote tag {owner} later."
-    );
-}
-
-fn warn_tag_denied(
-    error: crate::Error,
-    permission: &str,
-    resource: &str,
-    owner: &str,
-) -> Result<()> {
-    if error.permission().is_none() {
-        return Err(error);
-    }
-    warn_untagged(permission, resource, owner);
-    Ok(())
-}
-
 fn iam_tag(key: &str, value: &str) -> aws_sdk_iam::types::Tag {
     aws_sdk_iam::types::Tag::builder()
         .key(key)
@@ -466,59 +445,16 @@ fn iam_tag(key: &str, value: &str) -> aws_sdk_iam::types::Tag {
         .expect("tag fields")
 }
 
-fn s3_tag(key: &str, value: &str) -> aws_sdk_s3::types::Tag {
-    aws_sdk_s3::types::Tag::builder()
-        .key(key)
-        .value(value)
-        .build()
-        .expect("tag fields")
-}
-
-fn merged_bucket_tags(
-    existing: Vec<aws_sdk_s3::types::Tag>,
-    owner: &str,
-) -> Vec<aws_sdk_s3::types::Tag> {
-    let mut tags: Vec<_> = existing
-        .into_iter()
-        .filter(|tag| tag.key() != MANAGED_TAG && tag.key() != REMOTE_TAG)
-        .collect();
-    tags.push(s3_tag(MANAGED_TAG, MANAGER));
-    tags.push(s3_tag(REMOTE_TAG, owner));
-    tags
-}
-
-fn ensure_not_another_remote<'a>(
-    tags: impl Iterator<Item = (&'a str, &'a str)>,
-    owner: &str,
-) -> Result<()> {
-    crate::Error::ensure(
-        !tags
-            .into_iter()
-            .any(|(key, value)| key == REMOTE_TAG && value != owner),
-        "resource is tagged for another remote",
-    )
-}
-
-fn owned<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, owner: &str) -> Ownership {
-    let tags: Vec<_> = tags.collect();
-    if tags
-        .iter()
-        .any(|(key, value)| *key == MANAGED_TAG && *value == MANAGER)
-        && tags
-            .iter()
-            .any(|(key, value)| *key == REMOTE_TAG && *value == owner)
-    {
-        Ownership::Owned
-    } else {
-        Ownership::Unmanaged
-    }
-}
-
 fn tags(resource: ResourceType, name: &str, owner: &str) -> TagSpecification {
     TagSpecification::builder()
         .resource_type(resource)
         .tags(Tag::builder().key("Name").value(name).build())
-        .tags(Tag::builder().key(MANAGED_TAG).value(owner).build())
+        .tags(
+            Tag::builder()
+                .key(buckets::MANAGED_TAG)
+                .value(owner)
+                .build(),
+        )
         .build()
 }
 
@@ -586,13 +522,16 @@ fn bucket_policy(bucket: &str) -> serde_json::Value {
 
 impl Cloud for Aws {
     async fn ensure_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
-        self.ensure_bucket_exists(&bucket.name, &bucket.region, &bucket.owner)
+        if bucket.spec.needs_static_keys() {
+            return buckets::ensure(&buckets::client(&self.sdk_config, bucket)?, bucket).await;
+        }
+        self.ensure_bucket_exists(&bucket.spec.bucket, &bucket.spec.region, &bucket.owner)
             .await?;
         let role = bucket
             .node_credentials
             .clone()
             .unwrap_or_else(|| format!("swarmy-{}", bucket.owner));
-        self.ensure_profile(&bucket.name, &role, &bucket.owner)
+        self.ensure_profile(&bucket.spec.bucket, &role, &bucket.owner)
             .await
     }
 
@@ -734,8 +673,18 @@ impl Cloud for Aws {
         }
     }
 
-    async fn bucket_ownership(&self, name: &str, owner: &str) -> Result<Ownership> {
-        let output = match self.s3.get_bucket_tagging().bucket(name).send().await {
+    async fn bucket_ownership(&self, bucket: &ObjectBucket) -> Result<Ownership> {
+        if bucket.spec.needs_static_keys() {
+            let client = buckets::client(&self.sdk_config, bucket)?;
+            return buckets::ownership(&client, bucket).await;
+        }
+        let output = match self
+            .s3
+            .get_bucket_tagging()
+            .bucket(&bucket.spec.bucket)
+            .send()
+            .await
+        {
             Ok(output) => output,
             Err(error) => {
                 return match error
@@ -748,9 +697,9 @@ impl Cloud for Aws {
                 };
             }
         };
-        Ok(owned(
+        Ok(buckets::owned(
             output.tag_set().iter().map(|tag| (tag.key(), tag.value())),
-            owner,
+            &bucket.owner,
         ))
     }
 
@@ -765,7 +714,7 @@ impl Cloud for Aws {
             Ok(output) => output
                 .instance_profile
                 .map_or(Ownership::Absent, |profile| {
-                    owned(
+                    buckets::owned(
                         profile.tags().iter().map(|tag| (tag.key(), tag.value())),
                         owner,
                     )
@@ -782,7 +731,7 @@ impl Cloud for Aws {
         };
         let role = match self.iam.get_role().role_name(name).send().await {
             Ok(output) => output.role.map_or(Ownership::Absent, |role| {
-                owned(
+                buckets::owned(
                     role.tags().iter().map(|tag| (tag.key(), tag.value())),
                     owner,
                 )
@@ -800,7 +749,13 @@ impl Cloud for Aws {
         Ok((profile, role))
     }
 
-    async fn tag_bucket(&self, name: &str, owner: &str) -> Result<()> {
+    async fn tag_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
+        if bucket.spec.needs_static_keys() {
+            let client = buckets::client(&self.sdk_config, bucket)?;
+            return buckets::adopt(&client, bucket).await;
+        }
+        let name = &bucket.spec.bucket;
+        let owner = &bucket.owner;
         let tags = match self.s3.get_bucket_tagging().bucket(name).send().await {
             Ok(output) => output.tag_set().to_vec(),
             Err(error)
@@ -813,7 +768,7 @@ impl Cloud for Aws {
             }
             Err(error) => return Err(error).aws_context("s3:GetBucketTagging"),
         };
-        ensure_not_another_remote(tags.iter().map(|tag| (tag.key(), tag.value())), owner)?;
+        buckets::ensure_not_another_remote(tags.iter().map(|tag| (tag.key(), tag.value())), owner)?;
         self.write_bucket_tags(name, owner, tags).await
     }
 
@@ -837,115 +792,57 @@ impl Cloud for Aws {
             .instance_profile
             .ok_or_else(|| crate::Error::other("instance profile is absent"))?;
         // Check both before changing either one, so a conflicting profile cannot leave a tagged role.
-        ensure_not_another_remote(
+        buckets::ensure_not_another_remote(
             role.tags().iter().map(|tag| (tag.key(), tag.value())),
             owner,
         )?;
-        ensure_not_another_remote(
+        buckets::ensure_not_another_remote(
             profile.tags().iter().map(|tag| (tag.key(), tag.value())),
             owner,
         )?;
         self.iam
             .tag_role()
             .role_name(name)
-            .tags(iam_tag(MANAGED_TAG, MANAGER))
-            .tags(iam_tag(REMOTE_TAG, owner))
+            .tags(iam_tag(buckets::MANAGED_TAG, buckets::MANAGER))
+            .tags(iam_tag(buckets::REMOTE_TAG, owner))
             .send()
             .await
             .aws_context("iam:TagRole")?;
         self.iam
             .tag_instance_profile()
             .instance_profile_name(name)
-            .tags(iam_tag(MANAGED_TAG, MANAGER))
-            .tags(iam_tag(REMOTE_TAG, owner))
+            .tags(iam_tag(buckets::MANAGED_TAG, buckets::MANAGER))
+            .tags(iam_tag(buckets::REMOTE_TAG, owner))
             .send()
             .await
             .aws_context("iam:TagInstanceProfile")?;
         Ok(())
     }
 
-    async fn delete_bucket(&self, name: &str, owner: &str) -> Result<bool> {
-        use aws_sdk_s3::types::{Delete, ObjectIdentifier};
-        let ownership = self.bucket_ownership(name, owner).await?;
+    async fn delete_bucket(&self, bucket: &ObjectBucket) -> Result<BucketRemoval> {
+        if bucket.spec.needs_static_keys() {
+            let client = buckets::client(&self.sdk_config, bucket)?;
+            return buckets::delete(&client, bucket).await;
+        }
+        let name = &bucket.spec.bucket;
+        let ownership = self.bucket_ownership(bucket).await?;
         if ownership == Ownership::Absent {
-            return Ok(false);
+            return Ok(BucketRemoval::Absent);
         }
         crate::Error::ensure(
             ownership == Ownership::Owned,
             "bucket ownership tags do not match",
         )?;
-        let mut count = 0usize;
-        // Re-read the first page after every deletion. Markers would skip keys
-        // when the page just deleted changes the listing beneath the cursor.
-        loop {
-            let page = match self
-                .s3
-                .list_object_versions()
-                .bucket(name)
-                .max_keys(1000)
-                .send()
-                .await
-            {
-                Ok(page) => page,
-                Err(error)
-                    if error
-                        .as_service_error()
-                        .and_then(ProvideErrorMetadata::code)
-                        == Some("NoSuchBucket") =>
-                {
-                    return Ok(false);
-                }
-                Err(error) => return Err(error).aws_context("s3:ListBucketVersions"),
-            };
-            let objects: Vec<_> = page
-                .versions()
-                .iter()
-                .map(|object| {
-                    ObjectIdentifier::builder()
-                        .key(object.key().unwrap_or_default())
-                        .set_version_id(object.version_id().map(str::to_owned))
-                        .build()
-                })
-                .chain(page.delete_markers().iter().map(|object| {
-                    ObjectIdentifier::builder()
-                        .key(object.key().unwrap_or_default())
-                        .set_version_id(object.version_id().map(str::to_owned))
-                        .build()
-                }))
-                .collect::<std::result::Result<_, _>>()?;
-            if objects.is_empty() {
-                break;
-            }
-            let size = objects.len();
-            let result = self
-                .s3
-                .delete_objects()
-                .bucket(name)
-                .delete(Delete::builder().set_objects(Some(objects)).build()?)
-                .send()
-                .await
-                .aws_context("s3:DeleteObjects")?;
-            crate::Error::ensure(
-                result.errors().is_empty(),
-                format!(
-                    "s3:DeleteObjects failed for {} objects",
-                    result.errors().len()
-                ),
-            )?;
-            count += size;
-            if count / 10_000 != (count - size) / 10_000 {
-                cloud_out!("Deleted {count} objects from bucket {name}");
-            }
-        }
+        buckets::delete_prefix_scope(&self.s3, name, "").await?;
         match self.s3.delete_bucket().bucket(name).send().await {
-            Ok(_) => Ok(true),
+            Ok(_) => Ok(BucketRemoval::Removed),
             Err(error)
                 if error
                     .as_service_error()
                     .and_then(ProvideErrorMetadata::code)
                     == Some("NoSuchBucket") =>
             {
-                Ok(false)
+                Ok(BucketRemoval::Absent)
             }
             Err(error) => Err(error).aws_context("s3:DeleteBucket"),
         }
@@ -1189,7 +1086,7 @@ mod tests {
 
 #[cfg(test)]
 mod ownership_tag_tests {
-    use super::{ensure_not_another_remote, merged_bucket_tags, s3_tag};
+    use super::buckets::{ensure_not_another_remote, merged_bucket_tags, s3_tag};
 
     #[test]
     fn adoption_preserves_unrelated_bucket_tags() {
@@ -1222,7 +1119,7 @@ mod ownership_tag_tests {
 
 #[cfg(test)]
 mod tag_denial_tests {
-    use super::warn_tag_denied;
+    use super::buckets::warn_tag_denied;
 
     #[test]
     fn denied_tagging_does_not_abort_creation_but_other_errors_do() {

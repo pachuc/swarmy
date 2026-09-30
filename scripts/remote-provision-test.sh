@@ -9,6 +9,32 @@ for invalid in -1 word 1.5 4294967296; do
         exit 1
     fi
 done
+# Every provisioning argument lands in the variable the SSH command sends it
+# as; defaults match a bare `remote up` with no bucket.
+parse_provision_args node 10.0.0.2 test-bucket eu-west-1 https://objects.example.invalid runs/team false true 4 deploy-user dir:/srv/data
+[[ $mode == node ]]
+[[ $service_address == 10.0.0.2 ]]
+[[ $bucket == test-bucket ]]
+[[ $bucket_region == eu-west-1 ]]
+[[ $bucket_endpoint == https://objects.example.invalid ]]
+[[ $bucket_prefix == runs/team ]]
+[[ $bucket_conditional_create == false ]]
+[[ $bucket_static == true ]]
+[[ $sandboxes == 4 ]]
+[[ $service_user == deploy-user ]]
+[[ $local_storage == dir:/srv/data ]]
+parse_provision_args
+[[ $mode == stack ]]
+[[ $service_address == 127.0.0.1 ]]
+[[ -z $bucket ]]
+[[ -z $bucket_region ]]
+[[ -z $bucket_endpoint ]]
+[[ -z $bucket_prefix ]]
+[[ $bucket_conditional_create == true ]]
+[[ $bucket_static == false ]]
+[[ $sandboxes == 64 ]]
+[[ $service_user == swarmy ]]
+[[ -z $local_storage ]]
 zero=$(node_environment /tmp/checkout 0 /this-mount-does-not-exist)
 [[ $zero == *'SWARMY_NODE_ROLES=volume'* ]]
 [[ $zero == *'SWARMY_NODE_SANDBOXES=0'* ]]
@@ -27,6 +53,7 @@ zero_bucket=$(node_environment /tmp/checkout 0 /this-mount-does-not-exist exampl
 [[ $zero_bucket == *'SWARMY_S3_BUCKET=example-bucket'* ]]
 [[ $zero_bucket == *'SWARMY_S3_REGION=eu-west-1'* ]]
 [[ $zero_bucket == *'SWARMY_DEV_SKIP_S3=1'* ]]
+[[ $zero_bucket == *'SWARMY_S3_CONDITIONAL_CREATE=true'* ]]
 positive_bucket=$(node_environment /tmp/checkout 4 /tmp example-bucket eu-west-1)
 [[ $positive_bucket == *'SWARMY_NODE_ROLES=sandbox,volume'* ]]
 [[ $positive_bucket == *'SWARMY_NODE_SANDBOXES=4'* ]]
@@ -84,4 +111,12 @@ for invalid in relative dir: device: dir:relative; do
         exit 1
     fi
 done
+# Static buckets carry no key lines at all: the keys are merged later by
+# merge_static_s3_keys, and empty lines ahead of the real ones would be stale.
+static_bucket=$(node_environment /tmp/checkout 4 /tmp example-bucket eu-west-1 https://objects.example.invalid runs/team false true)
+[[ $static_bucket == *'SWARMY_S3_ENDPOINT=https://objects.example.invalid'* ]]
+[[ $static_bucket == *'SWARMY_S3_PREFIX=runs/team'* ]]
+[[ $static_bucket == *'SWARMY_S3_CONDITIONAL_CREATE=false'* ]]
+[[ $static_bucket != *'SWARMY_S3_ACCESS_KEY='* ]]
+[[ $static_bucket != *'SWARMY_S3_SECRET_KEY='* ]]
 echo 'remote provision argument and environment tests passed'

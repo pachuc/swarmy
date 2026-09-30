@@ -280,20 +280,27 @@ async fn s3_line(settings: &Settings) -> Check {
     let profile = settings.remote.profile.as_ref().and_then(|name| {
         swarmy_config::RemoteProfile::read(Path::new(&settings.state_dir), name).ok()
     });
-    if let Some(bucket) = profile
+    if let Some(spec) = profile
         .as_ref()
-        .filter(|profile| profile.s3_endpoint.is_empty())
-        .and_then(|profile| profile.s3_bucket.as_deref())
+        .filter(|profile| {
+            profile
+                .bucket
+                .as_ref()
+                .is_some_and(|spec| spec.endpoint.is_empty())
+        })
+        .and_then(|profile| profile.bucket.as_ref())
     {
         // The client holds no object store credentials; the control plane
         // owns its bucket. Listing it from the laptop would need the same
-        // AWS identity the API host already uses.
+        // identity the API host already uses. The description prints without
+        // secrets; static keys stay in the 0600 profile file.
         return Check::warn(
             "remote S3",
             format!(
-                "bucket {bucket}: object storage is verified on the API host, not from the client"
+                "bucket {}: object storage is verified on the API host, not from the client",
+                spec.describe()
             ),
-            "Check the API host's AWS credentials and region if image or volume operations fail.",
+            "Check the API host's object storage credentials and region if image or volume operations fail.",
         );
     }
     let (result, fix) = s3_check(settings).await;

@@ -51,6 +51,40 @@ async fn duplicate_chunk_does_not_upload_and_zero_chunks_need_no_object() {
 }
 
 #[tokio::test]
+async fn unconditional_writes_still_dedupe_and_verify() {
+    // Providers that reject the create-only header get plain PUTs through
+    // `conditional_create = false`. Content addressing keeps that safe: a
+    // repeat upload of identical bytes dedupes, and reads still verify.
+    let memory: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    let store: Arc<dyn ObjectStore> =
+        Arc::new(swarmy_store::objects::UnconditionalStore::new(memory));
+    let chunks = ChunkStore::new(store.clone());
+    let data = vec![11; CHUNK_SIZE as usize];
+    let first = chunks.put_chunk(&data).await.unwrap();
+    assert!(first.uploaded);
+    let second = chunks.put_chunk(&data).await.unwrap();
+    assert_eq!(second.hash, first.hash);
+    assert!(!second.uploaded);
+    assert_eq!(chunks.get_chunk(first.hash).await.unwrap(), data);
+    let size = 2 * u64::from(CHUNK_SIZE);
+    let mut builder = ManifestBuilder::new(store.clone(), Manifest::empty(size).unwrap());
+    builder.set_chunk(0, first.hash).unwrap();
+    builder.set_chunk(1, first.hash).unwrap();
+    let manifest = builder.build().await.unwrap();
+    let loaded = Manifest::load(&*store, manifest.header().clone())
+        .await
+        .unwrap();
+    assert_eq!(loaded.leaf_hashes(), manifest.leaf_hashes());
+    assert_eq!(
+        ChunkStore::new(store.clone())
+            .get_chunk(loaded.chunk_hash(&*store, 1).await.unwrap())
+            .await
+            .unwrap(),
+        data
+    );
+}
+
+#[tokio::test]
 async fn concurrent_chunk_puts_have_one_creator() {
     let memory = Arc::new(InMemory::new());
     let chunks = ChunkStore::new(memory);

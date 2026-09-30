@@ -3,7 +3,8 @@ use std::time::Duration;
 use crate::Result;
 use swarmy_config::RemoteNode;
 
-use super::{Cloud, Ownership, key_name, state::State};
+use super::{Cloud, ObjectBucket, Ownership, key_name, state::State};
+use crate::BucketRemoval;
 
 #[derive(Default)]
 struct Report {
@@ -55,16 +56,20 @@ pub(super) async fn plan(
     state: &State,
     node: &RemoteNode,
 ) -> Result<Option<DeletionPlan>> {
-    let Some(bucket) = node.bucket() else {
+    let Some(bucket) = object_bucket(node) else {
         return Ok(None);
     };
-    let role = node
-        .cloud_settings()
-        .instance_profile(&node.name)
-        .ok_or_else(|| crate::Error::other("bucket has no node role"))?;
-    let bucket_status = cloud.bucket_ownership(bucket, &node.name).await?;
+    let bucket_status = cloud.bucket_ownership(&bucket).await?;
     let bucket_owned =
-        !state.bucket_shared(&node.name, bucket)? && bucket_status == Ownership::Owned;
+        !state.bucket_shared(&node.name, &bucket.spec.bucket)? && bucket_status == Ownership::Owned;
+    // Static-key buckets have no IAM role or instance profile to delete.
+    let Some(role) = node.cloud_settings().instance_profile(&node.name) else {
+        return Ok(bucket_owned.then(|| DeletionPlan {
+            bucket: Some(bucket.spec.bucket.clone()),
+            profile: None,
+            role: None,
+        }));
+    };
     let role_shared = state.role_shared(&node.name, &role)?;
     let (profile, role_status) = cloud.role_ownership(&role, &node.name).await?;
     let iam_safe = !role_shared && (bucket_owned || bucket_status == Ownership::Absent);
@@ -76,26 +81,42 @@ pub(super) async fn plan(
         return Ok(None);
     }
     Ok(Some(DeletionPlan {
-        bucket: bucket_owned.then(|| bucket.to_owned()),
+        bucket: bucket_owned.then(|| bucket.spec.bucket.clone()),
         profile: profile_owned.then(|| role.clone()),
         role: role_owned.then(|| role.clone()),
     }))
 }
 
+/// Provider-neutral bucket for teardown, or `None` when the remote uses the
+/// local `SeaweedFS` object store instead of an object bucket.
+fn object_bucket(node: &RemoteNode) -> Option<ObjectBucket> {
+    let spec = node.bucket_spec()?;
+    let settings = node.cloud_settings();
+    Some(ObjectBucket::from_spec(
+        &node.name,
+        &spec,
+        &settings.region,
+        settings.instance_profile(&node.name),
+    ))
+}
+
 /// Adoption targets `remote tag` would adopt. The CLI prints the wording
 /// and prompts for each exact name; the library only reports the plan.
+/// Static-key buckets adopt only the bucket; there is no role or profile.
 pub(super) fn adoption_targets(state: &State, node: &RemoteNode) -> Result<Vec<(String, String)>> {
     let bucket = node
         .bucket()
         .ok_or_else(|| crate::Error::other("remote has no bucket"))?;
-    let role = node
-        .cloud_settings()
-        .instance_profile(&node.name)
-        .ok_or_else(|| crate::Error::other("bucket has no node role"))?;
     crate::Error::ensure(
         !state.bucket_shared(&node.name, bucket)?,
         "bucket is also recorded by another remote",
     )?;
+    let Some(role) = node.cloud_settings().instance_profile(&node.name) else {
+        return Ok([("bucket", bucket)]
+            .into_iter()
+            .map(|(kind, name)| (kind.to_owned(), name.to_owned()))
+            .collect());
+    };
     crate::Error::ensure(
         !state.role_shared(&node.name, &role)?,
         "role is also recorded by another remote",
@@ -112,18 +133,24 @@ pub(super) fn adoption_targets(state: &State, node: &RemoteNode) -> Result<Vec<(
 
 /// Adopt the bucket, role, and instance profile after the CLI confirmed
 /// every exact resource name. Confirmation lives in the CLI; this applies.
+/// Static-key buckets adopt only the bucket.
 pub(super) async fn apply_tag(cloud: &impl Cloud, node: &RemoteNode) -> Result<()> {
-    let bucket = node
-        .bucket()
-        .ok_or_else(|| crate::Error::other("remote has no bucket"))?;
-    let role = node
-        .cloud_settings()
-        .instance_profile(&node.name)
-        .ok_or_else(|| crate::Error::other("bucket has no node role"))?;
-    cloud.tag_bucket(bucket, &node.name).await?;
+    let Some(bucket) = object_bucket(node) else {
+        return Err(crate::Error::other("remote has no bucket"));
+    };
+    cloud.tag_bucket(&bucket).await?;
+    let Some(role) = node.cloud_settings().instance_profile(&node.name) else {
+        cloud_out!(
+            "Tagged bucket {} for remote {}",
+            bucket.spec.bucket,
+            node.name
+        );
+        return Ok(());
+    };
     cloud.tag_node_role(&role, &node.name).await?;
     cloud_out!(
-        "Tagged bucket {bucket}, role {role}, and instance profile {role} for remote {}",
+        "Tagged bucket {}, role {role}, and instance profile {role} for remote {}",
+        bucket.spec.bucket,
         node.name
     );
     Ok(())
@@ -182,37 +209,43 @@ async fn cleanup_bucket_and_role(
     node: &RemoteNode,
     keep_bucket: bool,
 ) -> Result<()> {
-    if let Some(bucket) = node.bucket() {
-        let role = node
-            .cloud_settings()
-            .instance_profile(&node.name)
-            .ok_or_else(|| crate::Error::other("bucket has no node role"))?;
+    if let Some(bucket) = object_bucket(node) {
+        let name = bucket.spec.bucket.clone();
         if keep_bucket {
-            cloud_out!("Kept bucket {bucket} and guarding role and instance profile {role}");
+            match node.cloud_settings().instance_profile(&node.name) {
+                Some(role) => {
+                    cloud_out!("Kept bucket {name} and guarding role and instance profile {role}");
+                }
+                None => cloud_out!("Kept bucket {name}"),
+            }
         } else {
-            let shared = state.bucket_shared(&node.name, bucket)?;
+            let shared = state.bucket_shared(&node.name, &name)?;
             let bucket_status = if shared {
                 Ownership::Unmanaged
             } else {
-                cloud.bucket_ownership(bucket, &node.name).await?
+                cloud.bucket_ownership(&bucket).await?
             };
             if shared {
-                cloud_out!("Bucket {bucket}: kept (another remote state records it)");
+                cloud_out!("Bucket {name}: kept (another remote state records it)");
             } else {
                 match bucket_status {
-                    Ownership::Owned => {
-                        let removed = cloud.delete_bucket(bucket, &node.name).await?;
-                        cloud_out!(
-                            "Bucket {bucket}: {}",
-                            if removed { "removed" } else { "absent" }
-                        );
-                    }
-                    Ownership::Absent => cloud_out!("Bucket {bucket}: absent"),
+                    Ownership::Owned => match cloud.delete_bucket(&bucket).await? {
+                        BucketRemoval::Removed => cloud_out!("Bucket {name}: removed"),
+                        BucketRemoval::Absent => cloud_out!("Bucket {name}: absent"),
+                        BucketRemoval::Retained => cloud_out!(
+                            "Bucket {name}: kept (bucket retains content outside the remote's prefix)"
+                        ),
+                    },
+                    Ownership::Absent => cloud_out!("Bucket {name}: absent"),
                     Ownership::Unmanaged => {
-                        cloud_out!("Bucket {bucket}: kept (ownership tags do not match)");
+                        cloud_out!("Bucket {name}: kept (ownership tags do not match)");
                     }
                 }
             }
+            // Static-key buckets have no IAM role or instance profile.
+            let Some(role) = node.cloud_settings().instance_profile(&node.name) else {
+                return Ok(());
+            };
             let role_shared = state.role_shared(&node.name, &role)?;
             if bucket_status == Ownership::Unmanaged || role_shared {
                 let reason = if role_shared {

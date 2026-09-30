@@ -37,6 +37,10 @@ fn denied(operation: &str) -> crate::Error {
     }
 }
 
+/// What `ensure_bucket` recorded: name, region, owner, endpoint, prefix, and
+/// whether static keys were present (never the values).
+type BucketEnsure = (String, String, String, Option<String>, String, bool);
+
 #[derive(Default)]
 struct FakeCloud {
     requests: RefCell<Vec<MachineSpec>>,
@@ -45,6 +49,7 @@ struct FakeCloud {
     deny_tag_read: Cell<bool>,
     deny_create_tags: Cell<bool>,
     deny_version_list: Cell<bool>,
+    retain_bucket: Cell<bool>,
     absent_bucket: Cell<bool>,
     untagged: Cell<bool>,
     untagged_profile: Cell<bool>,
@@ -52,7 +57,7 @@ struct FakeCloud {
     tagged: RefCell<Vec<String>>,
     foreign_bucket: Cell<bool>,
     foreign_role: Cell<bool>,
-    bucket_ensures: RefCell<Vec<(String, String, String)>>,
+    bucket_ensures: RefCell<Vec<BucketEnsure>>,
     bucket_creates: RefCell<Vec<String>>,
     role_creates: RefCell<Vec<String>>,
     policy_roles: RefCell<Vec<String>>,
@@ -74,17 +79,26 @@ struct FakeCloud {
 impl Cloud for FakeCloud {
     fn ensure_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<()>> {
         self.bucket_ensures.borrow_mut().push((
-            bucket.name.clone(),
-            bucket.region.clone(),
+            bucket.spec.bucket.clone(),
+            bucket.spec.region.clone(),
             bucket.owner.clone(),
+            if bucket.spec.endpoint.is_empty() {
+                None
+            } else {
+                Some(bucket.spec.endpoint.clone())
+            },
+            bucket.spec.prefix.as_str().to_owned(),
+            bucket.spec.needs_static_keys(),
         ));
         if !self
             .bucket_creates
             .borrow()
             .iter()
-            .any(|known| known == &bucket.name)
+            .any(|known| known == &bucket.spec.bucket)
         {
-            self.bucket_creates.borrow_mut().push(bucket.name.clone());
+            self.bucket_creates
+                .borrow_mut()
+                .push(bucket.spec.bucket.clone());
         }
         let role = bucket
             .node_credentials
@@ -93,6 +107,10 @@ impl Cloud for FakeCloud {
         // Creation succeeds even when the account denies ownership tags.
         if self.deny_create_tags.get() {
             self.untagged.set(true);
+        }
+        if bucket.spec.needs_static_keys() {
+            // Static-key buckets have no IAM role or instance profile.
+            return std::future::ready(Ok(()));
         }
         // The AWS provider writes the bucket policy to this role even on reuse.
         self.policy_roles.borrow_mut().push(role.clone());
@@ -152,7 +170,7 @@ impl Cloud for FakeCloud {
         self.terminated.borrow_mut().push(id.into());
         std::future::ready(Ok(()))
     }
-    fn bucket_ownership(&self, _: &str, _: &str) -> impl Future<Output = Result<Ownership>> {
+    fn bucket_ownership(&self, _: &ObjectBucket) -> impl Future<Output = Result<Ownership>> {
         if self.deny_tag_read.get() {
             return std::future::ready(Err(denied("s3:GetBucketTagging")));
         }
@@ -183,13 +201,15 @@ impl Cloud for FakeCloud {
             status(self.untagged_role.get()),
         )))
     }
-    fn tag_bucket(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
+    fn tag_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<()>> {
         if self.foreign_bucket.get() {
             return std::future::ready(Err(crate::Error::other(
                 "bucket belongs to another remote",
             )));
         }
-        self.tagged.borrow_mut().push(format!("bucket {name}"));
+        self.tagged
+            .borrow_mut()
+            .push(format!("bucket {}", bucket.spec.bucket));
         std::future::ready(Ok(()))
     }
     fn tag_node_role(&self, name: &str, _: &str) -> impl Future<Output = Result<()>> {
@@ -201,12 +221,23 @@ impl Cloud for FakeCloud {
             .push(format!("role and profile {name}"));
         std::future::ready(Ok(()))
     }
-    fn delete_bucket(&self, name: &str, _: &str) -> impl Future<Output = Result<bool>> {
+    fn delete_bucket(
+        &self,
+        bucket: &ObjectBucket,
+    ) -> impl Future<Output = Result<crate::BucketRemoval>> {
         if self.deny_version_list.get() {
             return std::future::ready(Err(denied("s3:ListBucketVersions")));
         }
-        self.teardown.borrow_mut().push(format!("bucket {name}"));
-        std::future::ready(Ok(!self.absent.get()))
+        self.teardown
+            .borrow_mut()
+            .push(format!("bucket {}", bucket.spec.bucket));
+        std::future::ready(Ok(if self.absent.get() {
+            crate::BucketRemoval::Absent
+        } else if self.retain_bucket.get() {
+            crate::BucketRemoval::Retained
+        } else {
+            crate::BucketRemoval::Removed
+        }))
     }
     fn delete_node_role(&self, name: &str, _: &str) -> impl Future<Output = Result<(bool, bool)>> {
         self.teardown.borrow_mut().push(format!("role {name}"));
@@ -1206,7 +1237,7 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
         sandboxes: 0,
     };
     let settings = RemoteSettings {
-        bucket: Some("test-bucket".into()),
+        bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
         ..settings()
     };
     up::run(
@@ -1271,8 +1302,8 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
         dir.path().join("socket"),
     )
     .unwrap();
-    assert_eq!(profile.s3_bucket.as_deref(), Some("test-bucket"));
-    assert_eq!(profile.s3_region.as_deref(), Some("us-east-1"));
+    assert_eq!(profile.bucket.as_ref().unwrap().bucket, "test-bucket");
+    assert_eq!(profile.bucket.as_ref().unwrap().region, "us-east-1");
     assert!(profile.s3_endpoint.is_empty());
     cloud.observations.borrow_mut().extend([None, None]);
     down::run(&cloud, &state, &node, Duration::ZERO, true)
@@ -1298,6 +1329,217 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     assert_eq!(cloud.profile_creates.borrow().len(), 1);
 }
 
+struct StaticSetup {
+    dir: tempfile::TempDir,
+    state: State,
+    cloud: FakeCloud,
+    host: FakeHost,
+    settings: RemoteSettings,
+}
+
+fn static_setup() -> StaticSetup {
+    static_setup_with("test-bucket")
+}
+
+fn static_setup_with(bucket: &str) -> StaticSetup {
+    use swarmy_config::{BucketCredentials, BucketSpec};
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let settings = RemoteSettings {
+        region: "eu-west-1".into(),
+        bucket: Some(BucketSpec {
+            endpoint: "https://objects.example.invalid".into(),
+            region: "eu-west-1".into(),
+            bucket: bucket.into(),
+            prefix: "runs/team".parse().unwrap(),
+            credentials: BucketCredentials::StaticKeys {
+                access_key: "static-access".into(),
+                secret_key: "static-secret".into(),
+            },
+            ..BucketSpec::default()
+        }),
+        ..settings()
+    };
+    StaticSetup {
+        dir,
+        state,
+        cloud: FakeCloud::default(),
+        host: FakeHost::default(),
+        settings,
+    }
+}
+
+async fn static_up(setup: &StaticSetup) {
+    static_up_as(setup, "static-test").await;
+}
+
+async fn static_up_as(setup: &StaticSetup, name: &str) {
+    observe_running(&setup.cloud);
+    up::run(
+        &setup.cloud,
+        &setup.host,
+        &setup.state,
+        &setup.settings,
+        up::NewNode { name, sandboxes: 0 },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn static_bucket_up_skips_roles_and_redacts_logs() {
+    let setup = static_setup();
+    static_up(&setup).await;
+    let cloud = &setup.cloud;
+    // The endpoint, prefix, and key presence (never the values) reach the
+    // provider; no IAM profile is attached to the machine.
+    assert_eq!(
+        cloud.bucket_ensures.borrow().as_slice(),
+        [(
+            String::from("test-bucket"),
+            String::from("eu-west-1"),
+            String::from("static-test"),
+            Some(String::from("https://objects.example.invalid")),
+            String::from("runs/team"),
+            true
+        )]
+    );
+    assert!(cloud.requests.borrow()[0].profile.is_none());
+    assert!(cloud.role_creates.borrow().is_empty());
+    assert!(cloud.profile_creates.borrow().is_empty());
+    // Saved state carries the description; formatter output never does.
+    let node = setup.state.require("static-test").unwrap();
+    assert_eq!(
+        PermissionsExt::mode(
+            &std::fs::metadata(setup.state.directory.join("static-test.json"))
+                .unwrap()
+                .permissions()
+        ) & 0o777,
+        0o600,
+        "remote state holding static keys must stay private"
+    );
+    let spec = node.bucket_spec().unwrap();
+    assert_eq!(spec.prefix.as_str(), "runs/team");
+    for rendered in [
+        format!("{node:?}"),
+        format!("{:?}", node.cloud_settings().bucket),
+        format!(
+            "{:?}",
+            ObjectBucket::from_spec(
+                "static-test",
+                &spec,
+                "eu-west-1",
+                node.cloud_settings().instance_profile("static-test"),
+            )
+        ),
+    ] {
+        assert!(!rendered.contains("static-access"), "{rendered}");
+        assert!(!rendered.contains("static-secret"), "{rendered}");
+    }
+    // The connect profile carries keys into service settings for the laptop.
+    let profile = super::connect::new_profile(
+        setup.dir.path(),
+        &node,
+        node.ports,
+        8742,
+        setup.dir.path().join("socket"),
+    )
+    .unwrap();
+    let mut applied = swarmy_config::Settings::default();
+    profile.apply(&mut applied);
+    assert_eq!(applied.s3.endpoint, "https://objects.example.invalid");
+    assert_eq!(applied.s3.access_key, "static-access");
+    assert_eq!(applied.s3.secret_key, "static-secret");
+    assert_eq!(applied.s3.prefix.as_str(), "runs/team");
+}
+
+#[tokio::test]
+async fn static_bucket_tag_and_down_touch_only_the_bucket() {
+    let setup = static_setup();
+    static_up(&setup).await;
+    let node = setup.state.require("static-test").unwrap();
+    // Tag adopts only the bucket; down deletes it without touching roles.
+    assert_eq!(
+        down::adoption_targets(&setup.state, &node).unwrap(),
+        [("bucket".to_owned(), "test-bucket".to_owned())]
+    );
+    tag_confirmed(&setup.cloud, &setup.state, &node, |_, _| Ok(()))
+        .await
+        .unwrap();
+    assert_eq!(
+        setup.cloud.tagged.borrow().as_slice(),
+        ["bucket test-bucket"]
+    );
+    setup.cloud.observations.borrow_mut().extend([None, None]);
+    down::run(&setup.cloud, &setup.state, &node, Duration::ZERO, false)
+        .await
+        .unwrap();
+    assert!(
+        setup
+            .cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|entry| entry == "bucket test-bucket")
+    );
+    assert!(
+        !setup
+            .cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|entry| entry.starts_with("role"))
+    );
+}
+
+#[tokio::test]
+async fn static_down_reports_a_retained_bucket_as_kept() {
+    static DOWN_OUTPUT: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    fn record(message: &str, _: bool) {
+        DOWN_OUTPUT.lock().unwrap().push(message.to_owned());
+    }
+    // The only test using the process-level provisioning sink; it stays set
+    // for later tests, which never read it.
+    crate::set_output_sink(record);
+    DOWN_OUTPUT.lock().unwrap().clear();
+    // Its own bucket keeps its sink messages apart from the other static
+    // tests running in parallel in this process.
+    let setup = static_setup_with("retained-bucket");
+    static_up_as(&setup, "retained-test").await;
+    // The swarm's prefix scope is deleted but the bucket itself remains
+    // because it retains content outside that scope.
+    setup.cloud.retain_bucket.set(true);
+    let node = setup.state.require("retained-test").unwrap();
+    setup.cloud.observations.borrow_mut().extend([None, None]);
+    down::run(&setup.cloud, &setup.state, &node, Duration::ZERO, false)
+        .await
+        .unwrap();
+    assert!(
+        setup
+            .cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|entry| entry == "bucket retained-bucket")
+    );
+    // A retained bucket is reported as kept, not removed, and teardown
+    // still completes and drops the local state.
+    let output = DOWN_OUTPUT.lock().unwrap().join("\n");
+    assert!(
+        output.contains(
+            "Bucket retained-bucket: kept (bucket retains content outside the remote's prefix)"
+        ),
+        "{output}"
+    );
+    assert!(
+        !output.contains("Bucket retained-bucket: removed"),
+        "{output}"
+    );
+    assert!(setup.state.require("retained-test").is_err());
+}
+
 #[tokio::test]
 async fn iam_role_override_reaches_bucket_and_machine() {
     let dir = tempfile::tempdir().unwrap();
@@ -1306,7 +1548,7 @@ async fn iam_role_override_reaches_bucket_and_machine() {
     observe_running(&cloud);
     let host = FakeHost::default();
     let mut settings = settings();
-    settings.bucket = Some("test-bucket".into());
+    settings.bucket = Some(swarmy_config::BucketSpec::aws("test-bucket"));
     settings.aws.iam_role = Some("custom-node-role".into());
     up::run(
         &cloud,
@@ -1757,7 +1999,7 @@ async fn bucket_profile_is_kept_when_key_deletion_is_denied() {
     let cloud = FakeCloud::default();
     observe_running(&cloud);
     let settings = RemoteSettings {
-        bucket: Some("test-bucket".into()),
+        bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
         ..settings()
     };
     up::run(
@@ -1900,7 +2142,7 @@ async fn down_deletes_bucket_then_role_after_nodes_and_retries_absent_resources(
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -1947,7 +2189,7 @@ async fn down_plan_reports_owned_resources_for_confirmation() {
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -1982,7 +2224,7 @@ async fn down_leaves_untagged_resources_and_removes_state() {
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -2022,7 +2264,7 @@ async fn down_keeps_mixed_ownership_iam_pairs() {
             &FakeHost::default(),
             &state,
             &RemoteSettings {
-                bucket: Some("test-bucket".into()),
+                bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
                 ..settings()
             },
             up::NewNode {
@@ -2066,7 +2308,7 @@ async fn down_refuses_bucket_shared_by_another_remote() {
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -2107,7 +2349,7 @@ async fn tag_requires_exact_resource_names_and_calls_cloud_only_after_all_confir
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -2160,7 +2402,7 @@ async fn down_ignores_tunnel_profile_and_keeps_shared_role() {
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -2177,7 +2419,8 @@ async fn down_ignores_tunnel_profile_and_keeps_shared_role() {
     assert!(!state.bucket_shared("cleanup", "test-bucket").unwrap());
     let mut other = node.clone();
     other.name = "other".into();
-    other.launch_settings.as_mut().unwrap().bucket = Some("different-bucket".into());
+    other.launch_settings.as_mut().unwrap().bucket =
+        Some(swarmy_config::BucketSpec::aws("different-bucket"));
     // The other remote uses the same IAM override, but not the same bucket.
     other.launch_settings.as_mut().unwrap().aws.iam_role = Some("swarmy-cleanup".into());
     state.save(&other).unwrap();
@@ -2213,7 +2456,7 @@ async fn tag_refuses_cloud_resources_owned_by_another_remote() {
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -2254,7 +2497,7 @@ async fn denied_ownership_and_version_reads_retain_state_and_explain_permission(
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
@@ -2294,7 +2537,7 @@ async fn up_continues_when_creation_tags_are_denied_and_down_keeps_untagged_reso
         &FakeHost::default(),
         &state,
         &RemoteSettings {
-            bucket: Some("test-bucket".into()),
+            bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
             ..settings()
         },
         up::NewNode {
