@@ -1421,6 +1421,7 @@ async fn node_shape_overrides_are_per_node_and_persist_before_provisioning() {
                 instance_type: Some("m6id.4xlarge".into()),
                 disk_gb: Some(100),
             },
+            local_storage: first.local_storage.clone(),
         },
         Duration::ZERO,
         None,
@@ -1497,7 +1498,8 @@ async fn invalid_join_shape_fails_before_launch_or_state_change() {
                 super::add_node::NewNode {
                     name: "demo",
                     sandboxes: 4,
-                    shape
+                    shape,
+                    local_storage: settings().local_storage.clone(),
                 },
                 Duration::ZERO,
                 None
@@ -1555,6 +1557,7 @@ async fn nvme_provisioning_failure_keeps_join_for_down() {
                 instance_type: Some("m6i.large".into()),
                 disk_gb: Some(40),
             },
+            local_storage: settings().local_storage.clone(),
         },
         Duration::ZERO,
         None,
