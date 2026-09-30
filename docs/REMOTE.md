@@ -47,8 +47,9 @@ instance_type = "m6id.xlarge"
 # iam_role = "custom-role"
 ```
 
-`provider` selects the cloud substrate (`swarmy-cloud` implements only
-`aws` today; see `docs/cloud-substrate.md` for the provider
+`provider` selects the cloud substrate (`aws` creates EC2 machines;
+`existing` provisions operator-owned machines over SSH and never touches
+machine APIs; see `docs/cloud-substrate.md` for the provider
 interface). The EC2-only settings live under `[remote.aws]`:
 placement, the instance type, the AMI override, and an optional IAM
 role override. Without `iam_role`, bucket-backed remotes use
@@ -65,7 +66,8 @@ through SSM in the configured region. Custom images must be compatible with
 Ubuntu 24.04 and grant the service user passwordless sudo; cloud-init is
 waited on only where it is installed, so plain servers boot without it.
 Provisioning creates the service user when it is missing, so a plain server
-arriving with only a root login can be adopted. Records saved before the
+arriving with only a root login can be adopted with `remote adopt` (see the
+existing-hosts section below). Records saved before the
 setting existed have no `service_user` in `launch_settings` and keep the SSH
 login they were provisioned with (`ubuntu` for the existing fleet).
 Sandbox nodes need local storage for their volume caches and dirty data: set
@@ -732,58 +734,84 @@ the laptop is disconnected.
 SSH control master, and writes `NAME.profile.json` beside it. `state_dir`
 defaults to the discovered project's `.swarmy` directory; `SWARMY_STATE_DIR`
 can select another directory. Provisioning and tunnel commands share the
-`swarmy_config::RemoteNode` JSON contract. For an existing host, a state file
-can be written directly:
+`swarmy_config::RemoteNode` JSON contract.
 
-```json
-{
-  "name": "test",
-  "region": "us-east-1",
-  "instance_id": "i-<instance-id>",
-  "public_ip": "<public-address>",
-  "private_ip": "<private-address>",
-  "key_path": "<path-to-test-key>",
-  "ssh_user": "ubuntu",
-  "ports": { "fdb": 4500, "nats": 4222, "s3": 8333 },
-  "nodes": [],
-  "created_at": "2026-09-16T00:00:00Z"
-}
+### Existing hosts
+
+For providers where swarmy does not create machines itself (dedicated
+servers today, any SSH-reachable host in general), `swarmy remote adopt`
+builds a swarm on machines already owned. It records the remote with the
+existing-host provider, then runs the same provisioning and service
+installation `remote up` runs after its machine is ready: no machine is
+created and no cloud machine call happens. Only the bucket setup touches
+object-storage APIs.
+
+```sh
+swarmy remote adopt plain --host <machine-address> --ssh-key <bootstrap-key> \
+  --local-storage dir:/srv/swarmy-local \
+  --bucket <bucket> --s3-endpoint <endpoint-url> \
+  --s3-access-key <access-key> --s3-secret-file <secret-file> \
+  --service-user swarmy
 ```
 
-A plain Ubuntu 24.04 server (no cloud-init, root login, already partitioned
-disks) is adopted the same way: write the state with the bootstrap login as
-`ssh_user` and the desired owner and disk in `launch_settings`, copy the
-checkout to the service home, and run the provisioning script on the server
-as root, for example `bash /home/swarmy/swarmy/scripts/remote-provision.sh
-stack <private-address> "" <region> 64 swarmy dir:/srv/swarmy-local`. The
-script creates the service user with passwordless sudo, waits for cloud-init
-only where it is installed, and uses the configured device or directory.
-`remote down` terminates cloud instances, so it does not apply to an adopted
-server: decommission the server itself, then remove its state file.
+`--host` is the machine's IP address, used for provisioning and tunnels.
+`--ssh-user` (default `root`) is the bootstrap login and `--ssh-key` is its
+private key file, copied into the 0600 remote state; provisioning creates
+the `--service-user` login (default from configuration) with passwordless
+sudo when it is missing. `--local-storage` is required for sandbox nodes
+(a block device or `dir:/path`); control-only nodes (`--sandboxes 0`) leave
+it empty. The bucket flags are the same object-bucket options `up` takes.
+`--services`, `--copy-credential`, `--sandboxes`, `--no-image`, and
+`--image-recipe` behave as in `up`; `--instance-type` and `--disk-gb` do
+not exist here because there is no machine to size.
 
-```json
-{
-  "name": "plain",
-  "region": "us-east-1",
-  "instance_id": "plain",
-  "public_ip": "<public-address>",
-  "private_ip": "<private-address>",
-  "key_path": "<path-to-test-key>",
-  "ssh_user": "root",
-  "ports": { "fdb": 4500, "nats": 4222, "s3": 8333 },
-  "nodes": [],
-  "launch_settings": {
-    "provider": "aws",
-    "services": "laptop",
-    "region": "us-east-1",
-    "disk_gb": 100,
-    "managed_by_tag": "swarmy",
-    "service_user": "swarmy",
-    "local_storage": "dir:/srv/swarmy-local"
-  },
-  "created_at": "2026-09-16T00:00:00Z"
-}
+`swarmy remote add-node NAME --host <machine-address> --ssh-key
+<bootstrap-key>` joins another existing machine the same way, with
+`--sandboxes`, `--local-storage`, and the bootstrap login. Joining nodes
+reach the primary's backing services through its recorded private address;
+where that is wrong (servers talking over public addresses or a private
+network between dedicated servers), pass `--primary-address` with the
+address to use instead. There is deliberately no AWS VPC assumption: the
+setting selects the address. The service user stays the primary's so the
+tunnel login matches.
+
+`down`, `status`, `upgrade`, and `connect` work for adopted remotes
+without any cloud machine call: no EC2 or instance API is ever touched
+(`down` still deletes the owned bucket scope through object-storage APIs).
+`down` stops and disables every swarmy unit
+(`swarmy-stack` or `swarmy-tunnel`, `swarmyd`, and any
+`scheduler`/`worker`/`gateway`/`api` units) through
+`scripts/remote-decommission.sh`, which reads the same unit and binary
+lists provisioning installs, then removes the units, the binaries in
+`/usr/local/bin`, `/etc/modules-load.d/swarmy.conf`, the node environment
+(`/etc/swarmy`, which holds static bucket keys and copied credentials),
+and the checkout on every host. It deletes the owned bucket scope unless
+`--keep-bucket` is passed, once every host is torn down (a failed host
+keeps its record and the bucket until a re-run completes), and drops local
+state. It never deletes the
+machines themselves, and says so. A failed host does not block the others:
+its real failure reason is reported, its record (and the bucket) is kept,
+and `down` waits only briefly per host instead of the full provisioning
+wait, so re-running `down` retries exactly the failed hosts.
+`status` reports no instance type for existing hosts, and owned bucket or
+role resources still ask for confirmation before deletion.
+
+`down` deliberately leaves the service user, the fstab line and its mount,
+local sandbox disk data, and the tunnel keys joining nodes authorized on
+the primary, so a re-provisioned host keeps its login, disks, and trust.
+To remove those by hand after `down`, on each adopted host as root:
+
+```sh
+umount /mnt/swarmy-local  # only for device storage; skip for dir:/path
+sed -i '/^LABEL=swarmy-local /d' /etc/fstab
+userdel -r <service-user>  # also removes its home and any checkout remains
+rm -f /etc/sudoers.d/90-swarmy-<service-user>
 ```
+
+On the primary, edit the service user's `~/.ssh/authorized_keys` and
+delete the joining nodes' restricted tunnel lines (the ones starting with
+`restrict,port-forwarding,command="/bin/false"`). For `dir:/path` storage,
+delete the directory used when its contents are no longer needed.
 
 ```sh
 swarmy remote connect test

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crate::Result;
 use swarmy_config::{RemoteNode, RemotePorts, RemoteSettings};
 
-use super::{Cloud, Host, MachineSpec, ObjectBucket, key_name, state::State, wait_running};
+use super::{Cloud, Host, MachineSpec, key_name, state::State, wait_running};
 
 #[derive(Clone, Copy)]
 pub(super) struct NewNode<'a> {
@@ -47,48 +47,56 @@ pub(super) async fn run(
     // Write the key name before any AWS mutation so down can recover an interrupted launch.
     state.save(&node)?;
     let result = async {
-        if let Some(spec) = &settings.bucket {
-            cloud
-                .ensure_bucket(&ObjectBucket::from_spec(
-                    name,
-                    spec,
-                    &settings.region,
-                    settings.instance_profile(name),
-                ))
-                .await?;
-        }
+        super::ensure_remote_bucket(cloud, settings, name).await?;
         let address = provision(cloud, host, state, settings, image, &mut node, delay).await?;
-        if settings.services == swarmy_config::RemoteServices::Node {
-            host.services(&node, &address, &options).await?;
-        }
-        if let Some(recipe) = options.recipe {
-            cloud_out!("Building base-ubuntu:{name} (this takes several minutes)");
-            let build_started = Instant::now();
-            host.build_image(&node, &address, recipe).await?;
-            node.default_image = Some(format!("base-ubuntu:{name}"));
-            state.save(&node)?;
-            cloud_out!(
-                "Image base-ubuntu:{name} built and registered in {:.1}s",
-                build_started.elapsed().as_secs_f64()
-            );
-        } else {
-            cloud_out!("Skipping image build (--no-image)");
-        }
-        Ok::<_, crate::Error>(address)
+        provision_stack(host, state, settings, &mut node, &address, options, started).await?;
+        Ok::<_, crate::Error>(())
     }
     .await;
-    let address = match result {
-        Ok(address) => address,
+    match result {
+        Ok(()) => Ok(()),
         Err(error) => {
             cloud_err!("remote up failed; cleanup with swarmy remote down {name}");
-            return Err(error);
+            Err(error)
         }
-    };
+    }
+}
+
+/// Install node services and build the registered image once an address is
+/// known. Shared by `up` (after its machine is ready) and `adopt` (after its
+/// host is recorded): one implementation, no second copy of these steps.
+pub(super) async fn provision_stack(
+    host: &impl Host,
+    state: &State,
+    settings: &RemoteSettings,
+    node: &mut RemoteNode,
+    address: &str,
+    options: super::services::Options<'_>,
+    started: Instant,
+) -> Result<()> {
+    if settings.services == swarmy_config::RemoteServices::Node {
+        host.services(node, address, &options).await?;
+    }
+    if let Some(recipe) = options.recipe {
+        let name = node.name.clone();
+        cloud_out!("Building base-ubuntu:{name} (this takes several minutes)");
+        let build_started = Instant::now();
+        host.build_image(node, address, recipe).await?;
+        node.default_image = Some(format!("base-ubuntu:{name}"));
+        state.save(node)?;
+        cloud_out!(
+            "Image base-ubuntu:{name} built and registered in {:.1}s",
+            build_started.elapsed().as_secs_f64()
+        );
+    } else {
+        cloud_out!("Skipping image build (--no-image)");
+    }
     cloud_out!(
-        "Remote node {name} ready in {:.1}s",
+        "Remote node {} ready in {:.1}s",
+        node.name,
         started.elapsed().as_secs_f64()
     );
-    cloud_out!("{}", super::ssh::command_line(&node, &address)?);
+    cloud_out!("{}", super::ssh::command_line(node, address)?);
     Ok(())
 }
 
@@ -173,10 +181,7 @@ async fn provision(
 }
 
 fn validate(settings: &RemoteSettings, name: &str) -> Result<()> {
-    crate::Error::ensure(
-        !settings.region.is_empty(),
-        "configure remote.region in config.toml before running swarmy remote up",
-    )?;
+    super::validate_region(settings, "up")?;
     for (field, value) in [
         ("subnet", &settings.aws.subnet),
         ("security_group", &settings.aws.security_group),
@@ -193,12 +198,5 @@ fn validate(settings: &RemoteSettings, name: &str) -> Result<()> {
             && !settings.aws.instance_type.is_empty(),
         "remote disk_gb must be positive and aws.instance_type and managed_by_tag must not be empty",
     )?;
-    if let Some(spec) = &settings.bucket {
-        crate::Error::ensure(
-            name.len() <= 57,
-            "bucket-backed remote name must be at most 57 characters to fit the IAM role name",
-        )?;
-        spec.validate_name()?;
-    }
-    Ok(())
+    super::validate_bucket_binding(settings, name)
 }
