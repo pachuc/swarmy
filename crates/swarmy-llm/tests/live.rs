@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! Manual test only. Never falls back to a Codex or launcher credential path.
 use futures::TryStreamExt;
 use serde_json::json;

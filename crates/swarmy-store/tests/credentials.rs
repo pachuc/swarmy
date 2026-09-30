@@ -1,6 +1,7 @@
+#![deny(clippy::disallowed_methods)]
 use std::{
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -17,22 +18,20 @@ use swarmy_store::{
     CredentialKey, Store, StoreError, blob::MemoryBlobStore, credentials::CredentialStore,
 };
 
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-
 const SCOPE: CredentialScope = CredentialScope::Cluster;
 
 struct Fixture {
     credentials: CredentialStore,
     db: Arc<Database>,
     root: Subspace,
+    // Held for its Drop: removes the test subspace even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 impl Fixture {
     fn new() -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        NETWORK.get_or_init(swarmy_store::boot);
-        let db = Arc::new(Database::new(Some(&cluster)).unwrap());
-        let root =
-            Subspace::all().subspace(&("credential-tests", ulid::Ulid::generate().to_string()));
+        let stack = swarmy_testkit::Stack::load("credentials")?;
+        let db = Arc::new(Database::new(Some(&stack.cluster)).unwrap());
+        let root = Subspace::all().subspace(&(stack.prefix.clone(),));
         let store = Store::with_subspace(
             db.clone(),
             root.clone(),
@@ -42,6 +41,7 @@ impl Fixture {
             credentials: store.credentials(Keyring::from_bytes([7; 32])),
             db,
             root,
+            _guard: swarmy_testkit::StackGuard::new(&stack),
         })
     }
 }
@@ -178,6 +178,12 @@ async fn simultaneous_refresh_invokes_one_function() {
     let calls = AtomicUsize::new(0);
     let refresh = |_: CredentialRecord| async {
         calls.fetch_add(1, Ordering::SeqCst);
+        // The refresh must genuinely take time: the second concurrent
+        // refresh may only proceed after the first releases the lease.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "slow refresh work is the lease contention under test"
+        )]
         tokio::time::sleep(Duration::from_millis(150)).await;
         Ok(oauth("new"))
     };
@@ -351,6 +357,12 @@ async fn refresh_cannot_write_after_expiry_or_resurrect_deleted_credentials() {
             "default",
             Duration::from_millis(50),
             |_| async {
+                // The refresh must outlast the 50 ms lease so the fencing
+                // path triggers mid-refresh.
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "slow refresh outlasting the lease is the fencing under test"
+                )]
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 Ok(oauth("late"))
             },

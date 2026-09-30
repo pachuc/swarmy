@@ -129,8 +129,8 @@ async fn stdin(node: &Node, store: &Store, bus: &Bus, agent: AgentId) {
     )
     .await;
     assert_eq!(written["bytes_written"], 6);
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
+    let log =
+        swarmy_testkit::eventually("process did not exit", Duration::from_secs(5), async || {
             let log = invoke(
                 node,
                 store,
@@ -140,15 +140,10 @@ async fn stdin(node: &Node, store: &Store, bus: &Bus, agent: AgentId) {
                 json!({"process_id":id}),
             )
             .await;
-            if log["status"] == "exited" {
-                assert_eq!(log["output"], "received:hello");
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
+            (log["status"] == "exited").then_some(log)
+        })
+        .await;
+    assert_eq!(log["output"], "received:hello");
 }
 
 async fn web_fetch(node: &Node, store: &Store, bus: &Bus, agent: AgentId) {

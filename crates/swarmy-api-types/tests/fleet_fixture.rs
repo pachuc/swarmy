@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! The fleet driver's fake CLI output must match the typed API shapes.
 //! This test loads the JSON sample the Python stub clones so a renamed
 //! field fails here instead of silently drifting in the fake.

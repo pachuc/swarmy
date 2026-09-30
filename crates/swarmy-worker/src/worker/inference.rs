@@ -609,6 +609,7 @@ fn is_effort_notice(message: &swarmy_core::Message) -> bool {
 
 #[cfg(test)]
 mod legacy_notice_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::is_effort_notice;
     use swarmy_core::{Message, MessageId, MessageRole, Part};
 

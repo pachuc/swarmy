@@ -1,8 +1,6 @@
+#![deny(clippy::disallowed_methods)]
 //! Image uploads, collection runs, timeline streams, and doctor nodes.
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use swarmy_api::{AppState, router};
 use swarmy_api_types as api;
 use swarmy_bus::{Bus, Config};
@@ -12,14 +10,14 @@ use swarmy_store::{Store, blob::MemoryBlobStore};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
 
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-
 struct Fixture {
     store: Store,
     client: Client,
     bus: Bus,
     server: JoinHandle<Result<(), std::io::Error>>,
     base: String,
+    // Held for its Drop: removes the test keys and streams even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 
 impl Drop for Fixture {
@@ -36,17 +34,11 @@ impl Fixture {
     /// Serve the same routes with an overridden spool ceiling, so size-limit
     /// tests need no multi-gigabyte bodies.
     async fn with_upload_max(upload_max_bytes: u64) -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-        NETWORK.get_or_init(swarmy_store::boot);
-        let store = Store::open(
-            Some(std::path::Path::new(&cluster)),
-            Some(&["ops-test".into(), Ulid::generate().to_string()]),
-            Arc::new(MemoryBlobStore::default()),
-        )
-        .await
-        .unwrap();
-        let bus = Bus::connect(&nats, Config::default()).await.unwrap();
+        let stack = swarmy_testkit::Stack::load("ops")?;
+        let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+        let bus = Bus::connect(&stack.nats_url, Config::default())
+            .await
+            .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let mut state = AppState::new(
@@ -65,6 +57,7 @@ impl Fixture {
             bus,
             server,
             base,
+            _guard: guard,
         })
     }
 
@@ -327,6 +320,9 @@ async fn upload_with_length_stops_before_streaming_the_body() {
     let counted = sent.clone();
     let body_stream = async_stream::stream! {
         for _ in 0..total_chunks {
+            // Throttle the upload so the server's rejection lands mid-body;
+            // an instant 4 MiB send could complete before the close.
+            #[expect(clippy::disallowed_methods, reason = "throttles the upload so rejection lands mid-body")]
             tokio::time::sleep(Duration::from_millis(2)).await;
             counted.fetch_add(chunk.len() as u64, Ordering::SeqCst);
             yield Ok::<Vec<u8>, std::io::Error>(chunk.clone());
@@ -421,17 +417,11 @@ async fn gc_run_starts_sweeps_and_reports_counts() {
         .unwrap();
     assert!(started.dry_run);
     // An empty namespace finishes immediately; poll for generality.
-    let run = tokio::time::timeout(Duration::from_secs(120), async {
-        loop {
-            let run = fixture.client.gc_run(&started.run_id).await.unwrap();
-            if run.finished {
-                return run;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
+    let run = swarmy_testkit::eventually("gc run finishes", Duration::from_secs(120), async || {
+        let run = fixture.client.gc_run(&started.run_id).await.unwrap();
+        run.finished.then_some(run)
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(run.run_id, started.run_id);
     assert!(run.finished);
     assert!(run.error.is_none());

@@ -633,6 +633,7 @@ async fn drive(
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     #[tokio::test]
     async fn bounded_writer_refuses_a_slow_client() {

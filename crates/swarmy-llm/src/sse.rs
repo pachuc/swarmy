@@ -89,6 +89,7 @@ impl SseParser {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     /// Feed one chunk byte by byte, collecting the data frames it completes.

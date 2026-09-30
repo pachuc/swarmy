@@ -159,6 +159,7 @@ pub fn interrupted_event(seq: u64, request_id: RequestId) -> Event {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use crate::{
         SessionId, encode,

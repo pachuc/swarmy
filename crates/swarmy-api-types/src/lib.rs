@@ -1472,6 +1472,7 @@ pub struct ApiDocument;
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     fn round_trip<T: Serialize + for<'a> Deserialize<'a> + PartialEq + std::fmt::Debug>(

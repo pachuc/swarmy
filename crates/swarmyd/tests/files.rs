@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 #[test]
 fn file_helper_behaviour_without_root() {
     let result = std::process::Command::new("python3")

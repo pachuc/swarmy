@@ -185,6 +185,7 @@ fn repair_paired(mut messages: Vec<Value>, wire: ToolWire) -> Vec<Value> {
 
 #[cfg(test)]
 mod sanitizer_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::sanitize_tool_id;
 
     // Wire-id sanitizing is covered here rather than through every provider

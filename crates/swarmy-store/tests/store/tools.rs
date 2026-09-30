@@ -274,7 +274,6 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
             swarmy_store::FenceError::PlacementMismatch
         ))
     ));
-    test.cleanup().await;
 }
 
 async fn check_tool_admission(
@@ -402,5 +401,4 @@ async fn tool_requests_and_dispatch_commit_together_with_both_fences() {
             .await,
         Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
-    test.cleanup().await;
 }

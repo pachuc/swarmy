@@ -110,6 +110,7 @@ impl Keyring {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     #[test]
     fn rejects_malformed_keys() {

@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 #[test]
 fn sandbox_python_helpers() {
     let result = std::process::Command::new("python3")

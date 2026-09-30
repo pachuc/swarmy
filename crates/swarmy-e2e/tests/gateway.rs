@@ -1,20 +1,6 @@
-#[path = "../../swarmy-store/tests/support/mod.rs"]
-mod image_fixture;
+#![deny(clippy::disallowed_methods)]
+use std::{future::Future, panic::AssertUnwindSafe, sync::Arc, time::Duration};
 
-#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
-mod cli_bin;
-
-use std::{
-    future::Future,
-    panic::AssertUnwindSafe,
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
-
-use foundationdb::{
-    Database,
-    directory::{Directory, DirectoryLayer},
-};
 use futures::FutureExt;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken, WorkQueue};
@@ -24,17 +10,14 @@ use swarmy_core::{
 };
 use swarmy_llm::{
     Delta, GenerationSettings, InferenceJob, InferenceJobRef, Request, Response, StopReason,
-    TokenUsage,
 };
 use swarmy_store::{
     CredentialKey, Store, SubmitInferenceOptions,
     blob::{BlobStore, ObjectBlobStore},
 };
+use swarmy_testkit::{ChildGuard, Stack, StackGuard};
 use tempfile::TempDir;
-use tokio::{
-    process::{Child, Command},
-    time::{sleep, timeout},
-};
+use tokio::{process::Command, time::timeout};
 use ulid::Ulid;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -48,34 +31,33 @@ struct Fixture {
     store: Store,
     bus: Bus,
     queue: WorkQueue,
-    prefix: String,
+    stack: Stack,
+    guard: StackGuard,
     files: TempDir,
-    children: Vec<Child>,
+    children: Vec<ChildGuard>,
 }
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-        for variable in [
-            "SWARMY_FDB_CLUSTER_FILE",
-            "SWARMY_NATS_URL",
-            "SWARMY_S3_ENDPOINT",
-        ] {
-            swarmy_core::test_support::stack_env(variable)?;
-        }
-        NETWORK.get_or_init(swarmy_store::boot);
-        let prefix = format!("gateway_{}", Ulid::generate());
+        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+        swarmy_testkit::require_stack("SWARMY_S3_ENDPOINT")?;
+        swarmy_testkit::boot_fdb();
+        let stack = Stack {
+            cluster,
+            nats_url: swarmy_testkit::require_stack("SWARMY_NATS_URL")?,
+            prefix: swarmy_testkit::unique_prefix("gateway"),
+        };
+        let prefix = stack.prefix.clone();
         let store = Store::open(
-            Some(std::path::Path::new(
-                &swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap(),
-            )),
+            Some(std::path::Path::new(&stack.cluster)),
             Some(std::slice::from_ref(&prefix)),
-            Arc::new(ObjectBlobStore::from_env().unwrap()),
+            Arc::new(ObjectBlobStore::from_env().unwrap()) as Arc<dyn BlobStore>,
         )
         .await
         .unwrap();
+        let guard = StackGuard::new(&stack);
         let bus = Bus::connect(
-            &swarmy_core::test_support::stack_env("SWARMY_NATS_URL").unwrap(),
+            &stack.nats_url,
             Config {
                 prefix: Some(SubjectToken::new(&prefix).unwrap()),
                 ack_wait: ACK_WAIT,
@@ -90,49 +72,33 @@ impl Fixture {
             store,
             bus,
             queue,
-            prefix,
+            stack,
+            guard,
             files: TempDir::new().unwrap(),
             children: Vec::new(),
         })
     }
 
     fn script(&self, latency_ms: u64, fail: bool, text: &str) -> Response {
-        let response = Response {
-            parts: vec![Part::Text { text: text.into() }],
-            stop_reason: StopReason::EndTurn,
-            usage: TokenUsage {
-                output_tokens: 42,
-                ..TokenUsage::default()
-            },
-            quota_remaining: std::collections::BTreeMap::new(),
-            quota_resets: std::collections::BTreeMap::new(),
-        };
-        let responses: std::collections::BTreeMap<_, _> =
-            (0..10).map(|turn| (turn, &response)).collect();
-        std::fs::write(
-            self.files.path().join("script.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "latency_ms": latency_ms, "fail": fail, "responses": responses,
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        response
+        let mut script = swarmy_testkit::Script::new(text)
+            .latency_ms(latency_ms)
+            .output_tokens(42);
+        if fail {
+            script = script.fail();
+        }
+        script.write_to(&self.files.path().join("script.json"));
+        script.sample()
     }
 
     fn failure_script(&self, status: u16, retry_after_seconds: Option<u64>) {
-        std::fs::write(
-            self.files.path().join("script.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "failures": {"0": {
-                    "status": status,
-                    "message": if status == 429 { "quota reached" } else { "invalid credentials" },
-                    "retry_after_seconds": retry_after_seconds,
-                }}
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        let message = if status == 429 {
+            "quota reached"
+        } else {
+            "invalid credentials"
+        };
+        swarmy_testkit::Script::new("unused")
+            .failure(0, status, message, retry_after_seconds)
+            .write_to(&self.files.path().join("script.json"));
     }
 
     fn start(&mut self, concurrency: usize) {
@@ -146,8 +112,8 @@ impl Fixture {
         custom_providers: &std::collections::BTreeMap<String, swarmy_config::CustomProvider>,
         models: &[swarmy_config::CustomModel],
     ) {
-        self.children.push(
-            Command::new(cli_bin::bin("swarmy-gateway"))
+        self.children.push(ChildGuard::new(
+            Command::new(swarmy_testkit::bin("swarmy-gateway"))
                 .env("SWARMY_PROVIDER", "fake")
                 .env("SWARMY_PROVIDERS", providers)
                 .env(
@@ -155,8 +121,8 @@ impl Fixture {
                     serde_json::to_string(custom_providers).unwrap(),
                 )
                 .env("SWARMY_MODELS", serde_json::to_string(models).unwrap())
-                .env("SWARMY_STORE_DIRECTORY", &self.prefix)
-                .env("SWARMY_BUS_PREFIX", &self.prefix)
+                .env("SWARMY_STORE_DIRECTORY", &self.stack.prefix)
+                .env("SWARMY_BUS_PREFIX", &self.stack.prefix)
                 .env("SWARMY_BUS_ACK_WAIT_MS", ACK_WAIT.as_millis().to_string())
                 .env("SWARMY_BUS_MAX_DELIVER", "3")
                 .env("SWARMY_GATEWAY_CONCURRENCY", concurrency.to_string())
@@ -166,12 +132,12 @@ impl Fixture {
                 .kill_on_drop(true)
                 .spawn()
                 .unwrap(),
-        );
+        ));
     }
 
     async fn kill(&mut self) {
         for child in &mut self.children {
-            child.kill().await.unwrap();
+            child.kill().await;
         }
         self.children.clear();
     }
@@ -225,7 +191,7 @@ impl Fixture {
         let now = Timestamp::now();
         let settings = swarmy_config::Settings {
             selection: swarmy_config::SelectionSettings {
-                default_image: Some(image_fixture::image(&self.store).await.into()),
+                default_image: Some(swarmy_testkit::image(&self.store).await.into()),
                 ..Default::default()
             },
             ..Default::default()
@@ -345,108 +311,76 @@ impl Fixture {
     }
 
     async fn terminal(&self, job: &InferenceJob) -> Event {
-        timeout(WAIT, async {
-            loop {
+        let events =
+            swarmy_testkit::eventually("terminal inference event lands", WAIT, async || {
                 let events = self.store.read_events(job.session_id, 1, 64).await.unwrap();
-                if let Some(event) = events.first() {
-                    let idle = matches!(event, Event::InferenceCompleted { completion, .. }
-                        if !completion.message.parts.iter().any(|part| matches!(part, Part::ToolCall { .. })));
-                    assert_eq!(events.len(), if idle { 2 } else { 1 });
-                    let session = self
-                        .store
-                        .fetch_session(job.session_id)
-                        .await
-                        .unwrap()
-                        .unwrap();
-                    assert_eq!(
-                        session.state,
-                        if idle {
-                            SessionState::Idle
-                        } else {
-                            SessionState::Runnable
-                        }
-                    );
-                    if idle {
-                        self.check_idle_snapshot(job, event, &events, &session).await;
-                    }
-                    assert!(
-                        self.store
-                            .get_inflight(job.request_id)
-                            .await
-                            .unwrap()
-                            .is_none()
-                    );
-                    assert_eq!(
-                        self.store
-                            .get_idempotency(job.request_id)
-                            .await
-                            .unwrap()
-                            .unwrap()
-                            .state,
-                        IdempotencyState::Completed
-                    );
-                    return event.clone();
-                }
-                sleep(Duration::from_millis(20)).await;
+                (!events.is_empty()).then_some(events)
+            })
+            .await;
+        let event = events.first().unwrap();
+        let idle = matches!(event, Event::InferenceCompleted { completion, .. }
+            if !completion.message.parts.iter().any(|part| matches!(part, Part::ToolCall { .. })));
+        assert_eq!(events.len(), if idle { 2 } else { 1 });
+        let session = self
+            .store
+            .fetch_session(job.session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            session.state,
+            if idle {
+                SessionState::Idle
+            } else {
+                SessionState::Runnable
             }
-        })
-        .await
-        .unwrap()
+        );
+        if idle {
+            self.check_idle_snapshot(job, event, &events, &session)
+                .await;
+        }
+        assert!(
+            self.store
+                .get_inflight(job.request_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            self.store
+                .get_idempotency(job.request_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            IdempotencyState::Completed
+        );
+        event.clone()
     }
 
     async fn drained(&self) {
         let context = async_nats::jetstream::new(
-            async_nats::connect(swarmy_core::test_support::stack_env("SWARMY_NATS_URL").unwrap())
+            async_nats::connect(swarmy_testkit::require_stack("SWARMY_NATS_URL").unwrap())
                 .await
                 .unwrap(),
         );
-        timeout(WAIT, async {
-            loop {
-                if context
-                    .get_stream(format!("{}_INFER_REQ", self.prefix))
-                    .await
-                    .unwrap()
-                    .cached_info()
-                    .state
-                    .messages
-                    == 0
-                {
-                    break;
-                }
-                sleep(Duration::from_millis(20)).await;
-            }
+        swarmy_testkit::eventually("work stream drains", WAIT, async || {
+            (context
+                .get_stream(format!("{}_INFER_REQ", self.stack.prefix))
+                .await
+                .unwrap()
+                .cached_info()
+                .state
+                .messages
+                == 0)
+                .then_some(())
         })
-        .await
-        .unwrap();
+        .await;
     }
 
     async fn cleanup(mut self) {
         self.kill().await;
-        let db = Database::new(Some(
-            &swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap(),
-        ))
-        .unwrap();
-        let path = vec![self.prefix.clone()];
-        db.run(|trx, _| {
-            let path = &path;
-            async move {
-                DirectoryLayer::default().remove(&trx, path).await?;
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-        let context = async_nats::jetstream::new(
-            async_nats::connect(swarmy_core::test_support::stack_env("SWARMY_NATS_URL").unwrap())
-                .await
-                .unwrap(),
-        );
-        for name in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
-            context
-                .delete_stream(format!("{}_{name}", self.prefix))
-                .await
-                .unwrap();
-        }
+        self.guard.cleanup().await;
     }
 }
 
@@ -474,11 +408,10 @@ async fn credential_changes_update_a_running_gateway() {
         )]);
         f.start_with(1, "openrouter", &providers, &[]);
         let result = AssertUnwindSafe(async {
-            timeout(WAIT, async {
-                while f.store.gateway_provider("openrouter").await.unwrap().is_none() {
-                    sleep(Duration::from_millis(20)).await;
-                }
-            }).await.unwrap();
+            swarmy_testkit::eventually("gateway advertises provider", WAIT, async || {
+                f.store.gateway_provider("openrouter").await.unwrap()
+            })
+            .await;
             assert!(!f.store.gateway_serves("openrouter").await.unwrap());
             credentials.put_entry(CredentialScope::Cluster, "openrouter", "primary", &CredentialRecord { bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                 kind: CredentialKind::ApiKey { key: "fixture-key".into(), extra: std::collections::BTreeMap::default() },
@@ -488,18 +421,19 @@ async fn credential_changes_update_a_running_gateway() {
                 kind: CredentialKind::ApiKey { key: "fixture-backup".into(), extra: std::collections::BTreeMap::default() },
                 updated_at: Timestamp::now(),
             }).await.unwrap();
-            timeout(Duration::from_secs(65), async {
-                while !f.store.gateway_serves("openrouter").await.unwrap() {
-                    sleep(Duration::from_millis(100)).await;
-                }
-            }).await.unwrap();
-            timeout(Duration::from_secs(65), async {
-                while f.store.gateway_entry("openrouter", "primary").await.unwrap().is_none()
-                    || f.store.gateway_entry("openrouter", "backup").await.unwrap().is_none()
+            swarmy_testkit::eventually("gateway serves provider", Duration::from_secs(65), async || {
+                f.store.gateway_serves("openrouter").await.unwrap().then_some(())
+            })
+            .await;
+            swarmy_testkit::eventually("gateway advertises entries", Duration::from_secs(65), async || {
+                if f.store.gateway_entry("openrouter", "primary").await.unwrap().is_some()
+                    && f.store.gateway_entry("openrouter", "backup").await.unwrap().is_some()
                 {
-                    sleep(Duration::from_millis(100)).await;
+                    return Some(());
                 }
-            }).await.unwrap();
+                None
+            })
+            .await;
             let queue = WorkQueue::Inference(SubjectToken::new("openrouter").unwrap());
             let mut job = f.job_with_settings(GenerationSettings {
                 model: "openai/gpt-5.5".into(), ..Default::default()
@@ -514,11 +448,10 @@ async fn credential_changes_update_a_running_gateway() {
             assert!(entries.iter().find(|entry| entry.label == "backup").unwrap().last_used_at.is_none());
             credentials.delete_entry(CredentialScope::Cluster, "openrouter", "primary").await.unwrap();
             credentials.delete_entry(CredentialScope::Cluster, "openrouter", "backup").await.unwrap();
-            timeout(Duration::from_secs(65), async {
-                while f.store.gateway_serves("openrouter").await.unwrap() {
-                    sleep(Duration::from_millis(100)).await;
-                }
-            }).await.unwrap();
+            swarmy_testkit::eventually("gateway stops serving provider", Duration::from_secs(65), async || {
+                (!f.store.gateway_serves("openrouter").await.unwrap()).then_some(())
+            })
+            .await;
             let mut rejected = f.job_with_settings(GenerationSettings {
                 model: "openai/gpt-5.5".into(), ..Default::default()
             }).await;
@@ -611,43 +544,31 @@ async fn one_request_completes_and_duplicates_across_gateways_call_once() {
 /// Wait until the gateway commits the inference completion around an
 /// intervening event.
 async fn wait_for_inference(f: &Fixture, job: &InferenceJob) {
-    timeout(WAIT, async {
-        loop {
-            let events = f.store.read_events(job.session_id, 0, 64).await.unwrap();
-            if events
-                .iter()
-                .any(|event| matches!(event, Event::InferenceCompleted { .. }))
-            {
-                break;
-            }
-            sleep(Duration::from_millis(20)).await;
-        }
+    swarmy_testkit::eventually("inference completes", WAIT, async || {
+        let events = f.store.read_events(job.session_id, 0, 64).await.unwrap();
+        events
+            .iter()
+            .any(|event| matches!(event, Event::InferenceCompleted { .. }))
+            .then_some(())
     })
-    .await
-    .unwrap();
+    .await;
 }
 
 /// Wait until the session returns to runnable after the gateway commits
 /// around the intervening event, with the completed head and no snapshot.
 async fn wait_for_runnable_replay(f: &Fixture, job: &InferenceJob) {
-    timeout(WAIT, async {
-        loop {
-            let session = f
-                .store
-                .fetch_session(job.session_id)
-                .await
-                .unwrap()
-                .unwrap();
-            if session.state == SessionState::Runnable {
-                assert_eq!(session.head_seq, 3);
-                assert!(session.snapshot_ref.is_none());
-                break;
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
+    let session = swarmy_testkit::eventually("session runs the notice", WAIT, async || {
+        let session = f
+            .store
+            .fetch_session(job.session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        (session.state == SessionState::Runnable).then_some(session)
     })
-    .await
-    .unwrap();
+    .await;
+    assert_eq!(session.head_seq, 3);
+    assert!(session.snapshot_ref.is_none());
 }
 
 #[tokio::test]
@@ -773,7 +694,13 @@ async fn exhausted_retries_append_failure_and_stop_delivery() {
                 Event::InferenceFailed { .. }
             ));
             f.drained().await;
-            sleep(ACK_WAIT * 3).await;
+            // Quiescence is the assertion: a full redelivery window must pass
+            // with no fourth provider call before the stream is observed idle.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "silence over a redelivery window is the assertion"
+            )]
+            tokio::time::sleep(ACK_WAIT * 3).await;
             assert_eq!(f.calls(), 3);
             let mut work = f.bus.consume::<InferenceJobRef>(&f.queue).await.unwrap();
             assert!(timeout(ACK_WAIT * 2, work.next()).await.is_err());
@@ -822,7 +749,7 @@ async fn unscripted_provider_failure_exhausts_retries_with_backoff() {
             let started = tokio::time::Instant::now();
             let mut calls_at = Vec::new();
             let mut republished = false;
-            while calls_at.len() < 3 {
+            swarmy_testkit::eventually("provider finishes retries", Duration::from_secs(5), async || {
                 let calls = f.calls();
                 if calls >= 1 && !republished {
                     // Recovery publishes a fresh stream sequence whose delivery
@@ -834,15 +761,18 @@ async fn unscripted_provider_failure_exhausts_retries_with_backoff() {
                 while calls_at.len() < calls {
                     calls_at.push(started.elapsed());
                 }
-                assert!(started.elapsed() < Duration::from_secs(5), "provider did not finish retries");
-                sleep(Duration::from_millis(5)).await;
-            }
+                (calls_at.len() >= 3).then_some(())
+            })
+            .await;
             assert!(matches!(f.terminal(&job).await, Event::InferenceFailed { retryable: false, error, .. }
                 if error.contains("fake provider has no response")));
             assert_eq!(f.calls(), 3);
             assert!(calls_at[1] >= calls_at[0] + Duration::from_millis(75));
             assert!(calls_at[2] >= calls_at[1] + Duration::from_millis(175));
-            sleep(ACK_WAIT * 2).await;
+            // Quiescence is the assertion: another redelivery window must pass
+            // with the call count pinned before the stream is observed drained.
+            #[expect(clippy::disallowed_methods, reason = "silence over a redelivery window is the assertion")]
+            tokio::time::sleep(ACK_WAIT * 2).await;
             assert_eq!(f.calls(), 3);
             f.drained().await;
         }).catch_unwind().await;
@@ -872,7 +802,7 @@ async fn authentication_failure_does_not_open_breaker() {
 #[tokio::test]
 async fn concurrency_limit_and_large_responses_preserve_full_results() {
     run(|mut f| async move {
-        let text = format!("{}{}", f.prefix, "x".repeat(100 * 1024));
+        let text = format!("{}{}", f.stack.prefix, "x".repeat(100 * 1024));
         let expected = f.script(200, false, &text);
         f.start(1);
         let first = f.job().await;
@@ -998,9 +928,12 @@ async fn concurrent_duplicates_of_slow_request_complete_once() {
         let job = f.job().await;
         let result = AssertUnwindSafe(async {
             f.publish(&job).await;
-            // Publish the duplicate while the first delivery holds the claim
+            // Publish the duplicate once the first delivery holds the claim
             // and drives the slow provider call.
-            sleep(Duration::from_millis(200)).await;
+            swarmy_testkit::eventually("provider starts the slow call", WAIT, async || {
+                (f.calls() >= 1).then_some(())
+            })
+            .await;
             f.publish(&job).await;
             assert!(matches!(
                 f.terminal(&job).await,
@@ -1126,34 +1059,23 @@ async fn two_providers_share_one_gateway_and_record_selection_and_cost() {
     }).await;
 }
 
-fn switch_script() -> (Response, Response) {
-    let call = Part::ToolCall {
-        call_id: swarmy_core::ToolCallId("clock-0".into()),
-        tool: "get_time".into(),
-        input: serde_json::json!({}),
-    };
-    let first = Response {
-        parts: vec![
-            Part::Text {
-                text: "Checking.".into(),
-            },
-            call,
-        ],
-        stop_reason: StopReason::ToolCalls,
-        usage: TokenUsage::default(),
-        quota_remaining: std::collections::BTreeMap::new(),
-        quota_resets: std::collections::BTreeMap::new(),
-    };
-    let second = Response {
-        parts: vec![Part::Text {
-            text: "done".into(),
-        }],
-        stop_reason: StopReason::EndTurn,
-        usage: TokenUsage::default(),
-        quota_remaining: std::collections::BTreeMap::new(),
-        quota_resets: std::collections::BTreeMap::new(),
-    };
-    (first, second)
+fn write_switch_script(files: &TempDir) {
+    swarmy_testkit::Script::new("done")
+        .parts(
+            0,
+            vec![
+                Part::Text {
+                    text: "Checking.".into(),
+                },
+                Part::ToolCall {
+                    call_id: swarmy_core::ToolCallId("clock-0".into()),
+                    tool: "get_time".into(),
+                    input: serde_json::json!({}),
+                },
+            ],
+            StopReason::ToolCalls,
+        )
+        .write_to(&files.path().join("script.json"));
 }
 
 fn switch_models() -> (
@@ -1378,15 +1300,7 @@ async fn switch_turns(f: &mut Fixture, model: &swarmy_config::CustomModel) {
 #[tokio::test]
 async fn provider_switch_preserves_tool_history() {
     run(|mut f| async move {
-        let (first, second) = switch_script();
-        std::fs::write(
-            f.files.path().join("script.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "responses": {"0": first, "1": second, "2": second, "3": second},
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        write_switch_script(&f.files);
         let (model, models, providers) = switch_models();
         f.start_with(1, "fake,scripted", &providers, &models);
         let result = AssertUnwindSafe(switch_turns(&mut f, &model))
@@ -1411,8 +1325,8 @@ async fn unknown_model_is_a_permanent_failure_without_provider_calls() {
             f.publish(&job).await;
             assert!(matches!(f.terminal(&job).await, Event::InferenceFailed { error, .. } if error.contains("unknown catalog model: fake/unknown-model")));
             f.drained().await;
-            let context = async_nats::jetstream::new(async_nats::connect(swarmy_core::test_support::stack_env("SWARMY_NATS_URL").unwrap()).await.unwrap());
-            let stream = context.get_stream(format!("{}_INFER_REQ", f.prefix)).await.unwrap();
+            let context = async_nats::jetstream::new(async_nats::connect(swarmy_testkit::require_stack("SWARMY_NATS_URL").unwrap()).await.unwrap());
+            let stream = context.get_stream(format!("{}_INFER_REQ", f.stack.prefix)).await.unwrap();
             let consumer: async_nats::jetstream::consumer::PullConsumer = stream.get_consumer("infer_fake").await.unwrap();
             assert_eq!(consumer.cached_info().delivered.consumer_sequence, 1);
             assert_eq!(f.calls(), 0);

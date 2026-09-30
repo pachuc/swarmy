@@ -7,6 +7,7 @@ use std::{
 };
 use swarmy_core::ignore_best_effort;
 
+use futures::FutureExt as _;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::mpsc;
 
@@ -44,7 +45,7 @@ impl Terminal {
         agent: Option<&str>,
         new: bool,
     ) -> Self {
-        let mut command = CommandBuilder::new(cli_bin::bin("swarmy"));
+        let mut command = CommandBuilder::new(swarmy_testkit::bin("swarmy"));
         command.arg("chat");
         if new {
             command.arg("--new");
@@ -199,41 +200,34 @@ impl Terminal {
     }
 
     async fn exit(&mut self, success: bool) {
-        timeout(WAIT, async {
-            loop {
-                if let Some(status) = self.child.try_wait().unwrap() {
-                    // Drain the remaining PTY output first: the client prints
-                    // its error to stderr after leaving the alternate screen,
-                    // and the PTY merges it into this capture.
-                    while let Some(bytes) = self.receiver.recv().await {
-                        self.process(&bytes);
-                    }
-                    if status.success() != success {
-                        let mut tail = self
-                            .captured
-                            .iter()
-                            .rev()
-                            .take(4096)
-                            .copied()
-                            .collect::<Vec<_>>();
-                        tail.reverse();
-                        panic!(
-                            "chat exit status {} (expected success={success}); screen:\n{}\npty tail:\n{}",
-                            status.exit_code(),
-                            self.parser.screen().contents(),
-                            String::from_utf8_lossy(&tail),
-                        );
-                    }
-                    break;
-                }
-                sleep(Duration::from_millis(20)).await;
-            }
-            while let Some(bytes) = self.receiver.recv().await {
-                self.process(&bytes);
-            }
-        })
-        .await
-        .expect("chat did not exit");
+        let status =
+            swarmy_testkit::eventually("chat exits", WAIT, async || self.child.try_wait().unwrap())
+                .await;
+        // Drain the remaining PTY output first: the client prints
+        // its error to stderr after leaving the alternate screen,
+        // and the PTY merges it into this capture.
+        while let Some(bytes) = self.receiver.recv().await {
+            self.process(&bytes);
+        }
+        if status.success() != success {
+            let mut tail = self
+                .captured
+                .iter()
+                .rev()
+                .take(4096)
+                .copied()
+                .collect::<Vec<_>>();
+            tail.reverse();
+            panic!(
+                "chat exit status {} (expected success={success}); screen:\n{}\npty tail:\n{}",
+                status.exit_code(),
+                self.parser.screen().contents(),
+                String::from_utf8_lossy(&tail),
+            );
+        }
+        while let Some(bytes) = self.receiver.recv().await {
+            self.process(&bytes);
+        }
         assert!(
             !self.parser.screen().alternate_screen(),
             "chat did not restore terminal"
@@ -345,7 +339,7 @@ impl Services {
         let mut services = Self {
             files,
             children: Vec::new(),
-            bin: cli_bin::bin("swarmy").parent().unwrap().to_owned(),
+            bin: swarmy_testkit::bin("swarmy").parent().unwrap().to_owned(),
         };
         for name in ["scheduler", "worker", "gateway"] {
             services.launch(fixture, name);
@@ -430,40 +424,34 @@ impl Services {
 /// so the short client budget applies.
 async fn session_id(fixture: &Fixture) -> SessionId {
     let deadline = Instant::now() + WAIT;
-    loop {
+    swarmy_testkit::eventually("client creates session", WAIT, async || {
         let sessions = list_sessions_tolerant(fixture, deadline).await;
-        if let Some(session) = sessions.first() {
-            return session.session_id;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "no session appeared within {WAIT:?}"
-        );
-        sleep(Duration::from_millis(50)).await;
-    }
+        sessions.first().map(|session| session.session_id)
+    })
+    .await
 }
 
 /// Wait for a session to reach idle with an explicit budget, printing timeout
 /// diagnostics on expiry. Retryable database timeouts keep polling so the
 /// outer timeout below wins with diagnostics instead of panicking first.
 async fn idle(fixture: &Fixture, services: Option<&Services>, id: SessionId, budget: Duration) {
-    let result = timeout(budget, async {
-        loop {
-            match fixture.store.fetch_session(id).await {
-                Ok(session)
-                    if session
-                        .as_ref()
-                        .is_some_and(|session| session.state == SessionState::Idle) =>
-                {
-                    break;
-                }
-                Err(error) if is_retryable_store_error(&error) => {}
-                Err(error) => panic!("session fetch failed for {id}: {error}"),
-                Ok(_) => {}
+    let result = AssertUnwindSafe(swarmy_testkit::eventually(
+        "session idles",
+        budget,
+        async || match fixture.store.fetch_session(id).await {
+            Ok(session)
+                if session
+                    .as_ref()
+                    .is_some_and(|session| session.state == SessionState::Idle) =>
+            {
+                Some(())
             }
-            sleep(Duration::from_millis(30)).await;
-        }
-    })
+            Err(error) if is_retryable_store_error(&error) => None,
+            Err(error) => panic!("session fetch failed for {id}: {error}"),
+            Ok(_) => None,
+        },
+    ))
+    .catch_unwind()
     .await;
     if result.is_err() {
         let diagnostics = Diagnostics {
@@ -953,6 +941,12 @@ impl Drop for Node {
             if std::time::Instant::now() >= deadline {
                 break;
             }
+            // `Drop` cannot await an async poll, so the graceful-shutdown
+            // window stays a blocking sleep before the forced kill below.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "Drop cannot await; bounded wait for graceful shutdown before SIGKILL"
+            )]
             std::thread::sleep(Duration::from_millis(50));
         }
         ignore_best_effort(self.child.kill(), "kill child process");
@@ -1039,19 +1033,23 @@ async fn root_chat_default_image_executes_pwd() {
 
 /// Wait for the pwd tool call to complete and check its output names a path.
 async fn wait_for_pwd(fixture: &Fixture, id: SessionId, services: &Services) {
-    timeout(Duration::from_secs(120), async {
-        loop {
-            let events = fixture.store.read_events(id, 0, 64).await.unwrap();
-            if let Some(result) = events.iter().find_map(|event| match event {
-                Event::ToolCallCompleted { result, .. } => Some(result),
-                _ => None,
-            }) {
-                check_pwd_output(result);
-                break;
-            }
-            sleep(Duration::from_millis(100)).await;
-        }
-    })
+    let result = AssertUnwindSafe(swarmy_testkit::eventually(
+        "pwd tool call completes",
+        Duration::from_secs(120),
+        async || {
+            fixture
+                .store
+                .read_events(id, 0, 64)
+                .await
+                .unwrap()
+                .iter()
+                .find_map(|event| match event {
+                    Event::ToolCallCompleted { result, .. } => Some(result.clone()),
+                    _ => None,
+                })
+        },
+    ))
+    .catch_unwind()
     .await
     .unwrap_or_else(|_| {
         panic!(
@@ -1059,6 +1057,7 @@ async fn wait_for_pwd(fixture: &Fixture, id: SessionId, services: &Services) {
             std::fs::read_to_string(services.files.path().join("node.log")).unwrap()
         )
     });
+    check_pwd_output(&result);
 }
 
 fn check_pwd_output(result: &ToolResult) {
@@ -1076,7 +1075,10 @@ fn check_pwd_output(result: &ToolResult) {
 }
 
 async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Services, Node) {
-    let settings = swarmy_config::Settings::load().unwrap().settings;
+    // The image registry lives under the stack's store directory, never the
+    // host configuration: build settings from the test environment.
+    let settings =
+        swarmy_testkit::test_settings(&["SWARMY_FDB_CLUSTER_FILE", "SWARMY_STORE_DIRECTORY"]);
     let directory = settings.store_directory_path().unwrap();
     let images = Store::open(
         Some(settings.store.cluster_file.as_path()),
@@ -1116,7 +1118,7 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
     let mut services = Services {
         files,
         children: Vec::new(),
-        bin: cli_bin::bin("swarmy").parent().unwrap().to_owned(),
+        bin: swarmy_testkit::bin("swarmy").parent().unwrap().to_owned(),
     };
     for name in ["scheduler", "worker", "gateway"] {
         services.launch(fixture, name);

@@ -239,7 +239,12 @@ impl Worker {
             // placement or lease fence invalidates the cache and retries once.
             let placement = self
                 .placements
-                .resolve(&self.store, session.agent_id, self.config.placement_lease)
+                .resolve_at(
+                    &self.store,
+                    session.agent_id,
+                    self.config.placement_lease,
+                    self.now(),
+                )
                 .await?;
             let mut token = lease.lock().await;
             let result = match dispatch {
@@ -340,6 +345,9 @@ impl Worker {
         }
     }
 
+    /// Place through the worker clock; see
+    /// [`crate::placement::Cache::resolve_at`] for why tests advance time
+    /// instead of sleeping out real leases.
     pub(super) async fn place(&self, id: SessionId) -> Result<swarmy_core::PlacementRecord> {
         let agent = self
             .store
@@ -347,9 +355,11 @@ impl Worker {
             .await?
             .context("session missing")?
             .agent_id;
-        crate::placement::resolve(&self.store, agent, self.config.placement_lease).await
+        crate::placement::resolve_at(&self.store, agent, self.config.placement_lease, self.now())
+            .await
     }
 
+    /// Recover one dispatch through the worker clock.
     pub(super) async fn route_tool(&self, job: &ToolJob) -> Result<()> {
         if self.store.fail_deleted_computer_tool(job).await? {
             return Ok(());
@@ -378,6 +388,9 @@ impl Worker {
         Ok(())
     }
 
+    /// Scan the durable outbox through the worker clock. Tests advance the
+    /// shared clock past lease expiry instead of sleeping out real leases;
+    /// production keeps the default wall clock.
     pub(crate) async fn recover_tools(&self) -> Result<()> {
         let mut after = None;
         loop {

@@ -1,5 +1,6 @@
+#![deny(clippy::disallowed_methods)]
 //! Usage series and entry quota routes read from the metering rollups.
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use jiff::Timestamp;
 use swarmy_api::{AppState, router};
@@ -13,12 +14,12 @@ use swarmy_store::{
 };
 use ulid::Ulid;
 
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-
 struct Fixture {
     store: Store,
     client: Client,
     server: tokio::task::JoinHandle<Result<(), std::io::Error>>,
+    // Held for its Drop: removes the test keys and streams even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 
 impl Drop for Fixture {
@@ -29,17 +30,9 @@ impl Drop for Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-        NETWORK.get_or_init(swarmy_store::boot);
-        let store = Store::open(
-            Some(std::path::Path::new(&cluster)),
-            Some(&["usage-test".into(), Ulid::generate().to_string()]),
-            Arc::new(MemoryBlobStore::default()),
-        )
-        .await
-        .unwrap();
-        let bus = swarmy_bus::Bus::connect(&nats, swarmy_bus::Config::default())
+        let stack = swarmy_testkit::Stack::load("usage")?;
+        let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+        let bus = swarmy_bus::Bus::connect(&stack.nats_url, swarmy_bus::Config::default())
             .await
             .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -57,6 +50,7 @@ impl Fixture {
             store,
             client: Client::new(&base, "test-token").unwrap(),
             server,
+            _guard: guard,
         })
     }
 }

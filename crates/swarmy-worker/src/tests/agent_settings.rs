@@ -8,41 +8,39 @@ struct Fixture {
     store: Store,
     bus: Bus,
     worker: Worker,
-    cluster: String,
-    url: String,
-    prefix: String,
+    // Held for its Drop: removes the test keys and streams even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        let url = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-        NETWORK.get_or_init(swarmy_store::boot);
-        let prefix = format!("agent_inference_{}", Ulid::generate());
-        let mut config = config(url.clone(), &prefix, Arc::default());
+        let stack = swarmy_testkit::Stack::load("agent")?;
+        let guard = swarmy_testkit::StackGuard::new(&stack);
+        let prefix = stack.prefix.clone();
+        let mut config = config(stack.nats_url.clone(), &prefix, Arc::default());
         config.lease_duration = Duration::from_secs(5);
         config.harness.system_prompt_template = "Default system prompt.\n".into();
         config.harness.settings.model = "default-model".into();
         config.harness.settings.reasoning_effort = Some(ReasoningEffort::Medium);
         let blobs = Arc::new(MemoryBlobStore::default());
         let store = Store::open(
-            Some(std::path::Path::new(&cluster)),
+            Some(std::path::Path::new(&stack.cluster)),
             Some(std::slice::from_ref(&prefix)),
             blobs.clone(),
         )
         .await
         .unwrap();
-        image_fixture::image(&store).await;
-        let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
+        swarmy_testkit::image(&store).await;
+        let bus = Bus::connect(&stack.nats_url, config.bus.clone())
+            .await
+            .unwrap();
         bus.setup(&[]).await.unwrap();
         let worker = Worker::new(store.clone(), bus.clone(), blobs, config);
         Some(Self {
             store,
             bus,
             worker,
-            cluster,
-            url,
-            prefix,
+            _guard: guard,
         })
     }
 
@@ -208,7 +206,6 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
     })
     .catch_unwind()
     .await;
-    cleanup(&f.cluster, &f.url, &f.prefix).await;
     if let Err(panic) = result {
         std::panic::resume_unwind(panic);
     }
@@ -388,7 +385,6 @@ async fn session_selection_routes_and_missing_gateway_waits() {
     })
     .catch_unwind()
     .await;
-    cleanup(&f.cluster, &f.url, &f.prefix).await;
     if let Err(panic) = result {
         std::panic::resume_unwind(panic);
     }

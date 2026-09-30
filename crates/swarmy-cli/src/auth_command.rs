@@ -276,6 +276,7 @@ fn helper(auth_file: Option<PathBuf>, json: bool, argv: &[std::ffi::OsString]) -
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use clap::Parser;
 
     #[test]

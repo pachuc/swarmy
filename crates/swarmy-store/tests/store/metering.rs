@@ -235,7 +235,6 @@ async fn completion_updates_every_dimension_bucket_for_its_hour() {
         assert_eq!(groups[0].totals.usage.output_tokens, 20);
         assert_eq!(groups[0].totals.cost_micros, 500);
     }
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -315,7 +314,6 @@ async fn bucket_sums_match_session_totals_and_failed_commits_leave_nothing() {
     let groups = session_groups(store, id, hour).await;
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].completions, 3);
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -407,7 +405,6 @@ async fn observed_quota_reports_remaining_and_configured_uses_rollups() {
     assert_eq!(quota.free, Some(998));
     assert_eq!(quota.limit, Some(1_000));
     assert_eq!(quota.window_seconds, Some(18_000));
-    test.cleanup().await;
 }
 
 struct BreakdownSeed {
@@ -494,7 +491,6 @@ async fn entry_breakdown_splits_combined_keys_with_costs() {
         .unwrap();
     assert_eq!(breakdown.len(), 1);
     assert_eq!(breakdown[0].totals.cost_micros, seed.cost);
-    test.cleanup().await;
 }
 
 /// An owner's day slice holds exactly that day: rows for the same owner on
@@ -603,7 +599,6 @@ async fn owner_day_totals_ignore_rows_outside_their_range() {
         .await
         .unwrap();
     assert_eq!(all.iter().map(|total| total.completions).sum::<u64>(), 4);
-    test.cleanup().await;
 }
 
 /// Completions without an entry keep their provider in the rollups, so the
@@ -646,7 +641,6 @@ async fn unattributed_completions_keep_their_provider() {
     assert_eq!(totals.len(), 1);
     assert_eq!(totals[0].key, "openai/-");
     assert_eq!(totals[0].totals.cost_micros, cost);
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -685,7 +679,6 @@ async fn aggregate_series_sums_single_key_views() {
         }
     }
     assert_eq!(aggregate[0].totals, summed);
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -735,7 +728,6 @@ async fn pruning_removes_raw_records_but_keeps_rollups() {
     let groups = session_groups(store, id, hour).await;
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].completions, 1);
-    test.cleanup().await;
 }
 
 async fn complete_many(store: &Store, id: SessionId, now: Timestamp, count: usize) {
@@ -786,7 +778,6 @@ async fn pruning_drains_more_than_one_batch_across_ticks() {
     let groups = session_groups(store, id, hour).await;
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].completions, 70);
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -862,5 +853,4 @@ async fn pruning_before_a_cutoff_hour_removes_whole_earlier_hours() {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].completions, want);
     }
-    test.cleanup().await;
 }

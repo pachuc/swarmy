@@ -117,6 +117,7 @@ pub(crate) fn classify_http_failure(
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     // Vendor phrases are classified below the public Error API; the rate-limit
     // exclusion below is the edge case the recorded streams cannot reach cheaply.
     #[test]

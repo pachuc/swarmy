@@ -320,6 +320,7 @@ impl Provider for FileFake {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use futures::StreamExt;
 
@@ -365,6 +366,7 @@ mod tests {
 
 #[cfg(test)]
 mod file_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use futures::StreamExt;
     use swarmy_core::{Message, MessageId};

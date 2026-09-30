@@ -73,6 +73,7 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use std::collections::BTreeMap;
 
     use super::*;

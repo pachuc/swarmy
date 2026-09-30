@@ -52,6 +52,7 @@ pub struct ImageRecord {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use crate::{ImageTag, LeaseOwnerId, encoding::tests::assert_round_trip};
     use ulid::Ulid;

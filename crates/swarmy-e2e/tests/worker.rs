@@ -1,36 +1,25 @@
-#[path = "../../swarmy-store/tests/support/mod.rs"]
-mod image_fixture;
-
-#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
-mod cli_bin;
-
+#![deny(clippy::disallowed_methods)]
 use std::{
     collections::{BTreeMap, HashSet},
     future::Future,
     os::unix::process::ExitStatusExt,
     panic::AssertUnwindSafe,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
-use foundationdb::{
-    Database,
-    directory::{Directory, DirectoryLayer},
-};
 use futures::FutureExt;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken, WorkQueue};
 use swarmy_core::{
     AgentId, Event, Message, MessageId, MessageRole, Nudge, Part, RequestId, SessionId,
-    SessionRecord, SessionState, ToolCallId, ToolResult, ignore_best_effort,
+    SessionRecord, SessionState, ToolCallId, ToolResult,
 };
-use swarmy_llm::{Response, StopReason, TokenUsage};
+use swarmy_llm::StopReason;
 use swarmy_store::{AgentSessionOptions, Store, blob::ObjectBlobStore, runnable_partition};
+use swarmy_testkit::{ChildGuard, Stack, StackGuard};
 use tempfile::TempDir;
-use tokio::{
-    process::{Child, Command},
-    time::{sleep, timeout},
-};
+use tokio::{process::Command, time::timeout};
 use ulid::Ulid;
 
 const WAIT: Duration = Duration::from_secs(45);
@@ -40,43 +29,40 @@ struct Fixture {
     bus: Bus,
     api_url: String,
     api_token: String,
-    prefix: String,
+    stack: Stack,
+    guard: StackGuard,
     summarize_at_tokens: u64,
     max_wait_seconds: u64,
     gateway_wait_seconds: u64,
     provider: String,
     model: String,
-    nats_url: String,
     files: TempDir,
-    children: Vec<Child>,
+    children: Vec<ChildGuard>,
     snapshots: Mutex<HashSet<String>>,
     keyring: Option<swarmy_config::Keyring>,
 }
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        let url = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
+        let url = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
         Self::new_at(url).await
     }
 
     async fn new_at(nats_url: String) -> Option<Self> {
-        static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-        for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
-            swarmy_core::test_support::stack_env(variable)?;
-        }
-        NETWORK.get_or_init(swarmy_store::boot);
-        let prefix = format!("worker_{}", Ulid::generate());
-        let store = Store::open(
-            Some(std::path::Path::new(
-                &swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap(),
-            )),
-            Some(std::slice::from_ref(&prefix)),
-            Arc::new(ObjectBlobStore::from_env().unwrap()),
-        )
-        .await
-        .unwrap();
+        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+        swarmy_testkit::require_stack("SWARMY_S3_ENDPOINT")?;
+        swarmy_testkit::boot_fdb();
+        let stack = Stack {
+            cluster,
+            nats_url,
+            prefix: swarmy_testkit::unique_prefix("worker"),
+        };
+        let (store, guard) = stack
+            .open_store(Arc::new(ObjectBlobStore::from_env().unwrap()))
+            .await;
+        let prefix = stack.prefix.clone();
         let bus = Bus::connect(
-            &nats_url,
+            &stack.nats_url,
             Config {
                 prefix: Some(SubjectToken::new(&prefix).unwrap()),
                 ..Default::default()
@@ -102,13 +88,13 @@ impl Fixture {
             bus,
             api_url,
             api_token,
-            prefix,
+            stack,
+            guard,
             summarize_at_tokens: 300_000,
             max_wait_seconds: 3600,
             gateway_wait_seconds: 1,
             provider: "fake".into(),
             model: "fake-model".into(),
-            nats_url,
             files: TempDir::new().unwrap(),
             children: Vec::new(),
             snapshots: Mutex::default(),
@@ -178,64 +164,21 @@ impl Fixture {
     }
 
     fn script(&self, tools: bool, tool_name: &str) {
-        let answer = Response {
-            parts: vec![Part::Text {
-                text: "The turn is complete.".into(),
-            }],
-            stop_reason: StopReason::EndTurn,
-            usage: TokenUsage::default(),
-            quota_remaining: BTreeMap::new(),
-            quota_resets: BTreeMap::new(),
-        };
-        let mut responses: BTreeMap<_, _> = (0..100).map(|index| (index, answer.clone())).collect();
+        let mut script = swarmy_testkit::Script::new("The turn is complete.").latency_ms(10);
         if tools {
-            responses.insert(
-                0,
-                Response {
-                    parts: vec![Part::ToolCall {
-                        call_id: ToolCallId("clock".into()),
-                        tool: tool_name.into(),
-                        input: serde_json::json!({}),
-                    }],
-                    stop_reason: StopReason::ToolCalls,
-                    usage: TokenUsage::default(),
-                    quota_remaining: BTreeMap::new(),
-                    quota_resets: BTreeMap::new(),
-                },
-            );
+            script = script.tool_call(0, "clock", tool_name);
         }
-        std::fs::write(
-            self.files.path().join("script.json"),
-            serde_json::to_vec(&serde_json::json!({"latency_ms": 10, "responses": responses}))
-                .unwrap(),
-        )
-        .unwrap();
+        script.write_to(&self.files.path().join("script.json"));
     }
 
     fn rate_limit_script(&self, failures: usize, retry_after_seconds: u64) {
-        let answer = Response {
-            parts: vec![Part::Text {
-                text: "Recovered.".into(),
-            }],
-            stop_reason: StopReason::EndTurn,
-            usage: TokenUsage::default(),
-            quota_remaining: BTreeMap::new(),
-            quota_resets: BTreeMap::new(),
-        };
-        let responses: BTreeMap<_, _> = (failures..100).map(|index| (index, &answer)).collect();
-        let failures: BTreeMap<_, _> = (0..failures).map(|index| (index, serde_json::json!({
-            "status": 429, "message": "quota reached", "retry_after_seconds": retry_after_seconds
-        }))).collect();
-        std::fs::write(
-            self.files.path().join("script.json"),
-            serde_json::to_vec(&serde_json::json!({"responses": responses, "failures": failures}))
-                .unwrap(),
-        )
-        .unwrap();
+        swarmy_testkit::Script::new("Recovered.")
+            .rate_limited(failures, retry_after_seconds)
+            .write_to(&self.files.path().join("script.json"));
     }
 
     async fn interrupt_from_cli(&self, id: SessionId) {
-        let executable = cli_bin::bin("swarmy");
+        let executable = swarmy_testkit::bin("swarmy");
         let output = Command::new(executable)
             .args(["session", "interrupt", &id.to_string()])
             .env("SWARMY_API_URL", &self.api_url)
@@ -251,7 +194,7 @@ impl Fixture {
     }
 
     fn start(&mut self, service: &str, kill_point: Option<&str>) -> usize {
-        let executable = cli_bin::bin(service);
+        let executable = swarmy_testkit::bin(service);
         assert!(
             executable.exists(),
             "build the workspace binaries before running worker tests"
@@ -263,7 +206,7 @@ impl Fixture {
         let pair = self.provider == "fake-a";
         command
             .env("SWARMY_PROVIDER", &self.provider)
-            .env("SWARMY_NATS_URL", &self.nats_url)
+            .env("SWARMY_NATS_URL", &self.stack.nats_url)
             .env(
                 "SWARMY_MODEL",
                 if self.provider == "fake" || pair {
@@ -297,8 +240,8 @@ impl Fixture {
                 "SWARMY_SUMMARIZE_AT_TOKENS",
                 self.summarize_at_tokens.to_string(),
             )
-            .env("SWARMY_STORE_DIRECTORY", &self.prefix)
-            .env("SWARMY_BUS_PREFIX", &self.prefix)
+            .env("SWARMY_STORE_DIRECTORY", &self.stack.prefix)
+            .env("SWARMY_BUS_PREFIX", &self.stack.prefix)
             .env("SWARMY_WORKER_PARTITIONS", "7")
             .env("SWARMY_SCHEDULER_PARTITIONS", "7")
             .env("SWARMY_SCHEDULER_SCAN_INTERVAL_MS", "50")
@@ -328,8 +271,18 @@ impl Fixture {
         if let Some(point) = kill_point {
             command.env("SWARMY_WORKER_KILL_POINT", point);
         }
-        self.children.push(command.spawn().unwrap());
+        self.children
+            .push(ChildGuard::new(command.spawn().unwrap()));
         index
+    }
+
+    /// Wait until a spawned service exits, so kill-point tests synchronize on
+    /// the death itself instead of sleeping a fixed grace for it.
+    async fn wait_exit(&mut self, index: usize) {
+        swarmy_testkit::eventually("service exits", WAIT, async || {
+            self.children[index].has_exited().then_some(())
+        })
+        .await;
     }
 
     async fn create(&self) -> SessionId {
@@ -343,7 +296,7 @@ impl Fixture {
                 break id;
             }
         };
-        let image = image_fixture::image(&self.store).await;
+        let image = swarmy_testkit::image(&self.store).await;
         self.store
             .create_agent_session(
                 id,
@@ -365,16 +318,30 @@ impl Fixture {
     /// cannot fail over behind a missing advertisement instead of the
     /// scripted failure the test asserts on.
     async fn gateway_serves(&self, provider: &str) {
-        timeout(WAIT, async {
-            loop {
-                if self.store.gateway_serves(provider).await.unwrap() {
-                    break;
-                }
-                sleep(Duration::from_millis(50)).await;
-            }
+        swarmy_testkit::eventually("gateway advertises provider", WAIT, async || {
+            self.store
+                .gateway_serves(provider)
+                .await
+                .unwrap()
+                .then_some(())
         })
-        .await
-        .unwrap();
+        .await;
+    }
+
+    /// Wait until a session reaches `state`, naming the expectation so a
+    /// timeout points at the missing transition instead of a bare deadline.
+    async fn wait_state(&self, id: SessionId, state: SessionState) {
+        let label: &'static str = match state {
+            SessionState::Sleeping => "session sleeps",
+            SessionState::Idle => "session idles",
+            SessionState::WaitingInference => "session waits for inference",
+            SessionState::Completed => "session completes",
+            _ => "session reaches state",
+        };
+        swarmy_testkit::eventually(label, WAIT, async || {
+            (self.store.fetch_session(id).await.unwrap().unwrap().state == state).then_some(())
+        })
+        .await;
     }
 
     fn histories(&self) -> Vec<Vec<Message>> {
@@ -415,7 +382,7 @@ impl Fixture {
                     route_step: 0,
                 },
                 Timestamp::now(),
-                image_fixture::image(&self.store).await,
+                swarmy_testkit::image(&self.store).await,
             )
             .await
             .unwrap();
@@ -485,38 +452,27 @@ impl Fixture {
     }
 
     async fn wake(&self, id: SessionId) {
-        timeout(WAIT, async {
-            loop {
-                if self
-                    .bus
-                    .request_wake(id, Duration::from_millis(200))
-                    .await
-                    .is_ok()
-                {
-                    break;
-                }
-                sleep(Duration::from_millis(25)).await;
-            }
+        swarmy_testkit::eventually("scheduler accepts wake", WAIT, async || {
+            self.bus
+                .request_wake(id, Duration::from_millis(200))
+                .await
+                .ok()
         })
-        .await
-        .unwrap();
+        .await;
     }
 
     async fn idle(&self, id: SessionId) -> Vec<Event> {
-        timeout(WAIT, async {
-            loop {
-                let session = self.store.fetch_session(id).await.unwrap().unwrap();
-                if session.state == SessionState::Idle
-                    && let Some(snapshot) = session.snapshot_ref
-                {
-                    self.snapshots.lock().unwrap().insert(snapshot.object_key);
-                    return self.store.read_events(id, 0, 64).await.unwrap();
-                }
-                sleep(Duration::from_millis(25)).await;
+        swarmy_testkit::eventually("session reaches Idle with snapshot", WAIT, async || {
+            let session = self.store.fetch_session(id).await.unwrap().unwrap();
+            if session.state == SessionState::Idle
+                && let Some(snapshot) = session.snapshot_ref
+            {
+                self.snapshots.lock().unwrap().insert(snapshot.object_key);
+                return Some(self.store.read_events(id, 0, 64).await.unwrap());
             }
+            None
         })
         .await
-        .expect("session did not reach Idle")
     }
 
     fn calls(&self) -> usize {
@@ -528,36 +484,13 @@ impl Fixture {
 
     async fn cleanup(&mut self) {
         for child in &mut self.children {
-            ignore_best_effort(child.kill().await, "kill child process");
+            child.kill().await;
         }
         let blobs = ObjectBlobStore::from_env().unwrap();
         for key in self.snapshots.get_mut().unwrap().drain() {
             blobs.delete(&key).await.unwrap();
         }
-        let db = Database::new(Some(
-            &swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap(),
-        ))
-        .unwrap();
-        let path = vec![self.prefix.clone()];
-        db.run(|trx, _| {
-            let path = &path;
-            async move {
-                DirectoryLayer::default()
-                    .remove_if_exists(&trx, path)
-                    .await?;
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-        let client = async_nats::connect(&self.nats_url).await.unwrap();
-        let context = async_nats::jetstream::new(client);
-        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
-            context
-                .delete_stream(format!("{}_{stream}", self.prefix))
-                .await
-                .unwrap();
-        }
+        self.guard.cleanup().await;
     }
 }
 
@@ -680,7 +613,7 @@ async fn tool_turn_live_events_and_snapshot_survive_worker_restart() {
             .unwrap();
             assert_eq!(received.into_values().collect::<Vec<_>>(), events);
             assert_eq!(f.calls(), 2);
-            f.children[worker].kill().await.unwrap();
+            f.children[worker].kill().await;
             f.user_message(id).await;
             f.start("swarmy-worker", None);
             f.wake(id).await;
@@ -716,14 +649,7 @@ async fn rate_limit_waits_without_a_worker_lease_then_recovers() {
         let id = f.create().await;
         f.wake(id).await;
         let started = std::time::Instant::now();
-        timeout(WAIT, async {
-            loop {
-                if f.store.fetch_session(id).await.unwrap().unwrap().state == SessionState::Sleeping {
-                    break;
-                }
-                sleep(Duration::from_millis(20)).await;
-            }
-        }).await.unwrap();
+        f.wait_state(id, SessionState::Sleeping).await;
         assert!(f.store.inference_wait(id).await.unwrap().unwrap().reasons[0].contains("quota reached"));
         let leases = f.store.scan_expired_leases(
             Timestamp::now().checked_add(Duration::from_secs(60)).unwrap(), None, 64
@@ -749,25 +675,18 @@ async fn parked_inference_can_be_interrupted_and_followed_by_a_new_turn() {
             f.start("swarmy-worker", None);
             let id = f.create().await;
             f.wake(id).await;
-            timeout(WAIT, async {
-                while f.store.fetch_session(id).await.unwrap().unwrap().state
-                    != SessionState::Sleeping
-                {
-                    sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .unwrap();
+            f.wait_state(id, SessionState::Sleeping).await;
             let start = std::time::Instant::now();
             f.interrupt_from_cli(id).await;
-            timeout(Duration::from_secs(1), async {
-                while f.store.fetch_session(id).await.unwrap().unwrap().state != SessionState::Idle
-                {
-                    sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .unwrap();
+            swarmy_testkit::eventually(
+                "interrupt idles session",
+                Duration::from_secs(1),
+                async || {
+                    (f.store.fetch_session(id).await.unwrap().unwrap().state == SessionState::Idle)
+                        .then_some(())
+                },
+            )
+            .await;
             assert!(start.elapsed() < Duration::from_secs(1));
             assert!(f.store.inference_wait(id).await.unwrap().is_none());
             let head = f.store.fetch_session(id).await.unwrap().unwrap().head_seq;
@@ -815,15 +734,7 @@ async fn inflight_inference_interrupt_ends_at_next_boundary() {
             f.start("swarmy-worker", None);
             let id = f.create().await;
             f.wake(id).await;
-            timeout(WAIT, async {
-                while f.store.fetch_session(id).await.unwrap().unwrap().state
-                    != SessionState::WaitingInference
-                {
-                    sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .unwrap();
+            f.wait_state(id, SessionState::WaitingInference).await;
             f.interrupt_from_cli(id).await;
             assert!(
                 f.store
@@ -833,14 +744,7 @@ async fn inflight_inference_interrupt_ends_at_next_boundary() {
                     .unwrap()
                     .interrupt_requested
             );
-            timeout(WAIT, async {
-                while f.store.fetch_session(id).await.unwrap().unwrap().state != SessionState::Idle
-                {
-                    sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .unwrap();
+            f.wait_state(id, SessionState::Idle).await;
             let events = f.store.read_events(id, 0, 64).await.unwrap();
             assert!(
                 events.iter().any(
@@ -872,11 +776,7 @@ async fn missing_gateway_parks_until_it_returns() {
         f.start("swarmy-worker", None);
         let id = f.create().await;
         f.wake(id).await;
-        timeout(WAIT, async {
-            while f.store.fetch_session(id).await.unwrap().unwrap().state != SessionState::Sleeping {
-                sleep(Duration::from_millis(20)).await;
-            }
-        }).await.unwrap();
+        f.wait_state(id, SessionState::Sleeping).await;
         let events = f.store.read_events(id, 0, 64).await.unwrap();
         assert!(events.iter().any(|event| matches!(event,
             Event::InferenceFailed { retryable: true, retry_at: Some(_), error, .. }
@@ -1084,48 +984,31 @@ async fn route_failover_drops_previous_provider_reasoning() {
             // folded attempt hits the rate limit, so the failover request to
             // the second provider must not replay the first provider's
             // reasoning blocks.
-            let first = Response {
-                parts: vec![
-                    Part::Reasoning {
-                        text: "Think first.".into(),
-                        metadata: BTreeMap::from([(
-                            "openai_responses".into(),
-                            serde_json::json!({
-                                "provider": "fake-a",
-                                "model": "fake-model",
-                                "item": {"type": "reasoning"},
-                            }),
-                        )]),
-                    },
-                    Part::ToolCall {
-                        call_id: ToolCallId("clock".into()),
-                        tool: "get_time".into(),
-                        input: serde_json::json!({}),
-                    },
-                ],
-                stop_reason: StopReason::ToolCalls,
-                usage: TokenUsage::default(),
-                quota_remaining: BTreeMap::new(),
-                quota_resets: BTreeMap::new(),
-            };
-            let answer = Response {
-                parts: vec![Part::Text {
-                    text: "The turn is complete.".into(),
-                }],
-                stop_reason: StopReason::EndTurn,
-                usage: TokenUsage::default(),
-                quota_remaining: BTreeMap::new(),
-                quota_resets: BTreeMap::new(),
-            };
-            std::fs::write(
-                f.files.path().join("script.json"),
-                serde_json::to_vec(&serde_json::json!({
-                    "responses": {"0": first, "2": answer, "3": answer},
-                    "failures": {"1": {"status": 429, "message": "quota reached", "retry_after_seconds": 1}},
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+            swarmy_testkit::Script::new("The turn is complete.")
+                .parts(
+                    0,
+                    vec![
+                        Part::Reasoning {
+                            text: "Think first.".into(),
+                            metadata: BTreeMap::from([(
+                                "openai_responses".into(),
+                                serde_json::json!({
+                                    "provider": "fake-a",
+                                    "model": "fake-model",
+                                    "item": {"type": "reasoning"},
+                                }),
+                            )]),
+                        },
+                        Part::ToolCall {
+                            call_id: ToolCallId("clock".into()),
+                            tool: "get_time".into(),
+                            input: serde_json::json!({}),
+                        },
+                    ],
+                    StopReason::ToolCalls,
+                )
+                .failure(1, 429, "quota reached", Some(1))
+                .write_to(&f.files.path().join("script.json"));
             f.start("swarmy-scheduler", None);
             f.start("swarmy-gateway", None);
             f.start("swarmy-worker", None);
@@ -1144,23 +1027,26 @@ async fn route_failover_drops_previous_provider_reasoning() {
             assert_eq!(histories.len(), 3);
             // The folded retry on the first provider keeps its reasoning.
             assert!(
-                histories[1].iter().any(|message| message.parts.iter().any(
-                    |part| matches!(part, Part::Reasoning { .. })
-                )),
+                histories[1].iter().any(|message| message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, Part::Reasoning { .. }))),
                 "same-provider retries keep reasoning"
             );
             // The failover request carries the thinking as text, never as a
             // replayable reasoning block from the other provider.
             assert!(
-                histories[2].iter().all(|message| message.parts.iter().all(
-                    |part| !matches!(part, Part::Reasoning { .. })
-                )),
+                histories[2].iter().all(|message| message
+                    .parts
+                    .iter()
+                    .all(|part| !matches!(part, Part::Reasoning { .. }))),
                 "failover drops the previous provider's reasoning blocks"
             );
             assert!(
-                histories[2].iter().any(|message| message.parts.iter().any(
-                    |part| matches!(part, Part::Text { text } if text == "Think first.")
-                )),
+                histories[2].iter().any(|message| message
+                    .parts
+                    .iter()
+                    .any(|part| matches!(part, Part::Text { text } if text == "Think first."))),
                 "downgraded thinking text is preserved"
             );
         })
@@ -1176,21 +1062,14 @@ async fn wait_for_wait_reason(
     first: &str,
     second: &str,
 ) -> swarmy_store::InferenceWait {
-    timeout(WAIT, async {
-        loop {
-            if let Some(wait) = f.store.inference_wait(id).await.unwrap()
-                && wait
-                    .reasons
-                    .iter()
-                    .any(|reason| reason.contains(first) && reason.contains(second))
-            {
-                return wait;
-            }
-            sleep(Duration::from_millis(20)).await;
-        }
+    swarmy_testkit::eventually("breaker names the entry", WAIT, async || {
+        f.store.inference_wait(id).await.unwrap().filter(|wait| {
+            wait.reasons
+                .iter()
+                .any(|reason| reason.contains(first) && reason.contains(second))
+        })
     })
     .await
-    .unwrap()
 }
 
 /// Extract one `name=value` field from a claimed-step log line.
@@ -1238,40 +1117,28 @@ async fn check_summary_request(
 /// Wait until attempt one is durable: the session waits for inference or
 /// the request event is already in the log.
 async fn wait_for_durable_request(f: &Fixture, id: SessionId) {
-    timeout(WAIT, async {
-        loop {
-            let session = f.store.fetch_session(id).await.unwrap().unwrap();
-            if session.state == SessionState::WaitingInference {
-                break;
-            }
-            if f.store
-                .read_events(id, 0, 64)
-                .await
-                .unwrap()
-                .iter()
-                .any(|event| matches!(event, Event::InferenceRequested { .. }))
-            {
-                break;
-            }
-            sleep(Duration::from_millis(25)).await;
+    swarmy_testkit::eventually("attempt one is durable", WAIT, async || {
+        let session = f.store.fetch_session(id).await.unwrap().unwrap();
+        if session.state == SessionState::WaitingInference {
+            return Some(());
         }
+        f.store
+            .read_events(id, 0, 64)
+            .await
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, Event::InferenceRequested { .. }))
+            .then_some(())
     })
-    .await
-    .unwrap();
+    .await;
 }
 
 /// Wait until the session's route step advances to the expected step.
 async fn wait_for_route_step(f: &Fixture, id: SessionId, step: u32) {
-    timeout(WAIT, async {
-        loop {
-            if f.store.fetch_session(id).await.unwrap().unwrap().route_step == step {
-                break;
-            }
-            sleep(Duration::from_millis(25)).await;
-        }
+    swarmy_testkit::eventually("route advances to the expected step", WAIT, async || {
+        (f.store.fetch_session(id).await.unwrap().unwrap().route_step == step).then_some(())
     })
-    .await
-    .unwrap();
+    .await;
 }
 
 #[tokio::test]
@@ -1364,10 +1231,7 @@ async fn recover_at_each_kill_point() {
                 let worker = f.start("swarmy-worker", Some(point));
                 let id = f.create().await;
                 f.wake(id).await;
-                let status = timeout(WAIT, f.children[worker].wait())
-                    .await
-                    .unwrap()
-                    .unwrap();
+                let status = timeout(WAIT, f.children[worker].wait()).await.unwrap();
                 assert!(
                     status.code() == Some(137) || status.signal() == Some(9),
                     "kill point {point}: {status}"
@@ -1377,8 +1241,7 @@ async fn recover_at_each_kill_point() {
                 assert_requests(id, &events, 2);
                 assert_eq!(f.calls() - calls_before, 2, "kill point {point}");
                 for index in [worker, replacement, gateway] {
-                    ignore_best_effort(f.children[index].kill().await, "kill child process");
-                    ignore_best_effort(f.children[index].wait().await, "reap child process");
+                    f.children[index].kill().await;
                 }
             }
         })
@@ -1388,8 +1251,8 @@ async fn recover_at_each_kill_point() {
 
 #[tokio::test]
 async fn large_request_dispatches_on_default_nats_limit() {
-    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_none()
-        || swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_none()
+    if swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").is_none()
+        || swarmy_testkit::require_stack("SWARMY_S3_ENDPOINT").is_none()
     {
         return;
     }
@@ -1411,17 +1274,13 @@ async fn large_request_dispatches_on_default_nats_limit() {
         .spawn()
         .unwrap();
     let url = format!("nats://127.0.0.1:{port}");
-    timeout(Duration::from_secs(10), async {
-        loop {
-            if let Ok(client) = async_nats::connect(&url).await {
-                assert_eq!(client.max_payload(), 1_048_576);
-                break;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .unwrap();
+    let client = swarmy_testkit::eventually(
+        "embedded nats accepts connections",
+        Duration::from_secs(10),
+        async || async_nats::connect(&url).await.ok(),
+    )
+    .await;
+    assert_eq!(client.max_payload(), 1_048_576);
     run_at(Some(url), |f| {
         Box::pin(async move {
             f.script(false, "");
@@ -1469,8 +1328,8 @@ async fn large_request_dispatches_on_default_nats_limit() {
 
 #[tokio::test]
 async fn permanent_publish_error_ends_turn() {
-    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_none()
-        || swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_none()
+    if swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").is_none()
+        || swarmy_testkit::require_stack("SWARMY_S3_ENDPOINT").is_none()
     {
         return;
     }
@@ -1496,16 +1355,12 @@ async fn permanent_publish_error_ends_turn() {
         .spawn()
         .unwrap();
     let url = format!("nats://127.0.0.1:{port}");
-    timeout(Duration::from_secs(10), async {
-        loop {
-            if async_nats::connect(&url).await.is_ok() {
-                break;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .unwrap();
+    swarmy_testkit::eventually(
+        "embedded nats accepts connections",
+        Duration::from_secs(10),
+        async || async_nats::connect(&url).await.ok().map(|_| ()),
+    )
+    .await;
     let mut f = Fixture::new_at(url.clone()).await.unwrap();
     f.bus.setup(&[WorkQueue::Runnable(7)]).await.unwrap();
     std::fs::write(&config, "max_payload: 512\n").unwrap();
@@ -1517,18 +1372,19 @@ async fn permanent_publish_error_ends_turn() {
             .unwrap()
             .success()
     );
-    timeout(Duration::from_secs(10), async {
-        loop {
+    swarmy_testkit::eventually(
+        "reloaded nats advertises the new payload limit",
+        Duration::from_secs(10),
+        async || {
             if let Ok(client) = async_nats::connect(&url).await
                 && client.max_payload() == 512
             {
-                break;
+                return Some(());
             }
-            sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .unwrap();
+            None
+        },
+    )
+    .await;
     f.model = "long-model-".to_owned() + &"x".repeat(600);
     f.script(false, "");
     f.start("swarmy-scheduler", None);
@@ -1657,11 +1513,53 @@ async fn fresh_appends_and_gateway_completions_finish_without_a_scheduler() {
     .await;
 }
 
+fn write_main_summary_script(fixture: &Fixture, summary: &str) {
+    swarmy_testkit::Script::new("Finished the turn")
+        .usage(0, 101, 0)
+        .parts(
+            1,
+            vec![Part::Text {
+                text: summary.to_owned(),
+            }],
+            StopReason::EndTurn,
+        )
+        .usage(1, 120, 0)
+        .write_to(&fixture.files.path().join("script.json"));
+}
+
+async fn main_summary_session(fixture: &mut Fixture) -> (AgentId, SessionId) {
+    let image = swarmy_testkit::image(&fixture.store).await;
+    let agent = fixture
+        .store
+        .create_agent("tommy", image, "", Timestamp::now(), None)
+        .await
+        .unwrap();
+    let id = loop {
+        let id = SessionId::from_ulid(Ulid::generate());
+        if runnable_partition(id) == 7 {
+            break id;
+        }
+    };
+    fixture
+        .store
+        .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
+        .await
+        .unwrap();
+    fixture
+        .store
+        .set_main_session(agent.agent_id, id)
+        .await
+        .unwrap();
+    fixture.compactable_user_message(id).await;
+    (agent.agent_id, id)
+}
+
 #[tokio::test]
 async fn main_summary_atomically_archives_and_links_a_fresh_session() {
-    run(|f| Box::pin(async move {
-        f.summarize_at_tokens = 100;
-        let summary = "## Goal
+    run(|f| {
+        Box::pin(async move {
+            f.summarize_at_tokens = 100;
+            let summary = "## Goal
 Finish the task
 
 ## Progress
@@ -1669,57 +1567,85 @@ Finish the task
 - [x] Handler done
 
 ## Next Steps
-1. Verify".to_owned();
-        let response = |text: String, input_tokens| Response {
-            parts: vec![Part::Text { text }], stop_reason: StopReason::EndTurn,
-            usage: TokenUsage { input_tokens, ..Default::default() },
-            quota_remaining: BTreeMap::new(),
-            quota_resets: BTreeMap::new(),
-        };
-        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
-            "responses": {"0": response("Finished the turn".into(), 101), "1": response(summary.clone(), 120)}
-        })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
-        let agent = f.store.create_agent("tommy", image, "", Timestamp::now(), None).await.unwrap();
-        let id = loop {
-            let id = SessionId::from_ulid(Ulid::generate());
-            if runnable_partition(id) == 7 { break id; }
-        };
-        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
-        f.store.set_main_session(agent.agent_id, id).await.unwrap();
-        f.compactable_user_message(id).await;
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
-        f.wake(id).await;
-        let new = timeout(WAIT, async {
-            loop {
-                if let Some(next) = f.store.next_session(id).await.unwrap() { break next; }
-                sleep(Duration::from_millis(25)).await;
-            }
-        }).await.unwrap();
-        assert_ne!(id, new);
-        assert_eq!(f.store.get_agent(agent.agent_id).await.unwrap().unwrap().main_session, Some(new));
-        assert_eq!(f.store.fetch_session(id).await.unwrap().unwrap().state, SessionState::Completed);
-        assert_eq!(f.store.previous_session(new).await.unwrap(), Some(id));
-        let fresh = f.store.fetch_session(new).await.unwrap().unwrap();
-        assert_eq!(fresh.state, SessionState::Idle);
-        assert_eq!(fresh.agent_id, agent.agent_id);
-        let opening = f.store.read_events(new, 0, 64).await.unwrap();
-        let Event::MessageAppended { message, .. } = &opening[0] else { panic!("opening missing") };
-        assert_eq!(message.role, MessageRole::User);
-        let Part::Text { text } = &message.parts[0] else { panic!("summary missing") };
-        assert!(text.contains(&summary));
-        let old = f.store.read_events(id, 0, 64).await.unwrap();
-        assert_requests(id, &old, 2);
-        assert_eq!(f.calls(), 2);
-        assert_eq!(f.store.list_sessions_by_agent(agent.agent_id, None, 64).await.unwrap().len(), 2);
-        // A duplicate, unfenced rollover cannot create a third session or move the pointer.
-        let stale = swarmy_core::Lease { owner: swarmy_core::LeaseOwnerId::from_ulid(Ulid::generate()), seq: 1, expires_at: Timestamp::now() };
-        assert!(f.store.summarize_main_session(id, 0, &stale, message, &[]).await.is_err());
-        assert_eq!(f.store.get_agent(agent.agent_id).await.unwrap().unwrap().main_session, Some(new));
-        assert_eq!(f.store.list_sessions_by_agent(agent.agent_id, None, 64).await.unwrap().len(), 2);
-    })).await;
+1. Verify"
+                .to_owned();
+            write_main_summary_script(f, &summary);
+            let (agent_id, id) = main_summary_session(f).await;
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-worker", None);
+            f.start("swarmy-gateway", None);
+            f.wake(id).await;
+            let new = wait_successor(f, id).await;
+            assert_ne!(id, new);
+            assert_eq!(
+                f.store
+                    .get_agent(agent_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .main_session,
+                Some(new)
+            );
+            assert_eq!(
+                f.store.fetch_session(id).await.unwrap().unwrap().state,
+                SessionState::Completed
+            );
+            assert_eq!(f.store.previous_session(new).await.unwrap(), Some(id));
+            let fresh = f.store.fetch_session(new).await.unwrap().unwrap();
+            assert_eq!(fresh.state, SessionState::Idle);
+            assert_eq!(fresh.agent_id, agent_id);
+            let opening = f.store.read_events(new, 0, 64).await.unwrap();
+            let Event::MessageAppended { message, .. } = &opening[0] else {
+                panic!("opening missing")
+            };
+            assert_eq!(message.role, MessageRole::User);
+            let Part::Text { text } = &message.parts[0] else {
+                panic!("summary missing")
+            };
+            assert!(text.contains(&summary));
+            let old = f.store.read_events(id, 0, 64).await.unwrap();
+            assert_requests(id, &old, 2);
+            assert_eq!(f.calls(), 2);
+            assert_eq!(
+                f.store
+                    .list_sessions_by_agent(agent_id, None, 64)
+                    .await
+                    .unwrap()
+                    .len(),
+                2
+            );
+            // A duplicate, unfenced rollover cannot create a third session or move the pointer.
+            let stale = swarmy_core::Lease {
+                owner: swarmy_core::LeaseOwnerId::from_ulid(Ulid::generate()),
+                seq: 1,
+                expires_at: Timestamp::now(),
+            };
+            assert!(
+                f.store
+                    .summarize_main_session(id, 0, &stale, message, &[])
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                f.store
+                    .get_agent(agent_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .main_session,
+                Some(new)
+            );
+            assert_eq!(
+                f.store
+                    .list_sessions_by_agent(agent_id, None, 64)
+                    .await
+                    .unwrap()
+                    .len(),
+                2
+            );
+        })
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -1735,15 +1661,20 @@ async fn second_context_overflow_ends_the_turn() {
 async fn check_overflow_recovery(second_overflow: bool) {
     run(|f| Box::pin(async move {
         let summary = "## Goal\nFinish the work\n\n## Next Steps\n1. Retry";
-        let mut failures = serde_json::json!({"0": {"status": 400, "message": "context overflow"}});
+        let mut script = swarmy_testkit::Script::new("Recovered")
+            .parts(
+                1,
+                vec![Part::Text { text: summary.to_owned() }],
+                StopReason::EndTurn,
+            )
+            .usage(1, 20, 0)
+            .usage(2, 20, 0)
+            .failure(0, 400, "context overflow", None);
         if second_overflow {
-            failures["2"] = serde_json::json!({"status": 400, "message": "context overflow again"});
+            script = script.failure(2, 400, "context overflow again", None);
         }
-        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
-            "responses": {"1": side_response(summary.into(), 20), "2": side_response("Recovered".into(), 20)},
-            "failures": failures
-        })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        script.write_to(&f.files.path().join("script.json"));
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("overflow-agent", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -1770,26 +1701,38 @@ async fn check_overflow_recovery(second_overflow: bool) {
 async fn clean_tool_completion_reenables_overflow_recovery() {
     run(|f| Box::pin(async move {
         let summary = "## Goal\nFinish the work";
-        let mut large_tool = side_tool_response("clock-next", 20, false);
-        large_tool.parts.push(Part::Reasoning {
+        let large_tool = tool_parts("clock-next", false, Some(Part::Reasoning {
             text: "thinking ".repeat(13_000),
             metadata: BTreeMap::new(),
-        });
-        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
-            "responses": {
-                "1": side_response(summary.into(), 20),
-                "2": side_tool_response("clock-after-retry", 20, false),
-                "3": large_tool,
-                "5": side_response(summary.into(), 20),
-                "6": side_response("## Original Request\nContinue".into(), 20),
-                "7": side_response("Recovered again".into(), 20)
-            },
-            "failures": {
-                "0": {"status": 400, "message": "context overflow"},
-                "4": {"status": 400, "message": "context overflow after tool"}
-            }
-        })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        }));
+        swarmy_testkit::Script::new("Recovered again")
+            .parts(
+                1,
+                vec![Part::Text { text: summary.to_owned() }],
+                StopReason::EndTurn,
+            )
+            .usage(1, 20, 0)
+            .tool_call(2, "clock-after-retry", "get_time")
+            .usage(2, 20, 0)
+            .parts(3, large_tool, StopReason::ToolCalls)
+            .usage(3, 20, 0)
+            .parts(
+                5,
+                vec![Part::Text { text: summary.to_owned() }],
+                StopReason::EndTurn,
+            )
+            .usage(5, 20, 0)
+            .parts(
+                6,
+                vec![Part::Text { text: "## Original Request\nContinue".to_owned() }],
+                StopReason::EndTurn,
+            )
+            .usage(6, 20, 0)
+            .usage(7, 20, 0)
+            .failure(0, 400, "context overflow", None)
+            .failure(4, 400, "context overflow after tool", None)
+            .write_to(&f.files.path().join("script.json"));
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("clean-reset", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -1810,19 +1753,30 @@ async fn clean_tool_completion_reenables_overflow_recovery() {
 async fn new_user_turn_reenables_overflow_recovery() {
     run(|f| Box::pin(async move {
         let summary = "## Goal\nKeep working";
-        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
-            "responses": {
-                "1": side_response(summary.into(), 20),
-                "2": side_response("First recovered reply".into(), 20),
-                "4": side_response(summary.into(), 20),
-                "5": side_response("Second recovered reply".into(), 20)
-            },
-            "failures": {
-                "0": {"status": 400, "message": "context overflow"},
-                "3": {"status": 400, "message": "context overflow"}
-            }
-        })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        swarmy_testkit::Script::new("Second recovered reply")
+            .parts(
+                1,
+                vec![Part::Text { text: summary.to_owned() }],
+                StopReason::EndTurn,
+            )
+            .usage(1, 20, 0)
+            .parts(
+                2,
+                vec![Part::Text { text: "First recovered reply".to_owned() }],
+                StopReason::EndTurn,
+            )
+            .usage(2, 20, 0)
+            .parts(
+                4,
+                vec![Part::Text { text: summary.to_owned() }],
+                StopReason::EndTurn,
+            )
+            .usage(4, 20, 0)
+            .usage(5, 20, 0)
+            .failure(0, 400, "context overflow", None)
+            .failure(3, 400, "context overflow", None)
+            .write_to(&f.files.path().join("script.json"));
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("reset-recovery", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -1856,14 +1810,23 @@ async fn early_length_stop_compacts_without_replaying_truncated_reply() {
         f.provider = "openai".into();
         f.keyring();
         f.put_entry("primary").await;
-        let mut truncated = side_response("TRUNCATED_ATTEMPT".into(), 20);
-        truncated.stop_reason = StopReason::MaxOutputTokens;
-        truncated.usage.output_tokens = 1;
         let summary = "## Goal\nFinish the work\n\n## Next Steps\n- Retry";
-        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
-            "responses": {"0": truncated, "1": side_response(summary.into(), 20), "2": side_response("Recovered".into(), 20)}
-        })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        swarmy_testkit::Script::new("Recovered")
+            .parts(
+                0,
+                vec![Part::Text { text: "TRUNCATED_ATTEMPT".to_owned() }],
+                StopReason::MaxOutputTokens,
+            )
+            .usage(0, 20, 1)
+            .parts(
+                1,
+                vec![Part::Text { text: summary.to_owned() }],
+                StopReason::EndTurn,
+            )
+            .usage(1, 20, 0)
+            .usage(2, 20, 0)
+            .write_to(&f.files.path().join("script.json"));
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("length-agent", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -1887,23 +1850,33 @@ async fn second_length_stop_fails_with_notice() {
         f.provider = "openai".into();
         f.keyring();
         f.put_entry("primary").await;
-        let mut truncated = side_response("TRUNCATED_ATTEMPT".into(), 20);
-        truncated.parts.push(Part::ToolCall {
-            call_id: ToolCallId("first".into()),
-            tool: "get_time".into(),
-            input: serde_json::json!({}),
-        });
-        truncated.parts.push(Part::ToolCall {
-            call_id: ToolCallId("second".into()),
-            tool: "read".into(),
-            input: serde_json::json!({"path": "incomplete"}),
-        });
-        truncated.stop_reason = StopReason::MaxOutputTokens;
-        truncated.usage.output_tokens = 1;
-        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
-            "responses": {"0": truncated, "1": side_response("## Goal\nRetry".into(), 20), "2": truncated, "3": side_response("After retry limit".into(), 20)}
-        })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        let truncated = vec![
+            Part::Text { text: "TRUNCATED_ATTEMPT".to_owned() },
+            Part::ToolCall {
+                call_id: ToolCallId("first".into()),
+                tool: "get_time".into(),
+                input: serde_json::json!({}),
+            },
+            Part::ToolCall {
+                call_id: ToolCallId("second".into()),
+                tool: "read".into(),
+                input: serde_json::json!({"path": "incomplete"}),
+            },
+        ];
+        swarmy_testkit::Script::new("After retry limit")
+            .parts(0, truncated.clone(), StopReason::MaxOutputTokens)
+            .usage(0, 20, 1)
+            .parts(
+                1,
+                vec![Part::Text { text: "## Goal\nRetry".to_owned() }],
+                StopReason::EndTurn,
+            )
+            .usage(1, 20, 0)
+            .parts(2, truncated, StopReason::MaxOutputTokens)
+            .usage(2, 20, 1)
+            .usage(3, 20, 0)
+            .write_to(&f.files.path().join("script.json"));
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("length-twice", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -1953,15 +1926,22 @@ async fn refused_recovery_summary_ends_turn_and_omits_truncated_reply() {
         f.provider = "openai".into();
         f.keyring();
         f.put_entry("primary").await;
-        let mut truncated = side_response("UNUSABLE_TRUNCATION".into(), 20);
-        truncated.stop_reason = StopReason::MaxOutputTokens;
-        truncated.usage.output_tokens = 1;
-        let mut refused = side_response("REFUSED_CHECKPOINT".into(), 20);
-        refused.stop_reason = StopReason::MaxOutputTokens;
-        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
-            "responses": {"0": truncated, "1": refused, "2": side_response("Next answer".into(), 20)}
-        })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        swarmy_testkit::Script::new("Next answer")
+            .parts(
+                0,
+                vec![Part::Text { text: "UNUSABLE_TRUNCATION".to_owned() }],
+                StopReason::MaxOutputTokens,
+            )
+            .usage(0, 20, 1)
+            .parts(
+                1,
+                vec![Part::Text { text: "REFUSED_CHECKPOINT".to_owned() }],
+                StopReason::MaxOutputTokens,
+            )
+            .usage(1, 20, 0)
+            .usage(2, 20, 0)
+            .write_to(&f.files.path().join("script.json"));
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("refused-recovery", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -2046,23 +2026,20 @@ async fn no_head_to_compact_omits_truncated_tool_attempt() {
             f.provider = "openai".into();
             f.keyring();
             f.put_entry("primary").await;
-            let mut truncated = side_response("partial".into(), 20);
-            truncated.parts = vec![Part::ToolCall {
-                call_id: ToolCallId("abandoned".into()),
-                tool: "get_time".into(),
-                input: serde_json::json!({}),
-            }];
-            truncated.stop_reason = StopReason::MaxOutputTokens;
-            truncated.usage.output_tokens = 1;
-            std::fs::write(
-                f.files.path().join("script.json"),
-                serde_json::to_vec(&serde_json::json!({
-                    "responses": {"0": truncated, "1": side_response("Next answer".into(), 20)}
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-            let image = image_fixture::image(&f.store).await;
+            swarmy_testkit::Script::new("Next answer")
+                .parts(
+                    0,
+                    vec![Part::ToolCall {
+                        call_id: ToolCallId("abandoned".into()),
+                        tool: "get_time".into(),
+                        input: serde_json::json!({}),
+                    }],
+                    StopReason::MaxOutputTokens,
+                )
+                .usage(0, 20, 1)
+                .usage(1, 20, 0)
+                .write_to(&f.files.path().join("script.json"));
+            let image = swarmy_testkit::image(&f.store).await;
             let agent = f
                 .store
                 .create_agent("no-head-recovery", image, "", Timestamp::now(), None)
@@ -2116,23 +2093,20 @@ async fn no_head_recovery_survives_crash_before_release() {
             f.provider = "openai".into();
             f.keyring();
             f.put_entry("primary").await;
-            let mut truncated = side_response("partial".into(), 20);
-            truncated.parts = vec![Part::ToolCall {
-                call_id: ToolCallId("abandoned".into()),
-                tool: "get_time".into(),
-                input: serde_json::json!({}),
-            }];
-            truncated.stop_reason = StopReason::MaxOutputTokens;
-            truncated.usage.output_tokens = 1;
-            std::fs::write(
-                f.files.path().join("script.json"),
-                serde_json::to_vec(&serde_json::json!({
-                    "responses": {"0": truncated, "1": side_response("unexpected".into(), 20)}
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-            let image = image_fixture::image(&f.store).await;
+            swarmy_testkit::Script::new("unexpected")
+                .parts(
+                    0,
+                    vec![Part::ToolCall {
+                        call_id: ToolCallId("abandoned".into()),
+                        tool: "get_time".into(),
+                        input: serde_json::json!({}),
+                    }],
+                    StopReason::MaxOutputTokens,
+                )
+                .usage(0, 20, 1)
+                .usage(1, 20, 0)
+                .write_to(&f.files.path().join("script.json"));
+            let image = swarmy_testkit::image(&f.store).await;
             let agent = f
                 .store
                 .create_agent("no-head-crash", image, "", Timestamp::now(), None)
@@ -2148,10 +2122,7 @@ async fn no_head_recovery_survives_crash_before_release() {
             let worker = f.start("swarmy-worker", Some("before_release"));
             f.start("swarmy-gateway", None);
             f.wake(id).await;
-            let status = timeout(WAIT, f.children[worker].wait())
-                .await
-                .unwrap()
-                .unwrap();
+            let status = timeout(WAIT, f.children[worker].wait()).await.unwrap();
             assert!(
                 status.code() == Some(137) || status.signal() == Some(9),
                 "{status}"
@@ -2184,24 +2155,42 @@ async fn no_head_recovery_survives_crash_before_release() {
 
 #[tokio::test]
 async fn empty_successful_summary_rolls_over() {
-    run(|f| Box::pin(async move {
-        f.summarize_at_tokens = 100;
-        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
-            "responses": {"0": side_response("Original answer".into(), 101), "1": side_response(String::new(), 20)}
-        })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
-        let agent = f.store.create_agent("empty-summary", image, "", Timestamp::now(), None).await.unwrap();
-        let id = side_id();
-        f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
-        f.compactable_user_message(id).await;
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
-        f.wake(id).await;
-        let next = wait_successor(f, id).await;
-        assert_ne!(next, id);
-        assert_eq!(f.calls(), 2);
-    })).await;
+    run(|f| {
+        Box::pin(async move {
+            f.summarize_at_tokens = 100;
+            swarmy_testkit::Script::new("Original answer")
+                .usage(0, 101, 0)
+                .parts(
+                    1,
+                    vec![Part::Text {
+                        text: String::new(),
+                    }],
+                    StopReason::EndTurn,
+                )
+                .usage(1, 20, 0)
+                .write_to(&f.files.path().join("script.json"));
+            let image = swarmy_testkit::image(&f.store).await;
+            let agent = f
+                .store
+                .create_agent("empty-summary", image, "", Timestamp::now(), None)
+                .await
+                .unwrap();
+            let id = side_id();
+            f.store
+                .create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None)
+                .await
+                .unwrap();
+            f.compactable_user_message(id).await;
+            f.start("swarmy-scheduler", None);
+            f.start("swarmy-worker", None);
+            f.start("swarmy-gateway", None);
+            f.wake(id).await;
+            let next = wait_successor(f, id).await;
+            assert_ne!(next, id);
+            assert_eq!(f.calls(), 2);
+        })
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -2212,13 +2201,18 @@ async fn length_stopped_summary_preserves_session() {
 async fn rejected_summary_preserves_session(summary: &'static str, stop_reason: StopReason) {
     run(|f| Box::pin(async move {
         f.summarize_at_tokens = 100;
-        let mut summary_response = side_response(summary.into(), 20);
-        summary_response.stop_reason = stop_reason;
-        std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
-            "responses": {"0": side_response("Original answer".into(), 101), "1": summary_response,
-                "2": side_response("Next answer".into(), 20)}
-        })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        swarmy_testkit::Script::new("Original answer")
+            .usage(0, 101, 0)
+            .parts(1, vec![Part::Text { text: summary.to_owned() }], stop_reason)
+            .usage(1, 20, 0)
+            .parts(
+                2,
+                vec![Part::Text { text: "Next answer".to_owned() }],
+                StopReason::EndTurn,
+            )
+            .usage(2, 20, 0)
+            .write_to(&f.files.path().join("script.json"));
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("rejected-summary", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -2250,30 +2244,34 @@ fn side_id() -> SessionId {
     }
 }
 
-fn side_response(text: String, input_tokens: u64) -> Response {
-    Response {
-        parts: vec![Part::Text { text }],
-        stop_reason: StopReason::EndTurn,
-        usage: TokenUsage {
-            input_tokens,
-            ..Default::default()
-        },
-        quota_remaining: BTreeMap::new(),
-        quota_resets: BTreeMap::new(),
-    }
+fn write_direct_trigger_script(fixture: &Fixture, summary: &str) {
+    swarmy_testkit::Script::new("Done in the successor")
+        .parts(
+            0,
+            vec![Part::Text {
+                text: "Still working".into(),
+            }],
+            StopReason::EndTurn,
+        )
+        .usage(0, 150, 0)
+        .parts(
+            1,
+            vec![Part::Text {
+                text: summary.to_owned(),
+            }],
+            StopReason::EndTurn,
+        )
+        .usage(1, 120, 0)
+        .usage(2, 12, 0)
+        .usage(3, 12, 0)
+        .write_to(&fixture.files.path().join("script.json"));
 }
 
 async fn wait_successor(fixture: &Fixture, id: SessionId) -> SessionId {
-    timeout(WAIT, async {
-        loop {
-            if let Some(next) = fixture.store.next_session(id).await.unwrap() {
-                break next;
-            }
-            sleep(Duration::from_millis(25)).await;
-        }
+    swarmy_testkit::eventually("successor session appears", WAIT, async || {
+        fixture.store.next_session(id).await.unwrap()
     })
     .await
-    .unwrap()
 }
 
 #[tokio::test]
@@ -2292,7 +2290,7 @@ Finish the task
 1. Verify"
                 .to_owned();
             write_direct_trigger_script(f, &summary);
-            let image = image_fixture::image(&f.store).await;
+            let image = swarmy_testkit::image(&f.store).await;
             let agent = f
                 .store
                 .create_agent("sidekick", image, "", Timestamp::now(), None)
@@ -2335,20 +2333,6 @@ Finish the task
     .await;
 }
 
-fn write_direct_trigger_script(fixture: &Fixture, summary: &str) {
-    let responses = serde_json::json!({
-        "0": side_response("Still working".into(), 150),
-        "1": side_response(summary.to_owned(), 120),
-        "2": side_response("Done in the successor".into(), 12),
-        "3": side_response("Done in the successor".into(), 12),
-    });
-    std::fs::write(
-        fixture.files.path().join("script.json"),
-        serde_json::to_vec(&serde_json::json!({ "responses": responses })).unwrap(),
-    )
-    .unwrap();
-}
-
 async fn check_side_successor(
     f: &mut Fixture,
     agent: &AgentId,
@@ -2373,17 +2357,11 @@ async fn check_side_successor(
     // A chat-shaped rollover replays to end-of-turn and idles again. The
     // archival wakes the successor runnable first, so poll until it idles
     // instead of asserting on the transient runnable state.
-    let fresh = timeout(WAIT, async {
-        loop {
-            let fresh = f.store.fetch_session(new).await.unwrap().unwrap();
-            if fresh.state == SessionState::Idle {
-                break fresh;
-            }
-            sleep(Duration::from_millis(25)).await;
-        }
+    let fresh = swarmy_testkit::eventually("successor idles", WAIT, async || {
+        let fresh = f.store.fetch_session(new).await.unwrap().unwrap();
+        (fresh.state == SessionState::Idle).then_some(fresh)
     })
-    .await
-    .expect("chat-shaped successor did not idle");
+    .await;
     assert_eq!(fresh.state, SessionState::Idle);
     assert_eq!(fresh.agent_id, *agent);
     let opening = f.store.read_events(new, 0, 64).await.unwrap();
@@ -2398,7 +2376,7 @@ async fn check_side_successor(
     assert!(opening.len() >= 2);
 }
 
-fn side_tool_response(call: &str, input_tokens: u64, reasoning: bool) -> Response {
+fn tool_parts(call: &str, reasoning: bool, extra: Option<Part>) -> Vec<Part> {
     let mut parts = Vec::new();
     if reasoning {
         parts.push(Part::Reasoning {
@@ -2411,16 +2389,8 @@ fn side_tool_response(call: &str, input_tokens: u64, reasoning: bool) -> Respons
         tool: "get_time".into(),
         input: serde_json::json!({}),
     });
-    Response {
-        parts,
-        stop_reason: StopReason::ToolCalls,
-        usage: TokenUsage {
-            input_tokens,
-            ..Default::default()
-        },
-        quota_remaining: BTreeMap::new(),
-        quota_resets: BTreeMap::new(),
-    }
+    parts.extend(extra);
+    parts
 }
 
 fn write_fleet_side_script(fixture: &Fixture, summary: &str, split_turn: bool) {
@@ -2429,50 +2399,55 @@ fn write_fleet_side_script(fixture: &Fixture, summary: &str, split_turn: bool) {
     // 40. The summary response reports usage above the compaction threshold so the
     // gateway sends it down the slow path to archival. The remaining rounds
     // run small in the successor and finish the task there.
-    let mut responses = serde_json::Map::new();
-    for round in 0..40_u64 {
-        let mut response =
-            side_tool_response(&format!("clock-{round}"), 150 + round * 150, round % 5 == 0);
-        if split_turn {
-            response.parts.push(Part::Reasoning {
-                text: "working ".repeat(500),
-                metadata: BTreeMap::new(),
-            });
-        }
-        responses.insert(round.to_string(), serde_json::to_value(response).unwrap());
+    let mut script = swarmy_testkit::Script::new("Finished; nothing remains.");
+    for round in 0..40_usize {
+        let call = format!("clock-{round}");
+        let extra = split_turn.then(|| Part::Reasoning {
+            text: "working ".repeat(500),
+            metadata: BTreeMap::new(),
+        });
+        script = script
+            .parts(
+                round,
+                tool_parts(&call, round % 5 == 0, extra),
+                StopReason::ToolCalls,
+            )
+            .usage(round, 150 + round as u64 * 150, 0);
     }
+    let offset = usize::from(split_turn);
     if split_turn {
-        responses.insert(
-            "40".into(),
-            serde_json::to_value(side_response("## Goal\nEarlier work".into(), 6200)).unwrap(),
-        );
-        responses.insert(
-            "41".into(),
-            serde_json::to_value(side_response(summary.to_owned(), 6200)).unwrap(),
-        );
-    } else {
-        responses.insert(
-            "40".into(),
-            serde_json::to_value(side_response(summary.to_owned(), 6200)).unwrap(),
-        );
+        script = script
+            .parts(
+                40,
+                vec![Part::Text {
+                    text: "## Goal\nEarlier work".into(),
+                }],
+                StopReason::EndTurn,
+            )
+            .usage(40, 6200, 0);
     }
-    let offset = u64::from(split_turn);
-    for round in 41..45_u64 {
-        let response = side_tool_response(&format!("clock-{round}"), 12, round % 5 == 0);
-        responses.insert(
-            (round + offset).to_string(),
-            serde_json::to_value(response).unwrap(),
-        );
+    script = script
+        .parts(
+            40 + offset,
+            vec![Part::Text {
+                text: summary.to_owned(),
+            }],
+            StopReason::EndTurn,
+        )
+        .usage(40 + offset, 6200, 0);
+    for round in 41..45_usize {
+        let call = format!("clock-{round}");
+        script = script
+            .parts(
+                round + offset,
+                tool_parts(&call, round % 5 == 0, None),
+                StopReason::ToolCalls,
+            )
+            .usage(round + offset, 12, 0);
     }
-    responses.insert(
-        (45 + offset).to_string(),
-        serde_json::to_value(side_response("Finished; nothing remains.".into(), 12)).unwrap(),
-    );
-    std::fs::write(
-        fixture.files.path().join("script.json"),
-        serde_json::to_vec(&serde_json::json!({ "responses": responses })).unwrap(),
-    )
-    .unwrap();
+    script
+        .usage(45 + offset, 12, 0)
+        .write_to(&fixture.files.path().join("script.json"));
 }
 
 async fn read_all_events(fixture: &Fixture, id: SessionId) -> Vec<Event> {
@@ -2515,7 +2490,7 @@ Finish the task
 1. Verify"
                 .to_owned();
             write_fleet_side_script(f, &summary, false);
-            let image = image_fixture::image(&f.store).await;
+            let image = swarmy_testkit::image(&f.store).await;
             let agent = f
                 .store
                 .create_agent("sidekick", image, "", Timestamp::now(), None)
@@ -2558,12 +2533,19 @@ async fn refused_split_prefix_reply_is_not_in_next_prompt() {
         write_fleet_side_script(f, "REFUSED_PREFIX_REPLY", true);
         let path = f.files.path().join("script.json");
         let mut script: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        let mut refused = side_response("REFUSED_PREFIX_REPLY".into(), 6200);
-        refused.stop_reason = StopReason::MaxOutputTokens;
-        script["responses"]["41"] = serde_json::to_value(refused).unwrap();
-        script["responses"]["42"] = serde_json::to_value(side_response("Next answer".into(), 20)).unwrap();
+        let overlay = swarmy_testkit::Script::new("Next answer")
+            .parts(
+                41,
+                vec![Part::Text { text: "REFUSED_PREFIX_REPLY".to_owned() }],
+                StopReason::MaxOutputTokens,
+            )
+            .usage(41, 6200, 0)
+            .usage(42, 20, 0)
+            .json();
+        script["responses"]["41"] = overlay["responses"]["41"].clone();
+        script["responses"]["42"] = overlay["responses"]["42"].clone();
         std::fs::write(&path, serde_json::to_vec(&script).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("refused-prefix", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -2589,7 +2571,7 @@ async fn split_turn_prefix_summary_keeps_later_tool_rounds() {
         f.summarize_at_tokens = 5999;
         let prefix = "## Original Request\nFinish the task\n\n## Progress So Far\n- Tools used\n\n## Context Needed to Continue\n- Verify";
         write_fleet_side_script(f, prefix, true);
-        let image = image_fixture::image(&f.store).await;
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("split-turn", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -2626,7 +2608,7 @@ async fn side_summary_markdown_continues() {
             let summary =
                 "## Goal\nFinish the routes task\n\n## Progress\n### Done\n- [x] Handler done";
             write_fleet_side_script(f, summary, false);
-            let image = image_fixture::image(&f.store).await;
+            let image = swarmy_testkit::image(&f.store).await;
             let agent = f
                 .store
                 .create_agent("sidekick", image, "", Timestamp::now(), None)
@@ -2777,7 +2759,7 @@ async fn failover_survives_worker_restart_without_second_advance() {
             // The first worker dies right after handing attempt one to the
             // gateway path; its lease lapses and the replacement recovers
             // the turn from the durable outbox.
-            f.start("swarmy-worker", Some("after_release"));
+            let first = f.start("swarmy-worker", Some("after_release"));
             f.gateway_serves("openai").await;
             let id = f.create_with_route("ab").await;
             f.wake(id).await;
@@ -2786,17 +2768,17 @@ async fn failover_survives_worker_restart_without_second_advance() {
             // submit, so a durable request means the death already
             // happened, with a short grace for the event publish.
             wait_for_durable_request(f, id).await;
-            sleep(Duration::from_secs(3)).await;
+            f.wait_exit(first).await;
             // The second worker recovers attempt one, records the 429 as a
             // failover to the second step, and dies with the step lease
             // still held, before it can submit attempt two.
-            f.start("swarmy-worker", Some("after_advance"));
+            let second = f.start("swarmy-worker", Some("after_advance"));
             wait_for_route_step(f, id, 1).await;
             // The replacement resumes after the failover: the handled
             // failure advances nothing again and parks nothing behind the
             // in-flight successor, so the turn completes on the second
             // entry instead of sleeping behind the first entry's retry.
-            sleep(Duration::from_secs(3)).await;
+            f.wait_exit(second).await;
             f.start("swarmy-worker", None);
             let events = f.idle(id).await;
             let completed = events.iter().find_map(|event| match event {

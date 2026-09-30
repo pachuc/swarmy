@@ -544,6 +544,7 @@ impl StreamState {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     #[test]
     fn zero_thinking_budget_never_requests_thoughts() {
         let off = thinking_config("gemini-2.5-flash", ReasoningEffort::None).unwrap();

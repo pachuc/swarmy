@@ -57,5 +57,10 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 swarmy-core = { workspace = true, features = ["test-support"] }
+# The image test only polls for a spawned API with eventually(): no stack
+# feature, so this test binary does not link the FoundationDB client (the
+# remote-tests job has none). A direct path dependency because workspace
+# inheritance cannot disable default features.
+swarmy-testkit = { path = "../swarmy-testkit", version = "0.1.0", default-features = false }
 # Unit tests in the chat client construct typed API errors; the binary itself
 # talks HTTP only through swarmy-client.

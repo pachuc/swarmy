@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! Checked-in key layout fixture for the tuple registry.
 use foundationdb::tuple::Subspace;
 use jiff::Timestamp;

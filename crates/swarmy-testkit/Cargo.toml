@@ -1,0 +1,29 @@
+[package]
+name = "swarmy-testkit"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["stack"]
+# The stack feature covers everything that touches FoundationDB, the store,
+# or the bus: the stack gate, the cleanup guard, and the metadata image
+# fixture. Suites that only need the light helpers (`eventually`, sibling
+# binaries, the fake-provider script builder, test settings) disable default
+# features so their test binaries do not link the FoundationDB client.
+stack = ["dep:swarmy-store", "dep:foundationdb", "dep:async-nats"]
+
+[dependencies]
+swarmy-core = { workspace = true, features = ["test-support"] }
+swarmy-config.workspace = true
+swarmy-store = { workspace = true, features = ["test-support"], optional = true }
+swarmy-llm.workspace = true
+async-nats = { workspace = true, optional = true }
+foundationdb = { workspace = true, optional = true }
+serde_json.workspace = true
+tokio.workspace = true
+ulid.workspace = true

@@ -114,6 +114,7 @@ pub fn backoff(base: std::time::Duration, attempt: u32, max_doublings: u32) -> s
 
 #[cfg(test)]
 mod backoff_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::backoff;
     use std::time::Duration;
 

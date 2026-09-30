@@ -190,6 +190,7 @@ impl ObjectStore for UnconditionalStore {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_config::{BucketCredentials, BucketSpec, ObjectPrefix};
 

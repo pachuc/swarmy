@@ -85,6 +85,7 @@ pub(crate) fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option
 
 #[cfg(test)]
 mod header_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     // Future-date and invalid Retry-After forms cannot go through the mocks
     // without sleeping, so they are pinned at the parser.

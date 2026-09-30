@@ -1131,6 +1131,7 @@ fn parse_frame(frame: &str) -> Result<ParsedFrame, Error> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use axum::{
         Json, Router,
@@ -1458,7 +1459,13 @@ mod tests {
                         async move {
                             puts.fetch_add(1, Ordering::SeqCst);
                             // Hold the response long enough that the test can
-                            // drop the awaiting future mid-update.
+                            // drop the awaiting future mid-update: the hold
+                            // must outlast the test's 50 ms poll, so a fixed
+                            // delay is the assertion setup, not a wait.
+                            #[expect(
+                                clippy::disallowed_methods,
+                                reason = "holding the PUT past the test's 50 ms poll is the setup"
+                            )]
                             tokio::time::sleep(Duration::from_millis(200)).await;
                             sent.send(sub).await.unwrap();
                             HttpStatus::NO_CONTENT
@@ -1506,15 +1513,12 @@ mod tests {
                 .await
                 .is_err()
         );
-        let mut seen = false;
-        for _ in 0..50 {
-            if puts.load(Ordering::SeqCst) == 1 {
-                seen = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert!(seen, "server did not see the subscription PUT");
+        swarmy_testkit::eventually(
+            "server sees the subscription PUT",
+            Duration::from_secs(2),
+            async || (puts.load(Ordering::SeqCst) == 1).then_some(()),
+        )
+        .await;
         drop(cancelled);
         // Let the owned PUT task finish and record the applied selection.
         let applied = tokio::time::timeout(Duration::from_secs(2), received.recv())
@@ -1522,6 +1526,14 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(applied, updated);
+        // The applied selection is recorded inside the next next_item()
+        // call, and the stored PUT task's JoinHandle is private to the
+        // stream: no external signal marks it done. Beat once before the
+        // quiet assertion so it does not race the task's final poll.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "no external signal marks the stored PUT task done; the beat precedes the quiet assertion"
+        )]
         tokio::time::sleep(Duration::from_millis(100)).await;
         // The next update finishes the stored task instead of sending the
         // same cursors again, then waits for new-feed events.

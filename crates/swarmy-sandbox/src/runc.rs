@@ -73,6 +73,7 @@ fn parse_image_environment(content: &str) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod image_environment_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::parse_image_environment;
 
     // Tested directly because a running container is needed to reach this through `create`.
@@ -100,6 +101,7 @@ fn pressure_eligible(modified: SystemTime) -> bool {
 
 #[cfg(test)]
 mod scratch_pressure_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::{SCRATCH_PRESSURE_GRACE, pressure_eligible};
     use std::time::{Duration, SystemTime};
 

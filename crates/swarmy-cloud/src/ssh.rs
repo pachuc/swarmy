@@ -826,6 +826,7 @@ async fn wait_ssh(node: &RemoteNode) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::{Ssh, image_build_command, tunnel_authorization};
 
     #[test]
@@ -1009,6 +1010,7 @@ mod tests {
 
 #[cfg(test)]
 mod provisioning_command_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::provisioning_command;
 
     fn node() -> swarmy_config::RemoteNode {

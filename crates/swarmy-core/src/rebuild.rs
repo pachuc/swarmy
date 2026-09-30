@@ -32,6 +32,7 @@ pub fn computer_rebuilt_message(
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     #[test]

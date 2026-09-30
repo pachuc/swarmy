@@ -1053,6 +1053,7 @@ fn service_problem(services: &[api::ServiceHealth], provider: Option<&str>) -> &
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     fn service(role: api::ServiceRole, providers: &[&str], alive: bool) -> api::ServiceHealth {
         api::ServiceHealth {

@@ -23,6 +23,10 @@ pedantic = { level = "deny", priority = -1 }
 redundant_clone = "deny"
 needless_collect = "deny"
 large_stack_frames = "deny"
+# The sleep ban in clippy.toml applies to test targets only: each test root
+# opts in with its own deny (workspace lints cannot be test-scoped, and
+# production code sleeps legitimately in backoffs and intervals).
+disallowed_methods = "allow"
 # Part 1 (task n0sxwd): exceptions. Kept in one block so the parallel lint
 # task's rebase is trivial. Every `allow` needs a reason; `allow` itself
 # stays legal for lints that only fire under some feature combinations.
@@ -134,6 +138,7 @@ swarmy-sandbox = { path = "crates/swarmy-sandbox" }
 swarmy-volume = { path = "crates/swarmy-volume" }
 swarmy-store = { path = "crates/swarmy-store" }
 swarmy-tools = { path = "crates/swarmy-tools" }
+swarmy-testkit = { path = "crates/swarmy-testkit" }
 swarmy-harness = { path = "crates/swarmy-harness" }
 
 [profile.dev]

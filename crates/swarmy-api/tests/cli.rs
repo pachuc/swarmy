@@ -1,47 +1,22 @@
+#![deny(clippy::disallowed_methods)]
 //! CLI projections retain the stored record shape without exposing a database to clients.
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use swarmy_api::{AppState, router};
 use swarmy_bus::{Bus, Config};
-use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId};
 use swarmy_store::{Store, blob::MemoryBlobStore};
-use ulid::Ulid;
 
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 async fn fixture() -> Option<(
     swarmy_client::Client,
     Store,
     tokio::task::JoinHandle<Result<(), std::io::Error>>,
+    swarmy_testkit::StackGuard,
 )> {
-    let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-    let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-    NETWORK.get_or_init(swarmy_store::boot);
-    let store = Store::open(
-        Some(std::path::Path::new(&cluster)),
-        Some(&["cli-api-test".into(), Ulid::generate().to_string()]),
-        Arc::new(MemoryBlobStore::default()),
-    )
-    .await
-    .unwrap();
-    let manifest = ManifestId::from_ulid(Ulid::generate());
-    store
-        .put_manifest(
-            manifest,
-            &ManifestHeader {
-                size: u64::from(CHUNK_SIZE),
-                chunk_size: CHUNK_SIZE,
-                root_hash: ContentHash::ZERO,
-            },
-        )
+    let stack = swarmy_testkit::Stack::load("cli")?;
+    let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    swarmy_testkit::image(&store).await;
+    let bus = Bus::connect(&stack.nats_url, Config::default())
         .await
         .unwrap();
-    store
-        .put_image("fixture", &ImageTag("test".into()), manifest, None)
-        .await
-        .unwrap();
-    let bus = Bus::connect(&nats, Config::default()).await.unwrap();
     let mut state = AppState::new(
         store.clone(),
         bus,
@@ -57,11 +32,11 @@ async fn fixture() -> Option<(
     )
     .unwrap();
     let server = tokio::spawn(axum::serve(listener, router(state)).into_future());
-    Some((client, store, server))
+    Some((client, store, server, guard))
 }
 #[tokio::test]
 async fn projections_match_store_records_and_catalog() {
-    let Some((client, store, server)) = fixture().await else {
+    let Some((client, store, server, _guard)) = fixture().await else {
         return;
     };
     let agent = store
@@ -214,7 +189,7 @@ async fn assert_credential_entries(client: &swarmy_client::Client) {
 }
 #[tokio::test]
 async fn stopped_api_reports_endpoint_quickly() {
-    let Some((client, _store, server)) = fixture().await else {
+    let Some((client, _store, server, _guard)) = fixture().await else {
         return;
     };
     server.abort();
@@ -225,7 +200,7 @@ async fn stopped_api_reports_endpoint_quickly() {
 
 #[tokio::test]
 async fn agent_management_uses_api_and_preserves_requirements() {
-    let Some((client, store, server)) = fixture().await else {
+    let Some((client, store, server, _guard)) = fixture().await else {
         return;
     };
     let create = swarmy_api_types::CreateAgent {
@@ -315,7 +290,7 @@ async fn agent_management_uses_api_and_preserves_requirements() {
 
 #[tokio::test]
 async fn agent_update_rejects_invalid_merged_model() {
-    let Some((client, store, server)) = fixture().await else {
+    let Some((client, store, server, _guard)) = fixture().await else {
         return;
     };
     let agent = store

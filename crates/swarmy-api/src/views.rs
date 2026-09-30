@@ -703,6 +703,7 @@ async fn populate_agent_detail(
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use serde_json::json;
 

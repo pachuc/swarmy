@@ -152,6 +152,7 @@ pub(crate) fn anthropic_resets(headers: &reqwest::header::HeaderMap) -> BTreeMap
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     fn headers(entries: &[(&str, &str)]) -> reqwest::header::HeaderMap {

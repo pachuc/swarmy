@@ -43,5 +43,6 @@ rand.workspace = true
 # so `cargo test -p swarmy-store` alone compiles the gated helpers without
 # relying on other crates' dev-dependencies to unify the feature.
 swarmy-store = { path = ".", features = ["test-support"] }
+swarmy-testkit.workspace = true
 tempfile.workspace = true
 swarmy-volume.workspace = true

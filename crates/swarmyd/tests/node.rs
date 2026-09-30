@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 #![cfg(target_os = "linux")]
 use std::{
     path::{Path, PathBuf},
@@ -74,26 +75,24 @@ impl Node {
     }
 
     async fn ready(&mut self, store: &Store, after: jiff::Timestamp) {
-        tokio::time::timeout(Duration::from_secs(45), async {
-            loop {
+        swarmy_testkit::eventually(
+            "node did not register",
+            Duration::from_secs(45),
+            async || {
                 assert!(
                     self.child.as_mut().unwrap().try_wait().unwrap().is_none(),
                     "swarmyd exited during startup"
                 );
-                if store
+                (store
                     .get_node(self.id)
                     .await
                     .unwrap()
                     .is_some_and(|node| node.last_heartbeat > after)
-                    && UnixStream::connect(self.socket()).await.is_ok()
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        })
-        .await
-        .expect("node did not register");
+                    && UnixStream::connect(self.socket()).await.is_ok())
+                .then_some(())
+            },
+        )
+        .await;
     }
 
     async fn request(&self, request: Request) -> Response {
@@ -173,17 +172,17 @@ impl Node {
                 .unwrap()
                 .success()
         );
-        tokio::time::timeout(Duration::from_secs(45), async {
-            loop {
-                if let Some(status) = self.child.as_mut().unwrap().try_wait().unwrap() {
+        swarmy_testkit::eventually("node did not exit", Duration::from_secs(45), async || {
+            self.child
+                .as_mut()
+                .unwrap()
+                .try_wait()
+                .unwrap()
+                .map(|status| {
                     assert!(status.success());
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
+                })
         })
-        .await
-        .unwrap();
+        .await;
         self.child = None;
     }
 }
@@ -345,6 +344,9 @@ async fn base_image(settings: &swarmy_config::Settings, store: &Store) -> Manife
     if let Some(manifest) = store.get_image("base-ubuntu", &tag).await.unwrap() {
         return manifest;
     }
+    // The CLI inherits the suite API endpoint through settings.environment();
+    // fail here with the suite pointer when a bare local run has none.
+    let (_api_url, _api_token) = swarmy_testkit::require_api_endpoint(settings);
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let binary = std::env::var_os("SWARMY_TEST_CLI")
         .map_or_else(|| workspace.join("target/debug/swarmy"), PathBuf::from);
@@ -387,7 +389,7 @@ async fn root_node_scratch_is_local_persistent_and_removed_on_delete() {
         return;
     }
     boot_network();
-    let mut settings = swarmy_config::Settings::load().unwrap().settings;
+    let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
     settings.store.directory = format!("swarmy-scratch-test-{}", ulid::Ulid::generate());
@@ -468,18 +470,19 @@ async fn scratch_mounts(
         std::fs::read_to_string(scratch_root.join("1/scratch-test")).unwrap(),
         "temp\n"
     );
-    tokio::time::timeout(Duration::from_secs(25), async {
-        while !store
-            .scratch(agent.agent_id)
-            .await
-            .unwrap()
-            .is_some_and(|record| record.node_id == node.id && record.bytes >= 11)
-        {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("node did not report scratch size");
+    swarmy_testkit::eventually(
+        "node did not report scratch size",
+        Duration::from_secs(25),
+        async || {
+            store
+                .scratch(agent.agent_id)
+                .await
+                .unwrap()
+                .is_some_and(|record| record.node_id == node.id && record.bytes >= 11)
+                .then_some(())
+        },
+    )
+    .await;
     (agent.agent_id, sandbox, scratch_root)
 }
 
@@ -568,19 +571,26 @@ async fn scratch_restart_and_delete(
     .unwrap();
     node.start();
     node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    swarmy_testkit::eventually(
+        "restarted sweep retains fresh scratch",
+        Duration::from_secs(25),
+        async || {
+            (std::fs::read_to_string(scratch_root.join("0/cache")).unwrap() == "cargo\nmore\n")
+                .then_some(())
+        },
+    )
+    .await;
     assert_eq!(
         std::fs::read_to_string(scratch_root.join("0/cache")).unwrap(),
         "cargo\nmore\n"
     );
     store.delete_agent(agent).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(25), async {
-        while scratch_root.exists() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("deleted computer retained scratch");
+    swarmy_testkit::eventually(
+        "deleted computer retained scratch",
+        Duration::from_secs(25),
+        async || (!scratch_root.exists()).then_some(()),
+    )
+    .await;
 }
 
 async fn scratch_delete_cycles(node: &mut Node, store: &Store, base: ManifestId) {
@@ -609,17 +619,18 @@ async fn scratch_delete_cycles(node: &mut Node, store: &Store, base: ManifestId)
         node.destroy(sandbox).await;
         store.delete_agent(agent.agent_id).await.unwrap();
     }
-    tokio::time::timeout(Duration::from_secs(25), async {
-        while std::fs::read_dir(node.root.path().join(".swarmy/scratch"))
-            .unwrap()
-            .next()
-            .is_some()
-        {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("scratch directories remained after ten create/delete cycles");
+    swarmy_testkit::eventually(
+        "scratch directories remained after ten create/delete cycles",
+        Duration::from_secs(25),
+        async || {
+            std::fs::read_dir(node.root.path().join(".swarmy/scratch"))
+                .unwrap()
+                .next()
+                .is_none()
+                .then_some(())
+        },
+    )
+    .await;
     node.stop().await;
 }
 
@@ -688,13 +699,12 @@ async fn scratch_pressure(node: &mut Node, store: &Store, base: ManifestId) {
         response => panic!("third sandbox: {response:?}"),
     };
     node.destroy(third_sandbox).await;
-    tokio::time::timeout(Duration::from_secs(25), async {
-        while candidates.iter().any(|(_, path)| path.exists()) {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("pressure sweep retained scratch");
+    swarmy_testkit::eventually(
+        "pressure sweep retained scratch",
+        Duration::from_secs(25),
+        async || (!candidates.iter().any(|(_, path)| path.exists())).then_some(()),
+    )
+    .await;
     let log = std::fs::read_to_string(node.root.path().join("node.log")).unwrap();
     let oldest = log.find(&format!("computer={}", candidates[0].0)).unwrap();
     let newer = log.find(&format!("computer={}", candidates[1].0)).unwrap();
@@ -742,13 +752,12 @@ async fn scratch_idle(node: &mut Node, store: &Store) {
     .unwrap();
     node.start();
     node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
-    tokio::time::timeout(Duration::from_secs(25), async {
-        while path.exists() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("idle sweep retained old scratch");
+    swarmy_testkit::eventually(
+        "idle sweep retained old scratch",
+        Duration::from_secs(25),
+        async || (!path.exists()).then_some(()),
+    )
+    .await;
     node.stop().await;
 }
 
@@ -764,7 +773,7 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
         }
     }
     boot_network();
-    let mut settings = swarmy_config::Settings::load().unwrap().settings;
+    let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
     settings.store.directory = format!("swarmy-node-test-{}", ulid::Ulid::generate());
@@ -911,7 +920,7 @@ async fn root_dev_stack_uses_sandbox_loopback() {
     }
     boot_network();
     let (image_name, image_tag) = image_spec.split_once(':').expect("image must be name:tag");
-    let settings = swarmy_config::Settings::load().unwrap().settings;
+    let settings = swarmy_testkit::stack_settings();
     let store = store(&settings).await;
     let image = store
         .get_image(image_name, &ImageTag(image_tag.into()))
@@ -961,9 +970,15 @@ async fn registration(node: &Node, store: &Store) {
     let first = store.get_node(node.id).await.unwrap().unwrap();
     assert_eq!(first.roles, node.settings.node.roles);
     assert_eq!(first.capacity, node.settings.node.capacity);
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let second = store.get_node(node.id).await.unwrap().unwrap();
-    assert!(second.last_heartbeat > first.last_heartbeat);
+    let second = swarmy_testkit::eventually(
+        "node heartbeat advances",
+        Duration::from_secs(30),
+        async || {
+            let second = store.get_node(node.id).await.unwrap().unwrap();
+            (second.last_heartbeat > first.last_heartbeat).then_some(second)
+        },
+    )
+    .await;
     let (live, cursor) = store
         .scan_live_nodes(None, first.last_heartbeat, 1)
         .await
@@ -1050,8 +1065,20 @@ async fn crash_recovery(node: &mut Node, store: &Store, volume: VolumeId) {
     drop(reader);
     node.start();
     node.ready(store, before).await;
-    assert!(!Path::new("/run/netns").join(&network_name).exists());
-    assert!(!Path::new(&format!("/proc/{}", old_pasta.trim())).exists());
+    // The killed pasta process and its netns disappear on reaping, which
+    // races the restart: poll for both instead of asserting immediately.
+    swarmy_testkit::eventually(
+        "killed pasta netns disappears",
+        Duration::from_secs(10),
+        async || (!Path::new("/run/netns").join(&network_name).exists()).then_some(()),
+    )
+    .await;
+    swarmy_testkit::eventually(
+        "killed pasta process is reaped",
+        Duration::from_secs(10),
+        async || (!Path::new(&format!("/proc/{}", old_pasta.trim())).exists()).then_some(()),
+    )
+    .await;
     let expiry = store
         .get_volume(volume)
         .await
@@ -1060,16 +1087,17 @@ async fn crash_recovery(node: &mut Node, store: &Store, volume: VolumeId) {
         .writer_lease
         .unwrap()
         .expires_at;
-    let wait = u64::try_from(
+    eprintln!("waiting for the crashed writer lease to expire at {expiry}");
+    swarmy_testkit::eventually(
+        "crashed writer lease expires",
         expiry
             .duration_since(jiff::Timestamp::now())
-            .as_secs()
-            .max(0),
+            .try_into()
+            .unwrap_or(Duration::ZERO)
+            + Duration::from_secs(30),
+        async || (jiff::Timestamp::now() >= expiry).then_some(()),
     )
-    .unwrap()
-        + 2;
-    eprintln!("waiting {wait}s for the crashed writer lease to expire");
-    tokio::time::sleep(Duration::from_secs(wait)).await;
+    .await;
     let recovered = node.create(volume).await;
     let (result, _, stderr) = node
         .exec(
@@ -1197,7 +1225,7 @@ async fn root_deleted_computer_stops_call_destroys_sandbox_and_detaches_device()
         }
     }
     boot_network();
-    let mut settings = swarmy_config::Settings::load().unwrap().settings;
+    let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
     settings.store.directory = format!("swarmy-deletion-test-{}", ulid::Ulid::generate());
@@ -1227,7 +1255,7 @@ async fn root_named_agent_calls_serialize_and_report_occupancy() {
         }
     }
     boot_network();
-    let mut settings = swarmy_config::Settings::load().unwrap().settings;
+    let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
     settings.store.directory = format!("swarmy-shared-calls-test-{}", ulid::Ulid::generate());
@@ -1261,7 +1289,7 @@ async fn root_bash_yield_spill_stdin_and_web_fetch() {
         }
     }
     boot_network();
-    let mut settings = swarmy_config::Settings::load().unwrap().settings;
+    let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
     settings.store.directory = format!("swarmy-yield-test-{}", ulid::Ulid::generate());
@@ -1292,7 +1320,7 @@ async fn root_file_tools_run_on_agent_disk() {
         }
     }
     boot_network();
-    let mut settings = swarmy_config::Settings::load().unwrap().settings;
+    let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
     settings.store.directory = format!("swarmy-file-tools-test-{}", ulid::Ulid::generate());

@@ -47,11 +47,11 @@ impl HeldLease {
         &self,
         store: &Store,
         id: SessionId,
+        now: Timestamp,
         duration: std::time::Duration,
     ) -> Result<()> {
         let mut token = self.0.lock().await;
         if let Some(current) = token.as_ref() {
-            let now = Timestamp::now();
             *token = Some(
                 store
                     .renew_lease(id, current, now, now.checked_add(duration)?)
@@ -156,6 +156,7 @@ pub(crate) struct Worker {
     snapshots: Mutex<HashMap<String, Snapshot>>,
     display: Mutex<DisplayCache>,
     pub owner: LeaseOwnerId,
+    clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
 }
 
 impl Worker {
@@ -169,7 +170,25 @@ impl Worker {
             snapshots: Mutex::default(),
             display: Mutex::default(),
             owner: LeaseOwnerId::from_ulid(Ulid::generate()),
+            clock: Arc::new(Timestamp::now),
         }
+    }
+
+    /// Observe the worker's clock. Recovery and placement resolution read
+    /// this instead of the wall clock so tests advance one shared clock past
+    /// lease expiry instead of sleeping out real leases; production keeps the
+    /// default wall clock.
+    #[cfg(test)]
+    pub(crate) fn with_clock(
+        mut self,
+        clock: impl Fn() -> Timestamp + Send + Sync + 'static,
+    ) -> Self {
+        self.clock = Arc::new(clock);
+        self
+    }
+
+    fn now(&self) -> Timestamp {
+        (self.clock)()
     }
 
     fn kill(&self, point: KillPoint) {
@@ -193,7 +212,7 @@ impl Worker {
             .claim_step_with_tail(
                 id,
                 self.owner,
-                Timestamp::now().checked_add(self.config.lease_duration)?,
+                self.now().checked_add(self.config.lease_duration)?,
             )
             .await
         {
@@ -246,7 +265,7 @@ impl Worker {
             message.extend_deadline().await?;
             if lease.is_held().await {
                 lease
-                    .renew(&self.store, id, self.config.lease_duration)
+                    .renew(&self.store, id, self.now(), self.config.lease_duration)
                     .await?;
             }
         }

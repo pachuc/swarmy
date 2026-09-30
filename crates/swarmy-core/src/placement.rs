@@ -38,6 +38,7 @@ pub struct AgentCallStatus {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use crate::{decode, encode};
 

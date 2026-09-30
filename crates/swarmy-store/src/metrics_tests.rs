@@ -231,6 +231,7 @@ fn batched_patches_equal_sequential_writes() {
 
 #[cfg(test)]
 mod integration_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use crate::blob::MemoryBlobStore;
     use std::sync::{Arc, OnceLock};

@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use std::{collections::BTreeMap, fmt::Write, sync::Arc};
 
 use futures::{TryStreamExt, future::BoxFuture};

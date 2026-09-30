@@ -849,6 +849,7 @@ fn protocol(message: &str) -> Error {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use crate::{
         GenerationSettings, ToolDefinition,

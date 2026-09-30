@@ -95,6 +95,7 @@ impl From<&StoredSession> for StoredSessionCurrent {
 
 #[cfg(test)]
 mod stored_format_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     #[test]

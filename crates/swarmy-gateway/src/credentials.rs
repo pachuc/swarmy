@@ -218,6 +218,7 @@ impl AuthStore for ClusterCredentials {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use foundationdb::{Database, tuple::Subspace};
     use std::{
@@ -538,6 +539,12 @@ mod tests {
         }
         async fn refresh(&self, _: &CredentialKind) -> Result<Option<CredentialKind>, Error> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            // The race needs one refresh slower than the other; the injected
+            // delay is the slow side under test, not a wait for a signal.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the injected slow refresh is the race under test"
+            )]
             tokio::time::sleep(self.delay).await;
             Ok(Some(api_key(&self.key).kind))
         }

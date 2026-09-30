@@ -1,7 +1,5 @@
-#[path = "support/mod.rs"]
-mod image_fixture;
-
-use std::sync::{Arc, OnceLock};
+#![deny(clippy::disallowed_methods)]
+use std::sync::Arc;
 
 use foundationdb::{Database, tuple::Subspace};
 use jiff::Timestamp;
@@ -27,7 +25,6 @@ async fn large_tool_image_blob_round_trips_without_inline_bytes() {
     let key = f.store.put_tool_blob(image.clone()).await.unwrap();
     assert!(key.starts_with("blobs/"));
     assert_eq!(blobs.get(&key).await.unwrap().as_ref(), image.as_slice());
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -71,7 +68,6 @@ async fn service_health_becomes_stale_then_expires() {
             .unwrap()
             .is_empty()
     );
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -119,7 +115,6 @@ async fn interrupt_sleeping_inference_clears_wait_and_ends_turn() {
             swarmy_store::DomainError::NothingToInterrupt
         ))
     ));
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -154,7 +149,6 @@ async fn session_state_since_tracks_claim_and_wait_transition() {
         test.store.session_state_since(id).await.unwrap(),
         Some(waiting_since)
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -183,7 +177,6 @@ async fn marked_runnable_session_cannot_be_claimed_and_finishes_idle() {
     let session = f.store.fetch_session(id).await.unwrap().unwrap();
     assert_eq!(session.state, SessionState::Idle);
     assert!(!session.interrupt_requested);
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -270,7 +263,6 @@ async fn breaker_grants_one_probe_and_wait_wakes_without_a_lease() {
             .unwrap()
             .is_none()
     );
-    f.cleanup().await;
 }
 
 #[tokio::test]
@@ -350,7 +342,6 @@ async fn leased_park_rejects_stale_leases_and_dedupes_the_same_sequence() {
     let wait = test.store.inference_wait(id).await.unwrap().unwrap();
     assert_eq!(wait.attempts, 1);
     assert_eq!(wait.reasons, ["openai/primary: quota reached"]);
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -411,7 +402,6 @@ async fn leased_park_extends_the_wait_on_a_new_sequence() {
         ]
     );
     assert_eq!(wait.wake_at, timestamp(300));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -486,7 +476,6 @@ async fn entry_breakers_are_independent_and_label_scans_need_no_keyring() {
             .unwrap()
             .is_none()
     );
-    f.cleanup().await;
 }
 use ulid::Ulid;
 
@@ -537,16 +526,21 @@ struct TestStore {
     store: Store,
     db: Arc<Database>,
     root: Subspace,
+    // Held for its Drop: removes the test subspace even on panic.
+    _guard: swarmy_testkit::StackGuard,
 }
 impl TestStore {
     fn new(blobs: Arc<dyn BlobStore>) -> Option<Self> {
-        static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        NETWORK.get_or_init(swarmy_store::boot);
-        let db = Arc::new(Database::new(Some(&cluster)).unwrap());
-        let root = Subspace::all().subspace(&("swarmy-store-tests", Ulid::generate().to_string()));
+        let stack = swarmy_testkit::Stack::load("store")?;
+        let db = Arc::new(Database::new(Some(&stack.cluster)).unwrap());
+        let root = Subspace::all().subspace(&(stack.prefix.clone(),));
         let store = Store::with_subspace(db.clone(), root.clone(), blobs);
-        Some(Self { store, db, root })
+        Some(Self {
+            store,
+            db,
+            root,
+            _guard: swarmy_testkit::StackGuard::new(&stack),
+        })
     }
     fn memory() -> Option<Self> {
         Self::new(Arc::new(MemoryBlobStore::default()))
@@ -557,22 +551,11 @@ impl TestStore {
             .create_session(
                 &record,
                 timestamp(0),
-                image_fixture::image(&self.store).await,
+                swarmy_testkit::image(&self.store).await,
             )
             .await
             .unwrap();
         record.session_id
-    }
-    async fn cleanup(self) {
-        let root = &self.root;
-        self.db
-            .run(|trx, _| async move {
-                let (begin, end) = root.range();
-                trx.clear_range(&begin, &end);
-                Ok(())
-            })
-            .await
-            .unwrap();
     }
 }
 
@@ -588,7 +571,7 @@ async fn waking_only_changes_idle_sessions_and_preserves_existing_schedules() {
         .create_session(
             &record,
             timestamp(0),
-            image_fixture::image(&test.store).await,
+            swarmy_testkit::image(&test.store).await,
         )
         .await
         .unwrap();
@@ -659,7 +642,6 @@ async fn waking_only_changes_idle_sessions_and_preserves_existing_schedules() {
             swarmy_store::DomainError::SessionMissing
         ))
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -702,7 +684,6 @@ async fn events_are_contiguous_and_stale_appends_write_nothing() {
             .head_seq,
         3
     );
-    test.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -741,7 +722,6 @@ async fn concurrent_claims_have_exactly_one_winner() {
             .unwrap()
             .is_empty()
     );
-    test.cleanup().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -764,7 +744,6 @@ async fn concurrent_appends_do_not_overwrite_events() {
         ))
     ));
     assert_eq!(test.store.read_events(id, 0, 64).await.unwrap().len(), 1);
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -831,7 +810,6 @@ async fn expiry_scan_reap_and_fresh_claim() {
             .unwrap()
             .is_empty()
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -861,7 +839,6 @@ async fn large_event_uses_a_versioned_blob_pointer() {
     assert_eq!(value[0], swarmy_core::STORAGE_VERSION);
     assert!(value.len() < 200);
     drop(trx);
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -898,7 +875,6 @@ async fn runnable_partitions_are_isolated_and_rescheduling_replaces_entries() {
             .unwrap(),
         found[1..]
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -912,7 +888,7 @@ async fn snapshots_requests_and_lease_transitions_round_trip() {
         .create_session(
             &record,
             timestamp(0),
-            image_fixture::image(&test.store).await,
+            swarmy_testkit::image(&test.store).await,
         )
         .await
         .unwrap();
@@ -925,7 +901,7 @@ async fn snapshots_requests_and_lease_transitions_round_trip() {
             .create_session(
                 &record,
                 timestamp(0),
-                image_fixture::image(&test.store).await
+                swarmy_testkit::image(&test.store).await
             )
             .await,
         Err(StoreError::Domain(swarmy_store::DomainError::SessionExists))
@@ -973,7 +949,6 @@ async fn snapshots_requests_and_lease_transitions_round_trip() {
         .await
         .unwrap();
     assert_eq!(test.store.get_inflight(request).await.unwrap(), None);
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -1053,12 +1028,11 @@ async fn lease_renewal_and_state_transitions_update_indexes() {
             .len(),
         1
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
 async fn s3_blob_store_and_large_event_round_trip() {
-    if swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_none() {
+    if swarmy_testkit::require_stack("SWARMY_S3_ENDPOINT").is_none() {
         return;
     }
     let blobs = Arc::new(ObjectBlobStore::from_env().unwrap());
@@ -1084,7 +1058,6 @@ async fn s3_blob_store_and_large_event_round_trip() {
         [large.clone()]
     );
     let key = format!("blobs/{}", blake3::hash(&encode(&large).unwrap()).to_hex());
-    test.cleanup().await;
     blobs.delete(&key).await.unwrap();
 }
 
@@ -1095,7 +1068,7 @@ async fn directory_roots_reopen_without_crossing_isolation_boundaries() {
     let Some(test) = TestStore::memory() else {
         return;
     };
-    let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
+    let Some(cluster) = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE") else {
         return;
     };
     let path = vec![format!("swarmy-store-test-{}", Ulid::generate())];
@@ -1109,7 +1082,7 @@ async fn directory_roots_reopen_without_crossing_isolation_boundaries() {
     .unwrap();
     let record = session();
     store
-        .create_session(&record, timestamp(0), image_fixture::image(&store).await)
+        .create_session(&record, timestamp(0), swarmy_testkit::image(&store).await)
         .await
         .unwrap();
     let reopened = Store::open(Some(std::path::Path::new(&cluster)), Some(&path), blobs)
@@ -1133,7 +1106,6 @@ async fn directory_roots_reopen_without_crossing_isolation_boundaries() {
         })
         .await
         .unwrap();
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -1171,7 +1143,6 @@ async fn oversized_batches_and_invalid_snapshots_preserve_the_session() {
             .snapshot_ref
             .is_none()
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -1209,7 +1180,6 @@ async fn large_snapshot_metadata_survives_head_and_lease_updates() {
     let bytes = encode(&snapshot).unwrap();
     let key = format!("blobs/{}", blake3::hash(&bytes).to_hex());
     assert_eq!(blobs.get(&key).await.unwrap().as_ref(), bytes);
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -1314,7 +1284,6 @@ async fn inference_completion_is_atomic_fenced_and_idempotent() {
             .unwrap()
     );
     assert_inference_completed(&test.store, id, request_id, response).await;
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -1428,7 +1397,6 @@ async fn inference_retry_counts_deliveries_and_release_reopens_after_backoff() {
             .await
             .unwrap()
     );
-    test.cleanup().await;
 }
 
 async fn assert_completion_published_once(
@@ -1600,7 +1568,6 @@ async fn inference_claim_rejects_work_without_matching_inflight() {
             .await
             .unwrap()
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -1700,7 +1667,6 @@ async fn worker_writes_are_fenced_after_renewal_expiry_and_replacement() {
         test.store.get_inflight(request_id).await.unwrap(),
         Some(record)
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -1795,7 +1761,6 @@ async fn session_listing_pages_by_id_and_hydrates_snapshots() {
             .unwrap()
             .is_empty()
     );
-    test.cleanup().await;
 }
 
 fn manifest_id() -> ManifestId {
@@ -1895,7 +1860,6 @@ async fn volume_records_images_and_immutable_headers_round_trip() {
         test.store.clone_volume(volume_id(), volume_id()).await,
         Err(StoreError::Domain(swarmy_store::DomainError::VolumeMissing))
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -1967,7 +1931,6 @@ async fn cloning_has_constant_metadata_cost_for_small_and_large_manifests() {
         ));
     }
     assert_eq!(record_sizes[0], record_sizes[1]);
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -2065,7 +2028,6 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
             .await,
         Err(StoreError::Domain(swarmy_store::DomainError::VolumeMissing))
     ));
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -2223,7 +2185,6 @@ async fn volume_publication_fences_writers_and_preserves_history() {
             swarmy_store::FenceError::VolumeLeaseMismatch
         ))
     ));
-    test.cleanup().await;
 }
 
 async fn assert_volume_listing(store: &Store, head: ManifestId) {
@@ -2305,7 +2266,6 @@ async fn turn_identity_survives_later_messages_and_failed_appends() {
         test.store.request_turn_id(request).await.unwrap(),
         Some(turn)
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -2320,7 +2280,7 @@ async fn creation_requires_a_registered_image_and_pins_it_atomically() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("registered images: (none)"));
-    let image = image_fixture::image(&test.store).await;
+    let image = swarmy_testkit::image(&test.store).await;
     let manifest = test
         .store
         .get_image("fixture", &ImageTag("test".into()))
@@ -2399,7 +2359,6 @@ async fn creation_requires_a_registered_image_and_pins_it_atomically() {
         test.store.session_image(record.session_id).await.unwrap(),
         manifest
     );
-    test.cleanup().await;
 }
 
 #[tokio::test]
@@ -2417,7 +2376,6 @@ async fn fetch_and_claim_each_request_one_session_record() {
         .await
         .unwrap();
     assert_eq!(test.store.session_record_read_count() - before, 1);
-    test.cleanup().await;
 }
 
 #[path = "store/agents.rs"]
@@ -2518,7 +2476,6 @@ async fn session_plan_replacement_is_atomic_fenced_and_validated() {
     assert!(final_session.plan.is_empty());
     let events = test.store.read_events(id, 0, 10).await.unwrap();
     assert_eq!(events.len(), 4);
-    test.cleanup().await;
 }
 
 #[path = "store/timers.rs"]

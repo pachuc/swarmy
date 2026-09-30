@@ -896,6 +896,7 @@ fn file_lists(messages: &[swarmy_core::Message]) -> String {
 
 #[cfg(test)]
 mod pi_compaction_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use std::collections::BTreeMap;
     use swarmy_core::{Message, MessageRole, Part, ToolCallId};

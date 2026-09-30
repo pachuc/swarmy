@@ -738,6 +738,7 @@ mod boundary;
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
     use object_store::memory::InMemory;
 
@@ -889,6 +890,7 @@ mod tests {
 
 #[cfg(test)]
 mod fetch_histogram_tests {
+    #![deny(clippy::disallowed_methods)]
     use super::*;
 
     // Tested directly because reaching every bucket through timed object fetches is not cheap.

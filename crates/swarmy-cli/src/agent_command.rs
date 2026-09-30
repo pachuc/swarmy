@@ -107,6 +107,7 @@ fn agent_name(name: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #![deny(clippy::disallowed_methods)]
     use clap::Parser;
 
     #[test]
