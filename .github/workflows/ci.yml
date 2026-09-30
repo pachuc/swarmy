@@ -135,6 +135,7 @@ jobs:
       - uses: ./.github/actions/install-dev-services
         with:
           mode: install
+      - run: scripts/check-docs-accuracy.sh
       - run: scripts/test-scripts.sh
   dependency-policy:
     if: github.event_name != 'schedule'
