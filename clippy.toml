@@ -2,9 +2,3 @@
 # `Cargo.toml` `[workspace.lints]`; only numeric thresholds and test-only
 # exemptions live here. Part 1 (task n0sxwd) owns this stanza; the parallel
 # lint task keeps its own block below.
-#
-# Unit tests (`#[cfg(test)]`) may use `unwrap`; the workspace does not
-# currently deny `unwrap_used` because the exemption does not extend to
-# integration tests (see `Cargo.toml`), but the line stays so the exemption
-# is in place if the deny ever becomes scoped enough to enable.
-allow-unwrap-in-tests = true

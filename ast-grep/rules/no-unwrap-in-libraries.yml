@@ -1,0 +1,45 @@
+# Library code must not panic on `.unwrap()`: use `?` or an `expect`
+# stating the invariant. A new `.unwrap()` in any other library file fails
+# CI. Test modules and files are out of scope: unit tests live in
+# `#[cfg(test)] mod ...` blocks (excluded structurally below; the `stopBy`
+# keeps the search going past the enclosing function) and integration tests
+# live in `tests/` or `*tests.rs` files (excluded by path). Binaries are out
+# of scope: a binary owns its process and may fail with a message. Prefer
+# `?` or `expect`; list a file below only with a why-comment.
+# (The task text writes the pattern with an elided receiver; ast-grep needs
+# a complete call expression, hence `$X`.)
+id: no-unwrap-in-libraries
+language: rust
+severity: error
+message: >-
+  Do not unwrap in library code; propagate with ? or use expect with the
+  invariant that makes the value present. Only the listed files may unwrap,
+  each with its reason below.
+rule:
+  all:
+    - pattern: '$X.unwrap()'
+    - not:
+        inside:
+          all:
+            - kind: mod_item
+            - follows:
+                pattern: '#[cfg(test)]'
+          stopBy: end
+files:
+  - 'crates/*/src/**/*.rs'
+ignores:
+  # Binaries own their process; unwrapping is unrestricted there.
+  - 'crates/swarmy-cli/src/**'
+  - 'crates/swarmy-chaos/src/**'
+  - 'crates/swarmy-devtools/src/**'
+  - 'crates/swarmy-scheduler/src/**'
+  - 'crates/swarmy-worker/src/**'
+  # swarmyd counts as a binary: its lib.rs declares no modules and its code
+  # lives in the binary (see scripts/check-anyhow-in-libraries.sh).
+  - 'crates/swarmyd/src/**'
+  # Service entry points assemble connections and own their tasks.
+  - '**/main.rs'
+  # Tests assert on values and fail the run by panicking.
+  - '**/tests/**'
+  - '**/tests.rs'
+  - '**/*tests.rs'
