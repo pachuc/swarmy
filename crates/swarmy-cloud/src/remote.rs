@@ -42,8 +42,9 @@ pub use down::DeletionPlan;
 /// mistake. One `Cloud` implementation; the provider enum is read where
 /// behavior must differ: [`for_settings`] records it in the substrate
 /// (whose `machines` gate refuses machine calls for existing hosts), `run`
-/// picks host decommissioning over instance termination, and
-/// `add_node::resolve_existing` validates join flags per provider.
+/// picks host decommissioning over instance termination,
+/// `add_node::resolve_existing` validates join flags per provider, and
+/// `display_instance_type` hides the cloud shape for existing hosts.
 /// Nothing else branches on it.
 struct Substrate {
     aws: Aws,

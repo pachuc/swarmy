@@ -150,21 +150,22 @@ swarmy_cli_package() {
     printf 'swarmy-cli\n'
 }
 
-# Every systemd unit provisioning installs and the release binary it runs:
-# unit, binary, and owning modes, one row each. Units that run something
-# else leave the binary empty (the stack unit runs dev-stack.sh, the tunnel
-# unit runs ssh). Service rows derive from the seed list above. This table
-# is the single source installs, upgrades, and teardown read.
+# Every systemd unit provisioning installs: unit, binary, owning modes, and
+# role (backing services, node agent, or node service). Units that run
+# something else leave the binary empty (the stack unit runs dev-stack.sh,
+# the tunnel unit runs ssh). Service rows derive from the seed list above.
+# This table is the single source installs, upgrades, and teardown read;
+# each unit and binary name is written exactly once, here.
 swarmy_unit_table() {
     printf '%s\n' \
-        'swarmy-stack.service::stack' \
-        'swarmy-tunnel.service::node' \
-        'swarmyd.service:swarmyd:stack,node'
+        'swarmy-stack.service::stack:backing' \
+        'swarmy-tunnel.service::node:backing' \
+        'swarmyd.service:swarmyd:stack,node:agent'
     local service
     local services
     mapfile -t services < <(swarmy_service_names)
     for service in "${services[@]}"; do
-        printf 'swarmy-%s.service:swarmy-%s:stack\n' "$service" "$service"
+        printf 'swarmy-%s.service:swarmy-%s:stack:service\n' "$service" "$service"
     done
 }
 
@@ -183,6 +184,28 @@ swarmy_binary_names() {
 # The binary a unit runs, or empty for units running something else.
 swarmy_unit_binary() {
     swarmy_unit_table | awk -F: -v unit="${1-}" '$1 == unit { print $2 }'
+}
+
+# Node-service units (scheduler, worker, gateway, api), in table order.
+swarmy_service_units() {
+    swarmy_unit_table | awk -F: '$4 == "service" { print $1 }'
+}
+
+# Unit for a control-plane service short name, verified against the table
+# (empty when the service is unknown, so callers fail loudly).
+swarmy_service_unit() {
+    swarmy_unit_table | awk -F: -v unit="swarmy-${1-}.service" '$1 == unit { print $1 }'
+}
+
+# The node agent unit.
+swarmy_agent_unit() {
+    swarmy_unit_table | awk -F: '$4 == "agent" { print $1 }'
+}
+
+# Backing-service unit of a mode (stack or tunnel): the role both install
+# paths and unit files read instead of spelling the name.
+swarmy_mode_backing_unit() {
+    swarmy_unit_table | awk -F: -v mode="${1-}" '$4 == "backing" && index(","$3",", ","mode",") { print $1 }'
 }
 
 # Units a mode owns, backing-service unit first (table order).
@@ -212,13 +235,32 @@ swarmy_mode_build_args() {
     done
 }
 
+# Read a list function into an array, failing loudly when the producer
+# errors or prints nothing. A bare `mapfile < <(producer)` would hide a
+# producer failure and hand the caller an empty list (in a build script,
+# an empty package list becomes a whole-workspace build).
+read_shared_list() {
+    local -n list=${1-}
+    shift
+    local text
+    text=$("$@") || return 1
+    mapfile -t list <<< "$text"
+    [[ ${#list[@]} -gt 0 ]] || {
+        echo "empty list from $*" >&2
+        return 1
+    }
+}
+
 # Installed control-plane units (the stack unit plus node-services units:
 # everything stack mode owns beyond node mode), one per line from the
-# installed unit files. Empty output means none are installed.
+# installed unit files. Empty output means none are installed; a failed
+# query is an error, never mistaken for "none".
 list_installed_control_units() {
     local installed
-    installed=$(systemctl list-unit-files --no-legend --no-pager 2>/dev/null | awk '{ print $1 }')
-    printf '%s\n' "$installed" | grep -xFf <(comm -23 <(swarmy_mode_units stack | sort) <(swarmy_mode_units node | sort)) || true
+    local control
+    installed=$(systemctl list-unit-files --no-legend --no-pager | awk '{ print $1 }') || return 1
+    mapfile -t control < <(comm -23 <(swarmy_mode_units stack | sort) <(swarmy_mode_units node | sort)) || return 1
+    printf '%s\n' "$installed" | grep -xFf <(printf '%s\n' "${control[@]}") || true
 }
 
 # Stop and disable every shared unit so a re-provisioned host never keeps
@@ -227,13 +269,56 @@ list_installed_control_units() {
 # installing) and decommissioning (before removing).
 disable_previous_units() {
     local units unit
-    mapfile -t units < <(swarmy_unit_names)
+    read_shared_list units swarmy_unit_names
     for unit in "${units[@]}"; do
         sudo systemctl stop "$unit" 2>/dev/null || true
     done
     for unit in "${units[@]}"; do
         sudo systemctl disable "$unit" 2>/dev/null || true
     done
+}
+
+# Remove every installed unit, binary, environment, and checkout named in
+# the shared table. Idempotent: every removal tolerates a missing file so
+# a failed `down` can retry. Needs no checkout beyond this file itself, so
+# both the checkout script and piped use call it.
+decommission_remove() {
+    local service_user=${1-}
+    validate_service_user "$service_user" || return 1
+    local units unit binaries binary service_repo
+    disable_previous_units
+    read_shared_list units swarmy_unit_names
+    for unit in "${units[@]}"; do
+        sudo rm -f "/etc/systemd/system/$unit"
+    done
+    sudo systemctl daemon-reload
+    read_shared_list binaries swarmy_binary_names
+    for binary in "${binaries[@]}"; do
+        sudo rm -f "/usr/local/bin/$binary"
+    done
+    sudo rm -f /etc/modules-load.d/swarmy.conf
+    sudo rm -rf /etc/swarmy
+    service_repo=$(service_repo_for "$service_user")
+    sudo rm -rf "$service_repo"
+}
+
+# Decommission entrypoint for piped use (no checkout needed): run the
+# checkout's teardown script when present, fail loudly when units remain
+# without a checkout, and no-op when nothing remains. SWARMY_SYSTEMD_DIR
+# overrides the unit directory (tests point it at a fake root).
+decommission_probe() {
+    local service_user=${1-}
+    validate_service_user "$service_user" || return 1
+    local repo
+    repo=$(service_repo_for "$service_user")
+    if [[ -f $repo/scripts/remote-decommission.sh ]]; then
+        decommission_remove "$service_user"
+    elif ls "${SWARMY_SYSTEMD_DIR:-/etc/systemd/system}"/swarmy*.service >/dev/null 2>&1; then
+        echo "swarmy checkout is missing from $repo but swarmy units are still installed; restore the checkout or remove the units by hand (see docs/REMOTE.md)" >&2
+        return 1
+    else
+        echo 'swarmy checkout already removed; nothing to tear down'
+    fi
 }
 
 node_disk_bytes() {

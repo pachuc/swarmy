@@ -73,4 +73,21 @@ grep -qxF 'LABEL=swarmy-local /mnt/swarmy-local ext4 defaults,nofail 0 2' "$fake
 
 # Rerunning after a complete teardown still succeeds (a retried down is a no-op).
 bash scripts/remote-decommission.sh decomm-swarmy
+
+# The piped probe with no checkout: a leftover swarmyd.service unit file
+# fails with the checkout-is-missing error (the glob must cover swarmyd,
+# which a `swarmy-` glob would miss)...
+probe_dir=$(mktemp -d)
+trap 'rm -rf "$fake" "$probe_dir"' EXIT
+export SWARMY_SYSTEMD_DIR=$probe_dir
+touch "$probe_dir/swarmyd.service"
+if bash -c 'source scripts/remote-provision-env.sh; decommission_probe decomm-swarmy' 2>"$probe_dir/probe_err"; then
+    echo "probe should fail with leftover units and no checkout" >&2
+    exit 1
+fi
+grep -q "checkout is missing" "$probe_dir/probe_err" || { echo "probe hides the missing checkout" >&2; exit 1; }
+# ...while no units and no checkout succeeds as nothing to tear down.
+rm -f "$probe_dir/swarmyd.service"
+probe_out=$(bash -c 'source scripts/remote-provision-env.sh; decommission_probe decomm-swarmy')
+[[ $probe_out == 'swarmy checkout already removed; nothing to tear down' ]] || { echo "clean probe should no-op: $probe_out" >&2; exit 1; }
 echo 'remote decommission behavioral tests passed'

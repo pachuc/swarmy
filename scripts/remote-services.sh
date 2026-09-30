@@ -8,14 +8,21 @@ validate_service_user "$service_user"
 service_home=$(service_home_for "$service_user")
 repo_dir=$(service_repo_for "$service_user")
 [[ $(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd) == "$repo_dir" ]] || { echo "Expected checkout at $repo_dir" >&2; exit 1; }
-# Service names come from the shared list so installs and teardown agree.
-mapfile -t services < <(swarmy_service_names)
-for service in "${services[@]}"; do
-    sudo tee "/etc/systemd/system/swarmy-$service.service" >/dev/null <<UNIT
+# Service units and their binaries come from the shared table so installs
+# and teardown agree. The short name below is only prose for unit
+# descriptions and readiness messages.
+read_shared_list service_units swarmy_service_units
+stack_unit=$(swarmy_mode_backing_unit stack)
+node_unit=$(swarmy_agent_unit)
+for unit in "${service_units[@]}"; do
+    binary=$(swarmy_unit_binary "$unit")
+    short=${unit#swarmy-}
+    short=${short%.service}
+    sudo tee "/etc/systemd/system/$unit" >/dev/null <<UNIT
 [Unit]
-Description=Swarmy $service
-Requires=swarmy-stack.service
-After=network-online.target swarmy-stack.service
+Description=Swarmy $short
+Requires=$stack_unit
+After=network-online.target $stack_unit
 
 [Service]
 Type=exec
@@ -24,7 +31,7 @@ WorkingDirectory=$repo_dir
 EnvironmentFile=/etc/swarmy/node.env
 Environment=HOME=$service_home
 Environment=TOKIO_WORKER_THREADS=2
-ExecStart=/usr/local/bin/swarmy-$service
+ExecStart=/usr/local/bin/$binary
 Restart=always
 RestartSec=2
 TimeoutStopSec=40
@@ -35,16 +42,18 @@ UNIT
 done
 sudo systemctl daemon-reload
 # Reload the same namespace configuration in the execution node.
-sudo systemctl restart swarmyd.service
-for service in "${services[@]}"; do
-    sudo systemctl enable "swarmy-$service.service"
-    sudo systemctl restart "swarmy-$service.service"
+sudo systemctl restart "$node_unit"
+for unit in "${service_units[@]}"; do
+    sudo systemctl enable "$unit"
+    sudo systemctl restart "$unit"
 done
-for service in "${services[@]}"; do
-    invocation=$(sudo systemctl show -p InvocationID --value "swarmy-$service")
+for unit in "${service_units[@]}"; do
+    invocation=$(sudo systemctl show -p InvocationID --value "$unit")
     ready=false
-    message="$service ready"
-    if [[ $service == scheduler ]]; then message="scheduler started"; fi
+    short=${unit#swarmy-}
+    short=${short%.service}
+    message="$short ready"
+    if [[ $short == scheduler ]]; then message="scheduler started"; fi
     for _ in {1..60}; do
         if sudo journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager | grep -q "$message"; then
             ready=true
@@ -53,7 +62,7 @@ for service in "${services[@]}"; do
         sleep 1
     done
     if [[ $ready != true ]]; then
-        sudo journalctl -u "swarmy-$service" -n 30 --no-pager
+        sudo journalctl -u "$unit" -n 30 --no-pager
         exit 1
     fi
 done

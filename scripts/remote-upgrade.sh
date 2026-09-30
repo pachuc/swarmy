@@ -21,12 +21,14 @@ export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 find crates -type f \( -name '*.rs' -o -name 'build.rs' \) -exec touch {} +
 # Binaries and their packages come from the shared table (the CLI package
 # differs, so it builds separately with its own feature flags).
+# read_shared_list fails loudly: an empty list would become a
+# whole-workspace build or a no-op install loop.
 if [[ $mode == stack ]]; then
     SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p "$(swarmy_cli_package)" --no-default-features >&2
 fi
-mapfile -t build_args < <(swarmy_mode_build_args "$mode")
+read_shared_list build_args swarmy_mode_build_args "$mode"
 SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}" >&2
-mapfile -t binaries < <(swarmy_mode_binaries "$mode")
+read_shared_list binaries swarmy_mode_binaries "$mode"
 changed=()
 restarted=()
 for binary in "${binaries[@]}"; do
@@ -40,16 +42,18 @@ for binary in "${binaries[@]}"; do
 done
 # Nodes provisioned before API token provisioning carry an empty token while
 # serving the API. Fill it once; reruns keep the existing token.
+api_unit=$(swarmy_service_unit api)
 token_status=unchanged
-if systemctl cat swarmy-api.service >/dev/null 2>&1; then
+if systemctl cat "$api_unit" >/dev/null 2>&1; then
     token_status=$(ensure_api_token .swarmy/config.toml)
 fi
-mapfile -t services < <(swarmy_service_names)
-for service in "${services[@]}"; do
-    binary="swarmy-$service"
-    if systemctl cat "$binary.service" >/dev/null 2>&1; then
-        if unit_needs_restart "$binary.service" "/usr/local/bin/$binary"; then
-            sudo -n systemctl restart "$binary.service"
+read_shared_list service_units swarmy_service_units
+for unit in "${service_units[@]}"; do
+    binary=$(swarmy_unit_binary "$unit")
+    binary_path="/usr/local/bin/$binary"
+    if systemctl cat "$unit" >/dev/null 2>&1; then
+        if unit_needs_restart "$unit" "$binary_path"; then
+            sudo -n systemctl restart "$unit"
             restarted+=("$binary")
         else
             result=$?
@@ -63,31 +67,35 @@ done
 # to reload its configuration even when its binary is unchanged.
 if [[ $token_status == generated ]]; then
     already_restarted=false
+    api_binary=$(swarmy_unit_binary "$api_unit")
     for entry in "${restarted[@]}"; do
-        if [[ $entry == swarmy-api ]]; then already_restarted=true; fi
+        if [[ $entry == "$api_binary" ]]; then already_restarted=true; fi
     done
     if [[ $already_restarted == false ]]; then
-        sudo -n systemctl restart swarmy-api.service
-        restarted+=(swarmy-api)
+        sudo -n systemctl restart "$api_unit"
+        restarted+=("$api_binary")
     fi
 fi
-if unit_needs_restart swarmyd.service /usr/local/bin/swarmyd; then
+node_unit=$(swarmy_agent_unit)
+node_binary=$(swarmy_unit_binary "$node_unit")
+node_binary_path="/usr/local/bin/$node_binary"
+if unit_needs_restart "$node_unit" "$node_binary_path"; then
     if [[ $services == services-only ]]; then
-        echo 'swarmyd is out of date but --services-only skips its restart' >&2
+        echo "$node_binary is out of date but --services-only skips its restart" >&2
     else
         deadline=$((SECONDS + drain_timeout))
         while true; do
-            busy=$(sudo -n sh -c "cd $repo_dir && set -a && . /etc/swarmy/node.env && set +a && exec $repo_dir/target/release/swarmyd --upgrade-processes")
+            busy=$(sudo -n sh -c "cd $repo_dir && set -a && . /etc/swarmy/node.env && set +a && exec $repo_dir/target/release/$node_binary --upgrade-processes")
             [[ $busy == '[]' ]] && break
             echo "Waiting for running sandbox commands: $busy" >&2
             if (( SECONDS >= deadline )); then
-                echo "Drain timed out after $drain_timeout seconds; restarting swarmyd anyway, interrupting: $busy" >&2
+                echo "Drain timed out after $drain_timeout seconds; restarting $node_binary anyway, interrupting: $busy" >&2
                 break
             fi
             sleep 5
         done
-        sudo -n systemctl restart swarmyd.service
-        restarted+=(swarmyd)
+        sudo -n systemctl restart "$node_unit"
+        restarted+=("$node_binary")
     fi
 else
     result=$?

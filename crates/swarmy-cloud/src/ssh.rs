@@ -609,15 +609,14 @@ impl Ssh {
     }
 
     /// Stop swarmy services on an adopted host and remove its units,
-    /// binaries, node environment, and checkout. Runs the checkout's
-    /// `remote-decommission.sh`, which reads the same unit and binary lists
-    /// provisioning installs, so the two can never drift apart (a unit
-    /// missing from the shared list would be left running while its binary
-    /// is deleted). Idempotent, so a failed `down` can retry. `/etc/swarmy`
-    /// goes because it holds static bucket keys and copied credentials.
-    /// Local sandbox disk data, the service user, the fstab line and its
-    /// mount, and tunnel keys authorized on the primary stay: the machine
-    /// is operator-owned.
+    /// binaries, node environment, and checkout. Pipes the checkout's
+    /// `decommission_probe` over stdin (so no checkout is needed on the
+    /// host), which runs the shared teardown when the checkout is present,
+    /// fails loudly when units remain without one, and no-ops when nothing
+    /// remains. `/etc/swarmy` goes because it holds static bucket keys and
+    /// copied credentials. Local sandbox disk data, the service user, the
+    /// fstab line and its mount, and tunnel keys authorized on the primary
+    /// stay: the machine is operator-owned.
     ///
     /// # Errors
     ///
@@ -628,11 +627,15 @@ impl Ssh {
         let _ = self;
         let address = wait_ssh_for(node, 6).await?;
         let user = service_user(node)?;
-        checked(
-            base(node)?.arg(&address).arg(decommission_command(&user)),
-            "remove swarmy services",
-        )
-        .await
+        let mut script = self.piped_env()?;
+        // Fail loudly inside the piped script: without this, a failed
+        // removal would still exit zero and look like a clean teardown.
+        // `user` is validated, so single quotes are data, never shell.
+        // Writing to a `String` cannot fail.
+        write!(script, "set -euo pipefail\ndecommission_probe '{user}'\n")
+            .expect("writing to String cannot fail");
+        pipe_script(node, &address, "remove swarmy services", &script).await?;
+        Ok(())
     }
 }
 
@@ -679,24 +682,6 @@ fn provisioning_command(
         shell_words::quote(&user),
         shell_words::quote(node.local_storage()),
     ))
-}
-
-/// Run the checkout's decommission script for `down` on adopted hosts.
-/// The script reads the shared unit and binary lists, so Rust never repeats
-/// them. The service home resolves through `~user` on the host inside the
-/// copied checkout, like the provisioning paths. `user` is validated
-/// (letters, digits, `_`, `-`), so embedding it is data, never shell. A
-/// host whose checkout is already gone reports what remains: leftover unit
-/// files fail with a message saying the checkout is missing, while no
-/// units at all means a retried `down` is done. The unit check globs unit
-/// files directly (`swarmy*.service` covers `swarmyd.service` too, which a
-/// `swarmy-` glob would miss) instead of parsing `list-units` output, whose
-/// columns shift when units are failed.
-fn decommission_command(user: &str) -> String {
-    let repo = tilde_repo(user);
-    format!(
-        "if [ -f {repo}/scripts/remote-decommission.sh ]; then cd {repo} && bash scripts/remote-decommission.sh {user}; elif ls /etc/systemd/system/swarmy*.service >/dev/null 2>&1; then echo 'swarmy checkout is missing from {repo} but swarmy units are still installed; restore the checkout or remove the units by hand (see docs/REMOTE.md)' >&2; exit 1; else echo 'swarmy checkout already removed; nothing to tear down'; fi",
-    )
 }
 
 /// Use the node's service environment, including its native `FoundationDB` library.
@@ -954,31 +939,6 @@ mod tests {
         );
     }
 
-    // Regression test for the missing-checkout branch of the decommission
-    // command: the leftover-unit probe must read unit files with a glob
-    // that covers swarmyd.service (a `swarmy-` glob never matches it) and
-    // must not parse list-units columns (they shift for failed units), and
-    // the script probe is a readability check because it runs via bash.
-    #[test]
-    fn decommission_reports_leftover_units_without_a_checkout() {
-        let command = super::decommission_command("swarmy");
-        assert!(
-            command.contains("[ -f ~swarmy/swarmy/scripts/remote-decommission.sh ]"),
-            "{command}"
-        );
-        assert!(
-            command.contains("ls /etc/systemd/system/swarmy*.service"),
-            "{command}"
-        );
-        assert!(command.contains("checkout is missing"), "{command}");
-        assert!(!command.contains("list-units"), "{command}");
-        assert!(!command.contains("swarmy-*.service"), "{command}");
-        assert!(
-            super::decommission_command("other").contains("~other/swarmy"),
-            "{command}"
-        );
-    }
-
     #[test]
     fn image_command_sources_node_environment_and_quotes_recipe() {
         let path = std::path::Path::new("images/custom ' $(touch unwanted)");
@@ -1193,6 +1153,75 @@ mod provisioning_command_tests {
         );
         assert!(!command.contains("test-access"));
         assert!(!command.contains("test-secret"));
+    }
+
+    // The piped host query behind `has_service_units`, run through a local
+    // `bash -s` with a stubbed systemctl: the piped env text plus the query
+    // must compose and report installed control units (empty means none).
+    async fn piped_query(repo: &std::path::Path, bin: &std::path::Path) -> String {
+        use tokio::io::AsyncWriteExt;
+        let host = super::Ssh {
+            repo: repo.to_owned(),
+        };
+        let mut script = host.piped_env().unwrap();
+        assert!(!script.contains("remote-s3-env.sh"));
+        script.push_str("list_installed_control_units\n");
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let mut child = tokio::process::Command::new("bash")
+            .arg("-s")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .env("PATH", path)
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(script.as_bytes())
+            .await
+            .unwrap();
+        let output = child.wait_with_output().await.unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[tokio::test]
+    async fn piped_host_query_lists_control_units() {
+        use std::os::unix::fs::PermissionsExt;
+        if std::process::Command::new("bash")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let systemctl = bin.join("systemctl");
+        std::fs::write(
+            &systemctl,
+            "#!/usr/bin/env bash\nprintf 'swarmy-tunnel.service enabled\\nswarmyd.service enabled\\nswarmy-gateway.service enabled\\n'",
+        )
+        .unwrap();
+        std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../");
+        assert_eq!(
+            piped_query(&repo, &bin).await.trim(),
+            "swarmy-gateway.service"
+        );
+        std::fs::write(
+            &systemctl,
+            "#!/usr/bin/env bash\nprintf 'swarmy-tunnel.service enabled\\nswarmyd.service enabled\\n'",
+        )
+        .unwrap();
+        assert!(piped_query(&repo, &bin).await.trim().is_empty());
     }
 
     #[tokio::test]

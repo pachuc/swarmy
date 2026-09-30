@@ -39,12 +39,11 @@ fi
 [[ $mode == stack || $mode == node ]] || { echo 'Expected stack or node mode' >&2; exit 1; }
 [[ $service_address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
 storage=$(parse_local_storage "$local_storage")
-# Units this mode owns, backing-service unit first, from the shared list so
-# installs and teardown can never drift apart. Anything else in the shared
-# list is a leftover from a previous installation on this host.
-mapfile -t mode_units < <(swarmy_mode_units "$mode")
-stack_dependency=${mode_units[0]}
-node_unit=${mode_units[1]}
+# Units this mode owns from the shared table, so installs and teardown can
+# never drift apart. Anything else in the shared list is a leftover from a
+# previous installation on this host.
+stack_dependency=$(swarmy_mode_backing_unit "$mode")
+node_unit=$(swarmy_agent_unit)
 if [[ $mode == stack ]]; then
     dependency_kind=Requires
 else
@@ -130,15 +129,16 @@ if (( mem_available_kib < 6 * 1024 * 1024 )); then
 fi
 build_started=$SECONDS
 # Packages from the shared table (the CLI package differs, so it builds
-# separately with its own feature flags).
+# separately with its own feature flags). read_shared_list fails loudly:
+# an empty package list would become a whole-workspace build.
 if [[ $mode == stack ]]; then
     SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p "$(swarmy_cli_package)" --no-default-features
 fi
-mapfile -t build_args < <(swarmy_mode_build_args "$mode")
+read_shared_list build_args swarmy_mode_build_args "$mode"
 SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}"
 # Install from the shared binary list so the install can never name a binary
 # teardown misses. Only built binaries are present, selected per mode above.
-mapfile -t install_binaries < <(swarmy_mode_binaries "$mode")
+read_shared_list install_binaries swarmy_mode_binaries "$mode"
 sudo install -m 0755 "${install_binaries[@]/#/target/release/}" /usr/local/bin/
 printf 'Release build took %s seconds\n' "$((SECONDS - build_started))"
 sudo install -d -m 0755 /etc/swarmy
