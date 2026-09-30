@@ -49,7 +49,8 @@ fn fetch_percentile(buckets: &[AtomicU64; 12], percentile: u64) -> Option<u64> {
 
 pub const BLOCK_SIZE: u64 = 4096;
 pub(crate) const MAX_REQUEST: usize = 32 * 1024 * 1024;
-const DEFAULT_UPLOAD_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(32).unwrap();
+const DEFAULT_UPLOAD_CONCURRENCY: NonZeroUsize =
+    NonZeroUsize::new(32).expect("upload concurrency is nonzero");
 
 /// Counters are per device. Cold reads count foreground object fetches;
 /// readahead fetches count speculative object fetches separately.

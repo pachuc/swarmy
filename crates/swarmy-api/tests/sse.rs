@@ -178,26 +178,7 @@ impl SseReader {
                 if let Some(end) = self.pending.find("\n\n") {
                     let block = self.pending[..end].to_owned();
                     self.pending.drain(..end + 2);
-                    let mut item = SseItem {
-                        kind: String::new(),
-                        id: None,
-                        data: String::new(),
-                        retry: None,
-                    };
-                    for line in block.lines() {
-                        if let Some(value) = line.strip_prefix("event: ") {
-                            item.kind = value.into();
-                        }
-                        if let Some(value) = line.strip_prefix("id: ") {
-                            item.id = Some(value.into());
-                        }
-                        if let Some(value) = line.strip_prefix("data: ") {
-                            item.data.push_str(value);
-                        }
-                        if let Some(value) = line.strip_prefix("retry: ") {
-                            item.retry = Some(value.into());
-                        }
-                    }
+                    let item = parse_block(&block);
                     if !item.kind.is_empty() {
                         return item;
                     }
@@ -215,6 +196,29 @@ impl SseReader {
         .await
         .expect("SSE event timeout")
     }
+}
+
+/// Parse one SSE block into its fields. Prefixes are disjoint, so the first
+/// match wins.
+fn parse_block(block: &str) -> SseItem {
+    let mut item = SseItem {
+        kind: String::new(),
+        id: None,
+        data: String::new(),
+        retry: None,
+    };
+    for line in block.lines() {
+        if let Some(value) = line.strip_prefix("event: ") {
+            item.kind = value.into();
+        } else if let Some(value) = line.strip_prefix("id: ") {
+            item.id = Some(value.into());
+        } else if let Some(value) = line.strip_prefix("data: ") {
+            item.data.push_str(value);
+        } else if let Some(value) = line.strip_prefix("retry: ") {
+            item.retry = Some(value.into());
+        }
+    }
+    item
 }
 
 #[tokio::test]

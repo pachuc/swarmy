@@ -1,4 +1,5 @@
 use std::{ffi::OsString, fs::OpenOptions, path::Path, process::Stdio};
+use swarmy_core::ignore_best_effort;
 
 use anyhow::{Context, Result, ensure};
 use tokio::process::{Child, Command};
@@ -100,7 +101,7 @@ impl Process {
     }
 
     pub(crate) fn kill_now(&mut self) {
-        let _ = self.child.start_kill();
+        ignore_best_effort(self.child.start_kill(), "kill child process");
         for _ in 0..500 {
             if self.child.try_wait().ok().flatten().is_some() {
                 break;

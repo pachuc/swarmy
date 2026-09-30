@@ -1,4 +1,5 @@
 use std::process::{Child, Command, Stdio};
+use swarmy_core::ignore_best_effort;
 
 #[test]
 fn image_commands_are_advertised_and_validate_arguments() {
@@ -60,8 +61,8 @@ struct ApiService {
 
 impl Drop for ApiService {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        ignore_best_effort(self.child.kill(), "kill child process");
+        ignore_best_effort(self.child.wait(), "reap child process");
     }
 }
 

@@ -5,7 +5,9 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use swarmy_core::{AgentId, Event, ManifestId, NodeId, SessionId, ToolResult, VolumeId};
+use swarmy_core::{
+    AgentId, Event, ManifestId, NodeId, SessionId, ToolResult, VolumeId, ignore_best_effort,
+};
 use swarmy_sandbox::{BlockDevice, ExecOutput, ExecRequest, RuncRuntime, SandboxSpec};
 use swarmy_store::Store;
 use swarmy_volume::server::ServerConfig;
@@ -177,14 +179,17 @@ pub(crate) fn cleanup(root: &Path) {
     use std::process::{Command, Stdio};
     if let Ok(bundles) = std::fs::read_dir(root.join("bundles")) {
         for bundle in bundles.flatten() {
-            let _ = Command::new("runc")
-                .arg("--root")
-                .arg(root.join("runc"))
-                .args(["delete", "--force"])
-                .arg(bundle.file_name())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            ignore_best_effort(
+                Command::new("runc")
+                    .arg("--root")
+                    .arg(root.join("runc"))
+                    .args(["delete", "--force"])
+                    .arg(bundle.file_name())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status(),
+                "force-remove leftover bundle",
+            );
             let mount = bundle.path().join("rootfs");
             let source = Command::new("findmnt")
                 .args(["--noheadings", "--output", "SOURCE", "--mountpoint"])
@@ -192,21 +197,27 @@ pub(crate) fn cleanup(root: &Path) {
                 .output()
                 .ok()
                 .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
-            let _ = Command::new("umount")
-                .arg(&mount)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            ignore_best_effort(
+                Command::new("umount")
+                    .arg(&mount)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status(),
+                "unmount leftover rootfs",
+            );
             if let Some(source) = source.filter(|source| {
                 source
                     .strip_prefix("/dev/nbd")
                     .is_some_and(|suffix| suffix.parse::<u32>().is_ok())
             }) {
-                let _ = Command::new("nbd-client")
-                    .args(["-d", &source])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+                ignore_best_effort(
+                    Command::new("nbd-client")
+                        .args(["-d", &source])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status(),
+                    "detach leftover NBD device",
+                );
             }
         }
     }

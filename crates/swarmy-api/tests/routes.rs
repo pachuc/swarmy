@@ -104,6 +104,13 @@ async fn authenticated_routes_and_create_replay() {
 }
 
 async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
+    assert_image_reads(client, base).await;
+    assert_agent_reads(client, base, first).await;
+    assert_provider_and_docs_reads(client, base).await;
+}
+
+/// Image list and detail agree, and the detail carries the header.
+async fn assert_image_reads(client: &reqwest::Client, base: &str) {
     let images: Vec<Image> = client
         .get(format!("{base}/v1/images"))
         .bearer_auth("test-token")
@@ -130,6 +137,10 @@ async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
         shown.header.is_some(),
         "image detail includes the manifest header"
     );
+}
+
+/// Agent list rows are summaries; show carries the detail create returned.
+async fn assert_agent_reads(client: &reqwest::Client, base: &str, first: &Agent) {
     let listed: Vec<Agent> = client
         .get(format!("{base}/v1/agents"))
         .bearer_auth("test-token")
@@ -140,7 +151,6 @@ async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
         .await
         .unwrap();
     assert_eq!(listed.len(), 1);
-    // List rows are summaries; show carries the detail create returned.
     assert_eq!(listed[0].id, first.id);
     assert_eq!(listed[0].name, first.name);
     assert!(listed[0].sessions.is_empty());
@@ -163,6 +173,10 @@ async fn assert_reads(client: &reqwest::Client, base: &str, first: &Agent) {
             .remove("last_snapshot_age_seconds");
     }
     assert_eq!(created_value, shown_value);
+}
+
+/// Providers list and the public `OpenAPI` document both answer.
+async fn assert_provider_and_docs_reads(client: &reqwest::Client, base: &str) {
     let providers: Vec<Provider> = client
         .get(format!("{base}/v1/providers"))
         .bearer_auth("test-token")

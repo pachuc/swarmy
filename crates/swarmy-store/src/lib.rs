@@ -39,8 +39,8 @@ mod selection;
 mod services;
 pub use selection::GatewayProvider;
 pub use services::{
-    SERVICE_EXPIRE_SECONDS, SERVICE_STALE_SECONDS, ServiceDetail, ServiceHealth, ServiceHeartbeat,
-    ServiceRole,
+    HeartbeatSpec, SERVICE_EXPIRE_SECONDS, SERVICE_STALE_SECONDS, ServiceDetail, ServiceHealth,
+    ServiceHeartbeat, ServiceRole,
 };
 mod keys;
 #[cfg(test)]

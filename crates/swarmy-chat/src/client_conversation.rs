@@ -4,6 +4,7 @@
 //! [`TurnOutput`] to the caller's emitter as it arrives, so streaming text
 //! still renders incrementally while the CLI owns every `println!`.
 use std::time::{Duration, Instant};
+use swarmy_core::ignore_best_effort;
 
 use swarmy_api_types as api;
 use swarmy_client::{Client, EventStream, StreamItem};
@@ -886,7 +887,10 @@ impl Conversation {
         self.session.state = api::SessionState::Idle;
         self.current_turn = None;
         if let Some(sender) = &self.observer {
-            let _ = sender.send(swarmy_core::TurnStage::InputEnabled);
+            ignore_best_effort(
+                sender.send(swarmy_core::TurnStage::InputEnabled),
+                "publish turn stage",
+            );
         }
         if let Some(outcome) = turn_outcome(progress, requires_reply) {
             progress.error.take();
@@ -909,7 +913,10 @@ impl Conversation {
         progress.error = None;
         self.last_text.clone_from(&text);
         if let Some(sender) = &self.observer {
-            let _ = sender.send(swarmy_core::TurnStage::FinalTextRendered);
+            ignore_best_effort(
+                sender.send(swarmy_core::TurnStage::FinalTextRendered),
+                "publish turn stage",
+            );
         }
         if json {
             emit(TurnOutput::AssistantMessage(text));

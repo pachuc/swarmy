@@ -1,5 +1,6 @@
 use super::*;
 use std::io::{BufRead, Write};
+use swarmy_core::ignore_best_effort;
 use swarmy_store::CreateAgentOptions;
 
 struct Fake {
@@ -80,8 +81,8 @@ impl Fake {
 }
 impl Drop for Fake {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        ignore_best_effort(self.child.kill(), "kill child process");
+        ignore_best_effort(self.child.wait(), "reap child process");
     }
 }
 

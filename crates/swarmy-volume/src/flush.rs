@@ -108,12 +108,11 @@ impl VolumeWriter {
     /// The check shares the publication lock with checkpoints and legacy flushes.
     /// # Errors
     /// Returns storage or writer fencing errors. The mount is never frozen.
-    pub async fn flush_if_dirty(&self, mount: Option<&Path>) -> Result<Option<FlushResult>> {
+    pub async fn flush_if_dirty(&self) -> Result<Option<FlushResult>> {
         let mut head = self.head.lock().await;
         if !self.device.has_unpublished_changes().await {
             return Ok(None);
         }
-        let _ = mount;
         self.publish(None, &mut head).await.map(Some)
     }
 

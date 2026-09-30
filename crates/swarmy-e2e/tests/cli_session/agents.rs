@@ -138,6 +138,22 @@ async fn inspect_agents(
     first: SessionId,
     second: SessionId,
 ) {
+    check_agent_ls(fixture).await;
+    check_agent_show_text(fixture, first, second).await;
+    check_agent_show_json(fixture, agent, first).await;
+    assert!(
+        !fixture
+            .output(&["agent", "show", "absent"])
+            .await
+            .status
+            .success()
+    );
+    check_session_ls(fixture, first).await;
+}
+
+/// `agent ls` lists both agents; list rows omit detail keys instead of
+/// printing placeholders.
+async fn check_agent_ls(fixture: &Fixture) {
     let text = success(fixture.output(&["agent", "ls"]).await);
     assert!(text.contains("tommy") && text.contains("created="));
     let listed = success(fixture.output(&["agent", "ls", "--json"]).await);
@@ -146,10 +162,14 @@ async fn inspect_agents(
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(rows.len(), 2);
-    // List rows omit detail keys instead of printing placeholders.
     assert!(rows[0].get("session_count").is_none());
     assert!(rows[0].get("sessions").is_none());
     assert!(rows[0].get("node_id").is_none());
+}
+
+/// `agent show` text renders the description, both sessions, and the
+/// unknown placement placeholders.
+async fn check_agent_show_text(fixture: &Fixture, first: SessionId, second: SessionId) {
     let text = success(fixture.output(&["agent", "show", "tommy"]).await);
     for expected in [
         "Build things",
@@ -167,6 +187,11 @@ async fn inspect_agents(
     ] {
         assert!(text.contains(expected), "missing {expected}: {text}");
     }
+}
+
+/// `agent show --json` matches the projection assembled from the fixture's
+/// store records, not the API.
+async fn check_agent_show_json(fixture: &Fixture, agent: &AgentRecord, first: SessionId) {
     let shown: serde_json::Value = serde_json::from_str(&success(
         fixture
             .output(&["agent", "show", &agent.agent_id.to_string(), "--json"])
@@ -177,7 +202,6 @@ async fn inspect_agents(
     assert_eq!(shown["sessions"].as_array().unwrap().len(), 2);
     assert_eq!(shown["sessions"][0]["state"], "idle");
     assert!(shown["last_snapshot_at"].is_null());
-    // The expected projection is assembled from the fixture's store records, not the API.
     let expected_agent = serde_json::json!({
         "id": agent.agent_id, "name": agent.name, "description": agent.description,
         "main_session_id": first, "session_count": 2, "sandbox_state": "unknown",
@@ -190,14 +214,11 @@ async fn inspect_agents(
         "last_snapshot_at": shown["last_snapshot_at"], "node_id": shown["node_id"],
     });
     assert_eq!(actual_agent, expected_agent);
+}
 
-    assert!(
-        !fixture
-            .output(&["agent", "show", "absent"])
-            .await
-            .status
-            .success()
-    );
+/// `session ls` marks the named main session and resolves its selection
+/// from the stored session.
+async fn check_session_ls(fixture: &Fixture, first: SessionId) {
     let text = success(fixture.output(&["session", "ls"]).await);
     assert!(text.contains("kind=named agent=tommy") && text.contains("kind=ephemeral agent=-"));
     let text = success(fixture.output(&["session", "ls", "--json"]).await);
@@ -233,6 +254,14 @@ async fn close_and_delete(
     first: SessionId,
     ephemeral: SessionId,
 ) {
+    check_close_named_refused(fixture, first).await;
+    check_close_ephemeral(fixture, ephemeral).await;
+    check_delete_agent(fixture, agent, first).await;
+}
+
+/// A named session cannot close while its agent lives; both text and JSON
+/// point at `agent delete`.
+async fn check_close_named_refused(fixture: &Fixture, first: SessionId) {
     for json in [false, true] {
         let mut args = vec!["session", "close"];
         let id = first.to_string();
@@ -244,6 +273,10 @@ async fn close_and_delete(
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("agent delete"));
     }
+}
+
+/// An ephemeral session closes, completes, and releases its computer.
+async fn check_close_ephemeral(fixture: &Fixture, ephemeral: SessionId) {
     let id = ephemeral.to_string();
     assert_eq!(
         success(fixture.output(&["session", "close", &id]).await).trim(),
@@ -262,6 +295,11 @@ async fn close_and_delete(
         .unwrap();
     assert_eq!(record.state, SessionState::Completed);
     assert!(record.computer_deleted);
+}
+
+/// Deleting an agent needs `--yes`, removes both agents, and retains the
+/// named session rows with their computers released.
+async fn check_delete_agent(fixture: &Fixture, agent: &AgentRecord, first: SessionId) {
     let refused = fixture.output(&["agent", "delete", "tommy"]).await;
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("--yes"));

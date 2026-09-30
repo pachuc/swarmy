@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 use swarmy_config::{RemoteNode, RemotePorts, RemoteProfile, remote_path};
+use swarmy_core::ignore_best_effort;
 use tokio::{
     process::Child,
     time::{sleep, timeout},
@@ -23,7 +24,7 @@ struct StartingTunnel {
 impl Drop for StartingTunnel {
     fn drop(&mut self) {
         if !self.published {
-            let _ = self.child.start_kill();
+            ignore_best_effort(self.child.start_kill(), "kill child process");
         }
     }
 }
@@ -97,13 +98,18 @@ pub(super) async fn run(state_dir: &Path, state: &State, name: &str, json: bool)
     .map_err(|source| crate::Error::context(source, "SSH tunnel startup timed out"))
     .and_then(std::convert::identity);
     if let Err(error) = result {
-        let _ = tunnel.child.kill().await;
-        let _ = std::fs::remove_file(&profile.fdb_cluster_file);
+        ignore_best_effort(tunnel.child.kill().await, "kill child process");
+        ignore_best_effort(
+            std::fs::remove_file(&profile.fdb_cluster_file),
+            "remove stale file",
+        );
         return Err(error);
     }
     // The recorded control socket is the authority for stopping this process.
     tunnel.published = true;
-    let _ = socket_dir.keep();
+    // Keep the socket directory after connect returns; the path itself is
+    // recorded in the profile, so the value needs no use.
+    let _socket_dir = socket_dir.keep();
     print(
         &profile,
         json,
@@ -388,7 +394,7 @@ pub(super) fn cleanup(profile: &RemoteProfile) -> Result<()> {
     }
     if let Some(parent) = profile.socket_path.parent().filter(|p| *p != Path::new("")) {
         // Never recursively remove a directory supplied by a profile.
-        let _ = std::fs::remove_dir(parent);
+        ignore_best_effort(std::fs::remove_dir(parent), "remove parent directory");
     }
     Ok(())
 }

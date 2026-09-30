@@ -28,16 +28,24 @@ large_stack_frames = "deny"
 # stays legal for lints that only fire under some feature combinations.
 allow_attributes_without_reason = "deny"
 # Panics: `todo!`, `unimplemented!`, and `dbg!` never land in the tree.
-# (`unwrap_used`, `print_stdout`, and `print_stderr` were evaluated and
-# deliberately left out: `allow-unwrap-in-tests` covers only `cfg(test)`
-# code, so a deny would need a per-file exception in each of the 65
-# integration-test files, and the print denies would need one in each of the
-# 21 test and 6 example files that log skip diagnostics and progress, plus a
-# boilerplate tax on every new test file. The production sites those lints
-# reported were still fixed directly. See AGENTS.md.)
 todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
+# Part 2 (task kkr5bd): size, shape, and swallowed errors. Kept in one block
+# so the parallel lint task's rebase is trivial.
+# Complexity and nesting are nursery lints Clippy leaves off; the thresholds
+# in clippy.toml are measured in the task pull request and only real
+# offenders fail. `too_many_lines` (100) and `too_many_arguments` (7) ride
+# along with pedantic at the owners' defaults.
+cognitive_complexity = "deny"
+excessive_nesting = "deny"
+# Swallowed errors: best-effort ignores go through
+# `swarmy_core::ignore_best_effort`, which logs the failure at debug.
+# `map_err_ignore` stays allowed: its 155 sites translate a low-level error
+# into a domain error, and naming the discarded source at each site would be
+# noise, not information (see the task pull request).
+let_underscore_must_use = "deny"
+unused_result_ok = "deny"
 
 [workspace.dependencies]
 swarmy-version = { path = "crates/swarmy-version" }

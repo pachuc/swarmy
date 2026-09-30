@@ -160,6 +160,33 @@ fn select_route<'a>(
     )
 }
 
+/// Expand one provider's pool into route steps: ready entries in creation
+/// order, or a single unlabeled step when the pool is missing or empty.
+fn push_pool_steps(
+    expanded: &mut Vec<ExpandedRouteStep>,
+    provider: &str,
+    model: Option<String>,
+    pool: Option<&Vec<PoolEntry>>,
+) {
+    match pool {
+        Some(pool) if !pool.is_empty() => {
+            for label in usable_labels(pool) {
+                expanded.push(ExpandedRouteStep {
+                    provider: provider.to_owned(),
+                    label: Some(label),
+                    model: model.clone(),
+                });
+            }
+        }
+        _ => {
+            expanded.push(ExpandedRouteStep {
+                provider: provider.to_owned(),
+                label: None,
+                model,
+            });
+        }
+    }
+}
 fn skipped_step_reason(provider: &str, label: &str) -> String {
     format!("{provider}/{label} names an entry with no ready credential; trying the next step")
 }
@@ -560,24 +587,12 @@ impl Store {
         if let Some(record) = record {
             for step in &record.steps {
                 if step.entry == swarmy_core::ANY_ENTRY {
-                    match pools.get(&step.provider) {
-                        Some(pool) if !pool.is_empty() => {
-                            for label in usable_labels(pool) {
-                                expanded.push(ExpandedRouteStep {
-                                    provider: step.provider.clone(),
-                                    label: Some(label),
-                                    model: step.model.clone(),
-                                });
-                            }
-                        }
-                        _ => {
-                            expanded.push(ExpandedRouteStep {
-                                provider: step.provider.clone(),
-                                label: None,
-                                model: step.model.clone(),
-                            });
-                        }
-                    }
+                    push_pool_steps(
+                        &mut expanded,
+                        &step.provider,
+                        step.model.clone(),
+                        pools.get(&step.provider),
+                    );
                     continue;
                 }
                 // A stored but unready entry skips exactly like a missing
@@ -610,24 +625,12 @@ impl Store {
             record.map(|record| record.name.clone())
         };
         if expanded.is_empty() {
-            match pools.get(fallback_provider) {
-                Some(pool) if !pool.is_empty() => {
-                    for label in usable_labels(pool) {
-                        expanded.push(ExpandedRouteStep {
-                            provider: fallback_provider.to_owned(),
-                            label: Some(label),
-                            model: None,
-                        });
-                    }
-                }
-                _ => {
-                    expanded.push(ExpandedRouteStep {
-                        provider: fallback_provider.to_owned(),
-                        label: None,
-                        model: None,
-                    });
-                }
-            }
+            push_pool_steps(
+                &mut expanded,
+                fallback_provider,
+                None,
+                pools.get(fallback_provider),
+            );
         }
         ExpandedChain {
             name: resolved,
