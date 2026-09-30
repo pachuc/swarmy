@@ -1,6 +1,5 @@
 use super::{
-    Cloud, Host, Machine, MachineSpec, ObjectBucket, Ownership, buckets,
-    retry_profile_propagation,
+    Cloud, Host, Machine, MachineSpec, ObjectBucket, Ownership, buckets, retry_profile_propagation,
 };
 use crate::{BucketRemoval, Result};
 use aws_sdk_ec2::{
