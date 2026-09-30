@@ -1260,9 +1260,11 @@ mod tests {
 
     #[test]
     fn s3_settings_debug_redacts_both_keys() {
-        let mut settings = S3Settings::default();
-        settings.access_key = "test-access".into();
-        settings.secret_key = "test-secret".into();
+        let settings = S3Settings {
+            access_key: "test-access".into(),
+            secret_key: "test-secret".into(),
+            ..S3Settings::default()
+        };
         let debug = format!("{settings:?}");
         assert!(!debug.contains("test-access"), "{debug}");
         assert!(!debug.contains("test-secret"), "{debug}");
