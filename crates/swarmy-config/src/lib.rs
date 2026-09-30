@@ -66,7 +66,7 @@ mod duration {
     }
 
     impl Unit {
-        fn from_raw(self, raw: u64) -> Duration {
+        fn to_duration(self, raw: u64) -> Duration {
             match self {
                 Unit::Secs => Duration::from_secs(raw),
                 Unit::Millis => Duration::from_millis(raw),
@@ -100,7 +100,7 @@ mod duration {
             if raw == 0 {
                 return Err(serde::de::Error::custom("duration must be positive"));
             }
-            Ok(self.from_raw(raw))
+            Ok(self.to_duration(raw))
         }
     }
 
@@ -150,7 +150,7 @@ mod duration {
         if raw == 0 {
             return Err(());
         }
-        Ok(unit.from_raw(raw))
+        Ok(unit.to_duration(raw))
     }
 
     pub(crate) fn format(value: Duration, unit: Unit) -> String {
