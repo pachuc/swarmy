@@ -23,7 +23,7 @@ use swarmy_store::{AgentSessionOptions, Store, blob::ObjectBlobStore, runnable_p
 use tempfile::TempDir;
 use tokio::{
     process::{Child, Command},
-    time::{sleep, timeout},
+    time::timeout,
 };
 use ulid::Ulid;
 
@@ -173,60 +173,17 @@ impl Fixture {
     }
 
     fn script(&self, tools: bool, tool_name: &str) {
-        let answer = Response {
-            parts: vec![Part::Text {
-                text: "The turn is complete.".into(),
-            }],
-            stop_reason: StopReason::EndTurn,
-            usage: TokenUsage::default(),
-            quota_remaining: std::collections::BTreeMap::new(),
-            quota_resets: std::collections::BTreeMap::new(),
-        };
-        let mut responses: BTreeMap<_, _> = (0..100).map(|index| (index, answer.clone())).collect();
+        let mut script = swarmy_testkit::Script::new("The turn is complete.").latency_ms(10);
         if tools {
-            responses.insert(
-                0,
-                Response {
-                    parts: vec![Part::ToolCall {
-                        call_id: ToolCallId("clock".into()),
-                        tool: tool_name.into(),
-                        input: serde_json::json!({}),
-                    }],
-                    stop_reason: StopReason::ToolCalls,
-                    usage: TokenUsage::default(),
-                    quota_remaining: std::collections::BTreeMap::new(),
-                    quota_resets: std::collections::BTreeMap::new(),
-                },
-            );
+            script = script.tool_call(0, "clock", tool_name);
         }
-        std::fs::write(
-            self.files.path().join("script.json"),
-            serde_json::to_vec(&serde_json::json!({"latency_ms": 10, "responses": responses}))
-                .unwrap(),
-        )
-        .unwrap();
+        script.write_to(&self.files.path().join("script.json"));
     }
 
     fn rate_limit_script(&self, failures: usize, retry_after_seconds: u64) {
-        let answer = Response {
-            parts: vec![Part::Text {
-                text: "Recovered.".into(),
-            }],
-            stop_reason: StopReason::EndTurn,
-            usage: TokenUsage::default(),
-            quota_remaining: std::collections::BTreeMap::new(),
-            quota_resets: std::collections::BTreeMap::new(),
-        };
-        let responses: BTreeMap<_, _> = (failures..100).map(|index| (index, &answer)).collect();
-        let failures: BTreeMap<_, _> = (0..failures).map(|index| (index, serde_json::json!({
-            "status": 429, "message": "quota reached", "retry_after_seconds": retry_after_seconds
-        }))).collect();
-        std::fs::write(
-            self.files.path().join("script.json"),
-            serde_json::to_vec(&serde_json::json!({"responses": responses, "failures": failures}))
-                .unwrap(),
-        )
-        .unwrap();
+        swarmy_testkit::Script::new("Recovered.")
+            .rate_limited(failures, retry_after_seconds)
+            .write_to(&self.files.path().join("script.json"));
     }
 
     async fn interrupt_from_cli(&self, id: SessionId) {
@@ -327,6 +284,15 @@ impl Fixture {
         index
     }
 
+    /// Wait until a spawned service exits, so kill-point tests synchronize on
+    /// the death itself instead of sleeping a fixed grace for it.
+    async fn wait_exit(&mut self, index: usize) {
+        swarmy_testkit::eventually("service exits", WAIT, async || {
+            self.children[index].try_wait().unwrap().map(|_| ())
+        })
+        .await;
+    }
+
     async fn create(&self) -> SessionId {
         self.create_with_provider(None).await
     }
@@ -360,16 +326,30 @@ impl Fixture {
     /// cannot fail over behind a missing advertisement instead of the
     /// scripted failure the test asserts on.
     async fn gateway_serves(&self, provider: &str) {
-        timeout(WAIT, async {
-            loop {
-                if self.store.gateway_serves(provider).await.unwrap() {
-                    break;
-                }
-                sleep(Duration::from_millis(50)).await;
-            }
+        swarmy_testkit::eventually("gateway advertises provider", WAIT, async || {
+            self.store
+                .gateway_serves(provider)
+                .await
+                .unwrap()
+                .then_some(())
         })
-        .await
-        .unwrap();
+        .await;
+    }
+
+    /// Wait until a session reaches `state`, naming the expectation so a
+    /// timeout points at the missing transition instead of a bare deadline.
+    async fn wait_state(&self, id: SessionId, state: SessionState) {
+        let label: &'static str = match state {
+            SessionState::Sleeping => "session sleeps",
+            SessionState::Idle => "session idles",
+            SessionState::WaitingInference => "session waits for inference",
+            SessionState::Completed => "session completes",
+            _ => "session reaches state",
+        };
+        swarmy_testkit::eventually(label, WAIT, async || {
+            (self.store.fetch_session(id).await.unwrap().unwrap().state == state).then_some(())
+        })
+        .await;
     }
 
     fn histories(&self) -> Vec<Vec<swarmy_core::Message>> {
@@ -480,38 +460,27 @@ impl Fixture {
     }
 
     async fn wake(&self, id: SessionId) {
-        timeout(WAIT, async {
-            loop {
-                if self
-                    .bus
-                    .request_wake(id, Duration::from_millis(200))
-                    .await
-                    .is_ok()
-                {
-                    break;
-                }
-                sleep(Duration::from_millis(25)).await;
-            }
+        swarmy_testkit::eventually("scheduler accepts wake", WAIT, async || {
+            self.bus
+                .request_wake(id, Duration::from_millis(200))
+                .await
+                .ok()
         })
-        .await
-        .unwrap();
+        .await;
     }
 
     async fn idle(&self, id: SessionId) -> Vec<Event> {
-        timeout(WAIT, async {
-            loop {
-                let session = self.store.fetch_session(id).await.unwrap().unwrap();
-                if session.state == SessionState::Idle
-                    && let Some(snapshot) = session.snapshot_ref
-                {
-                    self.snapshots.lock().unwrap().insert(snapshot.object_key);
-                    return self.store.read_events(id, 0, 64).await.unwrap();
-                }
-                sleep(Duration::from_millis(25)).await;
+        swarmy_testkit::eventually("session reaches Idle with snapshot", WAIT, async || {
+            let session = self.store.fetch_session(id).await.unwrap().unwrap();
+            if session.state == SessionState::Idle
+                && let Some(snapshot) = session.snapshot_ref
+            {
+                self.snapshots.lock().unwrap().insert(snapshot.object_key);
+                return Some(self.store.read_events(id, 0, 64).await.unwrap());
             }
+            None
         })
         .await
-        .expect("session did not reach Idle")
     }
 
     fn calls(&self) -> usize {
@@ -711,14 +680,7 @@ async fn rate_limit_waits_without_a_worker_lease_then_recovers() {
         let id = f.create().await;
         f.wake(id).await;
         let started = std::time::Instant::now();
-        timeout(WAIT, async {
-            loop {
-                if f.store.fetch_session(id).await.unwrap().unwrap().state == SessionState::Sleeping {
-                    break;
-                }
-                sleep(Duration::from_millis(20)).await;
-            }
-        }).await.unwrap();
+        f.wait_state(id, SessionState::Sleeping).await;
         assert!(f.store.inference_wait(id).await.unwrap().unwrap().reasons[0].contains("quota reached"));
         let leases = f.store.scan_expired_leases(
             Timestamp::now().checked_add(Duration::from_secs(60)).unwrap(), None, 64
@@ -744,25 +706,18 @@ async fn parked_inference_can_be_interrupted_and_followed_by_a_new_turn() {
             f.start("swarmy-worker", None);
             let id = f.create().await;
             f.wake(id).await;
-            timeout(WAIT, async {
-                while f.store.fetch_session(id).await.unwrap().unwrap().state
-                    != SessionState::Sleeping
-                {
-                    sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .unwrap();
+            f.wait_state(id, SessionState::Sleeping).await;
             let start = std::time::Instant::now();
             f.interrupt_from_cli(id).await;
-            timeout(Duration::from_secs(1), async {
-                while f.store.fetch_session(id).await.unwrap().unwrap().state != SessionState::Idle
-                {
-                    sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .unwrap();
+            swarmy_testkit::eventually(
+                "interrupt idles session",
+                Duration::from_secs(1),
+                async || {
+                    (f.store.fetch_session(id).await.unwrap().unwrap().state == SessionState::Idle)
+                        .then_some(())
+                },
+            )
+            .await;
             assert!(start.elapsed() < Duration::from_secs(1));
             assert!(f.store.inference_wait(id).await.unwrap().is_none());
             let head = f.store.fetch_session(id).await.unwrap().unwrap().head_seq;
@@ -810,15 +765,7 @@ async fn inflight_inference_interrupt_ends_at_next_boundary() {
             f.start("swarmy-worker", None);
             let id = f.create().await;
             f.wake(id).await;
-            timeout(WAIT, async {
-                while f.store.fetch_session(id).await.unwrap().unwrap().state
-                    != SessionState::WaitingInference
-                {
-                    sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .unwrap();
+            f.wait_state(id, SessionState::WaitingInference).await;
             f.interrupt_from_cli(id).await;
             assert!(
                 f.store
@@ -828,14 +775,7 @@ async fn inflight_inference_interrupt_ends_at_next_boundary() {
                     .unwrap()
                     .interrupt_requested
             );
-            timeout(WAIT, async {
-                while f.store.fetch_session(id).await.unwrap().unwrap().state != SessionState::Idle
-                {
-                    sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .unwrap();
+            f.wait_state(id, SessionState::Idle).await;
             let events = f.store.read_events(id, 0, 64).await.unwrap();
             assert!(
                 events.iter().any(
@@ -867,11 +807,7 @@ async fn missing_gateway_parks_until_it_returns() {
         f.start("swarmy-worker", None);
         let id = f.create().await;
         f.wake(id).await;
-        timeout(WAIT, async {
-            while f.store.fetch_session(id).await.unwrap().unwrap().state != SessionState::Sleeping {
-                sleep(Duration::from_millis(20)).await;
-            }
-        }).await.unwrap();
+        f.wait_state(id, SessionState::Sleeping).await;
         let events = f.store.read_events(id, 0, 64).await.unwrap();
         assert!(events.iter().any(|event| matches!(event,
             Event::InferenceFailed { retryable: true, retry_at: Some(_), error, .. }
@@ -1196,26 +1132,14 @@ async fn all_entries_open_parks_until_earliest_retry() {
             // Both entries are open, so the session parks instead of calling.
             // The first park may blame a missing advertisement before the
             // gateway is ready; wait for the entry-named breaker reason.
-            timeout(WAIT, async {
-                loop {
-                    if f.store
-                        .inference_wait(id)
-                        .await
-                        .unwrap()
-                        .is_some_and(|wait| {
-                            wait.reasons.iter().any(|reason| {
-                                reason.contains("openai/primary")
-                                    && reason.contains("quota reached")
-                            })
-                        })
-                    {
-                        break;
-                    }
-                    sleep(Duration::from_millis(20)).await;
-                }
+            swarmy_testkit::eventually("breaker names the entry", WAIT, async || {
+                f.store.inference_wait(id).await.unwrap().filter(|wait| {
+                    wait.reasons.iter().any(|reason| {
+                        reason.contains("openai/primary") && reason.contains("quota reached")
+                    })
+                })
             })
-            .await
-            .unwrap();
+            .await;
             let wait = f.store.inference_wait(id).await.unwrap().unwrap();
             assert!(
                 wait.reasons
@@ -1320,17 +1244,13 @@ async fn large_request_dispatches_on_default_nats_limit() {
         .spawn()
         .unwrap();
     let url = format!("nats://127.0.0.1:{port}");
-    timeout(Duration::from_secs(10), async {
-        loop {
-            if let Ok(client) = async_nats::connect(&url).await {
-                assert_eq!(client.max_payload(), 1_048_576);
-                break;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .unwrap();
+    let client = swarmy_testkit::eventually(
+        "embedded nats accepts connections",
+        Duration::from_secs(10),
+        async || async_nats::connect(&url).await.ok(),
+    )
+    .await;
+    assert_eq!(client.max_payload(), 1_048_576);
     run_at(Some(url), |f| {
         Box::pin(async move {
             f.script(false, "");
@@ -1405,16 +1325,12 @@ async fn permanent_publish_error_ends_turn() {
         .spawn()
         .unwrap();
     let url = format!("nats://127.0.0.1:{port}");
-    timeout(Duration::from_secs(10), async {
-        loop {
-            if async_nats::connect(&url).await.is_ok() {
-                break;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .unwrap();
+    swarmy_testkit::eventually(
+        "embedded nats accepts connections",
+        Duration::from_secs(10),
+        async || async_nats::connect(&url).await.ok().map(|_| ()),
+    )
+    .await;
     let mut f = Fixture::new_at(url.clone()).await.unwrap();
     f.bus.setup(&[WorkQueue::Runnable(7)]).await.unwrap();
     std::fs::write(&config, "max_payload: 512\n").unwrap();
@@ -1426,18 +1342,19 @@ async fn permanent_publish_error_ends_turn() {
             .unwrap()
             .success()
     );
-    timeout(Duration::from_secs(10), async {
-        loop {
+    swarmy_testkit::eventually(
+        "reloaded nats advertises the new payload limit",
+        Duration::from_secs(10),
+        async || {
             if let Ok(client) = async_nats::connect(&url).await
                 && client.max_payload() == 512
             {
-                break;
+                return Some(());
             }
-            sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .unwrap();
+            None
+        },
+    )
+    .await;
     f.model = "long-model-".to_owned() + &"x".repeat(600);
     f.script(false, "");
     f.start("swarmy-scheduler", None);
@@ -1607,12 +1524,7 @@ Finish the task
         f.start("swarmy-worker", None);
         f.start("swarmy-gateway", None);
         f.wake(id).await;
-        let new = timeout(WAIT, async {
-            loop {
-                if let Some(next) = f.store.next_session(id).await.unwrap() { break next; }
-                sleep(Duration::from_millis(25)).await;
-            }
-        }).await.unwrap();
+        let new = wait_successor(f, id).await;
         assert_ne!(id, new);
         assert_eq!(f.store.get_agent(agent.agent_id).await.unwrap().unwrap().main_session, Some(new));
         assert_eq!(f.store.fetch_session(id).await.unwrap().unwrap().state, SessionState::Completed);
@@ -2179,16 +2091,10 @@ fn side_response(text: String, input_tokens: u64) -> Response {
 }
 
 async fn wait_successor(fixture: &Fixture, id: SessionId) -> SessionId {
-    timeout(WAIT, async {
-        loop {
-            if let Some(next) = fixture.store.next_session(id).await.unwrap() {
-                break next;
-            }
-            sleep(Duration::from_millis(25)).await;
-        }
+    swarmy_testkit::eventually("successor session appears", WAIT, async || {
+        fixture.store.next_session(id).await.unwrap()
     })
     .await
-    .unwrap()
 }
 
 #[tokio::test]
@@ -2288,17 +2194,11 @@ async fn check_side_successor(
     // A chat-shaped rollover replays to end-of-turn and idles again. The
     // archival wakes the successor runnable first, so poll until it idles
     // instead of asserting on the transient runnable state.
-    let fresh = timeout(WAIT, async {
-        loop {
-            let fresh = f.store.fetch_session(new).await.unwrap().unwrap();
-            if fresh.state == SessionState::Idle {
-                break fresh;
-            }
-            sleep(Duration::from_millis(25)).await;
-        }
+    let fresh = swarmy_testkit::eventually("successor idles", WAIT, async || {
+        let fresh = f.store.fetch_session(new).await.unwrap().unwrap();
+        (fresh.state == SessionState::Idle).then_some(fresh)
     })
-    .await
-    .expect("chat-shaped successor did not idle");
+    .await;
     assert_eq!(fresh.state, SessionState::Idle);
     assert_eq!(fresh.agent_id, *agent);
     let opening = f.store.read_events(new, 0, 64).await.unwrap();
@@ -2707,7 +2607,7 @@ async fn failover_survives_worker_restart_without_second_advance() {
             // The first worker dies right after handing attempt one to the
             // gateway path; its lease lapses and the replacement recovers
             // the turn from the durable outbox.
-            f.start("swarmy-worker", Some("after_release"));
+            let first = f.start("swarmy-worker", Some("after_release"));
             f.gateway_serves("openai").await;
             let id = f.create_with_route("ab").await;
             f.wake(id).await;
@@ -2715,46 +2615,34 @@ async fn failover_survives_worker_restart_without_second_advance() {
             // replacement starts: the kill fires synchronously after the
             // submit, so a durable request means the death already
             // happened, with a short grace for the event publish.
-            timeout(WAIT, async {
-                loop {
-                    let session = f.store.fetch_session(id).await.unwrap().unwrap();
-                    if session.state == SessionState::WaitingInference {
-                        break;
-                    }
-                    if f.store
-                        .read_events(id, 0, 64)
-                        .await
-                        .unwrap()
-                        .iter()
-                        .any(|event| matches!(event, Event::InferenceRequested { .. }))
-                    {
-                        break;
-                    }
-                    sleep(Duration::from_millis(25)).await;
+            swarmy_testkit::eventually("attempt one is durable", WAIT, async || {
+                let session = f.store.fetch_session(id).await.unwrap().unwrap();
+                if session.state == SessionState::WaitingInference {
+                    return Some(());
                 }
+                f.store
+                    .read_events(id, 0, 64)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|event| matches!(event, Event::InferenceRequested { .. }))
+                    .then_some(())
             })
-            .await
-            .unwrap();
-            sleep(Duration::from_secs(3)).await;
+            .await;
+            f.wait_exit(first).await;
             // The second worker recovers attempt one, records the 429 as a
             // failover to the second step, and dies with the step lease
             // still held, before it can submit attempt two.
-            f.start("swarmy-worker", Some("after_advance"));
-            timeout(WAIT, async {
-                loop {
-                    if f.store.fetch_session(id).await.unwrap().unwrap().route_step == 1 {
-                        break;
-                    }
-                    sleep(Duration::from_millis(25)).await;
-                }
+            let second = f.start("swarmy-worker", Some("after_advance"));
+            swarmy_testkit::eventually("route advances to the second step", WAIT, async || {
+                (f.store.fetch_session(id).await.unwrap().unwrap().route_step == 1).then_some(())
             })
-            .await
-            .unwrap();
+            .await;
             // The replacement resumes after the failover: the handled
             // failure advances nothing again and parks nothing behind the
             // in-flight successor, so the turn completes on the second
             // entry instead of sleeping behind the first entry's retry.
-            sleep(Duration::from_secs(3)).await;
+            f.wait_exit(second).await;
             f.start("swarmy-worker", None);
             let events = f.idle(id).await;
             let completed = events.iter().find_map(|event| match event {
