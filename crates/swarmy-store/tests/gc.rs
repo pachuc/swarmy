@@ -1,13 +1,13 @@
 use std::{
     num::NonZeroUsize,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
-use foundationdb::{Database, api::NetworkAutoStop, tuple::Subspace};
+use foundationdb::{Database, tuple::Subspace};
 use futures::{TryStreamExt, stream::BoxStream};
 use jiff::Timestamp;
 use object_store::{

@@ -452,7 +452,7 @@ fn agent_options_validate_before_connecting_to_services() {
             "--new",
         ],
     ] {
-        let output = std::process::Command::new(super::swarmy_testkit::bin("swarmy"))
+        let output = std::process::Command::new(swarmy_testkit::bin("swarmy"))
             .args(args)
             .output()
             .unwrap();
@@ -463,7 +463,7 @@ fn agent_options_validate_before_connecting_to_services() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    for binary in [super::swarmy_testkit::bin("swarmy")] {
+    for binary in [swarmy_testkit::bin("swarmy")] {
         let binary = binary.as_os_str();
         for args in [
             vec!["agent", "create", "invalid/name"],
@@ -506,7 +506,7 @@ fn agent_options_validate_before_connecting_to_services() {
         vec!["chat", "--agent", "tommy"],
         vec!["run", "hello", "--agent", "tommy"],
     ] {
-        let output = std::process::Command::new(super::swarmy_testkit::bin("swarmy"))
+        let output = std::process::Command::new(swarmy_testkit::bin("swarmy"))
             .args(args)
             .args(["--json", "--remote", "demo", "--help"])
             .output()

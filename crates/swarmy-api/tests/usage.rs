@@ -1,5 +1,5 @@
 //! Usage series and entry quota routes read from the metering rollups.
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use jiff::Timestamp;
 use swarmy_api::{AppState, router};
@@ -12,7 +12,6 @@ use swarmy_store::{
     AgentSessionOptions, MeteringDimension, Store, UsageGroupBy, blob::MemoryBlobStore,
 };
 use ulid::Ulid;
-
 
 struct Fixture {
     store: Store,

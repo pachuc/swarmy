@@ -1,8 +1,5 @@
 //! CLI projections retain the stored record shape without exposing a database to clients.
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use swarmy_api::{AppState, router};
 use swarmy_bus::{Bus, Config};
 use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId};

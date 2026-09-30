@@ -1,8 +1,5 @@
 //! Exercise the public client against the real HTTP router and development services.
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use swarmy_api::{AppState, router};
 use swarmy_api_types as api;
 use swarmy_bus::{Bus, Config, LiveFeed};
@@ -13,7 +10,6 @@ use swarmy_core::{
 };
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use ulid::Ulid;
-
 
 struct Fixture {
     client: Client,

@@ -1,10 +1,6 @@
-use foundationdb::{Database, api::NetworkAutoStop, tuple::Subspace};
+use foundationdb::{Database, tuple::Subspace};
 use jiff::Timestamp;
-use std::{
-    collections::BTreeSet,
-    num::NonZeroUsize,
-    sync::{Arc, OnceLock},
-};
+use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
 use swarmy_core::{
     CHUNK_SIZE, ContentHash, ImageTag, Lease, LeaseOwnerId, ManifestHeader, ManifestId, VolumeId,
 };

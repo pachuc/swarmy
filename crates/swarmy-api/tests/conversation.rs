@@ -1,7 +1,4 @@
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use swarmy_api::{AppState, router};
 use swarmy_api_types::{
     AppendMessage, AppendedMessage, CloseSession, CreateSession, ImageRef, InterruptOutcome,
@@ -13,7 +10,6 @@ use swarmy_core::{
 };
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use ulid::Ulid;
-
 
 struct Fixture {
     store: Store,

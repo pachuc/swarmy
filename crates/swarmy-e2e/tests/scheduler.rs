@@ -1,11 +1,9 @@
-
-
 use std::{
     collections::HashSet,
     future::Future,
     panic::AssertUnwindSafe,
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -563,7 +561,13 @@ async fn timer_closes_only_idle_ephemeral_sessions() {
         let active = f.create(7, SessionState::Runnable, old).await;
         let agent = f
             .store
-            .create_agent("named", swarmy_testkit::image(&f.store).await, "", old, None)
+            .create_agent(
+                "named",
+                swarmy_testkit::image(&f.store).await,
+                "",
+                old,
+                None,
+            )
             .await
             .unwrap();
         let named = f

@@ -4,7 +4,6 @@ use std::{
     process::{Command, Output},
 };
 
-
 struct Fixture {
     dir: tempfile::TempDir,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,

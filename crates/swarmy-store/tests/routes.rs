@@ -1,9 +1,5 @@
 //! Route resolution, expansion, and session step movement.
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use foundationdb::{Database, tuple::Subspace};
 use jiff::Timestamp;
@@ -13,7 +9,6 @@ use swarmy_core::{
     Lease, LeaseOwnerId, RouteStep, SessionId,
 };
 use swarmy_store::{AgentSessionOptions, CredentialKey, Store, StoreError, blob::MemoryBlobStore};
-
 
 struct Fixture {
     store: Store,

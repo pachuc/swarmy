@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use swarmy_api::{AppState, router};
 use swarmy_api_types::{
     Agent, CreateAgent, CreateCredential, Credential, CredentialKind, Event, Image, ImageRef,
@@ -8,7 +8,6 @@ use swarmy_bus::{Bus, Config};
 use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId};
 use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore};
 use ulid::Ulid;
-
 
 #[tokio::test]
 async fn authenticated_routes_and_create_replay() {

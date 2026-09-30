@@ -1,8 +1,5 @@
 //! Image uploads, collection runs, timeline streams, and doctor nodes.
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use swarmy_api::{AppState, router};
 use swarmy_api_types as api;
 use swarmy_bus::{Bus, Config};
@@ -11,7 +8,6 @@ use swarmy_core::{CHUNK_SIZE, TurnStage};
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
-
 
 struct Fixture {
     store: Store,

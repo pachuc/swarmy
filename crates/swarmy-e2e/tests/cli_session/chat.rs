@@ -43,7 +43,7 @@ impl Terminal {
         agent: Option<&str>,
         new: bool,
     ) -> Self {
-        let mut command = CommandBuilder::new(super::swarmy_testkit::bin("swarmy"));
+        let mut command = CommandBuilder::new(swarmy_testkit::bin("swarmy"));
         command.arg("chat");
         if new {
             command.arg("--new");
@@ -341,7 +341,7 @@ impl Services {
         let mut services = Self {
             files,
             children: Vec::new(),
-            bin: super::swarmy_testkit::bin("swarmy").parent().unwrap().to_owned(),
+            bin: swarmy_testkit::bin("swarmy").parent().unwrap().to_owned(),
         };
         for name in ["scheduler", "worker", "gateway"] {
             services.launch(fixture, name);
@@ -1070,7 +1070,7 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
     let mut services = Services {
         files,
         children: Vec::new(),
-        bin: super::swarmy_testkit::bin("swarmy").parent().unwrap().to_owned(),
+        bin: swarmy_testkit::bin("swarmy").parent().unwrap().to_owned(),
     };
     for name in ["scheduler", "worker", "gateway"] {
         services.launch(fixture, name);

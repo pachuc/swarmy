@@ -1,7 +1,4 @@
-use std::{
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use swarmy_api::{AppState, router};
 use swarmy_api_types::{self as api, Cursor, LogId, Subscription};
 use swarmy_bus::{Bus, Config, LiveFeed};
@@ -12,7 +9,6 @@ use swarmy_core::{
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
-
 
 struct Fixture {
     store: Store,

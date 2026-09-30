@@ -1,8 +1,7 @@
-
 use std::{
     collections::BTreeSet,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -27,7 +26,6 @@ use tokio::time::{sleep, timeout};
 use ulid::Ulid;
 
 use crate::{config::Config, worker::Worker};
-
 
 struct SlowTool(Arc<AtomicUsize>);
 impl Tool for SlowTool {
