@@ -928,8 +928,13 @@ async fn root_dev_stack_uses_sandbox_loopback() {
     // which peaks at several GiB. The default 768 MiB sandbox without scratch
     // mounts starves that build and backs its target directory by the volume
     // instead of the fast local disk, so use the image's values here too.
-    let scratch = store.image_scratch(&image).await.unwrap();
-    let memory_mib = store.image_memory(&image).await.unwrap().unwrap_or(768);
+    let record = swarmy_core::ImageRecord {
+        name: image_name.to_owned(),
+        tag: ImageTag(image_tag.into()),
+        manifest_id: image,
+    };
+    let scratch = store.image_scratch(&record).await.unwrap();
+    let memory_mib = store.image_memory(&record).await.unwrap().unwrap_or(768);
     let requirements = swarmy_core::SandboxRequirements {
         memory_mib,
         ..Default::default()
