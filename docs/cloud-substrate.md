@@ -52,17 +52,21 @@ S3-compatible providers and the `node_credentials` to attach to nodes.
 The bucket survives `remote down`; the credentials guard it.
 
 `Host` covers the SSH half of provisioning and stays
-provider-independent: key generation, provisioning over SSH, service
-installation, and image builds. The crate wires the standard SSH host
+provider-independent: key generation and adoption, provisioning over SSH,
+service installation, image builds, and host decommissioning. The crate
+wires the standard SSH host
 into `run`; tests replace it with a fake, as they replace `Cloud`
 with a fake.
 
 `for_settings` builds the provider selected by
-`RemoteSettings.provider` (only `aws` today) and rejects anything
-else. Teardown reads the provider from the node's saved launch
+`RemoteSettings.provider`: `aws` machines, or the existing-host substrate
+that reuses the bucket calls and fails every machine operation. The
+dispatch on the provider enum lives in that one place. Teardown reads
+the provider from the node's saved launch
 settings through `RemoteNode::cloud_settings`, falling back to
 defaults in the node's region for records saved before launch settings
-existed, so `down` never depends on a later configuration edit.
+existed, so `down` never depends on a later configuration edit. `down`
+decommissions existing hosts over SSH instead of terminating machines.
 
 ## What AWS implements
 

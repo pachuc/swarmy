@@ -47,8 +47,9 @@ instance_type = "m6id.xlarge"
 # iam_role = "custom-role"
 ```
 
-`provider` selects the cloud substrate (`swarmy-cloud` implements only
-`aws` today; see `docs/cloud-substrate.md` for the provider
+`provider` selects the cloud substrate (`aws` creates EC2 machines;
+`existing` provisions operator-owned machines over SSH and never touches
+machine APIs; see `docs/cloud-substrate.md` for the provider
 interface). The EC2-only settings live under `[remote.aws]`:
 placement, the instance type, the AMI override, and an optional IAM
 role override. Without `iam_role`, bucket-backed remotes use
@@ -65,7 +66,8 @@ through SSM in the configured region. Custom images must be compatible with
 Ubuntu 24.04 and grant the service user passwordless sudo; cloud-init is
 waited on only where it is installed, so plain servers boot without it.
 Provisioning creates the service user when it is missing, so a plain server
-arriving with only a root login can be adopted. Records saved before the
+arriving with only a root login can be adopted with `remote adopt` (see the
+existing-hosts section below). Records saved before the
 setting existed have no `service_user` in `launch_settings` and keep the SSH
 login they were provisioned with (`ubuntu` for the existing fleet).
 Sandbox nodes need local storage for their volume caches and dirty data: set
@@ -683,58 +685,55 @@ the laptop is disconnected.
 SSH control master, and writes `NAME.profile.json` beside it. `state_dir`
 defaults to the discovered project's `.swarmy` directory; `SWARMY_STATE_DIR`
 can select another directory. Provisioning and tunnel commands share the
-`swarmy_config::RemoteNode` JSON contract. For an existing host, a state file
-can be written directly:
+`swarmy_config::RemoteNode` JSON contract.
 
-```json
-{
-  "name": "test",
-  "region": "us-east-1",
-  "instance_id": "i-<instance-id>",
-  "public_ip": "<public-address>",
-  "private_ip": "<private-address>",
-  "key_path": "<path-to-test-key>",
-  "ssh_user": "ubuntu",
-  "ports": { "fdb": 4500, "nats": 4222, "s3": 8333 },
-  "nodes": [],
-  "created_at": "2026-09-16T00:00:00Z"
-}
+### Existing hosts
+
+For providers where swarmy does not create machines itself (dedicated
+servers today, any SSH-reachable host in general), `swarmy remote adopt`
+builds a swarm on machines already owned. It records the remote with the
+existing-host provider, then runs the same provisioning and service
+installation `remote up` runs after its machine is ready: no machine is
+created and no cloud machine call happens. Only the bucket setup touches
+object-storage APIs.
+
+```sh
+swarmy remote adopt plain --host <machine-address> --ssh-key <bootstrap-key> \
+  --service-user swarmy --local-storage dir:/srv/swarmy-local \
+  --bucket <bucket> --s3-endpoint <endpoint-url> \
+  --s3-access-key <access-key> --s3-secret-file <secret-file>
 ```
 
-A plain Ubuntu 24.04 server (no cloud-init, root login, already partitioned
-disks) is adopted the same way: write the state with the bootstrap login as
-`ssh_user` and the desired owner and disk in `launch_settings`, copy the
-checkout to the service home, and run the provisioning script on the server
-as root, for example `bash /home/swarmy/swarmy/scripts/remote-provision.sh
-stack <private-address> "" <region> 64 swarmy dir:/srv/swarmy-local`. The
-script creates the service user with passwordless sudo, waits for cloud-init
-only where it is installed, and uses the configured device or directory.
-`remote down` terminates cloud instances, so it does not apply to an adopted
-server: decommission the server itself, then remove its state file.
+`--host` is the machine's IP address, used for provisioning and tunnels.
+`--ssh-user` (default `root`) is the bootstrap login and `--ssh-key` is its
+private key file, copied into the 0600 remote state; provisioning creates
+the `--service-user` login (default from configuration) with passwordless
+sudo when it is missing. `--local-storage` is required for sandbox nodes
+(a block device or `dir:/path`); control-only nodes (`--sandboxes 0`) leave
+it empty. The bucket flags are the same object-bucket options `up` takes.
+`--services`, `--copy-credential`, `--sandboxes`, `--no-image`, and
+`--image-recipe` behave as in `up`; `--instance-type` and `--disk-gb` do
+not exist here because there is no machine to size.
 
-```json
-{
-  "name": "plain",
-  "region": "us-east-1",
-  "instance_id": "plain",
-  "public_ip": "<public-address>",
-  "private_ip": "<private-address>",
-  "key_path": "<path-to-test-key>",
-  "ssh_user": "root",
-  "ports": { "fdb": 4500, "nats": 4222, "s3": 8333 },
-  "nodes": [],
-  "launch_settings": {
-    "provider": "aws",
-    "services": "laptop",
-    "region": "us-east-1",
-    "disk_gb": 100,
-    "managed_by_tag": "swarmy",
-    "service_user": "swarmy",
-    "local_storage": "dir:/srv/swarmy-local"
-  },
-  "created_at": "2026-09-16T00:00:00Z"
-}
-```
+`swarmy remote add-node NAME --host <machine-address> --ssh-key
+<bootstrap-key>` joins another existing machine the same way, with
+`--sandboxes`, `--local-storage`, and the bootstrap login. Joining nodes
+reach the primary's backing services through its recorded private address;
+where that is wrong (servers talking over public addresses or a private
+network between dedicated servers), pass `--primary-address` with the
+address to use instead. There is deliberately no AWS VPC assumption: the
+setting selects the address. The service user stays the primary's so the
+tunnel login matches.
+
+`down`, `status`, `upgrade`, and `connect` work for adopted remotes
+without any cloud call. `down` stops and removes swarmy's services, units,
+binaries, node environment (`/etc/swarmy`, which holds static bucket keys
+and copied credentials), and checkout on every host, deletes the owned
+bucket scope unless `--keep-bucket` is passed, and drops local state. It
+never deletes the machines themselves, and says so; local sandbox disk
+data stays for the operator. `status` reports no instance type for
+existing hosts, and owned bucket or role resources still ask for
+confirmation before deletion.
 
 ```sh
 swarmy remote connect test
