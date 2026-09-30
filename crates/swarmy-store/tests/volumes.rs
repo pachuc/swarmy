@@ -134,7 +134,7 @@ async fn periodic_snapshots_skip_idle_staged_changes_publish_and_checkpoint_is_i
         let writer = task_writer.clone();
         let ticks = ticks.clone();
         async move {
-            let result = writer.flush_if_dirty(None).await?;
+            let result = writer.flush_if_dirty().await?;
             ticks.send(result.map(|flush| flush.manifest_id)).unwrap();
             Ok::<_, swarmy_volume::VolumeError>(())
         }
@@ -172,7 +172,7 @@ async fn periodic_snapshots_skip_idle_staged_changes_publish_and_checkpoint_is_i
     let task_writer = writer.clone();
     let _long_period = SnapshotLoop::spawn(std::time::Duration::from_secs(600), move || {
         let writer = task_writer.clone();
-        async move { writer.flush_if_dirty(None).await.map(|_| ()) }
+        async move { writer.flush_if_dirty().await.map(|_| ()) }
     });
     let checkpoint =
         tokio::time::timeout(std::time::Duration::from_secs(5), writer.checkpoint(None))

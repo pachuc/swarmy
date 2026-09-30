@@ -349,7 +349,7 @@ fn start_snapshots(
         async move {
             let _operation = operations.lock().await;
             if device.has_unpublished_changes().await {
-                writer.flush_if_dirty(None).await?;
+                writer.flush_if_dirty().await?;
             }
             Ok::<_, Error>(())
         }

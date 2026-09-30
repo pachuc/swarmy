@@ -236,7 +236,7 @@ impl RuncRuntime {
                 self.refresh_hosted(id, &entry.path()).await?;
                 continue;
             }
-            if let Some(candidate) = self.reap_stale(id, &entry.path()).await? {
+            if let Some(candidate) = self.reap_stale(id, &entry).await? {
                 candidates.push(candidate);
             }
         }
@@ -246,7 +246,7 @@ impl RuncRuntime {
 
     /// Refresh the hosted marker and usage report for a scratch directory
     /// whose sandbox still runs on this node.
-    async fn refresh_hosted(&self, id: AgentId, path: &std::path::Path) -> Result<()> {
+    async fn refresh_hosted(&self, id: AgentId, path: &Path) -> Result<()> {
         std::fs::write(path.join(".hosted"), b"")?;
         if self.config.store.is_computer_deleted(id).await? {
             return Ok(());
@@ -275,13 +275,14 @@ impl RuncRuntime {
     async fn reap_stale(
         &self,
         id: AgentId,
-        path: &std::path::Path,
-    ) -> Result<Option<(std::time::SystemTime, AgentId, u64)>> {
+        entry: &std::fs::DirEntry,
+    ) -> Result<Option<(SystemTime, AgentId, u64)>> {
+        let path = entry.path();
         let marker = path.join(".hosted");
         let modified = std::fs::metadata(&marker)
-            .or_else(|_| std::fs::metadata(path))?
+            .or_else(|_| entry.metadata())?
             .modified()?;
-        let bytes = directory_bytes(path)?;
+        let bytes = directory_bytes(&path)?;
         let deleted = self.config.store.is_computer_deleted(id).await?;
         let moved = self
             .config
@@ -316,7 +317,7 @@ impl RuncRuntime {
     /// below the low-water mark.
     async fn evict_under_pressure(
         &self,
-        mut candidates: Vec<(std::time::SystemTime, AgentId, u64)>,
+        mut candidates: Vec<(SystemTime, AgentId, u64)>,
     ) -> Result<()> {
         let total = fs2::total_space(&self.scratch_root)?;
         if total == 0
