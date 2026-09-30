@@ -789,10 +789,13 @@ lists provisioning installs, then removes the units, the binaries in
 `/usr/local/bin`, `/etc/modules-load.d/swarmy.conf`, the node environment
 (`/etc/swarmy`, which holds static bucket keys and copied credentials),
 and the checkout on every host. It deletes the owned bucket scope unless
-`--keep-bucket` is passed, and drops local state. It never deletes the
-machines themselves, and says so. An unreachable host does not block the
-others: its failure is reported after the bucket and state cleanup, and
-`down` waits only briefly per host instead of the full provisioning wait.
+`--keep-bucket` is passed, once every host is torn down (a failed host
+keeps its record and the bucket until a re-run completes), and drops local
+state. It never deletes the
+machines themselves, and says so. A failed host does not block the others:
+its real failure reason is reported, its record (and the bucket) is kept,
+and `down` waits only briefly per host instead of the full provisioning
+wait, so re-running `down` retries exactly the failed hosts.
 `status` reports no instance type for existing hosts, and owned bucket or
 role resources still ask for confirmation before deletion.
 

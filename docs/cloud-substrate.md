@@ -60,13 +60,14 @@ with a fake.
 
 `for_settings` builds the substrate selected by
 `RemoteSettings.provider`: `aws` machines, or the existing-host substrate
-that reuses the bucket calls and fails every machine operation. The
-provider enum is read in two places: `for_settings` builds the one `Cloud`
-(a `Substrate` holding the AWS implementation that refuses machine calls
-for existing hosts), and `run` picks host decommissioning over instance
-termination for teardown. Joins and status never match on the provider
-themselves: flag dispatch lives in `add_node::resolve_existing` and
-instance-type presentation in `display_instance_type`. Teardown reads
+that reuses the bucket calls and fails every machine operation. One `Cloud`
+implementation reads the provider enum where behavior must differ:
+`for_settings` records it in the substrate (whose `machines` gate refuses
+machine calls for existing hosts), `run` picks host decommissioning over
+instance termination for teardown, and `add_node::resolve_existing`
+validates join flags per provider. Status never matches on the provider
+itself: instance-type presentation goes through `display_instance_type`.
+Teardown reads
 the provider from the node's saved launch
 settings through `RemoteNode::cloud_settings`, falling back to
 defaults in the node's region for records saved before launch settings

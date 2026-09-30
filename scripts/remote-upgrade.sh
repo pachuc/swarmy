@@ -19,15 +19,14 @@ started=$SECONDS
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 # rsync preserves timestamps; a different commit can otherwise look older to cargo.
 find crates -type f \( -name '*.rs' -o -name 'build.rs' \) -exec touch {} +
+# Binaries and their packages come from the shared table (the CLI package
+# differs, so it builds separately with its own feature flags).
 if [[ $mode == stack ]]; then
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p swarmy-cli --no-default-features >&2
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked \
-        -p swarmyd -p swarmy-scheduler -p swarmy-gateway -p swarmy-worker -p swarmy-api >&2
-    binaries=(swarmy swarmyd swarmy-scheduler swarmy-gateway swarmy-worker swarmy-api)
-else
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p swarmyd >&2
-    binaries=(swarmyd)
+    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p "$(swarmy_cli_package)" --no-default-features >&2
 fi
+mapfile -t build_args < <(swarmy_mode_build_args "$mode")
+SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}" >&2
+mapfile -t binaries < <(swarmy_mode_binaries "$mode")
 changed=()
 restarted=()
 for binary in "${binaries[@]}"; do
@@ -45,7 +44,8 @@ token_status=unchanged
 if systemctl cat swarmy-api.service >/dev/null 2>&1; then
     token_status=$(ensure_api_token .swarmy/config.toml)
 fi
-for service in scheduler worker gateway api; do
+mapfile -t services < <(swarmy_service_names)
+for service in "${services[@]}"; do
     binary="swarmy-$service"
     if systemctl cat "$binary.service" >/dev/null 2>&1; then
         if unit_needs_restart "$binary.service" "/usr/local/bin/$binary"; then

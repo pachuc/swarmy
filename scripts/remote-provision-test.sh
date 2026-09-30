@@ -119,17 +119,23 @@ static_bucket=$(node_environment /tmp/checkout 4 /tmp example-bucket eu-west-1 h
 [[ $static_bucket == *'SWARMY_S3_CONDITIONAL_CREATE=false'* ]]
 [[ $static_bucket != *'SWARMY_S3_ACCESS_KEY='* ]]
 [[ $static_bucket != *'SWARMY_S3_SECRET_KEY='* ]]
-# The per-mode selectors stay within the shared lists: everything a mode
-# installs is torn down by the decommission script reading those lists.
-for mode in stack node; do
-    while IFS= read -r unit; do
-        swarmy_unit_names | grep -xF "$unit" >/dev/null || { echo "$mode unit $unit missing from shared list" >&2; exit 1; }
-    done < <(swarmy_mode_units "$mode")
-    while IFS= read -r binary; do
-        swarmy_binary_names | grep -xF "$binary" >/dev/null || { echo "$mode binary $binary missing from shared list" >&2; exit 1; }
-    done < <(swarmy_mode_binaries "$mode")
-done
-# Stopping previous units covers every shared unit, including the other
-# mode's units and old node-services units on a re-provisioned host.
-[[ $(swarmy_unit_names | wc -l) -ge 3 ]]
+# Installed control-plane units come from the installed unit files through
+# the shared table: tunnel-only or agent-only hosts report none, while the
+# stack unit or any node service reports it.
+systemctl() {
+    printf '%s\n' "$SWARMY_TEST_INSTALLED"
+}
+SWARMY_TEST_INSTALLED='swarmy-tunnel.service enabled
+swarmyd.service enabled'
+[[ -z $(list_installed_control_units) ]]
+SWARMY_TEST_INSTALLED='swarmy-tunnel.service enabled
+swarmy-gateway.service enabled'
+[[ $(list_installed_control_units) == 'swarmy-gateway.service' ]]
+SWARMY_TEST_INSTALLED='swarmy-stack.service enabled'
+[[ $(list_installed_control_units) == 'swarmy-stack.service' ]]
+SWARMY_TEST_INSTALLED='swarmy-stack.service enabled
+swarmyd.service enabled
+swarmy-api.service enabled'
+[[ $(list_installed_control_units | sort) == $'swarmy-api.service\nswarmy-stack.service' ]]
+unset -f systemctl
 echo 'remote provision argument and environment tests passed'

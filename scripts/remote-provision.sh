@@ -129,13 +129,13 @@ if (( mem_available_kib < 6 * 1024 * 1024 )); then
     exit 1
 fi
 build_started=$SECONDS
+# Packages from the shared table (the CLI package differs, so it builds
+# separately with its own feature flags).
 if [[ $mode == stack ]]; then
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p swarmy-cli --no-default-features
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked \
-        -p swarmyd -p swarmy-scheduler -p swarmy-gateway -p swarmy-worker -p swarmy-api
-else
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p swarmyd
+    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p "$(swarmy_cli_package)" --no-default-features
 fi
+mapfile -t build_args < <(swarmy_mode_build_args "$mode")
+SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}"
 # Install from the shared binary list so the install can never name a binary
 # teardown misses. Only built binaries are present, selected per mode above.
 mapfile -t install_binaries < <(swarmy_mode_binaries "$mode")
@@ -218,7 +218,7 @@ ${mount_requirement}
 [Service]
 WorkingDirectory=$repo_dir
 EnvironmentFile=/etc/swarmy/node.env
-ExecStart=/usr/local/bin/${node_unit%.service}
+ExecStart=/usr/local/bin/$(swarmy_unit_binary "$node_unit")
 Restart=always
 RestartSec=5
 TimeoutStopSec=120
@@ -236,7 +236,7 @@ else
 fi
 sudo systemctl enable "$node_unit"
 sudo systemctl restart "$node_unit"
-invocation=$(sudo systemctl show -p InvocationID --value "${node_unit%.service}")
+invocation=$(sudo systemctl show -p InvocationID --value "$node_unit")
 for _ in $(seq 1 60); do
     if sudo test -S "$repo_dir/.swarmy/node/control.sock" && sudo journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager | grep -q 'node registered and ready'; then
         sudo systemctl is-active "$node_unit"

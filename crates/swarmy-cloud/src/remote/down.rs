@@ -198,10 +198,10 @@ pub(super) async fn run(
 /// they stay running and no cloud machine call happens. A failed host
 /// never blocks the others, and the teardown SSH wait is short (see
 /// [`Host`]) so a cancelled server cannot hold teardown hostage. When any
-/// host fails, only its records are kept: hosts that were torn down are
-/// pruned with their key files, the bucket cleanup still runs (it is
-/// idempotent), and the command exits non-zero so re-running `down` retries
-/// exactly the failed hosts.
+/// host fails, only its records are kept and the bucket is left alone:
+/// hosts that were torn down are pruned with their key files, and the
+/// command exits non-zero so re-running `down` retries exactly the failed
+/// hosts and deletes the bucket once every host is torn down.
 pub(super) async fn run_existing(
     cloud: &impl Cloud,
     host: &impl Host,
@@ -227,8 +227,8 @@ pub(super) async fn run_existing(
             failed.push((current.name.clone(), swarmy_core::error_chain(&error)));
         }
     }
-    cleanup_bucket_and_role(cloud, state, node, keep_bucket).await?;
     if failed.is_empty() {
+        cleanup_bucket_and_role(cloud, state, node, keep_bucket).await?;
         for current in nodes {
             state.remove_key(current)?;
         }

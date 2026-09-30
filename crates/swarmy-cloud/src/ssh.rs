@@ -178,6 +178,44 @@ async fn run_output(command: &mut Command, action: &str) -> Result<std::process:
     Ok(output)
 }
 
+/// Run a helper script on the host over SSH stdin (`bash -s`), for helpers
+/// that must work with no checkout on the host. The `action` names the
+/// attempted operation in [`crate::Error::Ssh`].
+async fn pipe_script(
+    node: &RemoteNode,
+    address: &str,
+    action: &str,
+    script: &str,
+) -> Result<std::process::Output> {
+    let mut child = base(node)?
+        .arg(address)
+        .arg("bash -s")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(crate::Error::ssh(action))?;
+    let Some(mut stdin) = child.stdin.take() else {
+        return Err(crate::Error::other("SSH stdin missing"));
+    };
+    stdin
+        .write_all(script.as_bytes())
+        .await
+        .map_err(crate::Error::ssh(action))?;
+    drop(stdin);
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(crate::Error::ssh(action))?;
+    if !output.status.success() {
+        return Err(crate::Error::SshStatus {
+            command: action.to_owned(),
+            status: output.status,
+        });
+    }
+    Ok(output)
+}
+
 /// Create the node's private key file and return its public half.
 ///
 /// # Errors
@@ -294,6 +332,24 @@ impl Ssh {
         Ok(String::from_utf8(output.stdout)?)
     }
 
+    /// Read the provisioning env helpers for piping over stdin when the
+    /// checkout is not on the host (yet or anymore). The piped script has
+    /// no directory for `BASH_SOURCE`, so its S3 helper cannot be sourced;
+    /// only functions without that need run here.
+    fn piped_env(&self) -> Result<String> {
+        let env = String::from_utf8(std::fs::read(
+            self.repo.join("scripts/remote-provision-env.sh"),
+        )?)?;
+        let mut script = String::new();
+        for line in env.split_inclusive('\n') {
+            if line.trim_start().starts_with("source") && line.contains("remote-s3-env.sh") {
+                continue;
+            }
+            script.push_str(line);
+        }
+        Ok(script)
+    }
+
     /// Run the checkout's `ensure_service_user` on the host before the first
     /// copy, so a root login gains a destination owned by its owner. The helper
     /// script is piped over stdin because the checkout is not on the host yet;
@@ -311,19 +367,7 @@ impl Ssh {
         if user == "root" {
             return Ok("/root".to_owned());
         }
-        let env = String::from_utf8(std::fs::read(
-            self.repo.join("scripts/remote-provision-env.sh"),
-        )?)?;
-        let mut script = String::new();
-        for line in env.split_inclusive('\n') {
-            // Piped over stdin the script has no directory for BASH_SOURCE, so
-            // its S3 helper cannot be sourced. Only the user-management
-            // functions run here and none of them need it.
-            if line.trim_start().starts_with("source") && line.contains("remote-s3-env.sh") {
-                continue;
-            }
-            script.push_str(line);
-        }
+        let mut script = self.piped_env()?;
         // `user` is validated (letters, digits, `_`, `-`), so embedding it in
         // single quotes is data, never shell. `visudo -cf` reports to stdout, so
         // the home is the last line.
@@ -333,33 +377,7 @@ impl Ssh {
             "ensure_service_user '{user}'\nservice_home_for '{user}'\n"
         )
         .expect("writing to String cannot fail");
-        let action = "create service user";
-        let mut child = base(node)?
-            .arg(address)
-            .arg("bash -s")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(crate::Error::ssh(action))?;
-        let Some(mut stdin) = child.stdin.take() else {
-            return Err(crate::Error::other("SSH stdin missing"));
-        };
-        stdin
-            .write_all(script.as_bytes())
-            .await
-            .map_err(crate::Error::ssh(action))?;
-        drop(stdin);
-        let output = child
-            .wait_with_output()
-            .await
-            .map_err(crate::Error::ssh(action))?;
-        if !output.status.success() {
-            return Err(crate::Error::SshStatus {
-                command: action.to_owned(),
-                status: output.status,
-            });
-        }
+        let output = pipe_script(node, address, "create service user", &script).await?;
         let home = String::from_utf8(output.stdout)?
             .lines()
             .rfind(|line| !line.trim().is_empty())
@@ -454,20 +472,18 @@ impl Ssh {
             .collect())
     }
 
-    /// Report whether the node has swarmy service units installed.
+    /// Report whether the node has swarmy service units installed. Asks the
+    /// host script (piped over stdin, so no checkout is needed), which reads
+    /// the shared unit list instead of matching unit names in Rust.
     ///
     /// # Errors
     ///
-    /// Reports SSH failures and non-zero `systemctl` exits.
+    /// Reports SSH failures and non-zero remote exits.
     pub async fn has_service_units(&self, node: &RemoteNode, address: &str) -> Result<bool> {
-        let output = run_output(
-            base(node)?
-                .arg(address)
-                .arg("systemctl list-unit-files 'swarmy-*.service' --no-legend --no-pager"),
-            "inspect installed service units",
-        )
-        .await?;
-        Ok(has_control_units(&String::from_utf8(output.stdout)?))
+        let mut script = self.piped_env()?;
+        script.push_str("list_installed_control_units\n");
+        let output = pipe_script(node, address, "inspect installed service units", &script).await?;
+        Ok(!String::from_utf8(output.stdout)?.trim().is_empty())
     }
 
     /// Read the installed `swarmyd` version from a node.
@@ -628,22 +644,6 @@ fn is_python_cache(status_line: &str) -> bool {
         .any(|part| part.trim_matches('"') == "__pycache__")
 }
 
-fn has_control_units(listing: &str) -> bool {
-    listing
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .any(|unit| {
-            matches!(
-                unit,
-                "swarmy-stack.service"
-                    | "swarmy-scheduler.service"
-                    | "swarmy-worker.service"
-                    | "swarmy-gateway.service"
-                    | "swarmy-api.service"
-            )
-        })
-}
-
 fn provisioning_command(
     mode: &str,
     service_ip: std::net::Ipv4Addr,
@@ -686,13 +686,16 @@ fn provisioning_command(
 /// them. The service home resolves through `~user` on the host inside the
 /// copied checkout, like the provisioning paths. `user` is validated
 /// (letters, digits, `_`, `-`), so embedding it is data, never shell. A
-/// host whose checkout is already gone reports what remains: no installed
-/// units means a retried `down` is done, while leftover units fail with a
-/// message saying the checkout is missing instead of a bare SSH error.
+/// host whose checkout is already gone reports what remains: leftover unit
+/// files fail with a message saying the checkout is missing, while no
+/// units at all means a retried `down` is done. The unit check globs unit
+/// files directly (`swarmy*.service` covers `swarmyd.service` too, which a
+/// `swarmy-` glob would miss) instead of parsing `list-units` output, whose
+/// columns shift when units are failed.
 fn decommission_command(user: &str) -> String {
     let repo = tilde_repo(user);
     format!(
-        "if [ -x {repo}/scripts/remote-decommission.sh ]; then cd {repo} && bash scripts/remote-decommission.sh {user}; elif systemctl list-units --all --no-legend --no-pager 2>/dev/null | grep -qE '^swarmy(-[a-z]+)?\\.service'; then echo 'swarmy checkout is missing from {repo} but swarmy units are still installed; restore the checkout or remove the units by hand (see docs/REMOTE.md)' >&2; exit 1; else echo 'swarmy checkout already removed; nothing to tear down'; fi",
+        "if [ -f {repo}/scripts/remote-decommission.sh ]; then cd {repo} && bash scripts/remote-decommission.sh {user}; elif ls /etc/systemd/system/swarmy*.service >/dev/null 2>&1; then echo 'swarmy checkout is missing from {repo} but swarmy units are still installed; restore the checkout or remove the units by hand (see docs/REMOTE.md)' >&2; exit 1; else echo 'swarmy checkout already removed; nothing to tear down'; fi",
     )
 }
 
@@ -951,16 +954,29 @@ mod tests {
         );
     }
 
-    // Tested directly because `has_service_units` needs SSH to a live node.
+    // Regression test for the missing-checkout branch of the decommission
+    // command: the leftover-unit probe must read unit files with a glob
+    // that covers swarmyd.service (a `swarmy-` glob never matches it) and
+    // must not parse list-units columns (they shift for failed units), and
+    // the script probe is a readability check because it runs via bash.
     #[test]
-    fn installed_units_select_the_full_package_set() {
-        assert!(super::has_control_units(
-            "swarmy-tunnel.service enabled\nswarmy-gateway.service enabled\n"
-        ));
-        assert!(super::has_control_units("swarmy-stack.service enabled\n"));
-        assert!(!super::has_control_units(
-            "swarmy-tunnel.service enabled\nswarmyd.service enabled\n"
-        ));
+    fn decommission_reports_leftover_units_without_a_checkout() {
+        let command = super::decommission_command("swarmy");
+        assert!(
+            command.contains("[ -f ~swarmy/swarmy/scripts/remote-decommission.sh ]"),
+            "{command}"
+        );
+        assert!(
+            command.contains("ls /etc/systemd/system/swarmy*.service"),
+            "{command}"
+        );
+        assert!(command.contains("checkout is missing"), "{command}");
+        assert!(!command.contains("list-units"), "{command}");
+        assert!(!command.contains("swarmy-*.service"), "{command}");
+        assert!(
+            super::decommission_command("other").contains("~other/swarmy"),
+            "{command}"
+        );
     }
 
     #[test]

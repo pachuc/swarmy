@@ -3415,3 +3415,67 @@ async fn adopt_verifies_static_keys_before_saving_state() {
     assert!(setup.state.read("rejected-test").unwrap().is_none());
     assert_eq!(setup.cloud.bucket_ensures.borrow().len(), 1);
 }
+
+#[tokio::test]
+async fn down_existing_keeps_the_bucket_until_every_host_is_torn_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let setup = static_setup();
+    let host = FakeHost::default();
+    let settings = RemoteSettings {
+        provider: swarmy_config::Provider::Existing,
+        service_user: "swarmy".into(),
+        local_storage: String::new(),
+        ..setup.settings.clone()
+    };
+    super::adopt::run(
+        &setup.cloud,
+        &host,
+        &state,
+        &settings,
+        super::adopt::AdoptNode {
+            name: "static-test",
+            host: "203.0.113.10",
+            ssh_user: "root",
+            ssh_key: &bootstrap_key(&dir),
+            sandboxes: 0,
+        },
+        None.into(),
+    )
+    .await
+    .unwrap();
+    // A failed host keeps its record and the bucket: teardown touches
+    // neither until a retry tears every host down.
+    host.fail_decommission
+        .borrow_mut()
+        .push("static-test".into());
+    let node = state.require("static-test").unwrap();
+    down::run_existing(&setup.cloud, &host, &state, &node, false)
+        .await
+        .unwrap_err();
+    assert!(
+        setup
+            .cloud
+            .teardown
+            .borrow()
+            .iter()
+            .all(|entry| !entry.starts_with("bucket ")),
+        "{:?}",
+        setup.cloud.teardown.borrow()
+    );
+    assert!(state.require("static-test").is_ok());
+    host.fail_decommission.borrow_mut().clear();
+    let node = state.require("static-test").unwrap();
+    down::run_existing(&setup.cloud, &host, &state, &node, false)
+        .await
+        .unwrap();
+    assert!(
+        setup
+            .cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|entry| entry == "bucket test-bucket")
+    );
+    assert!(state.read("static-test").unwrap().is_none());
+}
