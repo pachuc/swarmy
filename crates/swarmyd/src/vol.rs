@@ -167,3 +167,17 @@ pub(crate) async fn store() -> Result<Store> {
     let settings = swarmy_config::Settings::load()?.settings;
     Ok(Store::open_store(&settings).await?.store)
 }
+
+/// Documented `swarmyd vol ...` commands resolve against the real clap tree.
+/// See the `swarmy-docs` crate for the shared extraction and validation.
+#[cfg(test)]
+mod docs_command_tests {
+    #[test]
+    fn markdown_vol_commands_match_the_clap_tree() {
+        use clap::CommandFactory;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../");
+        let command = clap::Command::new("swarmyd").subcommand(super::VolCli::command());
+        swarmy_docs::check_repo(&root, &[("swarmyd", &command)], &[])
+            .expect("documented swarmyd commands match the vol tree");
+    }
+}

@@ -4209,6 +4209,7 @@ dependencies = [
  "swarmy-cloud",
  "swarmy-config",
  "swarmy-core",
+ "swarmy-docs",
  "swarmy-image",
  "swarmy-version",
  "tempfile",
@@ -4321,6 +4322,14 @@ dependencies = [
  "swarmy-llm",
  "tokio",
  "ulid",
+]
+
+[[package]]
+name = "swarmy-docs"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -4586,6 +4595,7 @@ dependencies = [
  "swarmy-bus",
  "swarmy-config",
  "swarmy-core",
+ "swarmy-docs",
  "swarmy-sandbox",
  "swarmy-store",
  "swarmy-version",

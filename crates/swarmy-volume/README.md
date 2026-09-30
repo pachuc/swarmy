@@ -305,7 +305,7 @@ waiting time and can exceed elapsed time when callers overlap.
 that timer. It includes client work and network/service latency, so subtracting
 it from wall time does not produce a CPU profile.
 
-`VolumeWriter::flush()` returns `FlushResult`. `swarmyd --json vol flush` prints
+`VolumeWriter::flush()` returns `FlushResult`. `swarmyd vol --json flush` prints
 its manifest id, `elapsed`, `freeze_wait`, `frozen`, `uploads`, and `device_total`.
 Durations use serde's `{ "secs": ..., "nanos": ... }` representation.
 `uploads` is the counter difference from just before freeze acquisition through

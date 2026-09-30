@@ -28,6 +28,7 @@ jobs:
           shared-key: lint
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: scripts/check-public-ids.sh
+      - run: scripts/check-docs-accuracy.py
       - run: scripts/check-anyhow-in-libraries.sh
       - run: npx --yes --package @ast-grep/cli@0.45.3 ast-grep scan --config ast-grep/sgconfig.yml
       - run: cargo fmt --all --check
@@ -135,7 +136,6 @@ jobs:
       - uses: ./.github/actions/install-dev-services
         with:
           mode: install
-      - run: scripts/check-docs-accuracy.sh
       - run: scripts/test-scripts.sh
   dependency-policy:
     if: github.event_name != 'schedule'
