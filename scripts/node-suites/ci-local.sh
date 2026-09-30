@@ -75,6 +75,12 @@ step cargo test --locked -p swarmy-e2e --test gateway --test scheduler --test wo
 step scripts/chaos-ci.sh
 step cargo test --locked -p swarmy-e2e --test cli_session -- --test-threads=1
 scripts/dev-stack.sh stop >/dev/null 2>&1 || true
+# Some script tests start their own stack; wait until this one has released
+# its ports (FoundationDB, NATS and its monitor, SeaweedFS S3).
+for _ in $(seq 60); do
+  ss -ltn | grep -qE ':(4500|4222|8222|8333) ' || break
+  sleep 1
+done
 
 # script-tests (runs without the dev stack, as in CI; some scripts start their own)
 step scripts/test-scripts.sh
