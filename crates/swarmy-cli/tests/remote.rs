@@ -211,8 +211,7 @@ fn connect_reports_timing_in_json_and_human_output_when_reusing_a_tunnel() {
         s3_endpoint: "http://127.0.0.1:8333".into(),
         api_url: None,
         api_token: None,
-        s3_bucket: None,
-        s3_region: None,
+        bucket: None,
         default_image: Some("base-ubuntu:test".into()),
     };
     std::fs::write(

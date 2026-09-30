@@ -12,8 +12,9 @@ mod remote;
 pub use exports::parse_exports;
 pub use object::ObjectPrefix;
 pub use remote::{
-    AwsSettings, RemoteNode, RemotePorts, RemoteProfile, RemoteServices, RemoteSettings,
-    default_sandboxes, remote_path, validate_remote_name, validate_service_user,
+    AwsSettings, BucketCredentials, BucketSpec, RemoteNode, RemotePorts, RemoteProfile,
+    RemoteServices, RemoteSettings, default_sandboxes, ownership_marker_key, remote_path,
+    validate_remote_name, validate_service_user,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -260,7 +261,7 @@ impl Default for ApiSettings {
 }
 
 /// Object storage namespace shared by every service on one metadata namespace.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct S3Settings {
     pub endpoint: String,
@@ -269,6 +270,26 @@ pub struct S3Settings {
     pub bucket: String,
     pub prefix: ObjectPrefix,
     pub region: String,
+    /// Write chunks and manifests with a create-only PUT (`If-None-Match: *`).
+    /// Providers that reject the header need `false`, which makes the call a
+    /// plain PUT. The objects are content-addressed, so overwriting identical
+    /// bytes is safe.
+    pub conditional_create: bool,
+}
+
+impl std::fmt::Debug for S3Settings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("S3Settings")
+            .field("endpoint", &self.endpoint)
+            .field("access_key", &"..redacted..")
+            .field("secret_key", &"..redacted..")
+            .field("bucket", &self.bucket)
+            .field("prefix", &self.prefix)
+            .field("region", &self.region)
+            .field("conditional_create", &self.conditional_create)
+            .finish()
+    }
 }
 impl Default for S3Settings {
     fn default() -> Self {
@@ -279,6 +300,7 @@ impl Default for S3Settings {
             bucket: "swarmy".into(),
             prefix: ObjectPrefix::default(),
             region: "us-east-1".into(),
+            conditional_create: true,
         }
     }
 }
@@ -917,6 +939,7 @@ static ENV_TABLE: &[EnvEntry] = &[
     e!("SWARMY_S3_BUCKET", |s, v, _| assign(&mut s.s3.bucket, v), |s| Some(s.s3.bucket.clone())),
     e!("SWARMY_S3_PREFIX", |s, v, _| assign(&mut s.s3.prefix, v), |s| Some(s.s3.prefix.as_str().into())),
     e!("SWARMY_S3_REGION", |s, v, _| assign(&mut s.s3.region, v), |s| Some(s.s3.region.clone())),
+    e!("SWARMY_S3_CONDITIONAL_CREATE", |s, v, _| assign(&mut s.s3.conditional_create, v), |s| Some(s.s3.conditional_create.to_string())),
     e!("SWARMY_STORE_DIRECTORY", |s, v, _| assign(&mut s.store.directory, v), |s| Some(s.store.directory.clone())),
     e!("SWARMY_BUS_PREFIX", |s, v, _| assign(&mut s.bus.prefix, v), |s| Some(s.bus.prefix.clone())),
     e!("SWARMY_API_URL", |s, v, _| { s.api.url = Some(v.into()); Ok(()) }, |s| s.api.url.clone()),
@@ -1237,6 +1260,19 @@ mod tests {
     }
 
     #[test]
+    fn s3_settings_debug_redacts_both_keys() {
+        let settings = S3Settings {
+            access_key: "test-access".into(),
+            secret_key: "test-secret".into(),
+            ..S3Settings::default()
+        };
+        let debug = format!("{settings:?}");
+        assert!(!debug.contains("test-access"), "{debug}");
+        assert!(!debug.contains("test-secret"), "{debug}");
+        assert!(debug.contains("..redacted.."), "{debug}");
+    }
+
+    #[test]
     fn node_identity_persists_and_environment_can_select_another_node() {
         let dir = tempfile::tempdir().unwrap();
         let loaded = load_with_remote(dir.path(), &BTreeMap::new()).unwrap();
@@ -1390,6 +1426,7 @@ mod tests {
             ("SWARMY_S3_BUCKET", "test-bucket"),
             ("SWARMY_S3_PREFIX", "test/prefix"),
             ("SWARMY_S3_REGION", "eu-west-1"),
+            ("SWARMY_S3_CONDITIONAL_CREATE", "false"),
             ("SWARMY_STORE_DIRECTORY", "testdir"),
             ("SWARMY_BUS_PREFIX", "testprefix"),
             ("SWARMY_API_URL", "http://127.0.0.1:9999"),

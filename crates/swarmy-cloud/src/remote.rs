@@ -10,6 +10,8 @@ use swarmy_config::Settings;
 
 mod add_node;
 mod aws;
+mod bucket;
+mod buckets;
 mod connect;
 mod disconnect;
 mod down;
@@ -147,6 +149,12 @@ async fn run_up(state: &State, mut settings: Settings, command: Command) -> Resu
     let Command::Up {
         name,
         bucket,
+        s3_endpoint,
+        s3_region,
+        s3_prefix,
+        s3_access_key,
+        s3_secret_file,
+        s3_secret_stdin,
         sandboxes,
         instance_type,
         disk_gb,
@@ -169,8 +177,28 @@ async fn run_up(state: &State, mut settings: Settings, command: Command) -> Resu
     if let Some(services) = services {
         settings.remote.services = services;
     }
-    if let Some(bucket) = bucket {
-        settings.remote.bucket = Some(bucket);
+    let stdin_secret = s3_secret_stdin
+        .then(bucket::read_secret_stdin)
+        .transpose()?;
+    let resolved = bucket::resolve(
+        settings.remote.bucket.clone(),
+        &bucket::BucketOptions {
+            bucket,
+            endpoint: s3_endpoint,
+            region: s3_region,
+            prefix: s3_prefix,
+            access_key: s3_access_key,
+            secret_file: s3_secret_file,
+            secret_stdin: s3_secret_stdin,
+            stdin_secret,
+            env_access_key: std::env::var("AWS_ACCESS_KEY_ID").ok(),
+            env_secret_key: std::env::var("AWS_SECRET_ACCESS_KEY").ok(),
+        },
+    )?;
+    settings.remote.bucket = resolved;
+    if let Some(spec) = settings.remote.bucket.as_mut() {
+        let region = settings.remote.region.clone();
+        spec.resolve_region(&region);
     }
     NodeShape {
         instance_type,
@@ -224,6 +252,8 @@ async fn run_add_node(state: &State, mut settings: Settings, command: Command) -
         )
     })?;
     let cloud = for_settings(&launch).await?;
+    // Box the join future: it holds saved launch state across awaits and
+    // would otherwise exceed the large-future budget.
     guard(
         &name,
         // Pin the join so service-user paths and disk state do not inflate

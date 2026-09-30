@@ -325,6 +325,75 @@ with local state intact; grant the named permission and retry.
 
 Existing remotes without a bucket continue using SeaweedFS.
 
+### S3-compatible buckets with static keys
+
+A remote can store its volumes, images, and blobs in any S3-compatible
+bucket (for example Hetzner Object Storage) reached by endpoint URL with a
+static access key and secret key, instead of AWS S3 through an IAM instance
+role. The saved bucket description is one value everywhere: endpoint,
+region, bucket name, prefix, and a credential source that is either the
+instance role or static keys.
+
+```sh
+swarmy remote up demo --bucket NAME --s3-endpoint https://objects.example.invalid \
+  --s3-region eu-west-1 --s3-prefix runs/team \
+  --s3-access-key KEY --s3-secret-file ~/.swarmy/demo-s3-secret
+```
+
+The secret key comes from `--s3-secret-file` (a file readable only by its
+owner), from `--s3-secret-stdin` (one line on stdin), or from the standard
+`AWS_SECRET_ACCESS_KEY` environment variable, with the access key from
+`--s3-access-key` or `AWS_ACCESS_KEY_ID`. The keys are stored in the laptop's
+remote state file (mode 0600) and copied to each node into
+`/etc/swarmy/node.env` (mode 0600) over SSH stdin, the same way
+`--copy-credential` uploads the ChatGPT credential. They never appear on a
+command line, in a log, or in `remote status` output. The same description
+can live in the configuration file instead of flags:
+
+```toml
+[remote.bucket]
+endpoint = "https://objects.example.invalid"
+region = "eu-west-1"
+bucket = "NAME"
+prefix = "runs/team"
+
+[remote.bucket.credentials]
+source = "static_keys"
+access_key = "KEY"
+secret_key = "SECRET"
+```
+
+For a static-key bucket, `remote up` creates the bucket through the S3 API
+when it does not exist, or reuses an existing empty bucket. Ownership is
+recorded with bucket tags where the provider supports them; bucket tags are
+optional in the S3 API, so providers without tag support record ownership in
+a marker object under the prefix (`<prefix>/.swarmy-owner`). `remote down`
+deletes only what the swarm owns: its prefix scope, plus the bucket itself
+when nothing else remains. No IAM, public-access-block, or encryption calls
+are made for non-AWS endpoints. `remote tag` adopts only the bucket.
+
+Volume chunks and manifests are content-addressed and written with a
+create-only PUT (`If-None-Match: *`); overwriting identical bytes is safe.
+Providers that reject that header need the plain-PUT fallback, which is part
+of the bucket description so it reaches the nodes:
+
+```toml
+[remote.bucket]
+conditional_create = false
+```
+
+The description is carried into `/etc/swarmy/node.env` at provisioning and
+into the connect profile, which is what the node services read. `[s3]
+conditional_create` (or `SWARMY_S3_CONDITIONAL_CREATE=false`) remains the
+service-level setting for local development stacks. The fallback still
+dedupes through the pre-write existence check and reads still verify the
+content hash.
+
+Rotating static keys is a re-provisioning operation: `remote upgrade` never
+modifies `node.env` or service units for key changes, so run `remote down
+--keep-bucket` followed by `remote up` with the new keys. The kept bucket is
+still owned by the remote, so `up` reuses it instead of creating a new one.
+
 ## Costs and recovery
 
 Check current EC2 prices for the control and sandbox shapes, plus EBS,

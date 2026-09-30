@@ -47,15 +47,14 @@ pub(super) async fn run(
     // Write the key name before any AWS mutation so down can recover an interrupted launch.
     state.save(&node)?;
     let result = async {
-        if let Some(bucket) = &settings.bucket {
+        if let Some(spec) = &settings.bucket {
             cloud
-                .ensure_bucket(&ObjectBucket {
-                    name: bucket.clone(),
-                    region: settings.region.clone(),
-                    owner: name.into(),
-                    endpoint: None,
-                    node_credentials: settings.instance_profile(name),
-                })
+                .ensure_bucket(&ObjectBucket::from_spec(
+                    name,
+                    spec,
+                    &settings.region,
+                    settings.instance_profile(name),
+                ))
                 .await?;
         }
         let address = provision(cloud, host, state, settings, image, &mut node, delay).await?;
@@ -194,27 +193,12 @@ fn validate(settings: &RemoteSettings, name: &str) -> Result<()> {
             && !settings.aws.instance_type.is_empty(),
         "remote disk_gb must be positive and aws.instance_type and managed_by_tag must not be empty",
     )?;
-    if let Some(bucket) = &settings.bucket {
+    if let Some(spec) = &settings.bucket {
         crate::Error::ensure(
             name.len() <= 57,
             "bucket-backed remote name must be at most 57 characters to fit the IAM role name",
         )?;
-        crate::Error::ensure(
-            valid_bucket_name(bucket),
-            "remote.bucket must be a 3-63 character lowercase DNS name without dots (HTTPS virtual-hosted S3 requires this)",
-        )?;
+        spec.validate_name()?;
     }
     Ok(())
-}
-
-/// S3 bucket names are lowercase DNS labels; HTTPS virtual-hosted requests
-/// fail otherwise, so reject them before creating cloud resources.
-fn valid_bucket_name(bucket: &str) -> bool {
-    fn dns(byte: u8) -> bool {
-        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
-    }
-    (3..=63).contains(&bucket.len())
-        && bucket.bytes().all(dns)
-        && !bucket.starts_with('-')
-        && !bucket.ends_with('-')
 }
