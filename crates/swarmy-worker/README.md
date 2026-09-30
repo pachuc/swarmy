@@ -35,9 +35,9 @@ The fake gateway also needs its script and call-log settings; see
 | `SWARMY_STORE_DIRECTORY` | `swarmy` | Slash-separated database directory |
 | `SWARMY_BUS_PREFIX` | absent | Isolated subject and stream prefix |
 | `SWARMY_WORKER_PARTITIONS` | `0-255` | Comma-separated numbers and inclusive ranges, like the scheduler |
-| `SWARMY_PROVIDER` | `fake` | `fake` or `chatgpt`; match the gateway |
+| `SWARMY_PROVIDER` | `fake` | Default stack provider, any catalog provider id; the gateway must serve it |
 | `SWARMY_MODEL` | `gpt-5` | Harness model name |
-| `SWARMY_REASONING_EFFORT` | `medium` | `none`, `minimal`, `low`, `medium`, `high`, or `xhigh` |
+| `SWARMY_REASONING_EFFORT` | `medium` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `SWARMY_SYSTEM_PROMPT` | `You are a helpful assistant. Use tools when needed.` | Literal system prompt |
 | `SWARMY_WORKER_LEASE_MS` | `30000` | Lease duration, at least 30 ms |
 | `SWARMY_WORKER_RECOVERY_INTERVAL_MS` | `5000` | Inflight scan interval, at least 30 ms |
@@ -72,8 +72,8 @@ A crash after the atomic submission but before queue publication leaves an
 inflight record. Every worker scans those records at startup and
 periodically, in pages, and republishes jobs whose sessions are waiting for
 inference in its configured partitions. Repeated publications are safe because
-the gateway claims requests and records completion idempotently. Keep the provider
-class consistent across workers sharing a deployment. Saved prompts retain their
+the gateway claims requests and records completion idempotently. Keep the served
+provider list consistent across workers sharing a deployment. Saved prompts retain their
 original model settings even after a worker restart.
 
 A process interrupted during a tool batch retries only incomplete calls. Local

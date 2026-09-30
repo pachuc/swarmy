@@ -1,13 +1,14 @@
 # Inference gateway
 
-`swarmy-gateway` consumes `WorkQueue::Inference` for one provider class. Workers
+`swarmy-gateway` serves the configured provider list. Workers
 publish a versioned `swarmy_llm::InferenceJobRef` after recording the session as
 `WaitingInference`. The gateway verifies the deterministic request id, claims
 the job, and loads its `Request` from the store before calling the provider.
 
 | Environment variable | Meaning / default |
 | --- | --- |
-| `SWARMY_PROVIDER` | Required: `chatgpt` or `fake` |
+| `SWARMY_PROVIDER` | Default provider, `fake`; the served list when `SWARMY_PROVIDERS` is unset |
+| `SWARMY_PROVIDERS` | Comma-separated provider ids the gateway serves; unset: the `SWARMY_PROVIDER` value if set, else every catalog provider whose credentials resolve |
 | `SWARMY_GATEWAY_CONCURRENCY` | Maximum concurrent deliveries and provider calls, default `4` |
 | `SWARMY_FDB_CLUSTER_FILE` | Required FoundationDB cluster file |
 | `SWARMY_STORE_DIRECTORY` | Directory path, separated by `/`, default `swarmy` |
@@ -17,8 +18,8 @@ the job, and loads its `Request` from the store before calling the provider.
 | `SWARMY_BUS_MAX_DELIVER` | Delivery limit, default `5`; must match existing consumers |
 | `SWARMY_S3_*` | Blob settings from [DEV.md](../../docs/DEV.md) |
 | `SWARMY_CHATGPT_AUTH` | Required for `chatgpt`: dedicated credential file used by `FileCredentialStore` |
-| `SWARMY_FAKE_SCRIPT` | Required for `fake`: JSON script path |
-| `SWARMY_FAKE_CALL_LOG` | Required for `fake`: append-only call count file |
+| `SWARMY_FAKE_SCRIPT` | Needed when serving `fake`: JSON script path |
+| `SWARMY_FAKE_CALL_LOG` | Needed when serving `fake`: append-only call count file |
 | `RUST_LOG` | Tracing filter, default `info` |
 
 A short FoundationDB claim serializes duplicate deliveries across gateway

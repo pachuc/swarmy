@@ -67,7 +67,7 @@ same machine and a clean target directory. For a local debugging session with
 full debug info, run `CARGO_PROFILE_DEV_DEBUG=2 cargo build --workspace`.
 
 `up` starts FoundationDB, NATS, and SeaweedFS when needed, then starts one
-scheduler, worker, and gateway under a background CLI supervisor. It returns
+scheduler, worker, gateway, and API under a background CLI supervisor. It returns
 when their logs report readiness and prints process ids. The default fake
 provider replies `Hello from swarmy!` without credentials. Builds are separate
 from startup; build again after changing Rust code. The CLI and the services
@@ -77,7 +77,7 @@ search path to use `swarmy` directly. When using a system client library, omit `
 install prefix, set it to that prefix's `lib` directory at build time.
 
 ```sh
-./target/debug/swarmy dev logs           # follow all three service logs
+./target/debug/swarmy dev logs           # follow all four service logs
 ./target/debug/swarmy dev logs worker    # follow one service; Ctrl-C ends tailing
 ./target/debug/swarmy dev logs supervisor
 ```
@@ -146,11 +146,13 @@ swarmy agent show reviewer --json
 
 Use `--system-prompt TEXT` for an inline prompt or `--system-prompt-file PATH`
 for a UTF-8 file. The two flags are mutually exclusive and preserve whitespace.
+`agent create` and `agent set` also take `--memory MIB` for the sandbox memory
+limit and `--gpu none|shared|dedicated` for the placement GPU requirement.
 `agent set NAME` changes only supplied fields. Changes apply to the next inference
 in every existing or future session of that agent; an already submitted request
 keeps its settings. Unset fields use the current stack defaults, as do ephemeral
 sessions. `agent show` labels unset fields as `(stack default)` in text and emits
-`null` in JSON. Effort accepts `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`;
+`null` in JSON. Effort accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`;
 `none` is an explicit override, distinct from an unset field.
 
 `agent show` reports `main_session` and marks the main session in its text
@@ -233,7 +235,9 @@ plain-PUT fallback is safe. Additional settings are
 `[sandbox] idle_secs`, `[gc] grace_secs`, `[gc] interval_secs`,
 `[inference] max_wait_secs`, `[inference] max_backoff_secs`,
 `[inference] gateway_wait_secs`, `[volume_snapshots] period_secs`, and
-`[context] system_prompt`. The optional `[worker] kill_point` retains the
+`[context] system_prompt`. The optional `[context] summarize_at` and
+`[context] context_window` override the compaction threshold and the known
+model window. The optional `[worker] kill_point` retains the
 worker failure-injection setting. The documented `SWARMY_*` names still work;
 TOML keys live in the tables above.
 Exceptions are `[selection] credential_file` (`SWARMY_CHATGPT_AUTH`),
@@ -335,13 +339,16 @@ control-plane API, and ChatGPT credential validity when that provider is
 selected. The client links no database library, so there is no client-library
 check; database access problems surface through the API checks.
 It reads credentials without refreshing them or printing their contents.
-Once `.dev` exists it probes the configured FoundationDB coordinator, NATS, and
-S3 ports with timeouts. Port connectivity does not verify database or S3
-permissions. A stopped stack reports a fix pointing to `swarmy dev up`.
+The object-store check is a TCP connection to the configured S3 endpoint;
+there is no FoundationDB or NATS port probe. Database and bus liveness for a
+running stack come from the API snapshot: reaching the API and reading its
+service heartbeats proves the store path. TCP connectivity does not verify
+database or S3 permissions. A stopped stack reports a fix pointing to `swarmy dev up`.
 Before initialization, doctor asks for the missing config and tells you that the
 stack has not been initialized. Each failure includes a fix and causes exit 1.
-JSON output is one object containing `ok` and a `checks` array; each check has
-`name`, `ok`, `detail`, and an optional `fix`.
+JSON output is one object containing `ok`, a `checks` array, and a
+`providers` array; each check has `name`, `ok`, `status`, `detail`, and an
+optional `fix`.
 
 The public CLI never opens the database. Conversation commands (`run`,
 `chat`, `bench`), management reads, image builds, collection runs, and

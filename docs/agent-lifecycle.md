@@ -39,8 +39,9 @@ Workers and nodes refuse tools with this message:
 
 Worker recovery records this error for pending sandbox calls. A session whose
 computer alone was deleted can still retain and read conversation history.
-`close_session(id, now)` is for ephemeral sessions: it deletes the computer and
-sets the session to Completed. Named sessions cannot be closed by this API.
+`close_session(id, now)` closes an ephemeral session or a named side session:
+it deletes the computer of an ephemeral session and sets the session to
+Completed. A named main session cannot be closed by this API.
 
 `swarmy session interrupt SESSION_ID` ends the current turn without closing the
 session. A parked inference wait ends immediately with a non-retryable

@@ -215,12 +215,9 @@ loopback address and keeps local FoundationDB port 4500; stop any local dev stac
 before connecting. Remotes created with private FoundationDB advertising must
 be recreated with this version before using `add-node`.
 
-Doctor checks the control master and port mapping, then runs a bounded session
-read transaction through the profile's FoundationDB cluster file and a NATS
-publish/subscribe round trip through its NATS URL. A working SSH connection or
-TCP listener alone does not pass these checks. The database probe times out
-after eight seconds and NATS after five seconds. SeaweedFS uses a TCP check;
-bucket-backed remotes list one page under `chunks/` using the laptop identity.
+Doctor's checks are described under [Tunnel and profile reference](#tunnel-and-profile-reference):
+control master and port mapping, the control-plane API snapshot, and the S3
+check.
 
 Connect's JSON preserves the profile fields and adds `timing` with
 `elapsed_seconds`, `address_probe_seconds`, `tunnel_startup_seconds`, and
@@ -241,7 +238,7 @@ sudo iptables -D OUTPUT -m owner --uid-owner ubuntu -d FIRST_NODE_PRIVATE_IP \
   -p tcp -m multiport --dports 4500,4222 -j REJECT
 ```
 
-Record the block, failed direct probes, successful doctor transactions, and
+Record the block, failed direct probes, successful doctor checks, and
 provider teardown queries with the run. Remove the rule even after a failure.
 
 ## Persistent object storage
@@ -264,8 +261,8 @@ the dev stack uses static keys from settings. No laptop command opens the
 object store: every volume, image, GC, and doctor command runs through the
 control-plane API. The laptop identity needs bucket permissions only for
 `swarmy remote up` and `remote down`, which create and remove the bucket
-through the provisioning SDK. `swarmy doctor --remote NAME` reads node and service heartbeats, image
-metadata, and credentials through the API; it does not check the bucket. Image
+through the provisioning SDK. Doctor's remote checks are described under
+[Tunnel and profile reference](#tunnel-and-profile-reference). Image
 builds and chunk operations use S3 through the node services.
 
 The laptop identity needs the following permissions for bucket-backed remotes,
@@ -864,12 +861,13 @@ doctor reports the mapping failure, and configuration loading rejects it before
 starting the native client. NATS and S3 support alternative ports normally.
 See the port assertion in [FoundationDB's transport source](https://github.com/apple/foundationdb/blob/7.3.63/fdbrpc/FlowTransport.actor.cpp).
 
-Doctor verifies a real FoundationDB session read transaction and NATS
-publish/subscribe round trip through the selected profile. It fails if server
-advertising sends database traffic outside the tunnel, even when the control
-master is healthy. Database and NATS probes have eight- and five-second limits;
-S3 remains a TCP check. Joining nodes use a systemd SSH tunnel for all three
-services; see [remote provisioning](REMOTE.md).
+Doctor verifies the SSH control master, the FoundationDB port mapping, and a
+live API snapshot (service heartbeats, nodes, images, credentials) through
+the selected profile. A healthy control master alone does not pass: a
+remapped coordinator port fails the port check, and only a readable API
+snapshot passes. S3 remains a TCP check, and AWS-bucket remotes warn that
+object storage is verified on the API host. Joining nodes use a systemd SSH
+tunnel for all three services.
 
 Connect prints total elapsed time, address probing time, and tunnel startup
 time. JSON adds these seconds under `timing`, alongside `reused`; an existing

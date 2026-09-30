@@ -916,7 +916,7 @@ remain. The existing AWS bucket remains. The temporary GCP bucket and HMAC key
 were deleted. The storage-only preflight runs also passed their deletion audits.
 
 An initial GCP setup attempt used
-`swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741`. Its disk detector did not recognize
+`swarmy-bench-<id-8>`. Its disk detector did not recognize
 the local SSD model `nvme_card`, so it stopped before formatting or benchmarking.
 The lifecycle wrapper deleted that VM, its disk, and its empty bucket; the retry
 used the verified local SSD model and completed all four samples. The queries
@@ -937,28 +937,28 @@ AWS verification:
 
 ```sh
 aws ec2 describe-instances \
-  --filters Name=tag:Name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6 \
+  --filters Name=tag:Name,Values=swarmy-bench-<id-5> \
   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}' --output json
 # [{"Id":"i-<redacted>","State":"terminated"}]
 aws ec2 describe-volumes \
-  --filters Name=tag:Name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6 \
+  --filters Name=tag:Name,Values=swarmy-bench-<id-5> \
   --query 'Volumes[].{Id:VolumeId,State:State}' --output json
 # []
 aws ec2 describe-key-pairs \
-  --filters Name=key-name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6 \
+  --filters Name=key-name,Values=swarmy-bench-<id-5> \
   --query KeyPairs --output json
 # []
 aws s3api list-objects-v2 --bucket swarmy-bench-<account-id> \
-  --prefix swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/ --max-keys 1 --no-paginate \
+  --prefix swarmy-bench-<id-5>/ --max-keys 1 --no-paginate \
   --query '{KeyCount:KeyCount,IsTruncated:IsTruncated}' --output json
 # {"KeyCount":0,"IsTruncated":false}
 aws s3api list-object-versions --bucket swarmy-bench-<account-id> \
-  --prefix swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/ --max-keys 1 --no-paginate \
+  --prefix swarmy-bench-<id-5>/ --max-keys 1 --no-paginate \
   --query '{Versions:length(Versions || `[]`),DeleteMarkers:length(DeleteMarkers || `[]`),IsTruncated:IsTruncated}' \
   --output json
 # {"Versions":0,"DeleteMarkers":0,"IsTruncated":false}
 aws s3api list-multipart-uploads --bucket swarmy-bench-<account-id> \
-  --prefix swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/ --query Uploads --output json
+  --prefix swarmy-bench-<id-5>/ --query Uploads --output json
 # null
 ```
 
@@ -966,17 +966,17 @@ GCP verification:
 
 ```sh
 gcloud compute instances list \
-  --filter='name=(swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741 swarmy-bench-6226f3bce8b447fd9546e8fcaa658823)' --format=json
+  --filter='name=(swarmy-bench-<id-8> swarmy-bench-<id-3>)' --format=json
 # []
 gcloud compute disks list \
-  --filter='name=(swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741 swarmy-bench-6226f3bce8b447fd9546e8fcaa658823)' --format=json
+  --filter='name=(swarmy-bench-<id-8> swarmy-bench-<id-3>)' --format=json
 # []
 gcloud storage buckets list \
-  --filter='name=(swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741 swarmy-bench-6226f3bce8b447fd9546e8fcaa658823)' --format=json
+  --filter='name=(swarmy-bench-<id-8> swarmy-bench-<id-3>)' --format=json
 # []
-gcloud storage buckets describe gs://swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741 --format=json
+gcloud storage buckets describe gs://swarmy-bench-<id-8> --format=json
 # 404 not found (exit 1, expected)
-gcloud storage buckets describe gs://swarmy-bench-6226f3bce8b447fd9546e8fcaa658823 --format=json
+gcloud storage buckets describe gs://swarmy-bench-<id-3> --format=json
 # 404 not found (exit 1, expected)
 ```
 
@@ -1267,7 +1267,7 @@ was false for each empty storage result; the lifecycle controller also audited
 all version pages during cleanup.
 
 ```sh
-run_name=swarmy-bench-caf60e30a7f74d0cb888f181d1a7751d
+run_name=swarmy-bench-<id-10>
 filters="Name=tag:Name,Values=$run_name Name=tag:managed-by,Values=codex-launcher"
 aws ec2 describe-instances --region us-east-1 --filters $filters \
   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,Type:InstanceType,Image:ImageId}'
@@ -1291,7 +1291,7 @@ aws s3api list-multipart-uploads --bucket "$SWARMY_BENCH_BUCKET" \
   --query '{Uploads:Uploads,IsTruncated:IsTruncated}'
 # {"Uploads":null,"IsTruncated":false}
 gcloud compute instances list --project=swarmy-508717 \
-  --filter='name=(swarmy-bench-45ef9abfc08a421bb0f687ce5c0108d3 swarmy-bench-d7d1da0331b24c98972a4b2043f7fb15 swarmy-bench-4c51eadbbc834e74a49d0bee37c8fb8f swarmy-bench-9eb83331696b4239b45a60cf1a17f16b swarmy-bench-7579ebdf38b044e0ad9b9bdbb0dcc12e swarmy-bench-caf60e30a7f74d0cb888f181d1a7751d)' \
+  --filter='name=(swarmy-bench-<id-1> swarmy-bench-<id-11> swarmy-bench-<id-2> swarmy-bench-<id-7> swarmy-bench-<id-4> swarmy-bench-<id-10>)' \
   --format=json
 # []
 ```

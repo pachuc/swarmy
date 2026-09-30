@@ -14,7 +14,7 @@ features formerly presented as shipped in the old design draft.
 | gVisor runtime | Deferred; see [runtime backlog](../backlog/gvisor-runtime.md). |
 | `deploy/` manifests/tree | Not built; current deployment uses [remote provisioning](../scripts/remote-provision.sh) and [operations guide](REMOTE.md). |
 | Browser/screen and GPU sandboxes | Draft goal, not current capability; see [AGENTS.md](../AGENTS.md#the-plan-september-2026). |
-| Provider pools, failover and quota views | Draft goal, not a promise of current behavior; see [AGENTS.md](../AGENTS.md#the-plan-september-2026). |
+| Provider pools, failover and quota views | Named routes with turn-boundary failover and cost and quota views are current behavior (see [providers](providers.md)); key pools, admission, and the remaining quota work are a draft goal, not a promise of current behavior; see [AGENTS.md](../AGENTS.md#the-plan-september-2026). |
 
 ## Historical proposed latency budgets
 
