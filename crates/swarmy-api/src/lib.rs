@@ -177,7 +177,7 @@ fn storage(value: swarmy_store::StoreError) -> (StatusCode, Json<api::ApiError>)
                 "request failed with storage_error"
             );
             error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error")
-        },
+        }
     }
 }
 fn id<T>(text: &str, wrap: impl FnOnce(Ulid) -> T) -> Result<T, (StatusCode, Json<api::ApiError>)> {
@@ -1418,20 +1418,5 @@ mod store_error_tests {
             swarmy_store::DomainError::InvalidTransition,
         ));
         assert_eq!(body.code, "storage_error");
-    }
-
-    #[test]
-    fn invalid_selection_carries_the_catalog_explanation() {
-        let failure = swarmy_llm::selection::SelectionError(
-            "unknown provider/model foo/bar; closest matches: anthropic/claude".into(),
-        );
-        let (status, Json(body)) = invalid_selection(&failure);
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body.code, "invalid_selection");
-        assert!(
-            body.message.contains("closest matches"),
-            "unexpected message: {}",
-            body.message
-        );
     }
 }

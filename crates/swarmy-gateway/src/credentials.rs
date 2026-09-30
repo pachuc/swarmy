@@ -50,7 +50,7 @@ impl ClusterCredentials {
 }
 
 fn store_error(error: &StoreError) -> Error {
-    tracing::warn!(error = %swarmy_core::error_chain(&error), "cluster credential operation failed");
+    tracing::warn!(error = %swarmy_core::error_chain(error), "cluster credential operation failed");
     Error::Credentials("cluster credential unavailable; check keyring and database")
 }
 

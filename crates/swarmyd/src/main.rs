@@ -93,7 +93,7 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
                     let runtime = runtime.clone();
                     let shutdown = shutdown.subscribe();
                     clients.spawn(async move {
-                        if let Err(error) = service::handle(socket, runtime, shutdown).await { tracing::warn!(error = %swarmy_core::error_chain(&error), "node control request failed"); }
+                        if let Err(error) = service::handle(socket, runtime, shutdown).await { tracing::warn!(error = %swarmy_core::error_chain(&*error), "node control request failed"); }
                     });
                 }
                 _ = heartbeat.tick() => {

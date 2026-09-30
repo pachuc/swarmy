@@ -196,7 +196,7 @@ impl Hosting {
                 let hosting = self.clone();
                 let task = tokio::spawn(async move {
                     if let Err(error) = hosting.host(agent, receive).await {
-                        tracing::warn!(%agent, error = %swarmy_core::error_chain(&error), "agent hosting stopped");
+                        tracing::warn!(%agent, error = %swarmy_core::error_chain(&*error), "agent hosting stopped");
                     }
                 });
                 Entry {

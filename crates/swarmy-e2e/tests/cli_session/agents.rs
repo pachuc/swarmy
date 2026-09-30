@@ -1360,3 +1360,127 @@ async fn ephemeral_selection_is_stored_and_invalid_flags_are_rejected() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn create_agent_with_unknown_model_reports_the_catalog_explanation() {
+    run(|fixture| async move {
+        let client =
+            swarmy_client::Client::new(&fixture.api_url, fixture.api_token.clone()).unwrap();
+        let body = swarmy_api_types::CreateAgent {
+            idempotency_key: Ulid::generate().to_string(),
+            name: "bad-model".into(),
+            description: String::new(),
+            image: swarmy_api_types::ImageRef {
+                name: "fixture".into(),
+                tag: "test".into(),
+            },
+            provider: None,
+            model: Some("no-such-model".into()),
+            effort: None,
+            system_prompt: None,
+            route: None,
+            memory_mib: None,
+            gpu: None,
+            github_token: None,
+        };
+        let error = client
+            .create_agent(&body)
+            .await
+            .expect_err("unknown model must be rejected");
+        match error {
+            swarmy_client::Error::Api { status, body } => {
+                assert_eq!(status, 400);
+                assert_eq!(body.code, "invalid_selection");
+                assert!(
+                    body.message.contains("closest matches"),
+                    "unexpected message: {}",
+                    body.message
+                );
+            }
+            other => panic!("expected an API error, got {other:?}"),
+        }
+    })
+    .await;
+}
+
+/// Overwrite one agent row with bytes no codec accepts, so the next API
+/// read of that agent fails with a chained decode error.
+async fn corrupt_agent_row(fixture: &Fixture, name: &str) {
+    use futures_util::TryStreamExt as _;
+    let db = Database::new(Some(&fixture.cluster)).unwrap();
+    let key = db
+        .run(|transaction, _| async move {
+            let prefix = DirectoryLayer::default()
+                .open(&transaction, std::slice::from_ref(&fixture.directory), None)
+                .await
+                .expect("test directory must exist")
+                .bytes()
+                .expect("test directory must be a subspace")
+                .to_vec();
+            let (begin, end) = foundationdb::tuple::Subspace::from_bytes(prefix).range();
+            let rows: Vec<(Vec<u8>, Vec<u8>)> = transaction
+                .get_ranges_keyvalues(
+                    foundationdb::RangeOption {
+                        limit: Some(4096),
+                        ..(begin, end).into()
+                    },
+                    false,
+                )
+                .map_ok(|entry| (entry.key().to_vec(), entry.value().to_vec()))
+                .try_collect()
+                .await
+                .expect("test directory must scan");
+            Ok(rows
+                .into_iter()
+                .find(|(_, value)| {
+                    decode::<AgentRecord>(value)
+                        .is_ok_and(|record| record.name == name)
+                })
+                .map(|(key, _)| key))
+        })
+        .await
+        .unwrap()
+        .expect("agent row must exist");
+    let key_ref = &key;
+    db.run(|transaction, _| async move {
+        transaction.set(key_ref, b"definitely not a valid agent record");
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn corrupt_agent_row_logs_the_full_decode_chain() {
+    run(|fixture| async move {
+        install_log_capture();
+        fixture
+            .store
+            .create_agent("chain-agent", "fixture:test", "", Timestamp::now(), None)
+            .await
+            .unwrap();
+        corrupt_agent_row(&fixture, "chain-agent").await;
+        let client =
+            swarmy_client::Client::new(&fixture.api_url, fixture.api_token.clone()).unwrap();
+        let error = client
+            .agent("chain-agent")
+            .await
+            .expect_err("corrupt row must fail");
+        match error {
+            swarmy_client::Error::Api { status, body } => {
+                assert_eq!(status, 500);
+                assert_eq!(body.code, "storage_error");
+            }
+            other => panic!("expected an API error, got {other:?}"),
+        }
+        let lines = captured_logs_containing("request failed with storage_error");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("stored key or blob is corrupt")
+                    && line.contains("unsupported stored value version")),
+            "missing full chain in: {lines:?}"
+        );
+    })
+    .await;
+}

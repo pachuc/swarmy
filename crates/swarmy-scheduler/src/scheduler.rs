@@ -63,7 +63,7 @@ impl Scheduler {
             return;
         }
         if let Err(error) = self.nudge_inner(session_id, force, breakers).await {
-            tracing::warn!(%session_id, partition, error = %swarmy_core::error_chain(&error), "nudge failed");
+            tracing::warn!(%session_id, partition, error = %swarmy_core::error_chain(&*error), "nudge failed");
         }
     }
 
@@ -331,7 +331,9 @@ impl Scheduler {
                     }
                     // Another reaper or a renewal can win after the scan.
                     Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch)) => {}
-                    Err(error) => tracing::warn!(%session_id, error = %swarmy_core::error_chain(&error), "lease reaping failed"),
+                    Err(error) => {
+                        tracing::warn!(%session_id, error = %swarmy_core::error_chain(&error), "lease reaping failed")
+                    }
                 }
             }
             if page.len() < MAX_SCAN_LIMIT {

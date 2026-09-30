@@ -222,6 +222,76 @@ impl Fixture {
     }
 }
 
+/// Captured warn-and-above log lines, one per tracing event with its fields
+/// rendered as `name=value` pairs. Tests that assert on service logs install
+/// this once per process (a global default cannot be replaced) and filter by
+/// content, since the binary runs tests on shared threads.
+static CAPTURED_LOGS: OnceLock<std::sync::Mutex<Vec<String>>> = OnceLock::new();
+
+struct LogCapture;
+
+impl tracing::Subscriber for LogCapture {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        matches!(
+            *metadata.level(),
+            tracing::Level::ERROR | tracing::Level::WARN
+        )
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Collect(String);
+        impl tracing::field::Visit for Collect {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                use std::fmt::Write as _;
+                let _ = write!(self.0, "{}={value:?} ", field.name());
+            }
+        }
+        let mut collect = Collect(String::new());
+        event.record(&mut collect);
+        if let Some(logs) = CAPTURED_LOGS.get() {
+            logs.lock().expect("log capture lock").push(collect.0);
+        }
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+/// Install the log capture subscriber exactly once for the test process.
+/// Later tests reuse the same buffer and filter it by content.
+fn install_log_capture() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        CAPTURED_LOGS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+        let _ =
+            tracing::dispatcher::set_global_default(tracing::dispatcher::Dispatch::new(LogCapture));
+    });
+}
+
+/// Every captured log line containing `needle`, in capture order.
+fn captured_logs_containing(needle: &str) -> Vec<String> {
+    CAPTURED_LOGS
+        .get()
+        .map(|logs| {
+            logs.lock()
+                .expect("log capture lock")
+                .iter()
+                .filter(|line| line.contains(needle))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
     static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
     let (Some(cluster), Some(url)) = (

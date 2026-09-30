@@ -8,6 +8,9 @@
 
 /// Render an error followed by its `source()` chain, as anyhow's `{:#}`
 /// would: each cause is appended after `": "`.
+///
+/// `anyhow::Error` does not implement `std::error::Error`; dereference it
+/// first (`error_chain(&*error)`), which renders its whole context chain.
 #[must_use]
 pub fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     let mut out = error.to_string();
@@ -36,10 +39,7 @@ mod tests {
         let error = Outer {
             source: std::io::Error::other("entropy pool is empty"),
         };
-        assert_eq!(
-            error_chain(&error),
-            "outer failed: entropy pool is empty"
-        );
+        assert_eq!(error_chain(&error), "outer failed: entropy pool is empty");
         let lone = std::io::Error::other("no causes here");
         assert_eq!(error_chain(&lone), "no causes here");
     }
