@@ -161,9 +161,15 @@ swarmy_unit_table() {
         'swarmy-stack.service::stack:backing' \
         'swarmy-tunnel.service::node:backing' \
         'swarmyd.service:swarmyd:stack,node:agent'
-    local service
+    local services_text
+    services_text=$(swarmy_service_names) || return 1
+    [[ -n $services_text ]] || {
+        echo 'empty service list' >&2
+        return 1
+    }
     local services
-    mapfile -t services < <(swarmy_service_names)
+    mapfile -t services <<< "$services_text"
+    local service
     for service in "${services[@]}"; do
         printf 'swarmy-%s.service:swarmy-%s:stack:service\n' "$service" "$service"
     done
@@ -225,11 +231,23 @@ swarmy_mode_binaries() {
 
 # Cargo build arguments for a mode's binaries: package names match binary
 # names (the CLI builds separately with its own feature flags). Emits one
-# -p pair per line for mapfile.
+# -p pair per line for mapfile. Each stage is captured before filtering so
+# a failing table propagates instead of building an empty package list.
 swarmy_mode_build_args() {
-    local mode=${1-} package
-    local packages
-    mapfile -t packages < <(swarmy_unit_table | awk -F: -v mode="$mode" 'index(","$3",", ","mode",") && $2 != "" { print $2 }')
+    local mode=${1-}
+    local table filtered
+    table=$(swarmy_unit_table) || return 1
+    [[ -n $table ]] || {
+        echo 'empty unit table' >&2
+        return 1
+    }
+    filtered=$(printf '%s\n' "$table" | awk -F: -v mode="$mode" 'index(","$3",", ","mode",") && $2 != "" { print $2 }') || return 1
+    [[ -n $filtered ]] || {
+        echo "no build packages for mode $mode" >&2
+        return 1
+    }
+    local packages package
+    mapfile -t packages <<< "$filtered"
     for package in "${packages[@]}"; do
         printf -- '-p\n%s\n' "$package"
     done
@@ -238,29 +256,38 @@ swarmy_mode_build_args() {
 # Read a list function into an array, failing loudly when the producer
 # errors or prints nothing. A bare `mapfile < <(producer)` would hide a
 # producer failure and hand the caller an empty list (in a build script,
-# an empty package list becomes a whole-workspace build).
+# an empty package list becomes a whole-workspace build). The text check
+# comes before mapfile because mapfile turns empty input into one empty
+# element, which a length check would miss.
 read_shared_list() {
     local -n list=${1-}
     shift
     local text
     text=$("$@") || return 1
-    mapfile -t list <<< "$text"
-    [[ ${#list[@]} -gt 0 ]] || {
+    [[ -n $text ]] || {
         echo "empty list from $*" >&2
         return 1
     }
+    mapfile -t list <<< "$text"
 }
 
 # Installed control-plane units (the stack unit plus node-services units:
 # everything stack mode owns beyond node mode), one per line from the
-# installed unit files. Empty output means none are installed; a failed
-# query is an error, never mistaken for "none".
+# installed unit files. Empty output means none are installed. Each stage
+# checks its own status instead of relying on the caller's pipefail: a
+# failed query is an error, never mistaken for "none".
 list_installed_control_units() {
-    local installed
-    local control
-    installed=$(systemctl list-unit-files --no-legend --no-pager | awk '{ print $1 }') || return 1
-    mapfile -t control < <(comm -23 <(swarmy_mode_units stack | sort) <(swarmy_mode_units node | sort)) || return 1
-    printf '%s\n' "$installed" | grep -xFf <(printf '%s\n' "${control[@]}") || true
+    local raw units control
+    raw=$(systemctl list-unit-files --no-legend --no-pager) || return 1
+    units=$(printf '%s\n' "$raw" | awk '{ print $1 }') || return 1
+    read_shared_list control stack_only_units || return 1
+    printf '%s\n' "$units" | grep -xFf <(printf '%s\n' "${control[@]}") || true
+}
+
+# Control-plane units: everything stack mode owns beyond node mode (the
+# stack unit plus node-services units; never the tunnel or node agent).
+stack_only_units() {
+    comm -23 <(swarmy_mode_units stack | sort) <(swarmy_mode_units node | sort)
 }
 
 # Stop and disable every shared unit so a re-provisioned host never keeps
@@ -303,9 +330,10 @@ decommission_remove() {
 }
 
 # Decommission entrypoint for piped use (no checkout needed): run the
-# checkout's teardown script when present, fail loudly when units remain
-# without a checkout, and no-op when nothing remains. SWARMY_SYSTEMD_DIR
-# overrides the unit directory (tests point it at a fake root).
+# shared removal when the checkout script file is present (proving the
+# checkout is intact), fail loudly when units remain without a checkout,
+# and no-op when nothing remains. SWARMY_SYSTEMD_DIR overrides the unit
+# directory (tests point it at a fake root).
 decommission_probe() {
     local service_user=${1-}
     validate_service_user "$service_user" || return 1

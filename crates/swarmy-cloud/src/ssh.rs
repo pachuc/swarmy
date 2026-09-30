@@ -481,7 +481,11 @@ impl Ssh {
     /// Reports SSH failures and non-zero remote exits.
     pub async fn has_service_units(&self, node: &RemoteNode, address: &str) -> Result<bool> {
         let mut script = self.piped_env()?;
-        script.push_str("list_installed_control_units\n");
+        // Fail loudly inside the piped script, like decommission does: the
+        // query must error when systemctl fails, never look like no units.
+        // Writing to a `String` cannot fail.
+        write!(script, "set -euo pipefail\nlist_installed_control_units\n")
+            .expect("writing to String cannot fail");
         let output = pipe_script(node, address, "inspect installed service units", &script).await?;
         Ok(!String::from_utf8(output.stdout)?.trim().is_empty())
     }
@@ -1165,7 +1169,8 @@ mod provisioning_command_tests {
         };
         let mut script = host.piped_env().unwrap();
         assert!(!script.contains("remote-s3-env.sh"));
-        script.push_str("list_installed_control_units\n");
+        // Mirror `has_service_units`: fail loudly inside the pipe.
+        script.push_str("set -euo pipefail\nlist_installed_control_units\n");
         let path = format!(
             "{}:{}",
             bin.display(),

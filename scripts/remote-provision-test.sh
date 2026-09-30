@@ -137,5 +137,27 @@ SWARMY_TEST_INSTALLED='swarmy-stack.service enabled
 swarmyd.service enabled
 swarmy-api.service enabled'
 [[ $(list_installed_control_units | sort) == $'swarmy-api.service\nswarmy-stack.service' ]]
+# A failing systemctl is an error, never mistaken for "no units installed".
+systemctl() {
+    echo 'cannot list units' >&2
+    return 1
+}
+if list_installed_control_units >/dev/null 2>&1; then
+    echo 'failing systemctl looked like no units' >&2
+    exit 1
+fi
 unset -f systemctl
+# read_shared_list fails loudly on empty or failing producers instead of
+# handing callers an empty list.
+empty_producer() { :; }
+if read_shared_list probe_result empty_producer >/dev/null 2>&1; then
+    echo 'empty producer looked fine' >&2
+    exit 1
+fi
+swarmy_unit_table() { return 1; }
+if read_shared_list probe_result swarmy_mode_build_args stack >/dev/null 2>&1; then
+    echo 'failing unit table looked fine' >&2
+    exit 1
+fi
+unset -f empty_producer
 echo 'remote provision argument and environment tests passed'
