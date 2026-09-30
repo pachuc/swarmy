@@ -1433,8 +1433,7 @@ async fn corrupt_agent_row(fixture: &Fixture, name: &str) {
             Ok(rows
                 .into_iter()
                 .find(|(_, value)| {
-                    decode::<AgentRecord>(value)
-                        .is_ok_and(|record| record.name == name)
+                    decode::<AgentRecord>(value).is_ok_and(|record| record.name == name)
                 })
                 .map(|(key, _)| key))
         })

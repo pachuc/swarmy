@@ -332,7 +332,7 @@ impl Scheduler {
                     // Another reaper or a renewal can win after the scan.
                     Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch)) => {}
                     Err(error) => {
-                        tracing::warn!(%session_id, error = %swarmy_core::error_chain(&error), "lease reaping failed")
+                        tracing::warn!(%session_id, error = %swarmy_core::error_chain(&error), "lease reaping failed");
                     }
                 }
             }

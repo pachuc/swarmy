@@ -129,7 +129,7 @@ async fn consume_nudges(
                 }
             }
             Err(error) => {
-                tracing::warn!(error = %swarmy_core::error_chain(&error), "invalid nudge")
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "invalid nudge");
             }
         }
     }

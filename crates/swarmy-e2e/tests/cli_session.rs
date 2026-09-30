@@ -251,7 +251,8 @@ impl tracing::Subscriber for LogCapture {
         impl tracing::field::Visit for Collect {
             fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
                 use std::fmt::Write as _;
-                let _ = write!(self.0, "{}={value:?} ", field.name());
+                write!(self.0, "{}={value:?} ", field.name())
+                    .expect("writing to String cannot fail");
             }
         }
         let mut collect = Collect(String::new());
@@ -272,8 +273,8 @@ fn install_log_capture() {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         CAPTURED_LOGS.get_or_init(|| std::sync::Mutex::new(Vec::new()));
-        let _ =
-            tracing::dispatcher::set_global_default(tracing::dispatcher::Dispatch::new(LogCapture));
+        tracing::dispatcher::set_global_default(tracing::dispatcher::Dispatch::new(LogCapture))
+            .expect("no other test installs a log subscriber");
     });
 }
 
