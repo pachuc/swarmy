@@ -4349,6 +4349,7 @@ dependencies = [
  "swarmy-volume",
  "tempfile",
  "tokio",
+ "tracing",
  "ulid",
  "vt100",
  "wiremock",

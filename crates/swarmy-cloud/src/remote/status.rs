@@ -257,7 +257,7 @@ where
             }
         }
         Ok(Err(error)) => {
-            let error = format!("API unavailable: {}", crate::render(&error));
+            let error = format!("API unavailable: {}", swarmy_core::error_chain(&error));
             status.registration_error = Some(error.clone());
             status.image_error = Some(error);
         }

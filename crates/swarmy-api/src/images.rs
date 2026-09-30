@@ -156,7 +156,7 @@ pub async fn upload(
         if let Some(value) = state.store.api_replay(&replay_key).await.map_err(storage)? {
             drain(body).await;
             return serde_json::from_value(value).map(Json).map_err(|cause| {
-                failure(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay", cause)
+                failure(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay", &cause)
             });
         }
     }
@@ -221,7 +221,7 @@ async fn spool(
 ) -> Result<(tempfile::TempDir, std::path::PathBuf, u64), (StatusCode, Json<api::ApiError>)> {
     let max_bytes = state.upload_max_bytes;
     if let Err(create_error) = std::fs::create_dir_all(&state.upload_dir) {
-        tracing::warn!(error = %create_error, "upload spool directory unavailable");
+        tracing::warn!(error = %swarmy_core::error_chain(&create_error), "upload spool directory unavailable");
         drain(body).await;
         return Err(error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"));
     }
@@ -229,11 +229,11 @@ async fn spool(
     let directory = tempfile::Builder::new()
         .prefix("swarmy-upload-")
         .tempdir_in(&state.upload_dir)
-        .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", cause))?;
+        .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", &cause))?;
     let path = directory.path().join("disk.ext4");
     let mut file = tokio::fs::File::create(&path)
         .await
-        .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", cause))?;
+        .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", &cause))?;
     let mut stream = body.into_data_stream();
     let mut size: u64 = 0;
     while let Some(chunk) = stream.next().await {
@@ -249,14 +249,14 @@ async fn spool(
         }
         file.write_all(&chunk)
             .await
-            .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", cause))?;
+            .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", &cause))?;
     }
     if size == 0 {
         return Err(invalid("uploaded image is empty"));
     }
     file.flush()
         .await
-        .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", cause))?;
+        .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", &cause))?;
     drop(file);
     Ok((directory, path, size))
 }
@@ -289,7 +289,7 @@ pub fn sweep_stale_uploads(upload_dir: &std::path::Path) {
             continue;
         }
         if let Err(error) = std::fs::remove_dir_all(entry.path()) {
-            tracing::warn!(path = %entry.path().display(), %error, "stale upload not swept");
+            tracing::warn!(path = %entry.path().display(), error = %swarmy_core::error_chain(&error), "stale upload not swept");
         }
     }
 }

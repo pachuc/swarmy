@@ -19,6 +19,11 @@ set -a; . .dev/env; set +a
 # files in target/, which makes this build fail with permission errors.
 sudo chown -R "$(id -un):$(id -gn)" "$(readlink -f target)"
 rc=0
+# Every section below saves its full output to its own file under
+# ~/suite-logs/ and prints only a short summary, so a failure's cause is
+# always recoverable from the section file. This mirrors root-suites.sh.
+mkdir -p ~/suite-logs
+suffix=${branch##*/}
 CARGO_BUILD_JOBS=8 cargo build --locked --tests -p swarmy-cli -p swarmyd -p swarmy-volume --no-default-features > ~/suite-build-plus.log 2>&1 \
   || { tail -20 ~/suite-build-plus.log; echo "image suite build failed"; exit 1; }
 tail -1 ~/suite-build-plus.log
@@ -26,7 +31,8 @@ for suite in "swarmy-cli --test image" "swarmyd --test vol" "swarmy-volume --tes
   set -- $suite
   echo "== $suite"
   bash "$here/nbd-orphans.sh"
-  sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked --no-default-features -p "$1" "$2" "$3" -- --test-threads=1 2>&1 | tail -4 || rc=1
+  full=~/suite-logs/$suffix-plus-$1-$3.log
+  if sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked --no-default-features -p "$1" "$2" "$3" -- --test-threads=1 2>&1 | tee "$full" | { grep -E "^test |test result|panicked" || true; } | tail -4; then :; else rc=1; fi
 done
 
 # The dev-stack acceptance clones the checkout inside a sandbox and runs the
@@ -57,7 +63,8 @@ fi
 echo "== image build swarmy-dev"
 # The next section needs this image, so stop here when the build fails
 # instead of recording rc=1 and running the dependent test anyway.
-sudo -E ./target/debug/swarmy image build images/swarmy-dev --tag dev 2>&1 | tail -2 || { [ -n "$api_pid" ] && { kill "$api_pid" 2>/dev/null; wait "$api_pid" 2>/dev/null; }; echo "PLUS_EXIT=1"; exit 1; }
+full=~/suite-logs/$suffix-plus-image-build-swarmy-dev.log
+sudo -E ./target/debug/swarmy image build images/swarmy-dev --tag dev 2>&1 | tee "$full" | tail -2 || { [ -n "$api_pid" ] && { kill "$api_pid" 2>/dev/null; wait "$api_pid" 2>/dev/null; }; echo "PLUS_EXIT=1"; exit 1; }
 [ -n "$api_pid" ] && { kill "$api_pid" 2>/dev/null; wait "$api_pid" 2>/dev/null; api_pid=""; }
 # The node acceptance and the chat tests refuse headless client binaries, so
 # rebuild default features once, before the sections that need them.
@@ -71,10 +78,12 @@ CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-cli -p swarmyd -p swarmy-sched
 # background processes, and capped memory input.
 echo "== swarmyd --test node root_dev_stack_uses_sandbox_loopback"
 bash "$here/nbd-orphans.sh"
-sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev SWARMY_TEST_DEV_IMAGE=swarmy-dev:dev SWARMY_TEST_BRANCH="$branch" "$(command -v cargo)" test --locked -p swarmyd --test node -- root_dev_stack_uses_sandbox_loopback --test-threads=1 2>&1 | tail -4 || rc=1
+full=~/suite-logs/$suffix-plus-swarmyd-node-dev-stack.log
+if sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev SWARMY_TEST_DEV_IMAGE=swarmy-dev:dev SWARMY_TEST_BRANCH="$branch" "$(command -v cargo)" test --locked -p swarmyd --test node -- root_dev_stack_uses_sandbox_loopback --test-threads=1 2>&1 | tee "$full" | { grep -E "^test |test result|panicked" || true; } | tail -4; then :; else rc=1; fi
 echo "== swarmy-e2e --test cli_session root chats"
 bash "$here/nbd-orphans.sh"
-sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked -p swarmy-e2e --test cli_session -- root_chat_default_image_executes_pwd root_named_chats_share_a_background_process_and_delete root_memory_written_by_tools_is_in_the_next_turn_and_capped --test-threads=1 2>&1 | tail -6 || rc=1
+full=~/suite-logs/$suffix-plus-e2e-cli-session-root-chats.log
+if sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked -p swarmy-e2e --test cli_session -- root_chat_default_image_executes_pwd root_named_chats_share_a_background_process_and_delete root_memory_written_by_tools_is_in_the_next_turn_and_capped --test-threads=1 2>&1 | tee "$full" | { grep -E "^test |test result|panicked" || true; } | tail -6; then :; else rc=1; fi
 scripts/dev-stack.sh stop >/dev/null 2>&1 || true
 echo "PLUS_DONE"
 echo "PLUS_EXIT=$rc"

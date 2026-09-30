@@ -29,6 +29,11 @@ pub enum Error {
     Catalog(String),
     #[error("keyring: {0}")]
     Keyring(&'static str),
+    /// The operating system refused to supply randomness for a new cluster
+    /// key. The source carries the OS failure, the same way the store's
+    /// `Randomness` variant does.
+    #[error("keyring randomness unavailable")]
+    KeyringRandomness(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("a new session requires --image NAME:TAG or default_image (SWARMY_DEFAULT_IMAGE)")]
     MissingImage,
     #[error("remote configuration: {0}")]

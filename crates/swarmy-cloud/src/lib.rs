@@ -94,23 +94,9 @@ pub enum Error {
     Other(Box<dyn std::error::Error + Send + Sync>),
 }
 
-/// Render an error with its source chain, as anyhow's `{:#}` would. A
-/// variant with `#[source]` must not also print the source in its message;
-/// the chain here supplies the causes.
-#[cfg(feature = "remote")]
-pub(crate) fn render(error: &(dyn std::error::Error + 'static)) -> String {
-    let mut out = error.to_string();
-    let mut next = error.source();
-    while let Some(source) = next {
-        out.push_str(": ");
-        out.push_str(&source.to_string());
-        next = source.source();
-    }
-    out
-}
-
 /// A site message paired with its cause. `Display` shows the message so
-/// logs read the same with or without the chain; `render` appends the cause.
+/// logs read the same with or without the chain; [`swarmy_core::error_chain`]
+/// appends the cause.
 #[derive(Debug)]
 struct WithCause {
     message: String,

@@ -146,7 +146,7 @@ pub(crate) async fn subscribe(
         failure(
             StatusCode::SERVICE_UNAVAILABLE,
             "subscription_unavailable",
-            cause,
+            &cause,
         )
     })?;
     let connection_id = Ulid::generate().to_string();
@@ -349,7 +349,7 @@ async fn catch_up(
         let page = match state.store.read_events(id, after, MAX_SCAN_LIMIT).await {
             Ok(page) => page,
             Err(error) => {
-                tracing::warn!(%error, "SSE replay failed");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "SSE replay failed");
                 return Replay::Failed;
             }
         };
@@ -456,7 +456,7 @@ async fn produce(
         } {
             Ok(live) => live,
             Err(error) => {
-                tracing::warn!(%error, "SSE subscription failed");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "SSE subscription failed");
                 return;
             }
         };

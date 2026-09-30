@@ -79,7 +79,7 @@ impl Gateway {
                     .record_inference_retry(delivery.claim, Timestamp::now())
                     .await?;
                 if i64::from(attempts) >= self.max_deliver {
-                    warn!(%error, attempts, request_id = %job.request_id, "provider retries exhausted");
+                    warn!(error = %swarmy_core::error_chain(&error), attempts, request_id = %job.request_id, "provider retries exhausted");
                     return Ok(Some(AttemptOutcome {
                         result: Err(error),
                         streamed,
@@ -90,7 +90,7 @@ impl Gateway {
                 }
                 let delay = swarmy_core::backoff(Duration::from_millis(100), attempts, 5);
                 // Store the next deadline based on the durable attempt count.
-                warn!(%error, attempts, request_id = %job.request_id, "provider failed; retrying");
+                warn!(error = %swarmy_core::error_chain(&error), attempts, request_id = %job.request_id, "provider failed; retrying");
                 self.observe_wait(job, turn, swarmy_store::WaitKind::Retry);
                 self.observe_wait(job, turn, swarmy_store::WaitKind::ProviderFailure);
                 self.store.release_inference(delivery.claim).await?;
@@ -261,7 +261,7 @@ impl Gateway {
                 .touch_entry(swarmy_core::CredentialScope::Cluster, provider, label)
                 .await
         {
-            warn!(%error, "credential last-use update failed");
+            warn!(error = %swarmy_core::error_chain(&error), "credential last-use update failed");
         }
     }
 
@@ -292,7 +292,7 @@ impl Gateway {
             let snapshot = match self.terminal_snapshot(job, &completion, result).await {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
-                    warn!(%error, "retrying terminal snapshot upload");
+                    warn!(error = %swarmy_core::error_chain(&error), "retrying terminal snapshot upload");
                     sleep(Duration::from_millis(100)).await;
                     continue;
                 }
@@ -326,7 +326,7 @@ impl Gateway {
                     expected_head = actual;
                 }
                 Err(error) => {
-                    warn!(%error, "retrying terminal store update");
+                    warn!(error = %swarmy_core::error_chain(&error), "retrying terminal store update");
                     sleep(Duration::from_millis(100)).await;
                 }
             }
@@ -452,7 +452,7 @@ impl Gateway {
             .publish_live(LiveFeed::SessionEvents(id), event)
             .await
         {
-            warn!(%error, "completion event publication failed; client will catch up");
+            warn!(error = %swarmy_core::error_chain(&error), "completion event publication failed; client will catch up");
         }
     }
 
@@ -483,7 +483,7 @@ impl Gateway {
             )
             .await
         {
-            warn!(%error, "idle event publication failed; client will catch up");
+            warn!(error = %swarmy_core::error_chain(&error), "idle event publication failed; client will catch up");
         }
     }
 
@@ -500,7 +500,7 @@ impl Gateway {
             .nudge(id, event.seq(), turn, self.resend_interval, false)
             .await
         {
-            warn!(%error, "completion nudge failed; scheduler will recover");
+            warn!(error = %swarmy_core::error_chain(&error), "completion nudge failed; scheduler will recover");
         }
     }
 }
