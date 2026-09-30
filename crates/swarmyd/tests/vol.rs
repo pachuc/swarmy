@@ -231,49 +231,7 @@ async fn root_volume_durability_clone_crash_fencing_and_history() {
         &fixture.node_a,
         &["flush", volume, "--mount", node_a.mount.to_str().unwrap()],
     );
-    assert!(
-        flushed["manifest_id"].is_string(),
-        "flush reports a manifest"
-    );
-    let stats: swarmy_volume::FlushResult = serde_json::from_value(flushed.clone()).unwrap();
-    assert!(
-        stats.device_total.chunks_uploaded > 0,
-        "flush uploads chunks"
-    );
-    assert!(
-        stats.device_total.object_store_requests >= stats.device_total.chunks_uploaded,
-        "flush object requests cover uploads"
-    );
-    assert!(
-        stats.device_total.bytes_uploaded >= u64::from(swarmy_core::CHUNK_SIZE),
-        "flush uploads at least one chunk"
-    );
-    assert!(
-        stats.device_total.dirty_lock_wait > Duration::ZERO,
-        "flush waits on the dirty lock"
-    );
-    assert_eq!(
-        stats.frozen,
-        Duration::ZERO,
-        "unfrozen flush freezes nothing"
-    );
-    assert_eq!(
-        stats.freeze_wait,
-        Duration::ZERO,
-        "unfrozen flush waits for no freeze"
-    );
-    assert_eq!(
-        stats.frozen_chunks_uploaded, 0,
-        "unfrozen flush uploads no frozen chunks"
-    );
-    assert!(
-        stats.frozen_chunks_uploaded <= stats.uploads.chunks_uploaded,
-        "frozen uploads are a subset of uploads"
-    );
-    assert!(
-        stats.elapsed >= stats.freeze_wait + stats.frozen,
-        "flush elapsed covers freeze timings"
-    );
+    check_flush_stats(&flushed);
     fixture.json(&fixture.node_a, &["detach", volume]);
     node_a.stopped();
     let mut node_b = fixture.attach(&fixture.node_b, volume, "b");
@@ -294,18 +252,7 @@ async fn root_volume_durability_clone_crash_fencing_and_history() {
         ],
     );
     let stats: swarmy_volume::FlushResult = serde_json::from_value(frozen).unwrap();
-    assert!(
-        stats.frozen > Duration::ZERO,
-        "frozen flush reports frozen time"
-    );
-    assert!(
-        stats.frozen_chunks_uploaded <= stats.uploads.chunks_uploaded,
-        "frozen uploads are a subset of uploads"
-    );
-    assert!(
-        stats.elapsed >= stats.freeze_wait + stats.frozen,
-        "flush elapsed covers freeze timings"
-    );
+    check_frozen_flush(&stats);
     let snapshot = fixture.json(&fixture.node_b, &["checkpoint", volume]);
     assert_ne!(
         snapshot["manifest_id"], flushed["manifest_id"],
@@ -369,6 +316,67 @@ async fn root_volume_durability_clone_crash_fencing_and_history() {
     fixture.json(&fixture.node_a, &["detach", volume]);
     recovered.stopped();
     check_history(&fixture, volume, clone, &created);
+}
+
+fn check_flush_stats(flushed: &Value) {
+    assert!(
+        flushed["manifest_id"].is_string(),
+        "flush reports a manifest"
+    );
+    let stats: swarmy_volume::FlushResult = serde_json::from_value(flushed.clone()).unwrap();
+    assert!(
+        stats.device_total.chunks_uploaded > 0,
+        "flush uploads chunks"
+    );
+    assert!(
+        stats.device_total.object_store_requests >= stats.device_total.chunks_uploaded,
+        "flush object requests cover uploads"
+    );
+    assert!(
+        stats.device_total.bytes_uploaded >= u64::from(swarmy_core::CHUNK_SIZE),
+        "flush uploads at least one chunk"
+    );
+    assert!(
+        stats.device_total.dirty_lock_wait > Duration::ZERO,
+        "flush waits on the dirty lock"
+    );
+    assert_eq!(
+        stats.frozen,
+        Duration::ZERO,
+        "unfrozen flush freezes nothing"
+    );
+    assert_eq!(
+        stats.freeze_wait,
+        Duration::ZERO,
+        "unfrozen flush waits for no freeze"
+    );
+    assert_eq!(
+        stats.frozen_chunks_uploaded, 0,
+        "unfrozen flush uploads no frozen chunks"
+    );
+    assert!(
+        stats.frozen_chunks_uploaded <= stats.uploads.chunks_uploaded,
+        "frozen uploads are a subset of uploads"
+    );
+    assert!(
+        stats.elapsed >= stats.freeze_wait + stats.frozen,
+        "flush elapsed covers freeze timings"
+    );
+}
+
+fn check_frozen_flush(stats: &swarmy_volume::FlushResult) {
+    assert!(
+        stats.frozen > Duration::ZERO,
+        "frozen flush reports frozen time"
+    );
+    assert!(
+        stats.frozen_chunks_uploaded <= stats.uploads.chunks_uploaded,
+        "frozen uploads are a subset of uploads"
+    );
+    assert!(
+        stats.elapsed >= stats.freeze_wait + stats.frozen,
+        "flush elapsed covers freeze timings"
+    );
 }
 
 async fn reject_wrong_writer(fixture: &Fixture, volume: &str, snapshot: &Value) {

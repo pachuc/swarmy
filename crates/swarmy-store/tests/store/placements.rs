@@ -62,7 +62,7 @@ async fn expire(test: &TestStore, record: &PlacementRecord) -> PlacementRecord {
 struct Renewed {
     test: TestStore,
     first: PlacementRecord,
-    renewed: PlacementRecord,
+    live: PlacementRecord,
 }
 
 async fn placed_renewed() -> Option<Renewed> {
@@ -75,7 +75,7 @@ async fn placed_renewed() -> Option<Renewed> {
     Some(Renewed {
         test,
         first,
-        renewed,
+        live: renewed,
     })
 }
 
@@ -118,7 +118,7 @@ async fn placement_claim_and_renew_keep_identity_and_fence_stale_expiry() {
     let Renewed {
         test,
         first,
-        renewed,
+        live: renewed,
         ..
     } = &state;
     assert_eq!(renewed.epoch, 1, "renew keeps the epoch");
@@ -132,7 +132,7 @@ async fn placement_claim_and_renew_keep_identity_and_fence_stale_expiry() {
     );
     assert!(
         matches!(
-            test.store.renew(&renewed, renewed.expires_at).await,
+            test.store.renew(renewed, renewed.expires_at).await,
             Err(StoreError::Fence(
                 swarmy_store::FenceError::PlacementMismatch
             ))
@@ -146,7 +146,11 @@ async fn placement_impostor_node_operations_are_fenced() {
     let Some(state) = placed_renewed().await else {
         return;
     };
-    let Renewed { test, renewed, .. } = &state;
+    let Renewed {
+        test,
+        live: renewed,
+        ..
+    } = &state;
     let b = node(&test.store, 1).await.node_id;
     let impostor = PlacementRecord {
         node_id: b,
@@ -172,7 +176,7 @@ async fn placement_impostor_node_operations_are_fenced() {
     );
     assert!(
         matches!(
-            test.store.take_over(&renewed, b, future(60)).await,
+            test.store.take_over(renewed, b, future(60)).await,
             Err(StoreError::Fence(
                 swarmy_store::FenceError::PlacementMismatch
             ))
@@ -186,10 +190,14 @@ async fn placement_expiry_hands_takeover_to_waiting_node_and_fences_stale_record
     let Some(state) = placed_renewed().await else {
         return;
     };
-    let Renewed { test, renewed, .. } = &state;
+    let Renewed {
+        test,
+        live: renewed,
+        ..
+    } = &state;
     let a = renewed.node_id;
     let b = node(&test.store, 1).await.node_id;
-    let expired = expire(&test, &renewed).await;
+    let expired = expire(test, renewed).await;
     assert!(
         matches!(
             test.store.renew(&expired, future(60)).await,
@@ -233,10 +241,10 @@ async fn placement_expiry_hands_takeover_to_waiting_node_and_fences_stale_record
         vec![next.clone()],
         "new node lists the takeover"
     );
-    let stale = renewed.clone();
+    let superseded = renewed.clone();
     assert!(
         matches!(
-            test.store.renew(&stale, future(180)).await,
+            test.store.renew(&superseded, future(180)).await,
             Err(StoreError::Fence(
                 swarmy_store::FenceError::PlacementMismatch
             ))
@@ -245,7 +253,7 @@ async fn placement_expiry_hands_takeover_to_waiting_node_and_fences_stale_record
     );
     assert!(
         matches!(
-            test.store.release(&stale).await,
+            test.store.release(&superseded).await,
             Err(StoreError::Fence(
                 swarmy_store::FenceError::PlacementMismatch
             ))
