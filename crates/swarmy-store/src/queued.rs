@@ -187,8 +187,7 @@ impl Store {
         for (old_key, item) in self.queued_in(trx, old).await? {
             let space = keys.queued_space(old);
             let (index,): (u64,) = space
-                .unpack(&old_key)
-                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                .unpack(&old_key)?;
             trx.set(
                 &keys.queued_message(new, index),
                 &self.prepare(&item).await?,

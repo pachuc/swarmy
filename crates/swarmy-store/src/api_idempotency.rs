@@ -43,8 +43,7 @@ impl Store {
         record
             .filter(|entry| entry.expires_at > self.now())
             .map(|entry| {
-                serde_json::from_str(&entry.result)
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))
+                serde_json::from_str(&entry.result).map_err(StoreError::from)
             })
             .transpose()
     }

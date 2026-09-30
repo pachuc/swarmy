@@ -283,8 +283,7 @@ impl Store {
             let mut leases = Vec::new();
             for (key, value) in scan(&trx, (begin, end), limit).await? {
                 let (_, id): ((i64, i32), Vec<u8>) = space
-                    .unpack(&key)
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                    .unpack(&key)?;
                 leases.push((session_id(id)?, swarmy_core::decode(&value)?));
             }
             Ok(leases)

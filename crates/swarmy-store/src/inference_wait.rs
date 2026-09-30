@@ -396,8 +396,7 @@ impl Store {
                     .into_iter()
                     .map(|(key, _)| {
                         let (_, id): ((i64, i32), Vec<u8>) = space
-                            .unpack(&key)
-                            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                            .unpack(&key)?;
                         crate::keys::session_id(id)
                     })
                     .collect()

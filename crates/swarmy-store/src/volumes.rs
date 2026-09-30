@@ -230,8 +230,7 @@ impl Store {
             let mut images = Vec::new();
             for (key, value) in scan(&trx, (begin, end), limit).await? {
                 let (name, tag): (String, String) = space
-                    .unpack(&key)
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                    .unpack(&key)?;
                 images.push(ImageRecord {
                     name,
                     tag: ImageTag(tag),
@@ -447,11 +446,9 @@ impl Store {
             let mut volumes = Vec::new();
             for (key, value) in scan(&trx, (begin, end), limit).await? {
                 let (bytes,): (Vec<u8>,) = space
-                    .unpack(&key)
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                    .unpack(&key)?;
                 let bytes: [u8; 16] = bytes
-                    .try_into()
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                    .try_into()?;
                 volumes.push((
                     VolumeId::from_ulid(u128::from_be_bytes(bytes).into()),
                     swarmy_core::decode(&value)?,
@@ -508,11 +505,9 @@ impl Store {
             for (key, value) in scan_all(&trx, (begin, end)).await? {
                 let volume: VolumeRecord = swarmy_core::decode(&value)?;
                 let (bytes,): (Vec<u8>,) = volume_space
-                    .unpack(&key)
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                    .unpack(&key)?;
                 let bytes: [u8; 16] = bytes
-                    .try_into()
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                    .try_into()?;
                 let id = VolumeId::from_ulid(u128::from_be_bytes(bytes).into());
                 live.extend(self.snapshots(&trx, id).await?);
                 if volume.writer_lease.is_some() {

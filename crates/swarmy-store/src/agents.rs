@@ -54,8 +54,7 @@ impl Store {
                         read::<crate::api_idempotency::ApiReplay>(&trx, &replay_key).await?
                         && previous.expires_at > now
                     {
-                        return serde_json::from_str(&previous.result)
-                            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt));
+                    return serde_json::from_str(&previous.result).map_err(StoreError::from);
                     }
                 }
                 if trx
@@ -415,7 +414,7 @@ impl Store {
             plan: session.plan.clone(),
         }
         .validate()
-        .map_err(|_| StoreError::Domain(crate::DomainError::InvalidSessionRecord))?;
+        .map_err(|error| StoreError::Domain(crate::DomainError::InvalidSessionRecord(error)))?;
         write(
             trx,
             &self.keys().session_by_agent(session.agent_id, id),
@@ -646,7 +645,11 @@ impl Store {
                     .ok_or(StoreError::Domain(crate::DomainError::AgentMissing))?;
                 let kind = previous.kind;
                 let SessionKind::Named { agent_id } = kind else {
-                    return Err(StoreError::Domain(crate::DomainError::InvalidSessionRecord));
+                    return Err(StoreError::Domain(
+                        crate::DomainError::InvalidSessionRecord(
+                            "side rollover requires a named session".into(),
+                        ),
+                    ));
                 };
                 if agent_id != agent.agent_id {
                     return Err(StoreError::Fence(crate::FenceError::SessionAgentMismatch));

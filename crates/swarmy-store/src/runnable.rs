@@ -114,8 +114,7 @@ impl Store {
             let mut entries = Vec::new();
             for (key, _) in scan(&trx, (begin, end), limit).await? {
                 let (priority, (seconds, nanos), id): (i64, (i64, i32), Vec<u8>) = space
-                    .unpack(&key)
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                    .unpack(&key)?;
                 entries.push(RunnableEntry {
                     session_id: crate::keys::session_id(id)?,
                     priority,

@@ -300,8 +300,7 @@ impl Store {
         let mut routes = Vec::new();
         for (key, value) in self.scan_all_pages(begin, end).await? {
             let (name,): (String,) = space
-                .unpack(&key)
-                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                .unpack(&key)?;
             let mut record: RouteRecord = swarmy_core::decode(&value)?;
             if record.name != name {
                 return Err(StoreError::Storage(crate::StorageError::Corrupt));
@@ -341,8 +340,7 @@ impl Store {
         let mut entries: Vec<(Timestamp, PoolEntry)> = Vec::new();
         for (key, value) in scan_all(trx, space.range()).await? {
             let (label,): (String,) = space
-                .unpack(&key)
-                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                .unpack(&key)?;
             let entry = decode_entry(&value)?;
             entries.push((
                 entry.created_at,
