@@ -316,16 +316,24 @@ impl Host for FakeHost {
         tokio::fs::write(node.key_path.with_extension("pub"), "ssh-ed25519 test").await?;
         Ok(b"ssh-ed25519 test".to_vec())
     }
-    async fn adopt_key(&self, node: &RemoteNode, source: &std::path::Path) -> Result<()> {
+    fn adopt_key(
+        &self,
+        node: &RemoteNode,
+        source: &std::path::Path,
+    ) -> impl Future<Output = Result<()>> {
         self.adopted_keys.borrow_mut().push(node.key_path.clone());
-        let bytes = std::fs::read(source)?;
-        std::fs::write(&node.key_path, bytes)?;
-        std::fs::write(node.key_path.with_extension("pub"), "ssh-ed25519 test")?;
-        Ok(())
+        std::future::ready(
+            std::fs::read(source)
+                .and_then(|bytes| std::fs::write(&node.key_path, bytes))
+                .and_then(|()| {
+                    std::fs::write(node.key_path.with_extension("pub"), "ssh-ed25519 test")
+                })
+                .map_err(crate::Error::from),
+        )
     }
-    async fn decommission(&self, node: &RemoteNode) -> Result<()> {
+    fn decommission(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
         self.decommissioned.borrow_mut().push(node.name.clone());
-        Ok(())
+        std::future::ready(Ok(()))
     }
     fn block_devices(&self, _: &RemoteNode) -> impl Future<Output = Result<String>> {
         let listing = self.block_devices.borrow().clone();
@@ -1630,7 +1638,7 @@ async fn for_settings_dispatches_existing_hosts_without_machine_apis() {
         cloud.delete_ssh_key("key").await.unwrap_err(),
     ] {
         assert!(
-            crate::render(&error).contains("no cloud machines"),
+            swarmy_core::error_chain(&error).contains("no cloud machines"),
             "{error:?}"
         );
     }
@@ -2678,7 +2686,10 @@ async fn adopt_provisions_existing_host_through_shared_provisioning() {
     assert!(saved.aws.image.is_none());
     assert!(saved.aws.instance_type.is_empty());
     // The bootstrap key is copied into state, not generated or imported.
-    assert_eq!(*host.adopted_keys.borrow(), [node.key_path.clone()]);
+    assert_eq!(
+        *host.adopted_keys.borrow(),
+        std::slice::from_ref(&node.key_path)
+    );
     assert_eq!(std::fs::read(&node.key_path).unwrap(), b"private-bootstrap");
     assert!(node.key_path.with_extension("pub").is_file());
     // The shared tail ran: provisioned once with no primary, no image build
@@ -3016,7 +3027,7 @@ async fn down_existing_skips_unprovisioned_hosts_but_removes_state() {
         private_ip: "203.0.113.10".into(),
         key_path: state.directory.join("swarmy-test"),
         ssh_user: "root".into(),
-        ports: Default::default(),
+        ports: swarmy_config::RemotePorts::default(),
         nodes: Vec::new(),
         sandboxes: 0,
         default_image: None,

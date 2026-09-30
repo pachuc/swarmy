@@ -31,23 +31,23 @@ impl Cloud for ExistingHost {
     async fn ensure_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
         self.aws.ensure_bucket(bucket).await
     }
-    async fn base_image(&self) -> Result<String> {
-        Err(no_machines())
+    fn base_image(&self) -> impl Future<Output = Result<String>> {
+        std::future::ready(Err(no_machines()))
     }
-    async fn import_ssh_key(&self, _: &str, _: Vec<u8>, _: &str) -> Result<()> {
-        Err(no_machines())
+    fn import_ssh_key(&self, _: &str, _: Vec<u8>, _: &str) -> impl Future<Output = Result<()>> {
+        std::future::ready(Err(no_machines()))
     }
-    async fn create(&self, _: &MachineSpec) -> Result<String> {
-        Err(no_machines())
+    fn create(&self, _: &MachineSpec) -> impl Future<Output = Result<String>> {
+        std::future::ready(Err(no_machines()))
     }
-    async fn get(&self, _: &str) -> Result<Option<Machine>> {
-        Err(no_machines())
+    fn get(&self, _: &str) -> impl Future<Output = Result<Option<Machine>>> {
+        std::future::ready(Err(no_machines()))
     }
-    async fn find_by_tag(&self, _: &str) -> Result<Option<String>> {
-        Err(no_machines())
+    fn find_by_tag(&self, _: &str) -> impl Future<Output = Result<Option<String>>> {
+        std::future::ready(Err(no_machines()))
     }
-    async fn destroy(&self, _: &str) -> Result<()> {
-        Err(no_machines())
+    fn destroy(&self, _: &str) -> impl Future<Output = Result<()>> {
+        std::future::ready(Err(no_machines()))
     }
     async fn bucket_ownership(&self, bucket: &ObjectBucket) -> Result<Ownership> {
         self.aws.bucket_ownership(bucket).await
@@ -67,7 +67,7 @@ impl Cloud for ExistingHost {
     async fn delete_node_role(&self, name: &str, owner: &str) -> Result<(bool, bool)> {
         self.aws.delete_node_role(name, owner).await
     }
-    async fn delete_ssh_key(&self, _: &str) -> Result<()> {
-        Err(no_machines())
+    fn delete_ssh_key(&self, _: &str) -> impl Future<Output = Result<()>> {
+        std::future::ready(Err(no_machines()))
     }
 }

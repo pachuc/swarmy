@@ -73,7 +73,7 @@ pub enum Command {
         /// Login that owns the checkout and runs the node units
         #[arg(long)]
         service_user: Option<String>,
-        /// Local disk for sandbox data (a /dev device path or dir:/path)
+        /// Local disk for sandbox data (a /dev device path or `<dir:/path>`)
         #[arg(long)]
         local_storage: Option<String>,
         #[command(flatten)]

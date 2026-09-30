@@ -466,7 +466,7 @@ async fn run_add_node(state: &State, mut settings: Settings, command: Command) -
         Some(add_node::ExistingJoin {
             host: address,
             ssh_user: ssh_user.as_deref().unwrap_or("root"),
-            ssh_key: &key,
+            ssh_key: key,
             primary_address: primary_address.as_deref(),
         })
     } else {
