@@ -140,14 +140,14 @@ async fn marker_ownership(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) ->
 
 /// Whether the bucket holds any object under the remote's prefix scope.
 async fn prefix_empty(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -> Result<bool> {
-    let mut request = client
+    let page = client
         .list_objects_v2()
         .bucket(&bucket.spec.bucket)
-        .max_keys(1);
-    if !bucket.spec.prefix.as_str().is_empty() {
-        request = request.prefix(format!("{}/", bucket.spec.prefix.as_str()));
-    }
-    let page = request.send().await.aws_context("s3:ListObjects")?;
+        .prefix(scope_prefix(bucket))
+        .max_keys(1)
+        .send()
+        .await
+        .aws_context("s3:ListObjects")?;
     Ok(page.key_count().unwrap_or(0) == 0)
 }
 
