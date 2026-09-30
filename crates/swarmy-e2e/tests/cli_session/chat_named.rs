@@ -396,6 +396,24 @@ async fn root_memory_written_by_tools_is_in_the_next_turn_and_capped() {
         let manifest = fixture.store.get_volume(volume).await.unwrap().unwrap().head_manifest;
         let memory_reads = || std::fs::read_to_string(services.files.path().join("node.log")).unwrap().matches("reading agent memory with sandbox exec").count();
         assert_eq!(memory_reads(), 1);
+        // The base prompt grows over time, so derive the cap instead of freezing
+        // it in a magic number: the prompt without memory (this agent's template
+        // with its directory substituted) plus the bounded memory excerpt plus
+        // its truncation notice. Only uncapped memory can exceed this.
+        let settings = swarmy_config::Settings::load().unwrap().settings;
+        let memory_max = settings.memory.max_bytes.get();
+        let tommy = fixture.store.get_agent_by_name("tommy").await.unwrap().unwrap();
+        let template = tommy
+            .system_prompt
+            .clone()
+            .unwrap_or(settings.context.system_prompt.clone());
+        let base = template.replace(
+            "{memory_dir}",
+            &settings.memory.dir.to_string_lossy(),
+        );
+        let header = format!("\n\nAgent memory ({}):\n", settings.memory.dir.display());
+        let notice = "\n[Agent memory truncated at memory_max_bytes.]\n";
+        let bound = base.len() + header.len() + memory_max + notice.len();
         for (prompt, answer, fact) in [("remember", "Read memory", "violet"), ("update", "Updated memory", "orange")] {
             let before = fixture.store.fetch_session(id).await.unwrap().unwrap().head_seq;
             chat.type_text(&format!("{prompt}\r"));
@@ -414,7 +432,14 @@ async fn root_memory_written_by_tools_is_in_the_next_turn_and_capped() {
             assert!(job.request.system_prompt.contains(&format!("launch code is {fact}")));
             assert!(job.request.system_prompt.contains("Agent memory truncated at memory_max_bytes"));
             assert!(job.request.system_prompt.find("a.txt").unwrap() < job.request.system_prompt.find("z.txt").unwrap());
-            assert!(job.request.system_prompt.len() < 34000);
+            assert!(
+                job.request.system_prompt.len() <= bound,
+                "system prompt {} bytes exceeds capped bound {bound} (base {} + header {} + max {memory_max} + notice {})",
+                job.request.system_prompt.len(),
+                base.len(),
+                header.len(),
+                notice.len(),
+            );
             assert_eq!(memory_reads(), if prompt == "remember" { 1 } else { 2 });
         }
         assert_eq!(fixture.store.get_volume(volume).await.unwrap().unwrap().head_manifest, manifest, "memory updates must not require a checkpoint");

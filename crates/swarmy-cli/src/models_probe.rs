@@ -55,7 +55,7 @@ async fn server_probe(
                 body.message
             );
         }
-        swarmy_client::api_client::api_error(error, endpoint)
+        swarmy_client::api_client::api_error(error, endpoint).into()
     })?;
     let dollars = {
         let units = answer.cost_micros / 100 + u64::from(answer.cost_micros % 100 >= 50);

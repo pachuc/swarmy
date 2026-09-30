@@ -20,7 +20,7 @@ pub(crate) async fn run(
         if error.to_string().contains("gc_busy") {
             anyhow::anyhow!("another collection run is already in progress")
         } else {
-            error
+            error.into()
         }
     })?;
     // The sweep continues on the control plane; follow its durable record.

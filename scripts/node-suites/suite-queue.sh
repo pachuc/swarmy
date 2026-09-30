@@ -51,7 +51,7 @@ for branch in "$@"; do
     # Close the lock descriptor for the run itself: the dev stack's daemons
     # outlive a failed run and would otherwise hold the lock forever.
     esac > "$log" 2>&1 9>&-
-    if grep -qE "SUITES_EXIT=1|test result: FAILED|checkout failed" "$log"; then rc=1; else rc=0; fi
+    if grep -qE "SUITES_EXIT=1|PLUS_EXIT=1|test result: FAILED|checkout failed" "$log"; then rc=1; else rc=0; fi
     echo "QUEUE_DONE $branch${rev:+@$rev} $mode${only:+ $only} SUITES_EXIT=$rc" >> ~/suite-queue.log
   ) 9> ~/suite.lock
 done

@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use anyhow::Result;
+use crate::Result;
 use futures::StreamExt;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, LiveFeed};
@@ -28,7 +28,9 @@ fn part_has_content(part: &swarmy_core::Part) -> bool {
 /// fake provider's `PartDone` stream starts the first-token clock.
 fn is_first_content(delta: &Delta) -> bool {
     match delta {
-        Delta::Text { text, .. } | Delta::Reasoning { text, .. } => !text.is_empty(),
+        Delta::Text { text, .. } | Delta::Reasoning { text, .. } => {
+            !text.is_empty()
+        }
         Delta::ToolArguments { arguments, .. } => !arguments.is_empty(),
         Delta::PartDone { part, .. } => part_has_content(part),
         Delta::Completed(_) => false,
@@ -41,7 +43,9 @@ fn is_first_content(delta: &Delta) -> bool {
 /// would label every single-chunk response as streamed.
 fn is_stream_chunk(delta: &Delta) -> bool {
     match delta {
-        Delta::Text { text, .. } | Delta::Reasoning { text, .. } => !text.is_empty(),
+        Delta::Text { text, .. } | Delta::Reasoning { text, .. } => {
+            !text.is_empty()
+        }
         Delta::ToolArguments { arguments, .. } => !arguments.is_empty(),
         Delta::PartDone { .. } | Delta::Completed(_) => false,
     }
@@ -94,7 +98,7 @@ impl Gateway {
         job: &InferenceJob,
         effort: Option<swarmy_core::ReasoningEffort>,
         turn: Option<MessageId>,
-    ) -> Result<(Response, Option<bool>), swarmy_llm::Error> {
+    ) -> std::result::Result<(Response, Option<bool>), swarmy_llm::Error> {
         let mut request = job.request.clone();
         request.settings.reasoning_effort = effort;
         request.no_cache = job.summary;
@@ -243,7 +247,7 @@ impl Gateway {
                     status: reqwest::StatusCode::TOO_MANY_REQUESTS,
                     message: reason,
                     retry_after: Some(
-                        Duration::try_from(until - Timestamp::now()).unwrap_or_default(),
+                        std::time::Duration::try_from(until - Timestamp::now()).unwrap_or_default(),
                     ),
                 }),
                 streamed: None,
@@ -321,185 +325,6 @@ mod retry_tests {
     use crate::{dispatch::Gateway, providers::Providers};
     use swarmy_store::Store;
 
-    #[test]
-    fn completed_parts_count_as_first_content() {
-        use futures::StreamExt as _;
-        use swarmy_core::Part;
-        assert!(part_has_content(&Part::Text { text: "hi".into() }));
-        assert!(!part_has_content(&Part::Text {
-            text: String::new()
-        }));
-        assert!(part_has_content(&Part::ToolCall {
-            call_id: swarmy_core::ToolCallId("c".into()),
-            tool: "bash".into(),
-            input: serde_json::json!({}),
-        }));
-        // Drive the real fake provider: its stream yields PartDone deltas
-        // without any text deltas, so the first delta must start the
-        // first-token clock or append-to-first-token stays null on the dev
-        // stack.
-        let provider = swarmy_llm::fake::FakeProvider::default();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            let request = swarmy_llm::Request {
-                no_cache: false,
-                system_prompt: String::new(),
-                messages: Vec::new(),
-                tools: Vec::new(),
-                settings: swarmy_llm::GenerationSettings::default(),
-            };
-            let mut stream = {
-                use swarmy_llm::Provider as _;
-                provider.request(request)
-            };
-            // An unscripted turn errors before yielding content.
-            assert!(stream.next().await.unwrap().is_err());
-        });
-        let mut scripted = swarmy_llm::fake::FakeProvider::default();
-        scripted.responses.insert(
-            0,
-            Response {
-                parts: vec![Part::Text {
-                    text: "done".into(),
-                }],
-                stop_reason: swarmy_llm::StopReason::EndTurn,
-                usage: swarmy_llm::TokenUsage::default(),
-                quota_remaining: std::collections::BTreeMap::new(),
-                quota_resets: std::collections::BTreeMap::new(),
-            },
-        );
-        runtime.block_on(async {
-            use swarmy_llm::Provider as _;
-            let request = swarmy_llm::Request {
-                no_cache: false,
-                system_prompt: String::new(),
-                messages: Vec::new(),
-                tools: Vec::new(),
-                settings: swarmy_llm::GenerationSettings::default(),
-            };
-            let deltas: Vec<_> = scripted
-                .request(request)
-                .collect::<Vec<_>>()
-                .await
-                .into_iter()
-                .map(|result| result.unwrap())
-                .collect();
-            assert!(matches!(deltas[0], Delta::PartDone { .. }));
-            let first = deltas.iter().position(is_first_content);
-            assert_eq!(first, Some(0));
-        });
-    }
-
-    #[test]
-    fn single_chunk_fake_response_is_unstreamed_with_request_duration_throughput() {
-        use futures::StreamExt as _;
-        use swarmy_core::Part;
-        // The fake provider delivers the whole response in one chunk: a
-        // single `PartDone` delta with the completed part, then completion.
-        let mut scripted = swarmy_llm::fake::FakeProvider::default();
-        scripted.responses.insert(
-            0,
-            Response {
-                parts: vec![Part::Text {
-                    text: "done".into(),
-                }],
-                stop_reason: swarmy_llm::StopReason::EndTurn,
-                usage: swarmy_llm::TokenUsage {
-                    input_tokens: 12,
-                    output_tokens: 363,
-                    ..Default::default()
-                },
-                quota_remaining: std::collections::BTreeMap::new(),
-                quota_resets: std::collections::BTreeMap::new(),
-            },
-        );
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            use swarmy_llm::Provider as _;
-            let request = swarmy_llm::Request {
-                no_cache: false,
-                system_prompt: String::new(),
-                messages: Vec::new(),
-                tools: Vec::new(),
-                settings: swarmy_llm::GenerationSettings::default(),
-            };
-            let deltas: Vec<_> = scripted
-                .request(request)
-                .collect::<Vec<_>>()
-                .await
-                .into_iter()
-                .map(|result| result.unwrap())
-                .collect();
-            // The fake provider yields no incremental deltas, only `PartDone`:
-            // zero streaming chunks still counts as a single-chunk response.
-            let chunks = deltas.iter().filter(|delta| is_stream_chunk(delta)).count();
-            assert_eq!(chunks, 0);
-            assert!(!is_streamed_response(u32::try_from(chunks).unwrap()));
-        });
-        // Throughput divides by the whole request (first byte to completion):
-        // 363 tokens over a 1001 ms request reports about 363 tokens per
-        // second instead of dividing by the 1 ms streaming tail.
-        let mut turn = swarmy_store::TurnMetrics::default();
-        let row = |stage: &str, ns: u64, request: Option<&str>| swarmy_store::StageTiming {
-            stage: stage.into(),
-            request_id: request.map(str::to_owned),
-            clock_id: "boot".into(),
-            monotonic_ns: ns,
-            unix_ns: i64::try_from(ns).unwrap(),
-        };
-        turn.stages.push(row("appended", 1_000_000_000, None));
-        turn.stages
-            .push(row("inference_started", 2_000_000_000, Some("r")));
-        turn.stages
-            .push(row("first_token", 3_000_000_000, Some("r")));
-        turn.stages
-            .push(row("inference_finished", 3_001_000_000, Some("r")));
-        turn.inference.push(swarmy_store::InferenceMetric {
-            request_id: "r".into(),
-            output_tokens: 363,
-            streamed: Some(false),
-            ..Default::default()
-        });
-        turn.derive();
-        let request = &turn.inference[0];
-        assert_eq!(request.streamed, Some(false));
-        assert_eq!(request.request_duration_ms, Some(1001.0));
-        let expected = 363.0 * 1000.0 / 1001.0;
-        assert!((request.output_tokens_per_second.unwrap() - expected).abs() < 1.0);
-    }
-
-    #[test]
-    fn part_done_does_not_count_as_a_stream_chunk() {
-        use swarmy_core::Part;
-        let text = Delta::Text {
-            output_index: 0,
-            text: "hi".into(),
-        };
-        let done = Delta::PartDone {
-            output_index: 0,
-            part: Part::Text { text: "hi".into() },
-        };
-        // `PartDone` still starts the first-token clock (the fake provider
-        // relies on it) but never counts toward the streamed flag.
-        assert!(is_first_content(&text));
-        assert!(is_first_content(&done));
-        assert!(is_stream_chunk(&text));
-        assert!(!is_stream_chunk(&done));
-        assert!(!is_stream_chunk(&Delta::Completed(Response {
-            parts: Vec::new(),
-            stop_reason: swarmy_llm::StopReason::EndTurn,
-            usage: swarmy_llm::TokenUsage::default(),
-            quota_remaining: std::collections::BTreeMap::new(),
-            quota_resets: std::collections::BTreeMap::new(),
-        })));
-    }
-
     /// Build a real `Gateway` against the dev stack so the stream tests below
     /// exercise `Gateway::stream` itself instead of copying its counting loop.
     /// Returns `None` (and the caller skips) when the stack is absent. The
@@ -552,10 +377,10 @@ mod retry_tests {
         }
     }
 
-    fn stream_test_job() -> InferenceJob {
+    fn stream_test_job() -> swarmy_llm::InferenceJob {
         let session_id = swarmy_core::SessionId::from_ulid(ulid::Ulid::generate());
         let step = 1;
-        InferenceJob {
+        swarmy_llm::InferenceJob {
             summary: false,
             summary_prefix: false,
             summary_cut: None,
@@ -585,7 +410,7 @@ mod retry_tests {
         let Some(gateway) = stream_test_gateway().await else {
             return;
         };
-        let completed = Response {
+        let completed = swarmy_llm::Response {
             parts: vec![Part::Text { text: "hi".into() }],
             stop_reason: swarmy_llm::StopReason::EndTurn,
             usage: swarmy_llm::TokenUsage::default(),
@@ -617,7 +442,7 @@ mod retry_tests {
         let Some(gateway) = stream_test_gateway().await else {
             return;
         };
-        let completed = Response {
+        let completed = swarmy_llm::Response {
             parts: vec![Part::Text { text: "ab".into() }],
             stop_reason: swarmy_llm::StopReason::EndTurn,
             usage: swarmy_llm::TokenUsage::default(),

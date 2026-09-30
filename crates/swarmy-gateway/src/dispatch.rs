@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
-use anyhow::{Result, bail};
+use crate::{Error, Result};
 use futures::StreamExt;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, WorkMessage, WorkQueue};
@@ -118,7 +118,7 @@ impl Gateway {
                 () = swarmy_config::shutdown_signal() => break,
             };
             let Some(delivery) = delivery else {
-                bail!("work stream ended");
+                return Err(Error::Internal("work stream ended"));
             };
             let message = match delivery {
                 Ok(message) => message,
@@ -178,7 +178,7 @@ async fn refresh(
     messages: &mut futures::stream::SelectAll<
         futures::stream::BoxStream<
             'static,
-            Result<WorkMessage<InferenceJobRef>, swarmy_bus::Error>,
+            std::result::Result<WorkMessage<InferenceJobRef>, swarmy_bus::Error>,
         >,
     >,
     subscriptions: &mut BTreeSet<String>,
@@ -295,10 +295,11 @@ impl Gateway {
             warn!(request_id = %job.request_id, "terminating job with no stored request");
             return Ok(message.terminate().await?);
         };
-        anyhow::ensure!(
-            request.settings == job.selection,
-            "stored inference selection differs from delivery"
-        );
+        if request.settings != job.selection {
+            return Err(Error::Internal(
+                "stored inference selection differs from delivery",
+            ));
+        }
         let stored = InferenceJob {
             summary: job.summary,
             summary_prefix: job.summary_prefix,
@@ -326,7 +327,7 @@ impl Gateway {
                     let renewal = InferenceClaim { expires_at: now.checked_add(self.ack_wait)?, ..claim.clone() };
                     if !self.store.start_inference(&renewal, now).await? {
                         if self.completed(job.request_id).await? { return Ok(message.acknowledge().await?); }
-                        bail!("inference claim was replaced");
+                        return Err(Error::Internal("inference claim was replaced"));
                     }
                 }
             }

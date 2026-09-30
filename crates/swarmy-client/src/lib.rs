@@ -30,6 +30,28 @@ pub enum Error {
     Status { status: StatusCode, body: String },
     #[error("request timed out")]
     Timeout,
+    #[error("API configuration error: {0}")]
+    Config(#[from] swarmy_config::Error),
+    #[error("no [api] token configured; run swarmy dev up")]
+    MissingToken,
+    #[error("invalid API endpoint {endpoint}: {source}")]
+    InvalidEndpoint {
+        endpoint: String,
+        #[source]
+        source: url::ParseError,
+    },
+    #[error("API at {endpoint}: {source}")]
+    Endpoint {
+        endpoint: String,
+        #[source]
+        source: Box<Error>,
+    },
+    #[error("reading upload size for {path}: {source}")]
+    UploadSize {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// A locally built image streamed to the control plane for publication.
