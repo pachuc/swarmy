@@ -13,7 +13,7 @@ use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken, WorkQueue};
 use swarmy_core::{
     AgentId, Event, Message, MessageId, MessageRole, Nudge, Part, RequestId, SessionId,
-    SessionRecord, SessionState, ToolCallId, ToolResult, ignore_best_effort,
+    SessionRecord, SessionState, ToolCallId, ToolResult,
 };
 use swarmy_llm::StopReason;
 use swarmy_store::{AgentSessionOptions, Store, blob::ObjectBlobStore, runnable_partition};

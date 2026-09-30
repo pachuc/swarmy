@@ -5,8 +5,17 @@ use std::collections::BTreeMap;
 /// Build settings from the standard stack variables over defaults.
 ///
 /// Root-adjacent suites (node, volume, image acceptance) run against the
-/// same stack: cluster file, store directory, bus, and object storage. One
-/// list instead of a repeated nine-variable literal in every test.
+/// same stack: cluster file, store directory, bus, object storage, and the
+/// suite-provided API endpoint. One list instead of a repeated
+/// eleven-variable literal in every test.
+///
+/// The API URL and token come from the root-suite harness, which starts an
+/// API and exports `SWARMY_API_URL`/`SWARMY_API_TOKEN` (see
+/// `scripts/node-suites/root-suites.sh`); tests that shell out to the CLI
+/// inherit them through `settings.environment()`. Use
+/// [`require_api_endpoint`] at those call sites so a missing endpoint fails
+/// here with the suite pointer instead of the CLI's `no token configured`
+/// error two layers down.
 #[must_use]
 pub fn stack_settings() -> swarmy_config::Settings {
     test_settings(&[
@@ -19,7 +28,25 @@ pub fn stack_settings() -> swarmy_config::Settings {
         "SWARMY_S3_BUCKET",
         "SWARMY_S3_PREFIX",
         "SWARMY_S3_REGION",
+        "SWARMY_API_URL",
+        "SWARMY_API_TOKEN",
     ])
+}
+
+/// Return the suite API endpoint from settings built by [`stack_settings`].
+///
+/// # Panics
+/// Panics when the suite did not export `SWARMY_API_URL`/`SWARMY_API_TOKEN`
+/// (the root-suite harness does; a bare local run does not). Fixture setup
+/// has no recovery, and failing here names the missing piece instead of
+/// surfacing the CLI's `no token configured` error after the spawn.
+pub fn require_api_endpoint(settings: &swarmy_config::Settings) -> (&str, &str) {
+    let url = settings.api.url.as_deref().unwrap_or("");
+    assert!(
+        !url.is_empty() && !settings.api.token.is_empty(),
+        "root tests that call the CLI need the suite API: run under scripts/node-suites/root-suites.sh, which exports SWARMY_API_URL and SWARMY_API_TOKEN",
+    );
+    (url, &settings.api.token)
 }
 
 /// Build settings from the named test-environment variables over defaults,

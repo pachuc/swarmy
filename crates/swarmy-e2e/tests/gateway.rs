@@ -1,9 +1,5 @@
 use std::{future::Future, panic::AssertUnwindSafe, sync::Arc, time::Duration};
 
-use foundationdb::{
-    Database,
-    directory::{Directory, DirectoryLayer},
-};
 use futures::FutureExt;
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken, WorkQueue};
@@ -13,17 +9,14 @@ use swarmy_core::{
 };
 use swarmy_llm::{
     Delta, GenerationSettings, InferenceJob, InferenceJobRef, Request, Response, StopReason,
-    TokenUsage,
 };
 use swarmy_store::{
     CredentialKey, Store, SubmitInferenceOptions,
     blob::{BlobStore, ObjectBlobStore},
 };
+use swarmy_testkit::{ChildGuard, Stack, StackGuard};
 use tempfile::TempDir;
-use tokio::{
-    process::{Child, Command},
-    time::timeout,
-};
+use tokio::{process::Command, time::timeout};
 use ulid::Ulid;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -37,33 +30,33 @@ struct Fixture {
     store: Store,
     bus: Bus,
     queue: WorkQueue,
-    prefix: String,
+    stack: Stack,
+    guard: StackGuard,
     files: TempDir,
-    children: Vec<Child>,
+    children: Vec<ChildGuard>,
 }
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        for variable in [
-            "SWARMY_FDB_CLUSTER_FILE",
-            "SWARMY_NATS_URL",
-            "SWARMY_S3_ENDPOINT",
-        ] {
-            swarmy_testkit::require_stack(variable)?;
-        }
+        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+        swarmy_testkit::require_stack("SWARMY_S3_ENDPOINT")?;
         swarmy_testkit::boot_fdb();
-        let prefix = format!("gateway_{}", Ulid::generate());
+        let stack = Stack {
+            cluster,
+            nats_url: swarmy_testkit::require_stack("SWARMY_NATS_URL")?,
+            prefix: swarmy_testkit::unique_prefix("gateway"),
+        };
+        let prefix = stack.prefix.clone();
         let store = Store::open(
-            Some(std::path::Path::new(
-                &swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").unwrap(),
-            )),
+            Some(std::path::Path::new(&stack.cluster)),
             Some(std::slice::from_ref(&prefix)),
-            Arc::new(ObjectBlobStore::from_env().unwrap()),
+            Arc::new(ObjectBlobStore::from_env().unwrap()) as Arc<dyn BlobStore>,
         )
         .await
         .unwrap();
+        let guard = StackGuard::new(&stack);
         let bus = Bus::connect(
-            &swarmy_testkit::require_stack("SWARMY_NATS_URL").unwrap(),
+            &stack.nats_url,
             Config {
                 prefix: Some(SubjectToken::new(&prefix).unwrap()),
                 ack_wait: ACK_WAIT,
@@ -78,49 +71,29 @@ impl Fixture {
             store,
             bus,
             queue,
-            prefix,
+            stack,
+            guard,
             files: TempDir::new().unwrap(),
             children: Vec::new(),
         })
     }
 
     fn script(&self, latency_ms: u64, fail: bool, text: &str) -> Response {
-        let response = Response {
-            parts: vec![Part::Text { text: text.into() }],
-            stop_reason: StopReason::EndTurn,
-            usage: TokenUsage {
-                output_tokens: 42,
-                ..TokenUsage::default()
-            },
-            quota_remaining: std::collections::BTreeMap::new(),
-            quota_resets: std::collections::BTreeMap::new(),
-        };
-        let responses: std::collections::BTreeMap<_, _> =
-            (0..10).map(|turn| (turn, &response)).collect();
-        std::fs::write(
-            self.files.path().join("script.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "latency_ms": latency_ms, "fail": fail, "responses": responses,
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        response
+        let mut script = swarmy_testkit::Script::new(text)
+            .latency_ms(latency_ms)
+            .output_tokens(42);
+        if fail {
+            script = script.fail();
+        }
+        script.write_to(&self.files.path().join("script.json"));
+        script.sample()
     }
 
     fn failure_script(&self, status: u16, retry_after_seconds: Option<u64>) {
-        std::fs::write(
-            self.files.path().join("script.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "failures": {"0": {
-                    "status": status,
-                    "message": if status == 429 { "quota reached" } else { "invalid credentials" },
-                    "retry_after_seconds": retry_after_seconds,
-                }}
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        let message = if status == 429 { "quota reached" } else { "invalid credentials" };
+        swarmy_testkit::Script::new("unused")
+            .failure(0, status, message, retry_after_seconds)
+            .write_to(&self.files.path().join("script.json"));
     }
 
     fn start(&mut self, concurrency: usize) {
@@ -134,7 +107,7 @@ impl Fixture {
         custom_providers: &std::collections::BTreeMap<String, swarmy_config::CustomProvider>,
         models: &[swarmy_config::CustomModel],
     ) {
-        self.children.push(
+        self.children.push(ChildGuard::new(
             Command::new(swarmy_testkit::bin("swarmy-gateway"))
                 .env("SWARMY_PROVIDER", "fake")
                 .env("SWARMY_PROVIDERS", providers)
@@ -143,8 +116,8 @@ impl Fixture {
                     serde_json::to_string(custom_providers).unwrap(),
                 )
                 .env("SWARMY_MODELS", serde_json::to_string(models).unwrap())
-                .env("SWARMY_STORE_DIRECTORY", &self.prefix)
-                .env("SWARMY_BUS_PREFIX", &self.prefix)
+                .env("SWARMY_STORE_DIRECTORY", &self.stack.prefix)
+                .env("SWARMY_BUS_PREFIX", &self.stack.prefix)
                 .env("SWARMY_BUS_ACK_WAIT_MS", ACK_WAIT.as_millis().to_string())
                 .env("SWARMY_BUS_MAX_DELIVER", "3")
                 .env("SWARMY_GATEWAY_CONCURRENCY", concurrency.to_string())
@@ -154,12 +127,12 @@ impl Fixture {
                 .kill_on_drop(true)
                 .spawn()
                 .unwrap(),
-        );
+        ));
     }
 
     async fn kill(&mut self) {
         for child in &mut self.children {
-            child.kill().await.unwrap();
+            child.kill().await;
         }
         self.children.clear();
     }
@@ -388,7 +361,7 @@ impl Fixture {
         );
         swarmy_testkit::eventually("work stream drains", WAIT, async || {
             (context
-                .get_stream(format!("{}_INFER_REQ", self.prefix))
+                .get_stream(format!("{}_INFER_REQ", self.stack.prefix))
                 .await
                 .unwrap()
                 .cached_info()
@@ -402,31 +375,7 @@ impl Fixture {
 
     async fn cleanup(mut self) {
         self.kill().await;
-        let db = Database::new(Some(
-            &swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").unwrap(),
-        ))
-        .unwrap();
-        let path = vec![self.prefix.clone()];
-        db.run(|trx, _| {
-            let path = &path;
-            async move {
-                DirectoryLayer::default().remove(&trx, path).await?;
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-        let context = async_nats::jetstream::new(
-            async_nats::connect(swarmy_testkit::require_stack("SWARMY_NATS_URL").unwrap())
-                .await
-                .unwrap(),
-        );
-        for name in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
-            context
-                .delete_stream(format!("{}_{name}", self.prefix))
-                .await
-                .unwrap();
-        }
+        self.guard.cleanup().await;
     }
 }
 
@@ -848,7 +797,7 @@ async fn authentication_failure_does_not_open_breaker() {
 #[tokio::test]
 async fn concurrency_limit_and_large_responses_preserve_full_results() {
     run(|mut f| async move {
-        let text = format!("{}{}", f.prefix, "x".repeat(100 * 1024));
+        let text = format!("{}{}", f.stack.prefix, "x".repeat(100 * 1024));
         let expected = f.script(200, false, &text);
         f.start(1);
         let first = f.job().await;
@@ -1105,34 +1054,21 @@ async fn two_providers_share_one_gateway_and_record_selection_and_cost() {
     }).await;
 }
 
-fn switch_script() -> (Response, Response) {
-    let call = Part::ToolCall {
-        call_id: swarmy_core::ToolCallId("clock-0".into()),
-        tool: "get_time".into(),
-        input: serde_json::json!({}),
-    };
-    let first = Response {
-        parts: vec![
-            Part::Text {
-                text: "Checking.".into(),
-            },
-            call,
-        ],
-        stop_reason: StopReason::ToolCalls,
-        usage: TokenUsage::default(),
-        quota_remaining: std::collections::BTreeMap::new(),
-        quota_resets: std::collections::BTreeMap::new(),
-    };
-    let second = Response {
-        parts: vec![Part::Text {
-            text: "done".into(),
-        }],
-        stop_reason: StopReason::EndTurn,
-        usage: TokenUsage::default(),
-        quota_remaining: std::collections::BTreeMap::new(),
-        quota_resets: std::collections::BTreeMap::new(),
-    };
-    (first, second)
+fn write_switch_script(files: &TempDir) {
+    swarmy_testkit::Script::new("done")
+        .parts(
+            0,
+            vec![
+                Part::Text { text: "Checking.".into() },
+                Part::ToolCall {
+                    call_id: swarmy_core::ToolCallId("clock-0".into()),
+                    tool: "get_time".into(),
+                    input: serde_json::json!({}),
+                },
+            ],
+            StopReason::ToolCalls,
+        )
+        .write_to(&files.path().join("script.json"));
 }
 
 fn switch_models() -> (
@@ -1357,15 +1293,7 @@ async fn switch_turns(f: &mut Fixture, model: &swarmy_config::CustomModel) {
 #[tokio::test]
 async fn provider_switch_preserves_tool_history() {
     run(|mut f| async move {
-        let (first, second) = switch_script();
-        std::fs::write(
-            f.files.path().join("script.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "responses": {"0": first, "1": second, "2": second, "3": second},
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        write_switch_script(&f.files);
         let (model, models, providers) = switch_models();
         f.start_with(1, "fake,scripted", &providers, &models);
         let result = AssertUnwindSafe(switch_turns(&mut f, &model))
@@ -1391,7 +1319,7 @@ async fn unknown_model_is_a_permanent_failure_without_provider_calls() {
             assert!(matches!(f.terminal(&job).await, Event::InferenceFailed { error, .. } if error.contains("unknown catalog model: fake/unknown-model")));
             f.drained().await;
             let context = async_nats::jetstream::new(async_nats::connect(swarmy_testkit::require_stack("SWARMY_NATS_URL").unwrap()).await.unwrap());
-            let stream = context.get_stream(format!("{}_INFER_REQ", f.prefix)).await.unwrap();
+            let stream = context.get_stream(format!("{}_INFER_REQ", f.stack.prefix)).await.unwrap();
             let consumer: async_nats::jetstream::consumer::PullConsumer = stream.get_consumer("infer_fake").await.unwrap();
             assert_eq!(consumer.cached_info().delivered.consumer_sequence, 1);
             assert_eq!(f.calls(), 0);
