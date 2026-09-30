@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! CLI projections retain the stored record shape without exposing a database to clients.
 use std::{sync::Arc, time::Duration};
 use swarmy_api::{AppState, router};

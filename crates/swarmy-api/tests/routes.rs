@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use std::sync::Arc;
 use swarmy_api::{AppState, router};
 use swarmy_api_types::{

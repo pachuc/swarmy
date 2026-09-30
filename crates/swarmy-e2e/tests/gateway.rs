@@ -299,76 +299,72 @@ impl Fixture {
     }
 
     async fn terminal(&self, job: &InferenceJob) -> Event {
-        timeout(WAIT, async {
-            loop {
+        let events =
+            swarmy_testkit::eventually("terminal inference event lands", WAIT, async || {
                 let events = self.store.read_events(job.session_id, 1, 64).await.unwrap();
-                if let Some(event) = events.first() {
-                    let idle = matches!(event, Event::InferenceCompleted { completion, .. }
-                        if !completion.message.parts.iter().any(|part| matches!(part, Part::ToolCall { .. })));
-                    assert_eq!(events.len(), if idle { 2 } else { 1 });
-                    let session = self
-                        .store
-                        .fetch_session(job.session_id)
-                        .await
-                        .unwrap()
-                        .unwrap();
-                    assert_eq!(
-                        session.state,
-                        if idle {
-                            SessionState::Idle
-                        } else {
-                            SessionState::Runnable
-                        }
-                    );
-                    if idle {
-                        assert!(matches!(
-                            events.last(),
-                            Some(Event::StateChanged {
-                                to: SessionState::Idle,
-                                ..
-                            })
-                        ));
-                        let reference = session.snapshot_ref.unwrap();
-                        assert_eq!(reference.seq, session.head_seq);
-                        let bytes = ObjectBlobStore::from_env()
-                            .unwrap()
-                            .get(&reference.object_key)
-                            .await
-                            .unwrap();
-                        let snapshot: swarmy_harness::Snapshot =
-                            swarmy_core::decode(&bytes).unwrap();
-                        let Event::InferenceCompleted { completion, .. } = event else {
-                            unreachable!()
-                        };
-                        assert_eq!(snapshot.messages().last(), Some(&completion.message));
-                        assert_eq!(
-                            &snapshot.messages()[..snapshot.messages().len() - 1],
-                            job.request.messages
-                        );
-                    }
-                    assert!(
-                        self.store
-                            .get_inflight(job.request_id)
-                            .await
-                            .unwrap()
-                            .is_none()
-                    );
-                    assert_eq!(
-                        self.store
-                            .get_idempotency(job.request_id)
-                            .await
-                            .unwrap()
-                            .unwrap()
-                            .state,
-                        IdempotencyState::Completed
-                    );
-                    return event.clone();
-                }
-                sleep(Duration::from_millis(20)).await;
+                (!events.is_empty()).then_some(events)
+            })
+            .await;
+        let event = events.first().unwrap();
+        let idle = matches!(event, Event::InferenceCompleted { completion, .. }
+            if !completion.message.parts.iter().any(|part| matches!(part, Part::ToolCall { .. })));
+        assert_eq!(events.len(), if idle { 2 } else { 1 });
+        let session = self
+            .store
+            .fetch_session(job.session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            session.state,
+            if idle {
+                SessionState::Idle
+            } else {
+                SessionState::Runnable
             }
-        })
-        .await
-        .unwrap()
+        );
+        if idle {
+            assert!(matches!(
+                events.last(),
+                Some(Event::StateChanged {
+                    to: SessionState::Idle,
+                    ..
+                })
+            ));
+            let reference = session.snapshot_ref.unwrap();
+            assert_eq!(reference.seq, session.head_seq);
+            let bytes = ObjectBlobStore::from_env()
+                .unwrap()
+                .get(&reference.object_key)
+                .await
+                .unwrap();
+            let snapshot: swarmy_harness::Snapshot = swarmy_core::decode(&bytes).unwrap();
+            let Event::InferenceCompleted { completion, .. } = event else {
+                unreachable!()
+            };
+            assert_eq!(snapshot.messages().last(), Some(&completion.message));
+            assert_eq!(
+                &snapshot.messages()[..snapshot.messages().len() - 1],
+                job.request.messages
+            );
+        }
+        assert!(
+            self.store
+                .get_inflight(job.request_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            self.store
+                .get_idempotency(job.request_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            IdempotencyState::Completed
+        );
+        event.clone()
     }
 
     async fn drained(&self) {
@@ -377,24 +373,18 @@ impl Fixture {
                 .await
                 .unwrap(),
         );
-        timeout(WAIT, async {
-            loop {
-                if context
-                    .get_stream(format!("{}_INFER_REQ", self.prefix))
-                    .await
-                    .unwrap()
-                    .cached_info()
-                    .state
-                    .messages
-                    == 0
-                {
-                    break;
-                }
-                sleep(Duration::from_millis(20)).await;
-            }
+        swarmy_testkit::eventually("work stream drains", WAIT, async || {
+            (context
+                .get_stream(format!("{}_INFER_REQ", self.prefix))
+                .await
+                .unwrap()
+                .cached_info()
+                .state
+                .messages
+                == 0)
+                .then_some(())
         })
-        .await
-        .unwrap();
+        .await;
     }
 
     async fn cleanup(mut self) {
@@ -451,11 +441,10 @@ async fn credential_changes_update_a_running_gateway() {
         )]);
         f.start_with(1, "openrouter", &providers, &[]);
         let result = AssertUnwindSafe(async {
-            timeout(WAIT, async {
-                while f.store.gateway_provider("openrouter").await.unwrap().is_none() {
-                    sleep(Duration::from_millis(20)).await;
-                }
-            }).await.unwrap();
+            swarmy_testkit::eventually("gateway advertises provider", WAIT, async || {
+                f.store.gateway_provider("openrouter").await.unwrap()
+            })
+            .await;
             assert!(!f.store.gateway_serves("openrouter").await.unwrap());
             credentials.put_entry(CredentialScope::Cluster, "openrouter", "primary", &CredentialRecord { bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                 kind: CredentialKind::ApiKey { key: "fixture-key".into(), extra: std::collections::BTreeMap::default() },
@@ -465,18 +454,19 @@ async fn credential_changes_update_a_running_gateway() {
                 kind: CredentialKind::ApiKey { key: "fixture-backup".into(), extra: std::collections::BTreeMap::default() },
                 updated_at: Timestamp::now(),
             }).await.unwrap();
-            timeout(Duration::from_secs(65), async {
-                while !f.store.gateway_serves("openrouter").await.unwrap() {
-                    sleep(Duration::from_millis(100)).await;
-                }
-            }).await.unwrap();
-            timeout(Duration::from_secs(65), async {
-                while f.store.gateway_entry("openrouter", "primary").await.unwrap().is_none()
-                    || f.store.gateway_entry("openrouter", "backup").await.unwrap().is_none()
+            swarmy_testkit::eventually("gateway serves provider", Duration::from_secs(65), async || {
+                f.store.gateway_serves("openrouter").await.unwrap().then_some(())
+            })
+            .await;
+            swarmy_testkit::eventually("gateway advertises entries", Duration::from_secs(65), async || {
+                if f.store.gateway_entry("openrouter", "primary").await.unwrap().is_some()
+                    && f.store.gateway_entry("openrouter", "backup").await.unwrap().is_some()
                 {
-                    sleep(Duration::from_millis(100)).await;
+                    return Some(());
                 }
-            }).await.unwrap();
+                None
+            })
+            .await;
             let queue = WorkQueue::Inference(SubjectToken::new("openrouter").unwrap());
             let mut job = f.job_with_settings(GenerationSettings {
                 model: "openai/gpt-5.5".into(), ..Default::default()
@@ -491,11 +481,10 @@ async fn credential_changes_update_a_running_gateway() {
             assert!(entries.iter().find(|entry| entry.label == "backup").unwrap().last_used_at.is_none());
             credentials.delete_entry(CredentialScope::Cluster, "openrouter", "primary").await.unwrap();
             credentials.delete_entry(CredentialScope::Cluster, "openrouter", "backup").await.unwrap();
-            timeout(Duration::from_secs(65), async {
-                while f.store.gateway_serves("openrouter").await.unwrap() {
-                    sleep(Duration::from_millis(100)).await;
-                }
-            }).await.unwrap();
+            swarmy_testkit::eventually("gateway stops serving provider", Duration::from_secs(65), async || {
+                (!f.store.gateway_serves("openrouter").await.unwrap()).then_some(())
+            })
+            .await;
             let mut rejected = f.job_with_settings(GenerationSettings {
                 model: "openai/gpt-5.5".into(), ..Default::default()
             }).await;
@@ -623,20 +612,14 @@ async fn stale_first_commit_retries_without_another_provider_call() {
                 .await
                 .unwrap();
             f.publish(&job).await;
-            timeout(WAIT, async {
-                loop {
-                    let events = f.store.read_events(job.session_id, 0, 64).await.unwrap();
-                    if events
-                        .iter()
-                        .any(|event| matches!(event, Event::InferenceCompleted { .. }))
-                    {
-                        break;
-                    }
-                    sleep(Duration::from_millis(20)).await;
-                }
+            swarmy_testkit::eventually("inference completes", WAIT, async || {
+                let events = f.store.read_events(job.session_id, 0, 64).await.unwrap();
+                events
+                    .iter()
+                    .any(|event| matches!(event, Event::InferenceCompleted { .. }))
+                    .then_some(())
             })
-            .await
-            .unwrap();
+            .await;
             f.drained().await;
             assert_eq!(f.calls(), 1);
             assert_eq!(
@@ -721,7 +704,13 @@ async fn exhausted_retries_append_failure_and_stop_delivery() {
                 Event::InferenceFailed { .. }
             ));
             f.drained().await;
-            sleep(ACK_WAIT * 3).await;
+            // Quiescence is the assertion: a full redelivery window must pass
+            // with no fourth provider call before the stream is observed idle.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "silence over a redelivery window is the assertion"
+            )]
+            tokio::time::sleep(ACK_WAIT * 3).await;
             assert_eq!(f.calls(), 3);
             let mut work = f.bus.consume::<InferenceJobRef>(&f.queue).await.unwrap();
             assert!(timeout(ACK_WAIT * 2, work.next()).await.is_err());
@@ -770,7 +759,7 @@ async fn unscripted_provider_failure_exhausts_retries_with_backoff() {
             let started = tokio::time::Instant::now();
             let mut calls_at = Vec::new();
             let mut republished = false;
-            while calls_at.len() < 3 {
+            swarmy_testkit::eventually("provider finishes retries", Duration::from_secs(5), async || {
                 let calls = f.calls();
                 if calls >= 1 && !republished {
                     // Recovery publishes a fresh stream sequence whose delivery
@@ -782,15 +771,18 @@ async fn unscripted_provider_failure_exhausts_retries_with_backoff() {
                 while calls_at.len() < calls {
                     calls_at.push(started.elapsed());
                 }
-                assert!(started.elapsed() < Duration::from_secs(5), "provider did not finish retries");
-                sleep(Duration::from_millis(5)).await;
-            }
+                (calls_at.len() >= 3).then_some(())
+            })
+            .await;
             assert!(matches!(f.terminal(&job).await, Event::InferenceFailed { retryable: false, error, .. }
                 if error.contains("fake provider has no response")));
             assert_eq!(f.calls(), 3);
             assert!(calls_at[1] >= calls_at[0] + Duration::from_millis(75));
             assert!(calls_at[2] >= calls_at[1] + Duration::from_millis(175));
-            sleep(ACK_WAIT * 2).await;
+            // Quiescence is the assertion: another redelivery window must pass
+            // with the call count pinned before the stream is observed drained.
+            #[expect(clippy::disallowed_methods, reason = "silence over a redelivery window is the assertion")]
+            tokio::time::sleep(ACK_WAIT * 2).await;
             assert_eq!(f.calls(), 3);
             f.drained().await;
         }).catch_unwind().await;
@@ -924,24 +916,18 @@ async fn terminal_response_leaves_intervening_events_for_worker_replay() {
                 .append_events(job.session_id, 1, &[notice])
                 .await
                 .unwrap();
-            timeout(WAIT, async {
-                loop {
-                    let session = f
-                        .store
-                        .fetch_session(job.session_id)
-                        .await
-                        .unwrap()
-                        .unwrap();
-                    if session.state == SessionState::Runnable {
-                        assert_eq!(session.head_seq, 3);
-                        assert!(session.snapshot_ref.is_none());
-                        break;
-                    }
-                    sleep(Duration::from_millis(10)).await;
-                }
+            let session = swarmy_testkit::eventually("session runs the notice", WAIT, async || {
+                let session = f
+                    .store
+                    .fetch_session(job.session_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                (session.state == SessionState::Runnable).then_some(session)
             })
-            .await
-            .unwrap();
+            .await;
+            assert_eq!(session.head_seq, 3);
+            assert!(session.snapshot_ref.is_none());
             let events = f.store.read_events(job.session_id, 1, 64).await.unwrap();
             assert!(matches!(
                 events.as_slice(),

@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use std::{
     collections::BTreeSet,
     sync::{
@@ -41,7 +42,13 @@ impl Tool for SlowTool {
     fn execute(&self, _: Value) -> BoxFuture<'_, Result<String, String>> {
         Box::pin(async {
             self.0.fetch_add(1, Ordering::SeqCst);
-            sleep(Duration::from_millis(1600)).await;
+            // The tool must genuinely outlast the 600 ms step lease several
+            // times over, or there is no renewal to observe.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the slow tool duration is the renewal under test"
+            )]
+            tokio::time::sleep(Duration::from_millis(1600)).await;
             Ok("done".into())
         })
     }
@@ -204,9 +211,13 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
     let mut queued = false;
     timeout(Duration::from_secs(10), async {
         loop {
+            // The tick keeps driving the step future while renewal is
+            // observed; yielding without a bound would busy-loop.
+            #[expect(clippy::disallowed_methods, reason = "select tick drives the step future while renewals are observed")]
+            let tick = sleep(Duration::from_millis(50));
             tokio::select! {
                 result = &mut work => { result.unwrap(); break; }
-                () = sleep(Duration::from_millis(50)) => {
+                () = tick => {
                     if !queued && calls.load(Ordering::SeqCst) > 0 {
                         let message = Message {
                             id: MessageId::from_ulid(Ulid::generate()),

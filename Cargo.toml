@@ -19,6 +19,10 @@ pedantic = { level = "deny", priority = -1 }
 redundant_clone = "deny"
 needless_collect = "deny"
 large_stack_frames = "deny"
+# The sleep ban in clippy.toml applies to test targets only: each test root
+# opts in with its own deny (workspace lints cannot be test-scoped, and
+# production code sleeps legitimately in backoffs and intervals).
+disallowed_methods = "allow"
 
 [workspace.dependencies]
 swarmy-version = { path = "crates/swarmy-version" }

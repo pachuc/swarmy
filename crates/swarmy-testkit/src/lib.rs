@@ -15,7 +15,7 @@ mod script;
 mod service;
 mod stack;
 
-pub use eventually::{eventually, eventually_ok};
+pub use eventually::eventually;
 pub use image::image;
 pub use script::Script;
 pub use service::{ChildGuard, bin};

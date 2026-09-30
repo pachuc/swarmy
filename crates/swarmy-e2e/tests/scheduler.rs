@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use std::{
     collections::HashSet,
     future::Future,
@@ -81,24 +82,18 @@ impl Fixture {
             index
         };
         let bus = self.bus_for(prefix).await;
-        timeout(WAIT, async {
-            loop {
-                assert!(
-                    self.processes.lock().unwrap()[index]
-                        .0
-                        .try_wait()
-                        .unwrap()
-                        .is_none(),
-                    "scheduler exited during startup"
-                );
-                if matches!(bus.request_wake(id(), SCAN).await, Ok(WakeReply::NotFound)) {
-                    break;
-                }
-                sleep(Duration::from_millis(20)).await;
-            }
+        swarmy_testkit::eventually("scheduler starts", WAIT, async || {
+            assert!(
+                self.processes.lock().unwrap()[index]
+                    .0
+                    .try_wait()
+                    .unwrap()
+                    .is_none(),
+                "scheduler exited during startup"
+            );
+            matches!(bus.request_wake(id(), SCAN).await, Ok(WakeReply::NotFound)).then_some(())
         })
-        .await
-        .expect("scheduler did not start");
+        .await;
         index
     }
 
@@ -576,13 +571,12 @@ async fn timer_closes_only_idle_ephemeral_sessions() {
             .await
             .unwrap();
         f.start_with_retention("7", &f.prefix, 1).await;
-        timeout(WAIT, async {
-            while f.state(idle).await != SessionState::Completed {
-                sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .expect("ephemeral timer did not close old idle session");
+        swarmy_testkit::eventually(
+            "ephemeral timer closes old idle session",
+            WAIT,
+            async || (f.state(idle).await == SessionState::Completed).then_some(()),
+        )
+        .await;
         assert_eq!(f.state(active).await, SessionState::Runnable);
         assert_eq!(f.state(named.session_id).await, SessionState::Idle);
         assert!(

@@ -6,6 +6,7 @@ use std::{
     path::PathBuf,
 };
 
+use futures::FutureExt as _;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::mpsc;
 
@@ -198,41 +199,34 @@ impl Terminal {
     }
 
     async fn exit(&mut self, success: bool) {
-        timeout(WAIT, async {
-            loop {
-                if let Some(status) = self.child.try_wait().unwrap() {
-                    // Drain the remaining PTY output first: the client prints
-                    // its error to stderr after leaving the alternate screen,
-                    // and the PTY merges it into this capture.
-                    while let Some(bytes) = self.receiver.recv().await {
-                        self.process(&bytes);
-                    }
-                    if status.success() != success {
-                        let mut tail = self
-                            .captured
-                            .iter()
-                            .rev()
-                            .take(4096)
-                            .copied()
-                            .collect::<Vec<_>>();
-                        tail.reverse();
-                        panic!(
-                            "chat exit status {} (expected success={success}); screen:\n{}\npty tail:\n{}",
-                            status.exit_code(),
-                            self.parser.screen().contents(),
-                            String::from_utf8_lossy(&tail),
-                        );
-                    }
-                    break;
-                }
-                sleep(Duration::from_millis(20)).await;
-            }
-            while let Some(bytes) = self.receiver.recv().await {
-                self.process(&bytes);
-            }
-        })
-        .await
-        .expect("chat did not exit");
+        let status =
+            swarmy_testkit::eventually("chat exits", WAIT, async || self.child.try_wait().unwrap())
+                .await;
+        // Drain the remaining PTY output first: the client prints
+        // its error to stderr after leaving the alternate screen,
+        // and the PTY merges it into this capture.
+        while let Some(bytes) = self.receiver.recv().await {
+            self.process(&bytes);
+        }
+        if status.success() != success {
+            let mut tail = self
+                .captured
+                .iter()
+                .rev()
+                .take(4096)
+                .copied()
+                .collect::<Vec<_>>();
+            tail.reverse();
+            panic!(
+                "chat exit status {} (expected success={success}); screen:\n{}\npty tail:\n{}",
+                status.exit_code(),
+                self.parser.screen().contents(),
+                String::from_utf8_lossy(&tail),
+            );
+        }
+        while let Some(bytes) = self.receiver.recv().await {
+            self.process(&bytes);
+        }
         assert!(
             !self.parser.screen().alternate_screen(),
             "chat did not restore terminal"
@@ -417,40 +411,34 @@ impl Services {
 /// so the short client budget applies.
 async fn session_id(fixture: &Fixture) -> SessionId {
     let deadline = Instant::now() + WAIT;
-    loop {
+    swarmy_testkit::eventually("client creates session", WAIT, async || {
         let sessions = list_sessions_tolerant(fixture, deadline).await;
-        if let Some(session) = sessions.first() {
-            return session.session_id;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "no session appeared within {WAIT:?}"
-        );
-        sleep(Duration::from_millis(50)).await;
-    }
+        sessions.first().map(|session| session.session_id)
+    })
+    .await
 }
 
 /// Wait for a session to reach idle with an explicit budget, printing timeout
 /// diagnostics on expiry. Retryable database timeouts keep polling so the
 /// outer timeout below wins with diagnostics instead of panicking first.
 async fn idle(fixture: &Fixture, services: Option<&Services>, id: SessionId, budget: Duration) {
-    let result = timeout(budget, async {
-        loop {
-            match fixture.store.fetch_session(id).await {
-                Ok(session)
-                    if session
-                        .as_ref()
-                        .is_some_and(|session| session.state == SessionState::Idle) =>
-                {
-                    break;
-                }
-                Err(error) if is_retryable_store_error(&error) => {}
-                Err(error) => panic!("session fetch failed for {id}: {error}"),
-                Ok(_) => {}
+    let result = std::panic::AssertUnwindSafe(swarmy_testkit::eventually(
+        "session idles",
+        budget,
+        async || match fixture.store.fetch_session(id).await {
+            Ok(session)
+                if session
+                    .as_ref()
+                    .is_some_and(|session| session.state == SessionState::Idle) =>
+            {
+                Some(())
             }
-            sleep(Duration::from_millis(30)).await;
-        }
-    })
+            Err(error) if is_retryable_store_error(&error) => None,
+            Err(error) => panic!("session fetch failed for {id}: {error}"),
+            Ok(_) => None,
+        },
+    ))
+    .catch_unwind()
     .await;
     if result.is_err() {
         let diagnostics = Diagnostics {
@@ -937,6 +925,12 @@ impl Drop for Node {
             if std::time::Instant::now() >= deadline {
                 break;
             }
+            // `Drop` cannot await an async poll, so the graceful-shutdown
+            // window stays a blocking sleep before the forced kill below.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "Drop cannot await; bounded wait for graceful shutdown before SIGKILL"
+            )]
             std::thread::sleep(Duration::from_millis(50));
         }
         let _ = self.child.kill();
@@ -1005,23 +999,35 @@ async fn root_chat_default_image_executes_pwd() {
         let session = fixture.store.fetch_session(id).await.unwrap().unwrap();
         assert!(fixture.store.get_by_agent(session.agent_id).await.unwrap().is_none());
         terminal.type_text("Run pwd\r");
-        timeout(Duration::from_secs(120), async {
-            loop {
-                let events = fixture.store.read_events(id, 0, 64).await.unwrap();
-                if let Some(result) = events.iter().find_map(|event| match event {
-                    Event::ToolCallCompleted { result, .. } => Some(result),
-                    _ => None,
-                }) {
-                    let ToolResult::Completed { output, .. } = result else { panic!("pwd failed: {result:?}"); };
-                    let result: swarmy_core::BashResult = serde_json::from_str(output).unwrap();
-                    assert_eq!(result.exit_code, 0);
-                    assert!(result.stdout.trim().starts_with('/'), "pwd output: {}", result.stdout);
-                    assert!(!result.timed_out);
-                    break;
-                }
-                sleep(Duration::from_millis(100)).await;
-            }
-        }).await.unwrap_or_else(|_| panic!("pwd did not finish: {}", std::fs::read_to_string(services.files.path().join("node.log")).unwrap()));
+        let result = std::panic::AssertUnwindSafe(swarmy_testkit::eventually(
+            "pwd tool call completes",
+            Duration::from_secs(120),
+            async || {
+                fixture
+                    .store
+                    .read_events(id, 0, 64)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .find_map(|event| match event {
+                        Event::ToolCallCompleted { result, .. } => Some(result.clone()),
+                        _ => None,
+                    })
+            },
+        ))
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "pwd did not finish: {}",
+                std::fs::read_to_string(services.files.path().join("node.log")).unwrap()
+            )
+        });
+        let ToolResult::Completed { output, .. } = &result else { panic!("pwd failed: {result:?}"); };
+        let result: swarmy_core::BashResult = serde_json::from_str(output).unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert!(result.stdout.trim().starts_with('/'), "pwd output: {}", result.stdout);
+        assert!(!result.timed_out);
         assert!(fixture.store.get_by_agent(session.agent_id).await.unwrap().is_some());
         assert!(fixture.store.get_volume(swarmy_core::VolumeId::from_ulid(session.agent_id.as_ulid())).await.unwrap().is_some());
         terminal.type_text("\x1b");

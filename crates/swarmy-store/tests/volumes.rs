@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use foundationdb::{Database, tuple::Subspace};
 use jiff::Timestamp;
 use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};

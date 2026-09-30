@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! Route resolution, expansion, and session step movement.
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 

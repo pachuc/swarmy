@@ -206,31 +206,37 @@ async fn create_tommy(fixture: &Fixture) -> swarmy_core::AgentRecord {
 }
 
 async fn bash_result(fixture: &Fixture, id: SessionId, services: &Services) -> String {
-    timeout(Duration::from_secs(120), async {
-        loop {
-            let events = fixture.store.read_events(id, 0, 64).await.unwrap();
-            if let Some(result) = events.iter().find_map(|event| match event {
-                Event::ToolCallCompleted { result, .. } => Some(result),
-                _ => None,
-            }) {
-                let ToolResult::Completed { output, .. } = result else {
-                    panic!("bash failed: {result:?}");
-                };
-                let result: swarmy_core::BashResult = serde_json::from_str(output).unwrap();
-                assert_eq!(result.exit_code, 0, "{}", result.stderr);
-                assert!(!result.timed_out);
-                return result.stdout;
-            }
-            sleep(Duration::from_millis(100)).await;
-        }
-    })
+    let result = std::panic::AssertUnwindSafe(swarmy_testkit::eventually(
+        "bash tool call completes",
+        Duration::from_secs(120),
+        async || {
+            fixture
+                .store
+                .read_events(id, 0, 64)
+                .await
+                .unwrap()
+                .iter()
+                .find_map(|event| match event {
+                    Event::ToolCallCompleted { result, .. } => Some(result.clone()),
+                    _ => None,
+                })
+        },
+    ))
+    .catch_unwind()
     .await
     .unwrap_or_else(|_| {
         panic!(
             "bash did not finish: {}",
             std::fs::read_to_string(services.files.path().join("node.log")).unwrap()
         )
-    })
+    });
+    let ToolResult::Completed { output, .. } = &result else {
+        panic!("bash failed: {result:?}");
+    };
+    let result: swarmy_core::BashResult = serde_json::from_str(output).unwrap();
+    assert_eq!(result.exit_code, 0, "{}", result.stderr);
+    assert!(!result.timed_out);
+    result.stdout
 }
 
 #[tokio::test]
@@ -319,13 +325,21 @@ async fn open_chat_follows_a_summarized_main_with_a_notice() {
         // Reads retry database timeouts within the budget instead of panicking.
         let budget = WAIT;
         let deadline = Instant::now() + budget;
-        let landed = timeout(budget, async {
-            loop {
-                if read_events_tolerant(&fixture, new, 0, 64, deadline).await.iter().any(|event| matches!(event,
-                    Event::MessageAppended { message, .. } if message.role == MessageRole::User)) { break; }
-                sleep(Duration::from_millis(25)).await;
-            }
-        }).await;
+        let landed = std::panic::AssertUnwindSafe(swarmy_testkit::eventually(
+            "user message lands",
+            budget,
+            async || {
+                read_events_tolerant(&fixture, new, 0, 64, deadline)
+                    .await
+                    .iter()
+                    .any(|event| {
+                        matches!(event, Event::MessageAppended { message, .. } if message.role == MessageRole::User)
+                    })
+                    .then_some(())
+            },
+        ))
+        .catch_unwind()
+        .await;
         assert!(
             landed.is_ok(),
             "user message did not land within {budget:?}:\n{}",

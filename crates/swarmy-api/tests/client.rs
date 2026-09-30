@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! Exercise the public client against the real HTTP router and development services.
 use std::{sync::Arc, time::Duration};
 use swarmy_api::{AppState, router};

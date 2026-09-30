@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 #[path = "cli_session/agents.rs"]
 mod agents;
 
@@ -85,15 +86,15 @@ async fn fetch_session_tolerant(
     id: SessionId,
     deadline: Instant,
 ) -> Option<swarmy_core::SessionRecord> {
-    loop {
+    let budget = deadline.saturating_duration_since(Instant::now());
+    swarmy_testkit::eventually("session fetch succeeds", budget, async || {
         match fixture.store.fetch_session(id).await {
-            Ok(session) => return session,
-            Err(error) if is_retryable_store_error(&error) && Instant::now() < deadline => {
-                sleep(Duration::from_millis(100)).await;
-            }
+            Ok(session) => Some(session),
+            Err(error) if is_retryable_store_error(&error) => None,
             Err(error) => panic!("session fetch failed for {id}: {error}"),
         }
-    }
+    })
+    .await
 }
 
 /// Poll `read_events` until it succeeds or `deadline` passes, retrying
@@ -105,15 +106,15 @@ async fn read_events_tolerant(
     limit: usize,
     deadline: Instant,
 ) -> Vec<Event> {
-    loop {
+    let budget = deadline.saturating_duration_since(Instant::now());
+    swarmy_testkit::eventually("event read succeeds", budget, async || {
         match fixture.store.read_events(id, after, limit).await {
-            Ok(events) => return events,
-            Err(error) if is_retryable_store_error(&error) && Instant::now() < deadline => {
-                sleep(Duration::from_millis(100)).await;
-            }
+            Ok(events) => Some(events),
+            Err(error) if is_retryable_store_error(&error) => None,
             Err(error) => panic!("event read failed for {id}: {error}"),
         }
-    }
+    })
+    .await
 }
 
 /// Poll `list_sessions` until it succeeds or `deadline` passes, retrying
@@ -122,15 +123,15 @@ async fn list_sessions_tolerant(
     fixture: &Fixture,
     deadline: Instant,
 ) -> Vec<swarmy_core::SessionRecord> {
-    loop {
+    let budget = deadline.saturating_duration_since(Instant::now());
+    swarmy_testkit::eventually("session list succeeds", budget, async || {
         match fixture.store.list_sessions(None, 1).await {
-            Ok(sessions) => return sessions,
-            Err(error) if is_retryable_store_error(&error) && Instant::now() < deadline => {
-                sleep(Duration::from_millis(100)).await;
-            }
+            Ok(sessions) => Some(sessions),
+            Err(error) if is_retryable_store_error(&error) => None,
             Err(error) => panic!("session list failed: {error}"),
         }
-    }
+    })
+    .await
 }
 
 #[derive(Clone)]
@@ -511,25 +512,20 @@ async fn nudges(fixture: &Fixture) -> async_nats::Subscriber {
 }
 
 async fn wait_for_scheduler(fixture: &Fixture) {
-    timeout(service_budget(), async {
-        loop {
-            if matches!(
-                fixture
-                    .bus
-                    .request_wake(
-                        SessionId::from_ulid(Ulid::generate()),
-                        Duration::from_millis(100)
-                    )
-                    .await,
-                Ok(WakeReply::NotFound)
-            ) {
-                break;
-            }
-            sleep(Duration::from_millis(20)).await;
-        }
+    swarmy_testkit::eventually("service starts", service_budget(), async || {
+        matches!(
+            fixture
+                .bus
+                .request_wake(
+                    SessionId::from_ulid(Ulid::generate()),
+                    Duration::from_millis(100)
+                )
+                .await,
+            Ok(WakeReply::NotFound)
+        )
+        .then_some(())
     })
-    .await
-    .unwrap();
+    .await;
 }
 
 #[tokio::test]
@@ -725,8 +721,14 @@ async fn delayed_turn(fixture: &Fixture, id: SessionId) {
         .set_state(id, SessionState::Idle, Some(&lease), Timestamp::now())
         .await
         .unwrap();
-    // Let the client's poll tick observe Idle before SSE arrives.
-    sleep(Duration::from_millis(3500)).await;
+    // Let the client's poll tick observe Idle before SSE arrives. The test
+    // forces the three-second tick to fire mid-sequence, so the real delay
+    // is the point.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the test forces the client poll tick to fire before SSE"
+    )]
+    tokio::time::sleep(Duration::from_millis(3500)).await;
     for event in fixture
         .store
         .read_events(id, session.head_seq, 64)
@@ -1089,7 +1091,14 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
         .await
         .unwrap()
         .unwrap();
-        sleep(Duration::from_millis(2)).await;
+        // Stage the writes a tick apart: spawned stage writes race under
+        // millisecond timing while production staggers stages over seconds,
+        // so the pacing itself is the point.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "paces spawned stage writes apart so they land in order"
+        )]
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
     timeout(
         WAIT,
@@ -1112,24 +1121,18 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
     .unwrap()
     .unwrap();
     // The spawned stage writes land shortly after; wait for the record.
-    timeout(WAIT, async {
-        loop {
-            let rows = fixture
-                .store
-                .list_turn_metrics(session, None, 64)
-                .await
-                .unwrap();
-            if rows.len() == 1
-                && rows[0].stages.iter().any(|row| row.stage == "first_token")
-                && rows[0].stages.iter().any(|row| row.stage == "idle")
-            {
-                break;
-            }
-            sleep(Duration::from_millis(20)).await;
-        }
+    swarmy_testkit::eventually("turn metrics record lands", WAIT, async || {
+        let rows = fixture
+            .store
+            .list_turn_metrics(session, None, 64)
+            .await
+            .unwrap();
+        (rows.len() == 1
+            && rows[0].stages.iter().any(|row| row.stage == "first_token")
+            && rows[0].stages.iter().any(|row| row.stage == "idle"))
+        .then_some(())
     })
-    .await
-    .unwrap();
+    .await;
     (session.to_string(), appended.turn_id)
 }
 

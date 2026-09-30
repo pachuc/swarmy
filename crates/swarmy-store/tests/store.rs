@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use std::sync::Arc;
 
 use foundationdb::{Database, tuple::Subspace};

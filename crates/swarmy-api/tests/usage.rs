@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! Usage series and entry quota routes read from the metering rollups.
 use std::sync::Arc;
 

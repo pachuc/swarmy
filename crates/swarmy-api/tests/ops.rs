@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 //! Image uploads, collection runs, timeline streams, and doctor nodes.
 use std::{sync::Arc, time::Duration};
 use swarmy_api::{AppState, router};
