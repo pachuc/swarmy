@@ -198,12 +198,12 @@ impl Store {
                 detail: spec.detail.clone(),
             };
             if let Err(error) = self.put_service_heartbeat(&record).await {
-                tracing::warn!(%error, role = ?spec.role, "service health heartbeat failed");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), role = ?spec.role, "service health heartbeat failed");
             }
             if spec.expire_stale
                 && let Err(error) = self.expire_services().await
             {
-                tracing::warn!(%error, "service health expiry failed");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "service health expiry failed");
             }
         }
     }

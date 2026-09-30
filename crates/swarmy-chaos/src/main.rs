@@ -524,7 +524,7 @@ fn retain_on_failure(
         let replacement = match tempfile::tempdir() {
             Ok(dir) => dir,
             Err(error) => {
-                tracing::error!(%error, "cannot retain chaos logs");
+                tracing::error!(error = %swarmy_core::error_chain(&error), "cannot retain chaos logs");
                 return;
             }
         };
@@ -538,7 +538,7 @@ fn retain_on_failure(
 /// error: the run is what needs fixing.
 fn settle_cleanup(cleanup: Result<()>, result: Result<usize>) -> Result<()> {
     if let Err(error) = cleanup {
-        tracing::error!(%error, "cleanup failed");
+        tracing::error!(error = %swarmy_core::error_chain(&*error), "cleanup failed");
         result?;
         return Err(error);
     }

@@ -528,7 +528,7 @@ impl CredentialStore {
         let (mut replacement, failed) = match refreshed {
             Ok(Ok(record)) => (record, false),
             Ok(Err(error)) => {
-                tracing::warn!(provider, label, %error, "credential refresh failed; marking entry needs-login");
+                tracing::warn!(provider, label, error = %swarmy_core::error_chain(&error), "credential refresh failed; marking entry needs-login");
                 let mut record = current.clone();
                 record.bookkeeping.needs_login = true;
                 (record, true)

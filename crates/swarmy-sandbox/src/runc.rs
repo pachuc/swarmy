@@ -266,7 +266,7 @@ impl RuncRuntime {
             )
             .await
         {
-            tracing::warn!(%id, %error, "scratch size report failed");
+            tracing::warn!(%id, error = %swarmy_core::error_chain(&error), "scratch size report failed");
         }
         Ok(())
     }
@@ -744,7 +744,7 @@ impl RuncRuntime {
             {
                 // A detach error may arrive after the device was disconnected.
                 // Finish local cleanup even if the control reply reports failure.
-                tracing::warn!(%error, "forcing attachment shutdown after discard error");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "forcing attachment shutdown after discard error");
                 if let Some(server) = &running.server {
                     server.0.abort();
                 }
@@ -762,7 +762,7 @@ impl RuncRuntime {
         if publish {
             outcome?;
         } else if let Err(error) = outcome {
-            tracing::warn!(%error, "discarded failed attachment");
+            tracing::warn!(error = %swarmy_core::error_chain(&error), "discarded failed attachment");
         }
         Ok(forced)
     }

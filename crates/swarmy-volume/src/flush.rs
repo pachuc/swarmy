@@ -249,7 +249,7 @@ impl VolumeWriter {
             loop {
                 tokio::time::sleep(interval).await;
                 if let Err(error) = device.upload_settled(interval).await {
-                    tracing::warn!(%error, "background upload failed; final flush will retry");
+                    tracing::warn!(error = %swarmy_core::error_chain(&error), "background upload failed; final flush will retry");
                 }
             }
         }))
@@ -293,7 +293,7 @@ impl Drop for FrozenMount {
         if let Some(path) = &self.0
             && let Err(error) = freeze_command("--unfreeze", path)
         {
-            tracing::error!(%error, path = %path.display(), "could not unfreeze filesystem");
+            tracing::error!(error = %swarmy_core::error_chain(&error), path = %path.display(), "could not unfreeze filesystem");
         }
     }
 }

@@ -279,8 +279,8 @@ impl Store {
         }
         let rx = match self.metrics_rx.lock() {
             Ok(mut guard) => guard.take(),
-            Err(error) => {
-                tracing::warn!(%error, "metrics queue lock poisoned; skipping drain start");
+            Err(_) => {
+                tracing::warn!("metrics queue lock poisoned; skipping drain start");
                 return;
             }
         };

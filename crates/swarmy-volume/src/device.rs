@@ -724,7 +724,7 @@ impl VolumeDevice {
                     .await;
             for result in results {
                 if let Err(error) = result {
-                    tracing::debug!(%error, "readahead failed; demand reads will retry");
+                    tracing::debug!(error = %swarmy_core::error_chain(&error), "readahead failed; demand reads will retry");
                 }
             }
         });

@@ -62,7 +62,7 @@ impl VolumeDevice {
             if let Some(boundary) = &mut dirty.boundary {
                 boundary.failed = true;
             }
-            tracing::warn!(%error, "abandoning snapshot after boundary copy failed");
+            tracing::warn!(error = %swarmy_core::error_chain(&error), "abandoning snapshot after boundary copy failed");
         }
     }
 

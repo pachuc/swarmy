@@ -161,7 +161,7 @@ pub async fn complete(
             // without the lease so it stops instead of waiting out its
             // deadline while the lease expires underneath the sweep.
             if let Err(error) = store.fail_gc_run(run.owner, &run).await {
-                tracing::warn!(%error, "gc failure record lost after lease expiry");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "gc failure record lost after lease expiry");
             }
             result?;
             Err(record_error.into())
@@ -311,7 +311,7 @@ async fn sweep_page(
             match result {
                 Ok(()) => Some((hash, size)),
                 Err(error) => {
-                    tracing::warn!(%hash, %error, "chunk collection delete failed");
+                    tracing::warn!(%hash, error = %swarmy_core::error_chain(&error), "chunk collection delete failed");
                     None
                 }
             }

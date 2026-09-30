@@ -354,8 +354,8 @@ async fn doctor(State(state): State<AppState>) -> ApiResult<api::DoctorSnapshot>
                 .map(views::credential)
                 .collect::<Vec<_>>(),
         ),
-        Err(error) => {
-            tracing::warn!(?error, "doctor credential listing unavailable");
+        Err(_) => {
+            // credential_store logged the keyring failure with its cause chain.
             None
         }
     };

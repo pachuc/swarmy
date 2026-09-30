@@ -201,7 +201,7 @@ impl Drop for BuiltImage {
             .args(["-rf", "--"])
             .arg(self.scratch.path()))
         {
-            tracing::warn!(%error, path = %self.scratch.path().display(), "could not clean image build directory");
+            tracing::warn!(error = %swarmy_core::error_chain(&error), path = %self.scratch.path().display(), "could not clean image build directory");
         }
     }
 }
