@@ -226,7 +226,9 @@ async fn run_add_node(state: &State, mut settings: Settings, command: Command) -
     let cloud = for_settings(&launch).await?;
     guard(
         &name,
-        add_node::run(
+        // Pin the join so service-user paths and disk state do not inflate
+        // the guarded future past the pedantic size limit.
+        Box::pin(add_node::run(
             &cloud,
             &host,
             state,
@@ -237,10 +239,13 @@ async fn run_add_node(state: &State, mut settings: Settings, command: Command) -
                     instance_type,
                     disk_gb,
                 },
+                // The saved primary settings may carry its resolved device;
+                // the join starts from the explicit configuration instead.
+                local_storage: settings.remote.local_storage.clone(),
             },
             Duration::from_secs(5),
             options.as_ref(),
-        ),
+        )),
     )
     .await
 }

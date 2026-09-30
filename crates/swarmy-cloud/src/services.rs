@@ -77,6 +77,7 @@ impl<'a> Options<'a> {
         )?;
         // Copy only service options. Local paths, cloud secrets, endpoints, and
         // the selected tunnel profile must never become node configuration.
+        swarmy_config::validate_service_user(&settings.remote.service_user)?;
         let mut remote = Settings {
             api: settings.api.clone(),
             selection: swarmy_config::SelectionSettings {
@@ -104,7 +105,13 @@ impl<'a> Options<'a> {
             },
             fake: swarmy_config::Fake {
                 script: "/etc/swarmy/fake.json".into(),
-                call_log: "/home/ubuntu/swarmy/.swarmy/calls.log".into(),
+                // Relative to the gateway unit's working directory, which the
+                // host resolves to the service checkout. The laptop cannot
+                // render an absolute node path: the service home comes from
+                // the host's passwd entry, so a laptop-side `/home/<user>`
+                // guess would point at the wrong checkout whenever the laptop
+                // login differs from the node's service user.
+                call_log: ".swarmy/calls.log".into(),
             },
             ..Settings::default()
         };
@@ -144,10 +151,15 @@ impl<'a> Options<'a> {
 }
 
 pub(crate) async fn install(node: &RemoteNode, address: &str, options: &Options<'_>) -> Result<()> {
+    let user = node.service_user().to_owned();
+    swarmy_config::validate_service_user(&user)?;
+    // Bash resolves `~user` through the passwd entry; Rust passes only the login.
+    let repo = format!("~{user}/swarmy");
+    let home = format!("~{user}");
     upload(
         node,
         address,
-        "/home/ubuntu/swarmy/.swarmy/config.toml",
+        &format!("{repo}/.swarmy/config.toml"),
         options.config.as_bytes(),
     )
     .await?;
@@ -172,14 +184,17 @@ pub(crate) async fn install(node: &RemoteNode, address: &str, options: &Options<
         upload(
             node,
             address,
-            "/home/ubuntu/.swarmy/keyring",
+            &format!("{home}/.swarmy/keyring"),
             &std::fs::read(path)?,
         )
         .await?;
     }
     let status = super::ssh::command(node)?
         .arg(address)
-        .arg("cd swarmy && bash scripts/remote-services.sh")
+        .arg(format!(
+            "cd {repo} && bash scripts/remote-services.sh {}",
+            shell_words::quote(&user),
+        ))
         .status()
         .await
         .map_err(crate::Error::ssh("start node services"))?;
@@ -195,8 +210,10 @@ pub(crate) async fn install(node: &RemoteNode, address: &str, options: &Options<
 async fn upload(node: &RemoteNode, address: &str, path: &str, bytes: &[u8]) -> Result<()> {
     // Data travels on stdin, never in a shell argument, diagnostic, or process listing.
     // The remote file is private from creation, including on interrupted writes.
+    let user = node.service_user();
+    swarmy_config::validate_service_user(user)?;
     let script = format!(
-        "umask 077; (test -d $(dirname {path}) || install -d -o ubuntu -g ubuntu -m 700 $(dirname {path})) && cat > {path}.tmp && chown ubuntu:ubuntu {path}.tmp && chmod 600 {path}.tmp && mv {path}.tmp {path}"
+        "umask 077; (test -d $(dirname {path}) || install -d -o {user} -g {user} -m 700 $(dirname {path})) && cat > {path}.tmp && chown {user}:{user} {path}.tmp && chmod 600 {path}.tmp && mv {path}.tmp {path}"
     );
     let command = "copy node service file".to_owned();
     let mut child = super::ssh::command(node)?

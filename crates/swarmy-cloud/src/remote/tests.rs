@@ -229,11 +229,19 @@ struct FakeHost {
     fail: bool,
     fail_image: bool,
     nvme_failure: bool,
+    block_devices: RefCell<String>,
     images: RefCell<Vec<(String, String, std::path::PathBuf)>>,
     services: Cell<usize>,
     credentials: RefCell<Vec<std::path::PathBuf>>,
     keyrings: RefCell<Vec<std::path::PathBuf>>,
     primaries: RefCell<Vec<Option<RemoteNode>>>,
+}
+
+/// Default `lsblk -dno PATH,MODEL` fixture: EBS root plus one instance-store
+/// disk. Tests override `block_devices` for reorderings.
+fn default_block_devices() -> String {
+    "/dev/nvme0n1 Amazon Elastic Block Store\n/dev/nvme1n1 Amazon EC2 NVMe Instance Storage\n"
+        .to_owned()
 }
 
 impl Host for FakeHost {
@@ -274,6 +282,14 @@ impl Host for FakeHost {
         tokio::fs::write(&node.key_path, "private-test").await?;
         tokio::fs::write(node.key_path.with_extension("pub"), "ssh-ed25519 test").await?;
         Ok(b"ssh-ed25519 test".to_vec())
+    }
+    fn block_devices(&self, _: &RemoteNode) -> impl Future<Output = Result<String>> {
+        let listing = self.block_devices.borrow().clone();
+        std::future::ready(Ok(if listing.is_empty() {
+            default_block_devices()
+        } else {
+            listing
+        }))
     }
     fn provision(
         &self,
@@ -323,7 +339,7 @@ fn settings() -> RemoteSettings {
 }
 
 #[tokio::test]
-async fn up_waits_and_persists_connection_and_cleanup_contract() {
+async fn up_provisions_node_and_persists_launch_record() {
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(&dir.path().join("remote")).unwrap();
     let cloud = FakeCloud::default();
@@ -367,6 +383,12 @@ async fn up_waits_and_persists_connection_and_cleanup_contract() {
         (node.ports.fdb, node.ports.nats, node.ports.s3),
         (4500, 4222, 8333)
     );
+    // AWS launches write the service login explicitly and resolve the
+    // instance-store device over SSH, so later configuration defaults never
+    // move existing fleet checkouts. The checkout path itself is resolved on
+    // the host (`~ubuntu/swarmy`); see the provisioning command tests.
+    assert_eq!(node.service_user(), "ubuntu");
+    assert_eq!(node.local_storage(), "/dev/nvme1n1");
     assert!(node.nodes.is_empty());
     assert!(node.created_at.parse::<jiff::Timestamp>().is_ok());
     assert!(node.key_path.is_file());
@@ -399,13 +421,191 @@ async fn up_waits_and_persists_connection_and_cleanup_contract() {
     assert_eq!(
         cloud.keys.borrow()[0],
         (
-            request.key_name.clone(),
+            request.key_name,
             b"ssh-ed25519 test".to_vec(),
             "codex-launcher".into()
         )
     );
     assert_eq!(host.provisioned.borrow()[0].public_ip, node.public_ip);
     assert!(cloud.observations.borrow().is_empty());
+}
+
+#[tokio::test]
+async fn up_resolves_instance_store_by_model_not_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    let host = FakeHost {
+        block_devices: RefCell::new(
+            "/dev/nvme0n1 Amazon Elastic Block Store\n\
+             /dev/nvme1n1 Amazon Elastic Block Store\n\
+             /dev/nvme2n1 Amazon EC2 NVMe Instance Storage\n"
+                .to_owned(),
+        ),
+        ..Default::default()
+    };
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings(),
+        up::NewNode {
+            name: "demo",
+            sandboxes: 4,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let node = state.read("demo").unwrap().unwrap();
+    assert_eq!(node.local_storage(), "/dev/nvme2n1");
+}
+
+#[tokio::test]
+async fn joining_node_resolves_its_own_device_not_the_primarys() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    cloud
+        .launch_ids
+        .borrow_mut()
+        .extend(["i-test".into(), "i-second".into()]);
+    cloud.observations.borrow_mut().extend([
+        Some(instance("running")),
+        Some(Machine {
+            id: "i-second".into(),
+            private_ip: "10.0.0.11".into(),
+            ..instance("running")
+        }),
+    ]);
+    let host = FakeHost::default();
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings(),
+        up::NewNode {
+            name: "demo",
+            sandboxes: 4,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    // Simulate a primary whose saved settings carry its resolved device.
+    let mut primary = state.require("demo").unwrap();
+    assert_eq!(primary.local_storage(), "/dev/nvme1n1");
+    primary
+        .launch_settings
+        .as_mut()
+        .expect("launch settings were saved")
+        .local_storage = "/dev/primary-disk".into();
+    state.save(&primary).unwrap();
+    super::add_node::run(
+        &cloud,
+        &host,
+        &state,
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 4,
+            shape: super::NodeShape::default(),
+            // Empty explicit configuration: the join resolves its own device
+            // over SSH instead of reusing the primary's path.
+            local_storage: String::new(),
+        },
+        Duration::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
+    let node = state.require("demo").unwrap();
+    assert_eq!(node.nodes.len(), 1);
+    assert_eq!(node.nodes[0].local_storage(), "/dev/nvme1n1");
+    assert_eq!(host.provisioned.borrow()[1].local_storage(), "/dev/nvme1n1");
+}
+
+#[tokio::test]
+async fn joining_node_keeps_explicit_local_storage_without_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    cloud
+        .launch_ids
+        .borrow_mut()
+        .extend(["i-test".into(), "i-second".into()]);
+    cloud.observations.borrow_mut().extend([
+        Some(instance("running")),
+        Some(Machine {
+            id: "i-second".into(),
+            private_ip: "10.0.0.11".into(),
+            ..instance("running")
+        }),
+    ]);
+    let host = FakeHost::default();
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings(),
+        up::NewNode {
+            name: "demo",
+            sandboxes: 0,
+        },
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    // An unparseable listing proves no lookup ran: the explicit directory
+    // carries the join without touching SSH block devices.
+    let host = FakeHost {
+        block_devices: RefCell::new("not a device listing\n".to_owned()),
+        ..Default::default()
+    };
+    super::add_node::run(
+        &cloud,
+        &host,
+        &state,
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 4,
+            shape: super::NodeShape::default(),
+            local_storage: "dir:/srv/local".into(),
+        },
+        Duration::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
+    let node = state.require("demo").unwrap();
+    assert_eq!(node.nodes.len(), 1);
+    assert_eq!(node.nodes[0].local_storage(), "dir:/srv/local");
+}
+
+#[tokio::test]
+async fn up_rejects_duplicate_node() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    let host = FakeHost::default();
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings(),
+        up::NewNode {
+            name: "demo",
+            sandboxes: 64,
+        },
+        Some(std::path::Path::new("images/base-ubuntu")).into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
     assert!(
         up::run(
             &cloud,
@@ -657,6 +857,7 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
             name: "demo",
             sandboxes: 4,
             shape: super::NodeShape::default(),
+            local_storage: String::new(),
         },
         Duration::ZERO,
         None,
@@ -742,7 +943,8 @@ async fn failed_join_retains_child_for_cleanup() {
             super::add_node::NewNode {
                 name: "demo",
                 sandboxes: 64,
-                shape: super::NodeShape::default()
+                shape: super::NodeShape::default(),
+                local_storage: String::new(),
             },
             Duration::ZERO,
             None
@@ -944,6 +1146,7 @@ async fn add_node_copies_both_secrets_only_when_requested() {
             name: "demo",
             sandboxes: 64,
             shape: super::NodeShape::default(),
+            local_storage: String::new(),
         },
         Duration::ZERO,
         None,
@@ -979,6 +1182,7 @@ async fn add_node_copies_both_secrets_only_when_requested() {
             name: "demo",
             sandboxes: 64,
             shape: super::NodeShape::default(),
+            local_storage: String::new(),
         },
         Duration::ZERO,
         Some(&options),
@@ -1047,6 +1251,7 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
             name: "bucket-test",
             sandboxes: 4,
             shape: super::NodeShape::default(),
+            local_storage: String::new(),
         },
         Duration::ZERO,
         None,
@@ -1216,6 +1421,7 @@ async fn node_shape_overrides_are_per_node_and_persist_before_provisioning() {
                 instance_type: Some("m6id.4xlarge".into()),
                 disk_gb: Some(100),
             },
+            local_storage: first.local_storage.clone(),
         },
         Duration::ZERO,
         None,
@@ -1292,7 +1498,8 @@ async fn invalid_join_shape_fails_before_launch_or_state_change() {
                 super::add_node::NewNode {
                     name: "demo",
                     sandboxes: 4,
-                    shape
+                    shape,
+                    local_storage: settings().local_storage.clone(),
                 },
                 Duration::ZERO,
                 None
@@ -1350,6 +1557,7 @@ async fn nvme_provisioning_failure_keeps_join_for_down() {
                 instance_type: Some("m6i.large".into()),
                 disk_gb: Some(40),
             },
+            local_storage: settings().local_storage.clone(),
         },
         Duration::ZERO,
         None,
@@ -1660,6 +1868,25 @@ fn laptop_services_provisioning_generates_no_api_token() {
     let settings = node_settings(swarmy_config::RemoteServices::Laptop, "");
     let options = super::services::Options::with_keyring(&settings, false, None, None).unwrap();
     assert!(node_config_token(options.config_toml()).is_empty());
+}
+
+#[test]
+fn node_config_keeps_fake_call_log_relative_to_the_checkout() {
+    // The laptop default login (`swarmy`) must never leak into node paths:
+    // an AWS node runs as `ubuntu`, so an absolute laptop-rendered path
+    // would point at the wrong checkout. The gateway resolves the relative
+    // path against its unit working directory on the host.
+    let settings = node_settings(swarmy_config::RemoteServices::Node, "");
+    assert_eq!(settings.remote.service_user, "swarmy");
+    let options = super::services::Options::with_keyring(&settings, false, None, None).unwrap();
+    let config = toml::Value::from_str(options.config_toml()).unwrap();
+    assert_eq!(
+        config
+            .get("fake")
+            .and_then(|fake| fake.get("call_log"))
+            .and_then(toml::Value::as_str),
+        Some(".swarmy/calls.log")
+    );
 }
 
 #[tokio::test]

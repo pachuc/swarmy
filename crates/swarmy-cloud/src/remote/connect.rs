@@ -128,12 +128,16 @@ async fn read_remote_api_token(
     if !remote_api(node) {
         return Ok(None);
     }
+    let user = node.service_user().to_owned();
+    swarmy_config::validate_service_user(&user)?;
+    // Bash resolves `~user` through the passwd entry; Rust passes only the login.
+    let config = format!("~{user}/swarmy/.swarmy/config.toml");
     let command = "read remote API configuration".to_owned();
     let output = ssh::command(node)?
         .arg("-S")
         .arg(&profile.socket_path)
         .arg(address)
-        .arg("cat swarmy/.swarmy/config.toml")
+        .arg(format!("cat {config}"))
         .output()
         .await
         .map_err(crate::Error::ssh(&command))?;
@@ -167,15 +171,19 @@ async fn forward_session(
     path: &Path,
 ) -> Result<()> {
     let command = "initialize SSH forwarding session".to_owned();
+    let cluster_arg = if node.launch_settings.is_some() {
+        let user = node.service_user().to_owned();
+        swarmy_config::validate_service_user(&user)?;
+        // Bash resolves `~user` through the passwd entry; Rust passes only the login.
+        format!("cat ~{user}/swarmy/.dev/fdb.cluster")
+    } else {
+        "true".into()
+    };
     let output = ssh::command(node)?
         .arg("-S")
         .arg(&profile.socket_path)
         .arg(address)
-        .arg(if node.launch_settings.is_some() {
-            "cat swarmy/.dev/fdb.cluster"
-        } else {
-            "true"
-        })
+        .arg(cluster_arg)
         .output()
         .await
         .map_err(crate::Error::ssh(&command))?;
