@@ -56,16 +56,11 @@ pub enum Error {
 /// implementation through the thin `secs` and `ms` serde modules below.
 mod duration {
     use std::time::Duration;
-
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
     #[derive(Clone, Copy)]
     pub(crate) enum Unit {
         Secs,
         Millis,
     }
-
-    /// Shared checked constructor: reject zero once for TOML and env inputs.
     fn checked(raw: u64, unit: Unit) -> Result<Duration, String> {
         if raw == 0 {
             return Err("duration must be positive".into());
@@ -75,7 +70,6 @@ mod duration {
             Unit::Millis => Duration::from_millis(raw),
         })
     }
-
     fn as_raw(value: Duration, unit: Unit) -> Result<u64, String> {
         match unit {
             Unit::Secs => Ok(value.as_secs()),
@@ -84,71 +78,48 @@ mod duration {
             }
         }
     }
-
-    fn serialize_with_unit<S: Serializer>(
-        value: &Duration,
-        serializer: S,
-        unit: Unit,
-    ) -> Result<S::Ok, S::Error> {
-        as_raw(*value, unit)
-            .map_err(serde::ser::Error::custom)?
-            .serialize(serializer)
-    }
-
-    fn deserialize_with_unit<'de, D: Deserializer<'de>>(
-        deserializer: D,
-        unit: Unit,
-    ) -> Result<Duration, D::Error> {
-        let raw = u64::deserialize(deserializer)?;
-        checked(raw, unit).map_err(serde::de::Error::custom)
-    }
-
-    /// Serde glue for `*_secs` fields: `#[serde(with = "duration::secs")]`.
     pub(crate) mod secs {
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
         use std::time::Duration;
-
-        use serde::{Deserializer, Serializer};
-
         pub(crate) fn serialize<S: Serializer>(
             value: &Duration,
             serializer: S,
         ) -> Result<S::Ok, S::Error> {
-            super::serialize_with_unit(value, serializer, super::Unit::Secs)
+            super::as_raw(*value, super::Unit::Secs)
+                .map_err(serde::ser::Error::custom)?
+                .serialize(serializer)
         }
-
         pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
             deserializer: D,
         ) -> Result<Duration, D::Error> {
-            super::deserialize_with_unit(deserializer, super::Unit::Secs)
+            let raw = u64::deserialize(deserializer)?;
+            super::checked(raw, super::Unit::Secs).map_err(serde::de::Error::custom)
         }
     }
-
-    /// Serde glue for `*_ms` fields: `#[serde(with = "duration::ms")]`.
     pub(crate) mod ms {
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
         use std::time::Duration;
-
-        use serde::{Deserializer, Serializer};
-
         pub(crate) fn serialize<S: Serializer>(
             value: &Duration,
             serializer: S,
         ) -> Result<S::Ok, S::Error> {
-            super::serialize_with_unit(value, serializer, super::Unit::Millis)
+            super::as_raw(*value, super::Unit::Millis)
+                .map_err(serde::ser::Error::custom)?
+                .serialize(serializer)
         }
-
         pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
             deserializer: D,
         ) -> Result<Duration, D::Error> {
-            super::deserialize_with_unit(deserializer, super::Unit::Millis)
+            let raw = u64::deserialize(deserializer)?;
+            super::checked(raw, super::Unit::Millis).map_err(serde::de::Error::custom)
         }
     }
-
-    /// Parse an environment value in the given unit, rejecting zero.
     pub(crate) fn parse(value: &str, unit: Unit) -> Result<Duration, ()> {
-        let raw: u64 = value.parse().map_err(|_| ())?;
-        checked(raw, unit).map_err(|_| ())
+        value
+            .parse()
+            .map_err(|_| ())
+            .and_then(|raw| checked(raw, unit).map_err(|_| ()))
     }
-
     pub(crate) fn format(value: Duration, unit: Unit) -> String {
         match unit {
             Unit::Secs => value.as_secs().to_string(),

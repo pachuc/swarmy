@@ -318,6 +318,15 @@ async fn advertise_health(gateway: &Gateway, changes: &ProviderChanges) -> Resul
         .await?;
     Ok(())
 }
+/// Whether a claim attempt won the inference lease or found the work already
+/// done. Helpers return this instead of `()` so `handle` and the drive loop
+/// can stop after acknowledging a completed job rather than re-driving it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaimOutcome {
+    Claimed,
+    Acknowledged,
+}
+
 impl Gateway {
     async fn completed(&self, request: RequestId) -> Result<bool> {
         Ok(self
@@ -340,7 +349,10 @@ impl Gateway {
             owner: LeaseOwnerId::from_ulid(Ulid::generate()),
             expires_at: Timestamp::now(),
         };
-        self.acquire_claim(message, job, &mut claim).await?;
+        match self.acquire_claim(message, job, &mut claim).await? {
+            ClaimOutcome::Acknowledged => return Ok(()),
+            ClaimOutcome::Claimed => {}
+        }
         let Some(stored) = self.load_stored_job(job).await? else {
             // Nothing can serve a reference whose request is gone; the worker's
             // recovery scan republishes live work with its request stored.
@@ -357,16 +369,16 @@ impl Gateway {
         message: &WorkMessage<InferenceJobRef>,
         job: &InferenceJobRef,
         claim: &mut InferenceClaim,
-    ) -> Result<()> {
+    ) -> Result<ClaimOutcome> {
         loop {
             let now = Timestamp::now();
             claim.expires_at = now.checked_add(self.ack_wait)?;
             if self.store.start_inference(claim, now).await? {
-                return Ok(());
+                return Ok(ClaimOutcome::Claimed);
             }
             if self.completed(job.request_id).await? {
                 message.acknowledge().await?;
-                return Ok(());
+                return Ok(ClaimOutcome::Acknowledged);
             }
             message.extend_deadline().await?;
             sleep(self.ack_wait / 3).await;
@@ -423,7 +435,10 @@ impl Gateway {
                 result = &mut work => return result,
                 _ = heartbeat.tick() => {
                     message.extend_deadline().await?;
-                    self.renew_claim(message, job, claim).await?;
+                    match self.renew_claim(message, job, claim).await? {
+                        ClaimOutcome::Acknowledged => return Ok(()),
+                        ClaimOutcome::Claimed => {}
+                    }
                 }
             }
         }
@@ -437,18 +452,18 @@ impl Gateway {
         message: &WorkMessage<InferenceJobRef>,
         job: &InferenceJobRef,
         claim: &InferenceClaim,
-    ) -> Result<()> {
+    ) -> Result<ClaimOutcome> {
         let now = Timestamp::now();
         let renewal = InferenceClaim {
             expires_at: now.checked_add(self.ack_wait)?,
             ..claim.clone()
         };
         if self.store.start_inference(&renewal, now).await? {
-            return Ok(());
+            return Ok(ClaimOutcome::Claimed);
         }
         if self.completed(job.request_id).await? {
             message.acknowledge().await?;
-            return Ok(());
+            return Ok(ClaimOutcome::Acknowledged);
         }
         Err(Error::Internal("inference claim was replaced"))
     }

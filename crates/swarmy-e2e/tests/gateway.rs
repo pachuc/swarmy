@@ -948,6 +948,75 @@ async fn invalid_request_id_is_acknowledged_without_provider_call() {
     .await;
 }
 
+/// A redelivered reference for an already completed request must be
+/// acknowledged without a second provider call. This covers the
+/// `acquire_claim` acknowledged path: `handle` returns right after the ack
+/// instead of loading the stored job and re-driving inference.
+#[tokio::test]
+async fn completed_redelivery_is_acked_without_second_provider_call() {
+    run(|mut f| async move {
+        f.script(0, false, "done");
+        f.start(4);
+        let job = f.job().await;
+        let result = AssertUnwindSafe(async {
+            f.publish(&job).await;
+            assert!(matches!(
+                f.terminal(&job).await,
+                Event::InferenceCompleted { .. }
+            ));
+            assert_eq!(f.calls(), 1);
+            f.drained().await;
+            // The request is completed; a duplicate delivery must not run
+            // inference again.
+            f.publish(&job).await;
+            f.drained().await;
+            assert_eq!(f.calls(), 1);
+            assert!(matches!(
+                f.terminal(&job).await,
+                Event::InferenceCompleted { .. }
+            ));
+        })
+        .catch_unwind()
+        .await;
+        f.cleanup().await;
+        result.unwrap();
+    })
+    .await;
+}
+
+/// Concurrent duplicates of a slow request must still complete exactly once.
+/// The losing delivery waits in `acquire_claim` while the winner drives;
+/// once the winner completes, the loser acknowledges on its completed check
+/// and the drive loop never extends the deadline of an acked message. A
+/// second provider call or a failure event means the acknowledged path kept
+/// driving work it should have stopped.
+#[tokio::test]
+async fn concurrent_duplicates_of_slow_request_complete_once() {
+    run(|mut f| async move {
+        f.script(1500, false, "slow");
+        f.start(4);
+        let job = f.job().await;
+        let result = AssertUnwindSafe(async {
+            f.publish(&job).await;
+            // Publish the duplicate while the first delivery holds the claim
+            // and drives the slow provider call.
+            sleep(Duration::from_millis(200)).await;
+            f.publish(&job).await;
+            assert!(matches!(
+                f.terminal(&job).await,
+                Event::InferenceCompleted { .. }
+            ));
+            f.drained().await;
+            assert_eq!(f.calls(), 1);
+        })
+        .catch_unwind()
+        .await;
+        f.cleanup().await;
+        result.unwrap();
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn terminal_response_leaves_intervening_events_for_worker_replay() {
     run(|mut f| async move {
