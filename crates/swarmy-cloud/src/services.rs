@@ -143,7 +143,7 @@ impl<'a> Options<'a> {
     }
 }
 
-pub async fn install(node: &RemoteNode, address: &str, options: &Options<'_>) -> Result<()> {
+pub(crate) async fn install(node: &RemoteNode, address: &str, options: &Options<'_>) -> Result<()> {
     upload(
         node,
         address,

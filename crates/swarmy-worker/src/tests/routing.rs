@@ -65,7 +65,7 @@ async fn unrouted_ephemeral_first_attempt_keeps_gateway_pool_selection() {
         system_prompt: String::new(),
         messages: Vec::new(),
         tools: Vec::new(),
-        settings: swarmy_llm::GenerationSettings {
+        settings: GenerationSettings {
             model: "test-model".into(),
             ..Default::default()
         },
@@ -933,7 +933,7 @@ async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
         .expires_at
         .duration_since(Timestamp::now())
         .unsigned_abs();
-    tokio::time::sleep(remaining + Duration::from_millis(200)).await;
+    sleep(remaining + Duration::from_millis(200)).await;
     let after_expiry = cache
         .resolve(&fixture.store, fixture.agent, duration)
         .await

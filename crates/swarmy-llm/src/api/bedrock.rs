@@ -364,8 +364,7 @@ fn inference(
                     "Bedrock temperature must be between 0 and 1".into(),
                 ));
             }
-            // Bedrock uses f32 for sampling parameters; the value is bounded above.
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_possible_truncation, reason = "Bedrock takes f32 sampling parameters; the value is checked finite within 0.0..=1.0 just above")]
             Ok(value as f32)
         })
         .transpose()?;
@@ -834,8 +833,8 @@ impl StreamMapper {
                 .ok_or_else(|| protocol("stream ended before usage metadata"))?,
             // Bedrock surfaces throttling through SDK retry metadata rather
             // than remaining-quota headers, so nothing is recorded here.
-            quota_remaining: std::collections::BTreeMap::new(),
-            quota_resets: std::collections::BTreeMap::new(),
+            quota_remaining: BTreeMap::new(),
+            quota_resets: BTreeMap::new(),
         }))
     }
 }
@@ -1196,8 +1195,8 @@ mod tests {
         Delta::Completed(Response {
             parts,
             stop_reason,
-            quota_remaining: std::collections::BTreeMap::new(),
-            quota_resets: std::collections::BTreeMap::new(),
+            quota_remaining: BTreeMap::new(),
+            quota_resets: BTreeMap::new(),
             usage: TokenUsage {
                 input_tokens: 30,
                 output_tokens: 5,

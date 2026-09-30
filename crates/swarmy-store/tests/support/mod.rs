@@ -2,7 +2,7 @@
 use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId};
 use swarmy_store::Store;
 
-pub async fn image(store: &Store) -> &'static str {
+pub(crate) async fn image(store: &Store) -> &'static str {
     let manifest = ManifestId::from_ulid(ulid::Ulid::from_parts(1, 1));
     store
         .put_manifest(

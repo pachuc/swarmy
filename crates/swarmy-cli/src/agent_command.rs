@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Args, Subcommand};
 
 #[derive(Args)]
-pub struct InferenceArgs {
+pub(crate) struct InferenceArgs {
     /// Override the stack system prompt (preserved verbatim)
     #[arg(long, conflicts_with = "system_prompt_file")]
     pub system_prompt: Option<String>,
@@ -32,7 +32,7 @@ pub struct InferenceArgs {
 
 /// GPU requirement for placement, parsed once by clap instead of matched as a string.
 #[derive(Clone, Copy, clap::ValueEnum)]
-pub enum GpuArg {
+pub(crate) enum GpuArg {
     None,
     Shared,
     Dedicated,
@@ -40,7 +40,7 @@ pub enum GpuArg {
 
 impl GpuArg {
     #[must_use]
-    pub fn into_api(self) -> swarmy_api_types::GpuMode {
+    pub(crate) fn into_api(self) -> swarmy_api_types::GpuMode {
         match self {
             Self::None => swarmy_api_types::GpuMode::None,
             Self::Shared => swarmy_api_types::GpuMode::Shared,
@@ -50,7 +50,7 @@ impl GpuArg {
 }
 
 #[derive(Subcommand)]
-pub enum Command {
+pub(crate) enum Command {
     /// Create a named agent and pin its computer's image
     Create(CreateArgs),
     /// Change inference settings or rotate the GitHub token for an agent
@@ -81,7 +81,7 @@ pub enum Command {
 }
 
 #[derive(Args)]
-pub struct CreateArgs {
+pub(crate) struct CreateArgs {
     #[arg(value_parser = agent_name)]
     pub name: String,
     #[arg(long)]

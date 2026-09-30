@@ -8,7 +8,7 @@ use swarmy_client::Client;
 /// Flags for `swarmy run`, sharing one struct from parsing to execution so
 /// the dispatch passes three arguments instead of nine.
 #[derive(clap::Args)]
-pub struct RunArgs {
+pub(crate) struct RunArgs {
     pub prompt: String,
     #[arg(long)]
     pub image: Option<String>,
@@ -30,7 +30,7 @@ pub struct RunArgs {
 
 /// Flags for `swarmy chat`, sharing one struct from parsing to execution.
 #[derive(clap::Args)]
-pub struct ChatArgs {
+pub(crate) struct ChatArgs {
     #[arg(conflicts_with_all = ["provider", "model", "effort"])]
     pub session_id: Option<ulid::Ulid>,
     /// Base image in NAME:TAG form; otherwise use `default_image`.
@@ -46,7 +46,7 @@ pub struct ChatArgs {
     pub selection: SelectionArgs,
 }
 
-pub async fn run(client: Client, endpoint: String, args: RunArgs, json: bool) -> Result<()> {
+pub(crate) async fn run(client: Client, endpoint: String, args: RunArgs, json: bool) -> Result<()> {
     let RunArgs {
         prompt,
         image,
@@ -298,7 +298,12 @@ pub(crate) fn print_event(event: &Event) {
     );
 }
 
-pub async fn chat(client: Client, endpoint: String, args: ChatArgs, json: bool) -> Result<()> {
+pub(crate) async fn chat(
+    client: Client,
+    endpoint: String,
+    args: ChatArgs,
+    json: bool,
+) -> Result<()> {
     use tokio::io::AsyncBufReadExt;
     let ChatArgs {
         session_id,

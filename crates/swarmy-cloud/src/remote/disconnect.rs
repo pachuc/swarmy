@@ -3,7 +3,7 @@ use crate::Result;
 use std::path::Path;
 use swarmy_config::{RemoteProfile, remote_path};
 
-pub async fn run(state_dir: &Path, state: &State, name: &str) -> Result<()> {
+pub(super) async fn run(state_dir: &Path, state: &State, name: &str) -> Result<()> {
     let _lock = state.lock()?;
     let path = remote_path(state_dir, name, "profile.json")?;
     if !path.exists() {

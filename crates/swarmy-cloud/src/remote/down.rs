@@ -50,7 +50,7 @@ pub struct DeletionPlan {
 
 /// What `remote down` would delete, or `None` when nothing is owned.
 /// Query only: prints nothing and prompts for nothing.
-pub async fn plan(
+pub(super) async fn plan(
     cloud: &impl Cloud,
     state: &State,
     node: &RemoteNode,
@@ -84,7 +84,7 @@ pub async fn plan(
 
 /// Adoption targets `remote tag` would adopt. The CLI prints the wording
 /// and prompts for each exact name; the library only reports the plan.
-pub fn adoption_targets(state: &State, node: &RemoteNode) -> Result<Vec<(String, String)>> {
+pub(super) fn adoption_targets(state: &State, node: &RemoteNode) -> Result<Vec<(String, String)>> {
     let bucket = node
         .bucket()
         .ok_or_else(|| crate::Error::other("remote has no bucket"))?;
@@ -112,7 +112,7 @@ pub fn adoption_targets(state: &State, node: &RemoteNode) -> Result<Vec<(String,
 
 /// Adopt the bucket, role, and instance profile after the CLI confirmed
 /// every exact resource name. Confirmation lives in the CLI; this applies.
-pub async fn apply_tag(cloud: &impl Cloud, node: &RemoteNode) -> Result<()> {
+pub(super) async fn apply_tag(cloud: &impl Cloud, node: &RemoteNode) -> Result<()> {
     let bucket = node
         .bucket()
         .ok_or_else(|| crate::Error::other("remote has no bucket"))?;
@@ -129,7 +129,7 @@ pub async fn apply_tag(cloud: &impl Cloud, node: &RemoteNode) -> Result<()> {
     Ok(())
 }
 
-pub async fn run(
+pub(super) async fn run(
     cloud: &impl Cloud,
     state: &State,
     node: &RemoteNode,

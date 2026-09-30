@@ -119,7 +119,7 @@ impl Store {
     /// # Errors
     /// Returns `LeaseMismatch` while a live collector is deleting this hash,
     /// or a storage error. The uploader can retry after the deletion finishes.
-    pub async fn protect_reused_chunk(&self, hash: swarmy_core::ContentHash) -> Result<()> {
+    pub async fn protect_reused_chunk(&self, hash: ContentHash) -> Result<()> {
         self.transaction(|trx| async move {
             let deleting = self.keys().gc_deleting(hash);
             if let Some(owner) = read::<LeaseOwnerId>(&trx, &deleting).await?

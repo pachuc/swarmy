@@ -68,7 +68,7 @@ impl MetricsWriter {
     async fn transaction<T, F, Fut>(&self, operation: F) -> Result<T>
     where
         F: Fn(foundationdb::RetryableTransaction) -> Fut,
-        Fut: std::future::Future<Output = Result<T>>,
+        Fut: Future<Output = Result<T>>,
     {
         crate::run_transaction(&self.db, &self.transactions, operation).await
     }
@@ -212,7 +212,7 @@ impl MetricsWriter {
 
     async fn load_turn_state(
         &self,
-        trx: &foundationdb::Transaction,
+        trx: &Transaction,
         session: SessionId,
         turn: MessageId,
         summary_key: &[u8],
@@ -253,7 +253,7 @@ impl MetricsWriter {
 
     fn write_turn_state(
         &self,
-        trx: &foundationdb::Transaction,
+        trx: &Transaction,
         session: SessionId,
         turn: MessageId,
         summary_key: &[u8],
@@ -528,8 +528,10 @@ impl crate::Store {
     /// rows are scanned; per-request and per-tool rows are never read here.
     /// # Errors
     /// Returns agent lookup or database failures.
-    // Aggregate rates and durations have only approximate floating-point precision.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "aggregate rates and durations have only approximate floating-point precision"
+    )]
     pub async fn agent_turn_metrics(
         &self,
         agent: AgentId,
@@ -539,7 +541,7 @@ impl crate::Store {
         let record = self
             .get_agent(agent)
             .await?
-            .ok_or(crate::StoreError::Domain(crate::DomainError::AgentMissing))?;
+            .ok_or(StoreError::Domain(crate::DomainError::AgentMissing))?;
         let mut output = AgentMetrics {
             agent_id: agent.to_string(),
             main_session_id: record.main_session.map(|id| id.to_string()),

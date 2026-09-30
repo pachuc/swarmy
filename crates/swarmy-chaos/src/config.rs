@@ -5,7 +5,7 @@ use clap::Parser;
 
 #[derive(Debug, Parser)]
 #[command(about = "Verify durable sessions while killing and restarting services")]
-pub struct Config {
+pub(crate) struct Config {
     #[command(flatten)]
     pub agent_checks: AgentChecks,
     /// Executable controlling a remote first node: start, kill, and stop.
@@ -54,7 +54,7 @@ pub struct Config {
 }
 
 #[derive(Debug, clap::Args)]
-pub struct AgentChecks {
+pub(crate) struct AgentChecks {
     /// Exercise shared computers, background-process loss, and idle eviction.
     #[arg(long)]
     pub persistent: bool,
@@ -67,7 +67,7 @@ pub struct AgentChecks {
 }
 
 impl Config {
-    pub fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             self.sessions > 0 && self.steps > 0,
             "sessions and steps must be positive"
@@ -86,7 +86,7 @@ impl Config {
         );
         if self.image.is_some() {
             ensure!(
-                std::process::Command::new("id").arg("-u").output()?.stdout == b"0\n",
+                Command::new("id").arg("-u").output()?.stdout == b"0\n",
                 "--image requires root; run the prebuilt binary with sudo"
             );
             ensure!(self.steps >= 2, "bash checks require at least two steps");
@@ -117,7 +117,7 @@ impl Config {
         Ok(())
     }
 
-    pub fn binaries(&self) -> Result<PathBuf> {
+    pub(crate) fn binaries(&self) -> Result<PathBuf> {
         if let Some(path) = &self.bin_dir {
             return path.canonicalize().context("binary directory missing");
         }
@@ -148,12 +148,12 @@ impl Config {
     }
 }
 
-pub fn repo() -> PathBuf {
+pub(crate) fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 /// Source Bash's escaped connection settings in a child, before FDB or Tokio starts.
-pub fn with_stack() -> Result<()> {
+pub(crate) fn with_stack() -> Result<()> {
     let status = Command::new("bash")
         .arg("-c")
         .arg("cd -- \"$1\" && scripts/dev-stack.sh start && source .dev/env && shift && exec \"$@\" --no-start-stack")

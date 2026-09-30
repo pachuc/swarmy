@@ -2,7 +2,7 @@ use clap::Subcommand;
 use std::path::PathBuf;
 
 #[derive(Subcommand)]
-pub enum Command {
+pub(crate) enum Command {
     /// Create a volume from an image NAME:TAG
     Create { image: String },
     /// Serve a volume in the foreground (requires root)

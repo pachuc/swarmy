@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, time::Duration};
 
-pub struct Config {
+pub(crate) struct Config {
     pub partitions: BTreeSet<u16>,
     pub scan_interval: Duration,
     pub resend_interval: Duration,
@@ -10,7 +10,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_env() -> anyhow::Result<Self> {
+    pub(crate) fn from_env() -> anyhow::Result<Self> {
         let settings = swarmy_config::Settings::load()?.settings;
         Ok(Self {
             partitions: settings.scheduler.partitions.0,

@@ -41,7 +41,7 @@ impl Check {
     }
 }
 
-pub async fn run(json: bool) -> anyhow::Result<bool> {
+pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
     let loaded = Settings::load_base().map(|mut loaded| {
         if let Some(name) = &loaded.settings.remote.profile
             && let Ok(profile) =

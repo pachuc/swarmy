@@ -651,7 +651,7 @@ mod tests {
         std::fs::write(dir.path().join(".gitignore"), "ignored\n").unwrap();
         std::fs::write(dir.path().join("ignored"), "ignored").unwrap();
         std::fs::write(dir.path().join("untracked.rs"), "code").unwrap();
-        let changes = super::Ssh {
+        let changes = Ssh {
             repo: dir.path().to_owned(),
         }
         .checkout_changes()

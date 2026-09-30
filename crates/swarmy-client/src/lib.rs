@@ -101,9 +101,7 @@ pub const API_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// # Errors
 /// Fails if the request times out or the API rejects it.
-pub async fn timed_call<T>(
-    future: impl std::future::Future<Output = Result<T, Error>>,
-) -> Result<T, Error> {
+pub async fn timed_call<T>(future: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
     tokio::time::timeout(API_TIMEOUT, future)
         .await
         .map_err(|_| Error::Timeout)?
@@ -828,7 +826,7 @@ impl EventStream {
             .await?;
         let status = response.status();
         if !status.is_success() {
-            return Err(decode::<serde_json::Value>(response).await.unwrap_err());
+            return Err(decode::<serde_json::Value>(response).await.expect_err("decode rejects every non-success response, and the status check above guarantees this one is non-success"));
         }
         self.connection_id = response
             .headers()
@@ -877,7 +875,7 @@ impl EventStream {
             task: tokio::spawn(async move {
                 let response = http.put(url).bearer_auth(&token).json(&body).send().await?;
                 if !response.status().is_success() {
-                    return Err(decode::<serde_json::Value>(response).await.unwrap_err());
+                    return Err(decode::<serde_json::Value>(response).await.expect_err("decode rejects every non-success response, and the status check above guarantees this one is non-success"));
                 }
                 Ok(())
             }),
@@ -1131,7 +1129,7 @@ mod tests {
     async fn stream_handler(
         State(head): State<Arc<AtomicU64>>,
         Query(query): Query<HashMap<String, String>>,
-    ) -> impl axum::response::IntoResponse {
+    ) -> impl IntoResponse {
         let sub: api::Subscription = serde_json::from_str(&query["subscription"]).unwrap();
         let start = sub.cursors[0].sequence;
         let end = head.load(Ordering::SeqCst);

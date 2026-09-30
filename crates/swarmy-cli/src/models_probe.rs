@@ -1,7 +1,7 @@
 use crate::models_probe_command::Args;
 use anyhow::Context;
 
-pub async fn run(args: Args, json: bool) -> anyhow::Result<()> {
+pub(crate) async fn run(args: Args, json: bool) -> anyhow::Result<()> {
     let (provider, model) = args
         .model
         .split_once('/')

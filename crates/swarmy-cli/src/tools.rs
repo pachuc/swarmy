@@ -1,7 +1,7 @@
 use std::{ffi::OsString, os::unix::fs::PermissionsExt, path::PathBuf};
 
 /// Keep the caller's choices first, then search the locations installed by our script.
-pub fn search_path() -> Result<OsString, std::env::JoinPathsError> {
+pub(crate) fn search_path() -> Result<OsString, std::env::JoinPathsError> {
     let mut paths: Vec<_> =
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
     if let Some(lib) = option_env!("SWARMY_FDB_LIB_DIR")
@@ -17,7 +17,7 @@ pub fn search_path() -> Result<OsString, std::env::JoinPathsError> {
     std::env::join_paths(paths)
 }
 
-pub fn find(name: &str) -> Option<PathBuf> {
+pub(crate) fn find(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&search_path().ok()?)
         .map(|dir| dir.join(name))
         .find(|path| {

@@ -27,7 +27,7 @@ impl From<SelectionArgs> for InferenceSelection {
     }
 }
 
-pub fn effort_or_default(value: &str) -> Result<String, String> {
+pub(crate) fn effort_or_default(value: &str) -> Result<String, String> {
     if value != "default" {
         value
             .parse::<ReasoningEffort>()

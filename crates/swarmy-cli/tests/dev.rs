@@ -321,10 +321,7 @@ async fn register_image(fixture: &Fixture) {
     // A zeroed file stands in for a built filesystem: zero chunks never
     // reach object storage, so registration needs no root or image tools.
     let raw = fixture.files.path().join("fixture.ext4");
-    std::fs::File::create(&raw)
-        .unwrap()
-        .set_len(256 * 1024)
-        .unwrap();
+    fs::File::create(&raw).unwrap().set_len(256 * 1024).unwrap();
     timeout(
         Duration::from_secs(120),
         client.upload_image(&swarmy_client::UploadImage {

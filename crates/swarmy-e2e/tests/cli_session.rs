@@ -282,7 +282,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         bus.clone(),
         api_token.clone(),
         swarmy_llm::catalog::Catalog::get().clone(),
-        std::sync::Arc::new(object_store::memory::InMemory::new()),
+        Arc::new(object_store::memory::InMemory::new()),
     );
     api.default_image = Some("fixture:test".into());
     // Quota tests seed credential entries through the store with this
@@ -1090,7 +1090,7 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
         swarmy_core::TurnStage::InferenceFinished,
         swarmy_core::TurnStage::Idle,
     ] {
-        let event = swarmy_bus::Bus::turn_event(session, turn, stage, Some(request));
+        let event = Bus::turn_event(session, turn, stage, Some(request));
         timeout(
             WAIT,
             fixture.store.record_turn_metrics(
