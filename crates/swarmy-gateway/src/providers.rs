@@ -95,8 +95,10 @@ impl Providers {
     pub async fn discover(store: Store, settings: &Settings) -> Result<Self, swarmy_config::Error> {
         let catalog = settings.catalog()?;
         let resolver = match ClusterCredentials::new(store.clone()).await {
-            Ok(credentials) => Resolver::new(Arc::new(credentials))
-                .map_err(|_| "credential resolver cannot configure its HTTP client"),
+            Ok(credentials) => Resolver::new(Arc::new(credentials)).map_err(|error| {
+                tracing::warn!(%error, "credential resolver cannot configure its HTTP client");
+                "credential resolver cannot configure its HTTP client"
+            }),
             Err(error) => {
                 tracing::warn!(%error, "cluster credential store unavailable");
                 Err("cluster credential store unavailable; check keyring and database")
@@ -105,7 +107,10 @@ impl Providers {
         let scripted = if settings.fake.script.is_file() {
             swarmy_llm::fake::FileFake::from_files(&settings.fake.script, &settings.fake.call_log)
                 .map(|provider| Arc::new(provider) as Arc<dyn Provider>)
-                .map_err(|_| "fake script is unreadable or invalid")
+                .map_err(|error| {
+                    tracing::warn!(%error, "fake script is unreadable or invalid");
+                    "fake script is unreadable or invalid"
+                })
         } else {
             Err("fake script is absent")
         };

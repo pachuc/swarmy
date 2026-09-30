@@ -489,9 +489,7 @@ impl Store {
                 .keys()
                 .metering_hour_space_owner(dimension.as_str(), owner.as_str());
             for (raw_key, value) in &rows {
-                let (hour, row_entry, field): (i64, String, String) = prefix
-                    .unpack(raw_key)
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                let (hour, row_entry, field): (i64, String, String) = prefix.unpack(raw_key)?;
                 if row_entry == entry && FIELDS.contains(&field.as_str()) {
                     hours
                         .entry(hour)
@@ -502,9 +500,7 @@ impl Store {
         } else {
             let prefix = self.keys().metering_hour_space(dimension.as_str());
             for (raw_key, value) in &rows {
-                let (hour, row_key, field): (i64, String, String) = prefix
-                    .unpack(raw_key)
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                let (hour, row_key, field): (i64, String, String) = prefix.unpack(raw_key)?;
                 if row_key == key && FIELDS.contains(&field.as_str()) {
                     hours
                         .entry(hour)
@@ -572,9 +568,7 @@ impl Store {
         // every row in the slice folds exactly once.
         let mut folded: BTreeMap<i64, BTreeMap<String, u64>> = BTreeMap::new();
         for (raw_key, value) in &rows {
-            let (hour, _key, field): (i64, String, String) = prefix
-                .unpack(raw_key)
-                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+            let (hour, _key, field): (i64, String, String) = prefix.unpack(raw_key)?;
             if FIELDS.contains(&field.as_str()) {
                 fold_row(&mut folded, hour, field, counter(value));
             }
@@ -618,9 +612,7 @@ impl Store {
             .metering_hour_space_owner(dimension.as_str(), owner);
         let mut folded: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
         for (raw_key, value) in &rows {
-            let (_hour, entry, field): (i64, String, String) = prefix
-                .unpack(raw_key)
-                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+            let (_hour, entry, field): (i64, String, String) = prefix.unpack(raw_key)?;
             if FIELDS.contains(&field.as_str()) {
                 fold_row(&mut folded, entry, field, counter(value));
             }
@@ -672,13 +664,9 @@ impl Store {
         }
         let mut stale = Vec::with_capacity(rows.len() * 2);
         for (index_key, _) in &rows {
-            let (_, request): (i64, Vec<u8>) = prefix
-                .unpack(index_key)
-                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+            let (_, request): (i64, Vec<u8>) = prefix.unpack(index_key)?;
             let record_key = self.keys().usage_record(swarmy_core::RequestId::from_bytes(
-                request
-                    .try_into()
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
+                request.as_slice().try_into()?,
             ));
             stale.push(index_key.clone());
             stale.push(record_key);
@@ -721,13 +709,9 @@ impl Store {
         }
         let mut pairs = Vec::with_capacity(rows.len());
         for (index_key, _) in &rows {
-            let (_, request): (i64, Vec<u8>) = prefix
-                .unpack(index_key)
-                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+            let (_, request): (i64, Vec<u8>) = prefix.unpack(index_key)?;
             let record_key = self.keys().usage_record(swarmy_core::RequestId::from_bytes(
-                request
-                    .try_into()
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
+                request.as_slice().try_into()?,
             ));
             pairs.push((index_key.clone(), record_key));
         }

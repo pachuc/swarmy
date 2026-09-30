@@ -81,7 +81,9 @@ impl Store {
             call.tool.as_str(),
             "set_timer" | "list_timers" | "cancel_timer"
         ) {
-            return Err(StoreError::Domain(crate::DomainError::InvalidToolCall));
+            return Err(StoreError::Domain(crate::DomainError::InvalidToolCall(
+                "expected a timer tool (set_timer, list_timers, or cancel_timer)".into(),
+            )));
         }
         let timer_id = TimerId::from_ulid(ulid::Ulid::generate());
         let now = self.now();

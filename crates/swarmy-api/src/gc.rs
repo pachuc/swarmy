@@ -1,7 +1,7 @@
 //! Chunk collection runs. Starting a run acquires the collector lease and
 //! returns immediately; the sweep continues in the background and the client
 //! follows its durable run record.
-use super::{ApiResult, AppState, error, storage, volume};
+use super::{ApiResult, AppState, error, failure, storage, volume};
 use axum::{
     Json,
     extract::{Path, State},
@@ -50,12 +50,15 @@ pub(crate) async fn start(
     {
         let _guard = state.mutation_guard().await;
         if let Some(value) = state.store.api_replay(&replay_key).await.map_err(storage)? {
-            let run_id: String = serde_json::from_value(value)
-                .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay"))?;
+            let run_id: String = serde_json::from_value(value).map_err(|cause| {
+                failure(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay", cause)
+            })?;
             let owner = run_id
                 .parse::<Ulid>()
                 .map(LeaseOwnerId::from_ulid)
-                .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay"))?;
+                .map_err(|cause| {
+                    failure(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay", cause)
+                })?;
             // Between the replay-key reservation and the lease acquisition
             // the run record does not exist yet; a concurrent start with the
             // same key observes the reservation, so answer 409 rather than a

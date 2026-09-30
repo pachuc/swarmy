@@ -8,6 +8,11 @@ use crate::blob::BlobError;
 pub enum StorageError {
     #[error("keyring cannot decrypt credential")]
     Keyring,
+    /// The operating system refused to supply randomness for credential
+    /// encryption. The source carries the OS failure; unlike decryption
+    /// failures below, there is nothing secret to hide here.
+    #[error("keyring randomness unavailable")]
+    Randomness(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error(transparent)]
     FoundationDb(#[from] FdbError),
     #[error(transparent)]
@@ -24,6 +29,13 @@ pub enum StorageError {
     TooLarge,
     #[error("stored key or blob is corrupt")]
     Corrupt,
+    /// A stored key or blob failed to decode. The source names the codec
+    /// failure (tuple layout, JSON shape, byte length, or id text) so a
+    /// corruption report says what actually broke instead of only where the
+    /// read happened. Use this where a real decode error is in hand; keep
+    /// [`StorageError::Corrupt`] for invariant violations with no cause.
+    #[error("stored key or blob is corrupt")]
+    Decode(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("commit outcome is unknown; read durable state before retrying")]
     CommitUnknown,
     #[error("cluster file path is not UTF-8")]
@@ -132,12 +144,12 @@ pub enum DomainError {
     InvalidPartition,
     #[error("invalid retention")]
     InvalidRetention,
-    #[error("invalid session record")]
-    InvalidSessionRecord,
+    #[error("invalid session record: {0}")]
+    InvalidSessionRecord(String),
     #[error("invalid snapshot")]
     InvalidSnapshot,
-    #[error("invalid tool call")]
-    InvalidToolCall,
+    #[error("invalid tool call: {0}")]
+    InvalidToolCall(String),
     #[error("invalid transition")]
     InvalidTransition,
     #[error("missing inference wait")]
@@ -189,6 +201,54 @@ impl From<EncodingError> for StoreError {
 impl From<BlobError> for StoreError {
     fn from(error: BlobError) -> Self {
         StorageError::from(error).into()
+    }
+}
+
+impl From<foundationdb::tuple::PackError> for StoreError {
+    fn from(error: foundationdb::tuple::PackError) -> Self {
+        StorageError::from(error).into()
+    }
+}
+
+impl From<serde_json::Error> for StoreError {
+    fn from(error: serde_json::Error) -> Self {
+        StorageError::from(error).into()
+    }
+}
+
+impl From<std::array::TryFromSliceError> for StoreError {
+    fn from(error: std::array::TryFromSliceError) -> Self {
+        StorageError::from(error).into()
+    }
+}
+
+impl From<ulid::DecodeError> for StoreError {
+    fn from(error: ulid::DecodeError) -> Self {
+        StorageError::from(error).into()
+    }
+}
+
+impl From<foundationdb::tuple::PackError> for StorageError {
+    fn from(error: foundationdb::tuple::PackError) -> Self {
+        Self::Decode(Box::new(error))
+    }
+}
+
+impl From<serde_json::Error> for StorageError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Decode(Box::new(error))
+    }
+}
+
+impl From<std::array::TryFromSliceError> for StorageError {
+    fn from(error: std::array::TryFromSliceError) -> Self {
+        Self::Decode(Box::new(error))
+    }
+}
+
+impl From<ulid::DecodeError> for StorageError {
+    fn from(error: ulid::DecodeError) -> Self {
+        Self::Decode(Box::new(error))
     }
 }
 
