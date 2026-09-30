@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::Result;
 use swarmy_config::RemoteNode;
 
-use super::{Cloud, ObjectBucket, Ownership, key_name, state::State};
+use super::{Cloud, Host, ObjectBucket, Ownership, key_name, state::State};
 use crate::BucketRemoval;
 
 #[derive(Default)]
@@ -163,12 +163,7 @@ pub(super) async fn run(
     delay: Duration,
     keep_bucket: bool,
 ) -> Result<()> {
-    let mut pending = vec![node];
-    let mut nodes = Vec::new();
-    while let Some(current) = pending.pop() {
-        pending.extend(&current.nodes);
-        nodes.push(current);
-    }
+    let nodes = collect(node);
     let mut report = Report::default();
     // Every operation is attempted even if another AWS permission is denied.
     for current in nodes.iter().rev() {
@@ -194,6 +189,112 @@ pub(super) async fn run(
         report.live.is_empty(),
         format!("instances {live} may still exist; local state retained for retry"),
     )?;
+    finish(cloud, state, node, nodes, keep_bucket).await
+}
+
+/// Tear down an existing-host remote: stop swarmy services and remove
+/// swarmy files and state on every provisioned host, delete the owned
+/// bucket scope, and drop local state. The machines are operator-owned:
+/// they stay running and no cloud machine call happens. A failed host
+/// never blocks the others, and the teardown SSH wait is short (see
+/// [`Host`]) so a cancelled server cannot hold teardown hostage. When any
+/// host fails, only its records are kept and the bucket is left alone:
+/// hosts that were torn down are pruned with their key files, and the
+/// command exits non-zero so re-running `down` retries exactly the failed
+/// hosts and deletes the bucket once every host is torn down.
+pub(super) async fn run_existing(
+    cloud: &impl Cloud,
+    host: &impl Host,
+    state: &State,
+    node: &RemoteNode,
+    keep_bucket: bool,
+) -> Result<()> {
+    let nodes = collect(node);
+    cloud_out!(
+        "Remote {} uses existing hosts: the machines stay running; swarmy services, files, and state are removed from the hosts",
+        node.name
+    );
+    let mut failed: Vec<(String, String)> = Vec::new();
+    for current in nodes.iter().rev() {
+        if !current.launch_attempted {
+            cloud_out!("Nothing was provisioned for {}", current.name);
+            continue;
+        }
+        // The reason travels with the name: a reachable host with a missing
+        // checkout fails differently from a host that never answers SSH,
+        // and the report must say which.
+        if let Err(error) = host.decommission(current).await {
+            failed.push((current.name.clone(), swarmy_core::error_chain(&error)));
+        }
+    }
+    if failed.is_empty() {
+        cleanup_bucket_and_role(cloud, state, node, keep_bucket).await?;
+        for current in nodes {
+            state.remove_key(current)?;
+        }
+        state.remove(node)?;
+        cloud_out!("Removed remote {}", node.name);
+        return Ok(());
+    }
+    let failed_names: std::collections::HashSet<&str> =
+        failed.iter().map(|(name, _)| name.as_str()).collect();
+    let mut kept = node.clone();
+    retain_failed(&mut kept, &failed_names, state)?;
+    state.save(&kept)?;
+    let mut detail: Vec<String> = failed
+        .iter()
+        .map(|(name, reason)| format!("host {name}: {reason}"))
+        .collect();
+    detail.sort();
+    Err(crate::Error::other(format!(
+        "remote down {} incomplete for {} host(s) ({}); fix or remove them, then re-run swarmy remote down {}",
+        node.name,
+        detail.len(),
+        detail.join("; "),
+        node.name,
+    )))
+}
+
+/// Drop torn-down hosts from the tree and delete their key files, keeping
+/// exactly the failed records for a retry. A node stays when it failed
+/// itself or still contains a failed descendant; everything else is pruned.
+fn retain_failed(
+    node: &mut RemoteNode,
+    failed: &std::collections::HashSet<&str>,
+    state: &State,
+) -> Result<()> {
+    let mut kept = Vec::new();
+    for mut child in std::mem::take(&mut node.nodes) {
+        retain_failed(&mut child, failed, state)?;
+        if failed.contains(child.name.as_str()) || !child.nodes.is_empty() {
+            kept.push(child);
+        } else {
+            state.remove_key(&child)?;
+        }
+    }
+    node.nodes = kept;
+    Ok(())
+}
+
+/// Every node in the remote, primary first.
+fn collect(node: &RemoteNode) -> Vec<&RemoteNode> {
+    let mut pending = vec![node];
+    let mut nodes = Vec::new();
+    while let Some(current) = pending.pop() {
+        pending.extend(&current.nodes);
+        nodes.push(current);
+    }
+    nodes
+}
+
+/// Delete the owned bucket scope, then drop every key file and the record.
+async fn finish(
+    cloud: &impl Cloud,
+    state: &State,
+    node: &RemoteNode,
+    nodes: Vec<&RemoteNode>,
+    keep_bucket: bool,
+) -> Result<()> {
     cleanup_bucket_and_role(cloud, state, node, keep_bucket).await?;
     for current in nodes {
         state.remove_key(current)?;

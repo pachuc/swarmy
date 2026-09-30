@@ -12,7 +12,7 @@ mod remote;
 pub use exports::parse_exports;
 pub use object::ObjectPrefix;
 pub use remote::{
-    AwsSettings, BucketCredentials, BucketSpec, RemoteNode, RemotePorts, RemoteProfile,
+    AwsSettings, BucketCredentials, BucketSpec, Provider, RemoteNode, RemotePorts, RemoteProfile,
     RemoteServices, RemoteSettings, default_sandboxes, ownership_marker_key, remote_path,
     validate_remote_name, validate_service_user,
 };

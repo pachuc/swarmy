@@ -1,4 +1,33 @@
-use clap::Subcommand;
+use clap::{Args, Subcommand};
+
+/// Object bucket backing the remote, shared by `up` (create a machine, then
+/// provision it) and `adopt` (provision an existing machine). One declaration
+/// so the two commands never drift apart.
+#[derive(Args, Clone)]
+pub struct BucketArgs {
+    /// Object bucket backing the remote (AWS S3 by default)
+    #[arg(long)]
+    pub bucket: Option<String>,
+    /// S3-compatible endpoint URL for the bucket; empty selects AWS S3
+    #[arg(long)]
+    pub s3_endpoint: Option<String>,
+    /// Bucket region override (defaults to the remote region)
+    #[arg(long)]
+    pub s3_region: Option<String>,
+    /// Object prefix namespace inside the bucket
+    #[arg(long)]
+    pub s3_prefix: Option<String>,
+    /// Static access key (or `AWS_ACCESS_KEY_ID`); the secret comes from
+    /// `--s3-secret-file`, `--s3-secret-stdin`, or `AWS_SECRET_ACCESS_KEY`
+    #[arg(long)]
+    pub s3_access_key: Option<String>,
+    /// Read the static secret key from this 0600 file
+    #[arg(long, conflicts_with = "s3_secret_stdin")]
+    pub s3_secret_file: Option<std::path::PathBuf>,
+    /// Read the static secret key from stdin (one line, never logged)
+    #[arg(long)]
+    pub s3_secret_stdin: bool,
+}
 
 #[derive(Subcommand, Clone)]
 pub enum Command {
@@ -11,28 +40,44 @@ pub enum Command {
         /// Override the first node's EBS root disk size in GiB
         #[arg(long)]
         disk_gb: Option<u32>,
-        /// Object bucket backing the remote (AWS S3 by default)
+        #[command(flatten)]
+        bucket: BucketArgs,
+        /// Maximum sandboxes on this node (zero for a control-only node)
         #[arg(long)]
-        bucket: Option<String>,
-        /// S3-compatible endpoint URL for the bucket; empty selects AWS S3
+        sandboxes: Option<u32>,
+        /// Run control-plane services on the laptop (default) or the node
         #[arg(long)]
-        s3_endpoint: Option<String>,
-        /// Bucket region override (defaults to the remote region)
+        services: Option<swarmy_config::RemoteServices>,
+        /// Acknowledge that the `ChatGPT` credential file and cluster keyring leave this laptop over SSH
         #[arg(long)]
-        s3_region: Option<String>,
-        /// Object prefix namespace inside the bucket
+        copy_credential: bool,
+        /// Skip building and registering the stack's default image
+        #[arg(long, conflicts_with = "image_recipe")]
+        no_image: bool,
+        /// Recipe directory within the checkout, relative to its root
+        #[arg(long, default_value = "images/base-ubuntu")]
+        image_recipe: std::path::PathBuf,
+    },
+    /// Provision an existing SSH-reachable machine as a remote's first node
+    Adopt {
+        name: String,
+        /// Address (IP) of the existing machine, for provisioning and tunnels
         #[arg(long)]
-        s3_prefix: Option<String>,
-        /// Static access key (or `AWS_ACCESS_KEY_ID`); the secret comes from
-        /// `--s3-secret-file`, `--s3-secret-stdin`, or `AWS_SECRET_ACCESS_KEY`
+        host: String,
+        /// Bootstrap SSH login on the existing machine
+        #[arg(long, default_value = "root")]
+        ssh_user: String,
+        /// Private key file for the bootstrap login; copied into remote state
         #[arg(long)]
-        s3_access_key: Option<String>,
-        /// Read the static secret key from this 0600 file
-        #[arg(long, conflicts_with = "s3_secret_stdin")]
-        s3_secret_file: Option<std::path::PathBuf>,
-        /// Read the static secret key from stdin (one line, never logged)
+        ssh_key: std::path::PathBuf,
+        /// Login that owns the checkout and runs the node units
         #[arg(long)]
-        s3_secret_stdin: bool,
+        service_user: Option<String>,
+        /// Local disk for sandbox data (a /dev device path or `<dir:/path>`)
+        #[arg(long)]
+        local_storage: Option<String>,
+        #[command(flatten)]
+        bucket: BucketArgs,
         /// Maximum sandboxes on this node (zero for a control-only node)
         #[arg(long)]
         sandboxes: Option<u32>,
@@ -61,6 +106,22 @@ pub enum Command {
         /// Override this node's EBS root disk size in GiB
         #[arg(long)]
         disk_gb: Option<u32>,
+        /// Address (IP) of an existing machine to join instead of launching one
+        #[arg(long)]
+        host: Option<String>,
+        /// Bootstrap SSH login on the joining machine (existing-host joins only)
+        #[arg(long)]
+        ssh_user: Option<String>,
+        /// Private key file for the bootstrap login (existing-host joins only)
+        #[arg(long)]
+        ssh_key: Option<std::path::PathBuf>,
+        /// Local disk for sandbox data, overriding the saved configuration
+        #[arg(long)]
+        local_storage: Option<String>,
+        /// Address the joining node uses to reach the primary's backing
+        /// services (defaults to the primary's recorded private address)
+        #[arg(long)]
+        primary_address: Option<String>,
         /// Copy the `ChatGPT` credential and keyring and run a gateway on this node
         #[arg(long)]
         copy_credential: bool,
@@ -163,6 +224,40 @@ mod sandbox_limit_tests {
                 }
                 _ => panic!("expected launch command"),
             }
+        }
+        // `adopt` carries the same limit behind its required host flags.
+        for invalid in ["-1", "wrong", "4294967296"] {
+            assert!(
+                Cli::try_parse_from([
+                    "remote",
+                    "adopt",
+                    "demo",
+                    "--host",
+                    "203.0.113.10",
+                    "--ssh-key",
+                    "key",
+                    "--sandboxes",
+                    invalid
+                ])
+                .is_err()
+            );
+        }
+        let command = Cli::try_parse_from([
+            "remote",
+            "adopt",
+            "demo",
+            "--host",
+            "203.0.113.10",
+            "--ssh-key",
+            "key",
+            "--sandboxes",
+            "0",
+        ])
+        .unwrap()
+        .command;
+        match command {
+            Command::Adopt { sandboxes, .. } => assert_eq!(sandboxes, Some(0)),
+            _ => panic!("expected adopt command"),
         }
     }
 }
