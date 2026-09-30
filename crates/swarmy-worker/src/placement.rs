@@ -12,18 +12,9 @@ use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError};
 pub struct Cache(Mutex<HashMap<AgentId, PlacementRecord>>);
 
 impl Cache {
-    pub async fn resolve(
-        &self,
-        store: &Store,
-        agent: AgentId,
-        lease: Duration,
-    ) -> Result<PlacementRecord> {
-        self.resolve_at(store, agent, lease, Timestamp::now()).await
-    }
-
     /// Resolve against an explicit clock. Tests advance the shared store
     /// clock past lease expiry instead of sleeping out the real lease; the
-    /// wall-clock wrapper above keeps production on real time.
+    /// worker passes its own clock at every call site.
     pub async fn resolve_at(
         &self,
         store: &Store,

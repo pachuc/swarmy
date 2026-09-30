@@ -239,7 +239,12 @@ impl Worker {
             // placement or lease fence invalidates the cache and retries once.
             let placement = self
                 .placements
-                .resolve(&self.store, session.agent_id, self.config.placement_lease)
+                .resolve_at(
+                    &self.store,
+                    session.agent_id,
+                    self.config.placement_lease,
+                    self.now(),
+                )
                 .await?;
             let mut token = lease.lock().await;
             let result = match dispatch {
@@ -388,7 +393,7 @@ impl Worker {
     }
 
     pub(crate) async fn recover_tools(&self) -> Result<()> {
-        self.recover_tools_at(jiff::Timestamp::now()).await
+        self.recover_tools_at(self.now()).await
     }
 
     /// Scan the durable outbox against an explicit clock. Tests advance the
