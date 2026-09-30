@@ -65,43 +65,42 @@ mod duration {
         Millis,
     }
 
-    impl Unit {
-        fn to_duration(self, raw: u64) -> Duration {
-            match self {
-                Unit::Secs => Duration::from_secs(raw),
-                Unit::Millis => Duration::from_millis(raw),
+    /// Shared checked constructor: reject zero once for TOML and env inputs.
+    fn checked(raw: u64, unit: Unit) -> Result<Duration, String> {
+        if raw == 0 {
+            return Err("duration must be positive".into());
+        }
+        Ok(match unit {
+            Unit::Secs => Duration::from_secs(raw),
+            Unit::Millis => Duration::from_millis(raw),
+        })
+    }
+
+    fn as_raw(value: Duration, unit: Unit) -> Result<u64, String> {
+        match unit {
+            Unit::Secs => Ok(value.as_secs()),
+            Unit::Millis => {
+                u64::try_from(value.as_millis()).map_err(|_| "duration too large".to_owned())
             }
         }
+    }
 
-        fn as_raw(self, value: Duration) -> Result<u64, String> {
-            match self {
-                Unit::Secs => Ok(value.as_secs()),
-                Unit::Millis => {
-                    u64::try_from(value.as_millis()).map_err(|_| "duration too large".to_owned())
-                }
-            }
-        }
+    fn serialize_with_unit<S: Serializer>(
+        value: &Duration,
+        serializer: S,
+        unit: Unit,
+    ) -> Result<S::Ok, S::Error> {
+        as_raw(*value, unit)
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
 
-        fn serialize<S: Serializer>(
-            self,
-            value: &Duration,
-            serializer: S,
-        ) -> Result<S::Ok, S::Error> {
-            self.as_raw(*value)
-                .map_err(serde::ser::Error::custom)?
-                .serialize(serializer)
-        }
-
-        fn deserialize<'de, D: Deserializer<'de>>(
-            self,
-            deserializer: D,
-        ) -> Result<Duration, D::Error> {
-            let raw = u64::deserialize(deserializer)?;
-            if raw == 0 {
-                return Err(serde::de::Error::custom("duration must be positive"));
-            }
-            Ok(self.to_duration(raw))
-        }
+    fn deserialize_with_unit<'de, D: Deserializer<'de>>(
+        deserializer: D,
+        unit: Unit,
+    ) -> Result<Duration, D::Error> {
+        let raw = u64::deserialize(deserializer)?;
+        checked(raw, unit).map_err(serde::de::Error::custom)
     }
 
     /// Serde glue for `*_secs` fields: `#[serde(with = "duration::secs")]`.
@@ -114,13 +113,13 @@ mod duration {
             value: &Duration,
             serializer: S,
         ) -> Result<S::Ok, S::Error> {
-            super::Unit::Secs.serialize(value, serializer)
+            super::serialize_with_unit(value, serializer, super::Unit::Secs)
         }
 
         pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
             deserializer: D,
         ) -> Result<Duration, D::Error> {
-            super::Unit::Secs.deserialize(deserializer)
+            super::deserialize_with_unit(deserializer, super::Unit::Secs)
         }
     }
 
@@ -134,23 +133,20 @@ mod duration {
             value: &Duration,
             serializer: S,
         ) -> Result<S::Ok, S::Error> {
-            super::Unit::Millis.serialize(value, serializer)
+            super::serialize_with_unit(value, serializer, super::Unit::Millis)
         }
 
         pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
             deserializer: D,
         ) -> Result<Duration, D::Error> {
-            super::Unit::Millis.deserialize(deserializer)
+            super::deserialize_with_unit(deserializer, super::Unit::Millis)
         }
     }
 
     /// Parse an environment value in the given unit, rejecting zero.
     pub(crate) fn parse(value: &str, unit: Unit) -> Result<Duration, ()> {
         let raw: u64 = value.parse().map_err(|_| ())?;
-        if raw == 0 {
-            return Err(());
-        }
-        Ok(unit.to_duration(raw))
+        checked(raw, unit).map_err(|_| ())
     }
 
     pub(crate) fn format(value: Duration, unit: Unit) -> String {
