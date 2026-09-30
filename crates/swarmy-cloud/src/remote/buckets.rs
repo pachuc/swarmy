@@ -34,17 +34,10 @@ pub(super) fn client(
         !bucket.spec.endpoint.is_empty(),
         "static bucket has no endpoint",
     )?;
-    let credentials = aws_sdk_s3::config::Credentials::new(
-        access_key,
-        secret_key,
-        None,
-        None,
-        "swarmy-static",
-    );
+    let credentials =
+        aws_sdk_s3::config::Credentials::new(access_key, secret_key, None, None, "swarmy-static");
     let config = aws_sdk_s3::config::Builder::from(sdk_config)
-        .region(aws_sdk_s3::config::Region::new(
-            bucket.spec.region.clone(),
-        ))
+        .region(aws_sdk_s3::config::Region::new(bucket.spec.region.clone()))
         .endpoint_url(&bucket.spec.endpoint)
         .credentials_provider(credentials)
         .force_path_style(true)
@@ -57,7 +50,12 @@ pub(super) fn client(
 /// supports them, else in the marker object. No IAM, public-access-block,
 /// or encryption calls: those are AWS-only.
 pub(super) async fn ensure(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -> Result<()> {
-    match client.head_bucket().bucket(&bucket.spec.bucket).send().await {
+    match client
+        .head_bucket()
+        .bucket(&bucket.spec.bucket)
+        .send()
+        .await
+    {
         Ok(_) => match ownership(client, bucket).await? {
             Ownership::Owned => Ok(()),
             Ownership::Absent => record_ownership(client, bucket).await,
@@ -106,10 +104,7 @@ pub(super) async fn ownership(
 }
 
 /// Ownership from the marker object under the prefix.
-async fn marker_ownership(
-    client: &aws_sdk_s3::Client,
-    bucket: &ObjectBucket,
-) -> Result<Ownership> {
+async fn marker_ownership(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -> Result<Ownership> {
     match client
         .get_object()
         .bucket(&bucket.spec.bucket)
@@ -120,9 +115,10 @@ async fn marker_ownership(
         .await
     {
         Ok(output) => {
-            let body = output.body.collect().await.map_err(|source| {
-                crate::Error::context(source, "s3:GetObject ownership marker")
-            })?;
+            let body =
+                output.body.collect().await.map_err(|source| {
+                    crate::Error::context(source, "s3:GetObject ownership marker")
+                })?;
             let owner = String::from_utf8(body.into_bytes().to_vec())?;
             Ok(if owner.trim() == bucket.owner {
                 Ownership::Owned
@@ -172,13 +168,16 @@ async fn record_ownership(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) ->
         .await
     {
         Ok(_) => Ok(()),
-        Err(error) if tagging_unsupported(error_code(&error)) => {
-            write_marker(client, bucket).await
-        }
+        Err(error) if tagging_unsupported(error_code(&error)) => write_marker(client, bucket).await,
         Err(error) => {
             let result: Result<()> = Err(error).aws_context("s3:PutBucketTagging");
             if let Err(mapped) = result {
-                warn_tag_denied(mapped, "s3:PutBucketTagging", &bucket.spec.bucket, &bucket.owner)?;
+                warn_tag_denied(
+                    mapped,
+                    "s3:PutBucketTagging",
+                    &bucket.spec.bucket,
+                    &bucket.owner,
+                )?;
             }
             // Tagging is best effort here: denied tags warn as on AWS, so the
             // marker always records ownership.
@@ -323,9 +322,7 @@ pub(super) async fn adopt(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) ->
             )?;
             write_tags(client, bucket, tags).await
         }
-        Err(error) if is_no_such_tag_set(&error) => {
-            write_tags(client, bucket, Vec::new()).await
-        }
+        Err(error) if is_no_such_tag_set(&error) => write_tags(client, bucket, Vec::new()).await,
         Err(error) if tagging_unsupported(error_code(&error)) => {
             match marker_ownership(client, bucket).await? {
                 Ownership::Unmanaged => {

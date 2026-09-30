@@ -140,7 +140,11 @@ pub(super) async fn apply_tag(cloud: &impl Cloud, node: &RemoteNode) -> Result<(
     };
     cloud.tag_bucket(&bucket).await?;
     let Some(role) = node.cloud_settings().instance_profile(&node.name) else {
-        cloud_out!("Tagged bucket {} for remote {}", bucket.spec.bucket, node.name);
+        cloud_out!(
+            "Tagged bucket {} for remote {}",
+            bucket.spec.bucket,
+            node.name
+        );
         return Ok(());
     };
     cloud.tag_node_role(&role, &node.name).await?;
@@ -225,15 +229,13 @@ async fn cleanup_bucket_and_role(
                 cloud_out!("Bucket {name}: kept (another remote state records it)");
             } else {
                 match bucket_status {
-                    Ownership::Owned => {
-                        match cloud.delete_bucket(&bucket).await? {
-                            BucketRemoval::Removed => cloud_out!("Bucket {name}: removed"),
-                            BucketRemoval::Absent => cloud_out!("Bucket {name}: absent"),
-                            BucketRemoval::Retained => cloud_out!(
-                                "Bucket {name}: kept (bucket retains content outside the remote's prefix)"
-                            ),
-                        }
-                    }
+                    Ownership::Owned => match cloud.delete_bucket(&bucket).await? {
+                        BucketRemoval::Removed => cloud_out!("Bucket {name}: removed"),
+                        BucketRemoval::Absent => cloud_out!("Bucket {name}: absent"),
+                        BucketRemoval::Retained => cloud_out!(
+                            "Bucket {name}: kept (bucket retains content outside the remote's prefix)"
+                        ),
+                    },
                     Ownership::Absent => cloud_out!("Bucket {name}: absent"),
                     Ownership::Unmanaged => {
                         cloud_out!("Bucket {name}: kept (ownership tags do not match)");

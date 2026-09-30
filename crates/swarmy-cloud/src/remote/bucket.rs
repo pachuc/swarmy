@@ -101,12 +101,7 @@ pub(crate) fn resolve(
         let access_key = options
             .access_key
             .clone()
-            .or_else(|| {
-                options
-                    .env_access_key
-                    .clone()
-                    .filter(|key| !key.is_empty())
-            })
+            .or_else(|| options.env_access_key.clone().filter(|key| !key.is_empty()))
             .unwrap_or(saved.0);
         let secret_key = secret_from(options)?.unwrap_or(saved.1);
         crate::Error::ensure(
