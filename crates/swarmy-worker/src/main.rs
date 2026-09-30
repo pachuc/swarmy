@@ -74,7 +74,7 @@ struct Services {
 async fn supervise(
     store: &Store,
     worker: &worker::Worker,
-    health: impl std::future::Future<Output = ()>,
+    health: impl Future<Output = ()>,
     consumers: &mut JoinSet<()>,
     receive: mpsc::Receiver<Result<swarmy_bus::WorkMessage<Nudge>, swarmy_bus::Error>>,
 ) -> Result<()> {

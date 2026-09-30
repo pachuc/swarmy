@@ -979,7 +979,7 @@ async fn start_gated_pair(
     store: &Store,
     bus: &Bus,
     agent: AgentId,
-) -> (ToolJob, ToolJob, std::path::PathBuf) {
+) -> (ToolJob, ToolJob, PathBuf) {
     let first = dispatch(store, bus, node.id, agent,
         "echo first-start; echo first-error >&2; touch /first-started; while test ! -e /release-first; do sleep 0.05; done; echo first-end").await;
     written(node, agent, "first-started").await;
@@ -1001,7 +1001,7 @@ async fn check_fifo_handoff(
     agent: AgentId,
     first: &ToolJob,
     second: &ToolJob,
-    rootfs: &std::path::Path,
+    rootfs: &Path,
 ) {
     assert!(
         !rootfs.join("second-started").exists(),

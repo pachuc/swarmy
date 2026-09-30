@@ -153,7 +153,7 @@ impl DispatchWorker {
     async fn dispatch(
         &mut self,
         gateway: &Arc<Gateway>,
-        delivery: Result<WorkMessage<InferenceJobRef>, swarmy_bus::Error>,
+        delivery: std::result::Result<WorkMessage<InferenceJobRef>, swarmy_bus::Error>,
     ) -> Result<()> {
         let message = match delivery {
             Ok(message) => message,
@@ -231,7 +231,7 @@ async fn subscribe_new(
     messages: &mut futures::stream::SelectAll<
         futures::stream::BoxStream<
             'static,
-            Result<WorkMessage<InferenceJobRef>, swarmy_bus::Error>,
+            std::result::Result<WorkMessage<InferenceJobRef>, swarmy_bus::Error>,
         >,
     >,
     subscriptions: &mut BTreeSet<String>,

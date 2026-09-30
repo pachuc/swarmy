@@ -199,7 +199,7 @@ impl Drop for Node {
 impl Node {
     /// Remove one leftover sandbox bundle: its runtime, pasta process,
     /// network namespace, mount, and NBD device.
-    fn cleanup_bundle(id: &NodeId, root: &std::path::Path, bundle: &std::fs::DirEntry) {
+    fn cleanup_bundle(id: &NodeId, root: &Path, bundle: &std::fs::DirEntry) {
         ignore_best_effort(
             Command::new("runc")
                 .arg("--root")

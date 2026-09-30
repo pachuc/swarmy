@@ -229,7 +229,7 @@ async fn extract_image_blob(store: &Store, result: &mut ToolResult) -> Result<()
 /// what the worker recorded.
 async fn cap_completed_output(
     runtime: &Arc<RuncRuntime>,
-    sandbox: &swarmy_core::Sandbox,
+    sandbox: &Sandbox,
     claim: &PlacedToolClaim,
     result: &mut ToolResult,
 ) {

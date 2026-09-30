@@ -2,7 +2,6 @@
 use anyhow::{Context, Result, ensure};
 use std::fmt::Write as _;
 use swarmy_client::Client;
-use swarmy_core::ignore_best_effort;
 
 use ulid::Ulid;
 
@@ -562,6 +561,8 @@ fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
     // List rows are summaries: the list endpoint serves no placement,
     // scratch, usage, or sessions, so `agent ls` prints none of those
     // columns instead of placeholders. Detail hydrates them on show.
+    // Writing to a `String` cannot fail; `expect` documents the invariant
+    // instead of routing through the best-effort helper.
     let mut text = format!(
         "{} {} image={}:{} created={} main_session={}",
         agent.name,
@@ -572,19 +573,6 @@ fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
         agent.main_session_id.as_deref().unwrap_or("-"),
     );
     if detail {
-        push_placement_line(&mut text, agent);
-        text.push_str(&settings_text(agent));
-        push_usage_lines(&mut text, agent);
-        push_identity_lines(&mut text, agent);
-        push_call_lines(&mut text, agent);
-        push_session_lines(&mut text, agent);
-    }
-    text
-}
-
-/// Append the node and scratch line of `agent show`.
-fn push_placement_line(text: &mut String, agent: &swarmy_api_types::Agent) {
-    ignore_best_effort(
         write!(
             text,
             "\nnode={} scratch_node={} scratch_bytes={}",
@@ -594,15 +582,10 @@ fn push_placement_line(text: &mut String, agent: &swarmy_api_types::Agent) {
                 .as_ref()
                 .map_or("-", |scratch| scratch.node_id.as_str()),
             agent.scratch.as_ref().map_or(0, |scratch| scratch.bytes),
-        ),
-        "append node description line",
-    );
-}
-
-/// Append the usage summary and per-entry cost lines of `agent show`.
-fn push_usage_lines(text: &mut String, agent: &swarmy_api_types::Agent) {
-    if let Some(usage) = &agent.usage {
-        ignore_best_effort(
+        )
+        .expect("writing to String cannot fail");
+        text.push_str(&settings_text(agent));
+        if let Some(usage) = &agent.usage {
             write!(
                 text,
                 "\nUsage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
@@ -613,12 +596,10 @@ fn push_usage_lines(text: &mut String, agent: &swarmy_api_types::Agent) {
                 usage.reasoning_output_tokens,
                 usage.total_tokens,
                 usage.cost_dollars
-            ),
-            "append usage line",
-        );
-    }
-    for entry in &agent.entries {
-        ignore_best_effort(
+            )
+            .expect("writing to String cannot fail");
+        }
+        for entry in &agent.entries {
             write!(
                 text,
                 "\nentry {} cost=${} input={} output={} total={} completions={}",
@@ -628,19 +609,11 @@ fn push_usage_lines(text: &mut String, agent: &swarmy_api_types::Agent) {
                 entry.totals.output_tokens,
                 entry.totals.total_tokens,
                 entry.totals.completions
-            ),
-            "append entry cost line",
-        );
-    }
-}
-
-/// Append the providers and description block of `agent show`.
-fn push_identity_lines(text: &mut String, agent: &swarmy_api_types::Agent) {
-    ignore_best_effort(
-        write!(text, "\nproviders={}", agent.providers.join(",")),
-        "append agent description line",
-    );
-    ignore_best_effort(
+            )
+            .expect("writing to String cannot fail");
+        }
+        write!(text, "\nproviders={}", agent.providers.join(","))
+            .expect("writing to String cannot fail");
         write!(
             text,
             "\ndescription={}\nplacement_epoch={}\nsandbox_address={}\nsandbox_state={}\nlast_snapshot={} age_seconds={}",
@@ -655,15 +628,9 @@ fn push_identity_lines(text: &mut String, agent: &swarmy_api_types::Agent) {
             agent
                 .last_snapshot_age_seconds
                 .map_or_else(|| "-".into(), |v| v.to_string())
-        ),
-        "append agent description line",
-    );
-}
-
-/// Append the call-holder line of `agent show` when a call holds the agent.
-fn push_call_lines(text: &mut String, agent: &swarmy_api_types::Agent) {
-    if let Some(status) = &agent.call_status {
-        ignore_best_effort(
+        )
+        .expect("writing to String cannot fail");
+        if let Some(status) = &agent.call_status {
             write!(
                 text,
                 "\ncall_holder={} queued_calls={} observed_at={} expires_at={} node={} epoch={}",
@@ -673,16 +640,10 @@ fn push_call_lines(text: &mut String, agent: &swarmy_api_types::Agent) {
                 status.expires_at,
                 status.node_id,
                 status.epoch
-            ),
-            "append call status line",
-        );
-    }
-}
-
-/// Append the session rows and count of `agent show`.
-fn push_session_lines(text: &mut String, agent: &swarmy_api_types::Agent) {
-    for session in &agent.sessions {
-        ignore_best_effort(
+            )
+            .expect("writing to String cannot fail");
+        }
+        for session in &agent.sessions {
             write!(
                 text,
                 "\nsession={} state={} computer_deleted={} main={} archived={}",
@@ -691,16 +652,14 @@ fn push_session_lines(text: &mut String, agent: &swarmy_api_types::Agent) {
                 session.computer_deleted,
                 agent.main_session_id.as_deref() == Some(session.id.as_str()),
                 session.next_session.is_some()
-            ),
-            "append session line",
-        );
+            )
+            .expect("writing to String cannot fail");
+        }
+        if let Some(count) = agent.session_count {
+            write!(text, "\nsessions={count}").expect("writing to String cannot fail");
+        }
     }
-    if let Some(count) = agent.session_count {
-        ignore_best_effort(
-            write!(text, "\nsessions={count}"),
-            "append agent description line",
-        );
-    }
+    text
 }
 
 async fn update_agent(
@@ -1184,13 +1143,13 @@ fn quota_line(entry: &swarmy_api_types::QuotaEntry) -> String {
         quota.observed_at.as_deref().unwrap_or("-"),
     );
     if let Some(requests) = quota.requests_remaining {
-        ignore_best_effort(write!(line, " requests={requests}"), "append quota line");
+        write!(line, " requests={requests}").expect("writing to String cannot fail");
     }
     if let Some(tokens) = quota.tokens_remaining {
-        ignore_best_effort(write!(line, " tokens={tokens}"), "append quota line");
+        write!(line, " tokens={tokens}").expect("writing to String cannot fail");
     }
     if let Some(limit) = quota.limit {
-        ignore_best_effort(write!(line, " limit={limit}"), "append quota line");
+        write!(line, " limit={limit}").expect("writing to String cannot fail");
     }
     line
 }

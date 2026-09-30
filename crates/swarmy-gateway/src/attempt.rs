@@ -122,7 +122,7 @@ impl DeltaFold {
         job: &InferenceJob,
         turn: Option<MessageId>,
         delta: Delta,
-    ) -> Result<(), swarmy_llm::Error> {
+    ) -> std::result::Result<(), swarmy_llm::Error> {
         if is_stream_chunk(&delta) {
             self.content_chunks = self.content_chunks.saturating_add(1);
         }
@@ -188,7 +188,7 @@ impl DeltaFold {
         }
     }
 
-    fn finish(self) -> Result<(Response, Option<bool>), swarmy_llm::Error> {
+    fn finish(self) -> std::result::Result<(Response, Option<bool>), swarmy_llm::Error> {
         let response = self
             .response
             .ok_or_else(|| swarmy_llm::Error::Protocol("stream ended without completion".into()))?;
