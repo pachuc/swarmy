@@ -1,0 +1,60 @@
+   Compiling swarmy-core v0.1.0 (/home/agent/work/12nz3r/crates/swarmy-core)
+   Compiling swarmy-e2e v0.1.0 (/home/agent/work/12nz3r/crates/swarmy-e2e)
+   Compiling swarmy-catalog v0.1.0 (/home/agent/work/12nz3r/crates/swarmy-catalog)
+   Compiling swarmy-bus v0.1.0 (/home/agent/work/12nz3r/crates/swarmy-bus)
+   Compiling swarmy-image v0.1.0 (/home/agent/work/12nz3r/crates/swarmy-image)
+   Compiling swarmy-api-types v0.1.0 (/home/agent/work/12nz3r/crates/swarmy-api-types)
+   Compiling swarmy-llm v0.1.0 (/home/agent/work/12nz3r/crates/swarmy-llm)
+   Compiling swarmy-config v0.1.0 (/home/agent/work/12nz3r/crates/swarmy-config)
+   Compiling swarmy-store v0.1.0 (/home/agent/work/12nz3r/crates/swarmy-store)
+   Compiling swarmy-client v0.1.0 (/home/agent/work/12nz3r/crates/swarmy-client)
+   Compiling swarmy-harness v0.1.0 (/home/agent/work/12nz3r/crates/swarmy-harness)
+   Compiling swarmy-volume v0.1.0 (/home/agent/work/12nz3r/crates/swarmy-volume)
+   Compiling swarmy-api v0.1.0 (/home/agent/work/12nz3r/crates/swarmy-api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.10s
+     Running tests/cli_session.rs (/home/agent/.cargo-target/debug/deps/cli_session-b9476c464a889018)
+
+running 38 tests
+test agents::agent_commands_and_session_lifetimes ... ok
+test agents::agent_listing_and_session_counts_cross_store_pages ... ok
+test agents::agent_options_validate_before_connecting_to_services ... ok
+test agents::agent_show_reports_placement_and_committed_snapshot ... ok
+test agents::create_set_and_show_inference_settings_in_text_and_json ... ok
+test agents::ephemeral_selection_is_stored_and_invalid_flags_are_rejected ... ok
+test agents::github_tokens_are_private_rotatable_and_clearable ... ok
+test agents::invalid_agent_settings_do_not_change_records ... ok
+test agents::json_chat_reads_prompts_and_retains_named_sessions_on_eof ... ok
+test agents::named_chat_resumes_main_and_new_preserves_the_pointer ... ok
+test agents::named_run_resolves_names_and_ids_without_a_default_image ... ok
+test agents::new_commands_use_the_selected_remote_profile ... ok
+test agents::provider_selection_and_explicit_resets_are_durable ... ok
+test append_nudges_without_any_scheduler_and_leaves_durable_recovery_work ... Session 01M3RGA4SYY216Z95A59N6PC35
+ok
+test chat::chat_converses_resumes_and_survives_worker_and_gateway_death ... ok
+test chat::chat_enables_input_from_idle_events_and_recovers_missed_events ... ok
+test chat::chat_shows_pending_tools_and_incremental_text_before_commit ... ok
+test chat::chat_uses_default_image_without_a_node ... ok
+test chat::named::agent_delete_confirms_and_cancels_in_a_terminal ... ok
+test chat::named::named_chat_header_and_notices_identify_the_session ... ok
+test chat::named::open_chat_follows_a_summarized_main_with_a_notice ... ok
+test chat::named::root_memory_written_by_tools_is_in_the_next_turn_and_capped ... ok
+test chat::named::root_named_chats_share_a_background_process_and_delete ... ok
+test chat::root_chat_default_image_executes_pwd ... ok
+test cost::agent_and_session_show_name_entries_and_cost_per_entry ... ok
+test cost::auth_quota_lists_observed_and_configured_entries ... ok
+test cost::cost_by_agent_month_prints_twelve_rows_and_matching_total ... ok
+test idle_event_enables_input_without_polling_and_history_still_paginates ... ok
+test interrupt_idle_session_exits_with_clear_error ... ok
+test poll_idle_does_not_duplicate_live_turn_and_next_turn_is_clean ... ok
+test run_json_emits_only_machine_readable_records ... ok
+test run_recovers_without_live_publications_or_idle_event ... ok
+test run_rejects_unknown_images_before_creating_a_session ... ok
+test run_uses_server_default_image_and_explicit_image_overrides_it ... ok
+test session_and_agent_metrics_json_use_the_persisted_turn ... ok
+test session_show_json_includes_pending_interrupt ... ok
+test text_is_flushed_before_the_turn_finishes ... ok
+test unavailable_api_reports_endpoint_before_creating_a_session ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 103.44s
+
+E2E_CLI_EXIT:0
