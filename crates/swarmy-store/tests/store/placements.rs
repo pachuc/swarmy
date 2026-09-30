@@ -59,8 +59,28 @@ async fn expire(test: &TestStore, record: &PlacementRecord) -> PlacementRecord {
     expired
 }
 
+struct Renewed {
+    test: TestStore,
+    first: PlacementRecord,
+    renewed: PlacementRecord,
+}
+
+async fn placed_renewed() -> Option<Renewed> {
+    let test = TestStore::memory()?;
+    let a = node(&test.store, 1).await.node_id;
+    let agent = session().agent_id;
+    let first = test.store.place(agent, a, future(60)).await.unwrap();
+    test.store.claim_placement(&first).await.unwrap();
+    let renewed = test.store.renew(&first, future(120)).await.unwrap();
+    Some(Renewed {
+        test,
+        first,
+        renewed,
+    })
+}
+
 #[tokio::test]
-async fn placement_lifecycle_fences_holders() {
+async fn placement_initial_place_fences_a_second_live_placement() {
     let Some(test) = TestStore::memory() else {
         return;
     };
@@ -88,9 +108,20 @@ async fn placement_lifecycle_fences_holders() {
         ),
         "second placement while live is rejected"
     );
-    test.store.claim_placement(&first).await.unwrap();
-    let renewed = test.store.renew(&first, future(120)).await.unwrap();
-    assert_eq!(renewed.epoch, first.epoch, "renew keeps the epoch");
+}
+
+#[tokio::test]
+async fn placement_claim_and_renew_keep_identity_and_fence_stale_expiry() {
+    let Some(state) = placed_renewed().await else {
+        return;
+    };
+    let Renewed {
+        test,
+        first,
+        renewed,
+        ..
+    } = &state;
+    assert_eq!(renewed.epoch, 1, "renew keeps the epoch");
     assert_eq!(
         renewed.last_changed_at, first.last_changed_at,
         "renew keeps the change timestamp"
@@ -108,6 +139,15 @@ async fn placement_lifecycle_fences_holders() {
         ),
         "renew at the current expiry is fenced"
     );
+}
+
+#[tokio::test]
+async fn placement_impostor_node_operations_are_fenced() {
+    let Some(state) = placed_renewed().await else {
+        return;
+    };
+    let Renewed { test, renewed, .. } = &state;
+    let b = node(&test.store, 1).await.node_id;
     let impostor = PlacementRecord {
         node_id: b,
         ..renewed.clone()
@@ -132,13 +172,23 @@ async fn placement_lifecycle_fences_holders() {
     );
     assert!(
         matches!(
-            test.store.take_over(&first, b, future(60)).await,
+            test.store.take_over(&renewed, b, future(60)).await,
             Err(StoreError::Fence(
                 swarmy_store::FenceError::PlacementMismatch
             ))
         ),
         "takeover on a live placement is fenced"
     );
+}
+
+#[tokio::test]
+async fn placement_expiry_hands_takeover_to_waiting_node_and_fences_stale_records() {
+    let Some(state) = placed_renewed().await else {
+        return;
+    };
+    let Renewed { test, renewed, .. } = &state;
+    let a = renewed.node_id;
+    let b = node(&test.store, 1).await.node_id;
     let expired = expire(&test, &renewed).await;
     assert!(
         matches!(
@@ -165,8 +215,9 @@ async fn placement_lifecycle_fences_holders() {
         PlacementChangeReason::Failure,
         "takeover reason is failure"
     );
+    let first_changed_at = state.first.last_changed_at;
     assert!(
-        next.last_changed_at >= first.last_changed_at,
+        next.last_changed_at >= first_changed_at,
         "takeover timestamp advances"
     );
     assert!(
@@ -182,23 +233,24 @@ async fn placement_lifecycle_fences_holders() {
         vec![next.clone()],
         "new node lists the takeover"
     );
+    let stale = renewed.clone();
     assert!(
         matches!(
-            test.store.renew(&first, future(180)).await,
+            test.store.renew(&stale, future(180)).await,
             Err(StoreError::Fence(
                 swarmy_store::FenceError::PlacementMismatch
             ))
         ),
-        "stale first-record renew is fenced after takeover"
+        "stale pre-takeover renew is fenced"
     );
     assert!(
         matches!(
-            test.store.release(&first).await,
+            test.store.release(&stale).await,
             Err(StoreError::Fence(
                 swarmy_store::FenceError::PlacementMismatch
             ))
         ),
-        "stale first-record release is fenced after takeover"
+        "stale pre-takeover release is fenced"
     );
     assert!(
         matches!(

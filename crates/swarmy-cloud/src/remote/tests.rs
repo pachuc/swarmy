@@ -411,7 +411,10 @@ async fn up_provisions_node_and_persists_launch_record() {
         "provisioned node record: image build"
     );
     assert_eq!(node.region, "us-east-1", "provisioned node record: region");
-    assert_eq!(node.instance_id, "i-test", "provisioned node record: instance");
+    assert_eq!(
+        node.instance_id, "i-test",
+        "provisioned node record: instance"
+    );
     assert_eq!(
         node.public_ip, "203.0.113.10",
         "provisioned node record: public ip"
@@ -440,12 +443,18 @@ async fn up_provisions_node_and_persists_launch_record() {
         "/dev/nvme1n1",
         "service login and storage: device"
     );
-    assert!(node.nodes.is_empty(), "service login and storage: no join nodes");
+    assert!(
+        node.nodes.is_empty(),
+        "service login and storage: no join nodes"
+    );
     assert!(
         node.created_at.parse::<jiff::Timestamp>().is_ok(),
         "service login and storage: timestamp"
     );
-    assert!(node.key_path.is_file(), "service login and storage: key file");
+    assert!(
+        node.key_path.is_file(),
+        "service login and storage: key file"
+    );
     assert_eq!(
         std::fs::metadata(state.directory.join("demo.json"))
             .unwrap()
@@ -950,47 +959,109 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
     .await
     .unwrap();
     let node = state.require("demo").unwrap();
-    assert_eq!(node.nodes.len(), 1);
+    assert_eq!(node.nodes.len(), 1, "join records one child node");
     let child = &node.nodes[0];
-    assert_eq!(serde_json::to_value(&node).unwrap()["sandboxes"], 0);
+    assert_eq!(
+        serde_json::to_value(&node).unwrap()["sandboxes"],
+        0,
+        "join keeps the primary sandbox count"
+    );
     assert_eq!(
         serde_json::to_value(&node).unwrap()["nodes"][0]["sandboxes"],
-        4
+        4,
+        "join records the child sandbox count"
     );
-    assert_eq!(node.sandboxes, 0);
-    assert_eq!(child.sandboxes, 4);
-    assert_eq!(host.provisioned.borrow()[0].sandboxes, 0);
-    assert_eq!(host.provisioned.borrow()[1].sandboxes, 4);
-    assert_eq!(child.name, "demo-2");
-    assert_ne!(child.key_path, node.key_path);
-    assert_eq!(cloud.stock_reads.get(), 1);
+    assert_eq!(node.sandboxes, 0, "primary sandbox count");
+    assert_eq!(child.sandboxes, 4, "child sandbox count");
+    assert_eq!(
+        host.provisioned.borrow()[0].sandboxes,
+        0,
+        "primary provisioned with zero sandboxes"
+    );
+    assert_eq!(
+        host.provisioned.borrow()[1].sandboxes,
+        4,
+        "child provisioned with four sandboxes"
+    );
+    assert_eq!(child.name, "demo-2", "child node name");
+    assert_ne!(child.key_path, node.key_path, "child has its own key");
+    assert_eq!(
+        cloud.stock_reads.get(),
+        1,
+        "join reuses the saved launch without re-reading stock"
+    );
     {
         let requests = cloud.requests.borrow();
         let join = &requests[1];
-        assert_eq!(join.image, requests[0].image);
-        assert_eq!(join.subnet, settings().aws.subnet);
-        assert_eq!(join.security_group, settings().aws.security_group);
-        assert_eq!(join.instance_type, settings().aws.instance_type);
-        assert_eq!(join.disk_gb, settings().disk_gb);
-        assert_eq!(join.managed_by, "codex-launcher");
-        assert_eq!(join.key_name, super::key_name(child).unwrap());
-        assert_eq!(join.name, child.name);
+        assert_eq!(
+            join.image, requests[0].image,
+            "join launch reuses the primary image"
+        );
+        assert_eq!(
+            join.subnet,
+            settings().aws.subnet,
+            "join launch reuses the saved subnet"
+        );
+        assert_eq!(
+            join.security_group,
+            settings().aws.security_group,
+            "join launch reuses the saved security group"
+        );
+        assert_eq!(
+            join.instance_type,
+            settings().aws.instance_type,
+            "join launch reuses the saved shape"
+        );
+        assert_eq!(
+            join.disk_gb,
+            settings().disk_gb,
+            "join launch reuses the saved disk"
+        );
+        assert_eq!(
+            join.managed_by, "codex-launcher",
+            "join launch keeps the owner tag"
+        );
+        assert_eq!(
+            join.key_name,
+            super::key_name(child).unwrap(),
+            "join launch names the child key"
+        );
+        assert_eq!(join.name, child.name, "join launch names the child");
     }
-    assert_eq!(host.images.borrow().len(), 1);
-    assert!(host.primaries.borrow()[0].is_none());
+    assert_eq!(
+        host.images.borrow().len(),
+        1,
+        "image builds once for primary and child"
+    );
+    assert!(
+        host.primaries.borrow()[0].is_none(),
+        "primary provisions with no upstream"
+    );
     assert_eq!(
         host.primaries.borrow()[1].as_ref().unwrap().private_ip,
-        node.private_ip
+        node.private_ip,
+        "child provisions against the primary"
     );
     cloud.observations.borrow_mut().extend([None, None]);
     down::run(&cloud, &state, &node, Duration::ZERO, true)
         .await
         .unwrap();
-    assert_eq!(*cloud.terminated.borrow(), ["i-second", "i-test"]);
-    assert_eq!(cloud.deleted.borrow().len(), 2);
-    assert!(!child.key_path.exists());
-    assert!(!node.key_path.exists());
-    assert!(state.read("demo").unwrap().is_none());
+    assert_eq!(
+        *cloud.terminated.borrow(),
+        ["i-second", "i-test"],
+        "down terminates child before primary"
+    );
+    assert_eq!(
+        cloud.deleted.borrow().len(),
+        2,
+        "down deletes both instances"
+    );
+    assert!(!child.key_path.exists(), "down removes the child key");
+    assert!(!node.key_path.exists(), "down removes the primary key");
+    assert!(
+        state.read("demo").unwrap().is_none(),
+        "down removes the state record"
+    );
 }
 
 #[tokio::test]
@@ -1307,7 +1378,8 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     .unwrap();
     assert_eq!(
         cloud.requests.borrow()[0].profile.as_deref(),
-        Some("swarmy-bucket-test")
+        Some("swarmy-bucket-test"),
+        "up launches with the bucket instance profile"
     );
     assert!(
         up::run(
@@ -1320,13 +1392,30 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
             Duration::ZERO
         )
         .await
-        .is_ok()
+        .is_ok(),
+        "second up reuses the retained bucket without relaunching"
     );
-    assert_eq!(cloud.bucket_ensures.borrow().len(), 1);
-    assert_eq!(cloud.requests.borrow().len(), 1);
-    assert_eq!(cloud.bucket_creates.borrow().len(), 1);
-    assert_eq!(cloud.role_creates.borrow().len(), 1);
-    assert_eq!(cloud.profile_creates.borrow().len(), 1);
+    assert_eq!(
+        cloud.bucket_ensures.borrow().len(),
+        1,
+        "bucket ensured once across both ups"
+    );
+    assert_eq!(
+        cloud.requests.borrow().len(),
+        1,
+        "second up launches no new instance"
+    );
+    assert_eq!(
+        cloud.bucket_creates.borrow().len(),
+        1,
+        "bucket created once"
+    );
+    assert_eq!(cloud.role_creates.borrow().len(), 1, "role created once");
+    assert_eq!(
+        cloud.profile_creates.borrow().len(),
+        1,
+        "instance profile created once"
+    );
     observe_running(&cloud);
     super::add_node::run(
         &cloud,
@@ -1345,7 +1434,8 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
     .unwrap();
     assert_eq!(
         cloud.requests.borrow()[1].profile.as_deref(),
-        Some("swarmy-bucket-test")
+        Some("swarmy-bucket-test"),
+        "joined node launches with the bucket instance profile"
     );
     let node = state.require("bucket-test").unwrap();
     let profile = super::connect::new_profile(
@@ -1356,9 +1446,20 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
         dir.path().join("socket"),
     )
     .unwrap();
-    assert_eq!(profile.bucket.as_ref().unwrap().bucket, "test-bucket");
-    assert_eq!(profile.bucket.as_ref().unwrap().region, "us-east-1");
-    assert!(profile.s3_endpoint.is_empty());
+    assert_eq!(
+        profile.bucket.as_ref().unwrap().bucket,
+        "test-bucket",
+        "connect profile carries the bucket"
+    );
+    assert_eq!(
+        profile.bucket.as_ref().unwrap().region,
+        "us-east-1",
+        "connect profile carries the region"
+    );
+    assert!(
+        profile.s3_endpoint.is_empty(),
+        "AWS bucket needs no endpoint override"
+    );
     cloud.observations.borrow_mut().extend([None, None]);
     down::run(&cloud, &state, &node, Duration::ZERO, true)
         .await

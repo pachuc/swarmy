@@ -345,30 +345,26 @@ impl Worker {
         }
     }
 
-    /// Place against an explicit clock; see
-    /// [`crate::placement::Cache::resolve_at`] for why tests pass time.
-    /// Production passes the wall clock through [`Worker::recover_tools`].
-    pub(super) async fn place_at(
-        &self,
-        id: SessionId,
-        now: jiff::Timestamp,
-    ) -> Result<swarmy_core::PlacementRecord> {
+    /// Place through the worker clock; see
+    /// [`crate::placement::Cache::resolve_at`] for why tests advance time
+    /// instead of sleeping out real leases.
+    pub(super) async fn place(&self, id: SessionId) -> Result<swarmy_core::PlacementRecord> {
         let agent = self
             .store
             .fetch_session(id)
             .await?
             .context("session missing")?
             .agent_id;
-        crate::placement::resolve_at(&self.store, agent, self.config.placement_lease, now).await
+        crate::placement::resolve_at(&self.store, agent, self.config.placement_lease, self.now())
+            .await
     }
 
-    /// Recover one dispatch against an explicit clock; the wall-clock
-    /// wrapper [`Worker::recover_tools`] keeps production on real time.
-    pub(super) async fn route_tool_at(&self, job: &ToolJob, now: jiff::Timestamp) -> Result<()> {
+    /// Recover one dispatch through the worker clock.
+    pub(super) async fn route_tool(&self, job: &ToolJob) -> Result<()> {
         if self.store.fail_deleted_computer_tool(job).await? {
             return Ok(());
         }
-        let placement = self.place_at(job.session_id, now).await?;
+        let placement = self.place(job.session_id).await?;
         if self.store.route_tool_job(job, &placement).await? {
             let turn = self.store.request_turn_id(job.request_id).await?;
             if let Some(turn) = turn {
@@ -392,14 +388,10 @@ impl Worker {
         Ok(())
     }
 
+    /// Scan the durable outbox through the worker clock. Tests advance the
+    /// shared clock past lease expiry instead of sleeping out real leases;
+    /// production keeps the default wall clock.
     pub(crate) async fn recover_tools(&self) -> Result<()> {
-        self.recover_tools_at(self.now()).await
-    }
-
-    /// Scan the durable outbox against an explicit clock. Tests advance the
-    /// shared store clock past lease expiry instead of sleeping out real
-    /// leases; production keeps the wall-clock wrapper above.
-    pub(crate) async fn recover_tools_at(&self, now: jiff::Timestamp) -> Result<()> {
         let mut after = None;
         loop {
             let jobs = self.store.scan_tool_jobs(after, MAX_SCAN_LIMIT).await?;
@@ -415,7 +407,7 @@ impl Worker {
                 {
                     // A dead node cannot consume its own redeliveries. The durable
                     // outbox scan re-resolves every retry and repairs lost publishes.
-                    let result = self.route_tool_at(&job, now).await;
+                    let result = self.route_tool(&job).await;
                     if let Err(error) = result {
                         tracing::warn!(error = %swarmy_core::error_chain(&*error), request_id = %job.request_id, "tool recovery failed");
                     }

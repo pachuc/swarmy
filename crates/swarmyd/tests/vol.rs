@@ -231,21 +231,57 @@ async fn root_volume_durability_clone_crash_fencing_and_history() {
         &fixture.node_a,
         &["flush", volume, "--mount", node_a.mount.to_str().unwrap()],
     );
-    assert!(flushed["manifest_id"].is_string());
+    assert!(
+        flushed["manifest_id"].is_string(),
+        "flush reports a manifest"
+    );
     let stats: swarmy_volume::FlushResult = serde_json::from_value(flushed.clone()).unwrap();
-    assert!(stats.device_total.chunks_uploaded > 0);
-    assert!(stats.device_total.object_store_requests >= stats.device_total.chunks_uploaded);
-    assert!(stats.device_total.bytes_uploaded >= u64::from(swarmy_core::CHUNK_SIZE));
-    assert!(stats.device_total.dirty_lock_wait > Duration::ZERO);
-    assert_eq!(stats.frozen, Duration::ZERO);
-    assert_eq!(stats.freeze_wait, Duration::ZERO);
-    assert_eq!(stats.frozen_chunks_uploaded, 0);
-    assert!(stats.frozen_chunks_uploaded <= stats.uploads.chunks_uploaded);
-    assert!(stats.elapsed >= stats.freeze_wait + stats.frozen);
+    assert!(
+        stats.device_total.chunks_uploaded > 0,
+        "flush uploads chunks"
+    );
+    assert!(
+        stats.device_total.object_store_requests >= stats.device_total.chunks_uploaded,
+        "flush object requests cover uploads"
+    );
+    assert!(
+        stats.device_total.bytes_uploaded >= u64::from(swarmy_core::CHUNK_SIZE),
+        "flush uploads at least one chunk"
+    );
+    assert!(
+        stats.device_total.dirty_lock_wait > Duration::ZERO,
+        "flush waits on the dirty lock"
+    );
+    assert_eq!(
+        stats.frozen,
+        Duration::ZERO,
+        "unfrozen flush freezes nothing"
+    );
+    assert_eq!(
+        stats.freeze_wait,
+        Duration::ZERO,
+        "unfrozen flush waits for no freeze"
+    );
+    assert_eq!(
+        stats.frozen_chunks_uploaded, 0,
+        "unfrozen flush uploads no frozen chunks"
+    );
+    assert!(
+        stats.frozen_chunks_uploaded <= stats.uploads.chunks_uploaded,
+        "frozen uploads are a subset of uploads"
+    );
+    assert!(
+        stats.elapsed >= stats.freeze_wait + stats.frozen,
+        "flush elapsed covers freeze timings"
+    );
     fixture.json(&fixture.node_a, &["detach", volume]);
     node_a.stopped();
     let mut node_b = fixture.attach(&fixture.node_b, volume, "b");
-    assert_eq!(node_b.read("durable"), b"committed on A");
+    assert_eq!(
+        node_b.read("durable"),
+        b"committed on A",
+        "durable data moves from node A to node B"
+    );
     eprintln!("acceptance 1 passed: durable data moved from node A to node B");
     let frozen = fixture.json(
         &fixture.node_b,
@@ -258,18 +294,36 @@ async fn root_volume_durability_clone_crash_fencing_and_history() {
         ],
     );
     let stats: swarmy_volume::FlushResult = serde_json::from_value(frozen).unwrap();
-    assert!(stats.frozen > Duration::ZERO);
-    assert!(stats.frozen_chunks_uploaded <= stats.uploads.chunks_uploaded);
-    assert!(stats.elapsed >= stats.freeze_wait + stats.frozen);
+    assert!(
+        stats.frozen > Duration::ZERO,
+        "frozen flush reports frozen time"
+    );
+    assert!(
+        stats.frozen_chunks_uploaded <= stats.uploads.chunks_uploaded,
+        "frozen uploads are a subset of uploads"
+    );
+    assert!(
+        stats.elapsed >= stats.freeze_wait + stats.frozen,
+        "flush elapsed covers freeze timings"
+    );
     let snapshot = fixture.json(&fixture.node_b, &["checkpoint", volume]);
-    assert_ne!(snapshot["manifest_id"], flushed["manifest_id"]);
+    assert_ne!(
+        snapshot["manifest_id"], flushed["manifest_id"],
+        "checkpoint advances the manifest"
+    );
     let cloned = fixture.json(&fixture.node_a, &["clone", volume]);
     let clone = cloned["volume_id"].as_str().unwrap();
     let mut clone_server = fixture.attach(&fixture.node_a, clone, "clone");
     node_b.write("original-only", b"original");
     clone_server.write("clone-only", b"clone");
-    assert!(!node_b.mount.join("clone-only").exists());
-    assert!(!clone_server.mount.join("original-only").exists());
+    assert!(
+        !node_b.mount.join("clone-only").exists(),
+        "clone writes stay out of the original"
+    );
+    assert!(
+        !clone_server.mount.join("original-only").exists(),
+        "original writes stay out of the clone"
+    );
     fixture.json(&fixture.node_a, &["detach", clone]);
     clone_server.stopped();
     eprintln!("acceptance 2 passed: simultaneous read-write clone is isolated");
@@ -298,9 +352,19 @@ async fn root_volume_durability_clone_crash_fencing_and_history() {
     )
     .await;
     let mut recovered = fixture.attach(&fixture.node_a, volume, "recovered");
-    assert_eq!(recovered.read("durable"), b"committed on A");
-    assert!(!recovered.mount.join("uncommitted").exists());
-    assert!(!recovered.mount.join("original-only").exists());
+    assert_eq!(
+        recovered.read("durable"),
+        b"committed on A",
+        "recovered volume keeps committed data"
+    );
+    assert!(
+        !recovered.mount.join("uncommitted").exists(),
+        "recovered volume drops uncommitted writes"
+    );
+    assert!(
+        !recovered.mount.join("original-only").exists(),
+        "recovered volume drops post-snapshot writes"
+    );
     eprintln!("acceptance 3 passed: killed server recovers exactly the last snapshot");
     fixture.json(&fixture.node_a, &["detach", volume]);
     recovered.stopped();
@@ -312,7 +376,8 @@ async fn reject_wrong_writer(fixture: &Fixture, volume: &str, snapshot: &Value) 
     let before = fixture.store.get_volume(id).await.unwrap().unwrap();
     assert_eq!(
         serde_json::to_value(before.head_manifest).unwrap(),
-        snapshot["manifest_id"]
+        snapshot["manifest_id"],
+        "wrong-writer check starts from the snapshot head"
     );
     let wrong = swarmy_core::Lease {
         owner: LeaseOwnerId::from_ulid(fixture.node_a.parse().unwrap()),
@@ -325,41 +390,62 @@ async fn reject_wrong_writer(fixture: &Fixture, volume: &str, snapshot: &Value) 
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(
-        fixture
-            .store
-            .advance_volume(id, &wrong, before.head_manifest, next, &header)
-            .await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::VolumeLeaseMismatch
-        ))
-    ));
+    assert!(
+        matches!(
+            fixture
+                .store
+                .advance_volume(id, &wrong, before.head_manifest, next, &header)
+                .await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::VolumeLeaseMismatch
+            ))
+        ),
+        "wrong-writer advance is fenced"
+    );
     let rejected = fixture
         .command(&fixture.node_a, &["flush", volume])
         .output()
         .unwrap();
-    assert!(!rejected.status.success());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("another node"));
-    assert_eq!(fixture.store.get_volume(id).await.unwrap(), Some(before));
-    assert_eq!(fixture.store.get_manifest(next).await.unwrap(), None);
+    assert!(!rejected.status.success(), "wrong-node flush exits nonzero");
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("another node"),
+        "wrong-node flush names the holder"
+    );
+    assert_eq!(
+        fixture.store.get_volume(id).await.unwrap(),
+        Some(before),
+        "rejected advance leaves the volume record"
+    );
+    assert_eq!(
+        fixture.store.get_manifest(next).await.unwrap(),
+        None,
+        "rejected advance stores no manifest"
+    );
     eprintln!("acceptance 4 passed: wrong node rejected by transaction and control socket");
 }
 
 fn check_history(fixture: &Fixture, volume: &str, clone: &str, created: &Value) {
     let shown = fixture.json(&fixture.node_a, &["show", volume]);
     let chain = shown["manifests"].as_array().unwrap();
-    assert!(chain.len() >= 5);
-    assert_eq!(chain.last().unwrap()["manifest_id"], created["manifest_id"]);
+    assert!(chain.len() >= 5, "history holds the snapshot chain");
+    assert_eq!(
+        chain.last().unwrap()["manifest_id"],
+        created["manifest_id"],
+        "history ends at the base manifest"
+    );
     let output = fixture.command(&fixture.node_a, &["ls"]).output().unwrap();
-    assert!(output.status.success());
+    assert!(output.status.success(), "volume list exits zero");
     let listed: Vec<Value> = String::from_utf8(output.stdout)
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(listed.len(), 2);
+    assert_eq!(listed.len(), 2, "volume list shows volume and clone");
     for id in [volume, clone] {
-        assert!(listed.iter().any(|record| record["volume_id"] == id));
+        assert!(
+            listed.iter().any(|record| record["volume_id"] == id),
+            "volume list contains {id}"
+        );
     }
     let output = Command::new(env!("CARGO_BIN_EXE_swarmyd"))
         .current_dir(fixture.root.path())
@@ -367,10 +453,13 @@ fn check_history(fixture: &Fixture, volume: &str, clone: &str, created: &Value) 
         .args(["vol", "show", volume])
         .output()
         .unwrap();
-    assert!(output.status.success());
+    assert!(output.status.success(), "volume show exits zero");
     let text = String::from_utf8(output.stdout).unwrap();
     for entry in chain {
-        assert!(text.contains(entry["manifest_id"].as_str().unwrap()));
+        assert!(
+            text.contains(entry["manifest_id"].as_str().unwrap()),
+            "show output contains every chained manifest"
+        );
     }
     eprintln!("acceptance 5 passed: manifest history and every volume are listed");
 }

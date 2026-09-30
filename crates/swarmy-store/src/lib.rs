@@ -314,14 +314,9 @@ impl Store {
         keys::Keys::new(&self.root)
     }
 
-    /// Test-only entry point, also available with the `test-support` feature.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn now(&self) -> jiff::Timestamp {
-        (self.clock)()
-    }
-
-    #[cfg(not(any(test, feature = "test-support")))]
+    /// Observe the store clock. Production reads the wall clock through the
+    /// default closure; lease and expiry tests inject a shared manual clock
+    /// with [`Store::with_clock`] instead of sleeping out real leases.
     pub(crate) fn now(&self) -> jiff::Timestamp {
         (self.clock)()
     }

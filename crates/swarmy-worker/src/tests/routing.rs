@@ -25,10 +25,9 @@ async fn placement_prefers_scratch_node_then_falls_back_when_full() {
         )
         .await
         .unwrap();
-    let first =
-        crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.store.now())
-            .await
-            .unwrap();
+    let first = crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
+        .await
+        .unwrap();
     assert_eq!(first.node_id, f.nodes[1]);
     f.store.release(&first).await.unwrap();
     let occupied = f
@@ -43,7 +42,7 @@ async fn placement_prefers_scratch_node_then_falls_back_when_full() {
         .await
         .unwrap();
     let fallback =
-        crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.store.now())
+        crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
             .await
             .unwrap();
     assert_eq!(fallback.node_id, f.nodes[0]);
@@ -907,7 +906,7 @@ async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
     let cache = crate::placement::Cache::default();
     let duration = Duration::from_secs(30);
     let old = cache
-        .resolve_at(&fixture.store, fixture.agent, duration, fixture.store.now())
+        .resolve_at(&fixture.store, fixture.agent, duration, fixture.now())
         .await
         .unwrap();
     let renewed = fixture
@@ -918,7 +917,7 @@ async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
     // A cached route does not borrow a renewal it has not observed.
     assert_eq!(
         cache
-            .resolve_at(&fixture.store, fixture.agent, duration, fixture.store.now())
+            .resolve_at(&fixture.store, fixture.agent, duration, fixture.now())
             .await
             .unwrap(),
         old
@@ -927,7 +926,7 @@ async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
     assert!(fixture.store.validate_placement(&old).await.is_err());
     cache.invalidate(fixture.agent).await;
     let replacement = cache
-        .resolve_at(&fixture.store, fixture.agent, duration, fixture.store.now())
+        .resolve_at(&fixture.store, fixture.agent, duration, fixture.now())
         .await
         .unwrap();
     assert!(replacement.epoch > old.epoch);
@@ -946,7 +945,7 @@ async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
     cache.invalidate(fixture.agent).await;
     assert_eq!(
         cache
-            .resolve_at(&fixture.store, fixture.agent, duration, fixture.store.now())
+            .resolve_at(&fixture.store, fixture.agent, duration, fixture.now())
             .await
             .unwrap(),
         short
@@ -959,7 +958,7 @@ async fn cached_placement_keeps_observed_expiry_and_invalidates_on_release() {
         .unsigned_abs();
     fixture.advance(remaining + Duration::from_millis(200));
     let after_expiry = cache
-        .resolve_at(&fixture.store, fixture.agent, duration, fixture.store.now())
+        .resolve_at(&fixture.store, fixture.agent, duration, fixture.now())
         .await
         .unwrap();
     assert!(after_expiry.epoch > short.epoch);
