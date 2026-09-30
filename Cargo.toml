@@ -50,6 +50,8 @@ excessive_nesting = "deny"
 # noise, not information (see the task pull request).
 let_underscore_must_use = "deny"
 unused_result_ok = "deny"
+# Every unsafe block states the contract it relies on in a SAFETY comment.
+undocumented_unsafe_blocks = "deny"
 
 [workspace.dependencies]
 swarmy-version = { path = "crates/swarmy-version" }
