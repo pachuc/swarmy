@@ -585,39 +585,29 @@ impl Worker {
     }
 
     pub(crate) async fn session_display(&self, session: &SessionRecord) -> Result<bool> {
-        // The display flag varies only by image manifest, so the cache is
-        // keyed by manifest id with a per-session index for read-free hits.
-        // The lock is released before the database reads below so concurrent
-        // steps do not block on them.
-        {
-            let cache = self.display.lock().await;
-            if let Some(display) = cache.get(session.session_id) {
-                return Ok(display);
-            }
+        // The display flag varies only by image, so the cache is keyed by
+        // the full image identity with a per-session index for read-free
+        // hits. One lock guard covers the whole lookup, including the two
+        // point reads on a miss; concurrent first looks at the same image
+        // serialize briefly instead of stampeding the store.
+        let mut cache = self.display.lock().await;
+        if let Some(display) = cache.get(session.session_id) {
+            return Ok(display);
         }
         let Some(agent) = self.store.get_agent(session.agent_id).await? else {
             // Sessions without an agent row (ephemeral tests, deleted agents)
             // have no display. Remember the miss so repeated lookups cost no
             // reads, as a hit would.
-            let mut cache = self.display.lock().await;
             cache.insert(session.session_id, None, false);
             return Ok(false);
         };
-        let manifest = agent.image.manifest_id;
-        {
-            let cache = self.display.lock().await;
-            if let Some(display) = cache.get_image(manifest) {
-                drop(cache);
-                let mut cache = self.display.lock().await;
-                cache.insert(session.session_id, Some(manifest), display);
-                return Ok(display);
-            }
+        let image = crate::worker::ImageKey::from(&agent.image);
+        if let Some(display) = cache.get_image(&image) {
+            cache.insert(session.session_id, Some(image), display);
+            return Ok(display);
         }
         let display = self.store.image_display(&agent.image).await?;
-        {
-            let mut cache = self.display.lock().await;
-            cache.insert(session.session_id, Some(manifest), display);
-        }
+        cache.insert(session.session_id, Some(image), display);
         Ok(display)
     }
 

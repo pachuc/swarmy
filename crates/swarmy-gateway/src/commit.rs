@@ -436,6 +436,17 @@ impl Gateway {
         turn: Option<MessageId>,
         snapshot: Option<&swarmy_core::SnapshotRef>,
     ) {
+        self.publish_completion(id, event).await;
+        if let Some(snapshot) = snapshot {
+            self.publish_snapshot_idle(id, turn, snapshot).await;
+        } else {
+            self.nudge_completion(id, event, turn).await;
+        }
+    }
+
+    /// Publish the terminal event to the session feed. A failed publish only
+    /// warns: live clients catch up from the stored log.
+    async fn publish_completion(&self, id: swarmy_core::SessionId, event: &Event) {
         if let Err(error) = self
             .bus
             .publish_live(LiveFeed::SessionEvents(id), event)
@@ -443,31 +454,47 @@ impl Gateway {
         {
             warn!(%error, "completion event publication failed; client will catch up");
         }
-        if let Some(snapshot) = snapshot {
-            if let Some(turn) = turn {
-                let event = Bus::turn_event(id, turn, swarmy_core::TurnStage::Idle, None);
-                self.bus.record_turn(&event).await;
-                // The idle anchor is the turn's wall time. Record it in the
-                // store as well as on the bus so a turn of any length keeps
-                // its duration even when the worker never sees this turn end.
-                self.store.observe_turn_stage(event);
-            }
-            if let Err(error) = self
-                .bus
-                .publish_live(
-                    LiveFeed::SessionEvents(id),
-                    &Event::StateChanged {
-                        seq: snapshot.seq,
-                        from: swarmy_core::SessionState::WaitingInference,
-                        to: swarmy_core::SessionState::Idle,
-                    },
-                )
-                .await
-            {
-                warn!(%error, "idle event publication failed; client will catch up");
-            }
-            return;
+    }
+
+    /// Publish the idle turn and state change for a snapshot completion. The
+    /// idle anchor is the turn's wall time, recorded in the store as well as
+    /// on the bus so a turn of any length keeps its duration even when the
+    /// worker never sees this turn end.
+    async fn publish_snapshot_idle(
+        &self,
+        id: swarmy_core::SessionId,
+        turn: Option<MessageId>,
+        snapshot: &swarmy_core::SnapshotRef,
+    ) {
+        if let Some(turn) = turn {
+            let event = Bus::turn_event(id, turn, swarmy_core::TurnStage::Idle, None);
+            self.bus.record_turn(&event).await;
+            self.store.observe_turn_stage(event);
         }
+        if let Err(error) = self
+            .bus
+            .publish_live(
+                LiveFeed::SessionEvents(id),
+                &Event::StateChanged {
+                    seq: snapshot.seq,
+                    from: swarmy_core::SessionState::WaitingInference,
+                    to: swarmy_core::SessionState::Idle,
+                },
+            )
+            .await
+        {
+            warn!(%error, "idle event publication failed; client will catch up");
+        }
+    }
+
+    /// Nudge the session so the scheduler picks up the completed turn. A
+    /// failed nudge only warns: the scheduler's resend recovers the work.
+    async fn nudge_completion(
+        &self,
+        id: swarmy_core::SessionId,
+        event: &Event,
+        turn: Option<MessageId>,
+    ) {
         if let Err(error) = self
             .bus
             .nudge(id, event.seq(), turn, self.resend_interval, false)

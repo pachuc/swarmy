@@ -6,7 +6,7 @@
 //! scheduler role, version, and expiry behaviour.
 
 use jiff::Timestamp;
-use swarmy_store::{ServiceDetail, ServiceRole, Store};
+use swarmy_store::{HeartbeatSpec, ServiceDetail, ServiceRole, Store};
 
 /// Report this instance and expire stale service records until the process
 /// ends. Heartbeat and expiry failures only warn; the next tick retries.
@@ -17,13 +17,13 @@ pub(crate) async fn run(
     partitions: Vec<u16>,
 ) {
     store
-        .heartbeat_loop(
-            ServiceRole::Scheduler,
+        .heartbeat_loop(HeartbeatSpec {
+            role: ServiceRole::Scheduler,
             instance_id,
-            env!("CARGO_PKG_VERSION").into(),
-            started,
-            ServiceDetail::Partitions(partitions),
-            true,
-        )
+            version: env!("CARGO_PKG_VERSION").into(),
+            started_at: started,
+            detail: ServiceDetail::Partitions(partitions),
+            expire_stale: true,
+        })
         .await;
 }

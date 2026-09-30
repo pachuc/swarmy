@@ -93,9 +93,20 @@ async fn assert_resource_projections(
     agent: &swarmy_core::AgentRecord,
     session: swarmy_core::SessionId,
 ) {
+    assert_agent_projections(client, agent, session).await;
+    assert_session_projections(client, store, session).await;
+    assert_catalog_projections(client).await;
+}
+
+/// Agent list rows are summaries (no session scan, usage, or placement
+/// reads); the detail view hydrates sessions and usage.
+async fn assert_agent_projections(
+    client: &swarmy_client::Client,
+    agent: &swarmy_core::AgentRecord,
+    session: swarmy_core::SessionId,
+) {
     let rows = client.agents(None, 10).await.unwrap();
     assert_eq!(rows[0].id, agent.agent_id.to_string());
-    // List rows are summaries: no session scan, usage, or placement reads.
     assert!(rows[0].sessions.is_empty());
     assert!(rows[0].usage.is_none());
     assert!(rows[0].placement.is_none());
@@ -104,11 +115,19 @@ async fn assert_resource_projections(
     assert_eq!(detailed.sessions.len(), 1);
     assert_eq!(detailed.sessions[0].id, session.to_string());
     assert!(detailed.usage.is_some());
+}
+
+/// Session list rows carry the fleet fields but no detail hydration; the
+/// detail view hydrates usage and requirements.
+async fn assert_session_projections(
+    client: &swarmy_client::Client,
+    store: &Store,
+    session: swarmy_core::SessionId,
+) {
     let rows = client.sessions(None, 10).await.unwrap();
     let stored = store.fetch_session(session).await.unwrap().unwrap();
     assert_eq!(rows[0].id, session.to_string());
     assert_eq!(rows[0].state, stored.state.into());
-    // Session list rows carry the fleet fields but no detail hydration.
     assert!(rows[0].state_since.is_some());
     assert!(rows[0].usage.is_none());
     assert!(rows[0].requirements.is_none());
@@ -116,6 +135,10 @@ async fn assert_resource_projections(
     assert_eq!(detail.id, session.to_string());
     assert!(detail.usage.is_some());
     assert!(detail.requirements.is_some());
+}
+
+/// Images, models, and providers all answer from the catalog.
+async fn assert_catalog_projections(client: &swarmy_client::Client) {
     assert_eq!(
         client.image("fixture", "test").await.unwrap().name,
         "fixture"

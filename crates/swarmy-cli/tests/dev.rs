@@ -6,6 +6,7 @@ use std::{
     process::{Command, Output, Stdio},
     time::Duration,
 };
+use swarmy_core::ignore_best_effort;
 
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -66,7 +67,7 @@ impl Drop for Fixture {
                 command.env_remove(key);
             }
         }
-        let _ = command.output();
+        ignore_best_effort(command.output(), "stop leftover dev services");
         if self.restore_stack {
             let result = Command::new(self.repo.join("scripts/dev-stack.sh"))
                 .process_group(0)

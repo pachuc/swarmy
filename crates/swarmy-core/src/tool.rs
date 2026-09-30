@@ -348,7 +348,8 @@ pub fn tool_spill_path(call_id: &str) -> String {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
             encoded.push(byte as char);
         } else {
-            let _ = write!(encoded, "%{byte:02X}");
+            // Writing to a `String` cannot fail.
+            write!(encoded, "%{byte:02X}").expect("writing to String cannot fail");
         }
     }
     if encoded.is_empty() {

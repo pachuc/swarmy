@@ -2,6 +2,7 @@ use super::*;
 use crate::nbd::{NbdServer, serve_connection};
 use crate::{ChunkStore, Manifest};
 use object_store::memory::InMemory;
+use swarmy_core::ignore_best_effort;
 use tempfile::TempDir;
 
 async fn device() -> (TempDir, Arc<VolumeDevice>) {
@@ -136,7 +137,7 @@ async fn go_and_commands_over_listener() {
     request(&mut client, 2, 0, 0, 0, &[], 0).await;
     assert_eq!(client.read(&mut [0]).await.unwrap(), 0);
     task.abort();
-    let _ = task.await;
+    ignore_best_effort(task.await, "await background task");
     assert!(!path.exists());
 }
 

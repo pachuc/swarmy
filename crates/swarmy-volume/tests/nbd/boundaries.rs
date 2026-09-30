@@ -1,10 +1,13 @@
 use super::*;
-use swarmy_core::{LeaseOwnerId, ManifestId, VolumeId};
+use swarmy_core::{LeaseOwnerId, ManifestId, VolumeId, ignore_best_effort};
 use swarmy_volume::VolumeWriter;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn continuous_writes_and_retained_crash_images() {
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    ignore_best_effort(
+        tracing_subscriber::fmt().with_test_writer().try_init(),
+        "install test log subscriber",
+    );
     if command("id", &["-u"]).await.trim() != "0" {
         eprintln!("skipping snapshot NBD test: execute the built binary with sudo");
         return;

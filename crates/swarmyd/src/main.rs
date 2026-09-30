@@ -9,7 +9,7 @@ mod vol_server;
 
 use anyhow::{Result, ensure};
 use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
-use swarmy_core::NodeRecord;
+use swarmy_core::{NodeRecord, ignore_best_effort};
 use swarmy_sandbox::{RuncRuntime, ScratchPolicy};
 use swarmy_store::Store;
 use swarmy_volume::server::ServerConfig;
@@ -114,9 +114,9 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
     memory_server.abort();
     tool_server.abort();
     if !tool_server.is_finished() {
-        let _ = tool_server.await;
+        ignore_best_effort(tool_server.await, "await tool server shutdown");
     }
-    let _ = shutdown.send(true);
+    ignore_best_effort(shutdown.send(true), "signal shutdown");
     while clients.join_next().await.is_some() {}
     hosting.shutdown().await;
     let cleanup = runtime.shutdown().await;

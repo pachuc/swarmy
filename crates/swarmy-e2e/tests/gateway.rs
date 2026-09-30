@@ -310,6 +310,40 @@ impl Fixture {
             .unwrap();
     }
 
+    /// Check the idle completion's snapshot: the state change, the stored
+    /// snapshot's message tail, and the completed idempotency record.
+    async fn check_idle_snapshot(
+        &self,
+        job: &InferenceJob,
+        event: &Event,
+        events: &[Event],
+        session: &SessionRecord,
+    ) {
+        assert!(matches!(
+            events.last(),
+            Some(Event::StateChanged {
+                to: SessionState::Idle,
+                ..
+            })
+        ));
+        let reference = session.snapshot_ref.as_ref().unwrap();
+        assert_eq!(reference.seq, session.head_seq);
+        let bytes = ObjectBlobStore::from_env()
+            .unwrap()
+            .get(&reference.object_key)
+            .await
+            .unwrap();
+        let snapshot: swarmy_harness::Snapshot = swarmy_core::decode(&bytes).unwrap();
+        let Event::InferenceCompleted { completion, .. } = event else {
+            unreachable!()
+        };
+        assert_eq!(snapshot.messages().last(), Some(&completion.message));
+        assert_eq!(
+            &snapshot.messages()[..snapshot.messages().len() - 1],
+            job.request.messages
+        );
+    }
+
     async fn terminal(&self, job: &InferenceJob) -> Event {
         timeout(WAIT, async {
             loop {
@@ -333,30 +367,7 @@ impl Fixture {
                         }
                     );
                     if idle {
-                        assert!(matches!(
-                            events.last(),
-                            Some(Event::StateChanged {
-                                to: SessionState::Idle,
-                                ..
-                            })
-                        ));
-                        let reference = session.snapshot_ref.unwrap();
-                        assert_eq!(reference.seq, session.head_seq);
-                        let bytes = ObjectBlobStore::from_env()
-                            .unwrap()
-                            .get(&reference.object_key)
-                            .await
-                            .unwrap();
-                        let snapshot: swarmy_harness::Snapshot =
-                            swarmy_core::decode(&bytes).unwrap();
-                        let Event::InferenceCompleted { completion, .. } = event else {
-                            unreachable!()
-                        };
-                        assert_eq!(snapshot.messages().last(), Some(&completion.message));
-                        assert_eq!(
-                            &snapshot.messages()[..snapshot.messages().len() - 1],
-                            job.request.messages
-                        );
+                        self.check_idle_snapshot(job, event, &events, &session).await;
                     }
                     assert!(
                         self.store
@@ -597,6 +608,48 @@ async fn one_request_completes_and_duplicates_across_gateways_call_once() {
     .await;
 }
 
+/// Wait until the gateway commits the inference completion around an
+/// intervening event.
+async fn wait_for_inference(f: &Fixture, job: &InferenceJob) {
+    timeout(WAIT, async {
+        loop {
+            let events = f.store.read_events(job.session_id, 0, 64).await.unwrap();
+            if events
+                .iter()
+                .any(|event| matches!(event, Event::InferenceCompleted { .. }))
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// Wait until the session returns to runnable after the gateway commits
+/// around the intervening event, with the completed head and no snapshot.
+async fn wait_for_runnable_replay(f: &Fixture, job: &InferenceJob) {
+    timeout(WAIT, async {
+        loop {
+            let session = f
+                .store
+                .fetch_session(job.session_id)
+                .await
+                .unwrap()
+                .unwrap();
+            if session.state == SessionState::Runnable {
+                assert_eq!(session.head_seq, 3);
+                assert!(session.snapshot_ref.is_none());
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn stale_first_commit_retries_without_another_provider_call() {
     run(|mut f| async move {
@@ -635,20 +688,7 @@ async fn stale_first_commit_retries_without_another_provider_call() {
                 .await
                 .unwrap();
             f.publish(&job).await;
-            timeout(WAIT, async {
-                loop {
-                    let events = f.store.read_events(job.session_id, 0, 64).await.unwrap();
-                    if events
-                        .iter()
-                        .any(|event| matches!(event, Event::InferenceCompleted { .. }))
-                    {
-                        break;
-                    }
-                    sleep(Duration::from_millis(20)).await;
-                }
-            })
-            .await
-            .unwrap();
+            wait_for_inference(&f, &job).await;
             f.drained().await;
             assert_eq!(f.calls(), 1);
             assert_eq!(
@@ -908,6 +948,75 @@ async fn invalid_request_id_is_acknowledged_without_provider_call() {
     .await;
 }
 
+/// A redelivered reference for an already completed request must be
+/// acknowledged without a second provider call. This covers the
+/// `acquire_claim` acknowledged path: `handle` returns right after the ack
+/// instead of loading the stored job and re-driving inference.
+#[tokio::test]
+async fn completed_redelivery_is_acked_without_second_provider_call() {
+    run(|mut f| async move {
+        f.script(0, false, "done");
+        f.start(4);
+        let job = f.job().await;
+        let result = AssertUnwindSafe(async {
+            f.publish(&job).await;
+            assert!(matches!(
+                f.terminal(&job).await,
+                Event::InferenceCompleted { .. }
+            ));
+            assert_eq!(f.calls(), 1);
+            f.drained().await;
+            // The request is completed; a duplicate delivery must not run
+            // inference again.
+            f.publish(&job).await;
+            f.drained().await;
+            assert_eq!(f.calls(), 1);
+            assert!(matches!(
+                f.terminal(&job).await,
+                Event::InferenceCompleted { .. }
+            ));
+        })
+        .catch_unwind()
+        .await;
+        f.cleanup().await;
+        result.unwrap();
+    })
+    .await;
+}
+
+/// Concurrent duplicates of a slow request must still complete exactly once.
+/// The losing delivery waits in `acquire_claim` while the winner drives;
+/// once the winner completes, the loser acknowledges on its completed check
+/// and the drive loop never extends the deadline of an acked message. A
+/// second provider call or a failure event means the acknowledged path kept
+/// driving work it should have stopped.
+#[tokio::test]
+async fn concurrent_duplicates_of_slow_request_complete_once() {
+    run(|mut f| async move {
+        f.script(1500, false, "slow");
+        f.start(4);
+        let job = f.job().await;
+        let result = AssertUnwindSafe(async {
+            f.publish(&job).await;
+            // Publish the duplicate while the first delivery holds the claim
+            // and drives the slow provider call.
+            sleep(Duration::from_millis(200)).await;
+            f.publish(&job).await;
+            assert!(matches!(
+                f.terminal(&job).await,
+                Event::InferenceCompleted { .. }
+            ));
+            f.drained().await;
+            assert_eq!(f.calls(), 1);
+        })
+        .catch_unwind()
+        .await;
+        f.cleanup().await;
+        result.unwrap();
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn terminal_response_leaves_intervening_events_for_worker_replay() {
     run(|mut f| async move {
@@ -936,24 +1045,7 @@ async fn terminal_response_leaves_intervening_events_for_worker_replay() {
                 .append_events(job.session_id, 1, &[notice])
                 .await
                 .unwrap();
-            timeout(WAIT, async {
-                loop {
-                    let session = f
-                        .store
-                        .fetch_session(job.session_id)
-                        .await
-                        .unwrap()
-                        .unwrap();
-                    if session.state == SessionState::Runnable {
-                        assert_eq!(session.head_seq, 3);
-                        assert!(session.snapshot_ref.is_none());
-                        break;
-                    }
-                    sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .unwrap();
+            wait_for_runnable_replay(&f, &job).await;
             let events = f.store.read_events(job.session_id, 1, 64).await.unwrap();
             assert!(matches!(
                 events.as_slice(),
