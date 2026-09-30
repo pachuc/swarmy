@@ -67,7 +67,7 @@ same machine and a clean target directory. For a local debugging session with
 full debug info, run `CARGO_PROFILE_DEV_DEBUG=2 cargo build --workspace`.
 
 `up` starts FoundationDB, NATS, and SeaweedFS when needed, then starts one
-scheduler, worker, and gateway under a background CLI supervisor. It returns
+scheduler, worker, gateway, and API under a background CLI supervisor. It returns
 when their logs report readiness and prints process ids. The default fake
 provider replies `Hello from swarmy!` without credentials. Builds are separate
 from startup; build again after changing Rust code. The CLI and the services
@@ -77,7 +77,7 @@ search path to use `swarmy` directly. When using a system client library, omit `
 install prefix, set it to that prefix's `lib` directory at build time.
 
 ```sh
-./target/debug/swarmy dev logs           # follow all three service logs
+./target/debug/swarmy dev logs           # follow all four service logs
 ./target/debug/swarmy dev logs worker    # follow one service; Ctrl-C ends tailing
 ./target/debug/swarmy dev logs supervisor
 ```
@@ -235,7 +235,9 @@ plain-PUT fallback is safe. Additional settings are
 `[sandbox] idle_secs`, `[gc] grace_secs`, `[gc] interval_secs`,
 `[inference] max_wait_secs`, `[inference] max_backoff_secs`,
 `[inference] gateway_wait_secs`, `[volume_snapshots] period_secs`, and
-`[context] system_prompt`. The optional `[worker] kill_point` retains the
+`[context] system_prompt`. The optional `[context] summarize_at` and
+`[context] context_window` override the compaction threshold and the known
+model window. The optional `[worker] kill_point` retains the
 worker failure-injection setting. The documented `SWARMY_*` names still work;
 TOML keys live in the tables above.
 Exceptions are `[selection] credential_file` (`SWARMY_CHATGPT_AUTH`),

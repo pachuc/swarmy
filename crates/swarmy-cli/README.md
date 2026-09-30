@@ -1,6 +1,6 @@
 # CLI
 
-Source `.dev/env`, start the scheduler, worker, and gateway, and configure
+Source `.dev/env`, start the scheduler, worker, gateway, and API, and configure
 `default_image` (or `SWARMY_DEFAULT_IMAGE`) to a registered `NAME:TAG`, then run:
 
 ```sh
