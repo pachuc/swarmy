@@ -30,11 +30,7 @@ pub(super) async fn run(
     request: AdoptNode<'_>,
     options: super::services::Options<'_>,
 ) -> Result<()> {
-    let AdoptNode {
-        name,
-        sandboxes,
-        ..
-    } = request;
+    let name = request.name;
     if state.read(name)?.is_some() {
         return Err(crate::Error::AlreadyExists(name.to_owned()));
     }

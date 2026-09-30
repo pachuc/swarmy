@@ -41,7 +41,7 @@ pub use command::{BucketArgs, Command, select};
 mod remote;
 mod services;
 #[cfg(feature = "remote")]
-pub use remote::{Aws, DeletionPlan, ProviderCloud, RunOutcome, ServiceOptions, for_settings, run};
+pub use remote::{Aws, DeletionPlan, RunOutcome, ServiceOptions, for_settings, run};
 
 /// Failures returned to clients of the remote provisioning entry point.
 ///

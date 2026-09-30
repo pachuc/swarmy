@@ -12,6 +12,8 @@ use std::{
 };
 use swarmy_config::Settings;
 
+use crate::BucketRemoval;
+
 mod add_node;
 mod adopt;
 mod aws;
@@ -37,7 +39,7 @@ use existing::ExistingHost;
 /// The cloud substrate selected by a remote's provider. AWS owns machines;
 /// existing hosts delegate only bucket lifecycle to object-storage APIs and
 /// fail every machine operation.
-pub enum ProviderCloud {
+enum ProviderCloud {
     Aws(Aws),
     Existing(ExistingHost),
 }
@@ -130,8 +132,9 @@ impl Cloud for ProviderCloud {
 }
 
 /// Build the provider selected by the remote settings: AWS machines, or the
-/// existing-host substrate that only manages buckets.
-pub async fn for_settings(settings: &RemoteSettings) -> ProviderCloud {
+/// existing-host substrate that only manages buckets. The concrete type
+/// stays private; callers use the [`Cloud`] interface.
+pub async fn for_settings(settings: &RemoteSettings) -> impl Cloud {
     match settings.provider {
         swarmy_config::Provider::Aws => ProviderCloud::Aws(Aws::new(&settings.region).await),
         swarmy_config::Provider::Existing => {
@@ -289,7 +292,7 @@ fn resolve_bucket(settings: &mut RemoteSettings, args: &crate::BucketArgs) -> Re
 
 /// Resolve the image recipe unless `--no-image` skips the registered build.
 /// Shared by `up` and `adopt`: a missing recipe fails before any host changes.
-fn image_recipe(host: &ssh::Ssh, no_image: bool, image_recipe: &Path) -> Result<Option<PathBuf>> {
+fn resolve_recipe(host: &ssh::Ssh, no_image: bool, image_recipe: &Path) -> Result<Option<PathBuf>> {
     if no_image {
         Ok(None)
     } else {
@@ -316,7 +319,7 @@ async fn run_up(state: &State, mut settings: Settings, command: Command) -> Resu
     let _lock = state.lock()?;
     swarmy_config::validate_remote_name(&name)?;
     let host = ssh::Ssh::discover()?;
-    let recipe = image_recipe(&host, no_image, &image_recipe)?;
+    let recipe = resolve_recipe(&host, no_image, &image_recipe)?;
     if let Some(services) = services {
         settings.remote.services = services;
     }
@@ -372,7 +375,7 @@ async fn run_adopt(state: &State, mut settings: Settings, command: Command) -> R
     let _lock = state.lock()?;
     swarmy_config::validate_remote_name(&name)?;
     let host = ssh::Ssh::discover()?;
-    let recipe = image_recipe(&host, no_image, &image_recipe)?;
+    let recipe = resolve_recipe(&host, no_image, &image_recipe)?;
     if let Some(services) = services {
         settings.remote.services = services;
     }
@@ -449,7 +452,7 @@ async fn run_add_node(state: &State, mut settings: Settings, command: Command) -
                 "remote {name} uses existing hosts; pass --host ADDRESS to join one"
             )));
         };
-        let Some(key) = ssh_key else {
+        let Some(key) = ssh_key.as_ref() else {
             return Err(crate::Error::other(
                 "joining an existing host needs --ssh-key PATH".to_owned(),
             ));

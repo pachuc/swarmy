@@ -266,6 +266,8 @@ struct FakeHost {
     credentials: RefCell<Vec<std::path::PathBuf>>,
     keyrings: RefCell<Vec<std::path::PathBuf>>,
     primaries: RefCell<Vec<Option<RemoteNode>>>,
+    adopted_keys: RefCell<Vec<std::path::PathBuf>>,
+    decommissioned: RefCell<Vec<String>>,
 }
 
 /// Default `lsblk -dno PATH,MODEL` fixture: EBS root plus one instance-store
@@ -313,6 +315,17 @@ impl Host for FakeHost {
         tokio::fs::write(&node.key_path, "private-test").await?;
         tokio::fs::write(node.key_path.with_extension("pub"), "ssh-ed25519 test").await?;
         Ok(b"ssh-ed25519 test".to_vec())
+    }
+    async fn adopt_key(&self, node: &RemoteNode, source: &std::path::Path) -> Result<()> {
+        self.adopted_keys.borrow_mut().push(node.key_path.clone());
+        let bytes = std::fs::read(source)?;
+        std::fs::write(&node.key_path, bytes)?;
+        std::fs::write(node.key_path.with_extension("pub"), "ssh-ed25519 test")?;
+        Ok(())
+    }
+    async fn decommission(&self, node: &RemoteNode) -> Result<()> {
+        self.decommissioned.borrow_mut().push(node.name.clone());
+        Ok(())
     }
     fn block_devices(&self, _: &RemoteNode) -> impl Future<Output = Result<String>> {
         let listing = self.block_devices.borrow().clone();
@@ -546,6 +559,7 @@ async fn joining_node_resolves_its_own_device_not_the_primarys() {
             // Empty explicit configuration: the join resolves its own device
             // over SSH instead of reusing the primary's path.
             local_storage: String::new(),
+            existing: None,
         },
         Duration::ZERO,
         None,
@@ -605,6 +619,7 @@ async fn joining_node_keeps_explicit_local_storage_without_lookup() {
             sandboxes: 4,
             shape: super::NodeShape::default(),
             local_storage: "dir:/srv/local".into(),
+            existing: None,
         },
         Duration::ZERO,
         None,
@@ -889,6 +904,7 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
             sandboxes: 4,
             shape: super::NodeShape::default(),
             local_storage: String::new(),
+            existing: None,
         },
         Duration::ZERO,
         None,
@@ -976,6 +992,7 @@ async fn failed_join_retains_child_for_cleanup() {
                 sandboxes: 64,
                 shape: super::NodeShape::default(),
                 local_storage: String::new(),
+                existing: None,
             },
             Duration::ZERO,
             None
@@ -1178,6 +1195,7 @@ async fn add_node_copies_both_secrets_only_when_requested() {
             sandboxes: 64,
             shape: super::NodeShape::default(),
             local_storage: String::new(),
+            existing: None,
         },
         Duration::ZERO,
         None,
@@ -1214,6 +1232,7 @@ async fn add_node_copies_both_secrets_only_when_requested() {
             sandboxes: 64,
             shape: super::NodeShape::default(),
             local_storage: String::new(),
+            existing: None,
         },
         Duration::ZERO,
         Some(&options),
@@ -1283,6 +1302,7 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
             sandboxes: 4,
             shape: super::NodeShape::default(),
             local_storage: String::new(),
+            existing: None,
         },
         Duration::ZERO,
         None,
@@ -1579,18 +1599,41 @@ async fn iam_role_override_reaches_bucket_and_machine() {
 }
 
 #[tokio::test]
-async fn for_settings_rejects_unknown_provider() {
-    let mut settings = settings();
-    settings.provider = "other-cloud".into();
-    let error = super::for_settings(&settings)
-        .await
-        .err()
-        .expect("unknown provider must fail");
-    assert!(
-        error
-            .to_string()
-            .contains("unknown cloud provider 'other-cloud'")
-    );
+async fn for_settings_dispatches_existing_hosts_without_machine_apis() {
+    let mut existing = settings();
+    existing.provider = swarmy_config::Provider::Existing;
+    let cloud = super::for_settings(&existing).await;
+    // Every machine operation fails with the existing-host error (an AWS
+    // substrate would attempt network calls instead); the provisioning paths
+    // never call them, so a failure here is a programming mistake.
+    for error in [
+        cloud.base_image().await.map(|_| ()).unwrap_err(),
+        cloud
+            .import_ssh_key("key", Vec::new(), "owner")
+            .await
+            .unwrap_err(),
+        cloud
+            .create(&MachineSpec::from_settings(
+                "test",
+                "ami-test",
+                "test-key",
+                Vec::new(),
+                &existing,
+                None,
+            ))
+            .await
+            .map(|_| ())
+            .unwrap_err(),
+        cloud.get("i-test").await.map(|_| ()).unwrap_err(),
+        cloud.find_by_tag("token").await.map(|_| ()).unwrap_err(),
+        cloud.destroy("i-test").await.unwrap_err(),
+        cloud.delete_ssh_key("key").await.unwrap_err(),
+    ] {
+        assert!(
+            crate::render(&error).contains("no cloud machines"),
+            "{error:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1664,6 +1707,7 @@ async fn node_shape_overrides_are_per_node_and_persist_before_provisioning() {
                 disk_gb: Some(100),
             },
             local_storage: first.local_storage.clone(),
+            existing: None,
         },
         Duration::ZERO,
         None,
@@ -1742,6 +1786,7 @@ async fn invalid_join_shape_fails_before_launch_or_state_change() {
                     sandboxes: 4,
                     shape,
                     local_storage: settings().local_storage.clone(),
+                    existing: None,
                 },
                 Duration::ZERO,
                 None
@@ -1800,6 +1845,7 @@ async fn nvme_provisioning_failure_keeps_join_for_down() {
                 disk_gb: Some(40),
             },
             local_storage: settings().local_storage.clone(),
+            existing: None,
         },
         Duration::ZERO,
         None,
@@ -2563,4 +2609,478 @@ async fn up_continues_when_creation_tags_are_denied_and_down_keeps_untagged_reso
             .iter()
             .any(|item| item.starts_with("bucket ") || item.starts_with("role "))
     );
+}
+
+/// Settings for adopted remotes: the existing-host provider, an explicit
+/// service user, and an explicit local disk. Mirrors what `run_adopt`
+/// records after applying `--service-user` and `--local-storage`.
+fn existing_settings() -> RemoteSettings {
+    RemoteSettings {
+        provider: swarmy_config::Provider::Existing,
+        service_user: "swarmy".into(),
+        local_storage: "dir:/srv/swarmy-local".into(),
+        ..settings()
+    }
+}
+
+fn bootstrap_key(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    let path = dir.path().join("bootstrap-key");
+    std::fs::write(&path, "private-bootstrap").unwrap();
+    path
+}
+
+async fn adopt_existing(
+    state: &State,
+    cloud: &FakeCloud,
+    host: &FakeHost,
+    settings: &RemoteSettings,
+    dir: &tempfile::TempDir,
+    name: &str,
+) {
+    super::adopt::run(
+        cloud,
+        host,
+        state,
+        settings,
+        super::adopt::AdoptNode {
+            name,
+            host: "203.0.113.10",
+            ssh_user: "root",
+            ssh_key: &bootstrap_key(dir),
+            sandboxes: 4,
+        },
+        None.into(),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn adopt_provisions_existing_host_through_shared_provisioning() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    let settings = existing_settings();
+    adopt_existing(&state, &cloud, &host, &settings, &dir, "demo").await;
+    let node = state.require("demo").unwrap();
+    assert_eq!(node.public_ip, "203.0.113.10");
+    assert_eq!(node.private_ip, "203.0.113.10");
+    assert_eq!(node.ssh_user, "root");
+    assert_eq!(node.service_user(), "swarmy");
+    assert_eq!(node.local_storage(), "dir:/srv/swarmy-local");
+    assert_eq!(node.sandboxes, 4);
+    assert!(node.instance_id.is_empty());
+    assert!(node.launch_attempted);
+    assert!(node.nodes.is_empty());
+    let saved = node.launch_settings.clone().unwrap();
+    assert_eq!(saved.provider, swarmy_config::Provider::Existing);
+    assert!(saved.aws.image.is_none());
+    assert!(saved.aws.instance_type.is_empty());
+    // The bootstrap key is copied into state, not generated or imported.
+    assert_eq!(*host.adopted_keys.borrow(), [node.key_path.clone()]);
+    assert_eq!(std::fs::read(&node.key_path).unwrap(), b"private-bootstrap");
+    assert!(node.key_path.with_extension("pub").is_file());
+    // The shared tail ran: provisioned once with no primary, no image build
+    // without a recipe, and no node services in laptop mode.
+    assert_eq!(host.provisioned.borrow().len(), 1);
+    assert_eq!(host.provisioned.borrow()[0].name, "demo");
+    assert_eq!(host.primaries.borrow().len(), 1);
+    assert!(host.primaries.borrow()[0].is_none());
+    assert!(host.images.borrow().is_empty());
+    assert_eq!(host.services.get(), 0);
+    assert!(node.default_image.is_none());
+    // No cloud machine call happened: no launch, no key import, no polling.
+    assert!(cloud.requests.borrow().is_empty());
+    assert!(cloud.keys.borrow().is_empty());
+    assert!(cloud.bucket_ensures.borrow().is_empty());
+    assert!(cloud.observations.borrow().is_empty());
+    assert_eq!(cloud.stock_reads.get(), 0);
+}
+
+#[tokio::test]
+async fn adopt_runs_node_services_and_builds_the_registered_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    let settings = RemoteSettings {
+        services: swarmy_config::RemoteServices::Node,
+        ..existing_settings()
+    };
+    super::adopt::run(
+        &cloud,
+        &host,
+        &state,
+        &settings,
+        super::adopt::AdoptNode {
+            name: "demo",
+            host: "203.0.113.10",
+            ssh_user: "root",
+            ssh_key: &bootstrap_key(&dir),
+            sandboxes: 0,
+        },
+        Some(std::path::Path::new("images/base-ubuntu")).into(),
+    )
+    .await
+    .unwrap();
+    let node = state.require("demo").unwrap();
+    assert_eq!(host.services.get(), 1);
+    assert_eq!(node.default_image.as_deref(), Some("base-ubuntu:demo"));
+    assert_eq!(
+        *host.images.borrow(),
+        [(
+            "demo".to_owned(),
+            "203.0.113.10".to_owned(),
+            "images/base-ubuntu".into()
+        )]
+    );
+    assert!(cloud.requests.borrow().is_empty());
+}
+
+#[tokio::test]
+async fn adopt_rejects_bad_input_before_state_or_cloud_changes() {
+    for (address, ssh_user, sandboxes) in [
+        ("not-an-address", "root", 0),
+        ("203.0.113.10", "bad user", 0),
+        ("203.0.113.10", "", 0),
+        ("203.0.113.10", "root", 4),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::open(&dir.path().join("remote")).unwrap();
+        let cloud = FakeCloud::default();
+        let host = FakeHost::default();
+        // Sandbox nodes without an explicit disk fail; the control-only
+        // cases above fail on the address or login instead.
+        let mut settings = existing_settings();
+        if sandboxes > 0 {
+            settings.local_storage.clear();
+        }
+        let key = bootstrap_key(&dir);
+        let result = super::adopt::run(
+            &cloud,
+            &host,
+            &state,
+            &settings,
+            super::adopt::AdoptNode {
+                name: "demo",
+                host: address,
+                ssh_user,
+                ssh_key: &key,
+                sandboxes,
+            },
+            None.into(),
+        )
+        .await;
+        assert!(result.is_err(), "host={address} user={ssh_user}");
+        assert!(state.read("demo").unwrap().is_none());
+        assert!(host.provisioned.borrow().is_empty());
+        assert!(cloud.requests.borrow().is_empty());
+    }
+    // A missing key file and a duplicate name fail the same way.
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    let settings = existing_settings();
+    let missing = dir.path().join("absent-key");
+    assert!(
+        super::adopt::run(
+            &cloud,
+            &host,
+            &state,
+            &settings,
+            super::adopt::AdoptNode {
+                name: "demo",
+                host: "203.0.113.10",
+                ssh_user: "root",
+                ssh_key: &missing,
+                sandboxes: 0,
+            },
+            None.into(),
+        )
+        .await
+        .is_err()
+    );
+    adopt_existing(&state, &cloud, &host, &settings, &dir, "demo").await;
+    assert!(
+        super::adopt::run(
+            &cloud,
+            &host,
+            &state,
+            &settings,
+            super::adopt::AdoptNode {
+                name: "demo",
+                host: "203.0.113.11",
+                ssh_user: "root",
+                ssh_key: &bootstrap_key(&dir),
+                sandboxes: 0,
+            },
+            None.into(),
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(host.provisioned.borrow().len(), 1);
+}
+
+#[tokio::test]
+async fn add_node_joins_existing_host_through_the_primary_address_setting() {
+    for primary_address in [None, Some("192.0.2.10")] {
+        let dir = tempfile::tempdir().unwrap();
+        let state = State::open(&dir.path().join("remote")).unwrap();
+        let cloud = FakeCloud::default();
+        let host = FakeHost::default();
+        let settings = existing_settings();
+        adopt_existing(&state, &cloud, &host, &settings, &dir, "demo").await;
+        let key = bootstrap_key(&dir);
+        super::add_node::run(
+            &cloud,
+            &host,
+            &state,
+            super::add_node::NewNode {
+                name: "demo",
+                sandboxes: 8,
+                shape: super::NodeShape::default(),
+                local_storage: "dir:/srv/join-local".into(),
+                existing: Some(super::add_node::ExistingJoin {
+                    host: "203.0.113.11",
+                    ssh_user: "admin",
+                    ssh_key: &key,
+                    primary_address,
+                }),
+            },
+            Duration::ZERO,
+            None,
+        )
+        .await
+        .unwrap();
+        let node = state.require("demo").unwrap();
+        assert_eq!(node.nodes.len(), 1);
+        let child = &node.nodes[0];
+        assert_eq!(child.name, "demo-2");
+        assert_eq!(child.public_ip, "203.0.113.11");
+        assert_eq!(child.private_ip, "203.0.113.11");
+        assert_eq!(child.ssh_user, "admin");
+        // The service user stays the primary's so the tunnel login matches.
+        assert_eq!(child.service_user(), "swarmy");
+        assert_eq!(child.local_storage(), "dir:/srv/join-local");
+        assert_eq!(child.sandboxes, 8);
+        assert!(child.instance_id.is_empty());
+        assert!(child.launch_attempted);
+        assert_eq!(
+            child.launch_settings.as_ref().unwrap().provider,
+            swarmy_config::Provider::Existing
+        );
+        // The join reaches the primary through the recorded private address
+        // unless the operator overrides it (a vSwitch address, for example).
+        let primaries = host.primaries.borrow();
+        assert_eq!(primaries.len(), 2);
+        assert_eq!(
+            primaries[1].as_ref().unwrap().private_ip,
+            primary_address.unwrap_or("203.0.113.10")
+        );
+        assert_eq!(host.provisioned.borrow()[1].name, "demo-2");
+        assert_eq!(host.adopted_keys.borrow().len(), 2);
+        assert!(cloud.requests.borrow().is_empty());
+        assert!(cloud.keys.borrow().is_empty());
+        assert!(cloud.observations.borrow().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn existing_join_rejects_bad_input_before_state_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    adopt_existing(&state, &cloud, &host, &existing_settings(), &dir, "demo").await;
+    let key = bootstrap_key(&dir);
+    let missing = dir.path().join("absent-key");
+    for join in [
+        super::add_node::ExistingJoin {
+            host: "not-an-address",
+            ssh_user: "admin",
+            ssh_key: &key,
+            primary_address: None,
+        },
+        super::add_node::ExistingJoin {
+            host: "203.0.113.11",
+            ssh_user: "bad user",
+            ssh_key: &key,
+            primary_address: None,
+        },
+        super::add_node::ExistingJoin {
+            host: "203.0.113.11",
+            ssh_user: "admin",
+            ssh_key: &missing,
+            primary_address: None,
+        },
+        super::add_node::ExistingJoin {
+            host: "203.0.113.11",
+            ssh_user: "admin",
+            ssh_key: &key,
+            primary_address: Some("not-an-address"),
+        },
+    ] {
+        assert!(
+            super::add_node::run(
+                &cloud,
+                &host,
+                &state,
+                super::add_node::NewNode {
+                    name: "demo",
+                    sandboxes: 0,
+                    shape: super::NodeShape::default(),
+                    local_storage: String::new(),
+                    existing: Some(join),
+                },
+                Duration::ZERO,
+                None,
+            )
+            .await
+            .is_err()
+        );
+        assert!(state.require("demo").unwrap().nodes.is_empty());
+    }
+    assert!(cloud.requests.borrow().is_empty());
+    assert_eq!(host.provisioned.borrow().len(), 1);
+}
+
+#[tokio::test]
+async fn down_existing_decommissions_hosts_without_cloud_machine_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    let settings = existing_settings();
+    adopt_existing(&state, &cloud, &host, &settings, &dir, "demo").await;
+    let key = bootstrap_key(&dir);
+    super::add_node::run(
+        &cloud,
+        &host,
+        &state,
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 0,
+            shape: super::NodeShape::default(),
+            local_storage: String::new(),
+            existing: Some(super::add_node::ExistingJoin {
+                host: "203.0.113.11",
+                ssh_user: "admin",
+                ssh_key: &key,
+                primary_address: None,
+            }),
+        },
+        Duration::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
+    let node = state.require("demo").unwrap();
+    let primary_key = node.key_path.clone();
+    let child_key = node.nodes[0].key_path.clone();
+    down::run_existing(&cloud, &host, &state, &node, true)
+        .await
+        .unwrap();
+    // Children decommission before the primary; the machines themselves are
+    // never touched and no cloud machine call happens.
+    assert_eq!(*host.decommissioned.borrow(), ["demo-2", "demo"]);
+    assert!(cloud.requests.borrow().is_empty());
+    assert!(cloud.keys.borrow().is_empty());
+    assert!(cloud.find_tokens.borrow().is_empty());
+    assert!(cloud.terminated.borrow().is_empty());
+    assert!(cloud.deleted.borrow().is_empty());
+    assert!(cloud.key_delete_attempts.borrow().is_empty());
+    assert!(cloud.teardown.borrow().is_empty());
+    assert!(cloud.observations.borrow().is_empty());
+    assert!(!primary_key.exists());
+    assert!(!primary_key.with_extension("pub").exists());
+    assert!(!child_key.exists());
+    assert!(state.read("demo").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn down_existing_skips_unprovisioned_hosts_but_removes_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    // An interrupted adoption saved its record before provisioning ran.
+    let node = RemoteNode {
+        name: "demo".into(),
+        region: "us-east-1".into(),
+        instance_id: String::new(),
+        launch_attempted: false,
+        public_ip: "203.0.113.10".into(),
+        private_ip: "203.0.113.10".into(),
+        key_path: state.directory.join("swarmy-test"),
+        ssh_user: "root".into(),
+        ports: Default::default(),
+        nodes: Vec::new(),
+        sandboxes: 0,
+        default_image: None,
+        launch_settings: Some(existing_settings()),
+        created_at: "now".into(),
+    };
+    state.save(&node).unwrap();
+    down::run_existing(&cloud, &host, &state, &node, true)
+        .await
+        .unwrap();
+    assert!(host.decommissioned.borrow().is_empty());
+    assert!(state.read("demo").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn down_existing_deletes_the_owned_bucket_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let host = FakeHost::default();
+    let setup = static_setup();
+    super::adopt::run(
+        &setup.cloud,
+        &host,
+        &state,
+        &RemoteSettings {
+            provider: swarmy_config::Provider::Existing,
+            service_user: "swarmy".into(),
+            local_storage: String::new(),
+            ..setup.settings
+        },
+        super::adopt::AdoptNode {
+            name: "static-test",
+            host: "203.0.113.10",
+            ssh_user: "root",
+            ssh_key: &bootstrap_key(&dir),
+            sandboxes: 0,
+        },
+        None.into(),
+    )
+    .await
+    .unwrap();
+    // Adoption still sets the bucket up through object-storage APIs.
+    assert_eq!(setup.cloud.bucket_ensures.borrow().len(), 1);
+    let node = state.require("static-test").unwrap();
+    down::run_existing(&setup.cloud, &host, &state, &node, false)
+        .await
+        .unwrap();
+    assert_eq!(*host.decommissioned.borrow(), ["static-test"]);
+    assert!(
+        setup
+            .cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|entry| entry == "bucket test-bucket")
+    );
+    assert!(
+        !setup
+            .cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|entry| entry.starts_with("role"))
+    );
+    assert!(setup.cloud.requests.borrow().is_empty());
+    assert!(state.read("static-test").unwrap().is_none());
 }

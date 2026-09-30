@@ -1155,4 +1155,73 @@ mod provisioning_command_tests {
         assert!(!command.contains("test-access"));
         assert!(!command.contains("test-secret"));
     }
+
+    #[test]
+    fn decommission_stops_units_and_removes_swarmy_files_idempotently() {
+        let command = super::decommission_command("swarmy");
+        // Units stop and disable by listed name so an empty match succeeds;
+        // every removal forces so a failed `down` can retry.
+        assert!(command.contains("systemctl list-units --all --no-legend --no-pager 'swarmy-*.service'"));
+        assert!(command.contains("xargs sudo systemctl stop"));
+        assert!(command.contains("xargs sudo systemctl disable"));
+        assert!(command.contains("sudo rm -f /etc/systemd/system/swarmy-*.service"));
+        assert!(command.contains("sudo systemctl daemon-reload"));
+        assert!(command.contains("sudo rm -f /usr/local/bin/swarmy "));
+        assert!(command.contains("sudo rm -rf /etc/swarmy"));
+        // Secrets go with the node environment; the checkout resolves its
+        // home through the service login on the host.
+        assert!(command.contains("sudo sh -c 'rm -rf ~swarmy/swarmy'"));
+        assert!(!command.contains("~other/swarmy"));
+        assert!(super::decommission_command("other").contains("~other/swarmy"));
+    }
+
+    #[tokio::test]
+    async fn adopt_key_copies_the_operator_key_with_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        if std::process::Command::new("ssh-keygen")
+            .arg("-h")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("bootstrap");
+        assert!(
+            std::process::Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let node: swarmy_config::RemoteNode = serde_json::from_value(serde_json::json!({
+            "name": "demo", "region": "us-east-1", "instance_id": "",
+            "launch_attempted": false,
+            "public_ip": "203.0.113.10", "private_ip": "203.0.113.10",
+            "key_path": dir.path().join("adopted-key"), "ssh_user": "root",
+            "launch_settings": { "provider": "existing", "service_user": "swarmy" },
+            "created_at": "now"
+        }))
+        .unwrap();
+        super::adopt_key(&node, &source).await.unwrap();
+        assert_eq!(
+            std::fs::metadata(&node.key_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::read(&node.key_path).unwrap(),
+            std::fs::read(&source).unwrap()
+        );
+        let expected = std::process::Command::new("ssh-keygen")
+            .args(["-y", "-f"])
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(expected.status.success());
+        assert_eq!(
+            std::fs::read(node.key_path.with_extension("pub")).unwrap(),
+            expected.stdout
+        );
+    }
 }

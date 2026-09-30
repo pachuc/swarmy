@@ -667,7 +667,7 @@ mod tests {
             "[remote.aws]\nsubnet = 'subnet-only'\nsecurity_group = 'sg-only'\nimage = 'ami-nested'\niam_role = 'custom-role'\n",
         )
         .unwrap();
-        assert_eq!(nested.remote.provider, "aws");
+        assert_eq!(nested.remote.provider, Provider::Aws);
         assert_eq!(nested.remote.aws.instance_type, "m6id.xlarge");
         assert_eq!(nested.remote.aws.subnet.as_deref(), Some("subnet-only"));
         assert_eq!(nested.remote.aws.security_group.as_deref(), Some("sg-only"));
@@ -677,6 +677,24 @@ mod tests {
         // Unknown keys are rejected in either table.
         assert!(toml::from_str::<Settings>("[remote]\nsubnet_typo = 'x'").is_err());
         assert!(toml::from_str::<Settings>("[remote.aws]\nsubnet_typo = 'x'").is_err());
+    }
+
+    #[test]
+    fn provider_parses_and_round_trips() {
+        let aws: Settings = toml::from_str("[remote]\nprovider = 'aws'").unwrap();
+        assert_eq!(aws.remote.provider, Provider::Aws);
+        let existing: Settings = toml::from_str("[remote]\nprovider = 'existing'").unwrap();
+        assert_eq!(existing.remote.provider, Provider::Existing);
+        assert!(toml::from_str::<Settings>("[remote]\nprovider = 'other-cloud'").is_err());
+        assert_eq!(
+            serde_json::to_value(Provider::Existing).unwrap(),
+            serde_json::json!("existing")
+        );
+        assert_eq!(
+            serde_json::from_value::<Provider>(serde_json::json!("aws")).unwrap(),
+            Provider::Aws
+        );
+        assert_eq!(RemoteSettings::default().provider, Provider::Aws);
     }
 
     #[test]
@@ -692,7 +710,7 @@ mod tests {
 
         let bare: RemoteNode = serde_json::from_str(r#"{"name":"bare","region":"eu-west-1","instance_id":"","public_ip":"","private_ip":"","key_path":"/tmp/key","launch_attempted":true,"created_at":"2026-09-16T00:00:00Z"}"#).unwrap();
         let fallback = bare.cloud_settings();
-        assert_eq!(fallback.provider, "aws");
+        assert_eq!(fallback.provider, Provider::Aws);
         assert_eq!(fallback.region, "eu-west-1");
         assert_eq!(fallback.aws.instance_type, "m6id.xlarge");
 

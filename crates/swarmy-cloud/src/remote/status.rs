@@ -387,6 +387,22 @@ mod tests {
     use super::*;
     // Tested directly because `run` needs saved state, a tunnel, and SSH to a node.
     #[test]
+    fn existing_hosts_report_no_instance_type() {
+        let mut node: RemoteNode = serde_json::from_str(r#"{"name":"test","region":"local","instance_id":"","launch_attempted":true,"public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"key","created_at":"now"}"#).unwrap();
+        node.launch_settings = Some(swarmy_config::RemoteSettings {
+            provider: swarmy_config::Provider::Existing,
+            aws: swarmy_config::AwsSettings {
+                instance_type: "m6id.xlarge".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        // A leftover cloud shape must never print for operator-owned hosts.
+        assert_eq!(instance_type(&node), None);
+        node.launch_settings.as_mut().unwrap().provider = swarmy_config::Provider::Aws;
+        assert_eq!(instance_type(&node).as_deref(), Some("m6id.xlarge"));
+    }
+    #[test]
     fn control_nodes_report_profile_token_presence_and_others_opt_out() {
         let mut node: RemoteNode = serde_json::from_str(r#"{"name":"test","region":"local","instance_id":"i-test","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"key","launch_attempted":true,"created_at":"now"}"#).unwrap();
         // Without saved launch settings the node predates service roles.
