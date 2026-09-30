@@ -18,6 +18,7 @@ struct Fixture {
     bus: Bus,
     address: std::net::SocketAddr,
     server: tokio::task::JoinHandle<Result<(), std::io::Error>>,
+    guard: swarmy_testkit::StackGuard,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -80,33 +81,12 @@ impl Fixture {
 }
 
 async fn fixture() -> Option<Fixture> {
-    let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
-    let nats = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
-    swarmy_testkit::boot_fdb();
-    let store = Store::open(
-        Some(std::path::Path::new(&cluster)),
-        Some(&["client-api-test".into(), Ulid::generate().to_string()]),
-        Arc::new(MemoryBlobStore::default()),
-    )
-    .await
-    .unwrap();
-    let manifest = ManifestId::from_ulid(Ulid::generate());
-    store
-        .put_manifest(
-            manifest,
-            &ManifestHeader {
-                size: u64::from(CHUNK_SIZE),
-                chunk_size: CHUNK_SIZE,
-                root_hash: ContentHash::ZERO,
-            },
-        )
+    let stack = swarmy_testkit::Stack::load("client")?;
+    let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    swarmy_testkit::image(&store).await;
+    let bus = Bus::connect(&stack.nats_url, Config::default())
         .await
         .unwrap();
-    store
-        .put_image("fixture", &ImageTag("test".into()), manifest, None)
-        .await
-        .unwrap();
-    let bus = Bus::connect(&nats, Config::default()).await.unwrap();
     let state = AppState::new(
         store.clone(),
         bus.clone(),
@@ -124,6 +104,7 @@ async fn fixture() -> Option<Fixture> {
         bus,
         address,
         server,
+        guard,
     })
 }
 

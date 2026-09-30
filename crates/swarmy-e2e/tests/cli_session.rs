@@ -8,7 +8,13 @@ mod chat;
 #[path = "cli_session/cost.rs"]
 mod cost;
 
-use std::{future::Future, panic::AssertUnwindSafe, process::Stdio, sync::{Arc, Mutex}, time::Duration};
+use std::{
+    future::Future,
+    panic::AssertUnwindSafe,
+    process::Stdio,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use futures_util::{FutureExt, StreamExt};
 use jiff::Timestamp;
