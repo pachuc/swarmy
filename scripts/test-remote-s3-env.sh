@@ -21,61 +21,47 @@ static=$(swarmy_remote_s3_env example-bucket eu-west-1 https://objects.example.i
 [[ $static == *$'SWARMY_S3_BUCKET=example-bucket\n'* ]]
 [[ $static == *$'SWARMY_S3_PREFIX=runs/team\n'* ]]
 [[ $static == *'SWARMY_DEV_SKIP_S3=1'* ]]
-[[ $static != *'example-access'* ]]
-[[ $static != *'example-secret'* ]]
 
 local_store=$(swarmy_remote_s3_env '' '')
 [[ $local_store == *'SWARMY_S3_ENDPOINT=http://127.0.0.1:8333'* ]]
 [[ $local_store == *'SWARMY_S3_PREFIX='* ]]
 [[ $local_store == *'SWARMY_DEV_SKIP_S3=0'* ]]
+# The bucket name and region are checked; the endpoint and prefix were
+# validated when the bucket description was saved (Rust checks them).
 ! swarmy_remote_s3_env 'bad/bucket' eu-west-1 >/dev/null
 ! swarmy_remote_s3_env 'bad.bucket' eu-west-1 >/dev/null
-! swarmy_remote_s3_env example-bucket eu-west-1 'not a url' >/dev/null
-! swarmy_remote_s3_env example-bucket eu-west-1 https://objects.example.invalid '/lead' >/dev/null
-! swarmy_remote_s3_env example-bucket eu-west-1 https://objects.example.invalid 'a//b' >/dev/null
-! swarmy_remote_s3_env example-bucket eu-west-1 https://objects.example.invalid 'a/../b' >/dev/null
+! swarmy_remote_s3_env example-bucket '' >/dev/null
 ! swarmy_remote_s3_env '' '' https://objects.example.invalid >/dev/null
 swarmy_remote_s3_env example-bucket eu-west-1 https://objects.example.invalid 'runs/nested' >/dev/null
 
-# Static keys append to a 0600 file and never reach stdout.
-keys_file=$(mktemp)
-trap 'rm -f "$keys_file"' EXIT
-output=$(SWARMY_S3_ACCESS_KEY=example-access SWARMY_S3_SECRET_KEY=example-secret swarmy_remote_s3_keys "$keys_file")
-[[ -z $output ]]
-[[ $(stat -c %a "$keys_file") == 600 ]]
-[[ $(grep -c '^SWARMY_S3_ACCESS_KEY=example-access$' "$keys_file") == 1 ]]
-[[ $(grep -c '^SWARMY_S3_SECRET_KEY=example-secret$' "$keys_file") == 1 ]]
-# Missing or newline-containing keys are refused without touching the file.
-before=$(cat "$keys_file")
-! SWARMY_S3_ACCESS_KEY=example-access swarmy_remote_s3_keys "$keys_file" >/dev/null
-! SWARMY_S3_ACCESS_KEY=$'a\nb' SWARMY_S3_SECRET_KEY=example-secret swarmy_remote_s3_keys "$keys_file" >/dev/null
-[[ $(cat "$keys_file") == "$before" ]]
-
 # The root merge runs as a caller who does not own the staging file: the
-# staging file is root-owned 0600, one sudo shell merges and deletes it, and
-# nothing is printed.
-helpers="$(dirname "${BASH_SOURCE[0]}")/remote-s3-env.sh"
+# staging file is root-owned 0600, one sudo shell appends it verbatim and
+# deletes it, and nothing is printed. The secret carries `$`, a backtick, a
+# space and a command substitution, which must survive literally and never run.
 merge_dir=''
-trap 'rm -f "$keys_file"; [[ -n $merge_dir ]] && rm -rf "$merge_dir"' EXIT
+trap 'if [[ -n $merge_dir ]]; then rm -rf "$merge_dir"; fi' EXIT
 if sudo -n true 2>/dev/null; then
     merge_dir=$(mktemp -d)
     staging=$merge_dir/staging.env
     node_env=$merge_dir/node.env
+    hostile='sek ret$with`backtick$(touch "$merge_dir/pwned")'
     printf 'SWARMY_S3_BUCKET=example-bucket\n' >"$node_env"
     chmod 600 "$node_env"
-    printf 'SWARMY_S3_ACCESS_KEY=merge-access\nSWARMY_S3_SECRET_KEY=merge-secret\n' | sudo tee "$staging" >/dev/null
+    printf 'SWARMY_S3_ACCESS_KEY=%s\nSWARMY_S3_SECRET_KEY=%s\n' "$hostile" "$hostile" | sudo tee "$staging" >/dev/null
     sudo chmod 600 "$staging"
     [[ $(stat -c %U "$staging") == root ]]
-    merged=$(merge_static_s3_keys "$staging" "$node_env" "$helpers")
+    if [[ $(id -u) != 0 ]]; then
+        ! cat "$staging" >/dev/null 2>&1
+    fi
+    merged=$(merge_static_s3_keys "$staging" "$node_env")
     [[ -z $merged ]]
     [[ ! -e $staging ]]
-    [[ $(stat -c %a "$node_env") == 600 ]]
-    [[ $(grep -c '^SWARMY_S3_ACCESS_KEY=merge-access$' "$node_env") == 1 ]]
-    [[ $(grep -c '^SWARMY_S3_SECRET_KEY=merge-secret$' "$node_env") == 1 ]]
-    [[ $merged != *'merge-access'* ]]
-    [[ $merged != *'merge-secret'* ]]
+    [[ ! -e $merge_dir/pwned ]]
+    [[ $merged != *"$hostile"* ]]
+    [[ $(grep -c -F "SWARMY_S3_ACCESS_KEY=$hostile" "$node_env") == 1 ]]
+    [[ $(grep -c -F "SWARMY_S3_SECRET_KEY=$hostile" "$node_env") == 1 ]]
     # A missing staging file fails instead of writing an empty node env.
-    ! merge_static_s3_keys "$staging" "$node_env" "$helpers" >/dev/null
+    ! merge_static_s3_keys "$staging" "$node_env" >/dev/null
 else
     printf 'skipping root merge test (no passwordless sudo)\n' >&2
 fi

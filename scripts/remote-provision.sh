@@ -146,12 +146,12 @@ sudo install -d -m 0755 /etc/swarmy
 sudo install -m 0600 /dev/null /etc/swarmy/node.env
 node_environment "$repo_dir" "$sandboxes" "$local_mount" "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix" "$bucket_conditional_create" "$bucket_static" | sudo tee /etc/swarmy/node.env >/dev/null
 # Static S3 keys arrive over SSH stdin in a root-owned staging file the
-# provisioning user cannot read. Merge them into the 0600 node environment
-# as root in one step without printing them. Without static keys, delete any
-# staging file left from an earlier static provisioning instead of merging
-# stale keys.
+# provisioning user cannot read. Append it verbatim as root in one step and
+# delete it: sourcing the file would expand `$`, backticks and spaces in key
+# material. Without static keys, delete any staging file left from an earlier
+# static provisioning instead of merging stale keys.
 if [[ $bucket_static == true ]]; then
-    merge_static_s3_keys /etc/swarmy/s3-keys.env /etc/swarmy/node.env "$repo_dir/scripts/remote-s3-env.sh"
+    merge_static_s3_keys /etc/swarmy/s3-keys.env /etc/swarmy/node.env
 else
     sudo rm -f /etc/swarmy/s3-keys.env
 fi

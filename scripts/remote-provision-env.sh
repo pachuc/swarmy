@@ -128,11 +128,7 @@ node_disk_bytes() {
 node_environment() {
     local repo_dir=$1 sandboxes=$2 mount=$3 bucket=${4:-} bucket_region=${5:-} bucket_endpoint=${6:-} bucket_prefix=${7:-} bucket_conditional_create=${8:-true} bucket_static=${9:-false} roles=sandbox,volume
     local s3_env
-    if [[ $bucket_static == true ]]; then
-        s3_env=$(swarmy_remote_s3_env "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix" true)
-    else
-        s3_env=$(swarmy_remote_s3_env "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix")
-    fi
+    s3_env=$(swarmy_remote_s3_env "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix" "$bucket_static")
     if (( sandboxes == 0 )); then roles=volume; fi
     cat <<ENV
 SWARMY_FDB_CLUSTER_FILE=$repo_dir/.dev/fdb.cluster

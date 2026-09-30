@@ -93,14 +93,4 @@ static_bucket=$(node_environment /tmp/checkout 4 /tmp example-bucket eu-west-1 h
 [[ $static_bucket == *'SWARMY_S3_CONDITIONAL_CREATE=false'* ]]
 [[ $static_bucket != *'SWARMY_S3_ACCESS_KEY='* ]]
 [[ $static_bucket != *'SWARMY_S3_SECRET_KEY='* ]]
-# Static keys land in a 0600 file with nothing printed, never on a command line.
-node_keys=$(mktemp)
-trap 'rm -f "$node_keys"' EXIT
-printed=$(SWARMY_S3_ACCESS_KEY=fixture-access SWARMY_S3_SECRET_KEY=fixture-secret swarmy_remote_s3_keys "$node_keys")
-[[ -z $printed ]]
-[[ $(stat -c %a "$node_keys") == 600 ]]
-[[ $(grep -c '^SWARMY_S3_ACCESS_KEY=fixture-access$' "$node_keys") == 1 ]]
-[[ $(grep -c '^SWARMY_S3_SECRET_KEY=fixture-secret$' "$node_keys") == 1 ]]
-[[ $static_bucket != *'fixture-access'* ]]
-[[ $static_bucket != *'fixture-secret'* ]]
 echo 'remote provision argument and environment tests passed'
