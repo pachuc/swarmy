@@ -1,6 +1,6 @@
 //! A subscription is registered before replay, and the store remains the
 //! authority for every durable event after the live handover.
-use super::{AppState, error, failure, storage};
+use super::{ApiFailure, AppState, storage};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -37,7 +37,6 @@ const OUTBOUND_CAPACITY: usize = 64;
 const MAX_LOGS: usize = 32;
 /// How long a slow SSE client gets to drain one event before the stream ends.
 const SSE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(2);
-type ApiError = (StatusCode, Json<api::ApiError>);
 type Registry = Arc<std::sync::Mutex<HashMap<String, Connection>>>;
 
 #[derive(Clone)]
@@ -57,32 +56,36 @@ fn key(log: &LogId) -> String {
         LogId::Timeline(id) => format!("timeline:{id}"),
     }
 }
-fn session_id(log: &LogId) -> Result<SessionId, ApiError> {
+fn session_id(log: &LogId) -> Result<SessionId, ApiFailure> {
     let LogId::Session(text) = log else {
-        return Err(error(StatusCode::BAD_REQUEST, "unsupported_log"));
+        return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "unsupported_log", "log kind is not supported here"));
     };
     text.parse::<Ulid>()
         .map(SessionId::from_ulid)
-        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_log_id"))
+        .map_err(|_| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_log_id", "log id is not a valid ULID"))
 }
 /// Timeline cursors name the session whose turn observations are followed.
 /// The session must exist, but observations are live-only and never replayed.
-fn timeline_id(log: &LogId) -> Result<SessionId, ApiError> {
+fn timeline_id(log: &LogId) -> Result<SessionId, ApiFailure> {
     let LogId::Timeline(text) = log else {
-        return Err(error(StatusCode::BAD_REQUEST, "unsupported_log"));
+        return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "unsupported_log", "log kind is not supported here"));
     };
     text.parse::<Ulid>()
         .map(SessionId::from_ulid)
-        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_log_id"))
+        .map_err(|_| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_log_id", "log id is not a valid ULID"))
 }
-async fn validate(state: &AppState, subscription: &Subscription) -> Result<(), ApiError> {
+async fn validate(state: &AppState, subscription: &Subscription) -> Result<(), ApiFailure> {
     if subscription.cursors.is_empty() || subscription.cursors.len() > MAX_LOGS {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_subscription"));
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_subscription",
+            "subscription must list 1 to 32 logs",
+        ));
     }
     let mut seen = HashSet::new();
     for cursor in &subscription.cursors {
         if !seen.insert(key(&cursor.log_id)) {
-            return Err(error(StatusCode::BAD_REQUEST, "duplicate_log"));
+            return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "duplicate_log", "subscription lists a log twice"));
         }
         let id = match &cursor.log_id {
             LogId::Timeline(_) => timeline_id(&cursor.log_id)?,
@@ -95,24 +98,31 @@ async fn validate(state: &AppState, subscription: &Subscription) -> Result<(), A
             .map_err(storage)?
             .is_none()
         {
-            return Err(error(StatusCode::NOT_FOUND, "session_not_found"));
+            return Err(ApiFailure::new(StatusCode::NOT_FOUND, "session_not_found", "session not found"));
         }
     }
     Ok(())
 }
-fn encode_cursor(subscription: &Subscription) -> Result<String, ApiError> {
+fn encode_cursor(subscription: &Subscription) -> Result<String, ApiFailure> {
     serde_json::to_vec(subscription)
         .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
-        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "cursor_encoding"))
+        .map_err(|cause| {
+            ApiFailure::caused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "cursor_encoding",
+                "cursor could not be encoded",
+                &cause,
+            )
+        })
 }
-fn decode_cursor(text: &str) -> Result<Subscription, ApiError> {
+fn decode_cursor(text: &str) -> Result<Subscription, ApiFailure> {
     if text.len() > 8192 {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_cursor"));
+        return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_cursor", "cursor is not valid"));
     }
     let bytes = URL_SAFE_NO_PAD
         .decode(text)
-        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_cursor"))?;
-    serde_json::from_slice(&bytes).map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_cursor"))
+        .map_err(|_| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_cursor", "cursor is not valid"))?;
+    serde_json::from_slice(&bytes).map_err(|_| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_cursor", "cursor is not valid"))
 }
 
 /// GET /v1/events?subscription=<URL-encoded Subscription JSON>.
@@ -123,29 +133,42 @@ pub(crate) async fn subscribe(
     State(state): State<AppState>,
     Query(query): Query<StreamQuery>,
     headers: HeaderMap,
-) -> Result<Response, ApiError> {
+) -> Result<Response, ApiFailure> {
     let subscription = if let Some(header) = headers.get("last-event-id") {
         decode_cursor(
             header
                 .to_str()
-                .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_cursor"))?,
+                .map_err(|_| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_cursor", "cursor is not valid"))?,
         )?
     } else {
         serde_json::from_str(
             query
                 .subscription
                 .as_deref()
-                .ok_or_else(|| error(StatusCode::BAD_REQUEST, "invalid_subscription"))?,
+                .ok_or_else(|| {
+                    ApiFailure::new(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_subscription",
+                        "subscription is missing or not valid JSON",
+                    )
+                })?,
         )
-        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_subscription"))?
+        .map_err(|_| {
+            ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_subscription",
+                "subscription is missing or not valid JSON",
+            )
+        })?;
     };
     validate(&state, &subscription).await?;
     // Install the live subscriptions before headers become visible to a client.
     // Durable records can replay, but a token emitted in this window cannot.
     let initial_feeds = feeds(&state, &subscription).await.map_err(|cause| {
-        failure(
+        ApiFailure::caused(
             StatusCode::SERVICE_UNAVAILABLE,
             "subscription_unavailable",
+            "live subscription unavailable",
             &cause,
         )
     })?;
@@ -194,8 +217,14 @@ pub(crate) async fn subscribe(
         .into_response();
     response.headers_mut().insert(
         "x-swarmy-connection-id",
-        HeaderValue::from_str(&connection_id)
-            .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "connection_id"))?,
+        HeaderValue::from_str(&connection_id).map_err(|cause| {
+            ApiFailure::caused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "connection_id",
+                "connection id is not a valid header",
+                &cause,
+            )
+        })?,
     );
     Ok(response)
 }
@@ -205,7 +234,7 @@ pub(crate) async fn update(
     State(state): State<AppState>,
     Path(connection_id): Path<String>,
     Json(subscription): Json<Subscription>,
-) -> Result<StatusCode, ApiError> {
+) -> Result<StatusCode, ApiFailure> {
     validate(&state, &subscription).await?;
     let sender = state
         .stream_connections
@@ -213,7 +242,7 @@ pub(crate) async fn update(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&connection_id)
         .cloned()
-        .ok_or_else(|| error(StatusCode::NOT_FOUND, "connection_not_found"))?;
+        .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "connection_not_found", "stream connection not found"))?;
     let mut progress = sender
         .progress
         .lock()
@@ -228,13 +257,10 @@ pub(crate) async fn update(
             .get(&key(&cursor.log_id))
             .is_some_and(|old| cursor.sequence < *old)
         {
-            return Err((
+            return Err(ApiFailure::new(
                 StatusCode::BAD_REQUEST,
-                Json(api::ApiError {
-                    code: "cursor_rewind".into(),
-                    message: format!("cursor rewind for log {}", key(&cursor.log_id)),
-                    provider_text: None,
-                }),
+                "cursor_rewind",
+                format!("cursor rewind for log {}", key(&cursor.log_id)),
             ));
         }
     }
@@ -243,7 +269,7 @@ pub(crate) async fn update(
     sender
         .sender
         .send(subscription.clone())
-        .map_err(|_| error(StatusCode::NOT_FOUND, "connection_not_found"))?;
+        .map_err(|_| ApiFailure::new(StatusCode::NOT_FOUND, "connection_not_found", "stream connection not found"))?;
     *progress = subscription;
     Ok(StatusCode::NO_CONTENT)
 }
