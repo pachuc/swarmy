@@ -147,9 +147,7 @@ impl Store {
             .await?;
         let mut labels = Vec::new();
         for (key, _) in rows {
-            let (label,): (String,) = space
-                .unpack(&key)
-                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+            let (label,): (String,) = space.unpack(&key)?;
             labels.push(label);
         }
         labels.sort();
@@ -177,9 +175,7 @@ impl Store {
             let range = space.range();
             let mut entries: Vec<(String, bool)> = Vec::new();
             for (key, value) in scan_all(&trx, range).await? {
-                let (label,): (String,) = space
-                    .unpack(&key)
-                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                let (label,): (String,) = space.unpack(&key)?;
                 let entry = decode_entry(&value)?;
                 entries.push((label, entry_ready(entry.needs_login, entry.expires_at, now)));
             }
@@ -379,9 +375,7 @@ impl CredentialStore {
         let (begin, end) = space.range();
         let mut result = Vec::new();
         for (key, value) in self.store.scan_all_pages(begin, end).await? {
-            let (provider, label): (String, String) = space
-                .unpack(&key)
-                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+            let (provider, label): (String, String) = space.unpack(&key)?;
             let entry: EntryValue = decode_entry(&value)?;
             let record = decrypt(
                 &self.keyring,
@@ -428,9 +422,7 @@ impl CredentialStore {
             .await?;
         let mut entries = Vec::new();
         for (key, value) in rows {
-            let (label,): (String,) = space
-                .unpack(&key)
-                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+            let (label,): (String,) = space.unpack(&key)?;
             let entry: EntryValue = decode_entry(&value)?;
             let record = decrypt(
                 &self.keyring,
@@ -705,7 +697,7 @@ fn encrypt(
     let mut nonce = [0; 24];
     rand::rngs::OsRng
         .try_fill_bytes(&mut nonce)
-        .map_err(|_| StoreError::Storage(crate::StorageError::Keyring))?;
+        .map_err(|error| StoreError::Storage(crate::StorageError::Randomness(error.into())))?;
     let ciphertext = XChaCha20Poly1305::new(key.key().into())
         .encrypt(
             XNonce::from_slice(&nonce),
@@ -714,6 +706,7 @@ fn encrypt(
                 aad: &associated_data(scope, provider)?,
             },
         )
+        // Encryption with a valid nonce cannot fail.
         .map_err(|_| StoreError::Storage(crate::StorageError::Keyring))?;
     let mut bytes = nonce.to_vec();
     bytes.extend(ciphertext);
@@ -738,6 +731,8 @@ fn decrypt_raw(
                 aad: &associated_data(scope, provider)?,
             },
         )
+        // Decryption stays causeless on purpose: distinguishing a wrong key
+        // from tampered bytes would leak information about the secret.
         .map_err(|_| StoreError::Storage(crate::StorageError::Keyring))?;
     Ok(decode(&plaintext)?)
 }

@@ -11,8 +11,28 @@ pub enum Command {
         /// Override the first node's EBS root disk size in GiB
         #[arg(long)]
         disk_gb: Option<u32>,
+        /// Object bucket backing the remote (AWS S3 by default)
         #[arg(long)]
         bucket: Option<String>,
+        /// S3-compatible endpoint URL for the bucket; empty selects AWS S3
+        #[arg(long)]
+        s3_endpoint: Option<String>,
+        /// Bucket region override (defaults to the remote region)
+        #[arg(long)]
+        s3_region: Option<String>,
+        /// Object prefix namespace inside the bucket
+        #[arg(long)]
+        s3_prefix: Option<String>,
+        /// Static access key (or `AWS_ACCESS_KEY_ID`); the secret comes from
+        /// `--s3-secret-file`, `--s3-secret-stdin`, or `AWS_SECRET_ACCESS_KEY`
+        #[arg(long)]
+        s3_access_key: Option<String>,
+        /// Read the static secret key from this 0600 file
+        #[arg(long, conflicts_with = "s3_secret_stdin")]
+        s3_secret_file: Option<std::path::PathBuf>,
+        /// Read the static secret key from stdin (one line, never logged)
+        #[arg(long)]
+        s3_secret_stdin: bool,
         /// Maximum sandboxes on this node (zero for a control-only node)
         #[arg(long)]
         sandboxes: Option<u32>,

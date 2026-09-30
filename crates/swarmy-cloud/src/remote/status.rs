@@ -255,7 +255,7 @@ where
             }
         }
         Ok(Err(error)) => {
-            let error = format!("API unavailable: {}", crate::render(&error));
+            let error = format!("API unavailable: {}", swarmy_core::error_chain(&error));
             status.registration_error = Some(error.clone());
             status.image_error = Some(error);
         }
@@ -410,8 +410,7 @@ mod tests {
             s3_endpoint: String::new(),
             api_url: None,
             api_token: None,
-            s3_bucket: None,
-            s3_region: None,
+            bucket: None,
             default_image: None,
         };
         assert_eq!(api_token_status(&node, Some(&profile)), "missing");

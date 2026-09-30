@@ -11,6 +11,8 @@ mod agents;
 pub use agents::{AgentSessionOptions, CreateAgentOptions};
 mod api_idempotency;
 mod errors;
+#[cfg(test)]
+mod errors_tests;
 pub use errors::{DomainError, FenceError, Result, StorageError, StoreError};
 mod session;
 pub(crate) use session::{
@@ -424,7 +426,7 @@ impl Store {
             if bytes.len() != 20 {
                 return Err(StoreError::Storage(StorageError::Corrupt));
             }
-            let id = keys::session_id(bytes[2..18].to_vec())?;
+            let id = keys::session_id(&bytes[2..18])?;
             let count = u16::from_be_bytes([bytes[18], bytes[19]]);
             if count == 0 || usize::from(count) > SESSION_MAX_BYTES.div_ceil(INLINE_LIMIT) {
                 return Err(StoreError::Storage(StorageError::Corrupt));

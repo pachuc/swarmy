@@ -199,7 +199,7 @@ impl Worker {
                 rustix::process::getpid(),
                 rustix::process::Signal::KILL,
             ) {
-                tracing::warn!(%error, "chaos kill signal failed; aborting instead");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "chaos kill signal failed; aborting instead");
             }
             std::process::abort();
         }

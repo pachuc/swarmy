@@ -219,10 +219,13 @@ tool use, so a fake-provider conversation without sandbox tools needs no node.
 Resuming an existing session keeps its pinned image.
 
 The connection keys are `[store] cluster_file`, `[bus] nats_url`, `[s3] endpoint`,
-`[s3] access_key`, `[s3] secret_key`, `[s3] bucket`, `[s3] prefix`, and
-`[s3] region`. `[s3] prefix` defaults to empty. Use it to select a namespace
+`[s3] access_key`, `[s3] secret_key`, `[s3] bucket`, `[s3] prefix`,
+`[s3] region`, and `[s3] conditional_create`. `[s3] prefix` defaults to empty. Use it to select a namespace
 within the bucket; see the [namespace and migration
-rules](../crates/swarmy-store/src/objects.rs). Additional settings are
+rules](../crates/swarmy-store/src/objects.rs). Set `[s3] conditional_create`
+to `false` (or `SWARMY_S3_CONDITIONAL_CREATE=false`) for object stores that
+reject create-only PUTs; chunks and manifests are content-addressed, so the
+plain-PUT fallback is safe. Additional settings are
 `[scheduler] scan_interval_ms`, `[scheduler] resend_interval_ms`,
 `[scheduler] ephemeral_retention_secs`, `[scheduler] placement_lease_secs`,
 `[worker] lease_ms`, `[worker] recovery_interval_ms`, `[bus] ack_wait_ms`,

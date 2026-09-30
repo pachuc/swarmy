@@ -28,7 +28,9 @@ fn report_collection(result: Result<swarmy_core::GcRun, VolumeError>) {
         Err(VolumeError::Store(StoreError::Fence(swarmy_store::FenceError::GcLeaseMismatch))) => {
             tracing::debug!("collector lease busy or lost; retry next interval");
         }
-        Err(error) => tracing::error!(%error, "chunk collection failed; retry next interval"),
+        Err(error) => {
+            tracing::error!(error = %swarmy_core::error_chain(&error), "chunk collection failed; retry next interval");
+        }
     }
 }
 
@@ -53,6 +55,8 @@ async fn prune_metering(store: &Store, metering: Metering) {
     {
         Ok(0) => {}
         Ok(pruned) => tracing::info!(pruned, "metering raw records pruned"),
-        Err(error) => tracing::warn!(%error, "metering prune failed; will retry"),
+        Err(error) => {
+            tracing::warn!(error = %swarmy_core::error_chain(&error), "metering prune failed; will retry");
+        }
     }
 }

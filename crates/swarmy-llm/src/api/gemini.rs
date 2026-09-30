@@ -120,8 +120,8 @@ impl GeminiProvider {
 }
 
 fn endpoint_url(base: &str, model: &str, auth: &ClientAuth) -> Result<reqwest::Url, Error> {
-    let mut url =
-        reqwest::Url::parse(base).map_err(|_| Error::Protocol("invalid Gemini base URL".into()))?;
+    let mut url = reqwest::Url::parse(base)
+        .map_err(|error| Error::Protocol(format!("invalid Gemini base URL: {error}")))?;
     let versioned = url.path().trim_end_matches('/').ends_with("/v1");
     let mut path = url
         .path_segments_mut()
@@ -608,5 +608,17 @@ mod tests {
                 .event(&json!({"candidates":[{"content":{"parts":[{"functionCall":{}}]}}]}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn invalid_base_url_names_the_parse_failure() {
+        let auth = ClientAuth::ApiKey("key".into());
+        let error = endpoint_url("not a url", "gemini-2.5-flash", &auth).expect_err("bad base");
+        let text = error.to_string();
+        assert!(
+            text.contains("invalid Gemini base URL: relative URL without a base"),
+            "unexpected message: {text}"
+        );
+        assert!(endpoint_url("https://example.com", "gemini-2.5-flash", &auth).is_ok());
     }
 }

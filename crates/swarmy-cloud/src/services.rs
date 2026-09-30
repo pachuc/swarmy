@@ -215,10 +215,53 @@ async fn upload(node: &RemoteNode, address: &str, path: &str, bytes: &[u8]) -> R
     let script = format!(
         "umask 077; (test -d $(dirname {path}) || install -d -o {user} -g {user} -m 700 $(dirname {path})) && cat > {path}.tmp && chown {user}:{user} {path}.tmp && chmod 600 {path}.tmp && mv {path}.tmp {path}"
     );
+    upload_with(node, address, &script, bytes).await
+}
+
+/// Upload bytes to a root-owned 0600 path over SSH stdin. Data travels on
+/// stdin, never in a shell argument, diagnostic, or process listing.
+pub(crate) async fn upload_root(
+    node: &RemoteNode,
+    address: &str,
+    path: &str,
+    bytes: &[u8],
+) -> Result<()> {
+    let script = format!(
+        "umask 077; (test -d $(dirname {path}) || install -d -m 755 $(dirname {path})) && cat > {path}.tmp && chmod 600 {path}.tmp && mv {path}.tmp {path}"
+    );
+    upload_with(node, address, &script, bytes).await
+}
+
+/// Copy static S3 keys to the node when the remote uses them. Keys travel on
+/// SSH stdin into a root-owned 0600 file; the provisioning script merges them
+/// into the node environment without printing them, and deletes any staging
+/// file left from before when the bucket uses the instance role.
+pub(crate) async fn upload_bucket_keys(node: &RemoteNode, address: &str) -> Result<()> {
+    let Some(spec) = node.bucket_spec() else {
+        return Ok(());
+    };
+    let swarmy_config::BucketCredentials::StaticKeys {
+        access_key,
+        secret_key,
+    } = &spec.credentials
+    else {
+        return Ok(());
+    };
+    // A newline would escape the env-file line format; reject it loudly
+    // instead of writing a corrupt file.
+    crate::Error::ensure(
+        !access_key.contains('\n') && !secret_key.contains('\n'),
+        "static S3 keys must not contain newlines",
+    )?;
+    let bytes = format!("SWARMY_S3_ACCESS_KEY={access_key}\nSWARMY_S3_SECRET_KEY={secret_key}\n");
+    upload_root(node, address, "/etc/swarmy/s3-keys.env", bytes.as_bytes()).await
+}
+
+async fn upload_with(node: &RemoteNode, address: &str, script: &str, bytes: &[u8]) -> Result<()> {
     let command = "copy node service file".to_owned();
     let mut child = super::ssh::command(node)?
         .arg(address)
-        .arg(format!("sudo -n sh -c {}", shell_words::quote(&script)))
+        .arg(format!("sudo -n sh -c {}", shell_words::quote(script)))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()

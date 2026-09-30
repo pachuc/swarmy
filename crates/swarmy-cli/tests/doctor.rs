@@ -138,8 +138,7 @@ fn remote_fixture(cluster: &str, nats_url: &str) -> Fixture {
         s3_endpoint: "http://127.0.0.1:8333".into(),
         api_url: None,
         api_token: None,
-        s3_bucket: None,
-        s3_region: None,
+        bucket: None,
         default_image: None,
     };
     fs::write(

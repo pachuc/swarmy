@@ -1,6 +1,6 @@
 //! A subscription is registered before replay, and the store remains the
 //! authority for every durable event after the live handover.
-use super::{AppState, error, storage};
+use super::{AppState, error, failure, storage};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -142,9 +142,13 @@ pub(crate) async fn subscribe(
     validate(&state, &subscription).await?;
     // Install the live subscriptions before headers become visible to a client.
     // Durable records can replay, but a token emitted in this window cannot.
-    let initial_feeds = feeds(&state, &subscription)
-        .await
-        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "subscription_unavailable"))?;
+    let initial_feeds = feeds(&state, &subscription).await.map_err(|cause| {
+        failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "subscription_unavailable",
+            &cause,
+        )
+    })?;
     let connection_id = Ulid::generate().to_string();
     let (changes, receiver) = watch::channel(subscription.clone());
     let progress = Arc::new(std::sync::Mutex::new(subscription.clone()));
@@ -345,7 +349,7 @@ async fn catch_up(
         let page = match state.store.read_events(id, after, MAX_SCAN_LIMIT).await {
             Ok(page) => page,
             Err(error) => {
-                tracing::warn!(%error, "SSE replay failed");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "SSE replay failed");
                 return Replay::Failed;
             }
         };
@@ -452,7 +456,7 @@ async fn produce(
         } {
             Ok(live) => live,
             Err(error) => {
-                tracing::warn!(%error, "SSE subscription failed");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "SSE subscription failed");
                 return;
             }
         };

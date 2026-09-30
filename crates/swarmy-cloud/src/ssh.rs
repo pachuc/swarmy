@@ -539,15 +539,22 @@ impl Ssh {
             "stack"
         };
         cloud_out!("Provisioning node and building release binaries (this takes several minutes)");
+        // Static S3 keys travel on SSH stdin into a root-owned file, never on
+        // a command line. The provisioning script merges them into the 0600
+        // node environment without printing them.
+        crate::services::upload_bucket_keys(node, &address).await?;
         checked(
-            base(node)?.arg(&address).arg(provisioning_command(
-                mode,
-                service_ip,
-                node.bucket().unwrap_or(""),
-                &node.region,
-                node.sandboxes,
-                node,
-            )?),
+            base(node)?.arg(&address).arg({
+                let spec = node.bucket_spec();
+                provisioning_command(
+                    mode,
+                    service_ip,
+                    spec.as_ref(),
+                    &node.region,
+                    node.sandboxes,
+                    node,
+                )?
+            }),
             "provision remote node",
         )
         .await?;
@@ -582,18 +589,35 @@ fn has_control_units(listing: &str) -> bool {
 fn provisioning_command(
     mode: &str,
     service_ip: std::net::Ipv4Addr,
-    bucket: &str,
-    region: &str,
+    spec: Option<&swarmy_config::BucketSpec>,
+    fallback_region: &str,
     sandboxes: u32,
     node: &RemoteNode,
 ) -> Result<String> {
+    let (bucket, region, endpoint, prefix, conditional_create, static_keys) = match spec {
+        Some(spec) => (
+            spec.bucket.as_str(),
+            if spec.region.is_empty() {
+                fallback_region
+            } else {
+                spec.region.as_str()
+            },
+            spec.endpoint.as_str(),
+            spec.prefix.as_str(),
+            spec.conditional_create,
+            spec.needs_static_keys(),
+        ),
+        None => ("", fallback_region, "", "", true, false),
+    };
     let user = service_user(node)?;
     // Bash resolves `~user` through the passwd entry; Rust passes only the login.
     Ok(format!(
-        "cd {} && bash scripts/remote-provision.sh {mode} {service_ip} {} {} {sandboxes} {} {}",
+        "cd {} && bash scripts/remote-provision.sh {mode} {service_ip} {} {} {} {} {conditional_create} {static_keys} {sandboxes} {} {}",
         tilde_repo(&user),
         shell_words::quote(bucket),
         shell_words::quote(region),
+        shell_words::quote(endpoint),
+        shell_words::quote(prefix),
         shell_words::quote(&user),
         shell_words::quote(node.local_storage()),
     ))
@@ -1003,12 +1027,12 @@ mod provisioning_command_tests {
     fn sandbox_limit_is_passed_to_both_node_modes() {
         let ip = "10.0.0.1".parse().unwrap();
         assert_eq!(
-            provisioning_command("stack", ip, "", "us-east-1", 0, &node()).unwrap(),
-            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 0 swarmy /dev/nvme1n1"
+            provisioning_command("stack", ip, None, "us-east-1", 0, &node()).unwrap(),
+            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 '' '' true false 0 swarmy /dev/nvme1n1"
         );
         assert_eq!(
-            provisioning_command("node", ip, "", "us-east-1", 4, &node()).unwrap(),
-            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh node 10.0.0.1 '' us-east-1 4 swarmy /dev/nvme1n1"
+            provisioning_command("node", ip, None, "us-east-1", 4, &node()).unwrap(),
+            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh node 10.0.0.1 '' us-east-1 '' '' true false 4 swarmy /dev/nvme1n1"
         );
     }
 
@@ -1023,8 +1047,8 @@ mod provisioning_command_tests {
         .unwrap();
         assert_eq!(legacy.service_user(), "ubuntu");
         assert_eq!(
-            provisioning_command("stack", ip, "", "us-east-1", 0, &legacy).unwrap(),
-            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 0 ubuntu ''"
+            provisioning_command("stack", ip, None, "us-east-1", 0, &legacy).unwrap(),
+            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 '' '' true false 0 ubuntu ''"
         );
     }
 
@@ -1042,8 +1066,35 @@ mod provisioning_command_tests {
         .unwrap();
         assert_eq!(existing.service_user(), "ubuntu");
         assert_eq!(
-            provisioning_command("stack", ip, "", "us-east-1", 0, &existing).unwrap(),
-            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 0 ubuntu ''"
+            provisioning_command("stack", ip, None, "us-east-1", 0, &existing).unwrap(),
+            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 '' '' true false 0 ubuntu ''"
         );
+    }
+
+    #[test]
+    fn static_coordinates_are_quoted_positionally() {
+        use swarmy_config::{BucketCredentials, BucketSpec};
+        let ip = "10.0.0.1".parse().unwrap();
+        let spec = BucketSpec {
+            endpoint: "https://objects.example.invalid".into(),
+            region: String::new(),
+            bucket: "test-bucket".into(),
+            prefix: "runs/team".parse().unwrap(),
+            credentials: BucketCredentials::StaticKeys {
+                access_key: "test-access".into(),
+                secret_key: "test-secret".into(),
+            },
+            conditional_create: false,
+        };
+        // The bucket region falls back to the remote region; the create-only
+        // switch and the static signal travel positionally. Keys never do.
+        let command =
+            provisioning_command("stack", ip, Some(&spec), "eu-west-1", 4, &node()).unwrap();
+        assert_eq!(
+            command,
+            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 test-bucket eu-west-1 https://objects.example.invalid runs/team false true 4 swarmy /dev/nvme1n1"
+        );
+        assert!(!command.contains("test-access"));
+        assert!(!command.contains("test-secret"));
     }
 }

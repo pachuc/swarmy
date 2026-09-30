@@ -92,7 +92,7 @@ impl Gateway {
         let outcome = self.serve_inner(concurrency).await;
         // Drain queued turn metrics before exit so shutdown keeps every write.
         if let Err(error) = self.store.flush_turn_metrics().await {
-            warn!(%error, "gateway metric flush failed");
+            warn!(error = %swarmy_core::error_chain(&error), "gateway metric flush failed");
         }
         outcome
     }
@@ -110,7 +110,7 @@ impl Gateway {
             let delivery = tokio::select! {
                 _ = ticks.tick() => {
                     if let Err(error) = refresh(self, &mut messages, &mut subscriptions).await {
-                        warn!(%error, "provider refresh failed; retaining the previous advertisement");
+                        warn!(error = %swarmy_core::error_chain(&error), "provider refresh failed; retaining the previous advertisement");
                     }
                     continue;
                 }
@@ -158,7 +158,7 @@ impl DispatchWorker {
         let message = match delivery {
             Ok(message) => message,
             Err(error) => {
-                warn!(%error, "cannot decode work delivery");
+                warn!(error = %swarmy_core::error_chain(&error), "cannot decode work delivery");
                 return Ok(());
             }
         };
@@ -167,7 +167,7 @@ impl DispatchWorker {
         self.tasks.spawn(async move {
             let _permit = permit;
             if let Err(error) = gateway.handle(&message).await {
-                error!(%error, "delivery left unacknowledged");
+                error!(error = %swarmy_core::error_chain(&error), "delivery left unacknowledged");
             }
         });
         Ok(())
@@ -189,7 +189,7 @@ async fn advertise(store: &Store, served: &[String]) -> Result<()> {
                 .await?
         }
         Err(error) => {
-            warn!(%error, "keyring unavailable; advertising no credential entries");
+            warn!(error = %swarmy_core::error_chain(&error), "keyring unavailable; advertising no credential entries");
             Vec::new()
         }
     };
