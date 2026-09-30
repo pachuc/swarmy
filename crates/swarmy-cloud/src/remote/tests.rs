@@ -1412,7 +1412,7 @@ async fn static_bucket_up_skips_roles_and_redacts_logs() {
     // Saved state carries the description; formatter output never does.
     let node = setup.state.require("static-test").unwrap();
     assert_eq!(
-        std::os::unix::fs::PermissionsExt::mode(
+        PermissionsExt::mode(
             &std::fs::metadata(setup.state.directory.join("static-test.json"))
                 .unwrap()
                 .permissions()

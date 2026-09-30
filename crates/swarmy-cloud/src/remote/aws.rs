@@ -52,10 +52,6 @@ where
 const UBUNTU_IMAGE: &str =
     "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id";
 
-const REMOTE_TAG: &str = "swarmy-remote";
-const MANAGED_TAG: &str = "managed-by";
-const MANAGER: &str = "swarmy";
-
 /// Model reported by `lsblk` for EC2 instance-store `NVMe` devices. Nitro
 /// instances name `NVMe` disks by attachment order, so an extra EBS volume can
 /// take `/dev/nvme1n1`; the model, not the name, identifies the local disk.
