@@ -1,7 +1,7 @@
 //! Model probes through the control plane's stored credentials. An operator
 //! who ran `swarmy auth set` keeps credentials on the control plane, so the
 //! client asks the API to probe instead of resolving local files.
-use super::{ApiResult, AppState, credential_store, error, storage};
+use super::{ApiResult, AppState, credential_store, error, failure, storage};
 use axum::{Json, extract::State, http::StatusCode};
 use futures::StreamExt as _;
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
@@ -140,7 +140,7 @@ async fn resolve_auth(
         provider: body.provider.clone(),
         record,
     }))
-    .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"))?;
+    .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", cause))?;
     Ok(swarmy_llm::auth::resolve(&body.provider, &resolver)
         .await
         .map_err(|resolve_error| {

@@ -1,6 +1,6 @@
 //! Conversation mutations preserve the store-first, nudge-second client path.
 use super::views::session_with_next;
-use super::{ApiResult, AppState, error, id, replay, storage};
+use super::{ApiResult, AppState, error, failure, id, invalid_selection, replay, storage};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -63,19 +63,6 @@ pub(super) fn session_error(
         ),
         other => storage(other),
     }
-}
-
-fn invalid_selection(
-    error_value: &swarmy_llm::selection::SelectionError,
-) -> (StatusCode, Json<api::ApiError>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(api::ApiError {
-            code: "invalid_selection".into(),
-            message: error_value.to_string(),
-            provider_text: None,
-        }),
-    )
 }
 
 fn check_key(key: &str) -> Result<(), (StatusCode, Json<api::ApiError>)> {
@@ -401,7 +388,13 @@ pub(crate) async fn wait_idle(
         .bus
         .subscribe_live::<swarmy_core::Event>(LiveFeed::SessionEvents(session_id))
         .await
-        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "event_feed_unavailable"))?;
+        .map_err(|cause| {
+            failure(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "event_feed_unavailable",
+                cause,
+            )
+        })?;
     let deadline =
         Instant::now() + Duration::from_millis(query.timeout_ms.unwrap_or(30_000).min(120_000));
     let mut fallback = interval_at(
