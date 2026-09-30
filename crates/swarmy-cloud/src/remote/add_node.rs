@@ -178,6 +178,64 @@ enum JoinPlan<'a> {
     },
 }
 
+/// Decide whether a join provisions an existing host or launches an EC2
+/// machine from the remote's provider. Existing-host remotes require
+/// `--host` and `--ssh-key` and refuse the EC2 sizing flags; AWS remotes
+/// refuse every existing-host flag. One helper so the provider dispatch for
+/// joins lives here, not at the call site.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one flag per CLI option; a struct would repeat the same fields"
+)]
+pub(super) fn resolve_existing<'a>(
+    remote: &str,
+    provider: swarmy_config::Provider,
+    join_host: Option<&'a str>,
+    ssh_user: Option<&'a str>,
+    ssh_key: Option<&'a Path>,
+    primary_address: Option<&'a str>,
+    instance_type: Option<&str>,
+    disk_gb: Option<u32>,
+) -> Result<Option<ExistingJoin<'a>>> {
+    if provider == swarmy_config::Provider::Existing {
+        let Some(address) = join_host else {
+            return Err(crate::Error::other(format!(
+                "remote {remote} uses existing hosts; pass --host ADDRESS to join one"
+            )));
+        };
+        let Some(key) = ssh_key else {
+            return Err(crate::Error::other(
+                "joining an existing host needs --ssh-key PATH".to_owned(),
+            ));
+        };
+        if instance_type.is_some() || disk_gb.is_some() {
+            return Err(crate::Error::other(
+                "--instance-type and --disk-gb select EC2 machines; existing-host joins use --host"
+                    .to_owned(),
+            ));
+        }
+        return Ok(Some(ExistingJoin {
+            host: address,
+            ssh_user: ssh_user.unwrap_or("root"),
+            ssh_key: key,
+            primary_address,
+        }));
+    }
+    for (flag, present) in [
+        ("--host", join_host.is_some()),
+        ("--ssh-user", ssh_user.is_some()),
+        ("--ssh-key", ssh_key.is_some()),
+        ("--primary-address", primary_address.is_some()),
+    ] {
+        if present {
+            return Err(crate::Error::other(format!(
+                "{flag} is only for existing-host remotes; remote {remote} is AWS-managed"
+            )));
+        }
+    }
+    Ok(None)
+}
+
 /// Resolve how a node joins before any state or host changes. An
 /// existing-host join validates the operator-given addresses and key and
 /// clears the EC2 shape it never uses; a launch applies the shape override
@@ -209,10 +267,7 @@ fn plan_join<'a>(
     validate_existing(&join)?;
     settings.aws.image = None;
     settings.aws.instance_type = String::new();
-    crate::Error::ensure(
-        sandboxes == 0 || !settings.local_storage.is_empty(),
-        "sandbox nodes need local storage: pass --local-storage with a block device or dir:/path",
-    )?;
+    super::validate_sandbox_storage(sandboxes, &settings.local_storage, "add-node")?;
     let mut effective = primary.clone();
     if let Some(address) = join.primary_address {
         effective.private_ip = address.into();

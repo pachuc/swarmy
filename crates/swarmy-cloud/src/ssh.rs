@@ -1,7 +1,8 @@
 //! SSH helpers shared by provisioning, tunnel, log, and status commands.
 use std::{
     fmt::Write as _,
-    os::unix::fs::PermissionsExt,
+    io::Write as _,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -195,16 +196,22 @@ pub async fn generate_key(node: &RemoteNode) -> Result<Vec<u8>> {
 
 /// Copy an operator-owned bootstrap private key into remote state for
 /// adoption and derive its public half for inspection. The state directory
-/// is 0700; the copy is 0600 whatever the source's mode is, and the source
-/// file is left untouched.
+/// is 0700; the copy is created with mode 0600 whatever the source's mode
+/// or umask is, and the source file is left untouched.
 ///
 /// # Errors
 ///
 /// Reports unreadable sources and keys `ssh-keygen` cannot parse.
 pub async fn adopt_key(node: &RemoteNode, source: &Path) -> Result<()> {
     let bytes = std::fs::read(source)?;
-    std::fs::write(&node.key_path, &bytes)?;
-    std::fs::set_permissions(&node.key_path, std::fs::Permissions::from_mode(0o600))?;
+    let mut key = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&node.key_path)?;
+    key.write_all(&bytes)?;
+    drop(key);
     let output = run_output(
         Command::new("ssh-keygen")
             .args(["-y", "-f"])
@@ -586,18 +593,24 @@ impl Ssh {
     }
 
     /// Stop swarmy services on an adopted host and remove its units,
-    /// binaries, node environment, and checkout. Units are stopped and
-    /// disabled by listed name so an empty match still succeeds, and every
-    /// removal forces, so a failed `down` can retry. `/etc/swarmy` goes
-    /// because it holds static bucket keys and copied credentials. Local
-    /// sandbox disk data stays: the machine is operator-owned.
+    /// binaries, node environment, and checkout. Runs the checkout's
+    /// `remote-decommission.sh`, which reads the same unit and binary lists
+    /// provisioning installs, so the two can never drift apart (a unit
+    /// missing from the shared list would be left running while its binary
+    /// is deleted). Idempotent, so a failed `down` can retry. `/etc/swarmy`
+    /// goes because it holds static bucket keys and copied credentials.
+    /// Local sandbox disk data, the service user, the fstab line and its
+    /// mount, and tunnel keys authorized on the primary stay: the machine
+    /// is operator-owned.
     ///
     /// # Errors
     ///
-    /// Reports unreachable hosts and SSH failures.
+    /// Reports unreachable hosts and SSH failures. The wait is short
+    /// (about half a minute): `down` must continue past a cancelled
+    /// server instead of blocking for a full provisioning wait per host.
     pub async fn decommission(&self, node: &RemoteNode) -> Result<()> {
         let _ = self;
-        let address = wait_ssh(node).await?;
+        let address = wait_ssh_for(node, 6).await?;
         let user = service_user(node)?;
         checked(
             base(node)?.arg(&address).arg(decommission_command(&user)),
@@ -668,14 +681,15 @@ fn provisioning_command(
     ))
 }
 
-/// One idempotent teardown script for `down` on adopted hosts. Units stop
-/// and disable by listed name because a glob matching nothing must still
-/// succeed; every removal forces so a failed `down` can retry. The service
-/// home resolves through `~user` on the host inside a root shell, like the
-/// provisioning paths.
+/// Run the checkout's decommission script for `down` on adopted hosts.
+/// The script reads the shared unit and binary lists, so Rust never repeats
+/// them. The service home resolves through `~user` on the host inside the
+/// copied checkout, like the provisioning paths. `user` is validated
+/// (letters, digits, `_`, `-`), so embedding it is data, never shell.
 fn decommission_command(user: &str) -> String {
     format!(
-        "set -e; units=$(systemctl list-units --all --no-legend --no-pager 'swarmy-*.service' | awk '{{print $1}}' || true); if [ -n \"$units\" ]; then printf '%s\\n' \"$units\" | xargs sudo systemctl stop; printf '%s\\n' \"$units\" | xargs sudo systemctl disable; fi; sudo rm -f /etc/systemd/system/swarmy-*.service; sudo systemctl daemon-reload; sudo rm -f /usr/local/bin/swarmy /usr/local/bin/swarmyd /usr/local/bin/swarmy-scheduler /usr/local/bin/swarmy-gateway /usr/local/bin/swarmy-worker /usr/local/bin/swarmy-api; sudo rm -rf /etc/swarmy; sudo sh -c 'rm -rf ~{user}/swarmy'"
+        "cd {} && bash scripts/remote-decommission.sh {user}",
+        tilde_repo(user),
     )
 }
 
@@ -848,6 +862,14 @@ fn credential_excludes(repo: &Path, credential: &Path) -> Vec<PathBuf> {
 }
 
 async fn wait_ssh(node: &RemoteNode) -> Result<String> {
+    wait_ssh_for(node, 90).await
+}
+
+/// Wait for SSH with an explicit attempt budget (five seconds between
+/// passes over both addresses). Provisioning waits the full budget while a
+/// new machine boots; `down` passes a short budget so a cancelled server
+/// cannot block teardown for minutes per host.
+async fn wait_ssh_for(node: &RemoteNode, attempts: u32) -> Result<String> {
     for address in [&node.public_ip, &node.private_ip] {
         let _: std::net::IpAddr = address
             .parse()
@@ -858,7 +880,7 @@ async fn wait_ssh(node: &RemoteNode) -> Result<String> {
         node.public_ip,
         node.private_ip
     );
-    for _ in 0..90 {
+    for _ in 0..attempts {
         // Same-VPC launchers may reach only the private IP under group-based rules.
         for address in [&node.public_ip, &node.private_ip] {
             let status = base(node)?
@@ -1155,25 +1177,19 @@ mod provisioning_command_tests {
     }
 
     #[test]
-    fn decommission_stops_units_and_removes_swarmy_files_idempotently() {
+    fn decommission_runs_the_shared_teardown_script() {
         let command = super::decommission_command("swarmy");
-        // Units stop and disable by listed name so an empty match succeeds;
-        // every removal forces so a failed `down` can retry.
-        assert!(
-            command
-                .contains("systemctl list-units --all --no-legend --no-pager 'swarmy-*.service'")
+        // Rust never repeats the unit or binary lists: the script reads the
+        // shared lists from the checkout. The checkout resolves its home
+        // through the service login on the host.
+        assert_eq!(
+            command,
+            "cd ~swarmy/swarmy && bash scripts/remote-decommission.sh swarmy"
         );
-        assert!(command.contains("xargs sudo systemctl stop"));
-        assert!(command.contains("xargs sudo systemctl disable"));
-        assert!(command.contains("sudo rm -f /etc/systemd/system/swarmy-*.service"));
-        assert!(command.contains("sudo systemctl daemon-reload"));
-        assert!(command.contains("sudo rm -f /usr/local/bin/swarmy "));
-        assert!(command.contains("sudo rm -rf /etc/swarmy"));
-        // Secrets go with the node environment; the checkout resolves its
-        // home through the service login on the host.
-        assert!(command.contains("sudo sh -c 'rm -rf ~swarmy/swarmy'"));
-        assert!(!command.contains("~other/swarmy"));
-        assert!(super::decommission_command("other").contains("~other/swarmy"));
+        assert_eq!(
+            super::decommission_command("other"),
+            "cd ~other/swarmy && bash scripts/remote-decommission.sh other"
+        );
     }
 
     #[tokio::test]

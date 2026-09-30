@@ -22,7 +22,6 @@ mod buckets;
 mod connect;
 mod disconnect;
 mod down;
-mod existing;
 mod logs;
 mod state;
 mod status;
@@ -34,113 +33,168 @@ mod upgrade;
 pub use super::services::Options as ServiceOptions;
 pub use aws::Aws;
 pub use down::DeletionPlan;
-use existing::ExistingHost;
 
-/// The cloud substrate selected by a remote's provider. AWS owns machines;
-/// existing hosts delegate only bucket lifecycle to object-storage APIs and
-/// fail every machine operation.
-enum ProviderCloud {
-    Aws(Aws),
-    Existing(ExistingHost),
+/// The cloud substrate for a remote. Bucket lifecycle always goes through
+/// object-storage APIs (the same calls `remote up` uses, including
+/// S3-compatible endpoints with static keys). Machine operations delegate
+/// to AWS, or fail for existing-host remotes, which have no cloud machines:
+/// the provisioning paths never call them, so a failure is a programming
+/// mistake. One type, one dispatch on the provider (here in
+/// [`for_settings`]); callers use the [`Cloud`] interface and never branch
+/// on the provider for cloud calls.
+struct Substrate {
+    aws: Aws,
+    provider: swarmy_config::Provider,
 }
 
-impl Cloud for ProviderCloud {
+fn no_machines() -> crate::Error {
+    crate::Error::other(
+        "existing-host remotes have no cloud machines; decommission the server itself",
+    )
+}
+
+impl Cloud for Substrate {
     async fn ensure_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
-        match self {
-            Self::Aws(aws) => aws.ensure_bucket(bucket).await,
-            Self::Existing(existing) => existing.ensure_bucket(bucket).await,
-        }
+        self.aws.ensure_bucket(bucket).await
     }
     async fn base_image(&self) -> Result<String> {
-        match self {
-            Self::Aws(aws) => aws.base_image().await,
-            Self::Existing(existing) => existing.base_image().await,
+        if self.provider == swarmy_config::Provider::Existing {
+            return Err(no_machines());
         }
+        self.aws.base_image().await
     }
     async fn import_ssh_key(&self, name: &str, public_key: Vec<u8>, owner: &str) -> Result<()> {
-        match self {
-            Self::Aws(aws) => aws.import_ssh_key(name, public_key, owner).await,
-            Self::Existing(existing) => existing.import_ssh_key(name, public_key, owner).await,
+        if self.provider == swarmy_config::Provider::Existing {
+            return Err(no_machines());
         }
+        self.aws.import_ssh_key(name, public_key, owner).await
     }
     async fn create(&self, spec: &MachineSpec) -> Result<String> {
-        match self {
-            Self::Aws(aws) => aws.create(spec).await,
-            Self::Existing(existing) => existing.create(spec).await,
+        if self.provider == swarmy_config::Provider::Existing {
+            return Err(no_machines());
         }
+        self.aws.create(spec).await
     }
     async fn get(&self, id: &str) -> Result<Option<Machine>> {
-        match self {
-            Self::Aws(aws) => aws.get(id).await,
-            Self::Existing(existing) => existing.get(id).await,
+        if self.provider == swarmy_config::Provider::Existing {
+            return Err(no_machines());
         }
+        self.aws.get(id).await
     }
     async fn find_by_tag(&self, token: &str) -> Result<Option<String>> {
-        match self {
-            Self::Aws(aws) => aws.find_by_tag(token).await,
-            Self::Existing(existing) => existing.find_by_tag(token).await,
+        if self.provider == swarmy_config::Provider::Existing {
+            return Err(no_machines());
         }
+        self.aws.find_by_tag(token).await
     }
     async fn destroy(&self, id: &str) -> Result<()> {
-        match self {
-            Self::Aws(aws) => aws.destroy(id).await,
-            Self::Existing(existing) => existing.destroy(id).await,
+        if self.provider == swarmy_config::Provider::Existing {
+            return Err(no_machines());
         }
+        self.aws.destroy(id).await
     }
     async fn bucket_ownership(&self, bucket: &ObjectBucket) -> Result<Ownership> {
-        match self {
-            Self::Aws(aws) => aws.bucket_ownership(bucket).await,
-            Self::Existing(existing) => existing.bucket_ownership(bucket).await,
-        }
+        self.aws.bucket_ownership(bucket).await
     }
     async fn role_ownership(&self, name: &str, owner: &str) -> Result<(Ownership, Ownership)> {
-        match self {
-            Self::Aws(aws) => aws.role_ownership(name, owner).await,
-            Self::Existing(existing) => existing.role_ownership(name, owner).await,
-        }
+        self.aws.role_ownership(name, owner).await
     }
     async fn tag_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
-        match self {
-            Self::Aws(aws) => aws.tag_bucket(bucket).await,
-            Self::Existing(existing) => existing.tag_bucket(bucket).await,
-        }
+        self.aws.tag_bucket(bucket).await
     }
     async fn tag_node_role(&self, name: &str, owner: &str) -> Result<()> {
-        match self {
-            Self::Aws(aws) => aws.tag_node_role(name, owner).await,
-            Self::Existing(existing) => existing.tag_node_role(name, owner).await,
-        }
+        self.aws.tag_node_role(name, owner).await
     }
     async fn delete_bucket(&self, bucket: &ObjectBucket) -> Result<BucketRemoval> {
-        match self {
-            Self::Aws(aws) => aws.delete_bucket(bucket).await,
-            Self::Existing(existing) => existing.delete_bucket(bucket).await,
-        }
+        self.aws.delete_bucket(bucket).await
     }
     async fn delete_node_role(&self, name: &str, owner: &str) -> Result<(bool, bool)> {
-        match self {
-            Self::Aws(aws) => aws.delete_node_role(name, owner).await,
-            Self::Existing(existing) => existing.delete_node_role(name, owner).await,
-        }
+        self.aws.delete_node_role(name, owner).await
     }
     async fn delete_ssh_key(&self, name: &str) -> Result<()> {
-        match self {
-            Self::Aws(aws) => aws.delete_ssh_key(name).await,
-            Self::Existing(existing) => existing.delete_ssh_key(name).await,
+        if self.provider == swarmy_config::Provider::Existing {
+            return Err(no_machines());
         }
+        self.aws.delete_ssh_key(name).await
     }
 }
 
-/// Build the provider selected by the remote settings: AWS machines, or the
+/// Build the substrate for the remote settings: AWS machines, or the
 /// existing-host substrate that only manages buckets. The concrete type
 /// stays private; callers use the [`Cloud`] interface.
 pub async fn for_settings(settings: &RemoteSettings) -> impl Cloud {
-    match settings.provider {
-        swarmy_config::Provider::Aws => ProviderCloud::Aws(Aws::new(&settings.region).await),
-        swarmy_config::Provider::Existing => {
-            ProviderCloud::Existing(ExistingHost::new(&settings.region).await)
-        }
+    Substrate {
+        aws: Aws::new(&settings.region).await,
+        provider: settings.provider,
     }
+}
+
+/// Require a configured region before any state or host changes. Shared by
+/// `up` and `adopt` so the message never drifts.
+pub(super) fn validate_region(settings: &RemoteSettings, command: &str) -> Result<()> {
+    crate::Error::ensure(
+        !settings.region.is_empty(),
+        format!("configure remote.region in config.toml before running swarmy remote {command}"),
+    )
+}
+
+/// Check the bucket binding before any state or host changes. Shared by
+/// `up` and `adopt`: the IAM role name bounds the remote name and the
+/// bucket name must be valid.
+pub(super) fn validate_bucket_binding(settings: &RemoteSettings, name: &str) -> Result<()> {
+    if let Some(spec) = &settings.bucket {
+        crate::Error::ensure(
+            name.len() <= 57,
+            "bucket-backed remote name must be at most 57 characters to fit the IAM role name",
+        )?;
+        spec.validate_name()?;
+    }
+    Ok(())
+}
+
+/// Require explicit local storage for sandbox nodes. Shared by `adopt` and
+/// existing-host joins: the machine already exists, so there is no
+/// instance-store lookup to fall back on.
+pub(super) fn validate_sandbox_storage(
+    sandboxes: u32,
+    local_storage: &str,
+    command: &str,
+) -> Result<()> {
+    crate::Error::ensure(
+        sandboxes == 0 || !local_storage.is_empty(),
+        format!(
+            "sandbox nodes need local storage: pass --local-storage with a block device or dir:/path to {command}"
+        ),
+    )
+}
+
+/// Set the bucket up through object-storage APIs. Shared by `up` (create a
+/// machine, then provision it) and `adopt` (provision an existing machine)
+/// so the bucket options never drift apart.
+pub(super) async fn ensure_remote_bucket(
+    cloud: &impl Cloud,
+    settings: &RemoteSettings,
+    name: &str,
+) -> Result<()> {
+    if let Some(spec) = &settings.bucket {
+        cloud
+            .ensure_bucket(&ObjectBucket::from_spec(
+                name,
+                spec,
+                &settings.region,
+                settings.instance_profile(name),
+            ))
+            .await?;
+    }
+    Ok(())
+}
+
+/// Instance type only exists for AWS machines; existing hosts report none
+/// so status never prints a cloud shape that was never selected. One
+/// helper so only this module branches on the provider for presentation.
+pub(crate) fn display_instance_type(node: &RemoteNode) -> Option<String> {
+    let settings = node.launch_settings.as_ref()?;
+    (settings.provider == swarmy_config::Provider::Aws).then(|| settings.aws.instance_type.clone())
 }
 
 /// What a `swarmy remote` invocation did. Confirmation variants carry what
@@ -215,8 +269,10 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
             {
                 return Ok(RunOutcome::NeedsConfirmation { plan });
             }
-            // Existing-host remotes need SSH for host teardown; AWS teardown
-            // needs no checkout, so discovery stays lazy.
+            // The one provider branch for teardown: existing-host remotes
+            // need SSH for host decommissioning, while AWS teardown needs no
+            // checkout, so discovery stays lazy. Cloud calls never branch:
+            // the substrate refuses machine operations for existing hosts.
             if node.cloud_settings().provider == swarmy_config::Provider::Existing {
                 let host = ssh::Ssh::discover()?;
                 down::run_existing(&cloud, &host, &state, &node, keep_bucket).await?;
@@ -446,44 +502,18 @@ async fn run_add_node(state: &State, mut settings: Settings, command: Command) -
         )
     })?;
     let cloud = for_settings(&launch).await;
-    let existing = if launch.provider == swarmy_config::Provider::Existing {
-        let Some(address) = join_host.as_deref() else {
-            return Err(crate::Error::other(format!(
-                "remote {name} uses existing hosts; pass --host ADDRESS to join one"
-            )));
-        };
-        let Some(key) = ssh_key.as_ref() else {
-            return Err(crate::Error::other(
-                "joining an existing host needs --ssh-key PATH".to_owned(),
-            ));
-        };
-        if instance_type.is_some() || disk_gb.is_some() {
-            return Err(crate::Error::other(
-                "--instance-type and --disk-gb select EC2 machines; existing-host joins use --host"
-                    .to_owned(),
-            ));
-        }
-        Some(add_node::ExistingJoin {
-            host: address,
-            ssh_user: ssh_user.as_deref().unwrap_or("root"),
-            ssh_key: key,
-            primary_address: primary_address.as_deref(),
-        })
-    } else {
-        for (flag, present) in [
-            ("--host", join_host.is_some()),
-            ("--ssh-user", ssh_user.is_some()),
-            ("--ssh-key", ssh_key.is_some()),
-            ("--primary-address", primary_address.is_some()),
-        ] {
-            if present {
-                return Err(crate::Error::other(format!(
-                    "{flag} is only for existing-host remotes; remote {name} is AWS-managed"
-                )));
-            }
-        }
-        None
-    };
+    // The provider dispatch for joins lives in the add-node module, so this
+    // call site never branches on the provider itself.
+    let existing = add_node::resolve_existing(
+        &name,
+        launch.provider,
+        join_host.as_deref(),
+        ssh_user.as_deref(),
+        ssh_key.as_deref(),
+        primary_address.as_deref(),
+        instance_type.as_deref(),
+        disk_gb,
+    )?;
     // Box the join future: it holds saved launch state across awaits and
     // would otherwise exceed the large-future budget.
     guard(

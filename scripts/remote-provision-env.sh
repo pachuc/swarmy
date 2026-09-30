@@ -133,6 +133,21 @@ link_volumes_to() {
     [[ $(readlink -f .swarmy/volumes) == "$mount/volumes" ]]
 }
 
+# One list of the systemd units and binaries provisioning installs, shared
+# by the install paths and the decommission script. Provisioning writes
+# swarmy-stack.service or swarmy-tunnel.service (stack or node mode) plus
+# always swarmyd.service; node-services mode adds the four control-plane
+# units. Decommission stops, disables, and removes every name here, so a
+# name missing from this list would be left running while its binary is
+# deleted.
+swarmy_unit_names() {
+    printf '%s\n' swarmy-stack.service swarmy-tunnel.service swarmyd.service swarmy-scheduler.service swarmy-worker.service swarmy-gateway.service swarmy-api.service
+}
+
+swarmy_binary_names() {
+    printf '%s\n' swarmy swarmyd swarmy-scheduler swarmy-gateway swarmy-worker swarmy-api
+}
+
 node_disk_bytes() {
     local sandboxes=$1 mount=$2
     if (( sandboxes == 0 )); then

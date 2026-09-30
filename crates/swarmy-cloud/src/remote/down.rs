@@ -195,7 +195,9 @@ pub(super) async fn run(
 /// Tear down an existing-host remote: stop swarmy services and remove
 /// swarmy files and state on every provisioned host, delete the owned
 /// bucket scope, and drop local state. The machines are operator-owned:
-/// they stay running and no cloud machine call happens.
+/// they stay running and no cloud machine call happens. An unreachable host
+/// never blocks the others: its failure is reported after the bucket and
+/// state cleanup, so a cancelled server cannot hold teardown hostage.
 pub(super) async fn run_existing(
     cloud: &impl Cloud,
     host: &impl Host,
@@ -208,14 +210,23 @@ pub(super) async fn run_existing(
         "Remote {} uses existing hosts: the machines stay running; swarmy services, files, and state are removed from the hosts",
         node.name
     );
+    let mut unreachable = Vec::new();
     for current in nodes.iter().rev() {
         if !current.launch_attempted {
             cloud_out!("Nothing was provisioned for {}", current.name);
             continue;
         }
-        host.decommission(current).await?;
+        if let Err(error) = host.decommission(current).await {
+            unreachable.push((current.name.clone(), swarmy_core::error_chain(&error)));
+        }
     }
-    finish(cloud, state, node, nodes, keep_bucket).await
+    finish(cloud, state, node, nodes, keep_bucket).await?;
+    for (name, detail) in unreachable {
+        cloud_err!(
+            "Host {name} unreachable during down: {detail}; its services and files may remain"
+        );
+    }
+    Ok(())
 }
 
 /// Every node in the remote, primary first.

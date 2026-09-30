@@ -119,4 +119,23 @@ static_bucket=$(node_environment /tmp/checkout 4 /tmp example-bucket eu-west-1 h
 [[ $static_bucket == *'SWARMY_S3_CONDITIONAL_CREATE=false'* ]]
 [[ $static_bucket != *'SWARMY_S3_ACCESS_KEY='* ]]
 [[ $static_bucket != *'SWARMY_S3_SECRET_KEY='* ]]
+# The decommission script reads the same unit and binary lists the install
+# paths use, so a unit can never be left running while its binary is gone.
+units=$(swarmy_unit_names)
+for unit in swarmy-stack.service swarmy-tunnel.service swarmyd.service swarmy-scheduler.service swarmy-worker.service swarmy-gateway.service swarmy-api.service; do
+    [[ $units == *"$unit"* ]] || { echo "shared unit list misses $unit" >&2; exit 1; }
+done
+binaries=$(swarmy_binary_names)
+for binary in swarmy swarmyd swarmy-scheduler swarmy-gateway swarmy-worker swarmy-api; do
+    [[ $binaries == *"$binary"* ]] || { echo "shared binary list misses $binary" >&2; exit 1; }
+done
+decommission=$(<scripts/remote-decommission.sh)
+[[ $decommission == *'swarmy_unit_names'* ]]
+[[ $decommission == *'swarmy_binary_names'* ]]
+[[ $decommission == *'/etc/modules-load.d/swarmy.conf'* ]]
+[[ $decommission == *'/etc/swarmy'* ]]
+# The fstab line and the service user stay for the operator (mentioned only
+# in the header comment, never modified).
+[[ $decommission != *'/etc/fstab'* ]]
+[[ $decommission != *'userdel'* ]]
 echo 'remote provision argument and environment tests passed'

@@ -778,14 +778,37 @@ setting selects the address. The service user stays the primary's so the
 tunnel login matches.
 
 `down`, `status`, `upgrade`, and `connect` work for adopted remotes
-without any cloud call. `down` stops and removes swarmy's services, units,
-binaries, node environment (`/etc/swarmy`, which holds static bucket keys
-and copied credentials), and checkout on every host, deletes the owned
-bucket scope unless `--keep-bucket` is passed, and drops local state. It
-never deletes the machines themselves, and says so; local sandbox disk
-data stays for the operator. `status` reports no instance type for
-existing hosts, and owned bucket or role resources still ask for
-confirmation before deletion.
+without any cloud call. `down` stops and disables every swarmy unit
+(`swarmy-stack` or `swarmy-tunnel`, `swarmyd`, and any
+`scheduler`/`worker`/`gateway`/`api` units) through
+`scripts/remote-decommission.sh`, which reads the same unit and binary
+lists provisioning installs, then removes the units, the binaries in
+`/usr/local/bin`, `/etc/modules-load.d/swarmy.conf`, the node environment
+(`/etc/swarmy`, which holds static bucket keys and copied credentials),
+and the checkout on every host. It deletes the owned bucket scope unless
+`--keep-bucket` is passed, and drops local state. It never deletes the
+machines themselves, and says so. An unreachable host does not block the
+others: its failure is reported after the bucket and state cleanup, and
+`down` waits only briefly per host instead of the full provisioning wait.
+`status` reports no instance type for existing hosts, and owned bucket or
+role resources still ask for confirmation before deletion.
+
+`down` deliberately leaves the service user, the fstab line and its mount,
+local sandbox disk data, and the tunnel keys joining nodes authorized on
+the primary, so a re-provisioned host keeps its login, disks, and trust.
+To remove those by hand after `down`, on each adopted host as root:
+
+```sh
+umount /mnt/swarmy-local  # only for device storage; skip for dir:/path
+sed -i '/^LABEL=swarmy-local /d' /etc/fstab
+userdel -r <service-user>  # also removes its home and any checkout remains
+rm -f /etc/sudoers.d/90-swarmy-<service-user>
+```
+
+On the primary, edit the service user's `~/.ssh/authorized_keys` and
+delete the joining nodes' restricted tunnel lines (the ones starting with
+`restrict,port-forwarding,command="/bin/false"`). For `dir:/path` storage,
+delete the directory used when its contents are no longer needed.
 
 ```sh
 swarmy remote connect test

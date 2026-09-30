@@ -9,7 +9,7 @@ use std::{path::Path, time::Instant};
 use crate::Result;
 use swarmy_config::{RemoteNode, RemotePorts, RemoteSettings};
 
-use super::{Cloud, Host, ObjectBucket, state::State};
+use super::{Cloud, Host, state::State};
 
 pub(super) struct AdoptNode<'a> {
     pub name: &'a str,
@@ -38,16 +38,7 @@ pub(super) async fn run(
     // recover an interrupted adoption.
     state.save(&node)?;
     let result = async {
-        if let Some(spec) = &settings.bucket {
-            cloud
-                .ensure_bucket(&ObjectBucket::from_spec(
-                    name,
-                    spec,
-                    &settings.region,
-                    settings.instance_profile(name),
-                ))
-                .await?;
-        }
+        super::ensure_remote_bucket(cloud, settings, name).await?;
         node.launch_attempted = true;
         state.save(&node)?;
         host.adopt_key(&node, request.ssh_key).await?;
@@ -104,37 +95,35 @@ fn initial_node(state: &State, settings: &RemoteSettings, request: &AdoptNode<'_
 }
 
 fn validate(settings: &RemoteSettings, request: &AdoptNode<'_>) -> Result<()> {
-    crate::Error::ensure(
-        !settings.region.is_empty(),
-        "configure remote.region in config.toml before running swarmy remote adopt",
-    )?;
+    super::validate_region(settings, "adopt")?;
     validate_bootstrap(request.host, request.ssh_user, request.ssh_key, "adopt")?;
     swarmy_config::validate_service_user(&settings.service_user)?;
-    crate::Error::ensure(
-        request.sandboxes == 0 || !settings.local_storage.is_empty(),
-        "sandbox nodes need local storage: pass --local-storage with a block device or dir:/path",
-    )?;
+    super::validate_sandbox_storage(request.sandboxes, &settings.local_storage, "adopt")?;
+    super::validate_bucket_binding(settings, request.name)?;
+    // An existing host can never use an IAM instance role: the role would be
+    // created but the machine could never assume it. Require static keys.
     if let Some(spec) = &settings.bucket {
         crate::Error::ensure(
-            request.name.len() <= 57,
-            "bucket-backed remote name must be at most 57 characters to fit the IAM role name",
+            !spec.is_aws(),
+            "existing-host remotes cannot use an AWS instance-role bucket; pass static keys with --s3-endpoint, --s3-access-key, and --s3-secret-file",
         )?;
-        spec.validate_name()?;
     }
     Ok(())
 }
 
 /// Check an operator-given bootstrap address, login, and key before any
 /// state or host changes. `command` names the calling subcommand so messages
-/// point at its flags.
+/// point at its flags. The address must be IPv4 here: provisioning rejects
+/// anything else, so accepting IPv6 would create state and a bucket before
+/// failing.
 pub(super) fn validate_bootstrap(
     host: &str,
     ssh_user: &str,
     ssh_key: &Path,
     command: &str,
 ) -> Result<()> {
-    let _: std::net::IpAddr = host.parse().map_err(|source| {
-        crate::Error::context(source, format!("{command} --host must be an IP address"))
+    let _: std::net::Ipv4Addr = host.parse().map_err(|source| {
+        crate::Error::context(source, format!("{command} --host must be an IPv4 address"))
     })?;
     crate::Error::ensure(
         !ssh_user.is_empty()

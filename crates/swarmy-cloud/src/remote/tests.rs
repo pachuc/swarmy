@@ -268,6 +268,7 @@ struct FakeHost {
     primaries: RefCell<Vec<Option<RemoteNode>>>,
     adopted_keys: RefCell<Vec<std::path::PathBuf>>,
     decommissioned: RefCell<Vec<String>>,
+    fail_decommission: RefCell<Vec<String>>,
 }
 
 /// Default `lsblk -dno PATH,MODEL` fixture: EBS root plus one instance-store
@@ -333,7 +334,14 @@ impl Host for FakeHost {
     }
     fn decommission(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
         self.decommissioned.borrow_mut().push(node.name.clone());
-        std::future::ready(Ok(()))
+        std::future::ready(if self.fail_decommission.borrow().contains(&node.name) {
+            Err(crate::Error::other(format!(
+                "host {} unreachable",
+                node.name
+            )))
+        } else {
+            Ok(())
+        })
     }
     fn block_devices(&self, _: &RemoteNode) -> impl Future<Output = Result<String>> {
         let listing = self.block_devices.borrow().clone();
@@ -3094,4 +3102,169 @@ async fn down_existing_deletes_the_owned_bucket_scope() {
     );
     assert!(setup.cloud.requests.borrow().is_empty());
     assert!(state.read("static-test").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn adopt_rejects_ipv6_before_state_or_cloud_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    let key = bootstrap_key(&dir);
+    // Provisioning only accepts IPv4, so adopt must reject IPv6 up front
+    // instead of creating state and a bucket first.
+    let error = super::adopt::run(
+        &cloud,
+        &host,
+        &state,
+        &existing_settings(),
+        super::adopt::AdoptNode {
+            name: "demo",
+            host: "2001:db8::10",
+            ssh_user: "root",
+            ssh_key: &key,
+            sandboxes: 0,
+        },
+        None.into(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        swarmy_core::error_chain(&error).contains("must be an IPv4 address"),
+        "{error:?}"
+    );
+    assert!(state.read("demo").unwrap().is_none());
+    assert!(host.provisioned.borrow().is_empty());
+    assert!(cloud.requests.borrow().is_empty());
+}
+
+#[tokio::test]
+async fn adopt_rejects_aws_buckets_without_static_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    let key = bootstrap_key(&dir);
+    let settings = RemoteSettings {
+        bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
+        ..existing_settings()
+    };
+    // An IAM role would be created that the host could never assume.
+    let error = super::adopt::run(
+        &cloud,
+        &host,
+        &state,
+        &settings,
+        super::adopt::AdoptNode {
+            name: "demo",
+            host: "203.0.113.10",
+            ssh_user: "root",
+            ssh_key: &key,
+            sandboxes: 0,
+        },
+        None.into(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        swarmy_core::error_chain(&error).contains("static keys"),
+        "{error:?}"
+    );
+    assert!(state.read("demo").unwrap().is_none());
+    assert!(cloud.bucket_ensures.borrow().is_empty());
+}
+
+#[test]
+fn join_dispatch_requires_host_for_existing_and_refuses_it_for_aws() {
+    let key = std::path::Path::new("key");
+    // Existing-host remotes need --host and --ssh-key.
+    assert!(
+        super::add_node::resolve_existing(
+            "demo",
+            swarmy_config::Provider::Existing,
+            None,
+            Some("root"),
+            Some(key),
+            None,
+            None,
+            None,
+        )
+        .is_err()
+    );
+    // AWS remotes refuse every existing-host flag.
+    for (host, user, ssh_key, primary) in [
+        (Some("203.0.113.11"), None, None, None),
+        (None, Some("root"), None, None),
+        (None, None, Some(key), None),
+        (None, None, None, Some("192.0.2.10")),
+    ] {
+        assert!(
+            super::add_node::resolve_existing(
+                "demo",
+                swarmy_config::Provider::Aws,
+                host,
+                user,
+                ssh_key,
+                primary,
+                None,
+                None,
+            )
+            .is_err()
+        );
+    }
+    // EC2 sizing flags never apply to an existing-host join.
+    assert!(
+        super::add_node::resolve_existing(
+            "demo",
+            swarmy_config::Provider::Existing,
+            Some("203.0.113.11"),
+            Some("root"),
+            Some(key),
+            None,
+            Some("m6id.xlarge"),
+            None,
+        )
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn down_existing_continues_past_unreachable_hosts() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    let settings = existing_settings();
+    adopt_existing(&state, &cloud, &host, &settings, &dir, "demo").await;
+    let key = bootstrap_key(&dir);
+    super::add_node::run(
+        &cloud,
+        &host,
+        &state,
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 0,
+            shape: super::NodeShape::default(),
+            local_storage: String::new(),
+            existing: Some(super::add_node::ExistingJoin {
+                host: "203.0.113.11",
+                ssh_user: "admin",
+                ssh_key: &key,
+                primary_address: None,
+            }),
+        },
+        Duration::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
+    // The child host is gone; teardown still reaches the primary and still
+    // drops the bucket scope and local state, reporting the failure.
+    host.fail_decommission.borrow_mut().push("demo-2".into());
+    let node = state.require("demo").unwrap();
+    down::run_existing(&cloud, &host, &state, &node, true)
+        .await
+        .unwrap();
+    assert_eq!(*host.decommissioned.borrow(), ["demo-2", "demo"]);
+    assert!(state.read("demo").unwrap().is_none());
 }

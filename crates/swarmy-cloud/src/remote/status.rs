@@ -82,10 +82,10 @@ fn instance_state(reachable: bool) -> String {
 }
 
 /// Instance type only exists for AWS machines; existing hosts report none
-/// so status never prints a cloud shape that was never selected.
+/// so status never prints a cloud shape that was never selected. The
+/// provider check lives in the shared helper, not here.
 fn instance_type(node: &RemoteNode) -> Option<String> {
-    let settings = node.launch_settings.as_ref()?;
-    (settings.provider == swarmy_config::Provider::Aws).then(|| settings.aws.instance_type.clone())
+    super::display_instance_type(node)
 }
 
 pub(super) async fn run(json: bool) -> Result<()> {
