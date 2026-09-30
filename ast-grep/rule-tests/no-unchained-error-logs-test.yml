@@ -1,0 +1,30 @@
+id: no-unchained-error-logs
+valid:
+  - |
+    fn f(error: E) { tracing::warn!(error = %swarmy_core::error_chain(&error), "write failed"); }
+  - |
+    fn f(error: E) { warn!(error = %swarmy_core::error_chain(&error), path = %p, "write failed"); }
+  - |
+    fn f(stderr: &str, reason: String) { tracing::warn!(%stderr, %reason, "spill failed"); }
+  - |
+    #[cfg(test)]
+    mod tests {
+        fn f(error: E) { tracing::warn!(%error, "x"); }
+    }
+invalid:
+  - |
+    fn f(error: E) { tracing::warn!(%error, "write failed"); }
+  - |
+    fn f(error: E) { tracing::debug!(what, ?error, "failed"); }
+  - |
+    fn f(error: E) { error!(error = %error, "failed"); }
+  - |
+    fn f(write_error: E) {
+        tracing::warn!(
+            session_id = %id,
+            %write_error,
+            "failed"
+        );
+    }
+  - |
+    fn f(error: E) { tracing::warn!("failed: {error}"); }

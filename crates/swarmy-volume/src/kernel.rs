@@ -66,7 +66,7 @@ impl Attachment {
         let server = tokio::spawn(async move {
             let result = nbd::serve_connection(server_socket, device).await;
             if let Err(error) = &result {
-                tracing::error!(%error, "attached NBD server failed");
+                tracing::error!(error = %swarmy_core::error_chain(error), "attached NBD server failed");
             }
             result
         });
@@ -207,7 +207,7 @@ impl Attachment {
 impl Drop for Attachment {
     fn drop(&mut self) {
         if let Err(error) = self.disconnect() {
-            tracing::error!(%error, "NBD detach failed");
+            tracing::error!(error = %swarmy_core::error_chain(&error), "NBD detach failed");
         }
     }
 }

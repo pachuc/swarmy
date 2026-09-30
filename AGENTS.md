@@ -257,24 +257,29 @@ locally the same way CI does:
   never `anyhow` in `[dependencies]` (`swarmyd` counts as a binary: its
   `lib.rs` declares no modules and it has a binary target). Blocking, milliseconds.
 - `npx --yes --package @ast-grep/cli@0.45.3 ast-grep scan --config ast-grep/sgconfig.yml`
-  (or `npm install --global @ast-grep/cli@0.45.3` once): the exact,
-  path-scoped `no-spawn-in-libraries`, `no-stringified-errors`,
-  `no-unwrap-in-libraries`, and `no-print-in-libraries` rules in
-  `ast-grep/rules/`. Blocking, under a second. A new `tokio::spawn`,
-  `.map_err(|error| error.to_string())`, `.unwrap()`, or `print!`,
-  `println!`, `eprint!`, or `eprintln!` in a library file fails unless its
-  file's listed exception genuinely applies. Test modules (`#[cfg(test)]
-  mod ...`), integration tests, examples, and binaries are out of scope, so
-  the rules need no per-test-file exceptions. Prefer fixing the code (`?` or
-  `expect` with the invariant, `tracing` or a return value instead of
-  printing); a new exception needs a why-comment meeting the bar below.
+  (or `npm install --global @ast-grep/cli@0.45.3` once) plus
+  `npx --yes --package @ast-grep/cli@0.45.3 ast-grep test --config ast-grep/sgconfig.yml --skip-snapshot-tests`:
+  the exact, path-scoped `no-spawn-in-libraries`, `no-stringified-errors`,
+  `no-unwrap-in-libraries`, `no-print-in-libraries`, and
+  `no-unchained-error-logs` rules in `ast-grep/rules/`. Blocking, under a
+  second. A new `tokio::spawn`, `.map_err(|error| error.to_string())`,
+  `.unwrap()`, `print!`, `println!`, `eprint!`, or `eprintln!` in a library
+  file, or a tracing macro logging an error without its cause chain, fails
+  unless its file's listed exception genuinely applies. Test modules
+  (`#[cfg(test)] mod ...`), integration tests, examples, and binaries are out
+  of scope for the print/spawn/unwrap/stringify rules (the error-chain rule
+  covers binaries too, with only tests out of scope), so the rules need no
+  per-test-file exceptions. Prefer fixing the code (`?` or `expect` with the
+  invariant, `tracing` or a return value instead of printing); a new exception
+  needs a why-comment meeting the bar below.
 - Clone report (`clone-report` CI job; locally
   `npx --yes jscpd@5.3.3 --config .jscpd.json`): advisory numbers in the job
   summary for `REVIEWER.md`'s duplication checklist, never a gate.
 - Error logging keeps the cause chain: services log
   `swarmy_core::error_chain(&error)` in an `error` field wherever they keep
   an error instead of returning it, so the log names the underlying failure
-  instead of only the top-level message. A `#[source]` variant must not also
+  instead of only the top-level message. The `no-unchained-error-logs`
+  ast-grep rule enforces this. A `#[source]` variant must not also
   print its source in its message.
 - From the CI hygiene task, all in place: `cargo deny check licenses bans
   sources` blocking with advisories on a weekly schedule (non-blocking),

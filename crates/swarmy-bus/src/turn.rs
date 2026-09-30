@@ -42,7 +42,7 @@ impl Bus {
             .publish_live(LiveFeed::TurnTimeline(event.session_id), event)
             .await
         {
-            tracing::warn!(%error, "turn observation publication failed");
+            tracing::warn!(error = %swarmy_core::error_chain(&error), "turn observation publication failed");
         }
     }
 }

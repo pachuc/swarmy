@@ -303,7 +303,7 @@ impl Bus {
             let request = match decode::<WakeRequest>(&message.payload) {
                 Ok(request) => request,
                 Err(error) => {
-                    tracing::warn!(%error, "invalid scheduler wake request");
+                    tracing::warn!(error = %swarmy_core::error_chain(&error), "invalid scheduler wake request");
                     continue;
                 }
             };
@@ -316,7 +316,7 @@ impl Bus {
             }
             .await;
             if let Err(error) = result {
-                tracing::warn!(session_id = %request.session_id, %error, "wake reply failed");
+                tracing::warn!(session_id = %request.session_id, error = %swarmy_core::error_chain(&error), "wake reply failed");
             }
         }
         Err(Error::Scheduler("wake subscription closed".into()))

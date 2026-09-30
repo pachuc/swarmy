@@ -109,7 +109,7 @@ pub(crate) fn spawn_metrics_drain(
             }
             for ((session, turn), patches) in batches {
                 if let Err(error) = writer.record_turn_metrics(session, turn, patches).await {
-                    tracing::warn!(%error, %session, %turn, "turn metric write failed");
+                    tracing::warn!(error = %swarmy_core::error_chain(&error), %session, %turn, "turn metric write failed");
                 }
             }
             for ack in flushes {
@@ -449,7 +449,9 @@ impl crate::Store {
         for (_, bytes) in raw {
             match decode_summary(&bytes) {
                 Ok(summary) => summaries.push(summary),
-                Err(error) => tracing::warn!(%error, "skipping undecodable turn metric"),
+                Err(error) => {
+                    tracing::warn!(error = %swarmy_core::error_chain(&error), "skipping undecodable turn metric");
+                }
             }
         }
         let mut turns = Vec::new();
@@ -502,7 +504,9 @@ impl crate::Store {
             for (_, bytes) in raw {
                 match decode_summary(&bytes) {
                     Ok(summary) => summaries.push(summary),
-                    Err(error) => tracing::warn!(%error, "skipping undecodable turn metric"),
+                    Err(error) => {
+                        tracing::warn!(error = %swarmy_core::error_chain(&error), "skipping undecodable turn metric");
+                    }
                 }
                 if summaries.len() >= limit {
                     break;

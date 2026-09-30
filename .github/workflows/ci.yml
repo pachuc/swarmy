@@ -31,6 +31,7 @@ jobs:
       - run: scripts/check-docs-accuracy.py
       - run: scripts/check-anyhow-in-libraries.sh
       - run: npx --yes --package @ast-grep/cli@0.45.3 ast-grep scan --config ast-grep/sgconfig.yml
+      - run: npx --yes --package @ast-grep/cli@0.45.3 ast-grep test --config ast-grep/sgconfig.yml --skip-snapshot-tests
       - run: cargo fmt --all --check
       - run: cargo build --locked -p swarmy-cli --no-default-features
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings

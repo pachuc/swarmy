@@ -324,14 +324,14 @@ impl Worker {
                     Event::InferenceFailed { .. } | Event::InferenceCompleted { .. }
                 )
             }) {
-                let error = error.clone();
-                tracing::warn!(session_id = %session.session_id, %error, "summary inference failed permanently");
+                let reason = error.clone();
+                tracing::warn!(session_id = %session.session_id, %reason, "summary inference failed permanently");
                 let notice = swarmy_core::Message {
                     id: MessageId::from_ulid(Ulid::generate()),
                     role: swarmy_core::MessageRole::System,
                     parts: vec![swarmy_core::Part::Text {
                         text: format!(
-                            "Summary inference failed permanently; this session could not continue automatically. Error: {error}"
+                            "Summary inference failed permanently; this session could not continue automatically. Error: {reason}"
                         ),
                     }],
                 };

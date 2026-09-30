@@ -284,12 +284,11 @@ impl Store {
         if self.metrics_drain.get().is_some() {
             return;
         }
-        let rx = match self.metrics_rx.lock() {
-            Ok(mut guard) => guard.take(),
-            Err(error) => {
-                tracing::warn!(%error, "metrics queue lock poisoned; skipping drain start");
-                return;
-            }
+        let rx = if let Ok(mut guard) = self.metrics_rx.lock() {
+            guard.take()
+        } else {
+            tracing::warn!("metrics queue lock poisoned; skipping drain start");
+            return;
         };
         let Some(rx) = rx else {
             return;
