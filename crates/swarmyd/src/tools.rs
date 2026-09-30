@@ -139,13 +139,20 @@ async fn settle(message: &WorkMessage<ToolJob>, outcome: Result<()>) {
         }
         Err(error) => {
             tracing::warn!(error = %swarmy_core::error_chain(&*error), request_id = %message.value.request_id, "sandbox tool call failed; released for redelivery");
-            if let Err(error) = message
-                .negative_acknowledge(Some(Duration::from_secs(2)))
-                .await
-            {
-                tracing::warn!(error = %swarmy_core::error_chain(&error), request_id = %message.value.request_id, "tool call release failed; NATS redelivers after ack wait");
-            }
+            release(message).await;
         }
+    }
+}
+
+/// Release a failed call for redelivery after a short delay. A failed
+/// release needs no further action: the acknowledgement deadline expires
+/// and NATS redelivers anyway.
+async fn release(message: &WorkMessage<ToolJob>) {
+    if let Err(error) = message
+        .negative_acknowledge(Some(Duration::from_secs(2)))
+        .await
+    {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), request_id = %message.value.request_id, "tool call release failed; NATS redelivers after ack wait");
     }
 }
 
