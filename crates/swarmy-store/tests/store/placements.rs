@@ -68,97 +68,147 @@ async fn placement_lifecycle_fences_holders() {
     let b = node(&test.store, 1).await.node_id;
     let agent = session().agent_id;
     let first = test.store.place(agent, a, future(60)).await.unwrap();
-    assert_eq!(first.epoch, 1);
-    assert_eq!(first.last_change_reason, PlacementChangeReason::Initial);
+    assert_eq!(first.epoch, 1, "initial placement starts at epoch 1");
+    assert_eq!(
+        first.last_change_reason,
+        PlacementChangeReason::Initial,
+        "initial placement reason"
+    );
     assert_eq!(
         test.store.get_by_agent(agent).await.unwrap(),
-        Some(first.clone())
+        Some(first.clone()),
+        "initial placement is readable"
     );
-    assert!(matches!(
-        test.store.place(agent, b, future(60)).await,
-        Err(StoreError::Domain(
-            swarmy_store::DomainError::PlacementExists
-        ))
-    ));
+    assert!(
+        matches!(
+            test.store.place(agent, b, future(60)).await,
+            Err(StoreError::Domain(
+                swarmy_store::DomainError::PlacementExists
+            ))
+        ),
+        "second placement while live is rejected"
+    );
     test.store.claim_placement(&first).await.unwrap();
     let renewed = test.store.renew(&first, future(120)).await.unwrap();
-    assert_eq!(renewed.epoch, first.epoch);
-    assert_eq!(renewed.last_changed_at, first.last_changed_at);
-    assert_eq!(renewed.last_change_reason, first.last_change_reason);
-    assert!(matches!(
-        test.store.renew(&renewed, renewed.expires_at).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
+    assert_eq!(renewed.epoch, first.epoch, "renew keeps the epoch");
+    assert_eq!(
+        renewed.last_changed_at, first.last_changed_at,
+        "renew keeps the change timestamp"
+    );
+    assert_eq!(
+        renewed.last_change_reason, first.last_change_reason,
+        "renew keeps the change reason"
+    );
+    assert!(
+        matches!(
+            test.store.renew(&renewed, renewed.expires_at).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "renew at the current expiry is fenced"
+    );
     let impostor = PlacementRecord {
         node_id: b,
         ..renewed.clone()
     };
-    assert!(matches!(
-        test.store.renew(&impostor, future(180)).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
-    assert!(matches!(
-        test.store.release(&impostor).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
-    assert!(matches!(
-        test.store.take_over(&first, b, future(60)).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
+    assert!(
+        matches!(
+            test.store.renew(&impostor, future(180)).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "impostor node renew is fenced"
+    );
+    assert!(
+        matches!(
+            test.store.release(&impostor).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "impostor node release is fenced"
+    );
+    assert!(
+        matches!(
+            test.store.take_over(&first, b, future(60)).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "takeover on a live placement is fenced"
+    );
     let expired = expire(&test, &renewed).await;
-    assert!(matches!(
-        test.store.renew(&expired, future(60)).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
-    assert!(matches!(
-        test.store.release(&expired).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
+    assert!(
+        matches!(
+            test.store.renew(&expired, future(60)).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "renew of an expired placement is fenced"
+    );
+    assert!(
+        matches!(
+            test.store.release(&expired).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "release of an expired placement is fenced"
+    );
     let next = test.store.take_over(&expired, b, future(60)).await.unwrap();
-    assert_eq!(next.epoch, 2);
-    assert_eq!(next.last_change_reason, PlacementChangeReason::Failure);
-    assert!(next.last_changed_at >= first.last_changed_at);
+    assert_eq!(next.epoch, 2, "takeover after expiry starts epoch 2");
+    assert_eq!(
+        next.last_change_reason,
+        PlacementChangeReason::Failure,
+        "takeover reason is failure"
+    );
+    assert!(
+        next.last_changed_at >= first.last_changed_at,
+        "takeover timestamp advances"
+    );
     assert!(
         test.store
             .list_by_node(a, None, 64)
             .await
             .unwrap()
-            .is_empty()
+            .is_empty(),
+        "old node lists nothing after takeover"
     );
     assert_eq!(
         test.store.list_by_node(b, None, 64).await.unwrap(),
-        vec![next.clone()]
+        vec![next.clone()],
+        "new node lists the takeover"
     );
-    assert!(matches!(
-        test.store.renew(&first, future(180)).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
-    assert!(matches!(
-        test.store.release(&first).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
-    assert!(matches!(
-        test.store.take_over(&expired, a, future(60)).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::PlacementMismatch
-        ))
-    ));
+    assert!(
+        matches!(
+            test.store.renew(&first, future(180)).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "stale first-record renew is fenced after takeover"
+    );
+    assert!(
+        matches!(
+            test.store.release(&first).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "stale first-record release is fenced after takeover"
+    );
+    assert!(
+        matches!(
+            test.store.take_over(&expired, a, future(60)).await,
+            Err(StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ),
+        "takeover with the superseded record is fenced"
+    );
 }
 
 #[tokio::test]

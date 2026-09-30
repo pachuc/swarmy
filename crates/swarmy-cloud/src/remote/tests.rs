@@ -395,41 +395,65 @@ async fn up_provisions_node_and_persists_launch_record() {
     .await
     .unwrap();
     let node = state.read("demo").unwrap().unwrap();
-    assert_eq!(node.name, "demo");
-    assert_eq!(node.default_image.as_deref(), Some("base-ubuntu:demo"));
+    assert_eq!(node.name, "demo", "provisioned node record: name");
+    assert_eq!(
+        node.default_image.as_deref(),
+        Some("base-ubuntu:demo"),
+        "provisioned node record: default image"
+    );
     assert_eq!(
         *host.images.borrow(),
         [(
             "demo".into(),
             node.public_ip.clone(),
             "images/base-ubuntu".into()
-        )]
+        )],
+        "provisioned node record: image build"
     );
-    assert_eq!(node.region, "us-east-1");
-    assert_eq!(node.instance_id, "i-test");
-    assert_eq!(node.public_ip, "203.0.113.10");
-    assert_eq!(node.private_ip, "10.0.0.10");
-    assert_eq!(node.ssh_user, "ubuntu");
+    assert_eq!(node.region, "us-east-1", "provisioned node record: region");
+    assert_eq!(node.instance_id, "i-test", "provisioned node record: instance");
+    assert_eq!(
+        node.public_ip, "203.0.113.10",
+        "provisioned node record: public ip"
+    );
+    assert_eq!(
+        node.private_ip, "10.0.0.10",
+        "provisioned node record: private ip"
+    );
+    assert_eq!(node.ssh_user, "ubuntu", "provisioned node record: ssh user");
     assert_eq!(
         (node.ports.fdb, node.ports.nats, node.ports.s3),
-        (4500, 4222, 8333)
+        (4500, 4222, 8333),
+        "provisioned node record: ports"
     );
     // AWS launches write the service login explicitly and resolve the
     // instance-store device over SSH, so later configuration defaults never
     // move existing fleet checkouts. The checkout path itself is resolved on
     // the host (`~ubuntu/swarmy`); see the provisioning command tests.
-    assert_eq!(node.service_user(), "ubuntu");
-    assert_eq!(node.local_storage(), "/dev/nvme1n1");
-    assert!(node.nodes.is_empty());
-    assert!(node.created_at.parse::<jiff::Timestamp>().is_ok());
-    assert!(node.key_path.is_file());
+    assert_eq!(
+        node.service_user(),
+        "ubuntu",
+        "service login and storage: user"
+    );
+    assert_eq!(
+        node.local_storage(),
+        "/dev/nvme1n1",
+        "service login and storage: device"
+    );
+    assert!(node.nodes.is_empty(), "service login and storage: no join nodes");
+    assert!(
+        node.created_at.parse::<jiff::Timestamp>().is_ok(),
+        "service login and storage: timestamp"
+    );
+    assert!(node.key_path.is_file(), "service login and storage: key file");
     assert_eq!(
         std::fs::metadata(state.directory.join("demo.json"))
             .unwrap()
             .permissions()
             .mode()
             & 0o777,
-        0o600
+        0o600,
+        "key file permissions: node record"
     );
     assert_eq!(
         std::fs::metadata(&state.directory)
@@ -437,28 +461,58 @@ async fn up_provisions_node_and_persists_launch_record() {
             .permissions()
             .mode()
             & 0o777,
-        0o700
+        0o700,
+        "key file permissions: state directory"
     );
     let request = cloud.requests.borrow()[0].clone();
-    assert_eq!(request.image, "ami-stock");
-    assert_eq!(request.disk_gb, 100);
-    assert_eq!(request.instance_type, "m6id.xlarge");
-    assert_eq!(request.name, "demo");
-    assert_eq!(request.subnet.as_deref(), Some("subnet-test"));
-    assert_eq!(request.security_group.as_deref(), Some("sg-test"));
-    assert_eq!(request.managed_by, "codex-launcher");
-    assert_eq!(request.key_name, super::key_name(&node).unwrap());
-    assert!(request.key_name.len() <= 64);
+    assert_eq!(request.image, "ami-stock", "launch request: image");
+    assert_eq!(request.disk_gb, 100, "launch request: disk");
+    assert_eq!(
+        request.instance_type, "m6id.xlarge",
+        "launch request: shape"
+    );
+    assert_eq!(request.name, "demo", "launch request: name");
+    assert_eq!(
+        request.subnet.as_deref(),
+        Some("subnet-test"),
+        "launch request: subnet"
+    );
+    assert_eq!(
+        request.security_group.as_deref(),
+        Some("sg-test"),
+        "launch request: security group"
+    );
+    assert_eq!(
+        request.managed_by, "codex-launcher",
+        "launch request: owner tag"
+    );
+    assert_eq!(
+        request.key_name,
+        super::key_name(&node).unwrap(),
+        "launch request: key name"
+    );
+    assert!(
+        request.key_name.len() <= 64,
+        "launch request: key name fits AWS limits"
+    );
     assert_eq!(
         cloud.keys.borrow()[0],
         (
             request.key_name,
             b"ssh-ed25519 test".to_vec(),
             "codex-launcher".into()
-        )
+        ),
+        "key and provision records: uploaded key"
     );
-    assert_eq!(host.provisioned.borrow()[0].public_ip, node.public_ip);
-    assert!(cloud.observations.borrow().is_empty());
+    assert_eq!(
+        host.provisioned.borrow()[0].public_ip,
+        node.public_ip,
+        "key and provision records: provisioned host"
+    );
+    assert!(
+        cloud.observations.borrow().is_empty(),
+        "key and provision records: observations drained"
+    );
 }
 
 #[tokio::test]
