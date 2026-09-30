@@ -19,5 +19,6 @@ bash scripts/test-migrate-config.sh
 bash scripts/test-dev-stack.sh
 bash scripts/test-s3-compat-probe.sh
 bash scripts/remote-provision-test.sh
+bash scripts/test-remote-decommission.sh
 # test-bash.sh needs root and NBD; test-remote.sh needs an SSH fixture.
 # Both remain manual acceptance tests, not hosted-runner script tests.

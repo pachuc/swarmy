@@ -290,6 +290,7 @@ async fn run_once(
 fn remote_name(command: &swarmy_cloud::Command) -> &'static str {
     match command {
         swarmy_cloud::Command::Up { .. } => "up",
+        swarmy_cloud::Command::Adopt { .. } => "adopt",
         swarmy_cloud::Command::AddNode { .. } => "add-node",
         swarmy_cloud::Command::Upgrade { .. } => "upgrade",
         swarmy_cloud::Command::Down { .. } => "down",

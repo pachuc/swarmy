@@ -1,6 +1,8 @@
 //! SSH helpers shared by provisioning, tunnel, log, and status commands.
 use std::{
     fmt::Write as _,
+    io::Write as _,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -176,6 +178,44 @@ async fn run_output(command: &mut Command, action: &str) -> Result<std::process:
     Ok(output)
 }
 
+/// Run a helper script on the host over SSH stdin (`bash -s`), for helpers
+/// that must work with no checkout on the host. The `action` names the
+/// attempted operation in [`crate::Error::Ssh`].
+async fn pipe_script(
+    node: &RemoteNode,
+    address: &str,
+    action: &str,
+    script: &str,
+) -> Result<std::process::Output> {
+    let mut child = base(node)?
+        .arg(address)
+        .arg("bash -s")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(crate::Error::ssh(action))?;
+    let Some(mut stdin) = child.stdin.take() else {
+        return Err(crate::Error::other("SSH stdin missing"));
+    };
+    stdin
+        .write_all(script.as_bytes())
+        .await
+        .map_err(crate::Error::ssh(action))?;
+    drop(stdin);
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(crate::Error::ssh(action))?;
+    if !output.status.success() {
+        return Err(crate::Error::SshStatus {
+            command: action.to_owned(),
+            status: output.status,
+        });
+    }
+    Ok(output)
+}
+
 /// Create the node's private key file and return its public half.
 ///
 /// # Errors
@@ -190,6 +230,35 @@ pub async fn generate_key(node: &RemoteNode) -> Result<Vec<u8>> {
     )
     .await?;
     Ok(std::fs::read(node.key_path.with_extension("pub"))?)
+}
+
+/// Copy an operator-owned bootstrap private key into remote state for
+/// adoption and derive its public half for inspection. The state directory
+/// is 0700; the copy is created with mode 0600 whatever the source's mode
+/// or umask is, and the source file is left untouched.
+///
+/// # Errors
+///
+/// Reports unreadable sources and keys `ssh-keygen` cannot parse.
+pub async fn adopt_key(node: &RemoteNode, source: &Path) -> Result<()> {
+    let bytes = std::fs::read(source)?;
+    let mut key = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&node.key_path)?;
+    key.write_all(&bytes)?;
+    drop(key);
+    let output = run_output(
+        Command::new("ssh-keygen")
+            .args(["-y", "-f"])
+            .arg(&node.key_path),
+        "read bootstrap public key",
+    )
+    .await?;
+    std::fs::write(node.key_path.with_extension("pub"), output.stdout)?;
+    Ok(())
 }
 
 /// Provisions a fresh node from this repository checkout.
@@ -263,6 +332,24 @@ impl Ssh {
         Ok(String::from_utf8(output.stdout)?)
     }
 
+    /// Read the provisioning env helpers for piping over stdin when the
+    /// checkout is not on the host (yet or anymore). The piped script has
+    /// no directory for `BASH_SOURCE`, so its S3 helper cannot be sourced;
+    /// only functions without that need run here.
+    fn piped_env(&self) -> Result<String> {
+        let env = String::from_utf8(std::fs::read(
+            self.repo.join("scripts/remote-provision-env.sh"),
+        )?)?;
+        let mut script = String::new();
+        for line in env.split_inclusive('\n') {
+            if line.trim_start().starts_with("source") && line.contains("remote-s3-env.sh") {
+                continue;
+            }
+            script.push_str(line);
+        }
+        Ok(script)
+    }
+
     /// Run the checkout's `ensure_service_user` on the host before the first
     /// copy, so a root login gains a destination owned by its owner. The helper
     /// script is piped over stdin because the checkout is not on the host yet;
@@ -280,19 +367,7 @@ impl Ssh {
         if user == "root" {
             return Ok("/root".to_owned());
         }
-        let env = String::from_utf8(std::fs::read(
-            self.repo.join("scripts/remote-provision-env.sh"),
-        )?)?;
-        let mut script = String::new();
-        for line in env.split_inclusive('\n') {
-            // Piped over stdin the script has no directory for BASH_SOURCE, so
-            // its S3 helper cannot be sourced. Only the user-management
-            // functions run here and none of them need it.
-            if line.trim_start().starts_with("source") && line.contains("remote-s3-env.sh") {
-                continue;
-            }
-            script.push_str(line);
-        }
+        let mut script = self.piped_env()?;
         // `user` is validated (letters, digits, `_`, `-`), so embedding it in
         // single quotes is data, never shell. `visudo -cf` reports to stdout, so
         // the home is the last line.
@@ -302,33 +377,7 @@ impl Ssh {
             "ensure_service_user '{user}'\nservice_home_for '{user}'\n"
         )
         .expect("writing to String cannot fail");
-        let action = "create service user";
-        let mut child = base(node)?
-            .arg(address)
-            .arg("bash -s")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(crate::Error::ssh(action))?;
-        let Some(mut stdin) = child.stdin.take() else {
-            return Err(crate::Error::other("SSH stdin missing"));
-        };
-        stdin
-            .write_all(script.as_bytes())
-            .await
-            .map_err(crate::Error::ssh(action))?;
-        drop(stdin);
-        let output = child
-            .wait_with_output()
-            .await
-            .map_err(crate::Error::ssh(action))?;
-        if !output.status.success() {
-            return Err(crate::Error::SshStatus {
-                command: action.to_owned(),
-                status: output.status,
-            });
-        }
+        let output = pipe_script(node, address, "create service user", &script).await?;
         let home = String::from_utf8(output.stdout)?
             .lines()
             .rfind(|line| !line.trim().is_empty())
@@ -423,20 +472,20 @@ impl Ssh {
             .collect())
     }
 
-    /// Report whether the node has swarmy service units installed.
+    /// Report whether the node has swarmy service units installed. Asks the
+    /// host script (piped over stdin, so no checkout is needed), which reads
+    /// the shared unit list instead of matching unit names in Rust.
     ///
     /// # Errors
     ///
-    /// Reports SSH failures and non-zero `systemctl` exits.
+    /// Reports SSH failures and non-zero remote exits.
     pub async fn has_service_units(&self, node: &RemoteNode, address: &str) -> Result<bool> {
-        let output = run_output(
-            base(node)?
-                .arg(address)
-                .arg("systemctl list-unit-files 'swarmy-*.service' --no-legend --no-pager"),
-            "inspect installed service units",
-        )
-        .await?;
-        Ok(has_control_units(&String::from_utf8(output.stdout)?))
+        let mut script = self.piped_env()?;
+        // Fail loudly inside the piped script, like decommission does: the
+        // query must error when systemctl fails, never look like no units.
+        script.push_str("set -euo pipefail\nlist_installed_control_units\n");
+        let output = pipe_script(node, address, "inspect installed service units", &script).await?;
+        Ok(!String::from_utf8(output.stdout)?.trim().is_empty())
     }
 
     /// Read the installed `swarmyd` version from a node.
@@ -560,6 +609,36 @@ impl Ssh {
         .await?;
         Ok(address)
     }
+
+    /// Stop swarmy services on an adopted host and remove its units,
+    /// binaries, node environment, and checkout. Pipes the checkout's
+    /// `decommission_probe` over stdin (so no checkout is needed on the
+    /// host), which runs the shared teardown when the checkout is present,
+    /// fails loudly when units remain without one, and no-ops when nothing
+    /// remains. `/etc/swarmy` goes because it holds static bucket keys and
+    /// copied credentials. Local sandbox disk data, the service user, the
+    /// fstab line and its mount, and tunnel keys authorized on the primary
+    /// stay: the machine is operator-owned.
+    ///
+    /// # Errors
+    ///
+    /// Reports unreachable hosts and SSH failures. The wait is short
+    /// (about half a minute): `down` must continue past a cancelled
+    /// server instead of blocking for a full provisioning wait per host.
+    pub async fn decommission(&self, node: &RemoteNode) -> Result<()> {
+        let _ = self;
+        let address = wait_ssh_for(node, 6).await?;
+        let user = service_user(node)?;
+        let mut script = self.piped_env()?;
+        // Fail loudly inside the piped script: without this, a failed
+        // removal would still exit zero and look like a clean teardown.
+        // `user` is validated, so single quotes are data, never shell.
+        // Writing to a `String` cannot fail.
+        write!(script, "set -euo pipefail\ndecommission_probe '{user}'\n")
+            .expect("writing to String cannot fail");
+        pipe_script(node, &address, "remove swarmy services", &script).await?;
+        Ok(())
+    }
 }
 
 fn is_python_cache(status_line: &str) -> bool {
@@ -568,22 +647,6 @@ fn is_python_cache(status_line: &str) -> bool {
         .unwrap_or(status_line)
         .split('/')
         .any(|part| part.trim_matches('"') == "__pycache__")
-}
-
-fn has_control_units(listing: &str) -> bool {
-    listing
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .any(|unit| {
-            matches!(
-                unit,
-                "swarmy-stack.service"
-                    | "swarmy-scheduler.service"
-                    | "swarmy-worker.service"
-                    | "swarmy-gateway.service"
-                    | "swarmy-api.service"
-            )
-        })
 }
 
 fn provisioning_command(
@@ -792,6 +855,14 @@ fn credential_excludes(repo: &Path, credential: &Path) -> Vec<PathBuf> {
 }
 
 async fn wait_ssh(node: &RemoteNode) -> Result<String> {
+    wait_ssh_for(node, 90).await
+}
+
+/// Wait for SSH with an explicit attempt budget (five seconds between
+/// passes over both addresses). Provisioning waits the full budget while a
+/// new machine boots; `down` passes a short budget so a cancelled server
+/// cannot block teardown for minutes per host.
+async fn wait_ssh_for(node: &RemoteNode, attempts: u32) -> Result<String> {
     for address in [&node.public_ip, &node.private_ip] {
         let _: std::net::IpAddr = address
             .parse()
@@ -802,7 +873,7 @@ async fn wait_ssh(node: &RemoteNode) -> Result<String> {
         node.public_ip,
         node.private_ip
     );
-    for _ in 0..90 {
+    for _ in 0..attempts {
         // Same-VPC launchers may reach only the private IP under group-based rules.
         for address in [&node.public_ip, &node.private_ip] {
             let status = base(node)?
@@ -869,18 +940,6 @@ mod tests {
                 .iter()
                 .any(|path| path.contains("__pycache__") || path.contains("ignored"))
         );
-    }
-
-    // Tested directly because `has_service_units` needs SSH to a live node.
-    #[test]
-    fn installed_units_select_the_full_package_set() {
-        assert!(super::has_control_units(
-            "swarmy-tunnel.service enabled\nswarmy-gateway.service enabled\n"
-        ));
-        assert!(super::has_control_units("swarmy-stack.service enabled\n"));
-        assert!(!super::has_control_units(
-            "swarmy-tunnel.service enabled\nswarmyd.service enabled\n"
-        ));
     }
 
     #[test]
@@ -1098,5 +1157,129 @@ mod provisioning_command_tests {
         );
         assert!(!command.contains("test-access"));
         assert!(!command.contains("test-secret"));
+    }
+
+    // The piped host query behind `has_service_units`, run through a local
+    // `bash -s` with a stubbed systemctl: the piped env text plus the query
+    // must compose and report installed control units (empty means none).
+    async fn piped_query(repo: &std::path::Path, bin: &std::path::Path) -> String {
+        use tokio::io::AsyncWriteExt;
+        let host = super::Ssh {
+            repo: repo.to_owned(),
+        };
+        let mut script = host.piped_env().unwrap();
+        assert!(!script.contains("remote-s3-env.sh"));
+        // Mirror `has_service_units`: fail loudly inside the pipe.
+        script.push_str("set -euo pipefail\nlist_installed_control_units\n");
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let mut child = tokio::process::Command::new("bash")
+            .arg("-s")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .env("PATH", path)
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(script.as_bytes())
+            .await
+            .unwrap();
+        let output = child.wait_with_output().await.unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[tokio::test]
+    async fn piped_host_query_lists_control_units() {
+        use std::os::unix::fs::PermissionsExt;
+        if std::process::Command::new("bash")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let systemctl = bin.join("systemctl");
+        std::fs::write(
+            &systemctl,
+            "#!/usr/bin/env bash\nprintf 'swarmy-tunnel.service enabled\\nswarmyd.service enabled\\nswarmy-gateway.service enabled\\n'",
+        )
+        .unwrap();
+        std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../");
+        assert_eq!(
+            piped_query(&repo, &bin).await.trim(),
+            "swarmy-gateway.service"
+        );
+        std::fs::write(
+            &systemctl,
+            "#!/usr/bin/env bash\nprintf 'swarmy-tunnel.service enabled\\nswarmyd.service enabled\\n'",
+        )
+        .unwrap();
+        assert!(piped_query(&repo, &bin).await.trim().is_empty());
+    }
+
+    #[tokio::test]
+    async fn adopt_key_copies_the_operator_key_with_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        if std::process::Command::new("ssh-keygen")
+            .arg("-h")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("bootstrap");
+        assert!(
+            std::process::Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let node: swarmy_config::RemoteNode = serde_json::from_value(serde_json::json!({
+            "name": "demo", "region": "us-east-1", "instance_id": "",
+            "launch_attempted": false,
+            "public_ip": "203.0.113.10", "private_ip": "203.0.113.10",
+            "key_path": dir.path().join("adopted-key"), "ssh_user": "root",
+            "launch_settings": { "provider": "existing", "service_user": "swarmy" },
+            "created_at": "now"
+        }))
+        .unwrap();
+        super::adopt_key(&node, &source).await.unwrap();
+        assert_eq!(
+            std::fs::metadata(&node.key_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::read(&node.key_path).unwrap(),
+            std::fs::read(&source).unwrap()
+        );
+        let expected = std::process::Command::new("ssh-keygen")
+            .args(["-y", "-f"])
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(expected.status.success());
+        assert_eq!(
+            std::fs::read(node.key_path.with_extension("pub")).unwrap(),
+            expected.stdout
+        );
     }
 }

@@ -39,15 +39,21 @@ fi
 [[ $mode == stack || $mode == node ]] || { echo 'Expected stack or node mode' >&2; exit 1; }
 [[ $service_address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
 storage=$(parse_local_storage "$local_storage")
-stack_dependency=''
+# Units this mode owns from the shared table, so installs and teardown can
+# never drift apart. Anything else in the shared list is a leftover from a
+# previous installation on this host.
+stack_dependency=$(swarmy_mode_backing_unit "$mode")
+node_unit=$(swarmy_agent_unit)
 if [[ $mode == stack ]]; then
-    stack_dependency='swarmy-stack.service'
     dependency_kind=Requires
 else
-    stack_dependency='swarmy-tunnel.service'
     # Keep swarmyd running across tunnel reconnects; its clients reconnect too.
     dependency_kind=Wants
 fi
+# A re-provisioned host (adopted or rebuilt) may carry the other mode's
+# units or old node-services units; stop and disable them before installing.
+# What this mode owns is enabled again below.
+disable_previous_units
 export DEBIAN_FRONTEND=noninteractive
 # Dedicated servers boot stock Ubuntu without cloud-init; only cloud images wait.
 wait_for_cloud_init
@@ -122,15 +128,18 @@ if (( mem_available_kib < 6 * 1024 * 1024 )); then
     exit 1
 fi
 build_started=$SECONDS
+# Packages from the shared table (the CLI package differs, so it builds
+# separately with its own feature flags). read_shared_list fails loudly:
+# an empty package list would become a whole-workspace build.
 if [[ $mode == stack ]]; then
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p swarmy-cli --no-default-features
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked \
-        -p swarmyd -p swarmy-scheduler -p swarmy-gateway -p swarmy-worker -p swarmy-api
-    sudo install -m 0755 target/release/{swarmy,swarmyd,swarmy-scheduler,swarmy-gateway,swarmy-worker,swarmy-api} /usr/local/bin/
-else
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p swarmyd
-    sudo install -m 0755 target/release/swarmyd /usr/local/bin/
+    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p "$(swarmy_cli_package)" --no-default-features
 fi
+read_shared_list build_args swarmy_mode_build_args "$mode"
+SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}"
+# Install from the shared binary list so the install can never name a binary
+# teardown misses. Only built binaries are present, selected per mode above.
+read_shared_list install_binaries swarmy_mode_binaries "$mode"
+sudo install -m 0755 "${install_binaries[@]/#/target/release/}" /usr/local/bin/
 printf 'Release build took %s seconds\n' "$((SECONDS - build_started))"
 sudo install -d -m 0755 /etc/swarmy
 sudo install -m 0600 /dev/null /etc/swarmy/node.env
@@ -146,7 +155,7 @@ else
     sudo rm -f /etc/swarmy/s3-keys.env
 fi
 if [[ $mode == stack ]]; then
-sudo tee /etc/systemd/system/swarmy-stack.service >/dev/null <<UNIT
+sudo tee "/etc/systemd/system/$stack_dependency" >/dev/null <<UNIT
 [Unit]
 Description=Swarmy backing services (FoundationDB, NATS, optional SeaweedFS)
 After=network-online.target
@@ -177,7 +186,7 @@ sudo install -o "$service_user" -g "$service_user" -m 0600 .swarmy/tunnel-key /e
 sudo install -o "$service_user" -g "$service_user" -m 0600 .swarmy/tunnel-known-hosts /etc/swarmy/tunnel-known-hosts
 s3_forward=''
 if [[ -z $bucket ]]; then s3_forward=' -L 127.0.0.1:8333:127.0.0.1:8333'; fi
-sudo tee /etc/systemd/system/swarmy-tunnel.service >/dev/null <<UNIT
+sudo tee "/etc/systemd/system/$stack_dependency" >/dev/null <<UNIT
 [Unit]
 Description=Swarmy tunnel to first node backing services
 After=network-online.target
@@ -198,7 +207,7 @@ UNIT
 fi
 mount_requirement=''
 if [[ $storage_is_mount == true ]]; then mount_requirement="RequiresMountsFor=$local_mount"; fi
-sudo tee /etc/systemd/system/swarmyd.service >/dev/null <<UNIT
+sudo tee "/etc/systemd/system/$node_unit" >/dev/null <<UNIT
 [Unit]
 Description=Swarmy node agent
 $dependency_kind=$stack_dependency
@@ -209,7 +218,7 @@ ${mount_requirement}
 [Service]
 WorkingDirectory=$repo_dir
 EnvironmentFile=/etc/swarmy/node.env
-ExecStart=/usr/local/bin/swarmyd
+ExecStart=/usr/local/bin/$(swarmy_unit_binary "$node_unit")
 Restart=always
 RestartSec=5
 TimeoutStopSec=120
@@ -219,23 +228,23 @@ WantedBy=multi-user.target
 UNIT
 sudo systemctl daemon-reload
 if [[ $mode == stack ]]; then
-    sudo systemctl enable --now swarmy-stack.service
+    sudo systemctl enable --now "$stack_dependency"
 else
     [[ -s .dev/fdb.cluster ]] || { echo 'Missing primary cluster file' >&2; exit 1; }
-    sudo systemctl enable swarmy-tunnel.service
-    sudo systemctl restart swarmy-tunnel.service
+    sudo systemctl enable "$stack_dependency"
+    sudo systemctl restart "$stack_dependency"
 fi
-sudo systemctl enable swarmyd.service
-sudo systemctl restart swarmyd.service
-invocation=$(sudo systemctl show -p InvocationID --value swarmyd)
+sudo systemctl enable "$node_unit"
+sudo systemctl restart "$node_unit"
+invocation=$(sudo systemctl show -p InvocationID --value "$node_unit")
 for _ in $(seq 1 60); do
     if sudo test -S "$repo_dir/.swarmy/node/control.sock" && sudo journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager | grep -q 'node registered and ready'; then
-        sudo systemctl is-active swarmyd
-        if [[ $mode == stack ]]; then sudo systemctl is-active swarmy-stack; fi
+        sudo systemctl is-active "$node_unit"
+        if [[ $mode == stack ]]; then sudo systemctl is-active "$stack_dependency"; fi
         echo "swarmyd registered and ready; $mode mode enabled at boot"
         exit 0
     fi
     sleep 2
 done
-sudo journalctl -u swarmyd -n 50 --no-pager
+sudo journalctl -u "$node_unit" -n 50 --no-pager
 exit 1

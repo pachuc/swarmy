@@ -521,6 +521,26 @@ fn bucket_policy(bucket: &str) -> serde_json::Value {
 }
 
 impl Cloud for Aws {
+    async fn verify_bucket_access(&self, bucket: &ObjectBucket) -> Result<()> {
+        let client = if bucket.spec.needs_static_keys() {
+            buckets::client(&self.sdk_config, bucket)?
+        } else {
+            self.s3.clone()
+        };
+        match client
+            .head_bucket()
+            .bucket(&bucket.spec.bucket)
+            .send()
+            .await
+        {
+            Ok(_) => Ok(()),
+            // A missing bucket still proves the keys authenticate: S3
+            // answers 404 to an authenticated request and 403 to a bad
+            // signature, and the bucket is created right after.
+            Err(error) if buckets::is_no_such_bucket(&error) => Ok(()),
+            Err(error) => Err(error).aws_context("s3:HeadBucket"),
+        }
+    }
     async fn ensure_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
         if bucket.spec.needs_static_keys() {
             return buckets::ensure(&buckets::client(&self.sdk_config, bucket)?, bucket).await;
