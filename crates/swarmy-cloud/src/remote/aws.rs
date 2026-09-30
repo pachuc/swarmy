@@ -1,5 +1,6 @@
 use super::{
-    Cloud, Machine, MachineSpec, ObjectBucket, Ownership, buckets, retry_profile_propagation,
+    Cloud, Host, Machine, MachineSpec, ObjectBucket, Ownership, buckets,
+    retry_profile_propagation,
 };
 use crate::{BucketRemoval, Result};
 use aws_sdk_ec2::{
@@ -12,9 +13,6 @@ use aws_sdk_ec2::{
 };
 use std::time::Duration;
 
-use super::{
-    Cloud, Host, Machine, MachineSpec, ObjectBucket, Ownership, retry_profile_propagation,
-};
 use swarmy_config::RemoteNode;
 
 // AWS error codes, rather than rendered SDK messages, determine whether an
