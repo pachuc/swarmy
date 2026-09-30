@@ -62,14 +62,19 @@ add_case log.txt 'running /tmp/build/deps/vol-ad12838e0bf91175'
 check_pass "sixteen-digit cargo name passes"
 drop_case log.txt
 
-# A real EBS volume id is vol- plus exactly 17 hex digits.
-add_case ids.txt 'snapshot vol-0123456789abcdef0 ready'
-check_fail "seventeen-digit volume id fails" "vol-0123456789abcdef0"
+# A real EBS volume id is vol- plus exactly 17 hex digits. The id is built
+# at runtime so this file never contains a flaggable literal.
+vol_prefix='vol-'
+vol_id="${vol_prefix}0123456789abcdef0"
+add_case ids.txt "snapshot ${vol_id} ready"
+check_fail "seventeen-digit volume id fails" "${vol_id}"
 drop_case ids.txt
 
 # EC2 instance ids keep their existing shape.
-add_case ids.txt 'node i-0123456789abcdef0 joined'
-check_fail "instance id fails" "i-0123456789abcdef0"
+inst_prefix='i-'
+inst_id="${inst_prefix}0123456789abcdef0"
+add_case ids.txt "node ${inst_id} joined"
+check_fail "instance id fails" "${inst_id}"
 drop_case ids.txt
 
 check_pass "fixture green again"
