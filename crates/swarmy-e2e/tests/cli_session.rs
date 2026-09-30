@@ -8,12 +8,8 @@ mod chat;
 #[path = "cli_session/cost.rs"]
 mod cost;
 
-use std::{future::Future, panic::AssertUnwindSafe, process::Stdio, sync::Arc, time::Duration};
+use std::{future::Future, panic::AssertUnwindSafe, process::Stdio, sync::{Arc, Mutex}, time::Duration};
 
-use foundationdb::{
-    Database,
-    directory::{Directory, DirectoryLayer},
-};
 use futures_util::{FutureExt, StreamExt};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, LiveFeed, SubjectToken};
@@ -25,6 +21,7 @@ use swarmy_llm::Delta;
 use swarmy_store::{
     AgentSessionOptions, ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore,
 };
+use swarmy_testkit::{Stack, StackGuard};
 use tokio::{
     process::Command,
     time::{Instant, timeout},
@@ -144,6 +141,7 @@ struct Fixture {
     url: String,
     api_url: String,
     api_token: String,
+    guard: Arc<Mutex<StackGuard>>,
 }
 
 impl Fixture {
@@ -186,28 +184,7 @@ impl Fixture {
     }
 
     async fn cleanup(&self) {
-        let db = Database::new(Some(&self.cluster)).unwrap();
-        db.run(|trx, _| async move {
-            DirectoryLayer::default()
-                .remove_if_exists(&trx, std::slice::from_ref(&self.directory))
-                .await?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-        let admin = async_nats::connect(&self.url).await.unwrap();
-        let context = async_nats::jetstream::new(admin);
-        for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
-            if let Err(error) = context
-                .delete_stream(format!("{}_{stream}", self.prefix))
-                .await
-            {
-                assert!(
-                    matches!(error.kind(), async_nats::jetstream::context::DeleteStreamErrorKind::JetStream(ref error) if error.code() == 404),
-                    "stream cleanup failed: {error}"
-                );
-            }
-        }
+        self.guard.lock().unwrap().cleanup().await;
     }
 }
 
@@ -219,10 +196,15 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         return;
     };
     swarmy_testkit::boot_fdb();
-    let prefix = Ulid::generate().to_string();
-    let directory = format!("cli-test-{prefix}");
+    let stack = Stack {
+        cluster,
+        nats_url: url.clone(),
+        prefix: swarmy_testkit::unique_prefix("cli"),
+    };
+    let prefix = stack.prefix.clone();
+    let directory = stack.prefix.clone();
     let store = Store::open(
-        Some(std::path::Path::new(&cluster)),
+        Some(std::path::Path::new(&stack.cluster)),
         Some(std::slice::from_ref(&directory)),
         Arc::new(MemoryBlobStore::default()),
     )
@@ -287,10 +269,11 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         bus: bus.clone(),
         api_url,
         api_token,
-        cluster,
+        cluster: stack.cluster.clone(),
         directory,
         prefix,
         url,
+        guard: Arc::new(Mutex::new(StackGuard::new(&stack))),
     };
     swarmy_testkit::image(&fixture.store).await;
     let result = AssertUnwindSafe(test(fixture.clone())).catch_unwind().await;

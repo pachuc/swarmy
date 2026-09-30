@@ -8,10 +8,6 @@ use std::{
     time::Duration,
 };
 
-use foundationdb::{
-    Database,
-    directory::{Directory, DirectoryLayer},
-};
 use futures_util::{FutureExt, StreamExt};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, Config, SubjectToken};
@@ -20,6 +16,7 @@ use swarmy_core::{
     SessionRecord, SessionState, ToolCallId, ToolCallRecord, WakeReply, decode, ignore_best_effort,
 };
 use swarmy_store::{Store, blob::MemoryBlobStore, runnable_partition};
+use swarmy_testkit::{Stack, StackGuard};
 use tokio::time::{Instant, timeout};
 use ulid::Ulid;
 
@@ -41,11 +38,9 @@ struct Fixture {
     store: Store,
     bus: Bus,
     admin: async_nats::Client,
-    cluster: String,
-    url: String,
-    directory: String,
+    stack: Stack,
+    guard: Arc<Mutex<StackGuard>>,
     prefix: String,
-    prefixes: Arc<Mutex<Vec<String>>>,
     processes: Arc<Mutex<Vec<Process>>>,
 }
 
@@ -56,9 +51,9 @@ impl Fixture {
 
     async fn start_with_retention(&self, partitions: &str, prefix: &str, retention: u64) -> usize {
         let child = Command::new(swarmy_testkit::bin("swarmy-scheduler"))
-            .env("SWARMY_FDB_CLUSTER_FILE", &self.cluster)
-            .env("SWARMY_NATS_URL", &self.url)
-            .env("SWARMY_STORE_DIRECTORY", &self.directory)
+            .env("SWARMY_FDB_CLUSTER_FILE", &self.stack.cluster)
+            .env("SWARMY_NATS_URL", &self.stack.nats_url)
+            .env("SWARMY_STORE_DIRECTORY", &self.stack.prefix)
             .env("SWARMY_BUS_PREFIX", prefix)
             .env("SWARMY_SCHEDULER_PARTITIONS", partitions)
             .env(
@@ -109,9 +104,9 @@ impl Fixture {
     }
 
     async fn bus_for(&self, prefix: &str) -> Bus {
-        self.prefixes.lock().unwrap().push(prefix.to_owned());
+        self.guard.lock().unwrap().register(prefix);
         Bus::connect(
-            &self.url,
+            &self.stack.nats_url,
             Config {
                 prefix: Some(SubjectToken::new(prefix).unwrap()),
                 ..Default::default()
@@ -175,31 +170,7 @@ impl Fixture {
 
     async fn cleanup(&self) {
         self.processes.lock().unwrap().clear();
-        let db = Database::new(Some(&self.cluster)).unwrap();
-        let path = vec![self.directory.clone()];
-        db.run(|trx, _| {
-            let path = &path;
-            async move {
-                DirectoryLayer::default()
-                    .remove_if_exists(&trx, path)
-                    .await?;
-                Ok(())
-            }
-        })
-        .await
-        .unwrap();
-        let context = async_nats::jetstream::new(self.admin.clone());
-        let prefixes: HashSet<_> = self.prefixes.lock().unwrap().drain(..).collect();
-        for prefix in prefixes {
-            for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
-                if let Err(error) = context.delete_stream(format!("{prefix}_{stream}")).await {
-                    assert!(
-                        matches!(error.kind(), async_nats::jetstream::context::DeleteStreamErrorKind::JetStream(ref e) if e.code() == 404),
-                        "cleanup failed: {error}"
-                    );
-                }
-            }
-        }
+        self.guard.lock().unwrap().cleanup().await;
     }
 }
 
@@ -215,12 +186,16 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         return;
     };
     swarmy_testkit::boot_fdb();
-    let prefix = Ulid::generate().to_string();
-    let directory = format!("scheduler-test-{prefix}");
+    let stack = Stack {
+        cluster,
+        nats_url: url.clone(),
+        prefix: swarmy_testkit::unique_prefix("scheduler"),
+    };
+    let prefix = stack.prefix.clone();
     let fixture = Fixture {
         store: Store::open(
-            Some(std::path::Path::new(&cluster)),
-            Some(std::slice::from_ref(&directory)),
+            Some(std::path::Path::new(&stack.cluster)),
+            Some(std::slice::from_ref(&prefix)),
             Arc::new(MemoryBlobStore::default()),
         )
         .await
@@ -235,10 +210,8 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         .await
         .unwrap(),
         admin: async_nats::connect(&url).await.unwrap(),
-        cluster,
-        url,
-        directory,
-        prefixes: Arc::new(Mutex::new(vec![prefix.clone()])),
+        guard: Arc::new(Mutex::new(StackGuard::new(&stack))),
+        stack,
         prefix,
         processes: Arc::default(),
     };
@@ -329,7 +302,7 @@ async fn disjoint_instances_only_nudge_and_reap_their_owned_partitions() {
     run(|f| async move {
         // Separate bus prefixes let the observer identify the publishing process.
         // Both schedulers scan the same FoundationDB directory.
-        let other_prefix = Ulid::generate().to_string();
+        let other_prefix = format!("{}_other", f.prefix);
         let mut first = f.observe(&f.prefix).await;
         let mut second = f.observe(&other_prefix).await;
         f.start("0-127", &f.prefix).await;
@@ -503,7 +476,7 @@ async fn schedulers_share_one_deployment_and_serve_concurrent_wakes() {
 #[tokio::test]
 async fn wake_received_by_another_partition_owner_is_found_by_the_owner_scan() {
     run(|f| async move {
-        let other_prefix = Ulid::generate().to_string();
+        let other_prefix = format!("{}_other", f.prefix);
         let mut first = f.observe(&f.prefix).await;
         let mut second = f.observe(&other_prefix).await;
         f.start("7", &f.prefix).await;
