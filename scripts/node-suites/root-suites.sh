@@ -66,3 +66,4 @@ fi
 [ -n "$api_pid" ] && { kill "$api_pid" 2>/dev/null; wait "$api_pid" 2>/dev/null; api_pid=""; }
 scripts/dev-stack.sh stop >/dev/null 2>&1 || true
 echo "SUITES_EXIT=$rc"
+exit "$rc"
