@@ -92,15 +92,20 @@ fn first_present(names: &[&str]) -> Option<String> {
 fn required(flag: Option<String>, names: &[&str], what: &str) -> Result<String, String> {
     flag.filter(|value| !value.trim().is_empty())
         .or_else(|| first_present(names))
-        .ok_or_else(|| format!("missing {what}; pass the flag or set one of {}", names.join(", ")))
+        .ok_or_else(|| {
+            format!(
+                "missing {what}; pass the flag or set one of {}",
+                names.join(", ")
+            )
+        })
 }
 
 /// Read the secret key without ever printing it, from a file, stdin, or the
 /// environment, in the same precedence `remote up` accepts.
 fn resolve_secret(args: &Args) -> Result<String, String> {
     if let Some(path) = &args.secret_file {
-        let metadata = std::fs::metadata(path)
-            .map_err(|_| "cannot read the secret file".to_owned())?;
+        let metadata =
+            std::fs::metadata(path).map_err(|_| "cannot read the secret file".to_owned())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -109,8 +114,8 @@ fn resolve_secret(args: &Args) -> Result<String, String> {
             }
         }
         let _ = metadata;
-        let content = std::fs::read_to_string(path)
-            .map_err(|_| "cannot read the secret file".to_owned())?;
+        let content =
+            std::fs::read_to_string(path).map_err(|_| "cannot read the secret file".to_owned())?;
         let secret = content.lines().next().unwrap_or_default().trim().to_owned();
         return if secret.is_empty() {
             Err("the secret file holds no key".to_owned())
@@ -129,11 +134,10 @@ fn resolve_secret(args: &Args) -> Result<String, String> {
             Ok(secret)
         };
     }
-    first_present(&["SWARMY_S3_SECRET_KEY", "AWS_SECRET_ACCESS_KEY"])
-        .ok_or_else(|| {
-            "missing secret key; pass --secret-file, --secret-stdin, or set SWARMY_S3_SECRET_KEY"
-                .to_owned()
-        })
+    first_present(&["SWARMY_S3_SECRET_KEY", "AWS_SECRET_ACCESS_KEY"]).ok_or_else(|| {
+        "missing secret key; pass --secret-file, --secret-stdin, or set SWARMY_S3_SECRET_KEY"
+            .to_owned()
+    })
 }
 
 fn resolve(args: &Args) -> Result<Coordinates, String> {
@@ -164,11 +168,11 @@ fn resolve(args: &Args) -> Result<Coordinates, String> {
 /// the plain-PUT fallback wrapper when `conditional_create` is off.
 fn object_client(coordinates: &Coordinates) -> Result<Arc<dyn ObjectStore>, String> {
     let mut settings = swarmy_config::Settings::default();
-    settings.s3.endpoint = coordinates.endpoint.clone();
-    settings.s3.region = coordinates.region.clone();
-    settings.s3.bucket = coordinates.bucket.clone();
-    settings.s3.access_key = coordinates.access_key.clone();
-    settings.s3.secret_key = coordinates.secret.clone();
+    settings.s3.endpoint.clone_from(&coordinates.endpoint);
+    settings.s3.region.clone_from(&coordinates.region);
+    settings.s3.bucket.clone_from(&coordinates.bucket);
+    settings.s3.access_key.clone_from(&coordinates.access_key);
+    settings.s3.secret_key.clone_from(&coordinates.secret);
     settings.s3.prefix = swarmy_config::ObjectPrefix::default();
     settings.s3.conditional_create = coordinates.conditional_create;
     swarmy_store::objects::from_settings(&settings)
@@ -211,7 +215,7 @@ fn object_code(error: &object_store::Error) -> String {
         object_store::Error::NotFound { .. } => "not_found".to_owned(),
         object_store::Error::AlreadyExists { .. } => "already_exists".to_owned(),
         object_store::Error::NotSupported { .. } => "not_supported".to_owned(),
-        object_store::Error::NotImplemented { .. } => "not_implemented".to_owned(),
+        object_store::Error::NotImplemented => "not_implemented".to_owned(),
         object_store::Error::InvalidPath { .. } => "invalid_path".to_owned(),
         _ => "request_failed".to_owned(),
     }
@@ -236,8 +240,7 @@ struct Outcome {
 fn report(outcome: &Outcome, secrets: &[&str]) -> bool {
     let ok = outcome.result.is_ok();
     let detail = match &outcome.result {
-        Ok(detail) => detail.clone(),
-        Err(detail) => detail.clone(),
+        Ok(detail) | Err(detail) => detail.clone(),
     };
     println!(
         "{}",
@@ -251,7 +254,11 @@ fn report(outcome: &Outcome, secrets: &[&str]) -> bool {
 }
 
 fn payload() -> bytes::Bytes {
-    bytes::Bytes::from((0..8192_u32).map(|index| (index % 251) as u8).collect::<Vec<_>>())
+    bytes::Bytes::from(
+        (0..8192_u32)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>(),
+    )
 }
 
 async fn check_bucket_exists(client: &aws_sdk_s3::Client, bucket: &str) -> Outcome {
@@ -295,10 +302,10 @@ async fn check_create_existing(
         .put_opts(path, bytes.clone().into(), PutMode::Create.into())
         .await
     {
-        Ok(()) if conditional_create => {
+        Ok(_) if conditional_create => {
             Err("create-only put overwrote the existing key; the provider ignores If-None-Match: set conditional_create = false".to_owned())
         }
-        Ok(()) => Ok("overwrote the existing key with the fallback plain PUT".to_owned()),
+        Ok(_) => Ok("overwrote the existing key with the fallback plain PUT".to_owned()),
         Err(object_store::Error::AlreadyExists { .. }) if conditional_create => {
             Ok("existing key rejected with AlreadyExists".to_owned())
         }
@@ -320,7 +327,7 @@ async fn check_get(store: &dyn ObjectStore, path: &Path, bytes: &bytes::Bytes) -
     Outcome { name, result }
 }
 
-async fn check_head(store: &dyn ObjectStore, path: &Path, expected: usize) -> Outcome {
+async fn check_head(store: &dyn ObjectStore, path: &Path, expected: u64) -> Outcome {
     let name = "head";
     let result = match store.head(path).await {
         Ok(meta) if meta.size == expected => Ok(format!("size {expected} reported")),
@@ -354,8 +361,7 @@ async fn check_list_prefix(
                 .map(|meta| meta.location.filename().unwrap_or_default())
                 .collect();
             names.sort_unstable();
-            let expected: Vec<_> =
-                (0..count).map(|index| format!("key-{index:02}")).collect();
+            let expected: Vec<_> = (0..count).map(|index| format!("key-{index:02}")).collect();
             if names.iter().map(ToString::to_string).collect::<Vec<_>>() == expected {
                 Ok(format!("{count} keys listed under the prefix"))
             } else {
@@ -451,8 +457,9 @@ async fn run_probe(
     bucket: &str,
     conditional_create: bool,
 ) -> Vec<Outcome> {
-    let run = format!("probe-{}", ulid::Ulid::new());
+    let run = format!("probe-{}", ulid::Ulid::generate());
     let bytes = payload();
+    let expected_size = u64::try_from(bytes.len()).expect("the probe payload fits in a u64");
     let put_path = Path::from(format!("{run}/put"));
     let create_path = Path::from(format!("{run}/create"));
     let list_prefix = Path::from(format!("{run}/list"));
@@ -464,11 +471,10 @@ async fn run_probe(
     outcomes.push(check_create_new(objects, &create_path, &bytes).await);
     outcomes.push(check_create_existing(objects, &create_path, &bytes, conditional_create).await);
     outcomes.push(check_get(objects, &put_path, &bytes).await);
-    outcomes.push(check_head(objects, &put_path, bytes.len()).await);
+    outcomes.push(check_head(objects, &put_path, expected_size).await);
     outcomes.push(check_list_prefix(objects, &list_prefix, list_count, &bytes).await);
-    outcomes.push(
-        check_list_pagination(buckets, bucket, &format!("{run}/list/"), list_count).await,
-    );
+    outcomes
+        .push(check_list_pagination(buckets, bucket, &format!("{run}/list/"), list_count).await);
     let mut paths = vec![put_path, create_path];
     for index in 0..list_count {
         paths.push(Path::from(format!("{run}/list/key-{index:02}")));
