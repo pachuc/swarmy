@@ -388,7 +388,13 @@ pub(crate) async fn wait_idle(
         .bus
         .subscribe_live::<swarmy_core::Event>(LiveFeed::SessionEvents(session_id))
         .await
-        .map_err(|cause| failure(StatusCode::SERVICE_UNAVAILABLE, "event_feed_unavailable", cause))?;
+        .map_err(|cause| {
+            failure(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "event_feed_unavailable",
+                cause,
+            )
+        })?;
     let deadline =
         Instant::now() + Duration::from_millis(query.timeout_ms.unwrap_or(30_000).min(120_000));
     let mut fallback = interval_at(

@@ -32,7 +32,11 @@ fn json_and_slice_and_id_failures_keep_their_cause() {
     let json: serde_json::Error =
         serde_json::from_str::<serde_json::Value>("{oops").expect_err("invalid JSON");
     let chain = causes(&StoreError::from(json));
-    assert!(chain.iter().any(|cause| cause.contains("key must be a string")));
+    assert!(
+        chain
+            .iter()
+            .any(|cause| cause.contains("key must be a string"))
+    );
 
     let slice = <[u8; 16]>::try_from([0; 4].as_slice()).expect_err("short slice");
     let chain = causes(&StoreError::from(slice));

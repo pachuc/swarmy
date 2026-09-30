@@ -42,9 +42,7 @@ impl Store {
             .await?;
         record
             .filter(|entry| entry.expires_at > self.now())
-            .map(|entry| {
-                serde_json::from_str(&entry.result).map_err(StoreError::from)
-            })
+            .map(|entry| serde_json::from_str(&entry.result).map_err(StoreError::from))
             .transpose()
     }
 

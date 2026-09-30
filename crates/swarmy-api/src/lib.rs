@@ -893,7 +893,13 @@ fn credential_store(
         .credential_keyring
         .clone()
         .map_or_else(Keyring::load, Ok)
-        .map_err(|cause| failure(StatusCode::SERVICE_UNAVAILABLE, "keyring_unavailable", cause))?;
+        .map_err(|cause| {
+            failure(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "keyring_unavailable",
+                cause,
+            )
+        })?;
     Ok(state.store.credentials(keyring))
 }
 async fn credentials(State(state): State<AppState>) -> ApiResult<Vec<api::Credential>> {

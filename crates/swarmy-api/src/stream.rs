@@ -142,9 +142,13 @@ pub(crate) async fn subscribe(
     validate(&state, &subscription).await?;
     // Install the live subscriptions before headers become visible to a client.
     // Durable records can replay, but a token emitted in this window cannot.
-    let initial_feeds = feeds(&state, &subscription)
-        .await
-        .map_err(|cause| failure(StatusCode::SERVICE_UNAVAILABLE, "subscription_unavailable", cause))?;
+    let initial_feeds = feeds(&state, &subscription).await.map_err(|cause| {
+        failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "subscription_unavailable",
+            cause,
+        )
+    })?;
     let connection_id = Ulid::generate().to_string();
     let (changes, receiver) = watch::channel(subscription.clone());
     let progress = Arc::new(std::sync::Mutex::new(subscription.clone()));

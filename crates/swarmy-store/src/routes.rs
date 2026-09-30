@@ -299,8 +299,7 @@ impl Store {
         let (begin, end) = space.range();
         let mut routes = Vec::new();
         for (key, value) in self.scan_all_pages(begin, end).await? {
-            let (name,): (String,) = space
-                .unpack(&key)?;
+            let (name,): (String,) = space.unpack(&key)?;
             let mut record: RouteRecord = swarmy_core::decode(&value)?;
             if record.name != name {
                 return Err(StoreError::Storage(crate::StorageError::Corrupt));
@@ -339,8 +338,7 @@ impl Store {
             .credential_entry_space_provider(CredentialScope::Cluster, provider);
         let mut entries: Vec<(Timestamp, PoolEntry)> = Vec::new();
         for (key, value) in scan_all(trx, space.range()).await? {
-            let (label,): (String,) = space
-                .unpack(&key)?;
+            let (label,): (String,) = space.unpack(&key)?;
             let entry = decode_entry(&value)?;
             entries.push((
                 entry.created_at,

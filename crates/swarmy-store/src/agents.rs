@@ -54,7 +54,7 @@ impl Store {
                         read::<crate::api_idempotency::ApiReplay>(&trx, &replay_key).await?
                         && previous.expires_at > now
                     {
-                    return serde_json::from_str(&previous.result).map_err(StoreError::from);
+                        return serde_json::from_str(&previous.result).map_err(StoreError::from);
                     }
                 }
                 if trx

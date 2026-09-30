@@ -120,9 +120,8 @@ impl GeminiProvider {
 }
 
 fn endpoint_url(base: &str, model: &str, auth: &ClientAuth) -> Result<reqwest::Url, Error> {
-    let mut url =
-        reqwest::Url::parse(base)
-            .map_err(|error| Error::Protocol(format!("invalid Gemini base URL: {error}")))?;
+    let mut url = reqwest::Url::parse(base)
+        .map_err(|error| Error::Protocol(format!("invalid Gemini base URL: {error}")))?;
     let versioned = url.path().trim_end_matches('/').ends_with("/v1");
     let mut path = url
         .path_segments_mut()

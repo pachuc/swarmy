@@ -155,9 +155,9 @@ pub async fn upload(
         let _guard = state.mutation_guard().await;
         if let Some(value) = state.store.api_replay(&replay_key).await.map_err(storage)? {
             drain(body).await;
-            return serde_json::from_value(value)
-                .map(Json)
-                .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay", cause));
+            return serde_json::from_value(value).map(Json).map_err(|cause| {
+                failure(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay", cause)
+            });
         }
     }
     let (_spool, path, _size) = spool(&state, body).await?;

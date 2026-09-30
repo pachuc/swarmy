@@ -147,8 +147,7 @@ impl Store {
             .await?;
         let mut labels = Vec::new();
         for (key, _) in rows {
-            let (label,): (String,) = space
-                .unpack(&key)?;
+            let (label,): (String,) = space.unpack(&key)?;
             labels.push(label);
         }
         labels.sort();
@@ -176,8 +175,7 @@ impl Store {
             let range = space.range();
             let mut entries: Vec<(String, bool)> = Vec::new();
             for (key, value) in scan_all(&trx, range).await? {
-                let (label,): (String,) = space
-                    .unpack(&key)?;
+                let (label,): (String,) = space.unpack(&key)?;
                 let entry = decode_entry(&value)?;
                 entries.push((label, entry_ready(entry.needs_login, entry.expires_at, now)));
             }
@@ -377,8 +375,7 @@ impl CredentialStore {
         let (begin, end) = space.range();
         let mut result = Vec::new();
         for (key, value) in self.store.scan_all_pages(begin, end).await? {
-            let (provider, label): (String, String) = space
-                .unpack(&key)?;
+            let (provider, label): (String, String) = space.unpack(&key)?;
             let entry: EntryValue = decode_entry(&value)?;
             let record = decrypt(
                 &self.keyring,
@@ -425,8 +422,7 @@ impl CredentialStore {
             .await?;
         let mut entries = Vec::new();
         for (key, value) in rows {
-            let (label,): (String,) = space
-                .unpack(&key)?;
+            let (label,): (String,) = space.unpack(&key)?;
             let entry: EntryValue = decode_entry(&value)?;
             let record = decrypt(
                 &self.keyring,
