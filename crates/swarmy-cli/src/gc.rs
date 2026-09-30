@@ -1,4 +1,8 @@
-pub async fn run(dry_run: bool, grace_seconds: Option<u64>, json: bool) -> anyhow::Result<()> {
+pub(crate) async fn run(
+    dry_run: bool,
+    grace_seconds: Option<u64>,
+    json: bool,
+) -> anyhow::Result<()> {
     let (client, endpoint) = swarmy_client::api_client::connect()?;
     if let Some(grace) = grace_seconds {
         anyhow::ensure!(grace > 0, "grace window must be positive");

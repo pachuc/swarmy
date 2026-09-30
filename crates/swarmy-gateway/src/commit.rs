@@ -19,7 +19,7 @@ use crate::{
 
 struct CompletionAttribution {
     entry: Option<String>,
-    entry_kind: Option<swarmy_core::CredentialEntryKind>,
+    entry_kind: Option<CredentialEntryKind>,
     quota_remaining: std::collections::BTreeMap<String, u64>,
     quota_resets: std::collections::BTreeMap<String, u64>,
 }
@@ -32,8 +32,8 @@ struct TerminalInput<'a> {
     effort_requested: Option<swarmy_core::ReasoningEffort>,
     effort_clamped: bool,
     retryable: bool,
-    retry_at: Option<jiff::Timestamp>,
-    result: &'a std::result::Result<swarmy_llm::Response, swarmy_llm::Error>,
+    retry_at: Option<Timestamp>,
+    result: &'a std::result::Result<Response, swarmy_llm::Error>,
     entry: Option<String>,
     route: Option<String>,
     route_step: Option<u32>,

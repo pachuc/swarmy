@@ -26,14 +26,12 @@ fn part_has_content(part: &swarmy_core::Part) -> bool {
 /// First observable model content in a stream delta. Text, reasoning, and
 /// tool-argument deltas count when nonempty; completed parts count too so the
 /// fake provider's `PartDone` stream starts the first-token clock.
-fn is_first_content(delta: &swarmy_llm::Delta) -> bool {
+fn is_first_content(delta: &Delta) -> bool {
     match delta {
-        swarmy_llm::Delta::Text { text, .. } | swarmy_llm::Delta::Reasoning { text, .. } => {
-            !text.is_empty()
-        }
-        swarmy_llm::Delta::ToolArguments { arguments, .. } => !arguments.is_empty(),
-        swarmy_llm::Delta::PartDone { part, .. } => part_has_content(part),
-        swarmy_llm::Delta::Completed(_) => false,
+        Delta::Text { text, .. } | Delta::Reasoning { text, .. } => !text.is_empty(),
+        Delta::ToolArguments { arguments, .. } => !arguments.is_empty(),
+        Delta::PartDone { part, .. } => part_has_content(part),
+        Delta::Completed(_) => false,
     }
 }
 
@@ -41,13 +39,11 @@ fn is_first_content(delta: &swarmy_llm::Delta) -> bool {
 /// reasoning, and tool-argument deltas count: every real client emits one
 /// `PartDone` per part after the incremental deltas, so counting `PartDone`
 /// would label every single-chunk response as streamed.
-fn is_stream_chunk(delta: &swarmy_llm::Delta) -> bool {
+fn is_stream_chunk(delta: &Delta) -> bool {
     match delta {
-        swarmy_llm::Delta::Text { text, .. } | swarmy_llm::Delta::Reasoning { text, .. } => {
-            !text.is_empty()
-        }
-        swarmy_llm::Delta::ToolArguments { arguments, .. } => !arguments.is_empty(),
-        swarmy_llm::Delta::PartDone { .. } | swarmy_llm::Delta::Completed(_) => false,
+        Delta::Text { text, .. } | Delta::Reasoning { text, .. } => !text.is_empty(),
+        Delta::ToolArguments { arguments, .. } => !arguments.is_empty(),
+        Delta::PartDone { .. } | Delta::Completed(_) => false,
     }
 }
 
@@ -247,7 +243,7 @@ impl Gateway {
                     status: reqwest::StatusCode::TOO_MANY_REQUESTS,
                     message: reason,
                     retry_after: Some(
-                        std::time::Duration::try_from(until - Timestamp::now()).unwrap_or_default(),
+                        Duration::try_from(until - Timestamp::now()).unwrap_or_default(),
                     ),
                 }),
                 streamed: None,
@@ -364,7 +360,7 @@ mod retry_tests {
         })
     }
 
-    struct ScriptedStream(Vec<swarmy_llm::Delta>);
+    struct ScriptedStream(Vec<Delta>);
 
     impl swarmy_llm::Provider for ScriptedStream {
         fn request(&self, _request: swarmy_llm::Request) -> swarmy_llm::ProviderStream {
@@ -377,10 +373,10 @@ mod retry_tests {
         }
     }
 
-    fn stream_test_job() -> swarmy_llm::InferenceJob {
+    fn stream_test_job() -> InferenceJob {
         let session_id = swarmy_core::SessionId::from_ulid(ulid::Ulid::generate());
         let step = 1;
-        swarmy_llm::InferenceJob {
+        InferenceJob {
             summary: false,
             summary_prefix: false,
             summary_cut: None,
@@ -410,7 +406,7 @@ mod retry_tests {
         let Some(gateway) = stream_test_gateway().await else {
             return;
         };
-        let completed = swarmy_llm::Response {
+        let completed = Response {
             parts: vec![Part::Text { text: "hi".into() }],
             stop_reason: swarmy_llm::StopReason::EndTurn,
             usage: swarmy_llm::TokenUsage::default(),
@@ -418,15 +414,15 @@ mod retry_tests {
             quota_resets: std::collections::BTreeMap::new(),
         };
         let client: Arc<dyn swarmy_llm::Provider> = Arc::new(ScriptedStream(vec![
-            swarmy_llm::Delta::Text {
+            Delta::Text {
                 output_index: 0,
                 text: "hi".into(),
             },
-            swarmy_llm::Delta::PartDone {
+            Delta::PartDone {
                 output_index: 0,
                 part: Part::Text { text: "hi".into() },
             },
-            swarmy_llm::Delta::Completed(completed),
+            Delta::Completed(completed),
         ]));
         let job = stream_test_job();
         let (response, streamed) = gateway.stream(&client, &job, None, None).await.unwrap();
@@ -442,7 +438,7 @@ mod retry_tests {
         let Some(gateway) = stream_test_gateway().await else {
             return;
         };
-        let completed = swarmy_llm::Response {
+        let completed = Response {
             parts: vec![Part::Text { text: "ab".into() }],
             stop_reason: swarmy_llm::StopReason::EndTurn,
             usage: swarmy_llm::TokenUsage::default(),
@@ -450,19 +446,19 @@ mod retry_tests {
             quota_resets: std::collections::BTreeMap::new(),
         };
         let client: Arc<dyn swarmy_llm::Provider> = Arc::new(ScriptedStream(vec![
-            swarmy_llm::Delta::Text {
+            Delta::Text {
                 output_index: 0,
                 text: "a".into(),
             },
-            swarmy_llm::Delta::Text {
+            Delta::Text {
                 output_index: 0,
                 text: "b".into(),
             },
-            swarmy_llm::Delta::PartDone {
+            Delta::PartDone {
                 output_index: 0,
                 part: Part::Text { text: "ab".into() },
             },
-            swarmy_llm::Delta::Completed(completed),
+            Delta::Completed(completed),
         ]));
         let job = stream_test_job();
         let (response, streamed) = gateway.stream(&client, &job, None, None).await.unwrap();

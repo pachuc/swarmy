@@ -6,7 +6,7 @@ use swarmy_config::{GarbageCollection, Metering};
 use swarmy_store::{Store, StoreError};
 use swarmy_volume::VolumeError;
 
-pub async fn run(
+pub(crate) async fn run(
     store: &Store,
     objects: Arc<dyn ObjectStore>,
     policy: GarbageCollection,

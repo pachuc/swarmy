@@ -335,7 +335,7 @@ impl Worker {
         &self,
         id: SessionId,
         turn: Option<MessageId>,
-        stage: swarmy_core::TurnStage,
+        stage: TurnStage,
         request: RequestId,
     ) {
         if let Some(turn) = turn {
@@ -375,7 +375,7 @@ impl Worker {
                 let event = Bus::turn_event(
                     job.session_id,
                     turn,
-                    swarmy_core::TurnStage::ToolDispatched,
+                    TurnStage::ToolDispatched,
                     Some(job.request_id),
                 );
                 self.bus.record_turn(&event).await;

@@ -68,7 +68,7 @@ async fn unrouted_ephemeral_first_attempt_keeps_gateway_pool_selection() {
         system_prompt: String::new(),
         messages: Vec::new(),
         tools: Vec::new(),
-        settings: swarmy_llm::GenerationSettings {
+        settings: GenerationSettings {
             model: "test-model".into(),
             ..Default::default()
         },

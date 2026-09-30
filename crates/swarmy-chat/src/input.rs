@@ -1,44 +1,44 @@
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Default)]
-pub struct Input {
+pub(crate) struct Input {
     pub text: String,
     cursor: usize,
 }
 
 impl Input {
-    pub fn insert(&mut self, c: char) {
+    pub(crate) fn insert(&mut self, c: char) {
         if !c.is_control() {
             self.text.insert(self.cursor, c);
             self.cursor += c.len_utf8();
         }
     }
 
-    pub fn left(&mut self) {
+    pub(crate) fn left(&mut self) {
         self.cursor = self.text[..self.cursor]
             .char_indices()
             .next_back()
             .map_or(0, |(index, _)| index);
     }
 
-    pub fn right(&mut self) {
+    pub(crate) fn right(&mut self) {
         if let Some(c) = self.text[self.cursor..].chars().next() {
             self.cursor += c.len_utf8();
         }
     }
 
-    pub fn backspace(&mut self) {
+    pub(crate) fn backspace(&mut self) {
         let end = self.cursor;
         self.left();
         self.text.drain(self.cursor..end);
     }
 
-    pub fn take(&mut self) -> String {
+    pub(crate) fn take(&mut self) -> String {
         self.cursor = 0;
         std::mem::take(&mut self.text)
     }
 
-    pub fn view(&self, width: u16) -> (String, u16) {
+    pub(crate) fn view(&self, width: u16) -> (String, u16) {
         let available = usize::from(width.saturating_sub(3));
         let mut start = 0;
         while self.text[start..self.cursor].width() > available {

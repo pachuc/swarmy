@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 
 const LEASE: Duration = Duration::from_secs(30);
 
-pub fn spawn(
+pub(crate) fn spawn(
     bus: Bus,
     store: &Store,
     node: NodeId,
@@ -111,7 +111,7 @@ pub(crate) fn placement_refusal(
         })
 }
 
-pub async fn execute(
+pub(crate) async fn execute(
     store: &Store,
     runtime: Arc<RuncRuntime>,
     node: NodeId,
@@ -160,7 +160,7 @@ async fn run(
     needs_computer_sample: bool,
 ) -> Result<()> {
     tracing::info!(request_id = %claim.job.request_id, epoch = claim.placement.epoch, "executing sandbox command");
-    let sandbox = swarmy_core::Sandbox {
+    let sandbox = Sandbox {
         agent_id: claim.placement.agent_id,
     };
     if claim.job.arguments.is_display_tool() {
@@ -325,8 +325,10 @@ async fn run_command(
     Ok(CommandOutcome { result, summary })
 }
 
-// Fetch histogram reads are approximate, so floating-point display precision is sufficient.
-#[allow(clippy::cast_precision_loss)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "fetch histogram reads are approximate, so floating-point display precision is sufficient"
+)]
 fn observe_tool_completion(
     store: &Store,
     runtime: Arc<RuncRuntime>,
@@ -359,7 +361,7 @@ fn observe_tool_completion(
         process_wall_ms: timing.process_wall_ms,
         ..Default::default()
     };
-    let completed = swarmy_bus::Bus::turn_event(
+    let completed = Bus::turn_event(
         claim.job.session_id,
         turn,
         swarmy_core::TurnStage::ToolCompleted,
@@ -587,7 +589,10 @@ pub(crate) async fn exec(
     Ok((exit?, stdout, stderr))
 }
 
-pub async fn has_processes(runtime: &RuncRuntime, placement: &PlacementRecord) -> Result<bool> {
+pub(crate) async fn has_processes(
+    runtime: &RuncRuntime,
+    placement: &PlacementRecord,
+) -> Result<bool> {
     let arguments = SandboxArguments::ProcessList(ProcessListArguments {
         limit: 20,
         all: false,

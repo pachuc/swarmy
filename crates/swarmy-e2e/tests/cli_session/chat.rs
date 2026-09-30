@@ -422,7 +422,7 @@ async fn session_id(fixture: &Fixture) -> SessionId {
 /// diagnostics on expiry. Retryable database timeouts keep polling so the
 /// outer timeout below wins with diagnostics instead of panicking first.
 async fn idle(fixture: &Fixture, services: Option<&Services>, id: SessionId, budget: Duration) {
-    let result = std::panic::AssertUnwindSafe(swarmy_testkit::eventually(
+    let result = AssertUnwindSafe(swarmy_testkit::eventually(
         "session idles",
         budget,
         async || match fixture.store.fetch_session(id).await {
@@ -999,7 +999,7 @@ async fn root_chat_default_image_executes_pwd() {
         let session = fixture.store.fetch_session(id).await.unwrap().unwrap();
         assert!(fixture.store.get_by_agent(session.agent_id).await.unwrap().is_none());
         terminal.type_text("Run pwd\r");
-        let result = std::panic::AssertUnwindSafe(swarmy_testkit::eventually(
+        let result = AssertUnwindSafe(swarmy_testkit::eventually(
             "pwd tool call completes",
             Duration::from_secs(120),
             async || {

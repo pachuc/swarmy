@@ -127,7 +127,7 @@ impl DisplayCache {
     }
 }
 
-pub struct Worker {
+pub(crate) struct Worker {
     store: Store,
     bus: Bus,
     blobs: Arc<dyn BlobStore>,
@@ -140,7 +140,7 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn new(store: Store, bus: Bus, blobs: Arc<dyn BlobStore>, config: Config) -> Self {
+    pub(crate) fn new(store: Store, bus: Bus, blobs: Arc<dyn BlobStore>, config: Config) -> Self {
         Self {
             store,
             bus,
@@ -159,7 +159,7 @@ impl Worker {
     /// lease expiry instead of sleeping out real leases; production keeps the
     /// default wall clock.
     #[cfg(test)]
-    pub fn with_clock(mut self, clock: impl Fn() -> Timestamp + Send + Sync + 'static) -> Self {
+    pub(crate) fn with_clock(mut self, clock: impl Fn() -> Timestamp + Send + Sync + 'static) -> Self {
         self.clock = Arc::new(clock);
         self
     }
@@ -182,7 +182,7 @@ impl Worker {
         }
     }
 
-    pub async fn handle(&self, message: &WorkMessage<Nudge>) -> Result<()> {
+    pub(crate) async fn handle(&self, message: &WorkMessage<Nudge>) -> Result<()> {
         let id = message.value.session_id;
         let (lease, session, turn, events) = match self
             .store
@@ -204,7 +204,7 @@ impl Worker {
         };
         tracing::info!(session_id = %id, owner = %lease.owner, step = lease.seq, "claimed step");
         if let Some(turn) = turn {
-            let event = Bus::turn_event(id, turn, swarmy_core::TurnStage::Claimed, None);
+            let event = Bus::turn_event(id, turn, TurnStage::Claimed, None);
             self.bus.record_turn(&event).await;
             self.store.observe_turn_stage(event);
         }

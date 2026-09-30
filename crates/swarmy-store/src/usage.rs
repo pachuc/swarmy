@@ -75,7 +75,7 @@ impl Store {
         session: SessionId,
         agent: AgentId,
         attribution: &UsageAttribution<'_>,
-        usage: &swarmy_core::TokenUsage,
+        usage: &TokenUsage,
         cost_micros: u64,
     ) -> Result<()> {
         let session_key = self.keys().usage(session);
@@ -121,7 +121,7 @@ impl Store {
             model: attribution.model,
             recorded_at: attribution.recorded_at,
             entry: entry.as_deref(),
-            kind: kind.map(swarmy_core::CredentialEntryKind::as_str),
+            kind: kind.map(CredentialEntryKind::as_str),
             usage,
             cost: cost_micros,
         };

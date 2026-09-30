@@ -10,7 +10,12 @@ use swarmy_store::{ServiceDetail, ServiceRole, Store};
 
 /// Report this instance and expire stale service records until the process
 /// ends. Heartbeat and expiry failures only warn; the next tick retries.
-pub async fn run(store: &Store, instance_id: String, started: Timestamp, partitions: Vec<u16>) {
+pub(crate) async fn run(
+    store: &Store,
+    instance_id: String,
+    started: Timestamp,
+    partitions: Vec<u16>,
+) {
     store
         .heartbeat_loop(
             ServiceRole::Scheduler,

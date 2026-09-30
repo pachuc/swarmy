@@ -204,7 +204,7 @@ async fn run_chat(args: client_commands::ChatArgs, json: bool) -> anyhow::Result
         #[cfg(feature = "chat")]
         {
             let route = args.selection.route.clone();
-            let open = swarmy_chat::client_conversation::OpenArgs {
+            let open = client_conversation::OpenArgs {
                 id: args.session_id.map(|id| id.to_string()),
                 image: args.image,
                 agent: args.agent,

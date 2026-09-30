@@ -67,7 +67,7 @@ impl Drop for ActivityGuard {
 }
 
 /// Each actor serializes calls for one agent while its renewal runs independently.
-pub struct Hosting {
+pub(crate) struct Hosting {
     store: Store,
     runtime: Arc<RuncRuntime>,
     node: NodeId,
@@ -118,7 +118,7 @@ impl Hosting {
             Ok(Vec::new())
         }
     }
-    pub async fn new(
+    pub(crate) async fn new(
         store: Store,
         runtime: Arc<RuncRuntime>,
         node: NodeId,
@@ -151,7 +151,11 @@ impl Hosting {
 
     /// Serve one tool call with its durable turn already resolved by the
     /// caller, so the execution path needs no `request_turn_id` lookup.
-    pub async fn call(self: &Arc<Self>, job: ToolJob, turn: Option<MessageId>) -> Result<()> {
+    pub(crate) async fn call(
+        self: &Arc<Self>,
+        job: ToolJob,
+        turn: Option<MessageId>,
+    ) -> Result<()> {
         let agent = match self.store.tool_agent(&job, self.node).await {
             Ok(Some(agent)) => agent,
             Ok(None) => return Ok(()),
@@ -266,8 +270,10 @@ impl Hosting {
         Ok(placement)
     }
 
-    // Fetch histogram reads are approximate, so floating-point display precision is sufficient.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "fetch histogram reads are approximate, so floating-point display precision is sufficient"
+    )]
     fn observe_computer_boot(
         &self,
         session: SessionId,
@@ -315,7 +321,7 @@ impl Hosting {
             )
             .await?;
         self.store
-            .set_placement_address(placement, swarmy_sandbox::RuncRuntime::NETWORK_ADDRESS)
+            .set_placement_address(placement, RuncRuntime::NETWORK_ADDRESS)
             .await?;
         self.observe_computer_boot(
             first.job.session_id,
@@ -493,7 +499,7 @@ impl Hosting {
     }
 
     /// Heartbeat observations expire independently of placement authority.
-    pub async fn report_status(&self, lifetime: Duration) -> Result<()> {
+    pub(crate) async fn report_status(&self, lifetime: Duration) -> Result<()> {
         let observed_at = jiff::Timestamp::now();
         let expires_at = observed_at.checked_add(lifetime)?;
         let observations: Vec<_> = self
@@ -531,7 +537,7 @@ impl Hosting {
         Ok(())
     }
 
-    pub async fn shutdown(&self) {
+    pub(crate) async fn shutdown(&self) {
         self.shutdown.send_replace(true);
         let entries = std::mem::take(&mut *self.entries.lock().await);
         for (_, entry) in entries {

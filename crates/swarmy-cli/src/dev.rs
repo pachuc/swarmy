@@ -30,7 +30,7 @@ const SERVICES: [(&str, &str); 4] = [
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Subcommand)]
-pub enum Command {
+pub(crate) enum Command {
     /// Start the backing stack and supervised services in the background
     Up {
         /// Start even when a service reports a different or unavailable version
@@ -56,7 +56,7 @@ pub enum Command {
 
 /// One supervised backing service, parsed once by clap instead of matched as a string.
 #[derive(Clone, Copy, clap::ValueEnum)]
-pub enum DevService {
+pub(crate) enum DevService {
     Scheduler,
     Worker,
     Gateway,
@@ -121,7 +121,7 @@ impl Layout {
     }
 }
 
-pub async fn run(command: Command, json: bool) -> Result<()> {
+pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
     // One match owns every variant. The supervisor is spawned without flags
     // by `dev up`, so it never takes the human-output path; every other arm
     // rejects `--json` and discovers the layout through one helper.
@@ -430,9 +430,9 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
 }
 
 // Keep this command aligned with docs/DEV.md's no-root installation workflow.
-pub const REINSTALL: &str = "for crate in cli scheduler worker gateway api; do SWARMY_FDB_LIB_DIR=\"$HOME/.local/lib\" cargo install --locked --path \"crates/swarmy-$crate\"; done";
+pub(crate) const REINSTALL: &str = "for crate in cli scheduler worker gateway api; do SWARMY_FDB_LIB_DIR=\"$HOME/.local/lib\" cargo install --locked --path \"crates/swarmy-$crate\"; done";
 
-pub fn service_binary(name: &str) -> Result<PathBuf> {
+pub(crate) fn service_binary(name: &str) -> Result<PathBuf> {
     let executable =
         crate::tools::find(name).unwrap_or(std::env::current_exe()?.with_file_name(name));
     executable.canonicalize().with_context(|| {
@@ -447,7 +447,7 @@ fn binary(name: &str) -> Result<PathBuf> {
     service_binary(&format!("swarmy-{name}"))
 }
 
-pub async fn version_check(executable: &Path, name: &str) -> Result<String> {
+pub(crate) async fn version_check(executable: &Path, name: &str) -> Result<String> {
     let output = timeout(
         Duration::from_secs(5),
         Process::new(executable)

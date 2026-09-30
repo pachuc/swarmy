@@ -13,7 +13,7 @@ pub use exports::parse_exports;
 pub use object::ObjectPrefix;
 pub use remote::{
     AwsSettings, RemoteNode, RemotePorts, RemoteProfile, RemoteServices, RemoteSettings,
-    default_sandboxes, remote_path, validate_remote_name,
+    default_sandboxes, remote_path, validate_remote_name, validate_service_user,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -734,7 +734,7 @@ pub async fn shutdown_signal() {
 /// How often every service reports health while running. One shared tick so
 /// the worker, API, scheduler, and gateway advertisement stay in step; the
 /// store-side heartbeat loop below drives the actual reports.
-pub const SERVICE_HEALTH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+pub const SERVICE_HEALTH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Host label for health records. Every service reports the same way instead
 /// of repeating the environment lookup.
@@ -867,7 +867,11 @@ impl Settings {
     /// # Errors
     /// Fails if the file cannot be read or decoded.
     pub fn read(path: &Path) -> Result<Self, Error> {
-        let settings: Self = toml::from_str(&std::fs::read_to_string(path)?)?;
+        let mut settings: Self = toml::from_str(&std::fs::read_to_string(path)?)?;
+        // An absent service user predates the setting; configuration files
+        // take the new default while saved node records keep the empty value
+        // so they fall back to the SSH login they were provisioned with.
+        settings.remote.normalize_service_user();
         settings.validate()?;
         settings.catalog()?;
         Ok(settings)

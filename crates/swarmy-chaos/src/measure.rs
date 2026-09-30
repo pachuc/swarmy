@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::path::Path;
 use swarmy_core::{ManifestId, VolumeId};
 
-pub async fn run(f: &Fixture, binaries: &Path, script: &Path) -> Result<()> {
+pub(crate) async fn run(f: &Fixture, binaries: &Path, script: &Path) -> Result<()> {
     let root = f.files.path().join("measurements");
     std::fs::create_dir_all(root.join(".swarmy"))?;
     std::fs::write(root.join(".swarmy/config.toml"), "")?;

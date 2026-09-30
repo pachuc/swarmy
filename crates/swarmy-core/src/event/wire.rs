@@ -249,10 +249,6 @@ impl From<Event> for BinaryEvent {
     }
 }
 impl From<BinaryEvent> for Event {
-    // The binary layout contract lives in this one exhaustive table: one arm
-    // per frozen discriminant. Splitting arms further would scatter the
-    // mapping the discriminant test freezes, so the length lint is allowed here.
-    #[allow(clippy::too_many_lines)]
     fn from(event: BinaryEvent) -> Self {
         match event {
             BinaryEvent::MessageAppended { seq, message } => Self::MessageAppended { seq, message },
@@ -331,10 +327,8 @@ mod tests {
 
     #[test]
     fn routed_completions_keep_the_metered_discriminant() {
-        let request_id = crate::RequestId::for_step(
-            crate::SessionId::from_ulid(ulid::Ulid::from_parts(3, 4)),
-            2,
-        );
+        let request_id =
+            RequestId::for_step(crate::SessionId::from_ulid(ulid::Ulid::from_parts(3, 4)), 2);
         let plain = Event::InferenceCompleted {
             seq: 5,
             request_id,

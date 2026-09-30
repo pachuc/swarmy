@@ -300,7 +300,7 @@ async fn check_tool_admission(
 
 async fn check_stale_publication(
     store: &Store,
-    volume: swarmy_core::VolumeId,
+    volume: VolumeId,
     writer: &swarmy_core::Lease,
     image: ManifestId,
 ) {

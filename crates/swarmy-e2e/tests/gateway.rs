@@ -1079,7 +1079,7 @@ fn switch_tool_result() -> swarmy_core::Message {
     swarmy_core::Message {
         id: swarmy_core::MessageId::from_ulid(Ulid::generate()),
         role: swarmy_core::MessageRole::Tool,
-        parts: vec![swarmy_core::Part::ToolResult {
+        parts: vec![Part::ToolResult {
             call_id: swarmy_core::ToolCallId("clock-0".into()),
             result: swarmy_core::ToolResult::Completed {
                 output: "12:00".into(),
@@ -1120,17 +1120,17 @@ fn assert_logged_history_order(messages: &[swarmy_core::Message]) {
     let call = messages
         .iter()
         .position(|m| {
-            m.parts.iter().any(|p| {
-                matches!(p, swarmy_core::Part::ToolCall { call_id, .. } if call_id.0 == "clock-0")
-            })
+            m.parts
+                .iter()
+                .any(|p| matches!(p, Part::ToolCall { call_id, .. } if call_id.0 == "clock-0"))
         })
         .expect("call in logged history");
     let result = messages
         .iter()
         .position(|m| {
-            m.parts.iter().any(|p| {
-                matches!(p, swarmy_core::Part::ToolResult { call_id, .. } if call_id.0 == "clock-0")
-            })
+            m.parts
+                .iter()
+                .any(|p| matches!(p, Part::ToolResult { call_id, .. } if call_id.0 == "clock-0"))
         })
         .expect("result in logged history");
     assert!(call < result, "logged call must precede its result");
@@ -1147,9 +1147,9 @@ fn assert_logged_history_order(messages: &[swarmy_core::Message]) {
             messages
                 .iter()
                 .filter(|m| {
-                    m.parts.iter().any(|p| {
-                matches!(p, swarmy_core::Part::ToolCall { call_id, .. } if call_id.0 == "clock-0")
-            })
+                    m.parts.iter().any(
+                        |p| matches!(p, Part::ToolCall { call_id, .. } if call_id.0 == "clock-0"),
+                    )
                 })
                 .count(),
         ),
@@ -1158,9 +1158,9 @@ fn assert_logged_history_order(messages: &[swarmy_core::Message]) {
             messages
                 .iter()
                 .filter(|m| {
-                    m.parts.iter().any(|p| {
-                matches!(p, swarmy_core::Part::ToolResult { call_id, .. } if call_id.0 == "clock-0")
-            })
+                    m.parts.iter().any(
+                        |p| matches!(p, Part::ToolResult { call_id, .. } if call_id.0 == "clock-0"),
+                    )
                 })
                 .count(),
         ),
@@ -1199,7 +1199,7 @@ async fn switch_turns(f: &mut Fixture, model: &swarmy_config::CustomModel) {
             .message
             .parts
             .iter()
-            .any(|p| matches!(p, swarmy_core::Part::ToolCall { .. }))
+            .any(|p| matches!(p, Part::ToolCall { .. }))
     );
     let history = vec![
         switch_user(),

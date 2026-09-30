@@ -61,6 +61,14 @@ pub struct RemoteSettings {
     pub disk_gb: u32,
     pub managed_by_tag: String,
     pub profile: Option<String>,
+    /// Login that owns the checkout and runs the node units. Plain servers
+    /// use `swarmy`; EC2 launches write `ubuntu` explicitly.
+    pub service_user: String,
+    /// Local disk for sandbox data: a block device to format and mount at
+    /// `/mnt/swarmy-local` (for example `/dev/nvme1n1`) or `dir:/path` for an
+    /// existing directory to use directly. Sandbox nodes require it;
+    /// control-only nodes leave it empty for the root disk.
+    pub local_storage: String,
     pub aws: AwsSettings,
 }
 
@@ -74,6 +82,8 @@ impl Default for RemoteSettings {
             disk_gb: 100,
             managed_by_tag: "swarmy".into(),
             profile: None,
+            service_user: default_service_user(),
+            local_storage: String::new(),
             aws: AwsSettings::default(),
         }
     }
@@ -89,6 +99,8 @@ struct RemoteSettingsHelper {
     disk_gb: u32,
     managed_by_tag: String,
     profile: Option<String>,
+    service_user: String,
+    local_storage: String,
     aws: AwsHelper,
 }
 
@@ -102,6 +114,11 @@ impl Default for RemoteSettingsHelper {
             disk_gb: 100,
             managed_by_tag: "swarmy".into(),
             profile: None,
+            // Empty means the record predates the setting; `RemoteNode::service_user`
+            // falls back to the SSH login it was provisioned with. Configuration
+            // files fill the new default on load (`Settings::read`).
+            service_user: String::new(),
+            local_storage: String::new(),
             aws: AwsHelper::default(),
         }
     }
@@ -123,6 +140,9 @@ impl<'de> Deserialize<'de> for RemoteSettings {
         D: serde::Deserializer<'de>,
     {
         let helper = RemoteSettingsHelper::deserialize(deserializer)?;
+        // Keep an absent service user empty so saved node records fall back to
+        // the SSH login they were provisioned with. Configuration files fill
+        // the new default on load; see `Settings::read`.
         Ok(Self {
             provider: helper.provider,
             services: helper.services,
@@ -131,6 +151,8 @@ impl<'de> Deserialize<'de> for RemoteSettings {
             disk_gb: helper.disk_gb,
             managed_by_tag: helper.managed_by_tag,
             profile: helper.profile,
+            service_user: helper.service_user,
+            local_storage: helper.local_storage,
             aws: AwsSettings {
                 subnet: helper.aws.subnet,
                 security_group: helper.aws.security_group,
@@ -213,6 +235,26 @@ impl RemoteNode {
         self.launch_settings.as_ref()?.bucket.as_deref()
     }
 
+    /// Login that owns the checkout and runs the node units. Saved launch
+    /// settings win; records written before the setting existed fall back
+    /// to the SSH login, which matched the service user on those nodes.
+    #[must_use]
+    pub fn service_user(&self) -> &str {
+        match &self.launch_settings {
+            Some(settings) if !settings.service_user.is_empty() => &settings.service_user,
+            _ => &self.ssh_user,
+        }
+    }
+
+    /// Local disk setting for sandbox data; see `RemoteSettings::local_storage`.
+    #[must_use]
+    pub fn local_storage(&self) -> &str {
+        match &self.launch_settings {
+            Some(settings) => settings.local_storage.as_str(),
+            None => "",
+        }
+    }
+
     /// Settings selecting the cloud provider for this remote. Records saved
     /// before launch settings existed fall back to defaults in the node's
     /// region, so teardown never depends on a later configuration edit.
@@ -235,6 +277,41 @@ pub const fn default_sandboxes() -> u32 {
 
 fn ssh_user() -> String {
     "ubuntu".into()
+}
+
+fn default_service_user() -> String {
+    "swarmy".into()
+}
+
+impl RemoteSettings {
+    /// Fill the new default for configuration files. Saved node records keep
+    /// an empty service user so `RemoteNode::service_user` falls back to the
+    /// SSH login they were provisioned with.
+    pub fn normalize_service_user(&mut self) {
+        if self.service_user.is_empty() {
+            self.service_user = default_service_user();
+        }
+    }
+}
+
+/// Validate service logins before using them in paths or shell output.
+///
+/// # Errors
+///
+/// Rejects empty names and shell metacharacters.
+pub fn validate_service_user(user: &str) -> Result<(), Error> {
+    if !user.is_empty()
+        && user.len() <= 64
+        && user
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        Ok(())
+    } else {
+        Err(Error::Remote(
+            "service user must contain 1-64 letters, digits, hyphens, or underscores",
+        ))
+    }
 }
 
 /// Local endpoints and ownership information for one SSH control master.
@@ -417,6 +494,57 @@ mod tests {
             settings.selection.default_image.as_deref(),
             Some("configured:tag")
         );
+    }
+
+    #[test]
+    fn service_user_and_local_storage_defaults() {
+        let settings = Settings::default();
+        assert_eq!(settings.remote.service_user, "swarmy");
+        assert!(settings.remote.local_storage.is_empty());
+        let parsed: Settings =
+            toml::from_str("[remote]\nservice_user = 'ubuntu'\nlocal_storage = 'dir:/srv/local'")
+                .unwrap();
+        assert_eq!(parsed.remote.service_user, "ubuntu");
+        assert_eq!(parsed.remote.local_storage, "dir:/srv/local");
+        let round_trip: Settings = toml::from_str(&parsed.to_toml().unwrap()).unwrap();
+        assert_eq!(round_trip.remote.service_user, "ubuntu");
+        assert_eq!(round_trip.remote.local_storage, "dir:/srv/local");
+
+        // Records saved before the setting existed keep their SSH login.
+        // Paths are resolved on the host from that login (`~user`), never
+        // from a laptop-side `/home/<user>` guess.
+        let legacy: RemoteNode = serde_json::from_str(r#"{"name":"old","region":"us-east-1","instance_id":"i-old","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","launch_attempted":true,"created_at":"2026-09-16T00:00:00Z"}"#).unwrap();
+        assert_eq!(legacy.service_user(), "ubuntu");
+        assert_eq!(legacy.local_storage(), "");
+
+        // Saved launch settings without the new field keep the login they were
+        // provisioned with instead of taking the new default.
+        let existing: RemoteNode = serde_json::from_str(
+            r#"{"name":"existing","region":"us-east-1","instance_id":"i-old","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","launch_settings":{"aws":{"instance_type":"m6id.xlarge"},"disk_gb":100},"launch_attempted":true,"created_at":"2026-09-16T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(existing.service_user(), "ubuntu");
+
+        // Configuration files without the field take the new default on load.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[remote]\nregion = 'us-east-1'\n").unwrap();
+        let loaded = Settings::read(&path).unwrap();
+        assert_eq!(loaded.remote.service_user, "swarmy");
+
+        // New records resolve through their saved launch settings.
+        let node: RemoteNode = serde_json::from_str(
+            r#"{"name":"new","region":"us-east-1","instance_id":"i-new","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","ssh_user":"root","launch_settings":{"service_user":"swarmy","local_storage":"/dev/md0"},"launch_attempted":true,"created_at":"2026-09-16T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(node.service_user(), "swarmy");
+        assert_eq!(node.local_storage(), "/dev/md0");
+
+        assert!(validate_service_user("swarmy").is_ok());
+        assert!(validate_service_user("deploy-1").is_ok());
+        for invalid in ["", "has space", "semi;colon", "$(injected)", "dq\"quote"] {
+            assert!(validate_service_user(invalid).is_err());
+        }
     }
 
     #[test]

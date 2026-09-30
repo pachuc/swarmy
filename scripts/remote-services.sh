@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Install the optional control plane after its configuration and credentials arrive.
+# Arguments: SERVICE_USER, using the same service paths as provisioning.
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
+service_user=${1:?Usage: remote-services.sh SERVICE_USER}
+validate_service_user "$service_user"
+service_home=$(service_home_for "$service_user")
+repo_dir=$(service_repo_for "$service_user")
+[[ $(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd) == "$repo_dir" ]] || { echo "Expected checkout at $repo_dir" >&2; exit 1; }
 for service in scheduler worker gateway api; do
     sudo tee "/etc/systemd/system/swarmy-$service.service" >/dev/null <<UNIT
 [Unit]
@@ -10,10 +17,10 @@ After=network-online.target swarmy-stack.service
 
 [Service]
 Type=exec
-User=ubuntu
-WorkingDirectory=/home/ubuntu/swarmy
+User=$service_user
+WorkingDirectory=$repo_dir
 EnvironmentFile=/etc/swarmy/node.env
-Environment=HOME=/home/ubuntu
+Environment=HOME=$service_home
 Environment=TOKIO_WORKER_THREADS=2
 ExecStart=/usr/local/bin/swarmy-$service
 Restart=always

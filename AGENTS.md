@@ -234,6 +234,67 @@ satisfies it rather than silencing it. `unsafe_code` is denied
 workspace-wide; the one place that needs it opts in on a single function with
 a SAFETY comment.
 
+### Enforced by tools
+
+The authoritative list of mechanical checks; REVIEWER.md does not repeat it.
+The workspace lint table lives in the root `Cargo.toml` `[workspace.lints]`
+(every crate sets `[lints] workspace = true`); numeric thresholds and
+test-only exemptions live in the root `clippy.toml`. Run them locally with:
+
+```sh
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
+cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
+cargo clippy --locked -p swarmy-llm --no-default-features --all-targets -- -D warnings
+```
+
+- `clippy::allow_attributes_without_reason`: every `allow` carries a
+  `reason = "..."`. Prefer `#[expect(lint, reason = "...")]` so the build
+  fails if the exception goes stale; `#[allow(lint, reason = "...")]` stays
+  legal only where the lint fires under some feature combinations and not
+  others.
+- `unreachable_pub`: no `pub` wider than its crate (or parent module) can
+  reach. Binaries and private modules use `pub(crate)` or `pub(super)`.
+- `unused_qualifications`: paths use the shortest form their imports allow.
+  Fix mechanically with the compiler suggestion.
+- `clippy::todo`, `clippy::unimplemented`, `clippy::dbg_macro`: none of
+  these land in the tree.
+- `unsafe_code` (rustc): denied workspace-wide; the kernel and
+  FoundationDB boundaries opt out per function with a reason and a SAFETY
+  comment.
+
+These structural checks fail CI rather than asking for exceptions. Run them
+locally the same way CI does:
+
+- `scripts/check-anyhow-in-libraries.sh`: library crates use `thiserror`,
+  never `anyhow` in `[dependencies]` (`swarmyd` counts as a binary: its
+  `lib.rs` declares no modules and it has a binary target). Blocking, milliseconds.
+- `npx --yes --package @ast-grep/cli@0.45.3 ast-grep scan --config ast-grep/sgconfig.yml`
+  (or `npm install --global @ast-grep/cli@0.45.3` once): the exact,
+  path-scoped `no-spawn-in-libraries` and `no-stringified-errors` rules in
+  `ast-grep/rules/`. Blocking, under a second. A new `tokio::spawn` or
+  `.map_err(|error| error.to_string())` in a library file fails unless its
+  file's listed exception genuinely applies. Prefer fixing the code; a new
+  exception is only for a genuinely owned, bounded task, with a why-comment.
+- Clone report (`clone-report` CI job; locally
+  `npx --yes jscpd@5.3.3 --config .jscpd.json`): advisory numbers in the job
+  summary for `REVIEWER.md`'s duplication checklist, never a gate.
+- From the CI hygiene task, all in place: `cargo deny check licenses bans
+  sources` blocking with advisories on a weekly schedule (non-blocking),
+  `cargo machete`, and `cargo doc` with `-D warnings`.
+
+Deliberately not enforced: `unwrap_used`, `print_stdout`, and
+`print_stderr`. `allow-unwrap-in-tests` covers only `#[cfg(test)]` code, so
+denying `unwrap_used` would need a per-file exception in each of the 65
+integration-test files that idiomatically panic on failure; the print denies
+would need one in each of the 21 test and 6 example files that log skip
+diagnostics and progress, plus the same boilerplate in every new test file.
+The production sites those lints reported were fixed directly instead
+(`expect` with an invariant message, no prints in libraries). A path-scoped
+check (for example ast-grep over non-test sources) could enforce the
+production half with no exceptions; until one exists the reviewer checks new
+production code by hand.
+
 ### Lint exceptions
 
 The bar for an exception is high. An exception is acceptable only when all of
@@ -256,28 +317,6 @@ into pieces whose only purpose is to get under a limit. If you believe a lint
 is wrong for the whole codebase, say so in the pull request description and
 leave the lint as it is; the operator decides. Reviewers apply this bar using
 `REVIEWER.md`.
-
-### Enforced by tools
-
-These structural checks fail CI rather than asking for exceptions. Run them
-locally the same way CI does:
-
-- `scripts/check-anyhow-in-libraries.sh`: library crates use `thiserror`,
-  never `anyhow` in `[dependencies]` (`swarmyd` counts as a binary: its
-  `lib.rs` declares no modules and it has a binary target). Blocking, milliseconds.
-- `npx --yes --package @ast-grep/cli@0.45.3 ast-grep scan --config ast-grep/sgconfig.yml`
-  (or `npm install --global @ast-grep/cli@0.45.3` once): the exact,
-  path-scoped `no-spawn-in-libraries` and `no-stringified-errors` rules in
-  `ast-grep/rules/`. Blocking, under a second. A new `tokio::spawn` or
-  `.map_err(|error| error.to_string())` in a library file fails unless its
-  file's listed exception genuinely applies. Prefer fixing the code; a new
-  exception is only for a genuinely owned, bounded task, with a why-comment.
-- Clone report (`clone-report` CI job; locally
-  `npx --yes jscpd@5.3.3 --config .jscpd.json`): advisory numbers in the job
-  summary for `REVIEWER.md`'s duplication checklist, never a gate.
-- From the CI hygiene task, all in place: `cargo deny check licenses bans
-  sources` blocking with advisories on a weekly schedule (non-blocking),
-  `cargo machete`, and `cargo doc` with `-D warnings`.
 
 Integration tests that need FoundationDB, NATS, or SeaweedFS get them from
 `scripts/dev-stack.sh start`, which writes connection settings to `.dev/env`.

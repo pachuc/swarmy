@@ -249,7 +249,7 @@ impl Store {
                 // only means stale state: fall through to the main conversation.
                 let origin_session = match self.session(&trx, origin).await {
                     Ok(session) => Some(session),
-                    Err(crate::StoreError::Domain(crate::DomainError::SessionMissing)) => None,
+                    Err(StoreError::Domain(crate::DomainError::SessionMissing)) => None,
                     Err(error) => return Err(error),
                 };
                 if let Some(session) = origin_session

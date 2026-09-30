@@ -1,7 +1,7 @@
 use super::{ssh, state::State};
 use crate::Result;
 
-pub async fn run(state: &State, name: &str) -> Result<()> {
+pub(super) async fn run(state: &State, name: &str) -> Result<()> {
     let node = state.require(name)?;
     let address = ssh::reachable_address(&node).await?;
     let command = "remote journalctl".to_owned();

@@ -122,12 +122,12 @@ struct DirtyGuard<'a> {
 impl std::ops::Deref for DirtyGuard<'_> {
     type Target = Dirty;
     fn deref(&self) -> &Dirty {
-        self.guard.as_deref().unwrap()
+        self.guard.as_deref().expect("the dirty guard is installed at construction and taken only by drop, which never derefs")
     }
 }
 impl std::ops::DerefMut for DirtyGuard<'_> {
     fn deref_mut(&mut self) -> &mut Dirty {
-        self.guard.as_deref_mut().unwrap()
+        self.guard.as_deref_mut().expect("the dirty guard is installed at construction and taken only by drop, which never derefs")
     }
 }
 impl Drop for DirtyGuard<'_> {
@@ -683,7 +683,7 @@ impl VolumeDevice {
             &self.counters.cold_reads
         };
         counter.fetch_add(1, Ordering::Relaxed);
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let bytes = self.store.get_chunk(hash).await?;
         self.counters.fetched_chunks.fetch_add(1, Ordering::Relaxed);
         self.counters

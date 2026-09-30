@@ -67,7 +67,7 @@ impl Worker {
         Ok(job)
     }
 
-    pub async fn recovery_loop(&self) {
+    pub(crate) async fn recovery_loop(&self) {
         let mut ticks = interval(self.config.recovery_interval);
         ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {

@@ -9,7 +9,10 @@ use aws_sdk_ec2::{
 };
 use std::time::Duration;
 
-use super::{Cloud, Machine, MachineSpec, ObjectBucket, Ownership, retry_profile_propagation};
+use super::{
+    Cloud, Host, Machine, MachineSpec, ObjectBucket, Ownership, retry_profile_propagation,
+};
+use swarmy_config::RemoteNode;
 
 // AWS error codes, rather than rendered SDK messages, determine whether an
 // operation can be retried after an operator grants a missing permission.
@@ -51,6 +54,80 @@ const UBUNTU_IMAGE: &str =
 const REMOTE_TAG: &str = "swarmy-remote";
 const MANAGED_TAG: &str = "managed-by";
 const MANAGER: &str = "swarmy";
+
+/// Model reported by `lsblk` for EC2 instance-store `NVMe` devices. Nitro
+/// instances name `NVMe` disks by attachment order, so an extra EBS volume can
+/// take `/dev/nvme1n1`; the model, not the name, identifies the local disk.
+pub(crate) const INSTANCE_STORE_MODEL: &str = "Amazon EC2 NVMe Instance Storage";
+
+/// Pick the instance-store device from `lsblk -dno PATH,MODEL` output.
+/// Requires exactly one match so provisioning never formats the wrong disk.
+///
+/// # Errors
+///
+/// Reports when no device or several devices carry the instance-store model.
+pub(crate) fn parse_instance_store_device(output: &str) -> Result<String> {
+    let mut matches = Vec::new();
+    for line in output.lines() {
+        let mut fields = line.split_whitespace();
+        let Some(path) = fields.next() else {
+            continue;
+        };
+        let model = line[path.len()..].trim();
+        if model == INSTANCE_STORE_MODEL {
+            crate::Error::ensure(
+                path.starts_with("/dev/")
+                    && !path.contains([
+                        ' ', '\t', '\n', '\'', '"', '$', '`', ';', '&', '|', '(', ')', '<', '>',
+                    ])
+                    && !path.contains(".."),
+                "invalid instance-store device path from host",
+            )?;
+            matches.push(path.to_owned());
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.pop().expect("one match was collected")),
+        0 => Err(crate::Error::other(
+            "no instance-store NVMe device found; use an instance type with local storage",
+        )),
+        _ => Err(crate::Error::other(format!(
+            "multiple instance-store devices found ({}); pass the device explicitly with local_storage",
+            matches.join(", ")
+        ))),
+    }
+}
+
+/// Resolve the instance-store device over SSH for sandbox nodes without an
+/// explicit `local_storage` setting, storing it in the node's launch
+/// settings. Nitro instances name `NVMe` disks by attachment order, so the
+/// device is matched by model, never by name. Returns whether a device was
+/// resolved; nodes that need no lookup are left untouched.
+///
+/// # Errors
+///
+/// Reports unreachable hosts, SSH failures, and ambiguous or missing devices.
+pub(crate) async fn resolve_instance_store(
+    host: &impl Host,
+    node: &mut RemoteNode,
+) -> Result<bool> {
+    let needs_device = node.sandboxes > 0
+        && node
+            .launch_settings
+            .as_ref()
+            .is_some_and(|saved| saved.local_storage.is_empty());
+    if !needs_device {
+        return Ok(false);
+    }
+    cloud_out!("Resolving instance-store device");
+    let listing = host.block_devices(node).await?;
+    let device = parse_instance_store_device(&listing)?;
+    node.launch_settings
+        .as_mut()
+        .expect("launch settings were saved")
+        .local_storage = device;
+    Ok(true)
+}
 
 pub struct Aws {
     ec2: aws_sdk_ec2::Client,
@@ -992,6 +1069,31 @@ impl Cloud for Aws {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn instance_store_device_matches_model_not_name() {
+        // An extra EBS volume took `/dev/nvme1n1`; the instance store sits at
+        // `/dev/nvme2n1`. Nitro names depend on attachment order, so only the
+        // model identifies the local disk.
+        let listing = "/dev/nvme0n1 Amazon Elastic Block Store\n\
+             /dev/nvme1n1 Amazon Elastic Block Store\n\
+             /dev/nvme2n1 Amazon EC2 NVMe Instance Storage\n";
+        assert_eq!(
+            parse_instance_store_device(listing).unwrap(),
+            "/dev/nvme2n1"
+        );
+        let single = "/dev/nvme1n1 Amazon EC2 NVMe Instance Storage\n";
+        assert_eq!(parse_instance_store_device(single).unwrap(), "/dev/nvme1n1");
+        assert!(parse_instance_store_device("").is_err());
+        assert!(parse_instance_store_device("/dev/nvme0n1 Amazon Elastic Block Store\n").is_err());
+        assert!(
+            parse_instance_store_device(
+                "/dev/nvme1n1 Amazon EC2 NVMe Instance Storage\n\
+                 /dev/nvme2n1 Amazon EC2 NVMe Instance Storage\n"
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn bucket_location_normalizes_legacy_and_empty_values() {

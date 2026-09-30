@@ -206,7 +206,7 @@ async fn create_tommy(fixture: &Fixture) -> swarmy_core::AgentRecord {
 }
 
 async fn bash_result(fixture: &Fixture, id: SessionId, services: &Services) -> String {
-    let result = std::panic::AssertUnwindSafe(swarmy_testkit::eventually(
+    let result = AssertUnwindSafe(swarmy_testkit::eventually(
         "bash tool call completes",
         Duration::from_secs(120),
         async || {
@@ -325,7 +325,7 @@ async fn open_chat_follows_a_summarized_main_with_a_notice() {
         // Reads retry database timeouts within the budget instead of panicking.
         let budget = WAIT;
         let deadline = Instant::now() + budget;
-        let landed = std::panic::AssertUnwindSafe(swarmy_testkit::eventually(
+        let landed = AssertUnwindSafe(swarmy_testkit::eventually(
             "user message lands",
             budget,
             async || {

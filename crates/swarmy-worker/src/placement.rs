@@ -9,13 +9,13 @@ use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError};
 
 /// A cached route is a hint; dispatch and execution still check the stored epoch.
 #[derive(Default)]
-pub struct Cache(Mutex<HashMap<AgentId, PlacementRecord>>);
+pub(crate) struct Cache(Mutex<HashMap<AgentId, PlacementRecord>>);
 
 impl Cache {
     /// Resolve against an explicit clock. Tests advance the shared store
     /// clock past lease expiry instead of sleeping out the real lease; the
     /// worker passes its own clock at every call site.
-    pub async fn resolve_at(
+    pub(crate) async fn resolve_at(
         &self,
         store: &Store,
         agent: AgentId,
@@ -43,14 +43,14 @@ impl Cache {
         Ok(placement)
     }
 
-    pub async fn invalidate(&self, agent: AgentId) {
+    pub(crate) async fn invalidate(&self, agent: AgentId) {
         self.0.lock().await.remove(&agent);
     }
 }
 
 /// Resolve against an explicit clock; see [`Cache::resolve_at`] for why the
 /// clock is a parameter instead of a wall-clock read.
-pub async fn resolve_at(
+pub(crate) async fn resolve_at(
     store: &Store,
     agent: AgentId,
     lease: Duration,

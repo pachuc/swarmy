@@ -12,6 +12,10 @@ license = "MIT"
 # Deny rather than forbid: the store and volume crates must speak to kernel
 # block-device and VM interfaces and opt back in per module with a justification.
 unsafe_code = "deny"
+# Part 1 (task n0sxwd): public surface stays minimal and paths stay short.
+# Both are fixed mechanically with `cargo fix`.
+unreachable_pub = "deny"
+unused_qualifications = "deny"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
@@ -23,6 +27,21 @@ large_stack_frames = "deny"
 # opts in with its own deny (workspace lints cannot be test-scoped, and
 # production code sleeps legitimately in backoffs and intervals).
 disallowed_methods = "allow"
+# Part 1 (task n0sxwd): exceptions. Kept in one block so the parallel lint
+# task's rebase is trivial. Every `allow` needs a reason; `allow` itself
+# stays legal for lints that only fire under some feature combinations.
+allow_attributes_without_reason = "deny"
+# Panics: `todo!`, `unimplemented!`, and `dbg!` never land in the tree.
+# (`unwrap_used`, `print_stdout`, and `print_stderr` were evaluated and
+# deliberately left out: `allow-unwrap-in-tests` covers only `cfg(test)`
+# code, so a deny would need a per-file exception in each of the 65
+# integration-test files, and the print denies would need one in each of the
+# 21 test and 6 example files that log skip diagnostics and progress, plus a
+# boilerplate tax on every new test file. The production sites those lints
+# reported were still fixed directly. See AGENTS.md.)
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
 
 [workspace.dependencies]
 swarmy-version = { path = "crates/swarmy-version" }

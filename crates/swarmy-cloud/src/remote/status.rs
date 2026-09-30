@@ -81,7 +81,7 @@ fn instance_state(reachable: bool) -> String {
     .into()
 }
 
-pub async fn run(json: bool) -> Result<()> {
+pub(super) async fn run(json: bool) -> Result<()> {
     let base = Settings::load_base()?.settings;
     let directory = Path::new(&base.state_dir).join("remote");
     let mut nodes = Vec::new();
@@ -298,7 +298,7 @@ async fn inventory(
     )?;
     let client = swarmy_client::Client::new(&endpoint, settings.api.token.clone())
         .map_err(|source| client_error(&endpoint, source))?;
-    let snapshot = tokio::time::timeout(Duration::from_secs(10), client.doctor())
+    let snapshot = timeout(Duration::from_secs(10), client.doctor())
         .await
         .map_err(|source| {
             crate::Error::context(source, format!("API at {endpoint}: request timed out"))
@@ -307,7 +307,7 @@ async fn inventory(
     let mut images = Vec::new();
     let mut after = None;
     loop {
-        let page: Vec<swarmy_api_types::Image> = tokio::time::timeout(
+        let page: Vec<swarmy_api_types::Image> = timeout(
             Duration::from_secs(10),
             client.images(after.as_deref(), 256),
         )
@@ -390,7 +390,7 @@ mod tests {
         // Without saved launch settings the node predates service roles.
         assert_eq!(api_token_status(&node, None), "not-applicable");
         node.launch_settings = Some(swarmy_config::RemoteSettings {
-            services: swarmy_config::RemoteServices::Laptop,
+            services: RemoteServices::Laptop,
             ..Default::default()
         });
         assert_eq!(api_token_status(&node, None), "not-applicable");
@@ -425,7 +425,7 @@ mod tests {
         let node: RemoteNode = serde_json::from_str(r#"{"name":"test","region":"local","instance_id":"i-test","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"key","launch_attempted":true,"created_at":"now"}"#).unwrap();
         let record = |seconds| {
             (
-                swarmy_core::NodeRecord {
+                NodeRecord {
                     node_id: swarmy_core::NodeId::from_ulid(ulid::Ulid::generate()),
                     roles: vec![],
                     capacity: Settings::default().node.capacity,

@@ -59,7 +59,7 @@ impl Fixture {
             bus.clone(),
             "test-token".into(),
             swarmy_llm::catalog::Catalog::get().clone(),
-            std::sync::Arc::new(object_store::memory::InMemory::new()),
+            Arc::new(object_store::memory::InMemory::new()),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -105,11 +105,11 @@ async fn create_append_replay_wait_interrupt_close() {
     };
     let session = f.create("ephemeral", None, false).await;
     assert_eq!(session.id, f.create("ephemeral", None, false).await.id);
-    let created: ulid::Ulid = session.id.parse().unwrap();
+    let created: Ulid = session.id.parse().unwrap();
     assert!(
         created
             .timestamp_ms()
-            .abs_diff(ulid::Ulid::generate().timestamp_ms())
+            .abs_diff(Ulid::generate().timestamp_ms())
             < 60_000
     );
     let id: SessionId = SessionId::from_ulid(session.id.parse().unwrap());
@@ -573,7 +573,7 @@ async fn invalid_effort_uses_cli_selection_error() {
 /// observation path with real clocks, then attach usage and tool data.
 async fn emit_observed_turn(
     f: &Fixture,
-    session: swarmy_core::SessionId,
+    session: SessionId,
     turn: swarmy_core::MessageId,
 ) {
     let request = swarmy_core::RequestId::for_step(session, 2);
@@ -589,7 +589,7 @@ async fn emit_observed_turn(
         // millisecond timing and can lose read-modify-write updates, so
         // tests serialize while production staggers stages over seconds.
         // The pacing itself keeps the spawned writes ordered.
-        let event = swarmy_bus::Bus::turn_event(session, turn, stage, Some(request));
+        let event = Bus::turn_event(session, turn, stage, Some(request));
         f.bus.record_turn(&event).await;
         f.store
             .record_turn_metrics(session, turn, vec![swarmy_store::MetricPatch::Stage(event)])
@@ -599,7 +599,7 @@ async fn emit_observed_turn(
             clippy::disallowed_methods,
             reason = "paces spawned stage writes apart so they land in order"
         )]
-        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
     f.store
         .record_turn_metrics(
@@ -685,7 +685,7 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
     // fast direct write cannot break the poll before the spawned write lands.
     let direct = swarmy_testkit::eventually(
         "turn record assembles",
-        std::time::Duration::from_secs(10),
+        Duration::from_secs(10),
         async || {
             let records = f.store.list_turn_metrics(session, None, 10).await.unwrap();
             (records.len() == 1

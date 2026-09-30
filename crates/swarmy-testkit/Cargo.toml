@@ -16,9 +16,6 @@ swarmy-store = { workspace = true, features = ["test-support"] }
 swarmy-llm.workspace = true
 async-nats.workspace = true
 foundationdb.workspace = true
-jiff.workspace = true
 serde_json.workspace = true
-tempfile.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 ulid.workspace = true

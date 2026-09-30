@@ -5,7 +5,8 @@ use std::{env, path::Path};
 fn main() {
     println!("cargo:rerun-if-env-changed=SWARMY_FDB_LIB_DIR");
     println!("cargo:rerun-if-changed=../swarmy-store/build.rs");
-    let target = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let target = env::var("CARGO_CFG_TARGET_OS")
+        .expect("cargo always sets CARGO_CFG_TARGET_OS for build scripts");
     if target != "linux" && target != "macos" {
         return;
     }

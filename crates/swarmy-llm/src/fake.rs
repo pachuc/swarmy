@@ -442,7 +442,7 @@ mod file_tests {
         let text = |role, text: &str| Message {
             id: MessageId::from_ulid(ulid::Ulid::generate()),
             role,
-            parts: vec![swarmy_core::Part::Text { text: text.into() }],
+            parts: vec![Part::Text { text: text.into() }],
         };
         let mut request = Request {
             no_cache: false,

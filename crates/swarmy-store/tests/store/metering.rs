@@ -81,8 +81,8 @@ fn completion_event(
     usage: &swarmy_core::TokenUsage,
     cost: u64,
 ) -> Event {
-    let message = swarmy_core::Message {
-        id: swarmy_core::MessageId::from_ulid(ulid::Ulid::generate()),
+    let message = Message {
+        id: MessageId::from_ulid(Ulid::generate()),
         role: MessageRole::Assistant,
         parts: vec![Part::Text {
             text: "done".into(),
@@ -412,7 +412,7 @@ async fn observed_quota_reports_remaining_and_configured_uses_rollups() {
 
 struct BreakdownSeed {
     second: SessionId,
-    agents: [swarmy_core::AgentId; 2],
+    agents: [AgentId; 2],
     from: Timestamp,
     to: Timestamp,
     cost: u64,

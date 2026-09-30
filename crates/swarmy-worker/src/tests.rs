@@ -48,7 +48,7 @@ impl Tool for SlowTool {
                 clippy::disallowed_methods,
                 reason = "the slow tool duration is the renewal under test"
             )]
-            tokio::time::sleep(Duration::from_millis(1600)).await;
+            sleep(Duration::from_millis(1600)).await;
             Ok("done".into())
         })
     }

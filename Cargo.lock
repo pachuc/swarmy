@@ -4509,15 +4509,12 @@ version = "0.1.0"
 dependencies = [
  "async-nats",
  "foundationdb",
- "jiff",
  "serde_json",
  "swarmy-config",
  "swarmy-core",
  "swarmy-llm",
  "swarmy-store",
- "tempfile",
  "tokio",
- "tracing",
  "ulid",
 ]
 

@@ -35,7 +35,7 @@ async fn authenticated_routes_and_create_replay() {
         bus,
         "test-token".into(),
         swarmy_llm::catalog::Catalog::get().clone(),
-        std::sync::Arc::new(object_store::memory::InMemory::new()),
+        Arc::new(object_store::memory::InMemory::new()),
     );
     state.default_image = Some("fixture:test".into());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -472,7 +472,7 @@ fn route_input(steps: Vec<swarmy_api_types::RouteStep>) -> swarmy_api_types::Set
 
 async fn route_server() -> Option<(
     swarmy_client::Client,
-    tokio::task::JoinHandle<std::result::Result<(), std::io::Error>>,
+    tokio::task::JoinHandle<Result<(), std::io::Error>>,
 )> {
     let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
     let nats = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
@@ -496,7 +496,7 @@ async fn route_server() -> Option<(
         bus,
         "test-token".into(),
         swarmy_llm::catalog::Catalog::get().clone(),
-        std::sync::Arc::new(object_store::memory::InMemory::new()),
+        Arc::new(object_store::memory::InMemory::new()),
     );
     state.default_image = Some("fixture:test".into());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -540,7 +540,7 @@ async fn assert_route_crud(client: &swarmy_client::Client) {
 async fn assert_agent_route(client: &swarmy_client::Client) {
     // Agent assignment and clearing round-trips through the resource API.
     let agent = client
-        .create_agent(&swarmy_api_types::CreateAgent {
+        .create_agent(&CreateAgent {
             idempotency_key: Ulid::generate().to_string(),
             name: "routed".into(),
             description: String::new(),
@@ -585,7 +585,7 @@ async fn assert_agent_route(client: &swarmy_client::Client) {
     assert_eq!(agent.route.as_deref(), Some("fallback"));
 }
 
-async fn route_session(client: &swarmy_client::Client) -> swarmy_api_types::Session {
+async fn route_session(client: &swarmy_client::Client) -> Session {
     // Session overrides apply per conversation; missing routes are rejected.
     let session = client
         .create_session(&swarmy_api_types::CreateSession {
