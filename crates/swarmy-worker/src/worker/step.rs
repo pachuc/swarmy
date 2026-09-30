@@ -43,7 +43,7 @@ impl Worker {
             {
                 if matches!(error, swarmy_bus::Error::PayloadTooLarge { .. }) {
                     // The event is already durable. Live observers can read it by cursor.
-                    tracing::warn!(%id, seq = event.seq(), %error, "live event exceeds bus limit");
+                    tracing::warn!(%id, seq = event.seq(), error = %swarmy_core::error_chain(&error), "live event exceeds bus limit");
                 } else {
                     return Err(error.into());
                 }
@@ -325,7 +325,7 @@ impl Worker {
                 )
             }) {
                 let error = error.clone();
-                tracing::warn!(session_id = %session.session_id, %error, "summary inference failed permanently");
+                tracing::warn!(session_id = %session.session_id, error = %swarmy_core::error_chain(&error), "summary inference failed permanently");
                 let notice = swarmy_core::Message {
                     id: MessageId::from_ulid(Ulid::generate()),
                     role: swarmy_core::MessageRole::System,
@@ -818,7 +818,7 @@ impl Worker {
                 Err(error) => {
                     tracing::warn!(
                         session_id = %session.session_id,
-                        %error,
+                        error = %swarmy_core::error_chain(&error),
                         "finish_turn failed"
                     );
                     return Err(error.into());

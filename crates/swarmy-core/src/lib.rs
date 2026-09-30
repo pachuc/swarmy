@@ -5,6 +5,7 @@
 //! See `docs/ARCHITECTURE.md` for the design this crate implements.
 
 mod encoding;
+mod error;
 mod event;
 mod id;
 mod message;
@@ -17,6 +18,7 @@ mod volume;
 
 pub use encoding::{EncodingError, STORAGE_VERSION, decode, encode};
 pub use encoding::{json, trailing};
+pub use error::error_chain;
 pub use event::{Event, FailureKind, InferenceCompletion, interrupted_event};
 pub use id::{
     AgentId, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, ProcessId, RequestId,

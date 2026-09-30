@@ -63,7 +63,7 @@ impl Scheduler {
             return;
         }
         if let Err(error) = self.nudge_inner(session_id, force, breakers).await {
-            tracing::warn!(%session_id, partition, %error, "nudge failed");
+            tracing::warn!(%session_id, partition, error = %swarmy_core::error_chain(&error), "nudge failed");
         }
     }
 
@@ -198,7 +198,7 @@ impl Scheduler {
             let mut breakers = RouteCache::default();
             for &partition in &self.config.partitions {
                 if let Err(error) = self.scan_partition(partition, &mut breakers).await {
-                    tracing::warn!(partition, %error, "runnable scan failed; will retry");
+                    tracing::warn!(partition, error = %swarmy_core::error_chain(&error), "runnable scan failed; will retry");
                 }
             }
         }
@@ -210,7 +210,7 @@ impl Scheduler {
         loop {
             interval.tick().await;
             if let Err(error) = self.scan_timers().await {
-                tracing::warn!(%error, "timer scan failed; will retry");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "timer scan failed; will retry");
             }
         }
     }
@@ -261,13 +261,13 @@ impl Scheduler {
                     .publish_live(swarmy_bus::LiveFeed::SessionEvents(id), &event)
                     .await
                 {
-                    tracing::warn!(%error, "timer event notification failed");
+                    tracing::warn!(error = %swarmy_core::error_chain(&error), "timer event notification failed");
                 }
                 self.nudge(id, false, &mut RouteCache::default()).await;
             }
             Ok(None) => {}
             Err(error) => {
-                tracing::warn!(timer_id = %timer.timer_id, %error, "timer append failed; will retry");
+                tracing::warn!(timer_id = %timer.timer_id, error = %swarmy_core::error_chain(&error), "timer append failed; will retry");
             }
         }
     }
@@ -302,7 +302,7 @@ impl Scheduler {
         loop {
             interval.tick().await;
             if let Err(error) = self.reap().await {
-                tracing::warn!(%error, "lease scan failed; will retry");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "lease scan failed; will retry");
             }
         }
     }
@@ -331,7 +331,7 @@ impl Scheduler {
                     }
                     // Another reaper or a renewal can win after the scan.
                     Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch)) => {}
-                    Err(error) => tracing::warn!(%session_id, %error, "lease reaping failed"),
+                    Err(error) => tracing::warn!(%session_id, error = %swarmy_core::error_chain(&error), "lease reaping failed"),
                 }
             }
             if page.len() < MAX_SCAN_LIMIT {
@@ -359,7 +359,7 @@ impl Scheduler {
                 WakeReply::NotFound
             }
             Err(error) => {
-                tracing::warn!(%session_id, %error, "wake failed");
+                tracing::warn!(%session_id, error = %swarmy_core::error_chain(&error), "wake failed");
                 WakeReply::Failed(error.to_string())
             }
         }

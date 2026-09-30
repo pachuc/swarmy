@@ -15,9 +15,9 @@ impl Report {
     fn failed(&mut self, resource: &str, permission: &str, error: &crate::Error) {
         let detail = match error {
             crate::Error::MissingPermission { operation, source } => {
-                format!("{operation}: {}", crate::render(source.as_ref()))
+                format!("{operation}: {}", swarmy_core::error_chain(source.as_ref()))
             }
-            _ => crate::render(error),
+            _ => swarmy_core::error_chain(error),
         };
         self.failures.push(format!(
             "Skipped {resource}: requires {permission}; {detail}"

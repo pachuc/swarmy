@@ -1328,7 +1328,7 @@ mod aws_context_tests {
             crate::Error::Other(_) => {}
             error => panic!("expected Other, got {error:?}"),
         }
-        let rendered = crate::render(&error);
+        let rendered = swarmy_core::error_chain(&error);
         assert!(rendered.contains("ec2:DescribeInstances"), "{rendered}");
         assert!(rendered.contains(&cause), "{rendered}");
     }

@@ -120,9 +120,13 @@ fn error(status: StatusCode, code: &str) -> (StatusCode, Json<api::ApiError>) {
 pub(crate) fn failure(
     status: StatusCode,
     code: &str,
-    failure: impl std::fmt::Display,
+    failure: &(dyn std::error::Error + 'static),
 ) -> (StatusCode, Json<api::ApiError>) {
-    tracing::warn!(%failure, code, "request failed with a fixed error code");
+    tracing::warn!(
+        error = %swarmy_core::error_chain(failure),
+        code,
+        "request failed with a fixed error code"
+    );
     error(status, code)
 }
 /// Report a rejected provider/model choice with the catalog's explanation
@@ -167,7 +171,13 @@ fn storage(value: swarmy_store::StoreError) -> (StatusCode, Json<api::ApiError>)
         StoreError::Domain(swarmy_store::DomainError::InvalidRoute(_)) => {
             error(StatusCode::BAD_REQUEST, "invalid_route")
         }
-        _ => error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
+        _ => {
+            tracing::warn!(
+                error = %swarmy_core::error_chain(&value),
+                "request failed with storage_error"
+            );
+            error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error")
+        },
     }
 }
 fn id<T>(text: &str, wrap: impl FnOnce(Ulid) -> T) -> Result<T, (StatusCode, Json<api::ApiError>)> {
@@ -453,7 +463,7 @@ async fn replay<T: serde::Serialize + serde::de::DeserializeOwned>(
     if let Some(value) = state.store.api_replay(&key).await.map_err(storage)? {
         return serde_json::from_value(value)
             .map(Json)
-            .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay", cause));
+            .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay", &cause));
     }
     let Json(result) = operation.await?;
     let value = serde_json::to_value(&result)
@@ -897,7 +907,7 @@ fn credential_store(
             failure(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "keyring_unavailable",
-                cause,
+                &cause,
             )
         })?;
     Ok(state.store.credentials(keyring))

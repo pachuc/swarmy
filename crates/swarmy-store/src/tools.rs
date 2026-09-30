@@ -59,7 +59,7 @@ impl Store {
                 call_id: call.call_id.clone(),
                 arguments: swarmy_core::SandboxArguments::parse(&call.tool, call.arguments.clone())
                     .map_err(|error| {
-                        StoreError::Domain(crate::DomainError::InvalidToolCall(error.to_string()))
+                        StoreError::Domain(crate::DomainError::InvalidToolCallArguments(error))
                     })?,
             });
         }

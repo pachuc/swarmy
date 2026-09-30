@@ -12,7 +12,7 @@ pub(crate) async fn run(store: &Store, retention: Duration) {
         {
             Ok(closed) => tracing::info!(closed, "ephemeral session sweep finished"),
             Err(error) => {
-                tracing::error!(%error, "ephemeral session sweep failed; retry next interval");
+                tracing::error!(error = %swarmy_core::error_chain(&error), "ephemeral session sweep failed; retry next interval");
             }
         }
     }

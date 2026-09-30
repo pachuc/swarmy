@@ -396,7 +396,7 @@ impl Worker {
                     // outbox scan re-resolves every retry and repairs lost publishes.
                     let result = self.route_tool(&job).await;
                     if let Err(error) = result {
-                        tracing::warn!(%error, request_id = %job.request_id, "tool recovery failed");
+                        tracing::warn!(error = %swarmy_core::error_chain(&error), request_id = %job.request_id, "tool recovery failed");
                     }
                 }
             }

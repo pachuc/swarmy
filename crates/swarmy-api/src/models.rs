@@ -140,7 +140,7 @@ async fn resolve_auth(
         provider: body.provider.clone(),
         record,
     }))
-    .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", cause))?;
+    .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", &cause))?;
     Ok(swarmy_llm::auth::resolve(&body.provider, &resolver)
         .await
         .map_err(|resolve_error| {

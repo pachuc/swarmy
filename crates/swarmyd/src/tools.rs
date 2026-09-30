@@ -77,12 +77,12 @@ async fn serve(
                                 && session.state == swarmy_core::SessionState::Runnable
                                 && let Err(error) = bus.nudge(session.session_id, session.head_seq, turn, resend_interval, false).await
                             {
-                                tracing::warn!(%error, "tool completion nudge failed; scheduler will recover");
+                                tracing::warn!(error = %swarmy_core::error_chain(&error), "tool completion nudge failed; scheduler will recover");
                             }
                             message.acknowledge().await?;
                         }
                         Err(error) => {
-                            tracing::warn!(%error, request_id = %message.value.request_id, "sandbox tool refused or interrupted");
+                            tracing::warn!(error = %swarmy_core::error_chain(&error), request_id = %message.value.request_id, "sandbox tool refused or interrupted");
                             message.negative_acknowledge(Some(Duration::from_secs(2))).await?;
                         }
                     }
@@ -508,7 +508,7 @@ async fn cap_output(
             tracing::warn!(tool, %spill, exit_code = exit.exit_code, timed_out = exit.timed_out, %stderr, "tool spill write failed; truncating anyway");
         }
         Err(error) => {
-            tracing::warn!(%error, tool, %spill, "tool spill write failed; truncating anyway");
+            tracing::warn!(error = %swarmy_core::error_chain(&error), tool, %spill, "tool spill write failed; truncating anyway");
         }
     }
     swarmy_core::cap_tool_output(tool, call_id, output)

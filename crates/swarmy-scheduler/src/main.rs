@@ -38,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
     // The flush runs on every path, including a scheduler error, so a
     // failing run still keeps the metrics it queued.
     if let Err(error) = store.flush_turn_metrics().await {
-        tracing::warn!(%error, "scheduler metric flush failed");
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "scheduler metric flush failed");
     }
     outcome
 }
