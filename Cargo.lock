@@ -4501,6 +4501,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "swarmy-testkit"
+version = "0.1.0"
+dependencies = [
+ "async-nats",
+ "foundationdb",
+ "jiff",
+ "serde_json",
+ "swarmy-core",
+ "swarmy-llm",
+ "swarmy-store",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "ulid",
+]
+
+[[package]]
 name = "swarmy-tools"
 version = "0.1.0"
 dependencies = [
