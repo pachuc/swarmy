@@ -4516,7 +4516,6 @@ dependencies = [
  "swarmy-llm",
  "swarmy-store",
  "tokio",
- "tracing",
  "ulid",
 ]
 
