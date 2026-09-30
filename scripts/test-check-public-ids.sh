@@ -77,6 +77,19 @@ add_case ids.txt "node ${inst_id} joined"
 check_fail "instance id fails" "${inst_id}"
 drop_case ids.txt
 
+# Benchmark buckets are swarmy-bench- plus exactly 32 hex digits. The id is
+# built at runtime so this file never contains a flaggable literal.
+bench_prefix='swarmy-bench-'
+bench_id="${bench_prefix}0123456789abcdef0123456789abcdef"
+add_case ids.txt "bucket gs://${bench_id} checked"
+check_fail "thirty-two-digit benchmark bucket fails" "${bench_id}"
+drop_case ids.txt
+
+# The redacted placeholder carries no identifier.
+add_case ids.txt 'bucket gs://swarmy-bench-<id-1> checked'
+check_pass "redacted benchmark placeholder passes"
+drop_case ids.txt
+
 check_pass "fixture green again"
 
 printf 'check-public-ids: ok\n'

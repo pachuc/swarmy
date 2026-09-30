@@ -6,8 +6,8 @@
       {
         "phase": "run",
         "provider": "gcp",
-        "bucket": "swarmy-bench-c79f4ffac8604cb696d7d19929fa9926",
-        "prefix": "swarmy-bench-c79f4ffac8604cb696d7d19929fa9926/",
+        "bucket": "swarmy-bench-<id-9>",
+        "prefix": "swarmy-bench-<id-9>/",
         "retention_allowance": false
       },
       {
@@ -48,7 +48,7 @@
         "phase": "run",
         "provider": "aws",
         "bucket": "swarmy-bench-<account-id>",
-        "prefix": "swarmy-bench-99a9789359a645cdbc17006097b42e41/",
+        "prefix": "swarmy-bench-<id-6>/",
         "retention_allowance": false
       },
       {

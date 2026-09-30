@@ -213,14 +213,9 @@ loopback address and keeps local FoundationDB port 4500; stop any local dev stac
 before connecting. Remotes created with private FoundationDB advertising must
 be recreated with this version before using `add-node`.
 
-Doctor checks the control master and port mapping, then reads live service
-health, node heartbeats, images, and credential metadata from the
-control-plane API snapshot. A working SSH connection or TCP listener alone
-does not pass these checks: reaching the API and reading its snapshot proves
-the store path. API calls carry the standard ten-second client timeout; the
-client makes no direct database transaction. SeaweedFS and static-key
-endpoints get a TCP check; AWS-bucket remotes warn that object storage is
-verified on the API host, not from the laptop.
+Doctor's checks are described under [Tunnel and profile reference](#tunnel-and-profile-reference):
+control master and port mapping, the control-plane API snapshot, and the S3
+check.
 
 Connect's JSON preserves the profile fields and adds `timing` with
 `elapsed_seconds`, `address_probe_seconds`, `tunnel_startup_seconds`, and
@@ -241,7 +236,7 @@ sudo iptables -D OUTPUT -m owner --uid-owner ubuntu -d FIRST_NODE_PRIVATE_IP \
   -p tcp -m multiport --dports 4500,4222 -j REJECT
 ```
 
-Record the block, failed direct probes, successful doctor transactions, and
+Record the block, failed direct probes, successful doctor checks, and
 provider teardown queries with the run. Remove the rule even after a failure.
 
 ## Persistent object storage
@@ -840,11 +835,11 @@ See the port assertion in [FoundationDB's transport source](https://github.com/a
 
 Doctor verifies the SSH control master, the FoundationDB port mapping, and a
 live API snapshot (service heartbeats, nodes, images, credentials) through
-the selected profile. It fails if server advertising sends database traffic
-outside the tunnel, even when the control master is healthy: only a readable
-API snapshot passes. S3 remains a TCP check, and AWS-bucket remotes warn that
-object storage is verified on the API host. Joining nodes use a systemd SSH tunnel for all three
-services; see [remote provisioning](REMOTE.md).
+the selected profile. A healthy control master alone does not pass: a
+remapped coordinator port fails the port check, and only a readable API
+snapshot passes. S3 remains a TCP check, and AWS-bucket remotes warn that
+object storage is verified on the API host. Joining nodes use a systemd SSH
+tunnel for all three services; see the tunnel reference above.
 
 Connect prints total elapsed time, address probing time, and tunnel startup
 time. JSON adds these seconds under `timing`, alongside `reused`; an existing

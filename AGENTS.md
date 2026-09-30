@@ -136,7 +136,7 @@ cloud-topology goal and recorded in `backlog/kubernetes-packaging.md`.
 | 5 Channels | cancelled as a swarmy slice; becomes the standalone chaty tool, see `backlog/chaty.md` |
 | 6 Sandbox pause and resume | cancelled; live half exists, memory pause noted in `backlog/gvisor-runtime.md` |
 | 7 Browser and screen | widened to graphical and GPU sandboxes; draft goal with eight tasks |
-| 8 Provider breadth and quota | breadth done; pools, routes, failover, and metering are a draft goal with eight tasks |
+| 8 Provider breadth and quota | breadth done, plus named routes with turn-boundary failover and cost and quota views; pools, admission, and the remaining quota work are a draft goal with eight tasks |
 | 9 Cloud deploy | replaced by the cloud-topology goal on EC2; Kubernetes backlogged |
 
 Also done outside the slices: persistent computers with placement, remote

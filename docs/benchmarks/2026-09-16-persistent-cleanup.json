@@ -2,9 +2,9 @@
   "verified_at": "2026-09-16T06:06:29.068502+00:00",
   "runs": [
     {
-      "name": "swarmy-bench-45ef9abfc08a421bb0f687ce5c0108d3",
+      "name": "swarmy-bench-<id-1>",
       "bucket": "swarmy-bench-<account-id>",
-      "prefix": "swarmy-bench-45ef9abfc08a421bb0f687ce5c0108d3/",
+      "prefix": "swarmy-bench-<id-1>/",
       "checks": {
         "instances": [],
         "volumes": [],
@@ -25,9 +25,9 @@
       }
     },
     {
-      "name": "swarmy-bench-d7d1da0331b24c98972a4b2043f7fb15",
+      "name": "swarmy-bench-<id-11>",
       "bucket": "swarmy-bench-<account-id>",
-      "prefix": "swarmy-bench-d7d1da0331b24c98972a4b2043f7fb15/",
+      "prefix": "swarmy-bench-<id-11>/",
       "checks": {
         "instances": [
           {
@@ -61,9 +61,9 @@
       }
     },
     {
-      "name": "swarmy-bench-4c51eadbbc834e74a49d0bee37c8fb8f",
+      "name": "swarmy-bench-<id-2>",
       "bucket": "swarmy-bench-<account-id>",
-      "prefix": "swarmy-bench-4c51eadbbc834e74a49d0bee37c8fb8f/",
+      "prefix": "swarmy-bench-<id-2>/",
       "checks": {
         "instances": [
           {
@@ -97,9 +97,9 @@
       }
     },
     {
-      "name": "swarmy-bench-9eb83331696b4239b45a60cf1a17f16b",
+      "name": "swarmy-bench-<id-7>",
       "bucket": "swarmy-bench-<account-id>",
-      "prefix": "swarmy-bench-9eb83331696b4239b45a60cf1a17f16b/",
+      "prefix": "swarmy-bench-<id-7>/",
       "checks": {
         "instances": [
           {
@@ -133,9 +133,9 @@
       }
     },
     {
-      "name": "swarmy-bench-7579ebdf38b044e0ad9b9bdbb0dcc12e",
+      "name": "swarmy-bench-<id-4>",
       "bucket": "swarmy-bench-<account-id>",
-      "prefix": "swarmy-bench-7579ebdf38b044e0ad9b9bdbb0dcc12e/",
+      "prefix": "swarmy-bench-<id-4>/",
       "checks": {
         "instances": [
           {
@@ -169,9 +169,9 @@
       }
     },
     {
-      "name": "swarmy-bench-caf60e30a7f74d0cb888f181d1a7751d",
+      "name": "swarmy-bench-<id-10>",
       "bucket": "swarmy-bench-<account-id>",
-      "prefix": "swarmy-bench-caf60e30a7f74d0cb888f181d1a7751d/",
+      "prefix": "swarmy-bench-<id-10>/",
       "checks": {
         "instances": [
           {

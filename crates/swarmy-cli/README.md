@@ -118,9 +118,9 @@ bus subjects. Inspection commands only require the store settings. `RUST_LOG`
 controls tracing, which defaults to `warn`.
 
 The CLI integration tests use isolated store directories and NATS prefixes.
-A stand-in wake handler and worker exercise streaming, tool output, durable
-fallback, JSON, pagination, and absent or unresponsive scheduler failures. The
-stand-in claims a real store lease and commits the assistant message and Idle
+A stand-in worker consumes scheduler nudges and exercises streaming, tool
+output, durable fallback, JSON, pagination, and recovery with no scheduler
+running. The stand-in claims a real store lease and commits the assistant message and Idle
 transition. It does not exercise the real worker or provider.
 
 ## Terminal conversations
@@ -159,11 +159,12 @@ updated with its result on completion. User, agent, and tool lines have distinct
 labels and colors. The durable log supplies ordered history and replaces partial
 model text with the final message. Resuming reloads the full log, including work
 that finished while the client was closed. Both clients share session creation,
-message appends, subscriptions confirmed before waking, and a three-second
+message appends, live-feed subscriptions, and a three-second
 durable-log poll. Polling also refreshes
 the status bar when state changes do not publish an event. Closing the terminal
-client does not cancel the agent. A saved user message whose wake was interrupted
-is woken when the conversation resumes.
+client does not cancel the agent. A runnable session left behind by a missed
+nudge is recovered by the scheduler's scan; resuming replays the durable log
+and follows live events from the recorded head.
 
 For a fake conversation with a tool call followed by two text turns, point
 `[fake].script` in `.swarmy/config.toml` at a file containing:

@@ -7,7 +7,8 @@ the job, and loads its `Request` from the store before calling the provider.
 
 | Environment variable | Meaning / default |
 | --- | --- |
-| `SWARMY_PROVIDER` | Default served provider, `fake` | Any catalog provider id; `SWARMY_PROVIDERS` takes a comma-separated list instead |
+| `SWARMY_PROVIDER` | Default provider, `fake`; the served list when `SWARMY_PROVIDERS` is unset |
+| `SWARMY_PROVIDERS` | Comma-separated provider ids the gateway serves; unset serves the default provider |
 | `SWARMY_GATEWAY_CONCURRENCY` | Maximum concurrent deliveries and provider calls, default `4` |
 | `SWARMY_FDB_CLUSTER_FILE` | Required FoundationDB cluster file |
 | `SWARMY_STORE_DIRECTORY` | Directory path, separated by `/`, default `swarmy` |

@@ -4,8 +4,8 @@
   "build": "debug, Rust 1.98.1",
   "state": {
     "run_id": "caf60e30a7f74d0cb888f181d1a7751d",
-    "name": "swarmy-bench-caf60e30a7f74d0cb888f181d1a7751d",
-    "prefix": "swarmy-bench-caf60e30a7f74d0cb888f181d1a7751d/",
+    "name": "swarmy-bench-<id-10>",
+    "prefix": "swarmy-bench-<id-10>/",
     "provider": "aws",
     "bucket": "swarmy-bench-<account-id>",
     "project": "swarmy-508717",

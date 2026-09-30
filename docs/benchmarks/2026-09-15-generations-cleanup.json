@@ -18,7 +18,7 @@
             "ec2",
             "describe-instances",
             "--filters",
-            "Name=tag:Name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6",
+            "Name=tag:Name,Values=swarmy-bench-<id-5>",
             "--query",
             "Reservations[].Instances[].{Id:InstanceId,State:State.Name}",
             "--output",
@@ -38,7 +38,7 @@
             "ec2",
             "describe-volumes",
             "--filters",
-            "Name=tag:Name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6",
+            "Name=tag:Name,Values=swarmy-bench-<id-5>",
             "--query",
             "Volumes[].{Id:VolumeId,State:State}",
             "--output",
@@ -53,7 +53,7 @@
             "ec2",
             "describe-key-pairs",
             "--filters",
-            "Name=key-name,Values=swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6",
+            "Name=key-name,Values=swarmy-bench-<id-5>",
             "--query",
             "KeyPairs",
             "--output",
@@ -70,7 +70,7 @@
             "--bucket",
             "swarmy-bench-<account-id>",
             "--prefix",
-            "swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/",
+            "swarmy-bench-<id-5>/",
             "--max-keys",
             "1",
             "--no-paginate",
@@ -93,7 +93,7 @@
             "--bucket",
             "swarmy-bench-<account-id>",
             "--prefix",
-            "swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/",
+            "swarmy-bench-<id-5>/",
             "--max-keys",
             "1",
             "--no-paginate",
@@ -117,7 +117,7 @@
             "--bucket",
             "swarmy-bench-<account-id>",
             "--prefix",
-            "swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/",
+            "swarmy-bench-<id-5>/",
             "--query",
             "Uploads",
             "--output",
@@ -133,7 +133,7 @@
         "phase": "run",
         "provider": "aws",
         "bucket": "swarmy-bench-<account-id>",
-        "prefix": "swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6/",
+        "prefix": "swarmy-bench-<id-5>/",
         "retention_allowance": false
       },
       {
@@ -156,7 +156,7 @@
       },
       {
         "phase": "machine",
-        "name": "swarmy-bench-8647b4d4bdec46e485a6ac2ab01797a6",
+        "name": "swarmy-bench-<id-5>",
         "cache_disk": "local NVMe SSD"
       },
       {
@@ -176,7 +176,7 @@
   "gcp": {
     "machine": {
       "machineType": "https://www.googleapis.com/compute/v1/projects/swarmy-508717/zones/us-east1-b/machineTypes/n2-standard-4",
-      "name": "swarmy-bench-6226f3bce8b447fd9546e8fcaa658823",
+      "name": "swarmy-bench-<id-3>",
       "zone": "https://www.googleapis.com/compute/v1/projects/swarmy-508717/zones/us-east1-b"
     },
     "cleanup": {
@@ -188,7 +188,7 @@
             "compute",
             "instances",
             "list",
-            "--filter=name=(swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741 swarmy-bench-6226f3bce8b447fd9546e8fcaa658823)",
+            "--filter=name=(swarmy-bench-<id-8> swarmy-bench-<id-3>)",
             "--format=json"
           ],
           "output": []
@@ -199,7 +199,7 @@
             "compute",
             "disks",
             "list",
-            "--filter=name=(swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741 swarmy-bench-6226f3bce8b447fd9546e8fcaa658823)",
+            "--filter=name=(swarmy-bench-<id-8> swarmy-bench-<id-3>)",
             "--format=json"
           ],
           "output": []
@@ -210,7 +210,7 @@
             "storage",
             "buckets",
             "list",
-            "--filter=name=(swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741 swarmy-bench-6226f3bce8b447fd9546e8fcaa658823)",
+            "--filter=name=(swarmy-bench-<id-8> swarmy-bench-<id-3>)",
             "--format=json"
           ],
           "output": []
@@ -221,7 +221,7 @@
             "storage",
             "buckets",
             "describe",
-            "gs://swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741",
+            "gs://swarmy-bench-<id-8>",
             "--format=json"
           ],
           "exit_code": 1,
@@ -233,7 +233,7 @@
             "storage",
             "buckets",
             "describe",
-            "gs://swarmy-bench-6226f3bce8b447fd9546e8fcaa658823",
+            "gs://swarmy-bench-<id-3>",
             "--format=json"
           ],
           "exit_code": 1,
@@ -248,8 +248,8 @@
       {
         "phase": "run",
         "provider": "gcp",
-        "bucket": "swarmy-bench-6226f3bce8b447fd9546e8fcaa658823",
-        "prefix": "swarmy-bench-6226f3bce8b447fd9546e8fcaa658823/",
+        "bucket": "swarmy-bench-<id-3>",
+        "prefix": "swarmy-bench-<id-3>/",
         "retention_allowance": false
       },
       {
@@ -272,7 +272,7 @@
       },
       {
         "phase": "machine",
-        "name": "swarmy-bench-6226f3bce8b447fd9546e8fcaa658823",
+        "name": "swarmy-bench-<id-3>",
         "cache_disk": "local NVMe SSD"
       },
       {
@@ -296,8 +296,8 @@
       {
         "phase": "run",
         "provider": "gcp",
-        "bucket": "swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741",
-        "prefix": "swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741/",
+        "bucket": "swarmy-bench-<id-8>",
+        "prefix": "swarmy-bench-<id-8>/",
         "retention_allowance": false
       },
       {
@@ -320,7 +320,7 @@
       },
       {
         "phase": "machine",
-        "name": "swarmy-bench-a0029e5a7de34c7cb74f5b20b3def741",
+        "name": "swarmy-bench-<id-8>",
         "cache_disk": "local NVMe SSD"
       },
       {
