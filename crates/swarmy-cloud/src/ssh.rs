@@ -1,5 +1,6 @@
 //! SSH helpers shared by provisioning, tunnel, log, and status commands.
 use std::{
+    fmt::Write as _,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -295,9 +296,10 @@ impl Ssh {
         // `user` is validated (letters, digits, `_`, `-`), so embedding it in
         // single quotes is data, never shell. `visudo -cf` reports to stdout, so
         // the home is the last line.
-        script.push_str(&format!(
+        let _ = write!(
+            script,
             "ensure_service_user '{user}'\nservice_home_for '{user}'\n"
-        ));
+        );
         let action = "create service user";
         let mut child = base(node)?
             .arg(address)
