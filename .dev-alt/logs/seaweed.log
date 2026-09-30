@@ -1,0 +1,123 @@
+I0930 07:46:53.116598 master.go:396 current: 127.0.0.1:19334 peers:
+I0930 07:46:53.116955 file_util.go:29 Folder /home/agent/work/ag7yqh/.dev-alt/seaweed Permission: -rwxr-xr-x
+I0930 07:46:53.117011 master.go:396 current: 127.0.0.1:19334 peers:
+I0930 07:46:53.117055 file_util.go:29 Folder /home/agent/work/ag7yqh/.dev-alt/seaweed Permission: -rwxr-xr-x
+I0930 07:46:53.117078 master_server.go:157 Volume Size Limit is 30720 MB
+I0930 07:46:53.117188 master.go:205 Start Seaweed Master 30GB 4.47 c5073360007d28385a33426a42ac3e4ec504c5a3 at 127.0.0.1:19334
+I0930 07:46:53.117372 raft_server.go:145 Starting RaftServer with 127.0.0.1:19334
+I0930 07:46:53.117483 volume_grpc_client_to_master.go:98 checkWithMaster 127.0.0.1:19334: get master 127.0.0.1:19334 configuration: rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial unix /tmp/seaweedfs-master-grpc-29334.sock: connect: no such file or directory"
+I0930 07:46:53.119194 raft_server.go:231 current cluster leader: 
+I0930 07:46:53.119204 master_server.go:285 [127.0.0.1:19334.29334]  - is the leader.
+I0930 07:46:53.119312 master.go:275 Start Seaweed Master 30GB 4.47 c5073360007d28385a33426a42ac3e4ec504c5a3 grpc server at 127.0.0.1:29334
+I0930 07:46:53.119367 grpc_client_server.go:160 gRPC also listening on Unix socket /tmp/seaweedfs-master-grpc-29334.sock
+I0930 07:46:53.119403 master.go:296 bootstrap check in 1.678319073s (peer index 0 of 1)
+I0930 07:46:53.119924 masterclient.go:262 .master masterClient failed to receive from 127.0.0.1:19334: rpc error: code = Unknown desc = raft.Server: Not current leader
+I0930 07:46:54.118222 filer.go:369 Initialized credential manager: filer_etc
+I0930 07:46:54.118653 filer_server.go:220 default to create filer store dir in /home/agent/work/ag7yqh/.dev-alt/seaweed/filerldb2
+I0930 07:46:54.118765 filer_server.go:228 max_file_name_length 255
+I0930 07:46:54.120083 masterclient.go:586 .master masterClient reconnection attempt #1
+I0930 07:46:54.120879 masterclient.go:262 .master masterClient failed to receive from 127.0.0.1:19334: rpc error: code = Unknown desc = raft.Server: Not current leader
+I0930 07:46:54.125297 leveldb2_store.go:43 filer store leveldb2 dir: /home/agent/work/ag7yqh/.dev-alt/seaweed/filerldb2
+I0930 07:46:54.125316 file_util.go:29 Folder /home/agent/work/ag7yqh/.dev-alt/seaweed/filerldb2 Permission: -rwxr-xr-x
+I0930 07:46:54.125649 masterclient.go:262 .filer masterClient failed to receive from 127.0.0.1:19334: rpc error: code = Unknown desc = raft.Server: Not current leader
+I0930 07:46:54.149769 filer.go:213 create filer.store.id to -622292434
+I0930 07:46:54.149777 configuration.go:29 configured filer store to leveldb2
+I0930 07:46:54.149860 filer_server_tus_session.go:637 TUS session cleanup started with interval 1h0m0s
+I0930 07:46:54.798777 masterclient.go:619 No existing leader found!
+I0930 07:46:54.798790 raft_server.go:311 Initializing new cluster
+I0930 07:46:54.798808 master_server.go:250 leader change event:  => 127.0.0.1:19334.29334
+I0930 07:46:54.798819 master_server.go:253 [127.0.0.1:19334.29334] 127.0.0.1:19334.29334 becomes leader.
+I0930 07:46:54.800330 cluster_commands.go:40 TopologyId generated and applied on leader: 65a366e1-386d-470d-8244-724b3b8fc75c
+I0930 07:46:54.800356 raft_common.go:60 TopologyId generated: 65a366e1-386d-470d-8244-724b3b8fc75c
+I0930 07:46:54.802363 master_server.go:353 snapshot taken to persist TopologyId 65a366e1-386d-470d-8244-724b3b8fc75c
+I0930 07:46:54.909861 volume_grpc_client_to_master.go:107 Volume server start with seed master nodes: [127.0.0.1:19334]
+I0930 07:46:54.909971 grpc_client_server.go:160 gRPC also listening on Unix socket /tmp/seaweedfs-volume-grpc-18081.sock
+I0930 07:46:54.909986 volume.go:626 Start Seaweed volume server 30GB 4.47 c5073360007d28385a33426a42ac3e4ec504c5a3 at 127.0.0.1:8081
+I0930 07:46:54.910148 volume_grpc_client_to_master.go:181 Heartbeat to: 127.0.0.1:19334
+I0930 07:46:54.910546 node.go:522 topo adds child DefaultDataCenter
+I0930 07:46:54.910560 node.go:522 topo:DefaultDataCenter adds child DefaultRack
+I0930 07:46:54.910567 node.go:522 topo:DefaultDataCenter:DefaultRack adds child 127.0.0.1:8081
+I0930 07:46:54.910579 node.go:522 topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081 adds child 
+I0930 07:46:54.910584 master_grpc_server.go:191 added volume server 0: 127.0.0.1:8081 (id=127.0.0.1:8081, ip=127.0.0.1:8081) [fcf7d58a-0484-490c-8210-4ba0eb494d55]
+I0930 07:46:54.910591 master_grpc_server.go:75 found new uuid:127.0.0.1:8081 [fcf7d58a-0484-490c-8210-4ba0eb494d55] , map[127.0.0.1:8081:[fcf7d58a-0484-490c-8210-4ba0eb494d55]]
+I0930 07:46:55.121606 masterclient.go:586 .master masterClient reconnection attempt #2
+I0930 07:46:55.121878 master_grpc_server.go:598 + client .master@127.0.0.1:19334.29334
+I0930 07:46:55.122082 masterclient.go:315 + master@127.0.0.1:19334 noticed .master 127.0.0.1:19334.29334
+I0930 07:46:55.126260 masterclient.go:586 .filer masterClient reconnection attempt #1
+I0930 07:46:55.126538 master_grpc_server.go:598 + client .filer@127.0.0.1:8889.18889
+I0930 07:46:55.126647 masterclient.go:315 + master@127.0.0.1:19334 noticed .filer 127.0.0.1:8889.18889
+I0930 07:46:55.166999 master_client.go:24 the cluster has 1 filer
+I0930 07:46:55.167013 filer_server.go:299 127.0.0.1:8889 bootstrap from peers [node_type:"filer"  address:"127.0.0.1:8889.18889"  is_add:true  created_at_ns:1790754415126575998]
+I0930 07:46:55.167060 filer.go:152 127.0.0.1:8889 aggregate from peers [127.0.0.1:8889]
+I0930 07:46:55.169367 filer.go:450 Start Seaweed Filer 30GB 4.47 c5073360007d28385a33426a42ac3e4ec504c5a3 at 127.0.0.1:8889
+I0930 07:46:55.169400 meta_aggregator.go:335 loopSubscribeToOneFiler read 127.0.0.1:8889 start from 2026-09-30 07:45:55.167006568 +0000 UTC 1790754355167006568
+I0930 07:46:55.169481 filer.go:479 Registered IAM gRPC service on filer (unauthenticated; set jwt.filer_signing.key in security.toml to require admin Bearer token)
+I0930 07:46:55.169539 grpc_client_server.go:160 gRPC also listening on Unix socket /tmp/seaweedfs-filer-grpc-18889.sock
+I0930 07:46:55.170088 meta_aggregator.go:462 subscribing remote 127.0.0.1:8889 meta change: 2026-09-30 07:45:55.167006568 +0000 UTC, clientId:1746364344
+I0930 07:46:55.170390 filer_grpc_server_sub_meta.go:1534 + local listener filer:127.0.0.1:8889.18889@@ clientId -1746364344 clientEpoch 1
+I0930 07:46:55.170400 filer_grpc_server_sub_meta.go:973  + filer:127.0.0.1:8889.18889@@ local subscribe / from {Time:2026-09-30 07:45:55.167006568 +0000 UTC Offset:-7 IsOffsetBased:false} clientId:-1746364344
+I0930 07:46:56.118195 s3.go:310 S3 read filer buckets dir: /buckets
+I0930 07:46:56.118215 s3.go:311 S3 read filer maxMB: 4
+I0930 07:46:56.118221 s3.go:313 S3 read master addresses for discovery: [127.0.0.1:19334]
+I0930 07:46:56.118230 s3.go:321 connected to filers [127.0.0.1:8889]
+I0930 07:46:56.118261 s3.go:342 Starting S3 API Server with standard IAM
+I0930 07:46:56.119588 filer_client.go:177 FilerClient: started filer discovery for group '' (refresh interval: 5m0s)
+W0930 07:46:56.119616 s3_sse_s3.go:861 SSE-S3 KeyManager: neither s3.sse.kek.passphrase nor WEED_S3_SSE_KEK_PASSPHRASE is set; the KEK will be stored on the filer in plaintext. Set one to enable encrypted-at-rest KEK storage.
+I0930 07:46:56.120149 s3_sse_s3.go:566 SSE-S3 KeyManager: No KEK configured. SSE-S3 encryption is disabled. Set s3.sse.kek or s3.sse.key in security.toml to enable it.
+E0930 07:46:56.120391 s3api_server.go:388 Failed to load IAM configuration: no signing key found for STS service; please provide 'signingKey' in IAM config, configure 'jwt.filer_signing.key' in security.toml, or ensure SSE-S3 is initialized
+I0930 07:46:56.125428 master_grpc_server.go:598 + client .s3@127.0.0.1:18433
+I0930 07:46:56.125770 masterclient.go:315 + master@127.0.0.1:19334 noticed .s3 127.0.0.1:18433
+I0930 07:46:56.125773 masterclient.go:315 + filer@127.0.0.1:8889 noticed .s3 127.0.0.1:18433
+I0930 07:46:56.126890 lock_ring_manager.go:139 LockRing: broadcasting ring update for group "" version 1790754416126877359: [127.0.0.1:8889.18889]
+I0930 07:46:56.126964 masterclient.go:330 LockRing: s3@127.0.0.1:18433 received ring update v1790754416126877359: [127.0.0.1:8889.18889]
+I0930 07:46:56.126978 masterclient.go:330 LockRing: filer@127.0.0.1:8889 received ring update v1790754416126877359: [127.0.0.1:8889.18889]
+I0930 07:46:56.126990 filer.go:174 LockRing: applying master ring update v1790754416126877359: [127.0.0.1:8889]
+I0930 07:46:56.127398 grpc_client_server.go:160 gRPC also listening on Unix socket /tmp/seaweedfs-s3-grpc-18433.sock
+I0930 07:46:56.127416 s3.go:530 Start Seaweed S3 API Server 30GB 4.47 c5073360007d28385a33426a42ac3e4ec504c5a3 at http port 8433
+I0930 07:46:56.127540 filer_grpc_server_sub_meta.go:1534 + local listener s3@@ clientId -37352083 clientEpoch 2
+I0930 07:46:56.127548 filer_grpc_server_sub_meta.go:973  + s3@@ local subscribe /etc/ from {Time:2026-09-30 07:46:56.118275912 +0000 UTC Offset:-7 IsOffsetBased:false} clientId:-37352083
+I0930 07:46:56.128217 s3api_bucket_owner_index.go:277 bucket owner index ready
+I0930 07:46:56.145182 master_client.go:24 the cluster has 1 filer
+I0930 07:46:56.145196 filer_client.go:430 FilerClient: removed 1 filer(s) no longer in group '': [127.0.0.1:8889]
+I0930 07:46:56.145201 filer_client.go:433 FilerClient: discovered 1 new filer(s) in group '': [127.0.0.1:8889]
+I0930 07:47:36.128449 lock_client.go:238 Lock owner changed from  to 127.0.0.1:8889-s3-metrics
+I0930 07:47:54.125779 master_grpc_server_volume.go:143 volume grow &{Option:{"replication":{},"ttl":{"Count":0,"Unit":0},"version":3} Count:0 Force:false Reason:grpc assign}
+I0930 07:47:54.126390 store.go:338 In dir /home/agent/work/ag7yqh/.dev-alt/seaweed (disk ID 0) adds volume:1 collection: replicaPlacement:000 ttl:
+I0930 07:47:54.128696 store.go:343 add volume 1 on disk ID 0
+I0930 07:47:54.128753 volume_grpc_client_to_master.go:303 volume server 127.0.0.1:8081 adds volume 1
+I0930 07:47:54.128846 volume_growth.go:384 Created Volume 1 on topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081
+I0930 07:47:54.128873 volume_growth.go:397 Registered Volume 1 on topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081
+I0930 07:47:54.129060 store.go:338 In dir /home/agent/work/ag7yqh/.dev-alt/seaweed (disk ID 0) adds volume:2 collection: replicaPlacement:000 ttl:
+I0930 07:47:54.130993 store.go:343 add volume 2 on disk ID 0
+I0930 07:47:54.131029 volume_grpc_client_to_master.go:303 volume server 127.0.0.1:8081 adds volume 2
+I0930 07:47:54.131069 volume_growth.go:384 Created Volume 2 on topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081
+I0930 07:47:54.131080 volume_growth.go:397 Registered Volume 2 on topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081
+I0930 07:47:54.131203 store.go:338 In dir /home/agent/work/ag7yqh/.dev-alt/seaweed (disk ID 0) adds volume:3 collection: replicaPlacement:000 ttl:
+I0930 07:47:54.133028 store.go:343 add volume 3 on disk ID 0
+I0930 07:47:54.133058 volume_grpc_client_to_master.go:303 volume server 127.0.0.1:8081 adds volume 3
+I0930 07:47:54.133099 volume_growth.go:384 Created Volume 3 on topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081
+I0930 07:47:54.133109 volume_growth.go:397 Registered Volume 3 on topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081
+I0930 07:47:54.133218 store.go:338 In dir /home/agent/work/ag7yqh/.dev-alt/seaweed (disk ID 0) adds volume:4 collection: replicaPlacement:000 ttl:
+I0930 07:47:54.135055 store.go:343 add volume 4 on disk ID 0
+I0930 07:47:54.135086 volume_grpc_client_to_master.go:303 volume server 127.0.0.1:8081 adds volume 4
+I0930 07:47:54.135139 volume_growth.go:384 Created Volume 4 on topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081
+I0930 07:47:54.135151 volume_growth.go:397 Registered Volume 4 on topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081
+I0930 07:47:54.135402 store.go:338 In dir /home/agent/work/ag7yqh/.dev-alt/seaweed (disk ID 0) adds volume:5 collection: replicaPlacement:000 ttl:
+I0930 07:47:54.137265 store.go:343 add volume 5 on disk ID 0
+I0930 07:47:54.137305 volume_grpc_client_to_master.go:303 volume server 127.0.0.1:8081 adds volume 5
+I0930 07:47:54.137336 volume_growth.go:384 Created Volume 5 on topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081
+I0930 07:47:54.137348 volume_growth.go:397 Registered Volume 5 on topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081
+I0930 07:47:54.137473 store.go:338 In dir /home/agent/work/ag7yqh/.dev-alt/seaweed (disk ID 0) adds volume:6 collection: replicaPlacement:000 ttl:
+I0930 07:47:54.139279 store.go:343 add volume 6 on disk ID 0
+I0930 07:47:54.139306 volume_grpc_client_to_master.go:303 volume server 127.0.0.1:8081 adds volume 6
+I0930 07:47:54.139346 volume_growth.go:384 Created Volume 6 on topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081
+I0930 07:47:54.139355 volume_growth.go:397 Registered Volume 6 on topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081
+I0930 07:47:54.139479 store.go:338 In dir /home/agent/work/ag7yqh/.dev-alt/seaweed (disk ID 0) adds volume:7 collection: replicaPlacement:000 ttl:
+I0930 07:47:54.141308 store.go:343 add volume 7 on disk ID 0
+I0930 07:47:54.141342 volume_grpc_client_to_master.go:303 volume server 127.0.0.1:8081 adds volume 7
+I0930 07:47:54.141384 volume_growth.go:384 Created Volume 7 on topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081
+I0930 07:47:54.141397 volume_growth.go:397 Registered Volume 7 on topo:DefaultDataCenter:DefaultRack:127.0.0.1:8081
+I0930 07:51:56.146505 master_client.go:24 the cluster has 1 filer
+I0930 07:56:56.145666 master_client.go:24 the cluster has 1 filer
+I0930 08:01:56.145843 master_client.go:24 the cluster has 1 filer
+I0930 08:02:26.566995 filer.go:498 Gracefully stopping gRPC server
