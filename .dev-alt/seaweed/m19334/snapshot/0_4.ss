@@ -1,2 +1,0 @@
-c1a6c397
-{"lastIndex":4,"lastTerm":0,"peers":[{"name":"127.0.0.1:19334.29334","connectionString":"127.0.0.1:29334"}],"state":"eyJtYXhWb2x1bWVJZCI6MCwidG9wb2xvZ3lJZCI6IjY1YTM2NmUxLTM4NmQtNDcwZC04MjQ0LTcyNGIzYjhmYzc1YyJ9","path":"/home/agent/work/ag7yqh/.dev-alt/seaweed/m19334/snapshot/0_4.ss"}

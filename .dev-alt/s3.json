@@ -1,7 +1,0 @@
-{
-  "identities": [{
-    "name": "swarmy-dev",
-    "credentials": [{"accessKey": "swarmy-dev", "secretKey": "swarmy-dev-secret"}],
-    "actions": ["Admin"]
-  }]
-}
