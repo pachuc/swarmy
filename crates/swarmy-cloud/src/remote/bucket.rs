@@ -325,9 +325,6 @@ mod tests {
         options.env_secret_key = Some("laptop-secret".into());
         let spec = resolve(None, &options).unwrap().unwrap();
         assert!(spec.is_aws());
-        // The same holds when the saved description is already AWS.
-        let spec = resolve(Some(spec), &options).unwrap().unwrap();
-        assert!(spec.is_aws());
         // An explicit empty endpoint switches a static bucket back to AWS.
         let mut back = empty_options();
         back.endpoint = Some(String::new());

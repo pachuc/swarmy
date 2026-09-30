@@ -8,17 +8,7 @@
 #   Sandbox nodes require it; control-only nodes use the root disk.
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
-mode=${1:-stack}
-service_address=${2:-127.0.0.1}
-bucket=${3:-}
-bucket_region=${4:-}
-bucket_endpoint=${5:-}
-bucket_prefix=${6:-}
-bucket_conditional_create=${7:-true}
-bucket_static=${8:-false}
-sandboxes=$(parse_sandbox_count "${9-64}")
-service_user=${10:-swarmy}
-local_storage=${11:-}
+parse_provision_args "$@"
 validate_service_user "$service_user"
 ensure_service_user "$service_user"
 # Privileged setup runs as any sudoer, but the build and the units belong to

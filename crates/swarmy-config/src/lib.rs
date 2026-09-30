@@ -1259,6 +1259,17 @@ mod tests {
     }
 
     #[test]
+    fn s3_settings_debug_redacts_both_keys() {
+        let mut settings = S3Settings::default();
+        settings.access_key = "test-access".into();
+        settings.secret_key = "test-secret".into();
+        let debug = format!("{settings:?}");
+        assert!(!debug.contains("test-access"), "{debug}");
+        assert!(!debug.contains("test-secret"), "{debug}");
+        assert!(debug.contains("..redacted.."), "{debug}");
+    }
+
+    #[test]
     fn node_identity_persists_and_environment_can_select_another_node() {
         let dir = tempfile::tempdir().unwrap();
         let loaded = load_with_remote(dir.path(), &BTreeMap::new()).unwrap();

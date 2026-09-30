@@ -82,8 +82,8 @@ impl std::fmt::Debug for BucketCredentials {
 /// by endpoint URL with static keys. `up`, `add-node`, `connect`, `upgrade`,
 /// and the node environment all use this; there are no parallel AWS and
 /// non-AWS copies.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct BucketSpec {
     /// Storage endpoint override for S3-compatible providers. Empty selects
     /// the AWS regional endpoints.
@@ -104,10 +104,6 @@ pub struct BucketSpec {
     pub conditional_create: bool,
 }
 
-fn default_conditional_create() -> bool {
-    true
-}
-
 impl Default for BucketSpec {
     fn default() -> Self {
         Self {
@@ -121,46 +117,31 @@ impl Default for BucketSpec {
     }
 }
 
+/// A bucket description written as a name or a table. Records saved before
+/// tables existed use the shorthand `bucket = "name"`.
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum BucketSpecHelper {
+enum BucketSpecValue {
     /// Shorthand for an AWS instance-role bucket: `bucket = "name"`.
     Name(String),
-    Table(BucketSpecTable),
+    Table(BucketSpec),
 }
 
-#[derive(Deserialize, Default)]
-#[serde(default, deny_unknown_fields)]
-struct BucketSpecTable {
-    endpoint: String,
-    region: String,
-    bucket: String,
-    prefix: ObjectPrefix,
-    credentials: BucketCredentials,
-    #[serde(default = "default_conditional_create")]
-    conditional_create: bool,
-}
-
-impl<'de> Deserialize<'de> for BucketSpec {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        match BucketSpecHelper::deserialize(deserializer)? {
-            BucketSpecHelper::Name(bucket) => Ok(Self {
+/// Accept a bucket description written as a name or a table. Missing stays
+/// missing; unknown table keys are rejected by [`BucketSpec`].
+fn bucket_spec_from_string_or_table<'de, D>(deserializer: D) -> Result<Option<BucketSpec>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<BucketSpecValue>::deserialize(deserializer).map(|value| {
+        value.map(|value| match value {
+            BucketSpecValue::Name(bucket) => BucketSpec {
                 bucket,
-                ..Self::default()
-            }),
-            BucketSpecHelper::Table(table) => Ok(Self {
-                endpoint: table.endpoint,
-                region: table.region,
-                bucket: table.bucket,
-                prefix: table.prefix,
-                credentials: table.credentials,
-                conditional_create: table.conditional_create,
-            }),
-        }
-    }
+                ..BucketSpec::default()
+            },
+            BucketSpecValue::Table(spec) => spec,
+        })
+    })
 }
 
 impl BucketSpec {
@@ -318,6 +299,7 @@ struct RemoteSettingsHelper {
     provider: String,
     services: RemoteServices,
     region: String,
+    #[serde(default, deserialize_with = "bucket_spec_from_string_or_table")]
     bucket: Option<BucketSpec>,
     disk_gb: u32,
     managed_by_tag: String,
@@ -579,7 +561,7 @@ pub struct RemoteProfile {
     pub api_token: Option<String>,
     /// Object bucket backing the remote. The credential source is either the
     /// instance role or static keys; the secret itself is redacted in logs.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "bucket_spec_from_string_or_table")]
     pub bucket: Option<BucketSpec>,
     #[serde(default)]
     pub default_image: Option<String>,

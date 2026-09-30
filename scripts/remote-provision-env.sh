@@ -2,6 +2,23 @@
 # Helpers sourced by remote-provision.sh, remote-upgrade.sh,
 # remote-services.sh, and their no-sudo argument tests.
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-s3-env.sh"
+# Read the eleven positional arguments of remote-provision.sh into named
+# settings. One definition of the order, shared by the script and its
+# argument test; the SSH provisioning command sends them in this order.
+parse_provision_args() {
+    mode=${1:-stack}
+    service_address=${2:-127.0.0.1}
+    bucket=${3:-}
+    bucket_region=${4:-}
+    bucket_endpoint=${5:-}
+    bucket_prefix=${6:-}
+    bucket_conditional_create=${7:-true}
+    bucket_static=${8:-false}
+    sandboxes=$(parse_sandbox_count "${9-64}")
+    service_user=${10:-swarmy}
+    local_storage=${11:-}
+}
+
 parse_sandbox_count() {
     local count=${1-}
     [[ $count =~ ^(0|[1-9][0-9]*)$ ]] || { echo 'sandboxes must be a non-negative integer' >&2; return 1; }
