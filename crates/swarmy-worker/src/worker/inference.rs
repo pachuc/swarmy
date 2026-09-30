@@ -614,6 +614,8 @@ mod legacy_notice_tests {
 
     #[test]
     fn old_clamp_text_still_counts_as_a_notice() {
+        // Private classifier: old stored turns only carry the legacy clamp
+        // sentence, never a new-style notice, so compat is pinned here.
         let message = Message {
             id: MessageId::from_ulid(ulid::Ulid::generate()),
             role: MessageRole::System,

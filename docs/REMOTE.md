@@ -89,7 +89,7 @@ swarmy remote connect demo
 swarmy doctor --remote demo
 swarmy dev up --remote demo
 swarmy chat --remote demo        # ask it to run pwd; no image flag needed
-swarmy remote status
+swarmy remote ls
 swarmy dev down
 swarmy remote disconnect demo
 swarmy remote down demo
@@ -99,7 +99,7 @@ For a quick single-node setup, `swarmy remote up demo --services node`
 still runs services and sandboxes together on an NVMe-backed instance.
 Both `remote up` and `remote add-node` accept `--sandboxes N` (default 64); zero advertises only
 the volume role and no disk capacity, so placement cannot select that node.
-`remote status` displays each saved node's sandbox count.
+`remote ls` displays each saved node's sandbox count.
 
 ### Upgrade a running remote
 
@@ -122,7 +122,7 @@ FoundationDB, NATS, or object store. On a node serving the API, the upgrade
 also fills a missing `[api]` token in the node's `.swarmy/config.toml` without
 rotating an existing one, and restarts the API when the fill changed it, so
 nodes provisioned before token provisioning start accepting requests.
-`remote status` reports each remote's token state as `set`, `missing`, or
+`remote ls` reports each remote's token state as `set`, `missing`, or
 `not-applicable`.
 
 Use `--image-recipe images/custom` on `remote up` to select a recipe directory
@@ -336,7 +336,7 @@ settings are described in [gc-benchmarks.md](gc-benchmarks.md) and
 
 A joining node failure does not replicate the backing store: replace the
 sandbox node with `swarmy remote add-node NAME` after checking its record with
-`swarmy remote status`. If the first node fails, its development stack and
+`swarmy remote ls`. If the first node fails, its development stack and
 backing data are lost unless stored elsewhere; `remote down` cleans up the
 saved deployment, and `remote up` creates a new one. Pushed branches survive.
 If the client disconnects, `swarmy remote connect NAME` restores its profile
@@ -382,7 +382,7 @@ swarmy remote connect demo
 swarmy auth login              # dedicated ChatGPT login, on the laptop
 swarmy dev up --remote demo
 swarmy doctor --remote demo
-swarmy remote status
+swarmy remote ls
 ```
 
 FoundationDB must bind local `127.0.0.1:4500` exactly. A local stack using that
@@ -394,7 +394,7 @@ NATS and S3 alone can use automatically selected alternative local ports.
 and registers `base-ubuntu:demo`. `connect` copies that image into the remote
 profile's `default_image`, so new sessions need no image flag or local image
 configuration. Image construction needs node root; it never needs laptop root.
-`swarmy remote status` lists registered images while the remote is connected.
+`swarmy remote ls` lists registered images while the remote is connected.
 
 Start a chat on the laptop and ask the agent to run `pwd` in its sandbox:
 
@@ -537,7 +537,7 @@ space after compaction. See the dated lifecycle run in
 
 ```bash
 swarmy remote add-node demo
-swarmy remote status
+swarmy remote ls
 swarmy remote logs demo         # Ctrl-C stops following the primary's journal
 swarmy dev logs worker          # local routing and placement diagnostics
 ```
@@ -566,7 +566,7 @@ uses the operator's provider account. Without `--bucket`, the development stack 
 With `--bucket`, the instance role accesses S3 objects until teardown. Disconnecting, closing
 chat, or stopping local services leaves cloud resources running and billable.
 
-`swarmy dev status` shows local processes. `swarmy remote status` shows saved
+`swarmy dev status` shows local processes. `swarmy remote ls` shows saved
 instances, SSH reachability, and node heartbeat ages; it does **not** query EC2
 power state or billing. Use the AWS console or provider queries for that.
 Save the instance ids and key names before teardown, since `down` removes the
@@ -673,7 +673,7 @@ swarmy dev up --remote test
 swarmy doctor --remote test
 swarmy run --remote test 'what time is it'
 swarmy chat --remote test
-swarmy remote status
+swarmy remote ls
 swarmy remote logs test
 swarmy dev down
 swarmy remote disconnect test
@@ -894,7 +894,7 @@ until scratch lands.
    `swarmy auth set openrouter --file <key-file> --remote dev` for OpenRouter.
    The gateway watches the credential store; no manual restart is needed.
 6. Check: `swarmy doctor --remote dev` shows each provider as
-   `gateway=served`; `swarmy remote status` shows the node heartbeat and the
+   `gateway=served`; `swarmy remote ls` shows the node heartbeat and the
    image. A live turn: `swarmy --remote dev run --provider openrouter --model
    openai/gpt-6-sol "reply with the word ready"`.
 7. Fleet config: copy `scripts/fleet/fleet.example.toml` to

@@ -43,8 +43,8 @@ pub enum Command {
     Status,
     /// Follow all service logs, or one service's log
     Logs {
-        #[arg(value_parser = ["scheduler", "worker", "gateway", "api", "supervisor"])]
-        service: Option<String>,
+        #[arg(value_enum)]
+        service: Option<DevService>,
     },
     #[command(hide = true)]
     Supervise {
@@ -52,6 +52,16 @@ pub enum Command {
         #[arg(num_args = 4, required = true)]
         binaries: Vec<PathBuf>,
     },
+}
+
+/// One supervised backing service, parsed once by clap instead of matched as a string.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum DevService {
+    Scheduler,
+    Worker,
+    Gateway,
+    Api,
+    Supervisor,
 }
 
 struct Layout {
@@ -111,19 +121,21 @@ impl Layout {
     }
 }
 
-pub async fn run(command: Command) -> Result<()> {
-    if let Command::Supervise { state, binaries } = command {
-        return supervise(&state, &binaries).await;
-    }
-    let layout = Layout::discover()?;
+pub async fn run(command: Command, json: bool) -> Result<()> {
+    // One match owns every variant. The supervisor is spawned without flags
+    // by `dev up`, so it never takes the human-output path; every other arm
+    // rejects `--json` and discovers the layout through one helper.
     match command {
+        Command::Supervise { state, binaries } => supervise(&state, &binaries).await,
         Command::Up {
             allow_version_mismatch,
         } => {
+            let layout = local(json)?;
             let _lock = layout.lock()?;
             up(&layout, allow_version_mismatch).await
         }
         Command::Down => {
+            let layout = local(json)?;
             let _lock = layout.lock()?;
             stop_services(&layout.state).await?;
             let remote = layout.state.join("remote").exists()
@@ -136,10 +148,28 @@ pub async fn run(command: Command) -> Result<()> {
             }
             Ok(())
         }
-        Command::Status => status(&layout).await,
-        Command::Logs { service } => logs(&layout.state, service.as_deref()).await,
-        Command::Supervise { .. } => unreachable!(),
+        Command::Status => status(&local(json)?).await,
+        Command::Logs { service } => {
+            logs(
+                &local(json)?.state,
+                service
+                    .map(|service| crate::cost_command::value_name(&service))
+                    .as_deref(),
+            )
+            .await
+        }
     }
+}
+
+/// Reject `--json` and discover the checkout layout for human-output `dev`
+/// commands. `dev` manages local processes with progress lines, so it has no
+/// JSON rendering; the explicit rejection keeps `--json dev` from silently
+/// printing text.
+fn local(json: bool) -> Result<Layout> {
+    if json {
+        bail!("--json is not supported for dev commands; run without it for human-readable output");
+    }
+    Layout::discover()
 }
 
 fn write_private(path: &Path, content: &str) -> Result<()> {

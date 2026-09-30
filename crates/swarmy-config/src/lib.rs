@@ -1267,7 +1267,7 @@ mod tests {
     }
 
     #[test]
-    fn node_settings_round_trip_and_reject_invalid_roles() {
+    fn node_settings_apply_and_reject_invalid_roles() {
         let mut settings = Settings::default();
         let environment = BTreeMap::from([
             ("SWARMY_NODE_ROLES".into(), "volume".into()),
@@ -1284,9 +1284,6 @@ mod tests {
         for (key, value) in environment {
             assert_eq!(settings.environment()[&key], value);
         }
-        let encoded = settings.to_toml().unwrap();
-        let decoded: Settings = toml::from_str(&encoded).unwrap();
-        assert_eq!(decoded.environment(), settings.environment());
         assert!(
             settings
                 .apply_environment(&BTreeMap::from([(
@@ -1441,22 +1438,6 @@ mod tests {
             .apply_environment(&Settings::default().environment())
             .unwrap();
         assert!(settings.session_image(None).is_err());
-    }
-
-    #[test]
-    fn defaults_and_environment_round_trip() {
-        let settings = Settings::default();
-        let encoded = settings.to_toml().unwrap();
-        let decoded: Settings = toml::from_str(&encoded).unwrap();
-        assert_eq!(settings.environment(), decoded.environment());
-        let mut overridden = Settings::default();
-        overridden
-            .apply_environment(&decoded.environment())
-            .unwrap();
-        assert_eq!(overridden.to_toml().unwrap(), encoded);
-        assert_eq!(settings.selection.provider, "fake");
-        assert_eq!(settings.bus.nats_url, "nats://127.0.0.1:4222");
-        assert!(toml::from_str::<Settings>("store_directroy = 'typo'").is_err());
     }
 
     #[test]

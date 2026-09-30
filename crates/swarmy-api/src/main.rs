@@ -1,8 +1,29 @@
-use anyhow::{Context, Result};
 use swarmy_api::{AppState, router};
 use swarmy_bus::Bus;
 use swarmy_config::Settings;
 use swarmy_store::{ServiceDetail, ServiceRole, Store};
+
+/// Startup failures: the binary only assembles the service, so every
+/// error names the connection or socket that failed.
+#[derive(Debug, thiserror::Error)]
+enum Error {
+    #[error(transparent)]
+    Settings(#[from] swarmy_config::Error),
+    #[error(transparent)]
+    Store(#[from] swarmy_store::StoreError),
+    #[error(transparent)]
+    Bus(#[from] swarmy_bus::Error),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("bind API listener {listen}: {source}")]
+    Bind {
+        listen: String,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+type Result<T> = std::result::Result<T, Error>;
 
 fn main() -> Result<()> {
     swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-api")?;
@@ -57,7 +78,10 @@ async fn run() -> Result<()> {
     };
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
-        .context("bind API listener")?;
+        .map_err(|source| Error::Bind {
+            listen: listen.clone(),
+            source,
+        })?;
     tracing::info!(address = %listener.local_addr()?, "api ready");
     axum::serve(listener, router(state)).await?;
     Ok(())

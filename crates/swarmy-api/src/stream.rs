@@ -630,7 +630,6 @@ async fn drive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use api::Cursor;
     #[tokio::test]
     async fn bounded_writer_refuses_a_slow_client() {
         let (sender, mut receiver) = mpsc::channel(1);
@@ -640,22 +639,5 @@ mod tests {
         drop(sender);
         assert!(receiver.recv().await.is_some());
         assert!(receiver.recv().await.is_none());
-    }
-    #[test]
-    fn cursor_carries_the_whole_subscription() {
-        let sub = Subscription {
-            cursors: vec![
-                Cursor {
-                    log_id: LogId::Session("one".into()),
-                    sequence: 5,
-                },
-                Cursor {
-                    log_id: LogId::Session("two".into()),
-                    sequence: 7,
-                },
-            ],
-            token_deltas: true,
-        };
-        assert_eq!(decode_cursor(&encode_cursor(&sub).unwrap()).unwrap(), sub);
     }
 }

@@ -4077,7 +4077,6 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 name = "swarmy-api"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-stream",
  "async-trait",
  "axum",
@@ -4101,6 +4100,7 @@ dependencies = [
  "swarmy-version",
  "swarmy-volume",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "ulid",
@@ -4176,7 +4176,6 @@ dependencies = [
 name = "swarmy-chat"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "crossterm",
  "futures-util",
  "ratatui",
@@ -4186,6 +4185,7 @@ dependencies = [
  "swarmy-client",
  "swarmy-config",
  "swarmy-core",
+ "thiserror 2.0.20",
  "tokio",
  "ulid",
  "unicode-width",
@@ -4223,7 +4223,6 @@ dependencies = [
 name = "swarmy-client"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "axum",
  "bytes",
  "futures-util",
@@ -4358,7 +4357,6 @@ dependencies = [
 name = "swarmy-gateway"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-stream",
  "async-trait",
  "blake3",

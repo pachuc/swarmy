@@ -47,7 +47,7 @@ the durable ones are repeated below.
   retired on 2026-09-26.
 - Tunnel: `swarmy remote connect dev2`. Local ports are fixed, so only one
   swarm can be connected at a time. Plain `swarmy` commands that need the API
-  take `--remote dev2`. `swarmy remote status` shows nodes, services, images.
+  take `--remote dev2`. `swarmy remote ls` shows nodes, services, images.
 - SSH helpers: `~/.local/bin/ssh-dev2.sh "cmd"` and `ssh-dev2-2.sh "cmd"`
   (keys under `.swarmy/remote/`). Long commands on a node run detached:
   `setsid nohup bash script.sh > log 2>&1 < /dev/null &`.

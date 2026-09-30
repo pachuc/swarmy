@@ -358,6 +358,8 @@ mod tests {
 
     #[test]
     fn unchanged_fingerprints_skip_resolution_and_one_change_selects_one_provider() {
+        // Private helper: the diff only surfaces through a full provider refresh
+        // against the store, so the edge cases are pinned here.
         let first = BTreeMap::from([
             ("openai".into(), Some([1; 32])),
             ("openrouter".into(), None),

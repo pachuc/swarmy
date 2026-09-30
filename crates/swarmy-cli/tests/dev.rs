@@ -178,6 +178,25 @@ async fn dev_up_run_recover_reconfigure_and_down() {
     assert_gone(&running);
 }
 
+#[test]
+fn json_dev_status_is_rejected_without_touching_the_stack() {
+    // The `--json` rejection runs before layout discovery, so this needs no
+    // stack environment and fails even with an empty HOME.
+    let files = tempfile::tempdir().unwrap();
+    let output = Command::new(CLI)
+        .current_dir(files.path())
+        .env("HOME", files.path())
+        .args(["--json", "dev", "status"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("--json is not supported for dev commands"),
+        "{stderr}"
+    );
+}
+
 async fn check_uptime(fixture: &Fixture) {
     // A fast turn no longer guarantees that the uptime counter has advanced.
     tokio::time::sleep(Duration::from_secs(1)).await;

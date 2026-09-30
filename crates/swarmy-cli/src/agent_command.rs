@@ -26,8 +26,27 @@ pub struct InferenceArgs {
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     pub memory: Option<u64>,
     /// GPU requirement for placement
-    #[arg(long, value_parser = ["none", "shared", "dedicated"])]
-    pub gpu: Option<String>,
+    #[arg(long, value_enum)]
+    pub gpu: Option<GpuArg>,
+}
+
+/// GPU requirement for placement, parsed once by clap instead of matched as a string.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum GpuArg {
+    None,
+    Shared,
+    Dedicated,
+}
+
+impl GpuArg {
+    #[must_use]
+    pub fn into_api(self) -> swarmy_api_types::GpuMode {
+        match self {
+            Self::None => swarmy_api_types::GpuMode::None,
+            Self::Shared => swarmy_api_types::GpuMode::Shared,
+            Self::Dedicated => swarmy_api_types::GpuMode::Dedicated,
+        }
+    }
 }
 
 #[derive(Subcommand)]

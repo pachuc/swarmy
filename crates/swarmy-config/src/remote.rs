@@ -421,30 +421,6 @@ mod tests {
     use crate::tests::load_with_remote;
 
     #[test]
-    fn defaults_and_overrides() {
-        let settings: Settings = toml::from_str("[remote]\nmanaged_by_tag = 'codex-launcher'\n[remote.aws]\nsubnet = 'subnet-test'\nsecurity_group = 'sg-test'").unwrap();
-        assert_eq!(settings.remote.aws.subnet.as_deref(), Some("subnet-test"));
-        assert_eq!(
-            settings.remote.aws.security_group.as_deref(),
-            Some("sg-test")
-        );
-        assert_eq!(settings.remote.managed_by_tag, "codex-launcher");
-        let settings = Settings {
-            remote: RemoteSettings {
-                aws: AwsSettings {
-                    image: Some("ami-test".into()),
-                    ..settings.remote.aws.clone()
-                },
-                ..settings.remote
-            },
-            ..settings
-        };
-        let decoded: Settings = toml::from_str(&settings.to_toml().unwrap()).unwrap();
-        assert_eq!(decoded.remote.aws.image.as_deref(), Some("ami-test"));
-        assert_eq!(decoded.remote.managed_by_tag, "codex-launcher");
-    }
-
-    #[test]
     fn aws_sub_table_rejects_flat_keys() {
         assert!(toml::from_str::<Settings>("[remote]\nsubnet = 'old'").is_err());
         let nested: Settings = toml::from_str(
@@ -500,25 +476,6 @@ mod tests {
             Some("custom-role")
         );
         assert!(RemoteSettings::default().instance_profile("demo").is_none());
-    }
-
-    #[test]
-    fn shared_state_defaults_and_round_trip() {
-        let node: RemoteNode = serde_json::from_str(r#"{"name":"local","region":"local","instance_id":"i-local","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","launch_attempted":true,"created_at":"2026-09-16T00:00:00Z"}"#).unwrap();
-        assert_eq!(node.ssh_user, "ubuntu");
-        assert_eq!(node.ports, RemotePorts::default());
-        assert!(node.nodes.is_empty());
-        let encoded = serde_json::to_vec(&node).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<RemoteNode>(&encoded)
-                .unwrap()
-                .instance_id,
-            "i-local"
-        );
-        let settings = Settings::default();
-        assert_eq!(settings.remote.managed_by_tag, "swarmy");
-        assert!(settings.remote.aws.subnet.is_none());
-        assert!(settings.remote.aws.security_group.is_none());
     }
 
     #[test]

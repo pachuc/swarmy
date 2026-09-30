@@ -23,7 +23,6 @@ async-trait.workspace = true
 thiserror.workspace = true
 swarmy-version.workspace = true
 swarmy-config.workspace = true
-anyhow.workspace = true
 async-stream.workspace = true
 futures.workspace = true
 jiff.workspace = true

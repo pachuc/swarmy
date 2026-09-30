@@ -1,0 +1,8 @@
+{
+  "format": ["rust"],
+  "ignore": ["**/target/**", "**/tests/**", "**/*tests.rs", "**/tests.rs", "**/.dev/**"],
+  "reporters": ["json"],
+  "output": "target/jscpd",
+  "minLines": 20,
+  "mode": "mild"
+}

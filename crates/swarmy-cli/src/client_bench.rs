@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 use swarmy_api_types as api;
-use swarmy_chat::client_conversation::Conversation;
+use swarmy_chat::client_conversation::{Conversation, OpenArgs};
 use swarmy_client::{Client, EventStream};
 use swarmy_core::{MessageId, RequestId, SessionId, ToolResult, TurnEvent, TurnStage};
 
@@ -64,7 +64,7 @@ fn turn_event(
     }
 }
 
-pub async fn run(client: Client, command: Command, json: bool) -> Result<()> {
+pub async fn run(client: Client, endpoint: String, command: Command, json: bool) -> Result<()> {
     let Command::Turn {
         turns,
         image,
@@ -75,16 +75,19 @@ pub async fn run(client: Client, command: Command, json: bool) -> Result<()> {
     for shape in ["no_tool", "bash"] {
         let mut conversation = Conversation::open(
             client.clone(),
-            None,
-            Some(image.clone()),
-            None,
-            false,
-            swarmy_core::InferenceSelection {
-                provider: Some("fake".into()),
-                model: Some("scripted".into()),
-                effort: None,
+            endpoint.clone(),
+            OpenArgs {
+                id: None,
+                image: Some(image.clone()),
+                agent: None,
+                new: false,
+                selection: swarmy_core::InferenceSelection {
+                    provider: Some("fake".into()),
+                    model: Some("scripted".into()),
+                    effort: None,
+                },
+                route: None,
             },
-            None,
         )
         .await?;
         let mut timeline = timeline_stream(&client, &conversation.id).await?;
@@ -155,8 +158,11 @@ async fn measure(
     let mut events = Vec::new();
     let mut idle = false;
     let mut client_elapsed = Duration::ZERO;
+    let mut silent = |_: swarmy_chat::client_conversation::TurnOutput| {};
     {
-        let done = conversation.until_idle(false, true, true);
+        // Text rendering with an emitter that does nothing: the turn still
+        // requires a reply, but nothing renders during measurement.
+        let done = conversation.until_idle(false, true, &mut silent);
         tokio::pin!(done);
         loop {
             tokio::select! {
