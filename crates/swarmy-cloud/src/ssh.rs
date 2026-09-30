@@ -309,12 +309,14 @@ impl Ssh {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(crate::Error::ssh(action))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(script.as_bytes())
-                .await
-                .map_err(crate::Error::ssh(action))?;
-        }
+        let Some(mut stdin) = child.stdin.take() else {
+            return Err(crate::Error::other("SSH stdin missing"));
+        };
+        stdin
+            .write_all(script.as_bytes())
+            .await
+            .map_err(crate::Error::ssh(action))?;
+        drop(stdin);
         let output = child
             .wait_with_output()
             .await
