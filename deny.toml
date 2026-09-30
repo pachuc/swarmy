@@ -3,25 +3,54 @@
 all-features = true
 
 [advisories]
-# Existing transitive advisories are tracked until upstream upgrades land.
+# Each ignore names the affected line, why it is reachable, and what unblocks
+# the upgrade. Re-check on every lock refresh; drop the entry once resolved.
 ignore = [
-    { id = "RUSTSEC-2023-0071", reason = "Existing transitive dependency; upgrade requires upstream major-version migration" },
-    { id = "RUSTSEC-2026-0098", reason = "Existing transitive dependency; upgrade requires upstream major-version migration" },
-    { id = "RUSTSEC-2026-0099", reason = "Existing transitive dependency; upgrade requires upstream major-version migration" },
-    { id = "RUSTSEC-2026-0104", reason = "Existing transitive dependency; upgrade requires upstream major-version migration" },
-    { id = "RUSTSEC-2026-0194", reason = "Existing transitive dependency; upgrade requires upstream major-version migration" },
-    { id = "RUSTSEC-2026-0195", reason = "Existing transitive dependency; upgrade requires upstream major-version migration" },
-    { id = "RUSTSEC-2026-0258", reason = "Existing transitive dependency; upgrade requires upstream major-version migration" },
-    { id = "RUSTSEC-2026-0285", reason = "Existing transitive dependency; upgrade requires upstream major-version migration" },
+    # Marvin timing side channel in rsa 0.9.10. It reaches the tree only as a
+    # swarmy-llm dev-dependency for test JWT fixtures (no normal-edge parent);
+    # production TLS never links rsa, and upstream ships no patched release.
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.10 is dev-only test fixtures, never production TLS; no patched release upstream" },
+    # URI name constraints ignored in rustls-webpki. Only the 0.101.7 line is
+    # affected (the reqwest line already uses patched 0.103.15); 0.101.7 comes
+    # via rustls 0.21 in the AWS SDK HTTP stack, so the upgrade waits on the
+    # SDKs leaving rustls 0.21. Exploitation additionally needs a misissued
+    # certificate past signature verification.
+    { id = "RUSTSEC-2026-0098", reason = "only the AWS SDK's rustls-webpki 0.101.7 line is affected; upgrade waits on the SDKs leaving rustls 0.21" },
+    # Wildcard names accepted under DNS name constraints in rustls-webpki.
+    # Same affected line and upgrade path as RUSTSEC-2026-0098 above.
+    { id = "RUSTSEC-2026-0099", reason = "only the AWS SDK's rustls-webpki 0.101.7 line is affected; upgrade waits on the SDKs leaving rustls 0.21" },
+    # Reachable panic on an empty BIT STRING in CRL parsing in rustls-webpki.
+    # Same affected line and upgrade path as RUSTSEC-2026-0098 above; swarmy
+    # never configures CRLs, so parsing is unreachable in practice.
+    { id = "RUSTSEC-2026-0104", reason = "only the AWS SDK's rustls-webpki 0.101.7 line is affected and swarmy configures no CRLs; upgrade waits on the SDKs leaving rustls 0.21" },
+    # Quadratic duplicate-attribute check in quick-xml 0.38.4, reached via
+    # object_store 0.12 parsing S3 XML from our own SeaweedFS or cloud
+    # endpoints. Upgrade to >= 0.41 waits on object_store moving past 0.12.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.38.4 parses only our own S3 endpoints via object_store 0.12; upgrade waits on object_store" },
+    # Namespace memory exhaustion in quick-xml 0.38.4. Same reachability and
+    # upgrade path as RUSTSEC-2026-0194 above.
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.38.4 parses only our own S3 endpoints via object_store 0.12; upgrade waits on object_store" },
+    # Unbounded empty DATA frames in h2 0.3.27, reached via the AWS SDK hyper
+    # 0.14 stack (remote feature only); the reqwest line already uses patched
+    # 0.4.19. Upgrade waits on the SDKs moving to hyper 1.
+    { id = "RUSTSEC-2026-0258", reason = "only the AWS SDK's h2 0.3.27 line is affected; upgrade waits on the SDKs moving to hyper 1" },
+    # TLS 1.3 handshake accepted across encryption-level boundaries in rustls
+    # 0.23.44, reached via reqwest and async-nats. Our TLS is outbound-only
+    # to provider, AWS, and NATS endpoints, so exploitation needs a malicious
+    # server. Pick up >= 0.23.45 on the next compatible lock refresh.
+    { id = "RUSTSEC-2026-0285", reason = "outbound-only TLS via reqwest and async-nats; fixed 0.23.45 lands on the next compatible lock refresh" },
 ]
 
 [licenses]
 allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "Unicode-3.0", "CC0-1.0", "OpenSSL", "MPL-2.0", "Unlicense", "CDLA-Permissive-2.0"]
 
 [bans]
+# Duplicate transitive versions are common in the AWS SDK and TLS trees.
+# Keep them visible without blocking unrelated changes until upstream
+# dependency trees converge.
 multiple-versions = "warn"
-# The current lockfile contains many transitive duplicate versions. Keep this visible
-# without blocking unrelated changes until upstream dependency trees converge.
+# Wildcard requirements let a fresh resolve silently cross a major version.
+# Warn so any new wildcard is noticed; deny once the tree is fully pinned.
 wildcards = "warn"
 
 [sources]
