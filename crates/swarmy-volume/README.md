@@ -214,7 +214,7 @@ independently fences every durable publication with the full lease token.
 
 ### Durability acceptance test
 
-The CLI test uses the real dev stack's FoundationDB and SeaweedFS through
+The volume acceptance test uses the real dev stack's FoundationDB and SeaweedFS through
 `SWARMY_FDB_CLUSTER_FILE` and `SWARMY_S3_*`. It formats a small ext4 base, starts
 separate foreground servers, and tests cross-node recovery, simultaneous clone
 writes, SIGKILL rollback, lease rejection, and list/history output. It skips
@@ -223,7 +223,7 @@ without root or the required environment. Build without sudo:
 ```sh
 scripts/dev-stack.sh start
 source .dev/env
-cargo test -p swarmy-cli --test vol --no-run --message-format=json > /tmp/swarmy-vol-build.json
+cargo test -p swarmyd --test vol --no-run --message-format=json > /tmp/swarmy-vol-build.json
 sudo -E "$(jq -r 'select(.executable != null and .target.name == "vol") | .executable' /tmp/swarmy-vol-build.json)" --nocapture
 ```
 
@@ -305,7 +305,7 @@ waiting time and can exceed elapsed time when callers overlap.
 that timer. It includes client work and network/service latency, so subtracting
 it from wall time does not produce a CPU profile.
 
-`VolumeWriter::flush()` returns `FlushResult`. `swarmy --json vol flush` prints
+`VolumeWriter::flush()` returns `FlushResult`. `swarmyd --json vol flush` prints
 its manifest id, `elapsed`, `freeze_wait`, `frozen`, `uploads`, and `device_total`.
 Durations use serde's `{ "secs": ..., "nanos": ... }` representation.
 `uploads` is the counter difference from just before freeze acquisition through

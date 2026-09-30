@@ -39,7 +39,7 @@ fleet-worker pull requests show work landing across every UTC night of the
 run: 112 through 116 opened and merged between 22:58 on 2026-09-23 and
 01:41 on 2026-09-24, and 160, 161, 164, and 165 between 23:44 on
 2026-09-25 and 09:34 on 2026-09-26. What the repository does not hold is a
-saved `swarmy remote status dev` transcript from a reconnect; the claim
+saved `swarmy remote ls` transcript from a reconnect; the claim
 rests on the timeline and the runbook, not on a captured status line.
 
 **2. Three tasks in parallel to merged pull requests, two providers.**
@@ -69,10 +69,10 @@ limit tripped during the recorded runs: the perf baseline reports "no
 rate-limit waits or provider failures in any of the twelve runs". The
 forced path is covered by tests merged in pull request 152 on 2026-09-25:
 `rate_limit_opens_durable_breaker_and_keeps_provider_text`
-(`crates/swarmy-gateway/tests/gateway.rs`),
+(`crates/swarmy-e2e/tests/gateway.rs`),
 `rate_limit_waits_without_a_worker_lease_then_recovers` and
 `all_entries_open_parks_until_earliest_retry`
-(`crates/swarmy-worker/tests/worker.rs`), and the driver test at
+(`crates/swarmy-e2e/tests/worker.rs`), and the driver test at
 `scripts/fleet/test_fleet.py` line 158 asserting `fleet status` prints
 `waiting for inference: 429 rate limited`. The runbook documents the
 operator view ("Subscription limits": the breaker opens, workers park
@@ -97,7 +97,7 @@ cold), recorded in the same baseline and in `backlog/build-time.md`.
 - Item 7, the opt-in API latency benchmark from pull request 123 with a
   baseline on the current node, moved on 2026-09-27 into the cleanup
   goal's final measurement task.
-- A reconnect `swarmy remote status dev` transcript and a per-pull-request
+- A reconnect `swarmy remote ls` transcript and a per-pull-request
   provider record (see items 1 and 2 above).
 
 ## Known limits

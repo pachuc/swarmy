@@ -79,7 +79,7 @@ measured numbers with raw samples.
   to five in parallel. The orchestrator reviews, reconciles conflicts (one
   subagent per pull request in its own git worktree, with explicit per-file
   rules), merges on green CI, and marks the task done. Parallel tasks on
-  shared files (`swarmy-llm/src/lib.rs`, gateway config, `docs/providers.md`)
+  shared files (`crates/swarmy-llm/src/lib.rs`, gateway config, `docs/providers.md`)
   always conflict; expect reconciliation tasks so a shared helper has one
   owner.
 
@@ -359,7 +359,7 @@ instances with root and the NBD module loaded, so run them there with sudo:
 |---|---|
 | `swarmy-volume` (chunks, manifests, NBD, snapshots) | `swarmy-volume --test nbd`, `swarmy-volume --test image` |
 | image recipes or `swarmy image` | `swarmy-cli --test image` (starts its own API against the dev stack), `swarmy-volume --test image` |
-| `swarmy vol` or the volume server | `swarmyd --test vol` |
+| `swarmyd vol` or the volume server | `swarmyd --test vol` |
 | `swarmyd`, `swarmy-sandbox`, `swarmy-tools`, or the tool helpers | `swarmyd --test node`, then the chaos suites below |
 | the worker, scheduler, gateway, store, or bus | `swarmy-chaos --test bash`, `--test continuity`, `--test coding`, and `scripts/chaos-ci.sh` |
 
