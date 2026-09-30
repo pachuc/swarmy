@@ -414,7 +414,9 @@ async fn root_memory_written_by_tools_is_in_the_next_turn_and_capped() {
         // it in a magic number: the prompt without memory (this agent's template
         // with its directory substituted) plus the bounded memory excerpt plus
         // its truncation notice. Only uncapped memory can exceed this.
-        let settings = swarmy_config::Settings::load().unwrap().settings;
+        // The cap derives from compiled defaults, never the host
+        // configuration, so it holds on every machine.
+        let settings = swarmy_testkit::test_settings(&[]);
         let memory_max = settings.memory.max_bytes.get();
         let tommy = fixture.store.get_agent_by_name("tommy").await.unwrap().unwrap();
         let template = tommy

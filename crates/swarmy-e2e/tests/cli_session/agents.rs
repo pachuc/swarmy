@@ -652,9 +652,7 @@ async fn new_commands_use_the_selected_remote_profile() {
             remote_ports: swarmy_config::RemotePorts::default(),
             fdb_cluster_file: fixture.cluster.clone().into(),
             nats_url: fixture.url.clone(),
-            s3_endpoint: swarmy_config::Settings::load()
-                .unwrap()
-                .settings
+            s3_endpoint: swarmy_testkit::test_settings(&["SWARMY_S3_ENDPOINT"])
                 .s3
                 .endpoint,
             api_url: Some(fixture.api_url.clone()),

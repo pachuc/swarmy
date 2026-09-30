@@ -13,10 +13,12 @@ mod eventually;
 mod image;
 mod script;
 mod service;
+mod settings;
 mod stack;
 
 pub use eventually::eventually;
 pub use image::image;
 pub use script::Script;
 pub use service::{ChildGuard, bin};
+pub use settings::test_settings;
 pub use stack::{Stack, StackGuard, boot_fdb, require_stack, unique_prefix};

@@ -1036,7 +1036,10 @@ async fn root_chat_default_image_executes_pwd() {
 }
 
 async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Services, Node) {
-    let settings = swarmy_config::Settings::load().unwrap().settings;
+    // The image registry lives under the stack's store directory, never the
+    // host configuration: build settings from the test environment.
+    let settings =
+        swarmy_testkit::test_settings(&["SWARMY_FDB_CLUSTER_FILE", "SWARMY_STORE_DIRECTORY"]);
     let directory = settings.store_directory_path().unwrap();
     let images = Store::open(
         Some(settings.store.cluster_file.as_path()),

@@ -62,7 +62,17 @@ impl Fixture {
             swarmy_core::test_support::stack_env_os(variable)?;
         }
         NETWORK.get_or_init(swarmy_store::boot);
-        let settings = swarmy_config::Settings::load().unwrap().settings;
+        let settings = swarmy_testkit::test_settings(&[
+            "SWARMY_FDB_CLUSTER_FILE",
+            "SWARMY_STORE_DIRECTORY",
+            "SWARMY_NATS_URL",
+            "SWARMY_S3_ENDPOINT",
+            "SWARMY_S3_ACCESS_KEY",
+            "SWARMY_S3_SECRET_KEY",
+            "SWARMY_S3_BUCKET",
+            "SWARMY_S3_PREFIX",
+            "SWARMY_S3_REGION",
+        ]);
         let namespace = format!("swarmy-vol-test-{}", ulid::Ulid::generate());
         let store = Store::open(
             Some(settings.store.cluster_file.as_path()),
