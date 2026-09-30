@@ -685,11 +685,14 @@ fn provisioning_command(
 /// The script reads the shared unit and binary lists, so Rust never repeats
 /// them. The service home resolves through `~user` on the host inside the
 /// copied checkout, like the provisioning paths. `user` is validated
-/// (letters, digits, `_`, `-`), so embedding it is data, never shell.
+/// (letters, digits, `_`, `-`), so embedding it is data, never shell. A
+/// host whose checkout is already gone reports what remains: no installed
+/// units means a retried `down` is done, while leftover units fail with a
+/// message saying the checkout is missing instead of a bare SSH error.
 fn decommission_command(user: &str) -> String {
+    let repo = tilde_repo(user);
     format!(
-        "cd {} && bash scripts/remote-decommission.sh {user}",
-        tilde_repo(user),
+        "if [ -x {repo}/scripts/remote-decommission.sh ]; then cd {repo} && bash scripts/remote-decommission.sh {user}; elif systemctl list-units --all --no-legend --no-pager 2>/dev/null | grep -qE '^swarmy(-[a-z]+)?\\.service'; then echo 'swarmy checkout is missing from {repo} but swarmy units are still installed; restore the checkout or remove the units by hand (see docs/REMOTE.md)' >&2; exit 1; else echo 'swarmy checkout already removed; nothing to tear down'; fi",
     )
 }
 
@@ -1174,22 +1177,6 @@ mod provisioning_command_tests {
         );
         assert!(!command.contains("test-access"));
         assert!(!command.contains("test-secret"));
-    }
-
-    #[test]
-    fn decommission_runs_the_shared_teardown_script() {
-        let command = super::decommission_command("swarmy");
-        // Rust never repeats the unit or binary lists: the script reads the
-        // shared lists from the checkout. The checkout resolves its home
-        // through the service login on the host.
-        assert_eq!(
-            command,
-            "cd ~swarmy/swarmy && bash scripts/remote-decommission.sh swarmy"
-        );
-        assert_eq!(
-            super::decommission_command("other"),
-            "cd ~other/swarmy && bash scripts/remote-decommission.sh other"
-        );
     }
 
     #[tokio::test]

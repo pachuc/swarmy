@@ -53,45 +53,45 @@ fn no_machines() -> crate::Error {
     )
 }
 
+impl Substrate {
+    /// The AWS implementation for machine operations, or an error for
+    /// existing-host remotes, which have no cloud machines. The one place
+    /// machine calls are gated; bucket calls delegate unconditionally.
+    fn machines(&self) -> Result<&Aws> {
+        if self.provider == swarmy_config::Provider::Existing {
+            Err(no_machines())
+        } else {
+            Ok(&self.aws)
+        }
+    }
+}
+
 impl Cloud for Substrate {
     async fn ensure_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
         self.aws.ensure_bucket(bucket).await
     }
+    async fn verify_bucket_access(&self, bucket: &ObjectBucket) -> Result<()> {
+        self.aws.verify_bucket_access(bucket).await
+    }
     async fn base_image(&self) -> Result<String> {
-        if self.provider == swarmy_config::Provider::Existing {
-            return Err(no_machines());
-        }
-        self.aws.base_image().await
+        self.machines()?.base_image().await
     }
     async fn import_ssh_key(&self, name: &str, public_key: Vec<u8>, owner: &str) -> Result<()> {
-        if self.provider == swarmy_config::Provider::Existing {
-            return Err(no_machines());
-        }
-        self.aws.import_ssh_key(name, public_key, owner).await
+        self.machines()?
+            .import_ssh_key(name, public_key, owner)
+            .await
     }
     async fn create(&self, spec: &MachineSpec) -> Result<String> {
-        if self.provider == swarmy_config::Provider::Existing {
-            return Err(no_machines());
-        }
-        self.aws.create(spec).await
+        self.machines()?.create(spec).await
     }
     async fn get(&self, id: &str) -> Result<Option<Machine>> {
-        if self.provider == swarmy_config::Provider::Existing {
-            return Err(no_machines());
-        }
-        self.aws.get(id).await
+        self.machines()?.get(id).await
     }
     async fn find_by_tag(&self, token: &str) -> Result<Option<String>> {
-        if self.provider == swarmy_config::Provider::Existing {
-            return Err(no_machines());
-        }
-        self.aws.find_by_tag(token).await
+        self.machines()?.find_by_tag(token).await
     }
     async fn destroy(&self, id: &str) -> Result<()> {
-        if self.provider == swarmy_config::Provider::Existing {
-            return Err(no_machines());
-        }
-        self.aws.destroy(id).await
+        self.machines()?.destroy(id).await
     }
     async fn bucket_ownership(&self, bucket: &ObjectBucket) -> Result<Ownership> {
         self.aws.bucket_ownership(bucket).await
@@ -112,10 +112,7 @@ impl Cloud for Substrate {
         self.aws.delete_node_role(name, owner).await
     }
     async fn delete_ssh_key(&self, name: &str) -> Result<()> {
-        if self.provider == swarmy_config::Provider::Existing {
-            return Err(no_machines());
-        }
-        self.aws.delete_ssh_key(name).await
+        self.machines()?.delete_ssh_key(name).await
     }
 }
 
@@ -136,6 +133,15 @@ pub(super) fn validate_region(settings: &RemoteSettings, command: &str) -> Resul
         !settings.region.is_empty(),
         format!("configure remote.region in config.toml before running swarmy remote {command}"),
     )
+}
+
+/// Parse an IPv4 address for provisioning, with the flag in the message.
+/// The provisioning script only accepts IPv4, so every operator-given
+/// address is rejected up front instead of failing after state exists.
+pub(super) fn parse_ipv4(field: &str, value: &str) -> Result<std::net::Ipv4Addr> {
+    value
+        .parse()
+        .map_err(|source| crate::Error::context(source, format!("{field} must be an IPv4 address")))
 }
 
 /// Check the bucket binding before any state or host changes. Shared by

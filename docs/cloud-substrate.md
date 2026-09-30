@@ -58,10 +58,15 @@ wires the standard SSH host
 into `run`; tests replace it with a fake, as they replace `Cloud`
 with a fake.
 
-`for_settings` builds the provider selected by
+`for_settings` builds the substrate selected by
 `RemoteSettings.provider`: `aws` machines, or the existing-host substrate
 that reuses the bucket calls and fails every machine operation. The
-dispatch on the provider enum lives in that one place. Teardown reads
+provider enum is read in two places: `for_settings` builds the one `Cloud`
+(a `Substrate` holding the AWS implementation that refuses machine calls
+for existing hosts), and `run` picks host decommissioning over instance
+termination for teardown. Joins and status never match on the provider
+themselves: flag dispatch lives in `add_node::resolve_existing` and
+instance-type presentation in `display_instance_type`. Teardown reads
 the provider from the node's saved launch
 settings through `RemoteNode::cloud_settings`, falling back to
 defaults in the node's region for records saved before launch settings

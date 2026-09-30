@@ -348,6 +348,10 @@ pub enum Ownership {
 pub trait Cloud {
     /// Create the bucket and the node credentials guarding it, idempotently.
     fn ensure_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<()>>;
+    /// Check the caller's bucket credentials with a cheap read-only call
+    /// before recording state. Adopt fails here (not after saving) when the
+    /// operator's static keys are wrong.
+    fn verify_bucket_access(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<()>>;
     /// Resolve the stock machine image for the configured region.
     fn base_image(&self) -> impl Future<Output = Result<String>>;
     /// Import an SSH public key under `name` and tag it with `owner`.

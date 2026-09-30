@@ -256,9 +256,7 @@ fn plan_join<'a>(
             !primary.instance_id.is_empty(),
             "first node has not launched",
         )?;
-        let _: std::net::Ipv4Addr = primary.private_ip.parse().map_err(|source| {
-            crate::Error::context(source, "primary's private address must be an IPv4 address")
-        })?;
+        super::parse_ipv4("primary's private address", &primary.private_ip)?;
         let Some(image) = settings.aws.image.clone() else {
             return Err(crate::Error::other("saved launch image is missing"));
         };
@@ -272,9 +270,7 @@ fn plan_join<'a>(
     if let Some(address) = join.primary_address {
         effective.private_ip = address.into();
     }
-    let _: std::net::Ipv4Addr = effective.private_ip.parse().map_err(|source| {
-        crate::Error::context(source, "primary's private address must be an IPv4 address")
-    })?;
+    super::parse_ipv4("primary's private address", &effective.private_ip)?;
     Ok(JoinPlan::Existing {
         join,
         effective: Box::new(effective),
@@ -287,9 +283,7 @@ fn plan_join<'a>(
 fn validate_existing(join: &ExistingJoin<'_>) -> Result<()> {
     super::adopt::validate_bootstrap(join.host, join.ssh_user, join.ssh_key, "add-node")?;
     if let Some(address) = join.primary_address {
-        let _: std::net::Ipv4Addr = address.parse().map_err(|source| {
-            crate::Error::context(source, "add-node --primary-address must be an IPv4 address")
-        })?;
+        super::parse_ipv4("add-node --primary-address", address)?;
     }
     Ok(())
 }

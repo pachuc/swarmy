@@ -74,6 +74,8 @@ struct FakeCloud {
     find_tokens: RefCell<Vec<String>>,
     fail_delete: Cell<bool>,
     fail_terminate: Cell<bool>,
+    fail_verify: Cell<bool>,
+    verify_calls: RefCell<Vec<String>>,
 }
 
 impl Cloud for FakeCloud {
@@ -119,6 +121,17 @@ impl Cloud for FakeCloud {
             self.profile_creates.borrow_mut().push(role);
         }
         std::future::ready(Ok(()))
+    }
+
+    fn verify_bucket_access(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<()>> {
+        self.verify_calls
+            .borrow_mut()
+            .push(bucket.spec.bucket.clone());
+        std::future::ready(if self.fail_verify.get() {
+            Err(crate::Error::other("static keys rejected"))
+        } else {
+            Ok(())
+        })
     }
 
     fn base_image(&self) -> impl Future<Output = Result<String>> {
@@ -336,7 +349,7 @@ impl Host for FakeHost {
         self.decommissioned.borrow_mut().push(node.name.clone());
         std::future::ready(if self.fail_decommission.borrow().contains(&node.name) {
             Err(crate::Error::other(format!(
-                "host {} unreachable",
+                "simulated decommission failure on {}",
                 node.name
             )))
         } else {
@@ -2713,6 +2726,7 @@ async fn adopt_provisions_existing_host_through_shared_provisioning() {
     assert!(cloud.requests.borrow().is_empty());
     assert!(cloud.keys.borrow().is_empty());
     assert!(cloud.bucket_ensures.borrow().is_empty());
+    assert!(cloud.verify_calls.borrow().is_empty());
     assert!(cloud.observations.borrow().is_empty());
     assert_eq!(cloud.stock_reads.get(), 0);
 }
@@ -3229,7 +3243,7 @@ fn join_dispatch_requires_host_for_existing_and_refuses_it_for_aws() {
 }
 
 #[tokio::test]
-async fn down_existing_continues_past_unreachable_hosts() {
+async fn down_existing_keeps_failed_hosts_and_reports_their_reasons() {
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(&dir.path().join("remote")).unwrap();
     let cloud = FakeCloud::default();
@@ -3258,13 +3272,146 @@ async fn down_existing_continues_past_unreachable_hosts() {
     )
     .await
     .unwrap();
-    // The child host is gone; teardown still reaches the primary and still
-    // drops the bucket scope and local state, reporting the failure.
+    // The child host is gone while the primary answers: teardown still
+    // reaches the primary, then exits non-zero keeping only the failed
+    // record, with the real failure reason (not an "unreachable" label).
     host.fail_decommission.borrow_mut().push("demo-2".into());
     let node = state.require("demo").unwrap();
-    down::run_existing(&cloud, &host, &state, &node, true)
+    let primary_key = node.key_path.clone();
+    let child_key = node.nodes[0].key_path.clone();
+    let error = down::run_existing(&cloud, &host, &state, &node, true)
+        .await
+        .unwrap_err();
+    let report = swarmy_core::error_chain(&error);
+    assert!(report.contains("demo-2"), "{report}");
+    assert!(
+        report.contains("simulated decommission failure"),
+        "{report}"
+    );
+    assert!(!report.contains("unreachable"), "{report}");
+    // Both hosts were attempted; only the failed child's record is kept.
+    assert_eq!(*host.decommissioned.borrow(), ["demo-2", "demo"]);
+    let kept = state.require("demo").unwrap();
+    assert_eq!(kept.nodes.len(), 1);
+    assert_eq!(kept.nodes[0].name, "demo-2");
+    assert!(primary_key.exists());
+    assert!(child_key.exists());
+    // The failed child is retried while the torn-down primary is a no-op:
+    // clearing the failure completes the teardown and drops all state.
+    host.fail_decommission.borrow_mut().clear();
+    let kept = state.require("demo").unwrap();
+    down::run_existing(&cloud, &host, &state, &kept, true)
         .await
         .unwrap();
-    assert_eq!(*host.decommissioned.borrow(), ["demo-2", "demo"]);
+    assert_eq!(
+        *host.decommissioned.borrow(),
+        ["demo-2", "demo", "demo-2", "demo"]
+    );
     assert!(state.read("demo").unwrap().is_none());
+    assert!(!primary_key.exists());
+    assert!(!child_key.exists());
+}
+
+#[tokio::test]
+async fn down_existing_prunes_torn_down_children_of_a_failed_primary() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    let settings = existing_settings();
+    adopt_existing(&state, &cloud, &host, &settings, &dir, "demo").await;
+    let key = bootstrap_key(&dir);
+    super::add_node::run(
+        &cloud,
+        &host,
+        &state,
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 0,
+            shape: super::NodeShape::default(),
+            local_storage: String::new(),
+            existing: Some(super::add_node::ExistingJoin {
+                host: "203.0.113.11",
+                ssh_user: "admin",
+                ssh_key: &key,
+                primary_address: None,
+            }),
+        },
+        Duration::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
+    // The primary fails while its child is torn down: the child is pruned
+    // with its key file and only the primary record is kept for a retry.
+    host.fail_decommission.borrow_mut().push("demo".into());
+    let node = state.require("demo").unwrap();
+    let primary_key = node.key_path.clone();
+    let child_key = node.nodes[0].key_path.clone();
+    let error = down::run_existing(&cloud, &host, &state, &node, true)
+        .await
+        .unwrap_err();
+    assert!(
+        swarmy_core::error_chain(&error).contains("demo"),
+        "{error:?}"
+    );
+    let kept = state.require("demo").unwrap();
+    assert!(kept.nodes.is_empty());
+    assert!(primary_key.exists());
+    assert!(!child_key.exists());
+    assert!(!child_key.with_extension("pub").exists());
+}
+
+#[tokio::test]
+async fn adopt_verifies_static_keys_before_saving_state() {
+    let setup = static_setup();
+    let dir = tempfile::tempdir().unwrap();
+    let key = bootstrap_key(&dir);
+    let settings = RemoteSettings {
+        provider: swarmy_config::Provider::Existing,
+        service_user: "swarmy".into(),
+        local_storage: String::new(),
+        ..setup.settings.clone()
+    };
+    super::adopt::run(
+        &setup.cloud,
+        &setup.host,
+        &setup.state,
+        &settings,
+        super::adopt::AdoptNode {
+            name: "static-test",
+            host: "203.0.113.10",
+            ssh_user: "root",
+            ssh_key: &key,
+            sandboxes: 0,
+        },
+        None.into(),
+    )
+    .await
+    .unwrap();
+    // The cheap credential check ran before the record was saved.
+    assert_eq!(*setup.cloud.verify_calls.borrow(), ["test-bucket"]);
+    assert!(setup.state.require("static-test").is_ok());
+    // Wrong keys fail before any state exists and before ensure_bucket runs.
+    setup.cloud.fail_verify.set(true);
+    let error = super::adopt::run(
+        &setup.cloud,
+        &setup.host,
+        &setup.state,
+        &settings,
+        super::adopt::AdoptNode {
+            name: "rejected-test",
+            host: "203.0.113.10",
+            ssh_user: "root",
+            ssh_key: &bootstrap_key(&dir),
+            sandboxes: 0,
+        },
+        None.into(),
+    )
+    .await
+    .unwrap_err();
+    let report = swarmy_core::error_chain(&error);
+    assert!(report.contains("were rejected"), "{report}");
+    assert!(setup.state.read("rejected-test").unwrap().is_none());
+    assert_eq!(setup.cloud.bucket_ensures.borrow().len(), 1);
 }

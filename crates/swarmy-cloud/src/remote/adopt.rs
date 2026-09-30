@@ -9,7 +9,7 @@ use std::{path::Path, time::Instant};
 use crate::Result;
 use swarmy_config::{RemoteNode, RemotePorts, RemoteSettings};
 
-use super::{Cloud, Host, state::State};
+use super::{Cloud, Host, ObjectBucket, state::State};
 
 pub(super) struct AdoptNode<'a> {
     pub name: &'a str,
@@ -32,6 +32,29 @@ pub(super) async fn run(
         return Err(crate::Error::AlreadyExists(name.to_owned()));
     }
     validate(settings, &request)?;
+    // Static keys are checked with a cheap read-only call before any state
+    // exists, so wrong keys fail here instead of after the record is saved.
+    if let Some(spec) = &settings.bucket
+        && spec.needs_static_keys()
+    {
+        cloud
+            .verify_bucket_access(&ObjectBucket::from_spec(
+                name,
+                spec,
+                &settings.region,
+                settings.instance_profile(name),
+            ))
+            .await
+            .map_err(|source| {
+                crate::Error::context(
+                    source,
+                    format!(
+                        "static bucket keys for {} were rejected; check --s3-access-key and the secret",
+                        spec.describe(),
+                    ),
+                )
+            })?;
+    }
     let started = Instant::now();
     let mut node = initial_node(state, settings, &request);
     // Write the record before any bucket or host mutation so down can
@@ -122,9 +145,7 @@ pub(super) fn validate_bootstrap(
     ssh_key: &Path,
     command: &str,
 ) -> Result<()> {
-    let _: std::net::Ipv4Addr = host.parse().map_err(|source| {
-        crate::Error::context(source, format!("{command} --host must be an IPv4 address"))
-    })?;
+    super::parse_ipv4(&format!("{command} --host"), host)?;
     crate::Error::ensure(
         !ssh_user.is_empty()
             && ssh_user

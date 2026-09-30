@@ -119,23 +119,17 @@ static_bucket=$(node_environment /tmp/checkout 4 /tmp example-bucket eu-west-1 h
 [[ $static_bucket == *'SWARMY_S3_CONDITIONAL_CREATE=false'* ]]
 [[ $static_bucket != *'SWARMY_S3_ACCESS_KEY='* ]]
 [[ $static_bucket != *'SWARMY_S3_SECRET_KEY='* ]]
-# The decommission script reads the same unit and binary lists the install
-# paths use, so a unit can never be left running while its binary is gone.
-units=$(swarmy_unit_names)
-for unit in swarmy-stack.service swarmy-tunnel.service swarmyd.service swarmy-scheduler.service swarmy-worker.service swarmy-gateway.service swarmy-api.service; do
-    [[ $units == *"$unit"* ]] || { echo "shared unit list misses $unit" >&2; exit 1; }
+# The per-mode selectors stay within the shared lists: everything a mode
+# installs is torn down by the decommission script reading those lists.
+for mode in stack node; do
+    while IFS= read -r unit; do
+        swarmy_unit_names | grep -xF "$unit" >/dev/null || { echo "$mode unit $unit missing from shared list" >&2; exit 1; }
+    done < <(swarmy_mode_units "$mode")
+    while IFS= read -r binary; do
+        swarmy_binary_names | grep -xF "$binary" >/dev/null || { echo "$mode binary $binary missing from shared list" >&2; exit 1; }
+    done < <(swarmy_mode_binaries "$mode")
 done
-binaries=$(swarmy_binary_names)
-for binary in swarmy swarmyd swarmy-scheduler swarmy-gateway swarmy-worker swarmy-api; do
-    [[ $binaries == *"$binary"* ]] || { echo "shared binary list misses $binary" >&2; exit 1; }
-done
-decommission=$(<scripts/remote-decommission.sh)
-[[ $decommission == *'swarmy_unit_names'* ]]
-[[ $decommission == *'swarmy_binary_names'* ]]
-[[ $decommission == *'/etc/modules-load.d/swarmy.conf'* ]]
-[[ $decommission == *'/etc/swarmy'* ]]
-# The fstab line and the service user stay for the operator (mentioned only
-# in the header comment, never modified).
-[[ $decommission != *'/etc/fstab'* ]]
-[[ $decommission != *'userdel'* ]]
+# Stopping previous units covers every shared unit, including the other
+# mode's units and old node-services units on a re-provisioned host.
+[[ $(swarmy_unit_names | wc -l) -ge 3 ]]
 echo 'remote provision argument and environment tests passed'

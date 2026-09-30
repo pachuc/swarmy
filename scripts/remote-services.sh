@@ -8,7 +8,9 @@ validate_service_user "$service_user"
 service_home=$(service_home_for "$service_user")
 repo_dir=$(service_repo_for "$service_user")
 [[ $(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd) == "$repo_dir" ]] || { echo "Expected checkout at $repo_dir" >&2; exit 1; }
-for service in scheduler worker gateway api; do
+# Service names come from the shared list so installs and teardown agree.
+mapfile -t services < <(swarmy_service_names)
+for service in "${services[@]}"; do
     sudo tee "/etc/systemd/system/swarmy-$service.service" >/dev/null <<UNIT
 [Unit]
 Description=Swarmy $service
@@ -34,11 +36,11 @@ done
 sudo systemctl daemon-reload
 # Reload the same namespace configuration in the execution node.
 sudo systemctl restart swarmyd.service
-for service in scheduler worker gateway api; do
+for service in "${services[@]}"; do
     sudo systemctl enable "swarmy-$service.service"
     sudo systemctl restart "swarmy-$service.service"
 done
-for service in scheduler worker gateway api; do
+for service in "${services[@]}"; do
     invocation=$(sudo systemctl show -p InvocationID --value "swarmy-$service")
     ready=false
     message="$service ready"

@@ -133,19 +133,76 @@ link_volumes_to() {
     [[ $(readlink -f .swarmy/volumes) == "$mount/volumes" ]]
 }
 
-# One list of the systemd units and binaries provisioning installs, shared
-# by the install paths and the decommission script. Provisioning writes
-# swarmy-stack.service or swarmy-tunnel.service (stack or node mode) plus
-# always swarmyd.service; node-services mode adds the four control-plane
-# units. Decommission stops, disables, and removes every name here, so a
-# name missing from this list would be left running while its binary is
-# deleted.
-swarmy_unit_names() {
-    printf '%s\n' swarmy-stack.service swarmy-tunnel.service swarmyd.service swarmy-scheduler.service swarmy-worker.service swarmy-gateway.service swarmy-api.service
+# The control-plane services provisioning can install on a node. One list:
+# unit and binary names derive from these, so adding a service touches one
+# place. The backing-service units (stack/tunnel) and the node agent are
+# fixed in the lists below because they are structural, not services.
+swarmy_service_names() {
+    printf '%s\n' scheduler worker gateway api
 }
 
+# One list of the systemd units provisioning installs: the backing-service
+# unit per mode, always the node agent, plus the node-services units. The
+# decommission script stops, disables, and removes exactly these, so a name
+# missing from this list would be left running while its binary is deleted.
+swarmy_unit_names() {
+    printf '%s\n' swarmy-stack.service swarmy-tunnel.service swarmyd.service
+    local service
+    local services
+    mapfile -t services < <(swarmy_service_names)
+    for service in "${services[@]}"; do
+        printf 'swarmy-%s.service\n' "$service"
+    done
+}
+
+# One list of the release binaries provisioning installs.
 swarmy_binary_names() {
-    printf '%s\n' swarmy swarmyd swarmy-scheduler swarmy-gateway swarmy-worker swarmy-api
+    printf '%s\n' swarmy swarmyd
+    local service
+    local services
+    mapfile -t services < <(swarmy_service_names)
+    for service in "${services[@]}"; do
+        printf 'swarmy-%s\n' "$service"
+    done
+}
+
+# Binaries a provisioning mode installs, in install order: the stack runs
+# everything, a joining node only builds the node agent. Selected from the
+# shared list, so the install can never name a binary teardown misses.
+swarmy_mode_binaries() {
+    if [[ ${1-} == node ]]; then
+        printf 'swarmyd\n'
+    else
+        swarmy_binary_names
+    fi
+}
+
+# Units a provisioning mode owns, backing-service unit first: the stack
+# owns the backing services, a joining node only its tunnel, and both own
+# the node agent. Provisioning enables these in order; anything else in the
+# shared list is a leftover from a previous installation.
+swarmy_mode_units() {
+    if [[ ${1-} == stack ]]; then
+        printf 'swarmy-stack.service\n'
+    else
+        printf 'swarmy-tunnel.service\n'
+    fi
+    printf 'swarmyd.service\n'
+}
+
+# Stop and disable every shared unit so a re-provisioned host never keeps
+# the other mode's units or old node-services units running. The caller
+# enables what it installs afterwards. Shared by provisioning (before
+# installing) and decommissioning (before removing).
+disable_previous_units() {
+    local units unit
+    mapfile -t units < <(swarmy_unit_names)
+    for unit in "${units[@]}"; do
+        sudo systemctl stop "$unit" 2>/dev/null || true
+    done
+    for unit in "${units[@]}"; do
+        sudo systemctl disable "$unit" 2>/dev/null || true
+    done
 }
 
 node_disk_bytes() {

@@ -751,9 +751,10 @@ object-storage APIs.
 
 ```sh
 swarmy remote adopt plain --host <machine-address> --ssh-key <bootstrap-key> \
-  --service-user swarmy --local-storage dir:/srv/swarmy-local \
+  --local-storage dir:/srv/swarmy-local \
   --bucket <bucket> --s3-endpoint <endpoint-url> \
-  --s3-access-key <access-key> --s3-secret-file <secret-file>
+  --s3-access-key <access-key> --s3-secret-file <secret-file> \
+  --service-user swarmy
 ```
 
 `--host` is the machine's IP address, used for provisioning and tunnels.
@@ -778,7 +779,9 @@ setting selects the address. The service user stays the primary's so the
 tunnel login matches.
 
 `down`, `status`, `upgrade`, and `connect` work for adopted remotes
-without any cloud call. `down` stops and disables every swarmy unit
+without any cloud machine call: no EC2 or instance API is ever touched
+(`down` still deletes the owned bucket scope through object-storage APIs).
+`down` stops and disables every swarmy unit
 (`swarmy-stack` or `swarmy-tunnel`, `swarmyd`, and any
 `scheduler`/`worker`/`gateway`/`api` units) through
 `scripts/remote-decommission.sh`, which reads the same unit and binary
