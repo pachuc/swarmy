@@ -7,6 +7,7 @@ use std::{
 
 use crate::Result;
 use swarmy_config::{RemoteNode, RemoteProfile};
+use tokio::io::AsyncWriteExt;
 use tokio::{process::Command, time::timeout};
 
 /// Options shared by every SSH and rsync invocation for a node. The host key
@@ -59,84 +60,6 @@ fn service_user(node: &RemoteNode) -> Result<String> {
 /// bash (`~user` expands through the passwd entry).
 fn tilde_repo(user: &str) -> String {
     format!("~{user}/swarmy")
-}
-
-/// Run the checkout's `ensure_service_user` on the host before the first
-/// copy, so a root login gains a destination owned by its owner. The helper
-/// script is piped over stdin because the checkout is not on the host yet;
-/// user creation, sudoers, and path resolution stay in the one bash
-/// implementation instead of being repeated in Rust. Returns the
-/// host-resolved home for the rsync destination; every later command
-/// resolves the same home through `~user` on the host instead of assuming
-/// `/home/<user>`.
-async fn ensure_service_user(
-    &self,
-    node: &RemoteNode,
-    address: &str,
-    user: &str,
-) -> Result<String> {
-    if user == "root" {
-        return Ok("/root".to_owned());
-    }
-    let env = String::from_utf8(std::fs::read(
-        self.repo.join("scripts/remote-provision-env.sh"),
-    )?)?;
-    let mut script = String::new();
-    for line in env.split_inclusive('\n') {
-        // Piped over stdin the script has no directory for BASH_SOURCE, so
-        // its S3 helper cannot be sourced. Only the user-management
-        // functions run here and none of them need it.
-        if line.trim_start().starts_with("source") && line.contains("remote-s3-env.sh") {
-            continue;
-        }
-        script.push_str(line);
-    }
-    // `user` is validated (letters, digits, `_`, `-`), so embedding it in
-    // single quotes is data, never shell. `visudo -cf` reports to stdout, so
-    // the home is the last line.
-    script.push_str(&format!(
-        "ensure_service_user '{user}'\nservice_home_for '{user}'\n"
-    ));
-    let action = "create service user";
-    let mut child = base(node)?
-        .arg(address)
-        .arg("bash -s")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(crate::Error::ssh(action))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(script.as_bytes())
-            .await
-            .map_err(crate::Error::ssh(action))?;
-    }
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(crate::Error::ssh(action))?;
-    if !output.status.success() {
-        return Err(crate::Error::SshStatus {
-            command: action.to_owned(),
-            status: output.status,
-        });
-    }
-    let home = String::from_utf8(output.stdout)?
-        .lines()
-        .rfind(|line| !line.trim().is_empty())
-        .unwrap_or_default()
-        .trim()
-        .to_owned();
-    crate::Error::ensure(
-        home.starts_with('/')
-            && !home.contains([
-                ' ', '\t', '\n', '\'', '"', '$', '`', ';', '&', '|', '(', ')', '<', '>',
-            ])
-            && !home.contains(".."),
-        "invalid service home from host",
-    )?;
-    Ok(home)
 }
 
 fn base(node: &RemoteNode) -> Result<Command> {
@@ -337,6 +260,84 @@ impl Ssh {
         )
         .await?;
         Ok(String::from_utf8(output.stdout)?)
+    }
+
+    /// Run the checkout's `ensure_service_user` on the host before the first
+    /// copy, so a root login gains a destination owned by its owner. The helper
+    /// script is piped over stdin because the checkout is not on the host yet;
+    /// user creation, sudoers, and path resolution stay in the one bash
+    /// implementation instead of being repeated in Rust. Returns the
+    /// host-resolved home for the rsync destination; every later command
+    /// resolves the same home through `~user` on the host instead of assuming
+    /// `/home/<user>`.
+    async fn ensure_service_user(
+        &self,
+        node: &RemoteNode,
+        address: &str,
+        user: &str,
+    ) -> Result<String> {
+        if user == "root" {
+            return Ok("/root".to_owned());
+        }
+        let env = String::from_utf8(std::fs::read(
+            self.repo.join("scripts/remote-provision-env.sh"),
+        )?)?;
+        let mut script = String::new();
+        for line in env.split_inclusive('\n') {
+            // Piped over stdin the script has no directory for BASH_SOURCE, so
+            // its S3 helper cannot be sourced. Only the user-management
+            // functions run here and none of them need it.
+            if line.trim_start().starts_with("source") && line.contains("remote-s3-env.sh") {
+                continue;
+            }
+            script.push_str(line);
+        }
+        // `user` is validated (letters, digits, `_`, `-`), so embedding it in
+        // single quotes is data, never shell. `visudo -cf` reports to stdout, so
+        // the home is the last line.
+        script.push_str(&format!(
+            "ensure_service_user '{user}'\nservice_home_for '{user}'\n"
+        ));
+        let action = "create service user";
+        let mut child = base(node)?
+            .arg(address)
+            .arg("bash -s")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(crate::Error::ssh(action))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(script.as_bytes())
+                .await
+                .map_err(crate::Error::ssh(action))?;
+        }
+        let output = child
+            .wait_with_output()
+            .await
+            .map_err(crate::Error::ssh(action))?;
+        if !output.status.success() {
+            return Err(crate::Error::SshStatus {
+                command: action.to_owned(),
+                status: output.status,
+            });
+        }
+        let home = String::from_utf8(output.stdout)?
+            .lines()
+            .rfind(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        crate::Error::ensure(
+            home.starts_with('/')
+                && !home.contains([
+                    ' ', '\t', '\n', '\'', '"', '$', '`', ';', '&', '|', '(', ')', '<', '>',
+                ])
+                && !home.contains(".."),
+            "invalid service home from host",
+        )?;
+        Ok(home)
     }
 
     /// Copy the same filtered checkout used by initial provisioning.
