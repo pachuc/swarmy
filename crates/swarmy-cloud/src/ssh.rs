@@ -296,10 +296,12 @@ impl Ssh {
         // `user` is validated (letters, digits, `_`, `-`), so embedding it in
         // single quotes is data, never shell. `visudo -cf` reports to stdout, so
         // the home is the last line.
-        let _ = write!(
+        // Writing to a `String` cannot fail.
+        write!(
             script,
             "ensure_service_user '{user}'\nservice_home_for '{user}'\n"
-        );
+        )
+        .expect("writing to String cannot fail");
         let action = "create service user";
         let mut child = base(node)?
             .arg(address)

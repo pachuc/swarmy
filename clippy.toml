@@ -1,13 +1,13 @@
 # Clippy thresholds and test exemptions. Workspace lints live in the root
 # `Cargo.toml` `[workspace.lints]`; only numeric thresholds and test-only
-# exemptions live here. Part 1 (task n0sxwd) owns this stanza; the parallel
-# lint task keeps its own block below.
+# exemptions live here.
 #
-# Unit tests (`#[cfg(test)]`) may use `unwrap`; the workspace does not
-# currently deny `unwrap_used` because the exemption does not extend to
-# integration tests (see `Cargo.toml`), but the line stays so the exemption
-# is in place if the deny ever becomes scoped enough to enable.
-allow-unwrap-in-tests = true
+# Complexity: 96 functions exceed 15, 40 exceed 20, 21 exceed 25; the 21
+# were split by concern and what remains over 25 is genuinely too complex
+# to keep. Nesting: depth 8 is the observed maximum; only real offenders
+# fail at 6.
+cognitive-complexity-threshold = 25
+excessive-nesting-threshold = 6
 
 # Testkit task (kkc45e): fixed sleeps in tests hide timing assumptions: a
 # suite that sleeps past a lease passes on fast machines and flakes on slow

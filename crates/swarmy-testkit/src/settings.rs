@@ -48,6 +48,8 @@ pub fn test_settings(names: &[&str]) -> swarmy_config::Settings {
                 .map(|value| ((*name).to_owned(), value))
         })
         .collect();
-    settings.apply_environment(&environment).unwrap();
+    settings
+        .apply_environment(&environment)
+        .expect("test variables must validate");
     settings
 }

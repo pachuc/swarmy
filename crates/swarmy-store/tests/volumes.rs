@@ -4,6 +4,7 @@ use jiff::Timestamp;
 use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
 use swarmy_core::{
     CHUNK_SIZE, ContentHash, ImageTag, Lease, LeaseOwnerId, ManifestHeader, ManifestId, VolumeId,
+    ignore_best_effort,
 };
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use swarmy_volume::{ChunkStore, Manifest, SnapshotLoop, VolumeDevice, VolumeWriter};
@@ -87,7 +88,10 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.directory);
+        ignore_best_effort(
+            std::fs::remove_dir_all(&self.directory),
+            "remove test directory",
+        );
     }
 }
 fn manifest_id() -> ManifestId {
@@ -126,7 +130,7 @@ async fn periodic_snapshots_skip_idle_staged_changes_publish_and_checkpoint_is_i
         let writer = task_writer.clone();
         let ticks = ticks.clone();
         async move {
-            let result = writer.flush_if_dirty(None).await?;
+            let result = writer.flush_if_dirty().await?;
             ticks.send(result.map(|flush| flush.manifest_id)).unwrap();
             Ok::<_, swarmy_volume::VolumeError>(())
         }
@@ -164,7 +168,7 @@ async fn periodic_snapshots_skip_idle_staged_changes_publish_and_checkpoint_is_i
     let task_writer = writer.clone();
     let _long_period = SnapshotLoop::spawn(std::time::Duration::from_secs(600), move || {
         let writer = task_writer.clone();
-        async move { writer.flush_if_dirty(None).await.map(|_| ()) }
+        async move { writer.flush_if_dirty().await.map(|_| ()) }
     });
     let checkpoint =
         tokio::time::timeout(std::time::Duration::from_secs(5), writer.checkpoint(None))

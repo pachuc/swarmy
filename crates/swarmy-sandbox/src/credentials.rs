@@ -1,6 +1,6 @@
 //! Per-sandbox credential endpoint. The socket determines identity, never the request.
 use std::{os::unix::fs::PermissionsExt, path::Path, time::Duration};
-use swarmy_core::AgentId;
+use swarmy_core::{AgentId, ignore_best_effort};
 use swarmy_store::Store;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -25,7 +25,9 @@ impl Credentials {
         Ok(Self(tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
                 // Bound stalled clients without keeping credentials in a cache.
-                let _ = tokio::time::timeout(Duration::from_secs(5), async {
+                // Log both timeouts and inner I/O failures; `timeout` nests
+                // the inner result, so flatten it before the best-effort log.
+                match tokio::time::timeout(Duration::from_secs(5), async {
                     let mut request = [0; 13];
                     socket.read_exact(&mut request).await?;
                     if &request != b"github-token\n" {
@@ -40,7 +42,15 @@ impl Credentials {
                     bytes.push(b'\n');
                     socket.write_all(&bytes).await
                 })
-                .await;
+                .await
+                {
+                    Err(error) => {
+                        ignore_best_effort::<(), _>(Err(error), "answer credential request");
+                    }
+                    Ok(inner) => {
+                        ignore_best_effort(inner, "answer credential request");
+                    }
+                }
             }
         })))
     }

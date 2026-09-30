@@ -4,9 +4,9 @@ use anyhow::{Context, Result, ensure};
 use jiff::Timestamp;
 use swarmy_bus::{Bus, LiveFeed, SubjectToken, WorkMessage, WorkQueue};
 use swarmy_core::{
-    Event, InflightRecord, Lease, LeaseOwnerId, ManifestId, MessageId, Nudge, RequestId,
-    SandboxArguments, SessionId, SessionRecord, SessionState, SnapshotRef, ToolCallRecord, ToolJob,
-    TurnStage, decode, encode,
+    Event, ImageRecord, ImageTag, InflightRecord, Lease, LeaseOwnerId, ManifestId, MessageId,
+    Nudge, RequestId, SandboxArguments, SessionId, SessionRecord, SessionState, SnapshotRef,
+    ToolCallRecord, ToolJob, TurnStage, decode, encode,
 };
 use swarmy_harness::{Action, Snapshot, execution_result};
 use swarmy_llm::{InferenceJob, InferenceJobRef};
@@ -97,11 +97,31 @@ fn route_selection<'a>(
 const SNAPSHOT_CACHE_SIZE: usize = 16;
 const DISPLAY_CACHE_SIZE: usize = 64;
 
-/// Display flag per image manifest, indexed by session. A worker restart
-/// drops this cache; restart workers after changing an agent's image.
+/// Display flag per image, indexed by session. The store reads the flag by
+/// the full image identity (name, tag, manifest), so the cache keys the
+/// same way: two tags pointing at one manifest can still differ. A worker
+/// restart drops this cache; restart workers after changing an agent's
+/// image.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ImageKey {
+    name: String,
+    tag: ImageTag,
+    manifest: ManifestId,
+}
+
+impl From<&ImageRecord> for ImageKey {
+    fn from(image: &ImageRecord) -> Self {
+        Self {
+            name: image.name.clone(),
+            tag: image.tag.clone(),
+            manifest: image.manifest_id,
+        }
+    }
+}
+
 #[derive(Default)]
 struct DisplayCache {
-    by_image: HashMap<ManifestId, bool>,
+    by_image: HashMap<ImageKey, bool>,
     by_session: HashMap<SessionId, bool>,
 }
 
@@ -110,18 +130,18 @@ impl DisplayCache {
         self.by_session.get(&session).copied()
     }
 
-    fn get_image(&self, manifest: ManifestId) -> Option<bool> {
-        self.by_image.get(&manifest).copied()
+    fn get_image(&self, image: &ImageKey) -> Option<bool> {
+        self.by_image.get(image).copied()
     }
 
-    fn insert(&mut self, session: SessionId, manifest: Option<ManifestId>, display: bool) {
+    fn insert(&mut self, session: SessionId, image: Option<ImageKey>, display: bool) {
         if self.by_image.len() >= DISPLAY_CACHE_SIZE || self.by_session.len() >= DISPLAY_CACHE_SIZE
         {
             self.by_image.clear();
             self.by_session.clear();
         }
-        if let Some(manifest) = manifest {
-            self.by_image.insert(manifest, display);
+        if let Some(image) = image {
+            self.by_image.insert(image, display);
         }
         self.by_session.insert(session, display);
     }

@@ -4,6 +4,7 @@ use std::{
     fs,
     process::{Command, Output},
 };
+use swarmy_core::ignore_best_effort;
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -14,10 +15,10 @@ struct Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
+            ignore_best_effort(shutdown.send(()), "signal shutdown");
         }
         if let Some(server) = self.server.take() {
-            let _ = server.join();
+            ignore_best_effort(server.join(), "join test server thread");
         }
     }
 }
@@ -70,7 +71,7 @@ impl Fixture {
                 ready.send(()).unwrap();
                 axum::serve(listener, swarmy_api::router(state))
                     .with_graceful_shutdown(async {
-                        let _ = stopped.await;
+                        ignore_best_effort(stopped.await, "await server shutdown");
                     })
                     .await
                     .unwrap();

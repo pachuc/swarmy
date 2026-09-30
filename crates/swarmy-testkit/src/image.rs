@@ -22,10 +22,10 @@ pub async fn image(store: &swarmy_store::Store) -> &'static str {
             },
         )
         .await
-        .unwrap();
+        .expect("fixture image manifest must store");
     store
         .put_image("fixture", &ImageTag("test".into()), manifest, None)
         .await
-        .unwrap();
+        .expect("fixture image tag must store");
     "fixture:test"
 }

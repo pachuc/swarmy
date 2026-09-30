@@ -135,17 +135,20 @@ async fn cleanup(cluster: &str, url: &str, prefixes: &[String]) {
     };
     for prefix in prefixes {
         let path = vec![prefix.clone()];
-        let _ = database
-            .run(|trx, _| {
-                let path = &path;
-                async move {
-                    DirectoryLayer::default()
-                        .remove_if_exists(&trx, path)
-                        .await?;
-                    Ok(())
-                }
-            })
-            .await;
+        swarmy_core::ignore_best_effort(
+            database
+                .run(|trx, _| {
+                    let path = &path;
+                    async move {
+                        DirectoryLayer::default()
+                            .remove_if_exists(&trx, path)
+                            .await?;
+                        Ok(())
+                    }
+                })
+                .await,
+            "remove test directory prefix",
+        );
     }
     let Ok(client) = async_nats::connect(url).await else {
         return;
@@ -153,7 +156,10 @@ async fn cleanup(cluster: &str, url: &str, prefixes: &[String]) {
     let context = async_nats::jetstream::new(client);
     for prefix in prefixes {
         for stream in ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"] {
-            let _ = context.delete_stream(format!("{prefix}_{stream}")).await;
+            swarmy_core::ignore_best_effort(
+                context.delete_stream(format!("{prefix}_{stream}")).await,
+                "delete test bus stream",
+            );
         }
     }
 }

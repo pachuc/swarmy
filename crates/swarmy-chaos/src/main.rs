@@ -460,43 +460,15 @@ async fn run(config: &Config, binaries: &Path, seed: u64) -> Result<()> {
         .context("stack connection timed out")??;
     tracing::info!(prefix = %fixture.prefix, logs = %fixture.files.path().display(), "isolated run created");
     let result = tokio::select! {
-        result = async {
-            timeout(Duration::from_secs(60), fixture.start(config, binaries)).await.context("session setup timed out")??;
-            if config.agent_checks.coding {
-                coding::exercise(&mut fixture).await?;
-                Ok(0)
-            } else if config.agent_checks.continuity {
-                continuity::exercise(&mut fixture).await?;
-                Ok(0)
-            } else if config.agent_checks.persistent {
-                persistent::exercise(&mut fixture, binaries, config.node_driver.as_deref()).await?;
-                if let Some(script) = &config.measurements { measure::run(&fixture, binaries, &script.canonicalize()?).await?; }
-                Ok(0)
-            } else {
-                fixture.exercise(config, seed).await
-            }
-        } => result,
+        result = exercise_suite(config, binaries, seed, &mut fixture) => result,
         result = tokio::signal::ctrl_c() => { result?; Err(anyhow::anyhow!("interrupted")) }
     };
     let cleanup = timeout(Duration::from_secs(30), fixture.cleanup())
         .await
         .context("cleanup timed out")
         .and_then(std::convert::identity);
-    if result.is_err() || cleanup.is_err() {
-        for process in &mut fixture.processes {
-            process.kill_now();
-        }
-        disk::cleanup(&fixture.files.path().join(".swarmy/node"));
-        let replacement = tempfile::tempdir()?;
-        let path = std::mem::replace(&mut fixture.files, replacement).keep();
-        tracing::error!(seed, logs = %path.display(), "chaos failed; retained script, call log, and service logs");
-    }
-    if let Err(error) = cleanup {
-        tracing::error!(%error, "cleanup failed");
-        result?;
-        return Err(error);
-    }
-    result?;
+    retain_on_failure(&mut fixture, seed, &result, &cleanup);
+    settle_cleanup(cleanup, result)?;
     tracing::info!(
         seed,
         sessions = config.sessions,
@@ -505,6 +477,72 @@ async fn run(config: &Config, binaries: &Path, seed: u64) -> Result<()> {
         elapsed_secs = started.elapsed().as_secs_f64(),
         "chaos passed"
     );
+    Ok(())
+}
+
+/// Start the fixture's services and run the selected exercise suite: a
+/// single agent check or the full randomized session exercise.
+async fn exercise_suite(
+    config: &Config,
+    binaries: &Path,
+    seed: u64,
+    fixture: &mut Fixture,
+) -> Result<usize> {
+    timeout(Duration::from_secs(60), fixture.start(config, binaries))
+        .await
+        .context("session setup timed out")??;
+    if config.agent_checks.coding {
+        coding::exercise(fixture).await?;
+        Ok(0)
+    } else if config.agent_checks.continuity {
+        continuity::exercise(fixture).await?;
+        Ok(0)
+    } else if config.agent_checks.persistent {
+        persistent::exercise(fixture, binaries, config.node_driver.as_deref()).await?;
+        if let Some(script) = &config.measurements {
+            measure::run(fixture, binaries, &script.canonicalize()?).await?;
+        }
+        Ok(0)
+    } else {
+        fixture.exercise(config, seed).await
+    }
+}
+
+/// Keep the script, call log, and service logs when the run or its cleanup
+/// failed so the failure can be diagnosed after the temp dir is gone.
+fn retain_on_failure(
+    fixture: &mut Fixture,
+    seed: u64,
+    result: &Result<usize>,
+    cleanup: &Result<()>,
+) {
+    if result.is_err() || cleanup.is_err() {
+        for process in &mut fixture.processes {
+            process.kill_now();
+        }
+        disk::cleanup(&fixture.files.path().join(".swarmy/node"));
+        let replacement = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(error) => {
+                tracing::error!(%error, "cannot retain chaos logs");
+                return;
+            }
+        };
+        let path = std::mem::replace(&mut fixture.files, replacement).keep();
+        tracing::error!(seed, logs = %path.display(), "chaos failed; retained script, call log, and service logs");
+    }
+}
+
+/// Surface cleanup failures after a successful run, or the run failure when
+/// cleanup also failed. A failed cleanup after a failed run keeps the run's
+/// error: the run is what needs fixing.
+fn settle_cleanup(cleanup: Result<()>, result: Result<usize>) -> Result<()> {
+    if let Err(error) = cleanup {
+        tracing::error!(%error, "cleanup failed");
+        result?;
+        return Err(error);
+    }
+    result?;
     Ok(())
 }
 

@@ -4301,6 +4301,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tracing",
  "ulid",
 ]
 
@@ -4515,6 +4516,7 @@ dependencies = [
  "swarmy-llm",
  "swarmy-store",
  "tokio",
+ "tracing",
  "ulid",
 ]
 

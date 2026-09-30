@@ -561,6 +561,8 @@ fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
     // List rows are summaries: the list endpoint serves no placement,
     // scratch, usage, or sessions, so `agent ls` prints none of those
     // columns instead of placeholders. Detail hydrates them on show.
+    // Writing to a `String` cannot fail; `expect` documents the invariant
+    // instead of routing through the best-effort helper.
     let mut text = format!(
         "{} {} image={}:{} created={} main_session={}",
         agent.name,
@@ -571,7 +573,7 @@ fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
         agent.main_session_id.as_deref().unwrap_or("-"),
     );
     if detail {
-        let _ = write!(
+        write!(
             text,
             "\nnode={} scratch_node={} scratch_bytes={}",
             agent.node_id.as_deref().unwrap_or("-"),
@@ -580,10 +582,11 @@ fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
                 .as_ref()
                 .map_or("-", |scratch| scratch.node_id.as_str()),
             agent.scratch.as_ref().map_or(0, |scratch| scratch.bytes),
-        );
+        )
+        .expect("writing to String cannot fail");
         text.push_str(&settings_text(agent));
         if let Some(usage) = &agent.usage {
-            let _ = write!(
+            write!(
                 text,
                 "\nUsage: input={} cached={} cache_write={} output={} reasoning={} total={} cost=${}",
                 usage.input_tokens,
@@ -593,10 +596,11 @@ fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
                 usage.reasoning_output_tokens,
                 usage.total_tokens,
                 usage.cost_dollars
-            );
+            )
+            .expect("writing to String cannot fail");
         }
         for entry in &agent.entries {
-            let _ = write!(
+            write!(
                 text,
                 "\nentry {} cost=${} input={} output={} total={} completions={}",
                 entry.entry,
@@ -605,10 +609,12 @@ fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
                 entry.totals.output_tokens,
                 entry.totals.total_tokens,
                 entry.totals.completions
-            );
+            )
+            .expect("writing to String cannot fail");
         }
-        let _ = write!(text, "\nproviders={}", agent.providers.join(","));
-        let _ = write!(
+        write!(text, "\nproviders={}", agent.providers.join(","))
+            .expect("writing to String cannot fail");
+        write!(
             text,
             "\ndescription={}\nplacement_epoch={}\nsandbox_address={}\nsandbox_state={}\nlast_snapshot={} age_seconds={}",
             agent.description,
@@ -622,9 +628,10 @@ fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
             agent
                 .last_snapshot_age_seconds
                 .map_or_else(|| "-".into(), |v| v.to_string())
-        );
+        )
+        .expect("writing to String cannot fail");
         if let Some(status) = &agent.call_status {
-            let _ = write!(
+            write!(
                 text,
                 "\ncall_holder={} queued_calls={} observed_at={} expires_at={} node={} epoch={}",
                 status.holder_session_id.as_deref().unwrap_or("-"),
@@ -633,10 +640,11 @@ fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
                 status.expires_at,
                 status.node_id,
                 status.epoch
-            );
+            )
+            .expect("writing to String cannot fail");
         }
         for session in &agent.sessions {
-            let _ = write!(
+            write!(
                 text,
                 "\nsession={} state={} computer_deleted={} main={} archived={}",
                 session.id,
@@ -644,14 +652,16 @@ fn agent_text(agent: &swarmy_api_types::Agent, detail: bool) -> String {
                 session.computer_deleted,
                 agent.main_session_id.as_deref() == Some(session.id.as_str()),
                 session.next_session.is_some()
-            );
+            )
+            .expect("writing to String cannot fail");
         }
         if let Some(count) = agent.session_count {
-            let _ = write!(text, "\nsessions={count}");
+            write!(text, "\nsessions={count}").expect("writing to String cannot fail");
         }
     }
     text
 }
+
 async fn update_agent(
     client: &Client,
     endpoint: &str,
@@ -1133,13 +1143,13 @@ fn quota_line(entry: &swarmy_api_types::QuotaEntry) -> String {
         quota.observed_at.as_deref().unwrap_or("-"),
     );
     if let Some(requests) = quota.requests_remaining {
-        let _ = write!(line, " requests={requests}");
+        write!(line, " requests={requests}").expect("writing to String cannot fail");
     }
     if let Some(tokens) = quota.tokens_remaining {
-        let _ = write!(line, " tokens={tokens}");
+        write!(line, " tokens={tokens}").expect("writing to String cannot fail");
     }
     if let Some(limit) = quota.limit {
-        let _ = write!(line, " limit={limit}");
+        write!(line, " limit={limit}").expect("writing to String cannot fail");
     }
     line
 }

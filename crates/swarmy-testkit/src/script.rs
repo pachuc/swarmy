@@ -126,6 +126,10 @@ impl Script {
     /// # Panics
     /// Panics when the file cannot be written; fixture setup has no recovery.
     pub fn write_to(&self, path: &Path) {
-        std::fs::write(path, serde_json::to_vec(&self.json()).unwrap()).unwrap();
+        std::fs::write(
+            path,
+            serde_json::to_vec(&self.json()).expect("script must serialize"),
+        )
+        .expect("script file must write");
     }
 }

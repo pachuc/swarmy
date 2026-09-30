@@ -6,7 +6,7 @@ use std::{
 };
 use swarmy_core::{
     AgentCallStatus, AgentId, BlockDevice, MessageId, NodeId, PlacementRecord, SandboxSpec,
-    SessionId, ToolJob,
+    SessionId, ToolJob, ignore_best_effort,
 };
 use swarmy_sandbox::RuncRuntime;
 use swarmy_store::Store;
@@ -341,7 +341,7 @@ impl Hosting {
         let placement = match self.placement(agent, &first.job).await {
             Ok(placement) => placement,
             Err(error) => {
-                let _ = first.reply.send(Err(error));
+                ignore_best_effort(first.reply.send(Err(error)), "reply to waiter");
                 return Ok(());
             }
         };
@@ -456,7 +456,7 @@ impl Hosting {
                 .insert(placement.agent_id, turn);
         }
         let failed = result.is_err();
-        let _ = call.reply.send(result);
+        ignore_best_effort(call.reply.send(result), "reply to waiter");
         if failed {
             bail!("tool execution interrupted; stopping agent");
         }
@@ -541,7 +541,7 @@ impl Hosting {
         self.shutdown.send_replace(true);
         let entries = std::mem::take(&mut *self.entries.lock().await);
         for (_, entry) in entries {
-            let _ = entry.task.await;
+            ignore_best_effort(entry.task.await, "await background task");
         }
         self.computer_sampled.lock().await.clear();
     }

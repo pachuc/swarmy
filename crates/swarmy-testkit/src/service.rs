@@ -73,7 +73,7 @@ impl Drop for ChildGuard {
         if let Some(mut child) = self.child.take() {
             // Dropping a running service must not hang the test harness, so
             // signal and forget: the OS reaps the process after exit.
-            let _ = child.start_kill();
+            swarmy_core::ignore_best_effort(child.start_kill(), "kill guarded service process");
         }
     }
 }

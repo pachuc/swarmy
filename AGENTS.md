@@ -239,7 +239,8 @@ a SAFETY comment.
 The authoritative list of mechanical checks; REVIEWER.md does not repeat it.
 The workspace lint table lives in the root `Cargo.toml` `[workspace.lints]`
 (every crate sets `[lints] workspace = true`); numeric thresholds and
-test-only exemptions live in the root `clippy.toml`. Run them locally with:
+test-only exemptions would live in the root `clippy.toml` (neither exists
+right now). Run them locally with:
 
 ```sh
 cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -271,11 +272,16 @@ locally the same way CI does:
   `lib.rs` declares no modules and it has a binary target). Blocking, milliseconds.
 - `npx --yes --package @ast-grep/cli@0.45.3 ast-grep scan --config ast-grep/sgconfig.yml`
   (or `npm install --global @ast-grep/cli@0.45.3` once): the exact,
-  path-scoped `no-spawn-in-libraries` and `no-stringified-errors` rules in
-  `ast-grep/rules/`. Blocking, under a second. A new `tokio::spawn` or
-  `.map_err(|error| error.to_string())` in a library file fails unless its
-  file's listed exception genuinely applies. Prefer fixing the code; a new
-  exception is only for a genuinely owned, bounded task, with a why-comment.
+  path-scoped `no-spawn-in-libraries`, `no-stringified-errors`,
+  `no-unwrap-in-libraries`, and `no-print-in-libraries` rules in
+  `ast-grep/rules/`. Blocking, under a second. A new `tokio::spawn`,
+  `.map_err(|error| error.to_string())`, `.unwrap()`, or `print!`,
+  `println!`, `eprint!`, or `eprintln!` in a library file fails unless its
+  file's listed exception genuinely applies. Test modules (`#[cfg(test)]
+  mod ...`), integration tests, examples, and binaries are out of scope, so
+  the rules need no per-test-file exceptions. Prefer fixing the code (`?` or
+  `expect` with the invariant, `tracing` or a return value instead of
+  printing); a new exception needs a why-comment meeting the bar below.
 - Clone report (`clone-report` CI job; locally
   `npx --yes jscpd@5.3.3 --config .jscpd.json`): advisory numbers in the job
   summary for `REVIEWER.md`'s duplication checklist, never a gate.
@@ -283,17 +289,17 @@ locally the same way CI does:
   sources` blocking with advisories on a weekly schedule (non-blocking),
   `cargo machete`, and `cargo doc` with `-D warnings`.
 
-Deliberately not enforced: `unwrap_used`, `print_stdout`, and
+Deliberately not enforced by Clippy: `unwrap_used`, `print_stdout`, and
 `print_stderr`. `allow-unwrap-in-tests` covers only `#[cfg(test)]` code, so
 denying `unwrap_used` would need a per-file exception in each of the 65
 integration-test files that idiomatically panic on failure; the print denies
 would need one in each of the 21 test and 6 example files that log skip
 diagnostics and progress, plus the same boilerplate in every new test file.
-The production sites those lints reported were fixed directly instead
-(`expect` with an invariant message, no prints in libraries). A path-scoped
-check (for example ast-grep over non-test sources) could enforce the
-production half with no exceptions; until one exists the reviewer checks new
-production code by hand.
+The production half is enforced instead by the `no-unwrap-in-libraries` and
+`no-print-in-libraries` ast-grep rules above, which exclude test modules and
+files structurally and need no per-test-file exceptions. (`clippy.toml`
+carries no `allow-unwrap-in-tests`: the setting does nothing while
+`unwrap_used` is not denied.)
 
 ### Lint exceptions
 
@@ -317,6 +323,32 @@ into pieces whose only purpose is to get under a limit. If you believe a lint
 is wrong for the whole codebase, say so in the pull request description and
 leave the lint as it is; the operator decides. Reviewers apply this bar using
 `REVIEWER.md`.
+
+### Enforced by complexity, nesting, and error lints
+
+Complexity, nesting, and swallowed errors fail the build through
+`[workspace.lints]` in the root `Cargo.toml`, with numeric thresholds in
+`clippy.toml`. Run them locally the same way CI does:
+
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` (plus
+  `--features remote` on `swarmy-cloud` and `swarmy-cli`).
+- `cognitive_complexity` (denied at 25): split over-limit functions by
+  concern, never by line count. `too_many_lines` (100) and
+  `too_many_arguments` (7) ride along with pedantic at the owners' defaults.
+- `excessive_nesting` (denied at 6): extract the inner block into a named
+  helper. Five was measured but flags over a hundred mostly-legitimate
+  sites; at six only real offenders fail, and every one was fixed by
+  extraction with no exceptions.
+- `let_underscore_must_use` and `unused_result_ok` (denied): route every
+  best-effort ignore through `swarmy_core::ignore_best_effort(result,
+  "what was attempted")`, which logs the failure at `debug`.
+  `map_err_ignore` stays allowed on purpose: its sites translate a
+  low-level error into a domain error, and naming the discarded source at
+  each site would be noise, not information.
+- Infallible `String` writes use `write!(...).expect("writing to String
+  cannot fail")`, not the best-effort helper. The config `duration` module
+  stays under 96 lines through one shared checked constructor for TOML and
+  environment inputs.
 
 Integration tests that need FoundationDB, NATS, or SeaweedFS get them from
 `scripts/dev-stack.sh start`, which writes connection settings to `.dev/env`.

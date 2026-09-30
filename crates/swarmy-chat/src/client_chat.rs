@@ -20,14 +20,18 @@ use std::{
 };
 use swarmy_api_types as api;
 use swarmy_client::{Client, StreamItem};
+use swarmy_core::ignore_best_effort;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 struct RestoreTerminal;
 impl Drop for RestoreTerminal {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
+        ignore_best_effort(disable_raw_mode(), "restore terminal");
+        ignore_best_effort(
+            execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show),
+            "restore terminal",
+        );
     }
 }
 

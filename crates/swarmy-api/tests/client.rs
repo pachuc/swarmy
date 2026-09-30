@@ -7,7 +7,7 @@ use swarmy_bus::{Bus, Config, LiveFeed};
 use swarmy_client::{Client, Error, StreamItem};
 use swarmy_core::{
     CHUNK_SIZE, ContentHash, Event as StoredEvent, ImageTag, LiveTokenDelta, ManifestHeader,
-    ManifestId, Message, MessageId, MessageRole, Part, SessionId,
+    ManifestId, Message, MessageId, MessageRole, Part, SessionId, ignore_best_effort,
 };
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use ulid::Ulid;
@@ -27,7 +27,7 @@ impl Drop for Fixture {
 impl Fixture {
     async fn restart(&mut self) {
         self.server.abort();
-        let _ = (&mut self.server).await;
+        ignore_best_effort((&mut self.server).await, "await previous test server");
         let listener = tokio::net::TcpListener::bind(self.address).await.unwrap();
         let state = AppState::new(
             self.store.clone(),
@@ -429,7 +429,10 @@ async fn multiplexed_stream_resumes_and_rejects_rewind() {
     );
     desired.token_deltas = false;
     handle.set(desired);
-    let _ = tokio::time::timeout(Duration::from_millis(200), stream.next_item()).await;
+    ignore_best_effort(
+        tokio::time::timeout(Duration::from_millis(200), stream.next_item()).await,
+        "drain the first stream item",
+    );
     f.bus
         .publish_live(
             LiveFeed::ApiTokenDeltas(a),

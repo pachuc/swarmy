@@ -40,6 +40,29 @@ async fn wait_orphans_aged(objects: &Arc<dyn ObjectStore>, path: &Path) {
 
 async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore) {
     let objects = swarmy_store::objects::from_settings(settings).unwrap();
+    let (chunks, live) = seed_live_image(&objects, store).await;
+    let paths = seed_orphans(&objects, sibling).await;
+    check_listings(settings, &*objects, &paths).await;
+
+    // S3 last-modified has second precision and the collector truncates its cutoff.
+    // Poll the same timestamp source instead of a fixed wait: once the
+    // integer second ticks two past the write, the object is a candidate
+    // under any truncation of the one-second grace cutoff.
+    wait_orphans_aged(&objects, &paths[0]).await;
+    let policy = GarbageCollection {
+        grace_secs: Duration::from_secs(1),
+        ..GarbageCollection::default()
+    };
+    check_dry_run(store, &objects, policy, &paths).await;
+    check_real_collect(store, &objects, &chunks, live, sibling, &paths, policy).await;
+}
+
+/// Store one live chunk, manifest, and image so the collector has a
+/// survivor. Returns the chunk store and the live chunk hash.
+async fn seed_live_image(
+    objects: &Arc<dyn ObjectStore>,
+    store: &Store,
+) -> (ChunkStore, ContentHash) {
     let chunks = ChunkStore::new(objects.clone());
     let live = chunks
         .put_chunk(&vec![17; CHUNK_SIZE as usize])
@@ -58,9 +81,14 @@ async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore)
         .put_image("s3-test", &ImageTag("live".into()), id, None)
         .await
         .unwrap();
+    (chunks, live)
+}
 
-    // All orphans share one shard, so both the direct listing and collector
-    // must follow S3 continuation tokens beyond its 1000-object page limit.
+/// Write more orphans than one S3 page into a single shard and check the
+/// sibling namespace still reads its own object. All orphans share one
+/// shard, so both the direct listing and collector must follow S3
+/// continuation tokens beyond its 1000-object page limit.
+async fn seed_orphans(objects: &Arc<dyn ObjectStore>, sibling: &dyn ObjectStore) -> Vec<Path> {
     let paths: Vec<_> = (0..OBJECTS)
         .map(|index| {
             let mut hash = [1; 32];
@@ -88,17 +116,16 @@ async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore)
     let head = objects.head(&paths[0]).await.unwrap();
     assert_eq!(head.location, paths[0]);
     assert_eq!(head.size, 6);
-    check_listings(settings, &*objects, &paths).await;
+    paths
+}
 
-    // S3 last-modified has second precision and the collector truncates its cutoff.
-    // Poll the same timestamp source instead of a fixed wait: once the
-    // integer second ticks two past the write, the object is a candidate
-    // under any truncation of the one-second grace cutoff.
-    wait_orphans_aged(&objects, &paths[0]).await;
-    let policy = GarbageCollection {
-        grace_secs: Duration::from_secs(1),
-        ..GarbageCollection::default()
-    };
+/// A dry run must find every orphan and delete nothing.
+async fn check_dry_run(
+    store: &Store,
+    objects: &Arc<dyn ObjectStore>,
+    policy: GarbageCollection,
+    paths: &[Path],
+) {
     let dry = collect(store, objects.clone(), policy, true).await.unwrap();
     assert_eq!(dry.candidates, u64::try_from(OBJECTS).unwrap());
     assert_eq!(dry.deleted, 0);
@@ -109,10 +136,23 @@ async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore)
         .await
         .unwrap();
     assert_eq!(unchanged, paths);
+}
+
+/// A real run must delete every orphan, keep the live chunk, and leave the
+/// sibling namespace untouched.
+async fn check_real_collect(
+    store: &Store,
+    objects: &Arc<dyn ObjectStore>,
+    chunks: &ChunkStore,
+    live: ContentHash,
+    sibling: &dyn ObjectStore,
+    paths: &[Path],
+    policy: GarbageCollection,
+) {
     let real = collect(store, objects.clone(), policy, false)
         .await
         .unwrap();
-    assert_eq!(real.deleted, dry.candidates);
+    assert_eq!(real.deleted, u64::try_from(OBJECTS).unwrap());
     assert!(
         objects
             .list(Some(&Path::from("chunks/01")))

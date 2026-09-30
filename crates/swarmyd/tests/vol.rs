@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, OnceLock},
     time::Duration,
 };
-use swarmy_core::{ImageTag, LeaseOwnerId, ManifestId, VolumeId};
+use swarmy_core::{ImageTag, LeaseOwnerId, ManifestId, VolumeId, ignore_best_effort};
 use swarmy_store::{Store, StoreError, blob::MemoryBlobStore};
 
 #[test]
@@ -189,10 +189,13 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         if self.mounted {
-            let _ = Command::new("umount").arg(&self.mount).status();
+            ignore_best_effort(
+                Command::new("umount").arg(&self.mount).status(),
+                "unmount stale mount",
+            );
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        ignore_best_effort(self.child.kill(), "kill child process");
+        ignore_best_effort(self.child.wait(), "reap child process");
     }
 }
 fn system(program: &str, args: &[&str]) {

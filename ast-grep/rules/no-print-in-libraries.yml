@@ -1,0 +1,48 @@
+# Library code must not print to the terminal: return the value or log
+# with `tracing`. A new `print!`, `println!`, `eprint!`, or `eprintln!` in
+# any other library file fails CI. Test modules and files are out of scope:
+# tests log skip diagnostics and progress, which CI allows. Binaries own
+# their output paths and are out of scope. Prefer returning the value or
+# `tracing`; list a file below only with a why-comment.
+id: no-print-in-libraries
+language: rust
+severity: error
+message: >-
+  Do not print from library code; return the value or log with tracing.
+  Only the listed files may print, each with its reason below.
+rule:
+  all:
+    - any:
+        - pattern: 'print!($$$)'
+        - pattern: 'println!($$$)'
+        - pattern: 'eprint!($$$)'
+        - pattern: 'eprintln!($$$)'
+    - not:
+        inside:
+          all:
+            - kind: mod_item
+            - follows:
+                pattern: '#[cfg(test)]'
+          stopBy: end
+files:
+  - 'crates/*/src/**/*.rs'
+ignores:
+  # Binaries own their output paths; printing is unrestricted there.
+  - 'crates/swarmy-cli/src/**'
+  - 'crates/swarmy-chaos/src/**'
+  - 'crates/swarmy-devtools/src/**'
+  - 'crates/swarmy-scheduler/src/**'
+  - 'crates/swarmy-worker/src/**'
+  # swarmyd counts as a binary: its lib.rs declares no modules and its code
+  # lives in the binary (see scripts/check-anyhow-in-libraries.sh).
+  - 'crates/swarmyd/src/**'
+  # Service entry points assemble connections and report startup failures.
+  - '**/main.rs'
+  # Tests log skip diagnostics and progress.
+  - '**/tests/**'
+  - '**/tests.rs'
+  - '**/*tests.rs'
+  # Test-skip helpers: integration tests call these to log why they skip
+  # when the dev stack is absent. `tracing` would be invisible without a
+  # subscriber; the eprintln text is the skip record `cargo test` shows.
+  - 'crates/swarmy-core/src/test_support.rs'
