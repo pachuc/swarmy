@@ -27,8 +27,8 @@ struct BenchFixture {
     resend: Duration,
     // Held for their Drop: the script directory outlives the spawned
     // services, and the guards kill the services even on panic.
-    files: tempfile::TempDir,
-    children: Vec<swarmy_testkit::ChildGuard>,
+    _files: tempfile::TempDir,
+    _children: Vec<swarmy_testkit::ChildGuard>,
 }
 
 #[tokio::test]
@@ -89,7 +89,11 @@ async fn setup() -> BenchFixture {
     // randomized store directory and bus prefix, so no running service ever
     // needs to see its turns. The fake script answers every turn with text.
     let files = tempfile::tempdir().unwrap();
-    swarmy_testkit::Script::new("done").write_to(&files.path().join("script.json"));
+    // Usage on every answer keeps the throughput assertions meaningful:
+    // zero output tokens report no tokens-per-second.
+    swarmy_testkit::Script::new("done")
+        .output_tokens(42)
+        .write_to(&files.path().join("script.json"));
     let mut children = Vec::new();
     for name in ["swarmy-scheduler", "swarmy-worker", "swarmy-gateway"] {
         children.push(swarmy_testkit::ChildGuard::new(
@@ -99,6 +103,10 @@ async fn setup() -> BenchFixture {
                 .env("SWARMY_STORE_DIRECTORY", &settings.store.directory)
                 .env("SWARMY_BUS_PREFIX", &settings.bus.prefix)
                 .env("SWARMY_FAKE_SCRIPT", files.path().join("script.json"))
+                // The fake provider appends every request to its call log;
+                // the default relative path has no parent directory here, so
+                // point it at the fixture directory like the e2e fixtures do.
+                .env("SWARMY_FAKE_CALL_LOG", files.path().join("calls"))
                 .kill_on_drop(true)
                 .spawn()
                 .unwrap(),
@@ -170,8 +178,8 @@ async fn setup() -> BenchFixture {
         direct_id,
         server,
         resend: settings.scheduler.resend_interval_ms,
-        files,
-        children,
+        _files: files,
+        _children: children,
     }
 }
 
