@@ -119,9 +119,10 @@ controls tracing, which defaults to `warn`.
 
 The CLI integration tests use isolated store directories and NATS prefixes.
 A stand-in worker consumes scheduler nudges and exercises streaming, tool
-output, durable fallback, JSON, pagination, and recovery with no scheduler
-running. The stand-in claims a real store lease and commits the assistant message and Idle
-transition. It does not exercise the real worker or provider.
+output, durable fallback, JSON, pagination, and appending with no scheduler
+running: the append still nudges and leaves the session runnable. The
+stand-in claims a real store lease and commits the assistant message and
+Idle transition. It does not exercise the real worker or provider.
 
 ## Terminal conversations
 

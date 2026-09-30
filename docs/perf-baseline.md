@@ -13,9 +13,9 @@ Use the same `BENCH_PROVIDER`, `BENCH_MODEL`, and `BENCH_EFFORT` on every runner
 defaults are `chatgpt`, `gpt-6-sol`, and `medium`, matching the fleet and
 codex-daytona subscription lanes. OpenRouter is a fallback only when every
 environment can use the same provider and model; never compare different
-providers as if they were one baseline. `benchmarks/daytona-lane.sh` is the
-default adapter. It accepts `--provider`,
-`--model`, `--effort`, `--workspace`, `--json`, and `--prompt-file`, and runs
+providers as if they were one baseline. `benchmarks/daytona-lane.sh` is
+the default adapter. It accepts `--provider`, `--model`, `--effort`,
+`--workspace`, `--json`, and `--prompt-file`, and runs
 the codex-daytona launcher (`src/cli.mjs run --no-publish`) with the prompt;
 it accepts the `chatgpt` and `openrouter` providers. Set `DAYTONA_LANE_CMD`
 for another lane or installation. Do not silently substitute a different

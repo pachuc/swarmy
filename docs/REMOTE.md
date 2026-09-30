@@ -259,8 +259,8 @@ the dev stack uses static keys from settings. No laptop command opens the
 object store: every volume, image, GC, and doctor command runs through the
 control-plane API. The laptop identity needs bucket permissions only for
 `swarmy remote up` and `remote down`, which create and remove the bucket
-through the provisioning SDK. `swarmy doctor --remote NAME` reads node and service heartbeats, image
-metadata, and credentials through the API; it does not check the bucket. Image
+through the provisioning SDK. Doctor's remote checks are described under
+[Tunnel and profile reference](#tunnel-and-profile-reference). Image
 builds and chunk operations use S3 through the node services.
 
 The laptop identity needs the following permissions for bucket-backed remotes,
@@ -839,7 +839,7 @@ the selected profile. A healthy control master alone does not pass: a
 remapped coordinator port fails the port check, and only a readable API
 snapshot passes. S3 remains a TCP check, and AWS-bucket remotes warn that
 object storage is verified on the API host. Joining nodes use a systemd SSH
-tunnel for all three services; see the tunnel reference above.
+tunnel for all three services.
 
 Connect prints total elapsed time, address probing time, and tunnel startup
 time. JSON adds these seconds under `timing`, alongside `reused`; an existing
