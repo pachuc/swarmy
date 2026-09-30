@@ -72,8 +72,9 @@ crate in a tier depends on every lower tier.
 - **swarmy-devtools** is a binary for standalone provider login and credential
   import over the HTTP client
   ([source](../crates/swarmy-devtools/src/main.rs)).
-- **swarmy-cloud** implements the opt-in EC2 remote provisioning feature;
-  it is not a server dependency ([source](../crates/swarmy-cloud/src/lib.rs)).
+- **swarmy-cloud** handles EC2 provisioning and adopting existing hosts for
+  the opt-in remote feature; it is not a server dependency
+  ([source](../crates/swarmy-cloud/src/lib.rs)).
 
 Services share one bootstrap from `swarmy-config`: `Settings::load` for
 configuration, `init_tracing` for stderr logging, `Store::open_store` for the
