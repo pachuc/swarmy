@@ -49,6 +49,7 @@ struct FakeCloud {
     deny_tag_read: Cell<bool>,
     deny_create_tags: Cell<bool>,
     deny_version_list: Cell<bool>,
+    retain_bucket: Cell<bool>,
     absent_bucket: Cell<bool>,
     untagged: Cell<bool>,
     untagged_profile: Cell<bool>,
@@ -232,6 +233,8 @@ impl Cloud for FakeCloud {
             .push(format!("bucket {}", bucket.spec.bucket));
         std::future::ready(Ok(if self.absent.get() {
             crate::BucketRemoval::Absent
+        } else if self.retain_bucket.get() {
+            crate::BucketRemoval::Retained
         } else {
             crate::BucketRemoval::Removed
         }))
@@ -1484,6 +1487,47 @@ async fn static_bucket_tag_and_down_touch_only_the_bucket() {
             .iter()
             .any(|entry| entry.starts_with("role"))
     );
+}
+
+#[tokio::test]
+async fn static_down_reports_a_retained_bucket_as_kept() {
+    static DOWN_OUTPUT: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    fn record(message: &str, _: bool) {
+        DOWN_OUTPUT.lock().unwrap().push(message.to_owned());
+    }
+    // The only test using the process-level provisioning sink; it stays set
+    // for later tests, which never read it.
+    crate::set_output_sink(record);
+    DOWN_OUTPUT.lock().unwrap().clear();
+    let setup = static_setup();
+    static_up(&setup).await;
+    // The swarm's prefix scope is deleted but the bucket itself remains
+    // because it retains content outside that scope.
+    setup.cloud.retain_bucket.set(true);
+    let node = setup.state.require("static-test").unwrap();
+    setup.cloud.observations.borrow_mut().extend([None, None]);
+    down::run(&setup.cloud, &setup.state, &node, Duration::ZERO, false)
+        .await
+        .unwrap();
+    assert!(
+        setup
+            .cloud
+            .teardown
+            .borrow()
+            .iter()
+            .any(|entry| entry == "bucket test-bucket")
+    );
+    // A retained bucket is reported as kept, not removed, and teardown
+    // still completes and drops the local state.
+    let output = DOWN_OUTPUT.lock().unwrap().join("\n");
+    assert!(
+        output.contains(
+            "Bucket test-bucket: kept (bucket retains content outside the remote's prefix)"
+        ),
+        "{output}"
+    );
+    assert!(!output.contains("Bucket test-bucket: removed"), "{output}");
+    assert!(setup.state.require("static-test").is_err());
 }
 
 #[tokio::test]
