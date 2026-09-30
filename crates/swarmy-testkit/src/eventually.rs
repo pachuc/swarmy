@@ -10,6 +10,10 @@ use std::time::Duration;
 /// hanging the suite, and a label naming the condition so the failure points
 /// at the missing state rather than a bare timeout line.
 ///
+/// Each probe call runs under the remaining budget, so a hung probe fails
+/// the test the way the old `timeout()` wrappers did instead of stalling
+/// the suite past the budget.
+///
 /// # Panics
 /// Panics when `budget` elapses before `probe` returns `Some`.
 pub async fn eventually<T>(
@@ -19,13 +23,16 @@ pub async fn eventually<T>(
 ) -> T {
     let deadline = tokio::time::Instant::now() + budget;
     loop {
-        if let Some(value) = probe().await {
-            return value;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, probe()).await {
+            Ok(Some(value)) => return value,
+            Ok(None) | Err(_) => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "timed out waiting for {label}"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting for {label}"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }

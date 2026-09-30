@@ -66,6 +66,16 @@ impl ChildGuard {
     pub fn id(&self) -> Option<u32> {
         self.child.as_ref().and_then(tokio::process::Child::id)
     }
+
+    /// Stop the guarded service and reap it. Later drops are no-ops.
+    /// Fixture cleanups call this explicitly so port conflicts fail loudly
+    /// in order; the `Drop` backstop still kills whatever remains on panic.
+    pub async fn kill(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            swarmy_core::ignore_best_effort(child.kill().await, "kill guarded service process");
+            swarmy_core::ignore_best_effort(child.wait().await, "reap guarded service process");
+        }
+    }
 }
 
 impl Drop for ChildGuard {

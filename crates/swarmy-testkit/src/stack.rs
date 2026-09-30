@@ -1,11 +1,12 @@
 //! Stack gate and cleanup guard for tests that need the dev stack.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use foundationdb::{
     Database,
     directory::{Directory, DirectoryLayer},
 };
+use swarmy_store::blob::BlobStore;
 
 /// Read a required dev-stack setting.
 ///
@@ -63,39 +64,71 @@ impl Stack {
         require_stack("SWARMY_S3_ENDPOINT")?;
         Self::load(tag)
     }
+
+    /// Open a store isolated under this test's prefix with a cleanup guard.
+    /// Hold the guard in the fixture: dropping it removes the keys and
+    /// streams even when the test panics.
+    pub async fn open_store(&self, blobs: Arc<dyn BlobStore>) -> (swarmy_store::Store, StackGuard) {
+        let store = swarmy_store::Store::open(
+            Some(std::path::Path::new(&self.cluster)),
+            Some(std::slice::from_ref(&self.prefix)),
+            blobs,
+        )
+        .await
+        .expect("fixture store must open");
+        let guard = StackGuard::new(self);
+        (store, guard)
+    }
 }
 
 /// Deletes a test's directory prefix and bus streams when it goes out of
 /// scope, even when the test panics.
 ///
 /// The explicit [`StackGuard::cleanup`] path runs first on success; the
-/// `Drop` implementation repeats it on a detached thread so a panic between
-/// setup and cleanup still releases the keys and streams. Both paths are
-/// idempotent.
+/// `Drop` implementation repeats it on a joined thread so a panic between
+/// setup and cleanup still releases the keys and streams before the test
+/// result is recorded. Both paths are idempotent and best effort: cleanup
+/// must never fail a test, and panicking in `Drop` while unwinding would
+/// abort the test process.
+#[derive(Clone)]
 pub struct StackGuard {
     cluster: String,
     nats_url: String,
+    base: String,
     prefixes: Vec<String>,
     cleaned: bool,
 }
 
 impl StackGuard {
-    /// Guard one test's stack state. Registrations added with
-    /// [`StackGuard::register`] are cleaned with the initial prefix.
+    /// Guard one test's stack state. The stack prefix is cleaned along with
+    /// any prefixes added with [`StackGuard::register`].
     #[must_use]
     pub fn new(stack: &Stack) -> Self {
         Self {
             cluster: stack.cluster.clone(),
             nats_url: stack.nats_url.clone(),
+            base: stack.prefix.clone(),
             prefixes: vec![stack.prefix.clone()],
             cleaned: false,
         }
     }
 
-    /// Register another prefix (for example a second bus subject namespace)
-    /// for the same cleanup.
+    /// Register another stream prefix for the same cleanup. The prefix must
+    /// extend the guard's own base (`register` panics otherwise), so one
+    /// test can only ever clean up its own keys and streams.
+    ///
+    /// # Panics
+    /// Panics when `prefix` is outside the guard's base prefix; fixture
+    /// setup has no recovery from a cross-test cleanup registration.
     pub fn register(&mut self, prefix: &str) {
-        self.prefixes.push(prefix.to_owned());
+        assert!(
+            prefix == self.base || prefix.starts_with(&format!("{}_", self.base)),
+            "test prefix {prefix} is outside guard base {}",
+            self.base
+        );
+        if !self.prefixes.contains(&prefix.to_owned()) {
+            self.prefixes.push(prefix.to_owned());
+        }
     }
 
     /// Remove the guarded keys and streams. Runs once; the `Drop`
@@ -114,18 +147,32 @@ impl Drop for StackGuard {
         let cluster = self.cluster.clone();
         let url = self.nats_url.clone();
         let prefixes = self.prefixes.clone();
-        // The test's runtime is tearing down, so blocking it here could hang
-        // the panic path. A detached thread with its own runtime finishes the
-        // best-effort cleanup after the test result is recorded.
-        std::thread::spawn(move || {
-            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            else {
-                return;
-            };
-            runtime.block_on(cleanup(&cluster, &url, &prefixes));
-        });
+        // Join a worker thread so the cleanup runs to completion before the
+        // test result is recorded. The worker owns its own runtime: the
+        // panicking thread may be a runtime worker whose runtime is tearing
+        // down, so blocking it on async work directly could hang.
+        let worker =
+            std::thread::spawn(move || {
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return;
+                };
+                runtime.block_on(async {
+                    // Bound the backstop: a wedged cluster or bus must delay
+                    // the suite, never hang it.
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        cleanup(&cluster, &url, &prefixes),
+                    )
+                    .await;
+                });
+            });
+        swarmy_core::ignore_best_effort(
+            worker.join().map_err(|_| "cleanup thread panicked"),
+            "join test cleanup thread",
+        );
     }
 }
 

@@ -7,18 +7,22 @@ use swarmy_llm::{Response, StopReason, TokenUsage};
 
 /// Builds the `script.json` a fake-provider service reads.
 ///
-/// The e2e suites each hand-built `Response { .. }` literals with empty quota
-/// maps and a 0..100 turn fan-out. One builder keeps the shape: a shared
-/// answer text for unscripted turns, tool calls pinned to their turn, and
-/// rate-limit failures that recover after `failures` turns.
+/// The suites each hand-built `Response { .. }` literals with empty quota
+/// maps and ad-hoc failure envelopes. One builder keeps the shape: a shared
+/// answer text for unscripted turns, tool calls pinned to their turn,
+/// per-turn usage for cost assertions, full part overrides for reasoning and
+/// mixed text-plus-tool turns, and failures (rate limits or auth errors)
+/// that recover after their turns.
 #[derive(Default)]
 pub struct Script {
     answer: Option<String>,
     latency_ms: u64,
+    output_tokens: u64,
     tools: BTreeMap<usize, Vec<Part>>,
-    texts: BTreeMap<usize, String>,
-    failures: usize,
-    retry_after_seconds: u64,
+    usages: BTreeMap<usize, TokenUsage>,
+    overrides: BTreeMap<usize, (Vec<Part>, StopReason)>,
+    failures: BTreeMap<usize, serde_json::Value>,
+    fail: bool,
 }
 
 impl Script {
@@ -29,13 +33,6 @@ impl Script {
             answer: Some(text.to_owned()),
             ..Default::default()
         }
-    }
-
-    /// Answer one turn with literal text instead of the shared answer.
-    #[must_use]
-    pub fn text(mut self, turn: usize, text: &str) -> Self {
-        self.texts.insert(turn, text.to_owned());
-        self
     }
 
     /// Make `turn` issue a tool call instead of answering text.
@@ -49,11 +46,70 @@ impl Script {
         self
     }
 
+    /// Answer `turn` with exact parts and stop reason instead of the shared
+    /// answer: reasoning turns, text-plus-tool turns, and per-turn texts.
+    #[must_use]
+    pub fn parts(mut self, turn: usize, parts: Vec<Part>, stop: StopReason) -> Self {
+        self.overrides.insert(turn, (parts, stop));
+        self
+    }
+
+    /// Record token usage for `turn`, for tests asserting on durable costs.
+    #[must_use]
+    pub fn usage(mut self, turn: usize, input_tokens: u64, output_tokens: u64) -> Self {
+        self.usages.insert(
+            turn,
+            TokenUsage {
+                input_tokens,
+                output_tokens,
+                total_tokens: input_tokens + output_tokens,
+                ..TokenUsage::default()
+            },
+        );
+        self
+    }
+
+    /// Report `output_tokens` on every generated answer, for tests asserting
+    /// on durable costs without per-turn usage maps.
+    #[must_use]
+    pub fn output_tokens(mut self, output_tokens: u64) -> Self {
+        self.output_tokens = output_tokens;
+        self
+    }
+
+    /// Fail one turn with an HTTP error before recovering.
+    #[must_use]
+    pub fn failure(
+        mut self,
+        turn: usize,
+        status: u16,
+        message: &str,
+        retry_after_seconds: Option<u64>,
+    ) -> Self {
+        self.failures.insert(
+            turn,
+            serde_json::json!({
+                "status": status,
+                "message": message,
+                "retry_after_seconds": retry_after_seconds,
+            }),
+        );
+        self
+    }
+
     /// Fail the first `failures` turns with a 429 before recovering.
     #[must_use]
     pub fn rate_limited(mut self, failures: usize, retry_after_seconds: u64) -> Self {
-        self.failures = failures;
-        self.retry_after_seconds = retry_after_seconds;
+        for turn in 0..failures {
+            self = self.failure(turn, 429, "quota reached", Some(retry_after_seconds));
+        }
+        self
+    }
+
+    /// Fail every turn with a scripted provider error.
+    #[must_use]
+    pub fn fail(mut self) -> Self {
+        self.fail = true;
         self
     }
 
@@ -64,18 +120,33 @@ impl Script {
         self
     }
 
-    fn response(parts: Vec<Part>, stop: StopReason) -> Response {
+    fn response(&self, turn: usize, parts: Vec<Part>, stop: StopReason) -> Response {
+        let usage = self.usages.get(&turn).cloned().unwrap_or(TokenUsage {
+            output_tokens: self.output_tokens,
+            total_tokens: self.output_tokens,
+            ..TokenUsage::default()
+        });
         Response {
             parts,
             stop_reason: stop,
-            usage: TokenUsage::default(),
+            usage,
             quota_remaining: BTreeMap::new(),
             quota_resets: BTreeMap::new(),
         }
     }
 
-    fn answer(text: &str) -> Response {
-        Self::response(vec![Part::Text { text: text.into() }], StopReason::EndTurn)
+    fn answer(&self, turn: usize, text: &str) -> Response {
+        self.response(
+            turn,
+            vec![Part::Text { text: text.into() }],
+            StopReason::EndTurn,
+        )
+    }
+
+    /// The answer response for comparison with stored inference results.
+    #[must_use]
+    pub fn sample(&self) -> Response {
+        self.answer(0, self.answer.as_deref().unwrap_or("done."))
     }
 
     /// Render the script document the fake provider loads.
@@ -83,41 +154,20 @@ impl Script {
     pub fn json(&self) -> serde_json::Value {
         let answer = self.answer.as_deref().unwrap_or("done.");
         let mut responses = BTreeMap::new();
-        for turn in self.failures..100 {
-            if let Some(parts) = self.tools.get(&turn) {
-                responses.insert(turn, Self::response(parts.clone(), StopReason::ToolCalls));
-            } else if let Some(text) = self.texts.get(&turn) {
-                responses.insert(turn, Self::answer(text));
+        for turn in 0..100 {
+            if let Some((parts, stop)) = self.overrides.get(&turn) {
+                responses.insert(turn, self.response(turn, parts.clone(), stop.clone()));
+            } else if let Some(parts) = self.tools.get(&turn) {
+                responses.insert(turn, self.response(turn, parts.clone(), StopReason::ToolCalls));
             } else {
-                responses.insert(turn, Self::answer(answer));
+                responses.insert(turn, self.answer(turn, answer));
             }
         }
-        // Tool calls below the failure window still need their scripted turn;
-        // the provider reads failures first, so they surface after recovery.
-        for (turn, parts) in &self.tools {
-            if *turn < self.failures {
-                responses.insert(
-                    *turn + self.failures,
-                    Self::response(parts.clone(), StopReason::ToolCalls),
-                );
-            }
-        }
-        let failures: BTreeMap<_, _> = (0..self.failures)
-            .map(|turn| {
-                (
-                    turn,
-                    serde_json::json!({
-                        "status": 429,
-                        "message": "quota reached",
-                        "retry_after_seconds": self.retry_after_seconds,
-                    }),
-                )
-            })
-            .collect();
         serde_json::json!({
             "latency_ms": self.latency_ms,
             "responses": responses,
-            "failures": failures,
+            "failures": self.failures,
+            "fail": self.fail,
         })
     }
 
