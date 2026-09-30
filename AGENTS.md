@@ -319,7 +319,7 @@ leave the lint as it is; the operator decides. Reviewers apply this bar using
 
 Complexity, nesting, and swallowed errors fail the build through the same
 workspace lints and `clippy.toml` thresholds, checked with the clippy
-commands above (plus `--features remote` on `swarmy-cloud` and `swarmy-cli`).
+commands above.
 - `cognitive_complexity` (denied at 25): split over-limit functions by
   concern, never by line count. `too_many_lines` (100) and
   `too_many_arguments` (7) ride along with pedantic at the owners' defaults.
@@ -451,9 +451,8 @@ keep its own disk in order. The rules, which the task prompt repeats:
   To update the laptop CLI, build it on the dev node with full features and
   copy the binary back, or use a CI-built binary.
 
-- The Codex lanes share one ChatGPT usage limit; when it trips every
-  running Codex agent stops at once and the instances are retained for
-  resume. The provider quota goal removes this.
+- Subscription limits park workers instead of stopping them: see
+  [Subscription limits](docs/fleet-runbook.md#subscription-limits).
 - After switching branches, run `cargo build --workspace` before trusting a
   fixture failure; sibling binaries launch from `target/debug`.
 - Small chores that belong to no goal are in `backlog/housekeeping.md`.
