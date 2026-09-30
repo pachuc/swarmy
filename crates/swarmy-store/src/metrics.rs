@@ -450,7 +450,7 @@ impl crate::Store {
             match decode_summary(&bytes) {
                 Ok(summary) => summaries.push(summary),
                 Err(error) => {
-                    tracing::warn!(error = %swarmy_core::error_chain(&error), "skipping undecodable turn metric")
+                    tracing::warn!(error = %swarmy_core::error_chain(&error), "skipping undecodable turn metric");
                 }
             }
         }
@@ -505,7 +505,7 @@ impl crate::Store {
                 match decode_summary(&bytes) {
                     Ok(summary) => summaries.push(summary),
                     Err(error) => {
-                        tracing::warn!(error = %swarmy_core::error_chain(&error), "skipping undecodable turn metric")
+                        tracing::warn!(error = %swarmy_core::error_chain(&error), "skipping undecodable turn metric");
                     }
                 }
                 if summaries.len() >= limit {
