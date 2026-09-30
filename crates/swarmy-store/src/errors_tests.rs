@@ -64,7 +64,7 @@ fn validation_rejections_name_their_reason() {
         "invalid session record: plan steps must have a nonempty description"
     );
     let randomness = StoreError::Storage(StorageError::Randomness(
-        std::io::Error::new(std::io::ErrorKind::Other, "entropy pool is empty").into(),
+        std::io::Error::other("entropy pool is empty").into(),
     ));
     assert_eq!(randomness.to_string(), "keyring randomness unavailable");
 }

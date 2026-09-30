@@ -5,8 +5,8 @@ use swarmy_core::{
     SessionId, TimerId, VolumeId,
 };
 
-pub(crate) fn session_id(bytes: Vec<u8>) -> crate::Result<SessionId> {
-    let bytes: [u8; 16] = bytes.as_slice().try_into()?;
+pub(crate) fn session_id(bytes: &[u8]) -> crate::Result<SessionId> {
+    let bytes: [u8; 16] = bytes.try_into()?;
     Ok(SessionId::from_ulid(u128::from_be_bytes(bytes).into()))
 }
 
