@@ -113,6 +113,32 @@ fn error(status: StatusCode, code: &str) -> (StatusCode, Json<api::ApiError>) {
         }),
     )
 }
+/// Answer with a fixed machine-readable code while keeping the cause in the
+/// service log. The HTTP shape cannot carry a source, so without this the
+/// underlying failure (disk I/O, a corrupt replay row, a bus outage) would
+/// vanish behind the code.
+pub(crate) fn failure(
+    status: StatusCode,
+    code: &str,
+    failure: impl std::fmt::Display,
+) -> (StatusCode, Json<api::ApiError>) {
+    tracing::warn!(%failure, code, "request failed with a fixed error code");
+    error(status, code)
+}
+/// Report a rejected provider/model choice with the catalog's explanation
+/// (unknown ids plus the closest matches) instead of a bare code.
+pub(crate) fn invalid_selection(
+    failure: &swarmy_llm::selection::SelectionError,
+) -> (StatusCode, Json<api::ApiError>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(api::ApiError {
+            code: "invalid_selection".into(),
+            message: failure.to_string(),
+            provider_text: None,
+        }),
+    )
+}
 #[expect(
     clippy::needless_pass_by_value,
     reason = "`map_err` passes the owned error; taking a reference would require closures at every call site"
@@ -427,7 +453,7 @@ async fn replay<T: serde::Serialize + serde::de::DeserializeOwned>(
     if let Some(value) = state.store.api_replay(&key).await.map_err(storage)? {
         return serde_json::from_value(value)
             .map(Json)
-            .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay"));
+            .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay", cause));
     }
     let Json(result) = operation.await?;
     let value = serde_json::to_value(&result)
@@ -451,9 +477,9 @@ async fn create_agent(
         },
         &state.catalog,
     )
-    .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
+    .map_err(|failure| invalid_selection(&failure))?;
     swarmy_llm::selection::validate(&state.catalog, &selection, &state.default_selection)
-        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
+        .map_err(|failure| invalid_selection(&failure))?;
     let settings = AgentSettings {
         provider: selection.provider,
         model: selection.model,
@@ -504,7 +530,7 @@ async fn update_agent(
         },
         &state.catalog,
     )
-    .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
+    .map_err(|failure| invalid_selection(&failure))?;
     let settings = AgentSettings {
         provider: selection.provider,
         model: selection.model,
@@ -527,7 +553,7 @@ async fn update_agent(
         },
         &state.default_selection,
     )
-    .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_selection"))?;
+    .map_err(|failure| invalid_selection(&failure))?;
     let store = state.store.clone();
     let detail = state.clone();
     replay(
@@ -867,7 +893,7 @@ fn credential_store(
         .credential_keyring
         .clone()
         .map_or_else(Keyring::load, Ok)
-        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "keyring_unavailable"))?;
+        .map_err(|cause| failure(StatusCode::SERVICE_UNAVAILABLE, "keyring_unavailable", cause))?;
     Ok(state.store.credentials(keyring))
 }
 async fn credentials(State(state): State<AppState>) -> ApiResult<Vec<api::Credential>> {
@@ -1376,5 +1402,20 @@ mod store_error_tests {
             swarmy_store::DomainError::InvalidTransition,
         ));
         assert_eq!(body.code, "storage_error");
+    }
+
+    #[test]
+    fn invalid_selection_carries_the_catalog_explanation() {
+        let failure = swarmy_llm::selection::SelectionError(
+            "unknown provider/model foo/bar; closest matches: anthropic/claude".into(),
+        );
+        let (status, Json(body)) = invalid_selection(&failure);
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body.code, "invalid_selection");
+        assert!(
+            body.message.contains("closest matches"),
+            "unexpected message: {}",
+            body.message
+        );
     }
 }

@@ -11,6 +11,8 @@ mod agents;
 pub use agents::{AgentSessionOptions, CreateAgentOptions};
 mod api_idempotency;
 mod errors;
+#[cfg(test)]
+mod errors_tests;
 pub use errors::{DomainError, FenceError, Result, StorageError, StoreError};
 mod session;
 pub(crate) use session::{
