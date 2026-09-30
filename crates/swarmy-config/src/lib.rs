@@ -130,19 +130,20 @@ mod duration {
 
 const DEFAULT_VOLUME_SNAPSHOT_PERIOD: Duration = Duration::from_secs(600);
 const DEFAULT_VOLUME_SNAPSHOT_RETENTION: std::num::NonZeroUsize =
-    std::num::NonZeroUsize::new(10).unwrap();
+    std::num::NonZeroUsize::new(10).expect("snapshot retention count is nonzero");
 const DEFAULT_INFERENCE_MAX_WAIT: Duration = Duration::from_secs(3600);
 const DEFAULT_INFERENCE_MAX_BACKOFF: Duration = Duration::from_secs(300);
 const DEFAULT_INFERENCE_GATEWAY_WAIT: Duration = Duration::from_secs(30);
 const DEFAULT_METERING_RAW_RETENTION_DAYS: std::num::NonZeroU64 =
-    std::num::NonZeroU64::new(90).unwrap();
+    std::num::NonZeroU64::new(90).expect("retention days count is nonzero");
 const DEFAULT_GC_GRACE: Duration = Duration::from_hours(6);
 const DEFAULT_GC_INTERVAL: Duration = Duration::from_hours(1);
 const DEFAULT_GC_FILTER_BYTES: std::num::NonZeroUsize =
-    std::num::NonZeroUsize::new(64 * 1024 * 1024).unwrap();
-const DEFAULT_GC_BATCH_SIZE: std::num::NonZeroUsize = std::num::NonZeroUsize::new(256).unwrap();
+    std::num::NonZeroUsize::new(64 * 1024 * 1024).expect("filter byte size is nonzero");
+const DEFAULT_GC_BATCH_SIZE: std::num::NonZeroUsize =
+    std::num::NonZeroUsize::new(256).expect("batch size is nonzero");
 const DEFAULT_GC_DELETE_CONCURRENCY: std::num::NonZeroUsize =
-    std::num::NonZeroUsize::new(32).unwrap();
+    std::num::NonZeroUsize::new(32).expect("delete concurrency is nonzero");
 const DEFAULT_EPHEMERAL_RETENTION: Duration = Duration::from_hours(24);
 const DEFAULT_SANDBOX_IDLE: Duration = Duration::from_mins(30);
 const DEFAULT_PLACEMENT_LEASE: Duration = Duration::from_secs(30);
@@ -153,7 +154,7 @@ const DEFAULT_WORKER_LEASE: Duration = Duration::from_secs(30);
 const DEFAULT_WORKER_RECOVERY_INTERVAL: Duration = Duration::from_millis(5000);
 const DEFAULT_BUS_ACK_WAIT: Duration = Duration::from_secs(30);
 const DEFAULT_MEMORY_MAX_BYTES: std::num::NonZeroUsize =
-    std::num::NonZeroUsize::new(32 * 1024).unwrap();
+    std::num::NonZeroUsize::new(32 * 1024).expect("memory byte limit is nonzero");
 const DEFAULT_NODE_CAPACITY: swarmy_core::NodeCapacity = swarmy_core::NodeCapacity {
     cpu_millis: 1000,
     memory_bytes: 1_073_741_824,
