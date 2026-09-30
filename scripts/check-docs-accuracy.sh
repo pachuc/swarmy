@@ -324,6 +324,8 @@ def test_targets(package):
 
 
 def tracked_files():
+    # Outside a git checkout (fixture tests) there is no file list, so
+    # callers fall back to a directory walk with no tracked/ignored sets.
     try:
         out = subprocess.run(
             ["git", "ls-files", "-z"],
@@ -338,6 +340,8 @@ def tracked_files():
 
 
 def ignored_paths(paths):
+    # An unusable git (or unexpected output) means no runtime-artifact
+    # skip: missing paths then fail loudly below instead of passing.
     try:
         proc = subprocess.run(
             ["git", "check-ignore", "--stdin"],
