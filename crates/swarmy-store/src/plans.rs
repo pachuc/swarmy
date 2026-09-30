@@ -18,7 +18,9 @@ impl Store {
         call: &ToolCallRecord,
     ) -> Result<Event> {
         if call.tool != "update_plan" {
-            return Err(StoreError::Domain(crate::DomainError::InvalidToolCall));
+            return Err(StoreError::Domain(crate::DomainError::InvalidToolCall(
+                "expected the update_plan tool".into(),
+            )));
         }
         let parsed = UpdatePlanArguments::parse(call.arguments.clone());
         let result = match &parsed {
