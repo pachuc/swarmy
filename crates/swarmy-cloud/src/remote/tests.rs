@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::Result;
-use swarmy_config::{RemoteNode, RemoteSettings};
+use swarmy_config::{RemoteNode, RemoteProfile, RemoteSettings};
 
 use super::{
     Cloud, Host, Machine, MachineSpec, ObjectBucket, Ownership, down, retry_profile_propagation,
@@ -369,32 +369,7 @@ fn settings() -> RemoteSettings {
     }
 }
 
-#[tokio::test]
-async fn up_provisions_node_and_persists_launch_record() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = State::open(&dir.path().join("remote")).unwrap();
-    let cloud = FakeCloud::default();
-    cloud.observations.borrow_mut().extend([
-        None,
-        Some(instance("pending")),
-        Some(instance("running")),
-    ]);
-    let host = FakeHost::default();
-    up::run(
-        &cloud,
-        &host,
-        &state,
-        &settings(),
-        up::NewNode {
-            name: "demo",
-            sandboxes: 64,
-        },
-        Some(std::path::Path::new("images/base-ubuntu")).into(),
-        Duration::ZERO,
-    )
-    .await
-    .unwrap();
-    let node = state.read("demo").unwrap().unwrap();
+fn assert_demo_node(node: &RemoteNode, host: &FakeHost) {
     assert_eq!(node.name, "demo", "provisioned node record: name");
     assert_eq!(
         node.default_image.as_deref(),
@@ -429,6 +404,9 @@ async fn up_provisions_node_and_persists_launch_record() {
         (4500, 4222, 8333),
         "provisioned node record: ports"
     );
+}
+
+fn assert_demo_service(node: &RemoteNode) {
     // AWS launches write the service login explicitly and resolve the
     // instance-store device over SSH, so later configuration defaults never
     // move existing fleet checkouts. The checkout path itself is resolved on
@@ -455,6 +433,9 @@ async fn up_provisions_node_and_persists_launch_record() {
         node.key_path.is_file(),
         "service login and storage: key file"
     );
+}
+
+fn assert_demo_permissions(state: &State) {
     assert_eq!(
         std::fs::metadata(state.directory.join("demo.json"))
             .unwrap()
@@ -473,6 +454,9 @@ async fn up_provisions_node_and_persists_launch_record() {
         0o700,
         "key file permissions: state directory"
     );
+}
+
+fn assert_demo_launch(cloud: &FakeCloud, node: &RemoteNode) {
     let request = cloud.requests.borrow()[0].clone();
     assert_eq!(request.image, "ami-stock", "launch request: image");
     assert_eq!(request.disk_gb, 100, "launch request: disk");
@@ -497,13 +481,17 @@ async fn up_provisions_node_and_persists_launch_record() {
     );
     assert_eq!(
         request.key_name,
-        super::key_name(&node).unwrap(),
+        super::key_name(node).unwrap(),
         "launch request: key name"
     );
     assert!(
         request.key_name.len() <= 64,
         "launch request: key name fits AWS limits"
     );
+}
+
+fn assert_demo_keys(cloud: &FakeCloud, host: &FakeHost, node: &RemoteNode) {
+    let request = cloud.requests.borrow()[0].clone();
     assert_eq!(
         cloud.keys.borrow()[0],
         (
@@ -522,6 +510,39 @@ async fn up_provisions_node_and_persists_launch_record() {
         cloud.observations.borrow().is_empty(),
         "key and provision records: observations drained"
     );
+}
+
+#[tokio::test]
+async fn up_provisions_node_and_persists_launch_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    cloud.observations.borrow_mut().extend([
+        None,
+        Some(instance("pending")),
+        Some(instance("running")),
+    ]);
+    let host = FakeHost::default();
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings(),
+        up::NewNode {
+            name: "demo",
+            sandboxes: 64,
+        },
+        Some(std::path::Path::new("images/base-ubuntu")).into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    let node = state.read("demo").unwrap().unwrap();
+    assert_demo_node(&node, &host);
+    assert_demo_service(&node);
+    assert_demo_permissions(&state);
+    assert_demo_launch(&cloud, &node);
+    assert_demo_keys(&cloud, &host, &node);
 }
 
 #[tokio::test]
@@ -911,63 +932,16 @@ async fn termination_failure_keeps_key_and_record_for_retry() {
     assert_eq!(cloud.deleted.borrow().len(), 1);
 }
 
-#[tokio::test]
-async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = State::open(dir.path()).unwrap();
-    let cloud = FakeCloud::default();
-    let host = FakeHost::default();
-    cloud
-        .launch_ids
-        .borrow_mut()
-        .extend(["i-test".into(), "i-second".into()]);
-    cloud.observations.borrow_mut().extend([
-        Some(instance("running")),
-        Some(Machine {
-            id: "i-second".into(),
-            private_ip: "10.0.0.11".into(),
-            ..instance("running")
-        }),
-    ]);
-    up::run(
-        &cloud,
-        &host,
-        &state,
-        &settings(),
-        up::NewNode {
-            name: "demo",
-            sandboxes: 0,
-        },
-        Some(std::path::Path::new("images/base-ubuntu")).into(),
-        Duration::ZERO,
-    )
-    .await
-    .unwrap();
-    super::add_node::run(
-        &cloud,
-        &host,
-        &state,
-        super::add_node::NewNode {
-            name: "demo",
-            sandboxes: 4,
-            shape: super::NodeShape::default(),
-            local_storage: String::new(),
-        },
-        Duration::ZERO,
-        None,
-    )
-    .await
-    .unwrap();
-    let node = state.require("demo").unwrap();
+fn assert_join_records_child(node: &RemoteNode, cloud: &FakeCloud, host: &FakeHost) {
     assert_eq!(node.nodes.len(), 1, "join records one child node");
     let child = &node.nodes[0];
     assert_eq!(
-        serde_json::to_value(&node).unwrap()["sandboxes"],
+        serde_json::to_value(node).unwrap()["sandboxes"],
         0,
         "join keeps the primary sandbox count"
     );
     assert_eq!(
-        serde_json::to_value(&node).unwrap()["nodes"][0]["sandboxes"],
+        serde_json::to_value(node).unwrap()["nodes"][0]["sandboxes"],
         4,
         "join records the child sandbox count"
     );
@@ -1042,10 +1016,10 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
         node.private_ip,
         "child provisions against the primary"
     );
-    cloud.observations.borrow_mut().extend([None, None]);
-    down::run(&cloud, &state, &node, Duration::ZERO, true)
-        .await
-        .unwrap();
+}
+
+fn assert_down_removes_both(state: &State, cloud: &FakeCloud, node: &RemoteNode) {
+    let child = &node.nodes[0];
     assert_eq!(
         *cloud.terminated.borrow(),
         ["i-second", "i-test"],
@@ -1062,6 +1036,62 @@ async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both()
         state.read("demo").unwrap().is_none(),
         "down removes the state record"
     );
+}
+
+#[tokio::test]
+async fn add_node_uses_saved_launch_and_primary_services_and_down_removes_both() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(dir.path()).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    cloud
+        .launch_ids
+        .borrow_mut()
+        .extend(["i-test".into(), "i-second".into()]);
+    cloud.observations.borrow_mut().extend([
+        Some(instance("running")),
+        Some(Machine {
+            id: "i-second".into(),
+            private_ip: "10.0.0.11".into(),
+            ..instance("running")
+        }),
+    ]);
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings(),
+        up::NewNode {
+            name: "demo",
+            sandboxes: 0,
+        },
+        Some(std::path::Path::new("images/base-ubuntu")).into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    super::add_node::run(
+        &cloud,
+        &host,
+        &state,
+        super::add_node::NewNode {
+            name: "demo",
+            sandboxes: 4,
+            shape: super::NodeShape::default(),
+            local_storage: String::new(),
+        },
+        Duration::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
+    let node = state.require("demo").unwrap();
+    assert_join_records_child(&node, &cloud, &host);
+    cloud.observations.borrow_mut().extend([None, None]);
+    down::run(&cloud, &state, &node, Duration::ZERO, true)
+        .await
+        .unwrap();
+    assert_down_removes_both(&state, &cloud, &node);
 }
 
 #[tokio::test]
@@ -1172,7 +1202,7 @@ async fn up_skip_custom_recipe_and_failed_image_preserve_correct_default() {
             dir.path().join("socket"),
         )
         .unwrap();
-        let profile: swarmy_config::RemoteProfile =
+        let profile: RemoteProfile =
             serde_json::from_slice(&serde_json::to_vec(&profile).unwrap()).unwrap();
         assert_eq!(profile.default_image.as_deref(), expected);
         let mut settings = swarmy_config::Settings::default();
@@ -1350,43 +1380,27 @@ async fn add_node_copies_both_secrets_only_when_requested() {
     assert_eq!(*host.keyrings.borrow(), vec![keyring]);
 }
 
-#[tokio::test]
-async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = State::open(&dir.path().join("remote")).unwrap();
-    let cloud = FakeCloud::default();
-    observe_running(&cloud);
-    let host = FakeHost::default();
-    let request = up::NewNode {
-        name: "bucket-test",
-        sandboxes: 0,
-    };
-    let settings = RemoteSettings {
-        bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
-        ..settings()
-    };
-    up::run(
-        &cloud,
-        &host,
-        &state,
-        &settings,
-        request,
-        None.into(),
-        Duration::ZERO,
-    )
-    .await
-    .unwrap();
+fn assert_bucket_launch_profile(cloud: &FakeCloud) {
     assert_eq!(
         cloud.requests.borrow()[0].profile.as_deref(),
         Some("swarmy-bucket-test"),
         "up launches with the bucket instance profile"
     );
+}
+
+async fn assert_bucket_reused_without_relaunch(
+    cloud: &FakeCloud,
+    host: &FakeHost,
+    state: &State,
+    settings: &RemoteSettings,
+    request: up::NewNode<'_>,
+) {
     assert!(
         up::run(
-            &cloud,
-            &host,
-            &state,
-            &settings,
+            cloud,
+            host,
+            state,
+            settings,
             request,
             None.into(),
             Duration::ZERO
@@ -1416,36 +1430,17 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
         1,
         "instance profile created once"
     );
-    observe_running(&cloud);
-    super::add_node::run(
-        &cloud,
-        &host,
-        &state,
-        super::add_node::NewNode {
-            name: "bucket-test",
-            sandboxes: 4,
-            shape: super::NodeShape::default(),
-            local_storage: String::new(),
-        },
-        Duration::ZERO,
-        None,
-    )
-    .await
-    .unwrap();
+}
+
+fn assert_bucket_join_profile(cloud: &FakeCloud) {
     assert_eq!(
         cloud.requests.borrow()[1].profile.as_deref(),
         Some("swarmy-bucket-test"),
         "joined node launches with the bucket instance profile"
     );
-    let node = state.require("bucket-test").unwrap();
-    let profile = super::connect::new_profile(
-        dir.path(),
-        &node,
-        node.ports,
-        8742,
-        dir.path().join("socket"),
-    )
-    .unwrap();
+}
+
+fn assert_bucket_connect_profile(profile: &RemoteProfile) {
     assert_eq!(
         profile.bucket.as_ref().unwrap().bucket,
         "test-bucket",
@@ -1460,24 +1455,17 @@ async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
         profile.s3_endpoint.is_empty(),
         "AWS bucket needs no endpoint override"
     );
-    cloud.observations.borrow_mut().extend([None, None]);
-    down::run(&cloud, &state, &node, Duration::ZERO, true)
-        .await
-        .unwrap();
-    // The role and profile stay with the bucket; a later up reuses them.
-    assert_eq!(cloud.bucket_ensures.borrow().len(), 1);
-    observe_running(&cloud);
-    up::run(
-        &cloud,
-        &host,
-        &state,
-        &settings,
-        request,
-        None.into(),
-        Duration::ZERO,
-    )
-    .await
-    .unwrap();
+}
+
+fn assert_bucket_retained(cloud: &FakeCloud) {
+    assert_eq!(
+        cloud.bucket_ensures.borrow().len(),
+        1,
+        "down retains the bucket ensure"
+    );
+}
+
+fn assert_bucket_recreated_once(cloud: &FakeCloud) {
     assert_eq!(cloud.bucket_ensures.borrow().len(), 2);
     assert_eq!(cloud.bucket_creates.borrow().len(), 1);
     assert_eq!(cloud.role_creates.borrow().len(), 1);
@@ -1541,6 +1529,82 @@ async fn static_up_as(setup: &StaticSetup, name: &str) {
     )
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn bucket_remote_uses_profile_and_retains_bucket_on_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    observe_running(&cloud);
+    let host = FakeHost::default();
+    let request = up::NewNode {
+        name: "bucket-test",
+        sandboxes: 0,
+    };
+    let settings = RemoteSettings {
+        bucket: Some(swarmy_config::BucketSpec::aws("test-bucket")),
+        ..settings()
+    };
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings,
+        request,
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    assert_bucket_launch_profile(&cloud);
+    assert_bucket_reused_without_relaunch(&cloud, &host, &state, &settings, request).await;
+    observe_running(&cloud);
+    super::add_node::run(
+        &cloud,
+        &host,
+        &state,
+        super::add_node::NewNode {
+            name: "bucket-test",
+            sandboxes: 4,
+            shape: super::NodeShape::default(),
+            local_storage: String::new(),
+        },
+        Duration::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_bucket_join_profile(&cloud);
+    let node = state.require("bucket-test").unwrap();
+    let profile = super::connect::new_profile(
+        dir.path(),
+        &node,
+        node.ports,
+        8742,
+        dir.path().join("socket"),
+    )
+    .unwrap();
+    assert_bucket_connect_profile(&profile);
+    cloud.observations.borrow_mut().extend([None, None]);
+    down::run(&cloud, &state, &node, Duration::ZERO, true)
+        .await
+        .unwrap();
+    // The role and profile stay with the bucket; a later up reuses them.
+    assert_bucket_retained(&cloud);
+    observe_running(&cloud);
+    up::run(
+        &cloud,
+        &host,
+        &state,
+        &settings,
+        request,
+        None.into(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    assert_bucket_recreated_once(&cloud);
 }
 
 #[tokio::test]
