@@ -318,7 +318,7 @@ is wrong for the whole codebase, say so in the pull request description and
 leave the lint as it is; the operator decides. Reviewers apply this bar using
 `REVIEWER.md`.
 
-### Enforced by lint task kkr5bd
+### Enforced by complexity, nesting, and error lints
 
 Complexity, nesting, and swallowed errors fail the build through
 `[workspace.lints]` in the root `Cargo.toml`, with numeric thresholds in
@@ -339,6 +339,10 @@ Complexity, nesting, and swallowed errors fail the build through
   `map_err_ignore` stays allowed on purpose: its sites translate a
   low-level error into a domain error, and naming the discarded source at
   each site would be noise, not information.
+- Infallible `String` writes use `write!(...).expect("writing to String
+  cannot fail")`, not the best-effort helper. The config `duration` module
+  stays under 96 lines through one shared checked constructor for TOML and
+  environment inputs.
 
 Integration tests that need FoundationDB, NATS, or SeaweedFS get them from
 `scripts/dev-stack.sh start`, which writes connection settings to `.dev/env`.
