@@ -156,6 +156,9 @@ fn secret_from(options: &BucketOptions) -> Result<Option<String>> {
 pub(crate) fn read_secret_file(path: &Path) -> Result<String> {
     let mode = std::fs::metadata(path)?.permissions().mode();
     // No group or other permission bits: the low six mode bits must be zero.
+    // The mask states the requirement directly; the lint's arithmetic form
+    // would restate the same check less readably next to this comment.
+    #[expect(clippy::verbose_bit_mask, reason = "mask matches the permission requirement below")]
     crate::Error::ensure(
         mode & 0o077 == 0,
         format!(
