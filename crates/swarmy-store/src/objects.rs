@@ -89,7 +89,7 @@ pub fn from_settings(settings: &Settings) -> Result<Arc<dyn ObjectStore>, BlobEr
         Ok(store)
     } else {
         // Parse instead of converting so namespace characters stay exact.
-        let path = object_store::path::Path::parse(prefix.as_str()).map_err(|error| {
+        let path = Path::parse(prefix.as_str()).map_err(|error| {
             object_store::Error::Generic {
                 store: "S3 namespace",
                 source: Box::new(error),
@@ -348,7 +348,7 @@ mod tests {
             settings.s3.conditional_create = conditional_create;
             let store = from_settings(&settings).unwrap();
             let scope = format!("bucket-spec-test-{}", ulid::Ulid::generate());
-            let path = object_store::path::Path::from(format!("{scope}/object"));
+            let path = Path::from(format!("{scope}/object"));
             store.put(&path, "payload".into()).await.unwrap();
             assert_eq!(
                 store.get(&path).await.unwrap().bytes().await.unwrap(),
