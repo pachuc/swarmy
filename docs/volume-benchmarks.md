@@ -17,7 +17,7 @@ The executable procedure is [volume.py](../scripts/benchmarks/volume.py).
 measures the production `ChunkStore::get_chunk` path, including hash verification.
 
 - Shell startup: three fresh volumes per cache condition, timed from immediately
-  before `swarmy vol create` through attach, ext4 mount, and a successful command
+  before `swarmyd vol create` through attach, ext4 mount, and a successful command
   in interactive Bash under a controlling terminal (`script` and `chroot`).
   Image construction and teardown are outside the timer. This is a disk-to-shell
   measurement, not a full sandbox scheduler or VM boot measurement.
@@ -41,7 +41,7 @@ measures the production `ChunkStore::get_chunk` path, including hash verificatio
   `build-essential`, which is already present in `images/base-ubuntu`.
   Verify the package is absent, run `apt-get update` and
   `apt-get install -y build-essential`, then time
-  `swarmy vol flush VOLUME --mount MOUNT`. The timer includes the filesystem
+  `swarmyd vol flush VOLUME --mount MOUNT`. The timer includes the filesystem
   freeze, its dirty-page writeback, chunk uploads, manifest publication in
   FoundationDB, and thaw. Background uploading is disabled. Installation and
   package downloads are outside the timer. Verify `gcc` again after cloning
@@ -709,13 +709,13 @@ cargo fmt --all --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test -p swarmy-volume --locked --no-run --message-format=json
-cargo test -p swarmy-cli --test vol --locked --no-run --message-format=json
+cargo test -p swarmyd --test vol --locked --no-run --message-format=json
 cargo test --workspace --locked --no-run --message-format=json
 ```
 
 The three CI commands passed; the workspace run reported 173 passing tests.
 The JSON compiler artifacts supplied executable paths to a runner which invoked
-each volume test binary, the CLI `vol` and `image` binaries, the node test,
+each volume test binary, the `vol` and `image` test binaries, the node test,
 and the bash chaos test with
 `sudo -E BINARY --nocapture --test-threads=1`. All 28 distinct tests passed as
 root, including NBD/fio, publication counters, ext4, shell and OCI recipes,
@@ -1078,7 +1078,7 @@ FoundationDB cache are not controlled. Two samples do not establish a p95.
 
 The separate [volume workload](../scripts/benchmarks/persistent-volume.py) runs
 twice. Each sample overwrites an 8 MiB random file through thirteen explicit
-`swarmy vol checkpoint` calls, then measures a checkpoint with a process writing
+`swarmyd vol checkpoint` calls, then measures a checkpoint with a process writing
 and fsyncing monotonic timestamps every 10 ms. The reported pause is the largest
 observed inter-write gap, including scheduling and fsync costs; raw neighboring
 timestamps and observation counts accompany it. The pause checkpoint and final
@@ -1332,7 +1332,7 @@ No Google Cloud resources, managed S3 bucket, HMAC key, or objects in the
 pre-existing benchmark bucket were created. Object data stayed in the new
 node's SeaweedFS stack.
 
-The procedure used no `swarmy vol` commands:
+The procedure used no `swarmyd vol` commands:
 
 ```bash
 swarmy remote up no-root-proof
@@ -1376,7 +1376,7 @@ and marker write; process_list; end-turn text; checkpoint; end-turn text. The
 bash command fetched `http://127.0.0.1:18765/`, printed
 `SERVER_FROM_PREVIOUS_TURN_OK`, and wrote `remote-checkpoint` to
 `/root/proof-marker`. The terminal was driven through a PTY, answering cursor
-position requests as in `crates/swarmy-cli/tests/session/chat.rs`. Durable
+position requests as in `crates/swarmy-e2e/tests/cli_session/chat.rs`. Durable
 `session show --json` events, not the fake assistant's assertions, established
 the results. The driver initially sent the checkpoint prompt while input was
 locked; that prompt was not submitted. It was resent after the previous turn
@@ -1493,7 +1493,7 @@ observer timestamped JSON `tool_call_requested` and `tool_call_completed`
 records with `time.monotonic_ns()` and subtracted their arrival times by call
 id. The first call, which creates the computer, was excluded; the other twenty
 were the warm sample. No inference duration, session startup, image build,
-checkpoint, or `swarmy vol` operation is in that interval.
+checkpoint, or `swarmyd vol` operation is in that interval.
 
 For the tunnel sample, `swarmy --json run --remote no-root-proof --image
 base-ubuntu:remote` used the laptop scheduler, worker, and gateway. For the
@@ -2061,7 +2061,7 @@ The writer lease, placement fence, and retained-head transaction are unchanged.
 
 Checkpoint syncs buffered writes and uses the same unfrozen block boundary.
 Ext4 journal recovery is expected when mounting a retained image.
-`swarmy vol flush --freeze` optionally freezes the discovered mount for a clean
+`swarmyd vol flush --freeze` optionally freezes the discovered mount for a clean
 filesystem image; `--mount` alone only validates the mount path. Ordinary
 snapshots and checkpoints report zero frozen time.
 
@@ -2438,7 +2438,7 @@ swarmy dev up --remote turn-roundtrips
 swarmy bench turn --remote turn-roundtrips --turns 30 --image base-ubuntu:turn-roundtrips --output /tmp/swarmy-turn-node-final.json
 ```
 
-The temporary `images/turn-proof` recipe contained bash, sleep, setsid, their
+The temporary turn-proof recipe contained bash, sleep, setsid, their
 shared libraries, and a `/bin/sh` link in a 256 MiB ext4 image. Both configurations
 used the same registered image and `scripts/benchmarks/turn-fake.json`, including
 real `printf TURN_TOOL_OK` bash execution. No provider credential was copied.
