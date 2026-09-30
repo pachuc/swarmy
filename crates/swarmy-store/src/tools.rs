@@ -58,7 +58,9 @@ impl Store {
                 step,
                 call_id: call.call_id.clone(),
                 arguments: swarmy_core::SandboxArguments::parse(&call.tool, call.arguments.clone())
-                    .map_err(|_| StoreError::Domain(crate::DomainError::InvalidToolCall))?,
+                    .map_err(|error| {
+                        StoreError::Domain(crate::DomainError::InvalidToolCall(error.to_string()))
+                    })?,
             });
         }
         self.dispatch_jobs(id, lease, &jobs, placement, Some((expected_head, &events)))
@@ -148,7 +150,9 @@ impl Store {
                 seq, request_id, ..
             } = event
             else {
-                return Err(StoreError::Domain(crate::DomainError::InvalidToolCall));
+                return Err(StoreError::Domain(crate::DomainError::InvalidToolCall(
+                    "expected tool call request events".into(),
+                )));
             };
             trx.set(&self.keys().event(id, *seq), value);
             if let Some(turn) = turn {

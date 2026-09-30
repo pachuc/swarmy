@@ -393,16 +393,8 @@ impl crate::Store {
         inference_limit: Option<usize>,
         tools_limit: Option<usize>,
     ) -> Result<TurnMetrics> {
-        let session: SessionId = summary
-            .session_id
-            .parse()
-            .map(SessionId::from_ulid)
-            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-        let turn: MessageId = summary
-            .turn_id
-            .parse()
-            .map(MessageId::from_ulid)
-            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+        let session: SessionId = summary.session_id.parse().map(SessionId::from_ulid)?;
+        let turn: MessageId = summary.turn_id.parse().map(MessageId::from_ulid)?;
         let (inference_rows, tool_rows) = self.turn_rows(session, turn).await?;
         Ok(assemble_turn(
             &summary,

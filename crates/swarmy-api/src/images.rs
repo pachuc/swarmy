@@ -2,7 +2,7 @@
 //! bytes; the control plane chunks them, uploads with the same GC protection
 //! as a local build, and registers the image. A client machine never needs
 //! object store credentials.
-use super::{ApiResult, AppState, error, storage, volume};
+use super::{ApiResult, AppState, error, failure, storage, volume};
 use axum::{
     Json,
     body::Body,
@@ -155,9 +155,9 @@ pub async fn upload(
         let _guard = state.mutation_guard().await;
         if let Some(value) = state.store.api_replay(&replay_key).await.map_err(storage)? {
             drain(body).await;
-            return serde_json::from_value(value)
-                .map(Json)
-                .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay"));
+            return serde_json::from_value(value).map(Json).map_err(|cause| {
+                failure(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay", cause)
+            });
         }
     }
     let (_spool, path, _size) = spool(&state, body).await?;
@@ -229,11 +229,11 @@ async fn spool(
     let directory = tempfile::Builder::new()
         .prefix("swarmy-upload-")
         .tempdir_in(&state.upload_dir)
-        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"))?;
+        .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", cause))?;
     let path = directory.path().join("disk.ext4");
     let mut file = tokio::fs::File::create(&path)
         .await
-        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"))?;
+        .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", cause))?;
     let mut stream = body.into_data_stream();
     let mut size: u64 = 0;
     while let Some(chunk) = stream.next().await {
@@ -249,14 +249,14 @@ async fn spool(
         }
         file.write_all(&chunk)
             .await
-            .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"))?;
+            .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", cause))?;
     }
     if size == 0 {
         return Err(invalid("uploaded image is empty"));
     }
     file.flush()
         .await
-        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error"))?;
+        .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", cause))?;
     drop(file);
     Ok((directory, path, size))
 }
