@@ -200,9 +200,14 @@ fn json_dev_status_is_rejected_without_touching_the_stack() {
 }
 
 async fn check_uptime(fixture: &Fixture) {
-    // A fast turn no longer guarantees that the uptime counter has advanced.
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    let state = String::from_utf8(fixture.output(&["dev", "status"]).await.stdout).unwrap();
+    // Poll status until the uptime counter advances instead of assuming one
+    // fixed sleep covers a loaded runner.
+    let state =
+        swarmy_testkit::eventually("uptime advances", Duration::from_secs(30), async || {
+            let state = String::from_utf8(fixture.output(&["dev", "status"]).await.stdout).unwrap();
+            (!state.contains("uptime 0s")).then_some(state)
+        })
+        .await;
     assert_eq!(state.matches("uptime").count(), 8, "{state}");
     assert!(
         !state.contains("uptime 0s"),

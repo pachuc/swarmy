@@ -286,12 +286,17 @@ async fn root_volume_durability_clone_crash_fencing_and_history() {
         .writer_lease
         .unwrap()
         .expires_at;
-    let remaining = expiry
-        .duration_since(jiff::Timestamp::now())
-        .as_secs()
-        .max(0);
-    eprintln!("waiting for the crashed writer's lease to expire ({remaining}s)");
-    tokio::time::sleep(Duration::from_secs(u64::try_from(remaining).unwrap() + 2)).await;
+    eprintln!("waiting for the crashed writer's lease to expire");
+    swarmy_testkit::eventually(
+        "crashed writer lease expires",
+        expiry
+            .duration_since(jiff::Timestamp::now())
+            .try_into()
+            .unwrap_or(Duration::ZERO)
+            + Duration::from_secs(30),
+        async || (jiff::Timestamp::now() >= expiry).then_some(()),
+    )
+    .await;
     let mut recovered = fixture.attach(&fixture.node_a, volume, "recovered");
     assert_eq!(recovered.read("durable"), b"committed on A");
     assert!(!recovered.mount.join("uncommitted").exists());
@@ -382,8 +387,10 @@ async fn root_periodic_snapshot_checkpoint_and_configured_retention() {
     let id = VolumeId::from_ulid(volume.parse().unwrap());
     let mut server = fixture.attach(&fixture.node_a, volume, "periodic");
     server.write("periodic", b"published by timer");
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
+    swarmy_testkit::eventually(
+        "periodic snapshot did not publish",
+        Duration::from_secs(20),
+        async || {
             let head = fixture
                 .store
                 .get_volume(id)
@@ -391,14 +398,10 @@ async fn root_periodic_snapshot_checkpoint_and_configured_retention() {
                 .unwrap()
                 .unwrap()
                 .head_manifest;
-            if serde_json::to_value(head).unwrap() != created["manifest_id"] {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("periodic snapshot did not publish");
+            (serde_json::to_value(head).unwrap() != created["manifest_id"]).then_some(())
+        },
+    )
+    .await;
     for index in 0..12 {
         server.write("checkpoint", index.to_string().as_bytes());
         let checkpoint = fixture.json(&fixture.node_a, &["checkpoint", volume]);

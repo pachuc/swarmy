@@ -143,20 +143,19 @@ async fn start_api_service() -> ApiService {
         .unwrap();
     // The service opens the store and bus before binding, so an open port
     // means it is ready for uploads.
-    let started = std::time::Instant::now();
-    loop {
-        if let Ok(Some(status)) = child.try_wait() {
-            panic!("swarmy-api exited during startup: {status}");
-        }
-        if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
-            break;
-        }
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(60),
-            "swarmy-api did not listen on 127.0.0.1:{port} within 60s"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    swarmy_testkit::eventually(
+        "swarmy-api listens",
+        std::time::Duration::from_secs(60),
+        async || {
+            if let Ok(Some(status)) = child.try_wait() {
+                panic!("swarmy-api exited during startup: {status}");
+            }
+            std::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+                .is_ok()
+                .then_some(())
+        },
+    )
+    .await;
     ApiService {
         child,
         url: format!("http://127.0.0.1:{port}"),

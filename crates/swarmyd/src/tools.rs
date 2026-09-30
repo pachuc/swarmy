@@ -756,6 +756,12 @@ mod tests {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             while !exit.exists() {
                 assert!(std::time::Instant::now() < deadline, "process did not exit");
+                // Sync helper polling a file with a deadline; no async
+                // runtime here to await on.
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "sync file poll with a deadline in a non-async test helper"
+                )]
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
             id
@@ -817,6 +823,12 @@ mod tests {
         let mut ids = Vec::with_capacity(count);
         for index in 0..count {
             ids.push(processes.start_exited(&format!("true # {index}"), epoch));
+            // Stagger starts so mtime ordering is deterministic for the
+            // newest-first assertion; the spacing is the point.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "start-time spacing makes mtime ordering deterministic"
+            )]
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         ids

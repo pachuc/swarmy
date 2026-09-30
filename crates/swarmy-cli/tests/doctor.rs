@@ -209,6 +209,13 @@ fn serve_one(listener: &std::net::TcpListener, body: &str) {
                 if error.kind() == std::io::ErrorKind::WouldBlock
                     && std::time::Instant::now() < deadline =>
             {
+                // The blocking fixture socket has no readiness signal and
+                // this helper runs on a plain thread, so poll to the
+                // deadline instead of awaiting.
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "blocking accept-poll with a deadline on a non-async fixture thread"
+                )]
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             Err(error) => panic!("fixture accept failed: {error}"),

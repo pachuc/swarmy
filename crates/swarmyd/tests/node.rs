@@ -75,26 +75,24 @@ impl Node {
     }
 
     async fn ready(&mut self, store: &Store, after: jiff::Timestamp) {
-        tokio::time::timeout(Duration::from_secs(45), async {
-            loop {
+        swarmy_testkit::eventually(
+            "node did not register",
+            Duration::from_secs(45),
+            async || {
                 assert!(
                     self.child.as_mut().unwrap().try_wait().unwrap().is_none(),
                     "swarmyd exited during startup"
                 );
-                if store
+                (store
                     .get_node(self.id)
                     .await
                     .unwrap()
                     .is_some_and(|node| node.last_heartbeat > after)
-                    && UnixStream::connect(self.socket()).await.is_ok()
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        })
-        .await
-        .expect("node did not register");
+                    && UnixStream::connect(self.socket()).await.is_ok())
+                .then_some(())
+            },
+        )
+        .await;
     }
 
     async fn request(&self, request: Request) -> Response {
@@ -160,17 +158,17 @@ impl Node {
                 .unwrap()
                 .success()
         );
-        tokio::time::timeout(Duration::from_secs(45), async {
-            loop {
-                if let Some(status) = self.child.as_mut().unwrap().try_wait().unwrap() {
+        swarmy_testkit::eventually("node did not exit", Duration::from_secs(45), async || {
+            self.child
+                .as_mut()
+                .unwrap()
+                .try_wait()
+                .unwrap()
+                .map(|status| {
                     assert!(status.success());
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
+                })
         })
-        .await
-        .unwrap();
+        .await;
         self.child = None;
     }
 }
@@ -458,18 +456,19 @@ async fn scratch_mounts(
         std::fs::read_to_string(scratch_root.join("1/scratch-test")).unwrap(),
         "temp\n"
     );
-    tokio::time::timeout(Duration::from_secs(25), async {
-        while !store
-            .scratch(agent.agent_id)
-            .await
-            .unwrap()
-            .is_some_and(|record| record.node_id == node.id && record.bytes >= 11)
-        {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("node did not report scratch size");
+    swarmy_testkit::eventually(
+        "node did not report scratch size",
+        Duration::from_secs(25),
+        async || {
+            store
+                .scratch(agent.agent_id)
+                .await
+                .unwrap()
+                .is_some_and(|record| record.node_id == node.id && record.bytes >= 11)
+                .then_some(())
+        },
+    )
+    .await;
     (agent.agent_id, sandbox, scratch_root)
 }
 
@@ -558,19 +557,26 @@ async fn scratch_restart_and_delete(
     .unwrap();
     node.start();
     node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    swarmy_testkit::eventually(
+        "restarted sweep retains fresh scratch",
+        Duration::from_secs(25),
+        async || {
+            (std::fs::read_to_string(scratch_root.join("0/cache")).unwrap() == "cargo\nmore\n")
+                .then_some(())
+        },
+    )
+    .await;
     assert_eq!(
         std::fs::read_to_string(scratch_root.join("0/cache")).unwrap(),
         "cargo\nmore\n"
     );
     store.delete_agent(agent).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(25), async {
-        while scratch_root.exists() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("deleted computer retained scratch");
+    swarmy_testkit::eventually(
+        "deleted computer retained scratch",
+        Duration::from_secs(25),
+        async || (!scratch_root.exists()).then_some(()),
+    )
+    .await;
 }
 
 async fn scratch_delete_cycles(node: &mut Node, store: &Store, base: ManifestId) {
@@ -599,17 +605,18 @@ async fn scratch_delete_cycles(node: &mut Node, store: &Store, base: ManifestId)
         node.destroy(sandbox).await;
         store.delete_agent(agent.agent_id).await.unwrap();
     }
-    tokio::time::timeout(Duration::from_secs(25), async {
-        while std::fs::read_dir(node.root.path().join(".swarmy/scratch"))
-            .unwrap()
-            .next()
-            .is_some()
-        {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("scratch directories remained after ten create/delete cycles");
+    swarmy_testkit::eventually(
+        "scratch directories remained after ten create/delete cycles",
+        Duration::from_secs(25),
+        async || {
+            std::fs::read_dir(node.root.path().join(".swarmy/scratch"))
+                .unwrap()
+                .next()
+                .is_none()
+                .then_some(())
+        },
+    )
+    .await;
     node.stop().await;
 }
 
@@ -678,13 +685,12 @@ async fn scratch_pressure(node: &mut Node, store: &Store, base: ManifestId) {
         response => panic!("third sandbox: {response:?}"),
     };
     node.destroy(third_sandbox).await;
-    tokio::time::timeout(Duration::from_secs(25), async {
-        while candidates.iter().any(|(_, path)| path.exists()) {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("pressure sweep retained scratch");
+    swarmy_testkit::eventually(
+        "pressure sweep retained scratch",
+        Duration::from_secs(25),
+        async || (!candidates.iter().any(|(_, path)| path.exists())).then_some(()),
+    )
+    .await;
     let log = std::fs::read_to_string(node.root.path().join("node.log")).unwrap();
     let oldest = log.find(&format!("computer={}", candidates[0].0)).unwrap();
     let newer = log.find(&format!("computer={}", candidates[1].0)).unwrap();
@@ -732,13 +738,12 @@ async fn scratch_idle(node: &mut Node, store: &Store) {
     .unwrap();
     node.start();
     node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
-    tokio::time::timeout(Duration::from_secs(25), async {
-        while path.exists() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("idle sweep retained old scratch");
+    swarmy_testkit::eventually(
+        "idle sweep retained old scratch",
+        Duration::from_secs(25),
+        async || (!path.exists()).then_some(()),
+    )
+    .await;
     node.stop().await;
 }
 
@@ -933,9 +938,15 @@ async fn registration(node: &Node, store: &Store) {
     let first = store.get_node(node.id).await.unwrap().unwrap();
     assert_eq!(first.roles, node.settings.node.roles);
     assert_eq!(first.capacity, node.settings.node.capacity);
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let second = store.get_node(node.id).await.unwrap().unwrap();
-    assert!(second.last_heartbeat > first.last_heartbeat);
+    let second = swarmy_testkit::eventually(
+        "node heartbeat advances",
+        Duration::from_secs(30),
+        async || {
+            let second = store.get_node(node.id).await.unwrap().unwrap();
+            (second.last_heartbeat > first.last_heartbeat).then_some(second)
+        },
+    )
+    .await;
     let (live, cursor) = store
         .scan_live_nodes(None, first.last_heartbeat, 1)
         .await
@@ -1032,16 +1043,17 @@ async fn crash_recovery(node: &mut Node, store: &Store, volume: VolumeId) {
         .writer_lease
         .unwrap()
         .expires_at;
-    let wait = u64::try_from(
+    eprintln!("waiting for the crashed writer lease to expire at {expiry}");
+    swarmy_testkit::eventually(
+        "crashed writer lease expires",
         expiry
             .duration_since(jiff::Timestamp::now())
-            .as_secs()
-            .max(0),
+            .try_into()
+            .unwrap_or(Duration::ZERO)
+            + Duration::from_secs(30),
+        async || (jiff::Timestamp::now() >= expiry).then_some(()),
     )
-    .unwrap()
-        + 2;
-    eprintln!("waiting {wait}s for the crashed writer lease to expire");
-    tokio::time::sleep(Duration::from_secs(wait)).await;
+    .await;
     let recovered = node.create(volume).await;
     let (result, _, stderr) = node
         .exec(

@@ -37,6 +37,12 @@ async fn tool_activity_caps_node_uploads_and_restores_idle_priority() {
     let task = tokio::spawn(async move { uploading.upload_dirty().await });
     while !task.is_finished() {
         assert!(device.stats().uploads_in_flight <= 4);
+        // The per-tick concurrency assertion is the point of the poll:
+        // completion has no signal to await while asserting each tick.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "polling JoinHandle completion while asserting the per-tick concurrency limit"
+        )]
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     task.await.unwrap().unwrap();

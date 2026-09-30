@@ -26,3 +26,4 @@ futures-util.workspace = true
 [dev-dependencies]
 ulid.workspace = true
 axum.workspace = true
+swarmy-testkit.workspace = true
