@@ -94,24 +94,7 @@ async fn setup() -> BenchFixture {
     swarmy_testkit::Script::new("done")
         .output_tokens(42)
         .write_to(&files.path().join("script.json"));
-    let mut children = Vec::new();
-    for name in ["swarmy-scheduler", "swarmy-worker", "swarmy-gateway"] {
-        children.push(swarmy_testkit::ChildGuard::new(
-            tokio::process::Command::new(swarmy_testkit::bin(name))
-                .env("SWARMY_PROVIDER", "fake")
-                .env("SWARMY_MODEL", settings.selection.model.clone())
-                .env("SWARMY_STORE_DIRECTORY", &settings.store.directory)
-                .env("SWARMY_BUS_PREFIX", &settings.bus.prefix)
-                .env("SWARMY_FAKE_SCRIPT", files.path().join("script.json"))
-                // The fake provider appends every request to its call log;
-                // the default relative path has no parent directory here, so
-                // point it at the fixture directory like the e2e fixtures do.
-                .env("SWARMY_FAKE_CALL_LOG", files.path().join("calls"))
-                .kill_on_drop(true)
-                .spawn()
-                .unwrap(),
-        ));
-    }
+    let children = spawn_services(&settings, &files);
     let bus = Bus::connect(&settings.bus.nats_url, settings.bus.bus_config().unwrap())
         .await
         .unwrap();
@@ -181,6 +164,35 @@ async fn setup() -> BenchFixture {
         _files: files,
         _children: children,
     }
+}
+
+/// Spawn the scheduler, worker, and gateway a fixture's turns run through.
+/// They inherit the test environment over the fixture's store directory, bus
+/// prefix, and fake script, so no running service ever needs to see the
+/// fixture's turns.
+fn spawn_services(
+    settings: &swarmy_config::Settings,
+    files: &tempfile::TempDir,
+) -> Vec<swarmy_testkit::ChildGuard> {
+    let mut children = Vec::new();
+    for name in ["swarmy-scheduler", "swarmy-worker", "swarmy-gateway"] {
+        children.push(swarmy_testkit::ChildGuard::new(
+            tokio::process::Command::new(swarmy_testkit::bin(name))
+                .env("SWARMY_PROVIDER", "fake")
+                .env("SWARMY_MODEL", settings.selection.model.clone())
+                .env("SWARMY_STORE_DIRECTORY", &settings.store.directory)
+                .env("SWARMY_BUS_PREFIX", &settings.bus.prefix)
+                .env("SWARMY_FAKE_SCRIPT", files.path().join("script.json"))
+                // The fake provider appends every request to its call log;
+                // the default relative path has no parent directory here, so
+                // point it at the fixture directory like the e2e fixtures do.
+                .env("SWARMY_FAKE_CALL_LOG", files.path().join("calls"))
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap(),
+        ));
+    }
+    children
 }
 
 async fn measure(f: &BenchFixture, id: SessionId, via_api: bool, turn: usize) -> Duration {
