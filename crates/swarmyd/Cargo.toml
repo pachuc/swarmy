@@ -31,7 +31,6 @@ jiff.workspace = true
 
 [dev-dependencies]
 swarmy-core = { workspace = true, features = ["test-support"] }
-swarmy-docs.workspace = true
 swarmy-store = { workspace = true, features = ["test-support"] }
 
 foundationdb.workspace = true

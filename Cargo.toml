@@ -135,7 +135,6 @@ swarmy-volume = { path = "crates/swarmy-volume" }
 swarmy-store = { path = "crates/swarmy-store" }
 swarmy-tools = { path = "crates/swarmy-tools" }
 swarmy-harness = { path = "crates/swarmy-harness" }
-swarmy-docs = { path = "crates/swarmy-docs" }
 
 [profile.dev]
 debug = "line-tables-only"

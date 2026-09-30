@@ -361,7 +361,6 @@ fn read_confirmation(message: &str) -> anyhow::Result<String> {
 }
 
 /// Documented `swarmy ...` commands resolve against the real clap tree.
-/// See the `swarmy-docs` crate for the shared extraction and validation.
 #[cfg(test)]
 mod docs_command_tests {
     #[test]
@@ -369,7 +368,7 @@ mod docs_command_tests {
         use clap::CommandFactory;
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../");
         let command = crate::Cli::command();
-        swarmy_docs::check_repo(&root, &[("swarmy", &command)], &[("swarmy-cli", "swarmy")])
+        swarmy_core::test_support::check_docs_commands(&root, &[("swarmy", &command)])
             .expect("documented swarmy commands match the CLI tree");
     }
 }

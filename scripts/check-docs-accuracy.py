@@ -1,265 +1,288 @@
 #!/usr/bin/env python3
-# Fail when markdown names a repository path or test target that does not
-# exist, so docs cannot drift from the code silently. Command names and flags
-# are out of scope here: the swarmy-docs crate checks those against the real
-# clap trees in Rust unit tests.
-#
-# Paths: every backticked span that reads as a repository-relative path (one
-# line, no spaces, contains a slash) must resolve to a file or directory in
-# this checkout, either from the repository root or from the markdown file's
-# own directory (for `../` references). Spans that cannot be repository paths
-# are skipped: URLs, absolute machine paths, environment and home references,
-# shell globs, all-caps placeholders, model ids, and paths the tooling
-# creates at runtime (`.dev/`, `.swarmy/`, `target/`, anything gitignored).
-# Bare filenames without a slash are not repository paths: they name the
-# surrounding command's working directory, not this repository.
-#
-# Test targets: `X --test TARGET` and `cargo test -p PKG --test TARGET` must
-# name a real integration-test target of that package.
-#
-# Files under `backlog/` are proposals that name files which do not exist yet,
-# so they are never checked.
-# Usage: scripts/check-docs-accuracy.py
+# Docs accuracy: paths/test targets (default) or documented commands (--commands).
+# --commands prints location, binary, and args split into words (tab-separated,
+# args joined by \x1f, quoted values masked) for the Rust clap walk. Both modes
+# share tracked listing, fence joining, backtick spans, and the backlog/ skip.
 import os
 import re
 import subprocess
 import sys
 import tomllib
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
 BINARY_PACKAGE = {"swarmy": "swarmy-cli", "swarmyd": "swarmyd"}
-
-
+CARGO_BINARY = {"swarmy-cli": "swarmy", "swarmyd": "swarmyd"}
 def fail(message):
     sys.stderr.write("check-docs-accuracy: %s\n" % message)
     sys.exit(2)
-
-
-def test_targets(package):
-    """All integration-test target names of a package."""
-    crate_dir = os.path.join(ROOT, "crates", package)
-    tests_dir = os.path.join(crate_dir, "tests")
-    targets = set()
-    if os.path.isdir(tests_dir):
-        for entry in os.listdir(tests_dir):
-            if entry.endswith(".rs"):
-                targets.add(entry[:-3])
-            elif os.path.isfile(os.path.join(tests_dir, entry, "mod.rs")):
-                targets.add(entry)
-    manifest = os.path.join(crate_dir, "Cargo.toml")
-    if os.path.isfile(manifest):
-        with open(manifest, "rb") as handle:
-            data = tomllib.load(handle)
-        tests = data.get("test", [])
-        if isinstance(tests, dict):
-            tests = [tests]
-        for table in tests:
-            if isinstance(table, dict) and table.get("name"):
-                targets.add(table["name"])
-    return targets
-
-
+def mask_quoted(line):
+    out, in_q, esc = [], False, False
+    for c in line:
+        if in_q:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_q = False
+                out.append(c)
+                continue
+            out.append(" ")
+        elif c == '"':
+            in_q, out = True, out + [c]
+        else:
+            out.append(c)
+    return "".join(out)
+def logical_lines(lines):
+    logical, in_fence, buf, start = [], False, [], 0
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("```") and s.count("```") == 1:
+            if buf:
+                logical.append((start, " ".join(buf), True))
+                buf = []
+            logical.append((i + 1, line, False))
+            in_fence = not in_fence
+            continue
+        if in_fence and line.rstrip().endswith("\\"):
+            if not buf:
+                start = i + 1
+            buf.append(line.rstrip()[:-1])
+            continue
+        if buf:
+            buf.append(line)
+            logical.append((start, " ".join(buf), True))
+            buf = []
+            continue
+        logical.append((i + 1, line, in_fence))
+    if buf:
+        logical.append((start, " ".join(buf), True))
+    return logical
 def tracked_files():
     try:
-        out = subprocess.run(
-            ["git", "ls-files", "-z"],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=ROOT,
-        )
-    except (subprocess.CalledProcessError, OSError) as error:
-        fail("cannot list tracked files: %s" % error)
+        out = subprocess.run(["git", "ls-files", "-z"], capture_output=True,
+                             text=True, check=True, cwd=ROOT)
+    except (subprocess.CalledProcessError, OSError) as e:
+        fail("cannot list tracked files: %s" % e)
     return set(out.stdout.split("\0")) - {""}
-
-
 def ignored_paths(paths):
     try:
-        proc = subprocess.run(
-            ["git", "check-ignore", "--stdin"],
-            capture_output=True,
-            text=True,
-            cwd=ROOT,
-            input="\n".join(sorted(set(paths))),
-        )
-    except OSError:
-        return set()
+        proc = subprocess.run(["git", "check-ignore", "--stdin"], capture_output=True,
+                              text=True, cwd=ROOT, input="\n".join(sorted(set(paths))))
+    except OSError as e:
+        fail("cannot check ignored paths: %s" % e)
     if proc.returncode not in (0, 1):
-        return set()
-    return set(line for line in proc.stdout.splitlines() if line)
-
-
+        fail("cannot check ignored paths: %s" % proc.stderr.strip())
+    return set(l for l in proc.stdout.splitlines() if l)
+def test_targets(package):
+    d = os.path.join(ROOT, "crates", package, "tests")
+    targets = set()
+    if os.path.isdir(d):
+        for e in os.listdir(d):
+            if e.endswith(".rs"):
+                targets.add(e[:-3])
+            elif os.path.isfile(os.path.join(d, e, "mod.rs")):
+                targets.add(e)
+    m = os.path.join(ROOT, "crates", package, "Cargo.toml")
+    if os.path.isfile(m):
+        with open(m, "rb") as h:
+            tests = tomllib.load(h).get("test", [])
+        if isinstance(tests, dict):
+            tests = [tests]
+        for t in tests:
+            if isinstance(t, dict) and t.get("name"):
+                targets.add(t["name"])
+    return targets
 TEST_RE = re.compile(r"(swarmy(?:-[\w]+)*|swarmyd)\s+--test\s+([\w-]+)")
-WORD_RE = re.compile(r"[a-z][a-z0-9_-]*\Z")
+BACKTICK_RE = re.compile(r"`([^`\n]+)`")
 PATH_CHARS_RE = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_./-]*\Z")
 CAPS_PART_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 EXT_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9-]*\Z")
-BACKTICK_RE = re.compile(r"`([^`\n]+)`")
-
-
 def candidate_rels(text, docdir, root_entries):
-    """Repo-relative paths a backticked span could name, or None."""
-    if not text or "/" not in text:
+    if not text or "/" not in text or " " in text or "\t" in text:
         return None
-    if " " in text or "\t" in text:
-        return None
-    if "://" in text:
-        return None
-    if text[0] in "/$~":
+    if "://" in text or text[0] in "/$~":
         return None
     if re.search(r"[{}<>$|=&;!()\[\]\"'\\*?]", text):
         return None
-    if not re.search(r"[a-z]", text):
+    if not re.search(r"[a-z]", text) or not PATH_CHARS_RE.match(text):
         return None
-    if not PATH_CHARS_RE.match(text):
-        return None
-    if any(CAPS_PART_RE.match(part) for part in text.strip("/").split("/")):
+    if any(CAPS_PART_RE.match(p) for p in text.strip("/").split("/")):
         return None
     core = text[2:] if text.startswith("./") else text
-    first = core.split("/")[0]
-    last = core.rstrip("/").split("/")[-1]
+    first, last = core.split("/")[0], core.rstrip("/").split("/")[-1]
     if first not in root_entries and not core.startswith("../") and not EXT_RE.search(last):
         return None
     rels = [os.path.normpath(core)]
     if docdir:
-        resolved = os.path.normpath(os.path.join(docdir, core))
-        if not resolved.startswith(".."):
-            rels.append(resolved)
-    # Anything still escaping the checkout cannot be a repository path.
-    rels = [rel for rel in rels if not rel.startswith("..")]
-    if not rels:
+        r = os.path.normpath(os.path.join(docdir, core))
+        if not r.startswith(".."):
+            rels.append(r)
+    rels = [r for r in rels if not r.startswith("..")]
+    return rels or None
+def md_files():
+    return sorted(p for p in tracked_files() if p.endswith(".md") and not p.startswith("backlog/"))
+def split_args(text):
+    words, cur, quote, chars, i = [], [], None, list(text), 0
+    while i < len(chars):
+        c = chars[i]
+        if quote:
+            if c == "\\" and i + 1 < len(chars):
+                i += 1
+                cur.append(" ")
+            elif c == quote:
+                quote = None
+            else:
+                cur.append(" " if c.isspace() else "x")
+        elif c in ("'", '"'):
+            quote = c
+        elif c == "\\" and i + 1 < len(chars):
+            i += 1
+            cur.append(chars[i])
+        elif c.isspace():
+            if cur:
+                words.append("".join(cur))
+                cur = []
+        else:
+            cur.append(c)
+        i += 1
+    if cur:
+        words.append("".join(cur))
+    return words
+def is_command_word(t):
+    return bool(re.match(r"[A-Za-z][A-Za-z0-9_/-]*\Z", t))
+def find_invocations(line):
+    found, i = [], 0
+    while i < len(line):
+        prev = line[i - 1] if i else "\0"
+        if i == 0 or prev.isspace() or prev in "'\";(|&":
+            starts, j = [i], i
+            while j < len(line) and (line[j].isalnum() or line[j] in "_./$~-"):
+                if line[j] == "/":
+                    starts.append(j + 1)
+                j += 1
+            hit = False
+            for s in reversed(starts):
+                for name in ("swarmyd", "swarmy"):
+                    if line[s:].startswith(name):
+                        e = s + len(name)
+                        nxt = line[e] if e < len(line) else ""
+                        if not (nxt.isalnum() or nxt in "_-"):
+                            found.append((name, line[e:]))
+                            i, hit = e, True
+                            break
+                if hit:
+                    break
+            if hit:
+                continue
+            i += 1
+            continue
+        i += 1
+    return found
+def invocation_args(rest):
+    tokens = split_args(rest.split(" #", 1)[0])
+    if not tokens or tokens[0].startswith("/"):
         return None
-    return rels
-
-
+    if not tokens[0].startswith("-") and not is_command_word(tokens[0]):
+        return None
+    return tokens
+def invocations_in(text):
+    out, words = [], text.split()
+    try:
+        pkg = words[words.index("-p", words.index("run", words.index("cargo") + 1) + 1) + 1]
+        di = words.index("--", words.index("-p", words.index("run", words.index("cargo") + 1) + 1) + 1)
+        if pkg in CARGO_BINARY:
+            inv = invocation_args(" ".join(words[di + 1:]))
+            if inv is not None:
+                out.append((CARGO_BINARY[pkg], inv))
+    except (ValueError, IndexError):
+        pass
+    for binary, rest in find_invocations(text):
+        inv = invocation_args(rest)
+        if inv is not None:
+            out.append((binary, inv))
+    return out
+def command_rows():
+    rows, seen = [], set()
+    for path in md_files():
+        with open(os.path.join(ROOT, path), encoding="utf-8") as h:
+            lines = h.read().splitlines()
+        for lineno, text, in_fence in logical_lines(lines):
+            loc = "%s:%d" % (path, lineno)
+            spans = [m.group(1).strip() for m in BACKTICK_RE.finditer(text)]
+            if in_fence:
+                spans.append(mask_quoted(text))
+            for span in spans:
+                if span:
+                    for binary, args in invocations_in(span):
+                        if (binary, tuple(args)) not in seen:
+                            seen.add((binary, tuple(args)))
+                            src = re.sub(r"\s+", " ", span.strip())[:200]
+                            rows.append("%s\t%s\t%s\t%s" % (loc, binary, "\x1f".join(args), src))
+    return rows
 class Checker:
     def __init__(self):
-        self.errors = []
-        self.seen = set()
-        self.path_count = 0
-        self.target_count = 0
-        self.files = 0
-
-    def error(self, location, text, message):
-        key = (location, text, message)
-        if key not in self.seen:
-            self.seen.add(key)
-            self.errors.append("%s: %s: %s" % (location, message, text))
-
-    def check_test_target(self, package, target, location, text):
+        self.errors, self.seen, self.paths, self.targets = [], set(), 0, 0
+    def error(self, loc, text, msg):
+        if (loc, text, msg) not in self.seen:
+            self.seen.add((loc, text, msg))
+            self.errors.append("%s: %s: %s" % (loc, msg, text))
+    def check_target(self, package, target, loc, text):
         if not os.path.isdir(os.path.join(ROOT, "crates", package)):
-            self.error(location, text, "unknown package %r" % package)
-            return
-        if target not in test_targets(package):
-            self.error(
-                location, text, "unknown test target %r for package %r" % (target, package)
-            )
-
-    def scan_test_targets(self, line, location):
-        for match in TEST_RE.finditer(line):
-            token, target = match.group(1), match.group(2)
-            package = token if "-" in token else BINARY_PACKAGE[token]
-            self.target_count += 1
-            self.check_test_target(package, target, location, line.strip())
-        if re.search(r"cargo\s+test\b", line):
-            packages = re.findall(r"-p\s+([\w-]+)", line)
-            targets = re.findall(r"--test\s+([\w-]+)", line)
-            if packages and targets:
-                for package in packages:
-                    for target in targets:
-                        self.target_count += 1
-                        self.check_test_target(package, target, location, line.strip())
-
-    def check_paths(self, pending, ignored):
-        for text, location, rels in pending:
-            self.path_count += 1
-            if any(os.path.exists(os.path.join(ROOT, rel)) for rel in rels):
-                continue
-            if any(rel in self.tracked for rel in rels):
-                self.error(location, text, "tracked path was deleted")
-                continue
-            # Directory-only ignore patterns match only with a trailing
-            # slash, which normpath strips, so try both spellings.
-            if any(rel in ignored or rel + "/" in ignored for rel in rels):
-                continue
-            self.error(location, text, "unknown repository path")
-
-    def logical_lines(self, lines):
-        """Split lines into (lineno, text, in_fence), joining continuations."""
-        logical = []
-        in_fence = False
-        buffer = []
-        start = 0
-        for index, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith("```") and stripped.count("```") == 1:
-                if buffer:
-                    logical.append((start, " ".join(buffer), True))
-                    buffer = []
-                logical.append((index + 1, line, False))
-                in_fence = not in_fence
-                continue
-            if in_fence and line.rstrip().endswith("\\"):
-                if not buffer:
-                    start = index + 1
-                buffer.append(line.rstrip()[:-1])
-                continue
-            if buffer:
-                buffer.append(line)
-                logical.append((start, " ".join(buffer), True))
-                buffer = []
-                continue
-            logical.append((index + 1, line, in_fence))
-        if buffer:
-            logical.append((start, " ".join(buffer), True))
-        return logical
-
+            self.error(loc, text, "unknown package %r" % package)
+        elif target not in test_targets(package):
+            self.error(loc, text, "unknown test target %r for package %r" % (target, package))
+    def scan_targets(self, line, loc):
+        for m in TEST_RE.finditer(mask_quoted(line)):
+            tok, tgt = m.group(1), m.group(2)
+            self.targets += 1
+            self.check_target(tok if "-" in tok else BINARY_PACKAGE[tok], tgt, loc, line.strip())
+        if re.search(r"cargo\s+test\b", mask_quoted(line)):
+            pkgs, tgts = re.findall(r"-p\s+([\w-]+)", line), re.findall(r"--test\s+([\w-]+)", line)
+            if pkgs and tgts:
+                for p in pkgs:
+                    for t in tgts:
+                        self.targets += 1
+                        self.check_target(p, t, loc, line.strip())
     def run(self):
         root_entries = set(os.listdir(ROOT)) - {".git"}
         self.tracked = tracked_files()
-        md_files = sorted(
-            path
-            for path in self.tracked
-            if path.endswith(".md") and not path.startswith("backlog/")
-        )
-        self.files = len(md_files)
-        pending = []
-        for path in md_files:
-            with open(os.path.join(ROOT, path), encoding="utf-8") as handle:
-                lines = handle.read().splitlines()
+        files, pending = md_files(), []
+        for path in files:
+            with open(os.path.join(ROOT, path), encoding="utf-8") as h:
+                lines = h.read().splitlines()
             docdir = os.path.dirname(path)
-            for lineno, line, in_fence in self.logical_lines(lines):
-                location = "%s:%d" % (path, lineno)
-                for match in BACKTICK_RE.finditer(line):
-                    text = match.group(1).strip()
-                    rels = candidate_rels(text, docdir, root_entries)
+            for lineno, line, in_fence in logical_lines(lines):
+                loc = "%s:%d" % (path, lineno)
+                for m in BACKTICK_RE.finditer(line):
+                    rels = candidate_rels(m.group(1).strip(), docdir, root_entries)
                     if rels is not None:
-                        pending.append((text, location, rels))
-                    self.scan_test_targets(match.group(1), location)
+                        pending.append((m.group(1).strip(), loc, rels))
+                    self.scan_targets(m.group(1), loc)
                 if in_fence:
-                    self.scan_test_targets(line, location)
-        queries = []
-        for _, _, rels in pending:
-            for rel in rels:
-                queries.append(rel)
-                queries.append(rel + "/")
-        ignored = ignored_paths(
-            [rel for rel in queries if not rel.startswith("..")]
-        )
-        self.check_paths(pending, ignored)
+                    self.scan_targets(line, loc)
+        ignored = ignored_paths([r for _, _, rels in pending for r in rels for r in (r, r + "/")
+                                 if not r.startswith("..")])
+        for text, loc, rels in pending:
+            self.paths += 1
+            if any(os.path.exists(os.path.join(ROOT, r)) for r in rels):
+                continue
+            if any(r in self.tracked for r in rels):
+                self.error(loc, text, "tracked path was deleted")
+            elif any(r in ignored or r + "/" in ignored for r in rels):
+                continue
+            else:
+                self.error(loc, text, "unknown repository path")
         if self.errors:
             sys.stderr.write("\n".join(self.errors) + "\n")
-            sys.stderr.write(
-                "check-docs-accuracy: %d problem(s) in %d markdown file(s)\n"
-                % (len(self.errors), self.files)
-            )
+            sys.stderr.write("check-docs-accuracy: %d problem(s) in %d markdown file(s)\n"
+                             % (len(self.errors), len(files)))
             return 1
-        print(
-            "check-docs-accuracy: ok (%d files, %d paths, %d test targets checked)"
-            % (self.files, self.path_count, self.target_count)
-        )
+        print("check-docs-accuracy: ok (%d files, %d paths, %d test targets checked)"
+              % (len(files), self.paths, self.targets))
         return 0
-
-
-sys.exit(Checker().run())
+if __name__ == "__main__":
+    if "--commands" in sys.argv[1:]:
+        for row in command_rows():
+            print(row)
+    else:
+        sys.exit(Checker().run())
