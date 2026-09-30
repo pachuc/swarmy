@@ -9,15 +9,14 @@ use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId}
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use ulid::Ulid;
 
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 async fn fixture() -> Option<(
     swarmy_client::Client,
     Store,
     tokio::task::JoinHandle<Result<(), std::io::Error>>,
 )> {
-    let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-    let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-    NETWORK.get_or_init(swarmy_store::boot);
+    let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+    let nats = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
+    swarmy_testkit::boot_fdb();
     let store = Store::open(
         Some(std::path::Path::new(&cluster)),
         Some(&["cli-api-test".into(), Ulid::generate().to_string()]),

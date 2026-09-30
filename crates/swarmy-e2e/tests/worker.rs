@@ -1,8 +1,4 @@
-#[path = "../../swarmy-store/tests/support/mod.rs"]
-mod image_fixture;
 
-#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
-mod cli_bin;
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -55,20 +51,19 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        let url = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
+        let url = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
         Self::new_at(url).await
     }
 
     async fn new_at(nats_url: String) -> Option<Self> {
-        static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
         for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
-            swarmy_core::test_support::stack_env(variable)?;
+            swarmy_testkit::require_stack(variable)?;
         }
-        NETWORK.get_or_init(swarmy_store::boot);
+        swarmy_testkit::boot_fdb();
         let prefix = format!("worker_{}", Ulid::generate());
         let store = Store::open(
             Some(std::path::Path::new(
-                &swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap(),
+                &swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").unwrap(),
             )),
             Some(std::slice::from_ref(&prefix)),
             Arc::new(ObjectBlobStore::from_env().unwrap()),
@@ -237,7 +232,7 @@ impl Fixture {
     }
 
     async fn interrupt_from_cli(&self, id: SessionId) {
-        let executable = cli_bin::bin("swarmy");
+        let executable = swarmy_testkit::bin("swarmy");
         let output = Command::new(executable)
             .args(["session", "interrupt", &id.to_string()])
             .env("SWARMY_API_URL", &self.api_url)
@@ -253,7 +248,7 @@ impl Fixture {
     }
 
     fn start(&mut self, service: &str, kill_point: Option<&str>) -> usize {
-        let executable = cli_bin::bin(service);
+        let executable = swarmy_testkit::bin(service);
         assert!(
             executable.exists(),
             "build the workspace binaries before running worker tests"
@@ -345,7 +340,7 @@ impl Fixture {
                 break id;
             }
         };
-        let image = image_fixture::image(&self.store).await;
+        let image = swarmy_testkit::image(&self.store).await;
         self.store
             .create_agent_session(
                 id,
@@ -417,7 +412,7 @@ impl Fixture {
                     route_step: 0,
                 },
                 Timestamp::now(),
-                image_fixture::image(&self.store).await,
+                swarmy_testkit::image(&self.store).await,
             )
             .await
             .unwrap();
@@ -537,7 +532,7 @@ impl Fixture {
             blobs.delete(&key).await.unwrap();
         }
         let db = Database::new(Some(
-            &swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap(),
+            &swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").unwrap(),
         ))
         .unwrap();
         let path = vec![self.prefix.clone()];
@@ -1304,8 +1299,8 @@ async fn recover_at_each_kill_point() {
 
 #[tokio::test]
 async fn large_request_dispatches_on_default_nats_limit() {
-    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_none()
-        || swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_none()
+    if swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").is_none()
+        || swarmy_testkit::require_stack("SWARMY_S3_ENDPOINT").is_none()
     {
         return;
     }
@@ -1385,8 +1380,8 @@ async fn large_request_dispatches_on_default_nats_limit() {
 
 #[tokio::test]
 async fn permanent_publish_error_ends_turn() {
-    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_none()
-        || swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_none()
+    if swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").is_none()
+        || swarmy_testkit::require_stack("SWARMY_S3_ENDPOINT").is_none()
     {
         return;
     }
@@ -1601,7 +1596,7 @@ Finish the task
         std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
             "responses": {"0": response("Finished the turn".into(), 101), "1": response(summary.clone(), 120)}
         })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("tommy", image, "", Timestamp::now(), None).await.unwrap();
         let id = loop {
             let id = SessionId::from_ulid(Ulid::generate());
@@ -1665,7 +1660,7 @@ async fn check_overflow_recovery(second_overflow: bool) {
             "responses": {"1": side_response(summary.into(), 20), "2": side_response("Recovered".into(), 20)},
             "failures": failures
         })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("overflow-agent", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -1711,7 +1706,7 @@ async fn clean_tool_completion_reenables_overflow_recovery() {
                 "4": {"status": 400, "message": "context overflow after tool"}
             }
         })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("clean-reset", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -1744,7 +1739,7 @@ async fn new_user_turn_reenables_overflow_recovery() {
                 "3": {"status": 400, "message": "context overflow"}
             }
         })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("reset-recovery", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -1785,7 +1780,7 @@ async fn early_length_stop_compacts_without_replaying_truncated_reply() {
         std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
             "responses": {"0": truncated, "1": side_response(summary.into(), 20), "2": side_response("Recovered".into(), 20)}
         })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("length-agent", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -1825,7 +1820,7 @@ async fn second_length_stop_fails_with_notice() {
         std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
             "responses": {"0": truncated, "1": side_response("## Goal\nRetry".into(), 20), "2": truncated, "3": side_response("After retry limit".into(), 20)}
         })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("length-twice", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -1883,7 +1878,7 @@ async fn refused_recovery_summary_ends_turn_and_omits_truncated_reply() {
         std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
             "responses": {"0": truncated, "1": refused, "2": side_response("Next answer".into(), 20)}
         })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("refused-recovery", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -1984,7 +1979,7 @@ async fn no_head_to_compact_omits_truncated_tool_attempt() {
                 .unwrap(),
             )
             .unwrap();
-            let image = image_fixture::image(&f.store).await;
+            let image = swarmy_testkit::image(&f.store).await;
             let agent = f
                 .store
                 .create_agent("no-head-recovery", image, "", Timestamp::now(), None)
@@ -2054,7 +2049,7 @@ async fn no_head_recovery_survives_crash_before_release() {
                 .unwrap(),
             )
             .unwrap();
-            let image = image_fixture::image(&f.store).await;
+            let image = swarmy_testkit::image(&f.store).await;
             let agent = f
                 .store
                 .create_agent("no-head-crash", image, "", Timestamp::now(), None)
@@ -2111,7 +2106,7 @@ async fn empty_successful_summary_rolls_over() {
         std::fs::write(f.files.path().join("script.json"), serde_json::to_vec(&serde_json::json!({
             "responses": {"0": side_response("Original answer".into(), 101), "1": side_response(String::new(), 20)}
         })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("empty-summary", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -2140,7 +2135,7 @@ async fn rejected_summary_preserves_session(summary: &'static str, stop_reason: 
             "responses": {"0": side_response("Original answer".into(), 101), "1": summary_response,
                 "2": side_response("Next answer".into(), 20)}
         })).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("rejected-summary", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -2214,7 +2209,7 @@ Finish the task
 1. Verify"
                 .to_owned();
             write_direct_trigger_script(f, &summary);
-            let image = image_fixture::image(&f.store).await;
+            let image = swarmy_testkit::image(&f.store).await;
             let agent = f
                 .store
                 .create_agent("sidekick", image, "", Timestamp::now(), None)
@@ -2437,7 +2432,7 @@ Finish the task
 1. Verify"
                 .to_owned();
             write_fleet_side_script(f, &summary, false);
-            let image = image_fixture::image(&f.store).await;
+            let image = swarmy_testkit::image(&f.store).await;
             let agent = f
                 .store
                 .create_agent("sidekick", image, "", Timestamp::now(), None)
@@ -2485,7 +2480,7 @@ async fn refused_split_prefix_reply_is_not_in_next_prompt() {
         script["responses"]["41"] = serde_json::to_value(refused).unwrap();
         script["responses"]["42"] = serde_json::to_value(side_response("Next answer".into(), 20)).unwrap();
         std::fs::write(&path, serde_json::to_vec(&script).unwrap()).unwrap();
-        let image = image_fixture::image(&f.store).await;
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("refused-prefix", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -2511,7 +2506,7 @@ async fn split_turn_prefix_summary_keeps_later_tool_rounds() {
         f.summarize_at_tokens = 5999;
         let prefix = "## Original Request\nFinish the task\n\n## Progress So Far\n- Tools used\n\n## Context Needed to Continue\n- Verify";
         write_fleet_side_script(f, prefix, true);
-        let image = image_fixture::image(&f.store).await;
+        let image = swarmy_testkit::image(&f.store).await;
         let agent = f.store.create_agent("split-turn", image, "", Timestamp::now(), None).await.unwrap();
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
@@ -2563,7 +2558,7 @@ async fn side_summary_markdown_continues() {
             let summary =
                 "## Goal\nFinish the routes task\n\n## Progress\n### Done\n- [x] Handler done";
             write_fleet_side_script(f, summary, false);
-            let image = image_fixture::image(&f.store).await;
+            let image = swarmy_testkit::image(&f.store).await;
             let agent = f
                 .store
                 .create_agent("sidekick", image, "", Timestamp::now(), None)

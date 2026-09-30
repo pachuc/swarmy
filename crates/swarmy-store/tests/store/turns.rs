@@ -13,7 +13,7 @@ async fn turn_boundaries_are_atomic_and_fence_expired_and_replaced_workers() {
         .create_session(
             &session,
             Timestamp::now(),
-            image_fixture::image(store).await,
+            swarmy_testkit::image(store).await,
         )
         .await
         .unwrap();
@@ -189,7 +189,7 @@ async fn concurrent_user_appends_admit_one_message_and_index_it_atomically() {
         .create_session(
             &session,
             Timestamp::now(),
-            image_fixture::image(store).await,
+            swarmy_testkit::image(store).await,
         )
         .await
         .unwrap();
@@ -506,7 +506,7 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
         .create_session(
             &session,
             Timestamp::now(),
-            image_fixture::image(store).await,
+            swarmy_testkit::image(store).await,
         )
         .await
         .unwrap();
@@ -847,7 +847,7 @@ async fn queued_message_survives_main_and_side_rollover_exactly_once() {
     let store = &test.store;
     // Main rollover: waiting input queued while leased must move to the fresh
     // main, wake it runnable, and drain exactly once.
-    let image = image_fixture::image(store).await;
+    let image = swarmy_testkit::image(store).await;
     let agent = store
         .create_agent("rollover", image, "", timestamp(0), None)
         .await

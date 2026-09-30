@@ -8,7 +8,7 @@ async fn named_agents_pin_images_enforce_names_and_retain_sessions_on_delete() {
         return;
     };
     let store = &test.store;
-    let image = image_fixture::image(store).await;
+    let image = swarmy_testkit::image(store).await;
     let (a, b) = tokio::join!(
         store.create_agent("tommy", image, "coding", timestamp(0), None),
         store.create_agent("tommy", image, "coding", timestamp(0), None)
@@ -168,7 +168,7 @@ async fn ephemeral_creation_and_closure() {
         return;
     };
     let store = &test.store;
-    let image = image_fixture::image(store).await;
+    let image = swarmy_testkit::image(store).await;
     let id = SessionId::from_ulid(Ulid::generate());
     assert!(matches!(
         store
@@ -216,7 +216,7 @@ async fn sweep_rechecks_activity_and_protects_named_sessions() {
         return;
     };
     let store = &test.store;
-    let image = image_fixture::image(store).await;
+    let image = swarmy_testkit::image(store).await;
     let mut sessions = Vec::new();
     for _ in 0..3 {
         sessions.push(
@@ -302,7 +302,7 @@ async fn agent_inference_settings_create_and_independent_updates() {
         return;
     };
     let store = &test.store;
-    let image = image_fixture::image(store).await;
+    let image = swarmy_testkit::image(store).await;
     let settings = AgentSettings {
         system_prompt: Some("  Review carefully.\n".into()),
         model: Some("agent-model".into()),
@@ -447,7 +447,7 @@ async fn main_session_creation_replacement_and_close_are_atomic() {
         return;
     };
     let store = &test.store;
-    let image = image_fixture::image(store).await;
+    let image = swarmy_testkit::image(store).await;
     let agent = store
         .create_agent("main", image, "", timestamp(0), None)
         .await
@@ -546,7 +546,7 @@ async fn main_pointer_rejects_foreign_sessions_and_races_with_close() {
         return;
     };
     let store = &test.store;
-    let image = image_fixture::image(store).await;
+    let image = swarmy_testkit::image(store).await;
     let agent = store
         .create_agent("main", image, "", timestamp(0), None)
         .await
@@ -656,7 +656,7 @@ async fn agent_memory_and_gpu_requirements_are_durable() {
     let Some(test) = TestStore::memory() else {
         return;
     };
-    let image = image_fixture::image(&test.store).await;
+    let image = swarmy_testkit::image(&test.store).await;
     let settings = AgentSettings {
         memory_mib: Some(2048),
         gpu: Some(swarmy_core::GpuRequirement::Shared),

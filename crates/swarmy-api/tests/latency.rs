@@ -13,7 +13,6 @@ use swarmy_core::{
 use swarmy_store::{AgentSessionOptions, Store};
 use ulid::Ulid;
 
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 const TURNS: usize = 50;
 
 struct BenchFixture {
@@ -38,10 +37,10 @@ async fn api_first_fake_token_stays_within_five_ms_of_direct_append() {
     ) else {
         return;
     };
-    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_none() {
+    if swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").is_none() {
         return;
     }
-    if swarmy_core::test_support::stack_env("SWARMY_NATS_URL").is_none() {
+    if swarmy_testkit::require_stack("SWARMY_NATS_URL").is_none() {
         return;
     }
     let fixture = setup(&image).await;
@@ -63,7 +62,7 @@ async fn api_first_fake_token_stays_within_five_ms_of_direct_append() {
 }
 
 async fn setup(image: &str) -> BenchFixture {
-    NETWORK.get_or_init(swarmy_store::boot);
+    swarmy_testkit::boot_fdb();
     let settings = swarmy_config::Settings::load().unwrap().settings;
     assert_eq!(
         settings.selection.provider, "fake",
@@ -304,10 +303,10 @@ async fn fake_turn_records_first_token_metrics() {
     let Some(image) = swarmy_core::test_support::optional_env("SWARMY_TEST_IMAGE") else {
         return;
     };
-    if swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").is_none() {
+    if swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").is_none() {
         return;
     }
-    if swarmy_core::test_support::stack_env("SWARMY_NATS_URL").is_none() {
+    if swarmy_testkit::require_stack("SWARMY_NATS_URL").is_none() {
         return;
     }
     let fixture = setup(&image).await;

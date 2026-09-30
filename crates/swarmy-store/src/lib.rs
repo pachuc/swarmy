@@ -312,6 +312,14 @@ impl Store {
         crate::keys::Keys::new(&self.root)
     }
 
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn now(&self) -> jiff::Timestamp {
+        (self.clock)()
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
     pub(crate) fn now(&self) -> jiff::Timestamp {
         (self.clock)()
     }

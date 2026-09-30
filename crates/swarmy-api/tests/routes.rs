@@ -9,17 +9,16 @@ use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId}
 use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore};
 use ulid::Ulid;
 
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 
 #[tokio::test]
 async fn authenticated_routes_and_create_replay() {
-    let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
+    let Some(cluster) = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE") else {
         return;
     };
-    let Some(nats) = swarmy_core::test_support::stack_env("SWARMY_NATS_URL") else {
+    let Some(nats) = swarmy_testkit::require_stack("SWARMY_NATS_URL") else {
         return;
     };
-    NETWORK.get_or_init(swarmy_store::boot);
+    swarmy_testkit::boot_fdb();
     let path = vec!["swarmy-api-test".to_owned(), Ulid::generate().to_string()];
     let store = Store::open(
         Some(std::path::Path::new(&cluster)),
@@ -475,9 +474,9 @@ async fn route_server() -> Option<(
     swarmy_client::Client,
     tokio::task::JoinHandle<std::result::Result<(), std::io::Error>>,
 )> {
-    let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-    let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-    NETWORK.get_or_init(swarmy_store::boot);
+    let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+    let nats = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
+    swarmy_testkit::boot_fdb();
     let path = vec![
         "swarmy-api-route-test".to_owned(),
         Ulid::generate().to_string(),

@@ -49,6 +49,7 @@ async-stream.workspace = true
 [dev-dependencies]
 swarmy-core = { workspace = true, features = ["test-support"] }
 swarmy-store = { workspace = true, features = ["test-support"] }
+swarmy-testkit.workspace = true
 
 swarmy-client.workspace = true
 reqwest.workspace = true

@@ -12,7 +12,6 @@ use swarmy_store::{Store, blob::MemoryBlobStore};
 use tokio::task::JoinHandle;
 use ulid::Ulid;
 
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 
 struct Fixture {
     store: Store,
@@ -36,9 +35,9 @@ impl Fixture {
     /// Serve the same routes with an overridden spool ceiling, so size-limit
     /// tests need no multi-gigabyte bodies.
     async fn with_upload_max(upload_max_bytes: u64) -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-        NETWORK.get_or_init(swarmy_store::boot);
+        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+        let nats = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
+        swarmy_testkit::boot_fdb();
         let store = Store::open(
             Some(std::path::Path::new(&cluster)),
             Some(&["ops-test".into(), Ulid::generate().to_string()]),

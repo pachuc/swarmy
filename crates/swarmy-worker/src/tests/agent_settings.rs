@@ -15,9 +15,9 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        let url = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-        NETWORK.get_or_init(swarmy_store::boot);
+        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+        let url = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
+        swarmy_testkit::boot_fdb();
         let prefix = format!("agent_inference_{}", Ulid::generate());
         let mut config = config(url.clone(), &prefix, Arc::default());
         config.lease_duration = Duration::from_secs(5);
@@ -32,7 +32,7 @@ impl Fixture {
         )
         .await
         .unwrap();
-        image_fixture::image(&store).await;
+        swarmy_testkit::image(&store).await;
         let bus = Bus::connect(&url, config.bus.clone()).await.unwrap();
         bus.setup(&[]).await.unwrap();
         let worker = Worker::new(store.clone(), bus.clone(), blobs, config);

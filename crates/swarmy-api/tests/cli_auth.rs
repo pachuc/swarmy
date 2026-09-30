@@ -4,11 +4,6 @@ use std::{
     process::{Command, Output},
 };
 
-#[path = "support/cli_bin.rs"]
-mod cli_bin;
-
-static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
-    std::sync::OnceLock::new();
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -27,8 +22,8 @@ impl Drop for Fixture {
 }
 impl Fixture {
     fn new() -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
+        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+        let nats = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
         let dir = tempfile::tempdir().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -62,7 +57,7 @@ impl Fixture {
             include_bytes!("../../swarmy-llm/tests/fixtures/auth.json"),
         )
         .unwrap();
-        NETWORK.get_or_init(swarmy_store::boot);
+        swarmy_testkit::boot_fdb();
         let directory = settings.store.directory;
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
         let (ready, started) = std::sync::mpsc::channel();
@@ -107,7 +102,7 @@ impl Fixture {
         })
     }
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(cli_bin::bin("swarmy"));
+        let mut command = Command::new(swarmy_testkit::bin("swarmy"));
         for (name, _) in std::env::vars_os() {
             if name.to_string_lossy().starts_with("SWARMY_") {
                 command.env_remove(name);

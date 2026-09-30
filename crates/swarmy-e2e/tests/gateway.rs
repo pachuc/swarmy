@@ -1,8 +1,4 @@
-#[path = "../../swarmy-store/tests/support/mod.rs"]
-mod image_fixture;
 
-#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
-mod cli_bin;
 
 use std::{
     future::Future,
@@ -55,19 +51,18 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
         for variable in [
             "SWARMY_FDB_CLUSTER_FILE",
             "SWARMY_NATS_URL",
             "SWARMY_S3_ENDPOINT",
         ] {
-            swarmy_core::test_support::stack_env(variable)?;
+            swarmy_testkit::require_stack(variable)?;
         }
-        NETWORK.get_or_init(swarmy_store::boot);
+        swarmy_testkit::boot_fdb();
         let prefix = format!("gateway_{}", Ulid::generate());
         let store = Store::open(
             Some(std::path::Path::new(
-                &swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap(),
+                &swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").unwrap(),
             )),
             Some(std::slice::from_ref(&prefix)),
             Arc::new(ObjectBlobStore::from_env().unwrap()),
@@ -75,7 +70,7 @@ impl Fixture {
         .await
         .unwrap();
         let bus = Bus::connect(
-            &swarmy_core::test_support::stack_env("SWARMY_NATS_URL").unwrap(),
+            &swarmy_testkit::require_stack("SWARMY_NATS_URL").unwrap(),
             Config {
                 prefix: Some(SubjectToken::new(&prefix).unwrap()),
                 ack_wait: ACK_WAIT,
@@ -147,7 +142,7 @@ impl Fixture {
         models: &[swarmy_config::CustomModel],
     ) {
         self.children.push(
-            Command::new(cli_bin::bin("swarmy-gateway"))
+            Command::new(swarmy_testkit::bin("swarmy-gateway"))
                 .env("SWARMY_PROVIDER", "fake")
                 .env("SWARMY_PROVIDERS", providers)
                 .env(
@@ -225,7 +220,7 @@ impl Fixture {
         let now = Timestamp::now();
         let settings = swarmy_config::Settings {
             selection: swarmy_config::SelectionSettings {
-                default_image: Some(image_fixture::image(&self.store).await.into()),
+                default_image: Some(swarmy_testkit::image(&self.store).await.into()),
                 ..Default::default()
             },
             ..Default::default()
@@ -385,7 +380,7 @@ impl Fixture {
 
     async fn drained(&self) {
         let context = async_nats::jetstream::new(
-            async_nats::connect(swarmy_core::test_support::stack_env("SWARMY_NATS_URL").unwrap())
+            async_nats::connect(swarmy_testkit::require_stack("SWARMY_NATS_URL").unwrap())
                 .await
                 .unwrap(),
         );
@@ -412,7 +407,7 @@ impl Fixture {
     async fn cleanup(mut self) {
         self.kill().await;
         let db = Database::new(Some(
-            &swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE").unwrap(),
+            &swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").unwrap(),
         ))
         .unwrap();
         let path = vec![self.prefix.clone()];
@@ -426,7 +421,7 @@ impl Fixture {
         .await
         .unwrap();
         let context = async_nats::jetstream::new(
-            async_nats::connect(swarmy_core::test_support::stack_env("SWARMY_NATS_URL").unwrap())
+            async_nats::connect(swarmy_testkit::require_stack("SWARMY_NATS_URL").unwrap())
                 .await
                 .unwrap(),
         );
@@ -1319,7 +1314,7 @@ async fn unknown_model_is_a_permanent_failure_without_provider_calls() {
             f.publish(&job).await;
             assert!(matches!(f.terminal(&job).await, Event::InferenceFailed { error, .. } if error.contains("unknown catalog model: fake/unknown-model")));
             f.drained().await;
-            let context = async_nats::jetstream::new(async_nats::connect(swarmy_core::test_support::stack_env("SWARMY_NATS_URL").unwrap()).await.unwrap());
+            let context = async_nats::jetstream::new(async_nats::connect(swarmy_testkit::require_stack("SWARMY_NATS_URL").unwrap()).await.unwrap());
             let stream = context.get_stream(format!("{}_INFER_REQ", f.prefix)).await.unwrap();
             let consumer: async_nats::jetstream::consumer::PullConsumer = stream.get_consumer("infer_fake").await.unwrap();
             assert_eq!(consumer.cached_info().delivered.consumer_sequence, 1);

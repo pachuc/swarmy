@@ -20,9 +20,8 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Option<Self> {
-        static NETWORK: OnceLock<NetworkAutoStop> = OnceLock::new();
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        NETWORK.get_or_init(swarmy_store::boot);
+        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+        swarmy_testkit::boot_fdb();
         let name = format!("swarmy-snapshot-test-{}", Ulid::generate());
         let db = Arc::new(Database::new(Some(&cluster)).unwrap());
         let root = Subspace::all().subspace(&(name.clone(),));

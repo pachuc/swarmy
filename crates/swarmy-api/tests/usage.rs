@@ -13,7 +13,6 @@ use swarmy_store::{
 };
 use ulid::Ulid;
 
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 
 struct Fixture {
     store: Store,
@@ -29,9 +28,9 @@ impl Drop for Fixture {
 
 impl Fixture {
     async fn new() -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-        NETWORK.get_or_init(swarmy_store::boot);
+        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+        let nats = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
+        swarmy_testkit::boot_fdb();
         let store = Store::open(
             Some(std::path::Path::new(&cluster)),
             Some(&["usage-test".into(), Ulid::generate().to_string()]),

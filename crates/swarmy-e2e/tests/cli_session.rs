@@ -1,5 +1,3 @@
-#[path = "../../swarmy-store/tests/support/mod.rs"]
-mod image_fixture;
 
 #[path = "cli_session/agents.rs"]
 mod agents;
@@ -10,8 +8,6 @@ mod chat;
 #[path = "cli_session/cost.rs"]
 mod cost;
 
-#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
-mod cli_bin;
 
 use std::{
     future::Future,
@@ -159,7 +155,7 @@ struct Fixture {
 
 impl Fixture {
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(cli_bin::bin("swarmy"));
+        let mut command = Command::new(swarmy_testkit::bin("swarmy"));
         command
             .args(args)
             .env("SWARMY_FDB_CLUSTER_FILE", &self.cluster)
@@ -223,14 +219,13 @@ impl Fixture {
 }
 
 async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
-    static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
     let (Some(cluster), Some(url)) = (
-        swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
-        swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
+        swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE"),
+        swarmy_testkit::require_stack("SWARMY_NATS_URL"),
     ) else {
         return;
     };
-    NETWORK.get_or_init(swarmy_store::boot);
+    swarmy_testkit::boot_fdb();
     let prefix = Ulid::generate().to_string();
     let directory = format!("cli-test-{prefix}");
     let store = Store::open(
@@ -304,7 +299,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         prefix,
         url,
     };
-    image_fixture::image(&fixture.store).await;
+    swarmy_testkit::image(&fixture.store).await;
     let result = AssertUnwindSafe(test(fixture.clone())).catch_unwind().await;
     api_server.abort();
     fixture.cleanup().await;
@@ -597,7 +592,7 @@ async fn idle_event_enables_input_without_polling_and_history_still_paginates() 
                 .create_session(
                     &record,
                     Timestamp::now(),
-                    image_fixture::image(&fixture.store).await,
+                    swarmy_testkit::image(&fixture.store).await,
                 )
                 .await
                 .unwrap();

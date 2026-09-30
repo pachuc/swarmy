@@ -14,7 +14,6 @@ use swarmy_core::{
 };
 use swarmy_store::{AgentSessionOptions, CredentialKey, Store, StoreError, blob::MemoryBlobStore};
 
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 
 struct Fixture {
     store: Store,
@@ -23,8 +22,8 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        NETWORK.get_or_init(swarmy_store::boot);
+        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+        swarmy_testkit::boot_fdb();
         let db = Arc::new(Database::new(Some(&cluster)).unwrap());
         let root = Subspace::all().subspace(&("route-tests", ulid::Ulid::generate().to_string()));
         let store = Store::with_subspace(db, root, Arc::new(MemoryBlobStore::default()));

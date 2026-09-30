@@ -20,16 +20,11 @@ impl Drop for Fixture {
         }
     }
 }
-#[path = "support/cli_bin.rs"]
-mod cli_bin;
-
-static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
-    std::sync::OnceLock::new();
 
 impl Fixture {
     fn new(config: &str) -> Option<Self> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        let nats = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
+        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+        let nats = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
         let directory = tempfile::tempdir().unwrap();
         fs::create_dir(directory.path().join(".swarmy")).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -40,7 +35,7 @@ impl Fixture {
         fs::write(&config_path, config).unwrap();
         let settings = swarmy_config::Settings::read(&config_path).unwrap();
         let catalog = settings.catalog().unwrap();
-        NETWORK.get_or_init(swarmy_store::boot);
+        swarmy_testkit::boot_fdb();
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
         let (ready, started) = std::sync::mpsc::channel();
         let fake_dir = directory.path().to_path_buf();
@@ -92,7 +87,7 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        let mut command = Command::new(cli_bin::bin("swarmy"));
+        let mut command = Command::new(swarmy_testkit::bin("swarmy"));
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("SWARMY_") {
                 command.env_remove(key);

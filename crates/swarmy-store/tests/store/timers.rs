@@ -6,7 +6,7 @@ async fn setup(store: &Store) -> (AgentId, SessionId, Lease) {
     let agent = store
         .create_agent(
             "tommy",
-            image_fixture::image(store).await,
+            swarmy_testkit::image(store).await,
             "",
             Timestamp::now(),
             None,
@@ -398,7 +398,7 @@ async fn side_conversation_timer_opens_missing_main_conversation() {
     let agent = store
         .create_agent(
             "side-only",
-            image_fixture::image(store).await,
+            swarmy_testkit::image(store).await,
             "",
             Timestamp::now(),
             None,

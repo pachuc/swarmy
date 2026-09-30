@@ -1,8 +1,4 @@
-#[path = "../../swarmy-store/tests/support/mod.rs"]
-mod image_fixture;
 
-#[path = "../../swarmy-api/tests/support/cli_bin.rs"]
-mod cli_bin;
 
 use std::{
     collections::HashSet,
@@ -60,7 +56,7 @@ impl Fixture {
     }
 
     async fn start_with_retention(&self, partitions: &str, prefix: &str, retention: u64) -> usize {
-        let child = Command::new(cli_bin::bin("swarmy-scheduler"))
+        let child = Command::new(swarmy_testkit::bin("swarmy-scheduler"))
             .env("SWARMY_FDB_CLUSTER_FILE", &self.cluster)
             .env("SWARMY_NATS_URL", &self.url)
             .env("SWARMY_STORE_DIRECTORY", &self.directory)
@@ -168,7 +164,7 @@ impl Fixture {
                     plan: Vec::new(),
                 },
                 wake_at,
-                image_fixture::image(&self.store).await,
+                swarmy_testkit::image(&self.store).await,
             )
             .await
             .unwrap();
@@ -219,14 +215,13 @@ fn id() -> SessionId {
 }
 
 async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
-    static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
     let (Some(cluster), Some(url)) = (
-        swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
-        swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
+        swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE"),
+        swarmy_testkit::require_stack("SWARMY_NATS_URL"),
     ) else {
         return;
     };
-    NETWORK.get_or_init(swarmy_store::boot);
+    swarmy_testkit::boot_fdb();
     let prefix = Ulid::generate().to_string();
     let directory = format!("scheduler-test-{prefix}");
     let fixture = Fixture {
@@ -568,7 +563,7 @@ async fn timer_closes_only_idle_ephemeral_sessions() {
         let active = f.create(7, SessionState::Runnable, old).await;
         let agent = f
             .store
-            .create_agent("named", image_fixture::image(&f.store).await, "", old, None)
+            .create_agent("named", swarmy_testkit::image(&f.store).await, "", old, None)
             .await
             .unwrap();
         let named = f
@@ -626,7 +621,7 @@ async fn due_side_timer_nudges_its_idle_session() {
             .store
             .create_agent(
                 "timer-side",
-                image_fixture::image(&f.store).await,
+                swarmy_testkit::image(&f.store).await,
                 "",
                 Timestamp::now(),
                 None,

@@ -1,5 +1,3 @@
-#[path = "../../swarmy-store/tests/support/mod.rs"]
-mod image_fixture;
 
 use std::{
     collections::BTreeSet,
@@ -30,7 +28,6 @@ use ulid::Ulid;
 
 use crate::{config::Config, worker::Worker};
 
-static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
 
 struct SlowTool(Arc<AtomicUsize>);
 impl Tool for SlowTool {
@@ -147,12 +144,12 @@ fn partial_batch(id: SessionId) -> Vec<Event> {
 #[tokio::test]
 async fn partial_tool_batch_resumes_with_lease_renewal() {
     let (Some(cluster), Some(url)) = (
-        swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
-        swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
+        swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE"),
+        swarmy_testkit::require_stack("SWARMY_NATS_URL"),
     ) else {
         return;
     };
-    NETWORK.get_or_init(swarmy_store::boot);
+    swarmy_testkit::boot_fdb();
     let prefix = format!("worker_slow_{}", Ulid::generate());
     let calls = Arc::new(AtomicUsize::new(0));
     let config = config(url.clone(), &prefix, calls.clone());
@@ -186,7 +183,7 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
                 plan: Vec::new(),
             },
             Timestamp::now(),
-            image_fixture::image(&store).await,
+            swarmy_testkit::image(&store).await,
         )
         .await
         .unwrap();
@@ -340,12 +337,12 @@ mod routing;
 #[tokio::test]
 async fn deleted_computer_refuses_remote_tools_with_durable_message() {
     let (Some(cluster), Some(url)) = (
-        swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE"),
-        swarmy_core::test_support::stack_env("SWARMY_NATS_URL"),
+        swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE"),
+        swarmy_testkit::require_stack("SWARMY_NATS_URL"),
     ) else {
         return;
     };
-    NETWORK.get_or_init(swarmy_store::boot);
+    swarmy_testkit::boot_fdb();
     let prefix = format!("worker_slow_{}", Ulid::generate());
     let calls = Arc::new(AtomicUsize::new(0));
     let config = config(url.clone(), &prefix, calls.clone());
@@ -379,7 +376,7 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
                 plan: Vec::new(),
             },
             Timestamp::now(),
-            image_fixture::image(&store).await,
+            swarmy_testkit::image(&store).await,
         )
         .await
         .unwrap();

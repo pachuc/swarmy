@@ -1,5 +1,3 @@
-#[path = "support/mod.rs"]
-mod image_fixture;
 
 use std::sync::{Arc, OnceLock};
 
@@ -540,9 +538,8 @@ struct TestStore {
 }
 impl TestStore {
     fn new(blobs: Arc<dyn BlobStore>) -> Option<Self> {
-        static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        NETWORK.get_or_init(swarmy_store::boot);
+        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+        swarmy_testkit::boot_fdb();
         let db = Arc::new(Database::new(Some(&cluster)).unwrap());
         let root = Subspace::all().subspace(&("swarmy-store-tests", Ulid::generate().to_string()));
         let store = Store::with_subspace(db.clone(), root.clone(), blobs);
@@ -557,7 +554,7 @@ impl TestStore {
             .create_session(
                 &record,
                 timestamp(0),
-                image_fixture::image(&self.store).await,
+                swarmy_testkit::image(&self.store).await,
             )
             .await
             .unwrap();
@@ -588,7 +585,7 @@ async fn waking_only_changes_idle_sessions_and_preserves_existing_schedules() {
         .create_session(
             &record,
             timestamp(0),
-            image_fixture::image(&test.store).await,
+            swarmy_testkit::image(&test.store).await,
         )
         .await
         .unwrap();
@@ -912,7 +909,7 @@ async fn snapshots_requests_and_lease_transitions_round_trip() {
         .create_session(
             &record,
             timestamp(0),
-            image_fixture::image(&test.store).await,
+            swarmy_testkit::image(&test.store).await,
         )
         .await
         .unwrap();
@@ -925,7 +922,7 @@ async fn snapshots_requests_and_lease_transitions_round_trip() {
             .create_session(
                 &record,
                 timestamp(0),
-                image_fixture::image(&test.store).await
+                swarmy_testkit::image(&test.store).await
             )
             .await,
         Err(StoreError::Domain(swarmy_store::DomainError::SessionExists))
@@ -1058,7 +1055,7 @@ async fn lease_renewal_and_state_transitions_update_indexes() {
 
 #[tokio::test]
 async fn s3_blob_store_and_large_event_round_trip() {
-    if swarmy_core::test_support::stack_env("SWARMY_S3_ENDPOINT").is_none() {
+    if swarmy_testkit::require_stack("SWARMY_S3_ENDPOINT").is_none() {
         return;
     }
     let blobs = Arc::new(ObjectBlobStore::from_env().unwrap());
@@ -1095,7 +1092,7 @@ async fn directory_roots_reopen_without_crossing_isolation_boundaries() {
     let Some(test) = TestStore::memory() else {
         return;
     };
-    let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
+    let Some(cluster) = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE") else {
         return;
     };
     let path = vec![format!("swarmy-store-test-{}", Ulid::generate())];
@@ -1109,7 +1106,7 @@ async fn directory_roots_reopen_without_crossing_isolation_boundaries() {
     .unwrap();
     let record = session();
     store
-        .create_session(&record, timestamp(0), image_fixture::image(&store).await)
+        .create_session(&record, timestamp(0), swarmy_testkit::image(&store).await)
         .await
         .unwrap();
     let reopened = Store::open(Some(std::path::Path::new(&cluster)), Some(&path), blobs)
@@ -2320,7 +2317,7 @@ async fn creation_requires_a_registered_image_and_pins_it_atomically() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("registered images: (none)"));
-    let image = image_fixture::image(&test.store).await;
+    let image = swarmy_testkit::image(&test.store).await;
     let manifest = test
         .store
         .get_image("fixture", &ImageTag("test".into()))
