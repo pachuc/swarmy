@@ -377,8 +377,21 @@ async fn multiplexed_stream_resumes_and_rejects_rewind() {
         (api::LogId::Session(b.to_string()), 2)
     );
     f.append(a, "a3").await;
-    // Let the server's producer move ahead of the client's delivered cursor.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Wait until the server's producer delivers the third event past the
+    // client's cursor before changing the subscription.
+    swarmy_testkit::eventually(
+        "producer delivers the third event",
+        Duration::from_secs(8),
+        async || {
+            stream
+                .cursors()
+                .iter()
+                .find(|cursor| cursor.log_id == api::LogId::Session(a.to_string()))
+                .filter(|cursor| cursor.sequence >= 3)
+                .map(|_| ())
+        },
+    )
+    .await;
     let handle = stream.subscription_handle();
     handle.set(sub(&[a, b], true));
     let Err(Error::Api { body, .. }) = stream.next_item().await else {
@@ -395,6 +408,12 @@ async fn multiplexed_stream_resumes_and_rejects_rewind() {
     handle.set(desired.clone());
     let bus = f.bus.clone();
     tokio::spawn(async move {
+        // The delta must arrive after the subscription change is applied
+        // server-side; no acknowledgment exists, so the delay is the point.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "orders the delta after the subscription change across an async boundary with no ack"
+        )]
         tokio::time::sleep(Duration::from_millis(300)).await;
         bus.publish_live(
             LiveFeed::ApiTokenDeltas(a),

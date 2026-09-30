@@ -18,6 +18,26 @@ fn chunk_path(hash: ContentHash) -> Path {
     Path::from(format!("chunks/{}/{hex}", &hex[..2]))
 }
 
+/// Wait until the orphans age past the collector's grace cutoff. S3
+/// last-modified has second precision, so once the integer second ticks two
+/// past the write the object is a candidate under any truncation of the
+/// one-second grace cutoff.
+async fn wait_orphans_aged(objects: &Arc<dyn ObjectStore>, path: &Path) {
+    swarmy_testkit::eventually(
+        "orphans age past the grace period",
+        Duration::from_secs(30),
+        async || {
+            let modified = objects.head(path).await.unwrap().last_modified.timestamp();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            (now >= u64::try_from(modified).unwrap() + 2).then_some(())
+        },
+    )
+    .await;
+}
+
 async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore) {
     let objects = swarmy_store::objects::from_settings(settings).unwrap();
     let chunks = ChunkStore::new(objects.clone());
@@ -71,7 +91,10 @@ async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore)
     check_listings(settings, &*objects, &paths).await;
 
     // S3 last-modified has second precision and the collector truncates its cutoff.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Poll the same timestamp source instead of a fixed wait: once the
+    // integer second ticks two past the write, the object is a candidate
+    // under any truncation of the one-second grace cutoff.
+    wait_orphans_aged(&objects, &paths[0]).await;
     let policy = GarbageCollection {
         grace_secs: Duration::from_secs(1),
         ..GarbageCollection::default()

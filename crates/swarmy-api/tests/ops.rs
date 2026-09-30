@@ -323,6 +323,9 @@ async fn upload_with_length_stops_before_streaming_the_body() {
     let counted = sent.clone();
     let body_stream = async_stream::stream! {
         for _ in 0..total_chunks {
+            // Throttle the upload so the server's rejection lands mid-body;
+            // an instant 4 MiB send could complete before the close.
+            #[expect(clippy::disallowed_methods, reason = "throttles the upload so rejection lands mid-body")]
             tokio::time::sleep(Duration::from_millis(2)).await;
             counted.fetch_add(chunk.len() as u64, Ordering::SeqCst);
             yield Ok::<Vec<u8>, std::io::Error>(chunk.clone());
@@ -417,17 +420,11 @@ async fn gc_run_starts_sweeps_and_reports_counts() {
         .unwrap();
     assert!(started.dry_run);
     // An empty namespace finishes immediately; poll for generality.
-    let run = tokio::time::timeout(Duration::from_secs(120), async {
-        loop {
-            let run = fixture.client.gc_run(&started.run_id).await.unwrap();
-            if run.finished {
-                return run;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
+    let run = swarmy_testkit::eventually("gc run finishes", Duration::from_secs(120), async || {
+        let run = fixture.client.gc_run(&started.run_id).await.unwrap();
+        run.finished.then_some(run)
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(run.run_id, started.run_id);
     assert!(run.finished);
     assert!(run.error.is_none());

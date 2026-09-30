@@ -519,6 +519,12 @@ async fn wait_idle_wakes_from_live_transition() {
             .await
             .unwrap()
     });
+    // The interrupt must land while the wait-idle request is held server-side;
+    // no registration signal exists, so the ordering delay is the point.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "orders the interrupt after the wait-idle request reaches the server"
+    )]
     tokio::time::sleep(Duration::from_millis(200)).await;
     f.store.interrupt_session(id).await.unwrap();
     assert!(f.store.finish_runnable_interrupt(id).await.unwrap());
@@ -582,12 +588,17 @@ async fn emit_observed_turn(
         // Await each write: the spawned production path races under
         // millisecond timing and can lose read-modify-write updates, so
         // tests serialize while production staggers stages over seconds.
+        // The pacing itself keeps the spawned writes ordered.
         let event = swarmy_bus::Bus::turn_event(session, turn, stage, Some(request));
         f.bus.record_turn(&event).await;
         f.store
             .record_turn_metrics(session, turn, vec![swarmy_store::MetricPatch::Stage(event)])
             .await
             .unwrap();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "paces spawned stage writes apart so they land in order"
+        )]
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
     f.store
@@ -672,10 +683,12 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
     // handler, so it can land after the directly awaited stages below. Poll
     // for the derived fields the assertions need, not just the stages, so a
     // fast direct write cannot break the poll before the spawned write lands.
-    let direct = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
+    let direct = swarmy_testkit::eventually(
+        "turn record assembles",
+        std::time::Duration::from_secs(10),
+        async || {
             let records = f.store.list_turn_metrics(session, None, 10).await.unwrap();
-            if records.len() == 1
+            (records.len() == 1
                 && records[0].stages.iter().any(|row| row.stage == "idle")
                 && records[0]
                     .stages
@@ -684,15 +697,11 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
                 && records[0].stages.iter().any(|row| row.stage == "appended")
                 && records[0].append_to_first_token_ms.is_some()
                 && records[0].inference_duration_ms.is_some()
-                && records[0].append_to_idle_ms.is_some()
-            {
-                break records;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("turn record did not assemble");
+                && records[0].append_to_idle_ms.is_some())
+            .then_some(records)
+        },
+    )
+    .await;
     assert_eq!(direct[0].turn_id, appended.turn_id);
     assert!(
         direct[0]

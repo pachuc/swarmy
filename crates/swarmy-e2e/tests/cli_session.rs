@@ -27,7 +27,7 @@ use swarmy_store::{
 };
 use tokio::{
     process::Command,
-    time::{Instant, sleep, timeout},
+    time::{Instant, timeout},
 };
 use ulid::Ulid;
 

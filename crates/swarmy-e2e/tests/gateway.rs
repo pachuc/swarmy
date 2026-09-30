@@ -22,7 +22,7 @@ use swarmy_store::{
 use tempfile::TempDir;
 use tokio::{
     process::{Child, Command},
-    time::{sleep, timeout},
+    time::timeout,
 };
 use ulid::Ulid;
 use wiremock::{

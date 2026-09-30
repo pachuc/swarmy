@@ -396,8 +396,10 @@ async fn slow_http_client_is_closed_and_removed_from_registry() {
     let url = format!("{}/v1/events/{}/subscription", f.base, reader.connection_id);
     // Do not consume the response body: the HTTP transport must exert real
     // backpressure, rather than just a bare channel in the producer test.
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
+    swarmy_testkit::eventually(
+        "slow client is disconnected",
+        Duration::from_secs(20),
+        async || {
             let status = f
                 .client
                 .put(&url)
@@ -408,17 +410,16 @@ async fn slow_http_client_is_closed_and_removed_from_registry() {
                 .unwrap()
                 .status();
             if status == reqwest::StatusCode::NOT_FOUND {
-                break;
+                return Some(());
             }
             assert!(matches!(
                 status,
                 reqwest::StatusCode::NO_CONTENT | reqwest::StatusCode::BAD_REQUEST
             ));
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("slow client was not disconnected");
+            None
+        },
+    )
+    .await;
     let mut body = reader.response;
     tokio::time::timeout(Duration::from_secs(10), async {
         while body.chunk().await.unwrap().is_some() {}

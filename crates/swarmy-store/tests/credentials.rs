@@ -177,6 +177,12 @@ async fn simultaneous_refresh_invokes_one_function() {
     let calls = AtomicUsize::new(0);
     let refresh = |_: CredentialRecord| async {
         calls.fetch_add(1, Ordering::SeqCst);
+        // The refresh must genuinely take time: the second concurrent
+        // refresh may only proceed after the first releases the lease.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "slow refresh work is the lease contention under test"
+        )]
         tokio::time::sleep(Duration::from_millis(150)).await;
         Ok(oauth("new"))
     };
@@ -350,6 +356,12 @@ async fn refresh_cannot_write_after_expiry_or_resurrect_deleted_credentials() {
             "default",
             Duration::from_millis(50),
             |_| async {
+                // The refresh must outlast the 50 ms lease so the fencing
+                // path triggers mid-refresh.
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "slow refresh outlasting the lease is the fencing under test"
+                )]
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 Ok(oauth("late"))
             },

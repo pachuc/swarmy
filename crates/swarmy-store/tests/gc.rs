@@ -361,13 +361,10 @@ async fn background_upload_survives_sweep_before_manifest_publication() {
     let uploader = writer.background(Duration::from_millis(5));
     let data = vec![42; CHUNK_SIZE as usize];
     device.write(0, &data).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while device.upload_stats().chunks_uploaded == 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    swarmy_testkit::eventually("chunks upload", Duration::from_secs(5), async || {
+        (device.upload_stats().chunks_uploaded > 0).then_some(())
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(
         test.store
             .get_volume(volume)
@@ -611,7 +608,14 @@ async fn page_claim_skips_hash_reused_after_cutoff() {
         ContentHash([3; 32]),
     ];
     let cutoff = Timestamp::now();
-    tokio::time::sleep(Duration::from_millis(1)).await;
+    // Order the protection strictly after the cutoff without a fixed wait:
+    // the clock usually advances on the first probe.
+    swarmy_testkit::eventually(
+        "clock advances past the cutoff",
+        Duration::from_secs(5),
+        async || (Timestamp::now() > cutoff).then_some(()),
+    )
+    .await;
     test.store.protect_reused_chunk(hashes[1]).await.unwrap();
     let claimed = test
         .store

@@ -20,7 +20,7 @@ use swarmy_core::{
     SessionRecord, SessionState, ToolCallId, ToolCallRecord, WakeReply, decode,
 };
 use swarmy_store::{Store, blob::MemoryBlobStore, runnable_partition};
-use tokio::time::{Instant, sleep, timeout};
+use tokio::time::{Instant, timeout};
 use ulid::Ulid;
 
 const SCAN: Duration = Duration::from_millis(200);

@@ -188,17 +188,11 @@ async fn measure(f: &BenchFixture, id: SessionId, via_api: bool, turn: usize) ->
             .duration_since(start)
     };
 
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            let record = f.store.fetch_session(id).await.unwrap().unwrap();
-            if record.state == SessionState::Idle && record.head_seq > head {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    swarmy_testkit::eventually("fake turn finishes", Duration::from_secs(30), async || {
+        let record = f.store.fetch_session(id).await.unwrap().unwrap();
+        (record.state == SessionState::Idle && record.head_seq > head).then_some(())
     })
-    .await
-    .expect("fake turn did not finish");
+    .await;
     elapsed
 }
 
@@ -235,17 +229,11 @@ async fn drive_agent_turn(
         .unwrap();
     assert!(response.status().is_success(), "{}", response.status());
     let appended: AppendedMessage = response.json().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            let record = fixture.store.fetch_session(session).await.unwrap().unwrap();
-            if record.state == SessionState::Idle && record.head_seq > head {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+    swarmy_testkit::eventually("fake turn finishes", Duration::from_secs(60), async || {
+        let record = fixture.store.fetch_session(session).await.unwrap().unwrap();
+        (record.state == SessionState::Idle && record.head_seq > head).then_some(())
     })
-    .await
-    .expect("fake turn did not finish");
+    .await;
     (session, appended.turn_id)
 }
 
