@@ -146,11 +146,13 @@ swarmy agent show reviewer --json
 
 Use `--system-prompt TEXT` for an inline prompt or `--system-prompt-file PATH`
 for a UTF-8 file. The two flags are mutually exclusive and preserve whitespace.
+`agent create` and `agent set` also take `--memory MIB` for the sandbox memory
+limit and `--gpu none|shared|dedicated` for the placement GPU requirement.
 `agent set NAME` changes only supplied fields. Changes apply to the next inference
 in every existing or future session of that agent; an already submitted request
 keeps its settings. Unset fields use the current stack defaults, as do ephemeral
 sessions. `agent show` labels unset fields as `(stack default)` in text and emits
-`null` in JSON. Effort accepts `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`;
+`null` in JSON. Effort accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`;
 `none` is an explicit override, distinct from an unset field.
 
 `agent show` reports `main_session` and marks the main session in its text
@@ -335,13 +337,16 @@ control-plane API, and ChatGPT credential validity when that provider is
 selected. The client links no database library, so there is no client-library
 check; database access problems surface through the API checks.
 It reads credentials without refreshing them or printing their contents.
-Once `.dev` exists it probes the configured FoundationDB coordinator, NATS, and
-S3 ports with timeouts. Port connectivity does not verify database or S3
-permissions. A stopped stack reports a fix pointing to `swarmy dev up`.
+The object-store check is a TCP connection to the configured S3 endpoint;
+there is no FoundationDB or NATS port probe. Database and bus liveness for a
+running stack come from the API snapshot: reaching the API and reading its
+service heartbeats proves the store path. TCP connectivity does not verify
+database or S3 permissions. A stopped stack reports a fix pointing to `swarmy dev up`.
 Before initialization, doctor asks for the missing config and tells you that the
 stack has not been initialized. Each failure includes a fix and causes exit 1.
-JSON output is one object containing `ok` and a `checks` array; each check has
-`name`, `ok`, `detail`, and an optional `fix`.
+JSON output is one object containing `ok`, a `checks` array, and a
+`providers` array; each check has `name`, `ok`, `status`, `detail`, and an
+optional `fix`.
 
 The public CLI never opens the database. Conversation commands (`run`,
 `chat`, `bench`), management reads, image builds, collection runs, and

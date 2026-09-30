@@ -15,7 +15,7 @@ SWARMY_SCHEDULER_PARTITIONS=0-255 cargo run --locked -p swarmy-scheduler
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
 | `SWARMY_SCHEDULER_PARTITIONS` | `0-255` | Owned partitions, as a range or comma list; mixed ranges also work, such as `0-63,128,200-255`. |
-| `SWARMY_SCHEDULER_SCAN_INTERVAL_MS` | `1000` | Positive interval between runnable scans and between lease scans. Both run immediately at startup. |
+| `SWARMY_SCHEDULER_SCAN_INTERVAL_MS` | `5000` | Positive interval between runnable scans and between lease scans. Both run immediately at startup. |
 | `SWARMY_SCHEDULER_RESEND_INTERVAL_MS` | `5000` | Minimum time before a successful nudge is repeated by a runnable scan. |
 | `SWARMY_STORE_DIRECTORY` | `swarmy` | FoundationDB directory path; `/` separates components. |
 | `SWARMY_BUS_PREFIX` | none | Prefix for NATS subjects and stream names. |

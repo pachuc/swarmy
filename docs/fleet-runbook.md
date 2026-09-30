@@ -77,7 +77,7 @@ ad hoc against the local API with `--remote local`.
 - Review every pull request before merging. Medium-reasoning workers do what
   the task text says; the task text and the review are the quality control.
 - Cost: `swarmy agent show worker-N --remote dev` totals a worker's spend;
-  the cost views from the provider goal will replace this.
+  `swarmy cost --agent worker-N --remote dev` shows the same spend by day.
 
 ## Subscription limits
 

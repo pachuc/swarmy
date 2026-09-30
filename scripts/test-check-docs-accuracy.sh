@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Exercise scripts/check-docs-accuracy.py against a fixture repository tree.
 # The fixture covers repository paths and --test targets; command names and
-# flags belong to the swarmy-docs crate's Rust tests against the real clap
-# trees. Failing cases require exit code 1 with the expected message, so an
+# flags belong to the clap-tree tests in swarmy-cli and swarmyd (through
+# swarmy-core's test-support) against the real command trees. Failing cases
+# require exit code 1 with the expected message, so an
 # internal crash (exit 2) cannot pass as a detected problem.
 set -euo pipefail
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)

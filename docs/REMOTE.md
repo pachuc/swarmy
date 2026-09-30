@@ -213,12 +213,14 @@ loopback address and keeps local FoundationDB port 4500; stop any local dev stac
 before connecting. Remotes created with private FoundationDB advertising must
 be recreated with this version before using `add-node`.
 
-Doctor checks the control master and port mapping, then runs a bounded session
-read transaction through the profile's FoundationDB cluster file and a NATS
-publish/subscribe round trip through its NATS URL. A working SSH connection or
-TCP listener alone does not pass these checks. The database probe times out
-after eight seconds and NATS after five seconds. SeaweedFS uses a TCP check;
-bucket-backed remotes list one page under `chunks/` using the laptop identity.
+Doctor checks the control master and port mapping, then reads live service
+health, node heartbeats, images, and credential metadata from the
+control-plane API snapshot. A working SSH connection or TCP listener alone
+does not pass these checks: reaching the API and reading its snapshot proves
+the store path. API calls carry the standard ten-second client timeout; the
+client makes no direct database transaction. SeaweedFS and static-key
+endpoints get a TCP check; AWS-bucket remotes warn that object storage is
+verified on the API host, not from the laptop.
 
 Connect's JSON preserves the profile fields and adds `timing` with
 `elapsed_seconds`, `address_probe_seconds`, `tunnel_startup_seconds`, and
@@ -836,11 +838,12 @@ doctor reports the mapping failure, and configuration loading rejects it before
 starting the native client. NATS and S3 support alternative ports normally.
 See the port assertion in [FoundationDB's transport source](https://github.com/apple/foundationdb/blob/7.3.63/fdbrpc/FlowTransport.actor.cpp).
 
-Doctor verifies a real FoundationDB session read transaction and NATS
-publish/subscribe round trip through the selected profile. It fails if server
-advertising sends database traffic outside the tunnel, even when the control
-master is healthy. Database and NATS probes have eight- and five-second limits;
-S3 remains a TCP check. Joining nodes use a systemd SSH tunnel for all three
+Doctor verifies the SSH control master, the FoundationDB port mapping, and a
+live API snapshot (service heartbeats, nodes, images, credentials) through
+the selected profile. It fails if server advertising sends database traffic
+outside the tunnel, even when the control master is healthy: only a readable
+API snapshot passes. S3 remains a TCP check, and AWS-bucket remotes warn that
+object storage is verified on the API host. Joining nodes use a systemd SSH tunnel for all three
 services; see [remote provisioning](REMOTE.md).
 
 Connect prints total elapsed time, address probing time, and tunnel startup

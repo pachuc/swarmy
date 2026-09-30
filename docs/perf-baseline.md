@@ -13,12 +13,12 @@ Use the same `BENCH_PROVIDER`, `BENCH_MODEL`, and `BENCH_EFFORT` on every runner
 defaults are `chatgpt`, `gpt-6-sol`, and `medium`, matching the fleet and
 codex-daytona subscription lanes. OpenRouter is a fallback only when every
 environment can use the same provider and model; never compare different
-providers as if they were one baseline. `benchmarks/daytona-lane.sh` is the
-default adapter. It accepts `--provider`, `--model`, `--effort`, `--workspace`,
-`--json`, and `--prompt-file`, runs `codex exec --json` under the state directory
-in `CODEX_LANE_STATE` (default `~/.local/state/cdx-lane2`), and rejects providers
-other than `chatgpt`. Set `DAYTONA_LANE_CMD` for another lane or installation.
-Do not silently substitute a different provider or effort.
+providers as if they were one baseline. `benchmarks/daytona-lane.sh` is the default adapter. It accepts `--provider`,
+`--model`, `--effort`, `--workspace`, `--json`, and `--prompt-file`, and runs
+the codex-daytona launcher (`src/cli.mjs run --no-publish`) with the prompt;
+it accepts the `chatgpt` and `openrouter` providers. Set `DAYTONA_LANE_CMD`
+for another lane or installation. Do not silently substitute a different
+provider or effort.
 
 From a laptop connected to one remote at a time:
 
@@ -26,8 +26,7 @@ From a laptop connected to one remote at a time:
 benchmarks/run-swarm.sh dev baseline-dev --dry-run
 benchmarks/run-swarm.sh dev baseline-dev
 benchmarks/run-swarm.sh dev2 baseline-dev2
-CODEX_LANE_STATE=~/.local/state/cdx-lane2 \
-  python3 benchmarks/run-daytona.py baseline-daytona
+python3 benchmarks/run-daytona.py baseline-daytona
 python3 -m unittest discover -s benchmarks -p 'test_*.py'
 ```
 
@@ -44,7 +43,8 @@ It records that Boolean and the wall time of each `fleet benchmark` invocation
 per run, along with session IDs and raw event JSONL, in
 `.dev/benchmarks/` so a report can be retried without launching another run.
 The report prints the wall time as `wall_s` next to `duration_s`.
-The lane adapter records the same cache state before starting Codex. The
+The lane adapter takes the same cache state from the `BENCH_COLD` line the
+prompt asks Codex to print. The
 daytona runner writes `.dev/benchmarks/LABEL-daytona.json` (or `--output`)
 with `{ "label": LABEL, "runs": [...] }`. Each run includes task, run (1 or 2),
 environment, commit, provider, model, effort, session_id, wall_seconds,

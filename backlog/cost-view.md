@@ -8,9 +8,8 @@ The compute and storage side of cost per agent and per swarm: compute (the
 share of node hours the agent's computer occupied) and storage (the chunks
 its disk and snapshots hold in object storage, priced at the bucket's rate).
 The inference side (tokens and cost by session, agent, provider, auth entry,
-and time range) is built by the `provider-breadth-quota` goal in tasky,
-which also introduces the hourly rollups and the `swarmy cost` views that
-this item extends.
+and time range) is already built as hourly rollups with `swarmy cost` views
+(see `docs/providers.md`); this item extends those views.
 
 ## Why it matters
 

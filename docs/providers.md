@@ -229,7 +229,7 @@ swarmy auth quota --entry chatgpt/default --group month --since 3months --until 
 ```
 
 `agent show` and `session show` name the entries and providers behind
-their totals with the cost per entry, and `swarm status` ends with the
+their totals with the cost per entry, and `fleet status` ends with the
 fleet's cost for the current day and month. Completions recorded without
 an entry roll into `provider/-`, so the breakdown still names the
 provider. Agents and sessions that ran before these views existed show
@@ -432,5 +432,5 @@ not a new grant of vendor permission:
 | OpenRouter PKCE | Built as the documented public flow that mints an API key. |
 | Azure CLI Entra tokens | Built through the installed Azure CLI; no embedded Azure client identity. |
 
-Key pools, admission, affinity, failover, image inputs, and expanding the
+Key pools, admission, affinity, image inputs, and expanding the
 models.dev provider allowlist remain future work; see the `provider-breadth-quota` goal in tasky.

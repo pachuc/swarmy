@@ -77,14 +77,15 @@ pins its manifest atomically; an unknown image reports the registered names and
 tags. Existing sessions retain their image when resumed. A node is only needed
 when the session first calls a sandbox tool.
 
-`run` creates an Idle session, records the user prompt, subscribes to both live
-feeds, and asks the scheduler to wake it. Text is flushed as model deltas arrive.
+`run` creates an Idle session, records the user prompt, and subscribes to both live
+feeds; the API append stores first and then nudges the scheduler, and the
+scheduler's runnable scan recovers a missed nudge. Text is flushed as model deltas arrive.
 Tool requests and results each occupy one line; embedded newlines in tool data
 are JSON escaped. The session id is printed to stderr. The command exits with
 status zero at Idle. It also reads the durable log to recover missed events and
-checks the session record after the log stops moving. A missing or unresponsive
-scheduler produces a nonzero exit naming the scheduler; wake requests have a
-three-second deadline.
+checks the session record after the log stops moving. Before sending, the command
+waits for service health through the API; if the first streamed item takes more
+than 30 seconds, it exits nonzero reporting the session as unpicked.
 
 `session show` reads the log through the head recorded when the command starts,
 in ascending sequence order. `session ls` prints sessions in ascending id
@@ -130,7 +131,7 @@ swarmy chat SESSION_ID      # resume directly
 ```
 
 `chat` reads the same `Settings::load` configuration as `dev`, `run`, and the
-services. The picker lists the newest 50 session ids, with their first user
+services. The picker lists the newest 20 session ids, with their first user
 message. It starts on **New session**; use Up/Down and Enter to choose.
 
 The screen contains a wrapped transcript, a status bar with the agent name (or `ephemeral`),
@@ -158,8 +159,8 @@ updated with its result on completion. User, agent, and tool lines have distinct
 labels and colors. The durable log supplies ordered history and replaces partial
 model text with the final message. Resuming reloads the full log, including work
 that finished while the client was closed. Both clients share session creation,
-message appends, subscriptions confirmed before waking, the three-second
-scheduler wake deadline, and a five-second durable-log poll. Polling also refreshes
+message appends, subscriptions confirmed before waking, and a three-second
+durable-log poll. Polling also refreshes
 the status bar when state changes do not publish an event. Closing the terminal
 client does not cancel the agent. A saved user message whose wake was interrupted
 is woken when the conversation resumes.
