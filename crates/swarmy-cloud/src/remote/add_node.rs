@@ -226,30 +226,11 @@ fn plan_join<'a>(
     })
 }
 
-/// Check an existing-host join before any state or host changes: the join
-/// address must be reachable over IP, the bootstrap login must be SSH-safe,
-/// the key file must exist, and the primary override (if any) must be an
-/// IPv4 address for the provisioning script.
+/// Check an existing-host join before any state or host changes: the
+/// bootstrap address, login, and key, plus the primary override (if any),
+/// which must be an IPv4 address for the provisioning script.
 fn validate_existing(join: &ExistingJoin<'_>) -> Result<()> {
-    let _: std::net::IpAddr = join
-        .host
-        .parse()
-        .map_err(|source| crate::Error::context(source, "add-node --host must be an IP address"))?;
-    crate::Error::ensure(
-        !join.ssh_user.is_empty()
-            && join
-                .ssh_user
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
-        "add-node --ssh-user must contain letters, digits, hyphens, or underscores",
-    )?;
-    crate::Error::ensure(
-        join.ssh_key.is_file(),
-        format!(
-            "add-node --ssh-key {} does not exist",
-            join.ssh_key.display()
-        ),
-    )?;
+    super::adopt::validate_bootstrap(join.host, join.ssh_user, join.ssh_key, "add-node")?;
     if let Some(address) = join.primary_address {
         let _: std::net::Ipv4Addr = address.parse().map_err(|source| {
             crate::Error::context(source, "add-node --primary-address must be an IPv4 address")

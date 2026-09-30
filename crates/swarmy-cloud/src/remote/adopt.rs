@@ -108,26 +108,8 @@ fn validate(settings: &RemoteSettings, request: &AdoptNode<'_>) -> Result<()> {
         !settings.region.is_empty(),
         "configure remote.region in config.toml before running swarmy remote adopt",
     )?;
-    let _: std::net::IpAddr = request
-        .host
-        .parse()
-        .map_err(|source| crate::Error::context(source, "adopt --host must be an IP address"))?;
-    crate::Error::ensure(
-        !request.ssh_user.is_empty()
-            && request
-                .ssh_user
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
-        "adopt --ssh-user must contain letters, digits, hyphens, or underscores",
-    )?;
+    validate_bootstrap(request.host, request.ssh_user, request.ssh_key, "adopt")?;
     swarmy_config::validate_service_user(&settings.service_user)?;
-    crate::Error::ensure(
-        request.ssh_key.is_file(),
-        format!(
-            "adopt --ssh-key {} does not exist",
-            request.ssh_key.display()
-        ),
-    )?;
     crate::Error::ensure(
         request.sandboxes == 0 || !settings.local_storage.is_empty(),
         "sandbox nodes need local storage: pass --local-storage with a block device or dir:/path",
@@ -139,5 +121,31 @@ fn validate(settings: &RemoteSettings, request: &AdoptNode<'_>) -> Result<()> {
         )?;
         spec.validate_name()?;
     }
+    Ok(())
+}
+
+/// Check an operator-given bootstrap address, login, and key before any
+/// state or host changes. `command` names the calling subcommand so messages
+/// point at its flags.
+pub(super) fn validate_bootstrap(
+    host: &str,
+    ssh_user: &str,
+    ssh_key: &Path,
+    command: &str,
+) -> Result<()> {
+    let _: std::net::IpAddr = host.parse().map_err(|source| {
+        crate::Error::context(source, format!("{command} --host must be an IP address"))
+    })?;
+    crate::Error::ensure(
+        !ssh_user.is_empty()
+            && ssh_user
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+        format!("{command} --ssh-user must contain letters, digits, hyphens, or underscores"),
+    )?;
+    crate::Error::ensure(
+        ssh_key.is_file(),
+        format!("{command} --ssh-key {} does not exist", ssh_key.display()),
+    )?;
     Ok(())
 }
