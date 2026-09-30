@@ -70,8 +70,6 @@ SWARMY_TEST_HAS_CLOUD_INIT=present needs_cloud_init_wait
 SWARMY_TEST_HAS_CLOUD_INIT=absent; if needs_cloud_init_wait; then echo 'waited without cloud-init' >&2; exit 1; fi
 SWARMY_TEST_HAS_CLOUD_INIT=present; needs_cloud_init_wait
 unset -f command
-# The real binary still decides the real wait, but only through the helper.
-if command -v cloud-init >/dev/null 2>&1; then needs_cloud_init_wait; else ! needs_cloud_init_wait; fi
 
 # Local storage setting classification: empty means none, never guessing.
 [[ $(parse_local_storage '') == none ]]

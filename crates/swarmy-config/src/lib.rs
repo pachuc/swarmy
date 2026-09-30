@@ -13,8 +13,7 @@ pub use exports::parse_exports;
 pub use object::ObjectPrefix;
 pub use remote::{
     AwsSettings, RemoteNode, RemotePorts, RemoteProfile, RemoteServices, RemoteSettings,
-    default_sandboxes, remote_path, service_home_for, service_repo_for, validate_remote_name,
-    validate_service_user,
+    default_sandboxes, remote_path, validate_remote_name, validate_service_user,
 };
 use serde::{Deserialize, Serialize};
 use std::{

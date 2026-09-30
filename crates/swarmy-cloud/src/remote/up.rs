@@ -167,35 +167,10 @@ async fn provision(
     node.public_ip = machine.public_ip;
     node.private_ip = machine.private_ip;
     state.save(node)?;
-    resolve_instance_store(host, state, node).await?;
-    host.provision(node, None).await
-}
-
-/// Resolve the instance-store device over SSH for sandbox nodes without an
-/// explicit `local_storage` setting. Nitro instances name `NVMe` disks by
-/// attachment order, so the device is matched by model, never by name.
-async fn resolve_instance_store(
-    host: &impl Host,
-    state: &State,
-    node: &mut RemoteNode,
-) -> Result<()> {
-    let needs_device = node.sandboxes > 0
-        && node
-            .launch_settings
-            .as_ref()
-            .is_some_and(|saved| saved.local_storage.is_empty());
-    if !needs_device {
-        return Ok(());
+    if super::aws::resolve_instance_store(host, node).await? {
+        state.save(node)?;
     }
-    cloud_out!("Resolving instance-store device");
-    let listing = host.block_devices(node).await?;
-    let device = super::aws::parse_instance_store_device(&listing)?;
-    node.launch_settings
-        .as_mut()
-        .expect("launch settings were saved")
-        .local_storage = device;
-    state.save(node)?;
-    Ok(())
+    host.provision(node, None).await
 }
 
 fn validate(settings: &RemoteSettings, name: &str) -> Result<()> {

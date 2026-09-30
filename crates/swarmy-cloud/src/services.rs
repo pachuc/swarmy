@@ -78,7 +78,6 @@ impl<'a> Options<'a> {
         // Copy only service options. Local paths, cloud secrets, endpoints, and
         // the selected tunnel profile must never become node configuration.
         swarmy_config::validate_service_user(&settings.remote.service_user)?;
-        let service_repo = swarmy_config::service_repo_for(&settings.remote.service_user);
         let mut remote = Settings {
             api: settings.api.clone(),
             selection: swarmy_config::SelectionSettings {
@@ -106,7 +105,13 @@ impl<'a> Options<'a> {
             },
             fake: swarmy_config::Fake {
                 script: "/etc/swarmy/fake.json".into(),
-                call_log: format!("{service_repo}/.swarmy/calls.log").into(),
+                // Relative to the gateway unit's working directory, which the
+                // host resolves to the service checkout. The laptop cannot
+                // render an absolute node path: the service home comes from
+                // the host's passwd entry, so a laptop-side `/home/<user>`
+                // guess would point at the wrong checkout whenever the laptop
+                // login differs from the node's service user.
+                call_log: ".swarmy/calls.log".into(),
             },
             ..Settings::default()
         };

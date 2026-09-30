@@ -61,29 +61,73 @@ fn tilde_repo(user: &str) -> String {
     format!("~{user}/swarmy")
 }
 
-/// Create the service user before the first copy so a root login has a
-/// destination owned by its owner. Returns the host-resolved home for the
-/// rsync destination; every later command resolves the same home through
-/// `~user` on the host instead of assuming `/home/<user>`.
-async fn bootstrap_service_user(node: &RemoteNode, address: &str, user: &str) -> Result<String> {
+/// Run the checkout's `ensure_service_user` on the host before the first
+/// copy, so a root login gains a destination owned by its owner. The helper
+/// script is piped over stdin because the checkout is not on the host yet;
+/// user creation, sudoers, and path resolution stay in the one bash
+/// implementation instead of being repeated in Rust. Returns the
+/// host-resolved home for the rsync destination; every later command
+/// resolves the same home through `~user` on the host instead of assuming
+/// `/home/<user>`.
+async fn ensure_service_user(
+    &self,
+    node: &RemoteNode,
+    address: &str,
+    user: &str,
+) -> Result<String> {
     if user == "root" {
         return Ok("/root".to_owned());
     }
+    let env = String::from_utf8(std::fs::read(
+        self.repo.join("scripts/remote-provision-env.sh"),
+    )?)?;
+    let mut script = String::new();
+    for line in env.split_inclusive('\n') {
+        // Piped over stdin the script has no directory for BASH_SOURCE, so
+        // its S3 helper cannot be sourced. Only the user-management
+        // functions run here and none of them need it.
+        if line.trim_start().starts_with("source") && line.contains("remote-s3-env.sh") {
+            continue;
+        }
+        script.push_str(line);
+    }
     // `user` is validated (letters, digits, `_`, `-`), so embedding it in
-    // `~user` is data, never shell.
-    let script = format!(
-        "set -e; id {user} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash {user}; \
-        sudo mkdir -p /etc/sudoers.d; \
-        printf '%s ALL=(ALL) NOPASSWD:ALL\\n' {user} | sudo tee /etc/sudoers.d/90-swarmy-{user} >/dev/null; \
-        sudo chmod 0440 /etc/sudoers.d/90-swarmy-{user}; \
-        sudo visudo -cf /etc/sudoers.d/90-swarmy-{user} >/dev/null; \
-        home=~{user}; \
-        if [ -d \"$home\" ] && [ \"$(stat -c %U \"$home\")\" != \"{user}\" ]; then sudo chown {user}:{user} \"$home\"; fi; \
-        sudo -u {user} mkdir -p \"$home\"; \
-        printf '%s\\n' \"$home\""
-    );
-    let output = run_output(base(node)?.arg(address).arg(script), "create service user").await?;
-    let home = String::from_utf8(output.stdout)?.trim().to_owned();
+    // single quotes is data, never shell. `visudo -cf` reports to stdout, so
+    // the home is the last line.
+    script.push_str(&format!(
+        "ensure_service_user '{user}'\nservice_home_for '{user}'\n"
+    ));
+    let action = "create service user";
+    let mut child = base(node)?
+        .arg(address)
+        .arg("bash -s")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(crate::Error::ssh(action))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(script.as_bytes())
+            .await
+            .map_err(crate::Error::ssh(action))?;
+    }
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(crate::Error::ssh(action))?;
+    if !output.status.success() {
+        return Err(crate::Error::SshStatus {
+            command: action.to_owned(),
+            status: output.status,
+        });
+    }
+    let home = String::from_utf8(output.stdout)?
+        .lines()
+        .rfind(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
     crate::Error::ensure(
         home.starts_with('/')
             && !home.contains([
@@ -305,9 +349,9 @@ impl Ssh {
         checked(base(node)?.arg(address)
             .arg("command -v rsync >/dev/null || (if command -v cloud-init >/dev/null 2>&1; then sudo cloud-init status --wait; fi; sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y rsync)"), "prepare remote rsync").await?;
         let user = service_user(node)?;
-        // A root login has no service home yet; create the user before the
-        // copy so rsync has a destination owned by its owner.
-        let home = bootstrap_service_user(node, address, &user).await?;
+        // A root login has no service home yet; run the checkout's user
+        // setup before the copy so rsync has a destination owned by its owner.
+        let home = self.ensure_service_user(node, address, &user).await?;
         let repo = format!("{home}/swarmy");
         let mut transport = vec!["ssh".to_owned()];
         transport.extend(arguments(node)?);

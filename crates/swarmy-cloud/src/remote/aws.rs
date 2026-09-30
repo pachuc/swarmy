@@ -9,7 +9,10 @@ use aws_sdk_ec2::{
 };
 use std::time::Duration;
 
-use super::{Cloud, Machine, MachineSpec, ObjectBucket, Ownership, retry_profile_propagation};
+use super::{
+    Cloud, Host, Machine, MachineSpec, ObjectBucket, Ownership, retry_profile_propagation,
+};
+use swarmy_config::RemoteNode;
 
 // AWS error codes, rather than rendered SDK messages, determine whether an
 // operation can be retried after an operator grants a missing permission.
@@ -93,6 +96,37 @@ pub(crate) fn parse_instance_store_device(output: &str) -> Result<String> {
             matches.join(", ")
         ))),
     }
+}
+
+/// Resolve the instance-store device over SSH for sandbox nodes without an
+/// explicit `local_storage` setting, storing it in the node's launch
+/// settings. Nitro instances name `NVMe` disks by attachment order, so the
+/// device is matched by model, never by name. Returns whether a device was
+/// resolved; nodes that need no lookup are left untouched.
+///
+/// # Errors
+///
+/// Reports unreachable hosts, SSH failures, and ambiguous or missing devices.
+pub(crate) async fn resolve_instance_store(
+    host: &impl Host,
+    node: &mut RemoteNode,
+) -> Result<bool> {
+    let needs_device = node.sandboxes > 0
+        && node
+            .launch_settings
+            .as_ref()
+            .is_some_and(|saved| saved.local_storage.is_empty());
+    if !needs_device {
+        return Ok(false);
+    }
+    cloud_out!("Resolving instance-store device");
+    let listing = host.block_devices(node).await?;
+    let device = parse_instance_store_device(&listing)?;
+    node.launch_settings
+        .as_mut()
+        .expect("launch settings were saved")
+        .local_storage = device;
+    Ok(true)
 }
 
 pub struct Aws {

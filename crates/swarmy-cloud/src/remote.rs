@@ -231,6 +231,9 @@ async fn run_add_node(state: &State, mut settings: Settings, command: Command) -
                     instance_type,
                     disk_gb,
                 },
+                // The saved primary settings may carry its resolved device;
+                // the join starts from the explicit configuration instead.
+                local_storage: settings.remote.local_storage.clone(),
             },
             Duration::from_secs(5),
             options.as_ref(),

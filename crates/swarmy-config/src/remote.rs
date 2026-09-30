@@ -255,18 +255,6 @@ impl RemoteNode {
         }
     }
 
-    /// Home directory of the service user.
-    #[must_use]
-    pub fn service_home(&self) -> String {
-        service_home_for(self.service_user())
-    }
-
-    /// Checkout holding the provisioning scripts on the node.
-    #[must_use]
-    pub fn service_repo(&self) -> String {
-        service_repo_for(self.service_user())
-    }
-
     /// Settings selecting the cloud provider for this remote. Records saved
     /// before launch settings existed fall back to defaults in the node's
     /// region, so teardown never depends on a later configuration edit.
@@ -304,22 +292,6 @@ impl RemoteSettings {
             self.service_user = default_service_user();
         }
     }
-}
-
-/// Home directory for a service login: `/root` for root, `/home/{user}` otherwise.
-#[must_use]
-pub fn service_home_for(user: &str) -> String {
-    if user == "root" {
-        "/root".into()
-    } else {
-        format!("/home/{user}")
-    }
-}
-
-/// Checkout holding the provisioning scripts for a service login.
-#[must_use]
-pub fn service_repo_for(user: &str) -> String {
-    format!("{}/swarmy", service_home_for(user))
 }
 
 /// Validate service logins before using them in paths or shell output.
@@ -568,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn service_user_and_local_storage_defaults_and_paths() {
+    fn service_user_and_local_storage_defaults() {
         let settings = Settings::default();
         assert_eq!(settings.remote.service_user, "swarmy");
         assert!(settings.remote.local_storage.is_empty());
@@ -582,11 +554,11 @@ mod tests {
         assert_eq!(round_trip.remote.local_storage, "dir:/srv/local");
 
         // Records saved before the setting existed keep their SSH login.
+        // Paths are resolved on the host from that login (`~user`), never
+        // from a laptop-side `/home/<user>` guess.
         let legacy: RemoteNode = serde_json::from_str(r#"{"name":"old","region":"us-east-1","instance_id":"i-old","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","launch_attempted":true,"created_at":"2026-09-16T00:00:00Z"}"#).unwrap();
         assert_eq!(legacy.service_user(), "ubuntu");
         assert_eq!(legacy.local_storage(), "");
-        assert_eq!(legacy.service_home(), "/home/ubuntu");
-        assert_eq!(legacy.service_repo(), "/home/ubuntu/swarmy");
 
         // Saved launch settings without the new field keep the login they were
         // provisioned with instead of taking the new default.
@@ -595,8 +567,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(existing.service_user(), "ubuntu");
-        assert_eq!(existing.service_home(), "/home/ubuntu");
-        assert_eq!(existing.service_repo(), "/home/ubuntu/swarmy");
 
         // Configuration files without the field take the new default on load.
         let dir = tempfile::tempdir().unwrap();
@@ -612,11 +582,7 @@ mod tests {
         .unwrap();
         assert_eq!(node.service_user(), "swarmy");
         assert_eq!(node.local_storage(), "/dev/md0");
-        assert_eq!(node.service_home(), "/home/swarmy");
-        assert_eq!(node.service_repo(), "/home/swarmy/swarmy");
 
-        assert_eq!(super::service_home_for("root"), "/root");
-        assert_eq!(super::service_home_for("swarmy"), "/home/swarmy");
         assert!(super::validate_service_user("swarmy").is_ok());
         assert!(super::validate_service_user("deploy-1").is_ok());
         for invalid in ["", "has space", "semi;colon", "$(injected)", "dq\"quote"] {

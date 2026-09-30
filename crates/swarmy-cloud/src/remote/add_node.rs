@@ -9,6 +9,12 @@ pub struct NewNode<'a> {
     pub name: &'a str,
     pub sandboxes: u32,
     pub shape: NodeShape,
+    /// Explicit `local_storage` from the current configuration. The primary's
+    /// saved settings may carry a device resolved on the primary, which a
+    /// joining node must never reuse without a lookup, so the saved value is
+    /// replaced with this before resolving. Empty means each node resolves
+    /// its own instance-store device.
+    pub local_storage: String,
 }
 
 pub async fn run(
@@ -23,6 +29,7 @@ pub async fn run(
         name,
         sandboxes,
         shape,
+        local_storage,
     } = request;
     let mut primary = state.require(name)?;
     let Some(mut settings) = primary.launch_settings.clone() else {
@@ -31,6 +38,11 @@ pub async fn run(
         ));
     };
     shape.apply(&mut settings)?;
+    // The saved settings may carry the primary's resolved device; a joining
+    // node has its own disks, so it starts from the explicit configuration
+    // and resolves its own device below. Only the disk setting is refreshed:
+    // the service user must stay the primary's so the tunnel login matches.
+    settings.local_storage = local_storage;
     crate::Error::ensure(
         !primary.instance_id.is_empty(),
         "first node has not launched",
@@ -91,7 +103,10 @@ pub async fn run(
         node.private_ip = machine.private_ip;
         *primary.nodes.last_mut().expect("joining node was inserted") = node.clone();
         state.save(&primary)?;
-        resolve_instance_store(host, &mut node, &mut primary, state).await?;
+        if super::aws::resolve_instance_store(host, &mut node).await? {
+            *primary.nodes.last_mut().expect("joining node was inserted") = node.clone();
+            state.save(&primary)?;
+        }
         let address = host.provision(&node, Some(&primary)).await?;
         if let Some(options) = options {
             host.services(&node, &address, options).await?;
@@ -108,33 +123,4 @@ pub async fn run(
             Err(error)
         }
     }
-}
-
-/// Resolve the instance-store device over SSH for sandbox nodes without an
-/// explicit `local_storage` setting. Nitro instances name `NVMe` disks by
-/// attachment order, so the device is matched by model, never by name.
-async fn resolve_instance_store(
-    host: &impl Host,
-    node: &mut RemoteNode,
-    primary: &mut RemoteNode,
-    state: &State,
-) -> Result<()> {
-    let needs_device = node.sandboxes > 0
-        && node
-            .launch_settings
-            .as_ref()
-            .is_some_and(|saved| saved.local_storage.is_empty());
-    if !needs_device {
-        return Ok(());
-    }
-    cloud_out!("Resolving instance-store device");
-    let listing = host.block_devices(node).await?;
-    let device = super::aws::parse_instance_store_device(&listing)?;
-    node.launch_settings
-        .as_mut()
-        .expect("launch settings were saved")
-        .local_storage = device;
-    *primary.nodes.last_mut().expect("joining node was inserted") = node.clone();
-    state.save(primary)?;
-    Ok(())
 }
