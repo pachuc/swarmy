@@ -24,6 +24,13 @@ struct InferenceRetry {
     next_at: Timestamp,
 }
 
+/// A recorded provider retry: attempts so far and the delay stored as `next_at - now`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordedRetry {
+    pub attempts: u32,
+    pub delay: Duration,
+}
+
 /// Inputs to the atomic terminal update. Both success and exhausted retries wake
 /// the session; the next worker reads the corresponding event. The entry
 /// label, kind, and observed quota ride in the same transaction as the usage
@@ -157,14 +164,15 @@ impl Store {
 
     /// Count provider failures by request, not by queue delivery: recovery can
     /// publish a fresh `JetStream` message with delivery count one.
-    /// Returns the number of provider calls recorded for this request.
+    /// Returns the attempt count and the backoff delay stored as the next deadline;
+    /// the gateway waits exactly that long.
     /// # Errors
     /// Rejects a replaced claim and propagates storage failures.
     pub async fn record_inference_retry(
         &self,
         claim: &InferenceClaim,
         now: Timestamp,
-    ) -> Result<u32> {
+    ) -> Result<RecordedRetry> {
         self.transaction(|trx| async move {
             let keys = self.keys();
             let claim_key = keys.inference_claim(claim.request_id);
@@ -181,9 +189,9 @@ impl Store {
             let delay = swarmy_core::backoff(Duration::from_millis(100), attempts, 5);
             let next_at = now
                 .checked_add(delay)
-                .map_err(|_| StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
             write(&trx, &retry_key, &InferenceRetry { attempts, next_at })?;
-            Ok(attempts)
+            Ok(RecordedRetry { attempts, delay })
         })
         .await
     }
@@ -237,10 +245,7 @@ impl Store {
         snapshot: Option<&swarmy_core::SnapshotRef>,
     ) -> Result<bool> {
         let claim = &completion.claim;
-        let head = completion
-            .expected_head
-            .checked_add(1)
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+        let head = crate::seq_after(completion.expected_head, 1)?;
         let mut event = completion.event.clone();
         match &mut event {
             Event::InferenceCompleted {
@@ -457,9 +462,7 @@ impl Store {
         now: Timestamp,
         input: &T,
     ) -> Result<()> {
-        let step = expected_head
-            .checked_add(1)
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+        let step = crate::seq_after(expected_head, 1)?;
         let request_id = RequestId::for_step(session_id, step);
         let value = self.prepare(input).await?;
         self.transaction(|trx| {

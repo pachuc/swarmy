@@ -4,8 +4,7 @@ use std::{
     sync::{Arc, atomic::AtomicU64},
 };
 
-use foundationdb::{Database, RangeOption, Transaction, tuple::Subspace};
-use futures::TryStreamExt;
+use foundationdb::{Database, Transaction, tuple::Subspace};
 use swarmy_core::{AgentId, MessageId, SessionId, TurnEvent, ignore_best_effort};
 
 use crate::{
@@ -117,25 +116,6 @@ pub(crate) fn spawn_metrics_drain(
             }
         }
     })
-}
-
-pub(crate) async fn scan_reverse(
-    trx: &Transaction,
-    range: (Vec<u8>, Vec<u8>),
-    limit: usize,
-) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    use crate::check_limit;
-    check_limit(limit)?;
-    let options = RangeOption {
-        limit: Some(limit),
-        reverse: true,
-        ..range.into()
-    };
-    Ok(trx
-        .get_ranges_keyvalues(options, false)
-        .map_ok(|kv| (kv.key().to_vec(), kv.value().to_vec()))
-        .try_collect()
-        .await?)
 }
 
 impl MetricsWriter {
@@ -474,7 +454,10 @@ impl crate::Store {
             let raw = self
                 .transaction(|trx| {
                     let (begin, end) = (begin.clone(), end.clone());
-                    async move { scan_reverse(&trx, (begin, end), take).await }
+                    async move {
+                        crate::scan_ordered(&trx, (begin, end), take, crate::ScanOrder::Reverse)
+                            .await
+                    }
                 })
                 .await?;
             if raw.is_empty() {

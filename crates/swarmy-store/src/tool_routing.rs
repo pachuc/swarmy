@@ -178,10 +178,7 @@ impl Store {
                 crate::DomainError::UnexpectedSessionState,
             ));
         }
-        session.head_seq = session
-            .head_seq
-            .checked_add(1)
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+        session.head_seq = crate::seq_after(session.head_seq, 1)?;
         let event = self
             .prepare(&Event::ToolCallCompleted {
                 seq: session.head_seq,
@@ -320,10 +317,7 @@ impl Store {
         let delivered = self.keys().computer_notice_delivered(id, epoch);
         if read::<bool>(trx, &delivered).await? != Some(true) {
             let mut session = self.session(trx, id).await?;
-            session.head_seq = session
-                .head_seq
-                .checked_add(1)
-                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+            session.head_seq = crate::seq_after(session.head_seq, 1)?;
             let event = self
                 .prepare(&Event::MessageAppended {
                     seq: session.head_seq,

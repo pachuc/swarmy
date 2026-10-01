@@ -22,11 +22,7 @@ impl Store {
                 return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
             }
             let sequence_key = self.keys().gc_sequence();
-            let seq = read::<u64>(&trx, &sequence_key)
-                .await?
-                .unwrap_or(0)
-                .checked_add(1)
-                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+            let seq = crate::seq_after(read::<u64>(&trx, &sequence_key).await?.unwrap_or(0), 1)?;
             let lease = Lease {
                 owner: run.owner,
                 expires_at,

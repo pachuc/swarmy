@@ -278,6 +278,13 @@ pub struct AgentSessionOptions<'a> {
     pub route: Option<&'a str>,
 }
 
+struct SideRollover {
+    events: Vec<Vec<u8>>,
+    archived_value: Vec<u8>,
+    archived: swarmy_core::Event,
+    new_head: u64,
+}
+
 impl Store {
     /// Create an idle session, minting an anonymous agent or attaching to a named one.
     /// `image` is required for ephemeral sessions and forbidden for named sessions.
@@ -541,10 +548,9 @@ impl Store {
         }
         let id = SessionId::from_ulid(ulid::Ulid::generate());
         let messages = side_messages(opening, tail);
-        let (prepared, archived_value, archived, new_head) =
-            self.prepare_side_rollover(&messages, expected_head).await?;
+        let rollover = self.prepare_side_rollover(&messages, expected_head).await?;
         self.transaction(|trx| {
-            let (prepared, archived_value) = (&prepared, &archived_value);
+            let (prepared, archived_value) = (&rollover.events, &rollover.archived_value);
             async move {
                 let now = self.now();
                 self.check_worker_lease(&trx, old, lease, now).await?;
@@ -567,7 +573,7 @@ impl Store {
                 self.create_session_in(&trx, &session, now, None).await?;
                 self.transfer_queued(&trx, old, id).await?;
                 let mut created = self.session(&trx, id).await?;
-                created.head_seq = new_head;
+                created.head_seq = rollover.new_head;
                 self.write_session(&trx, &created)?;
                 // The queued-input check shares the rollover transaction, so a
                 // successor is runnable even if the worker dies before nudging it.
@@ -576,12 +582,10 @@ impl Store {
                         .await?;
                 }
                 for (index, value) in prepared.iter().enumerate() {
-                    let seq = u64::try_from(index)
-                        .map_err(|_| StoreError::Storage(crate::StorageError::SequenceOverflow))?
-                        + 1;
+                    let seq = crate::seq_after(0, index + 1)?;
                     trx.set(&self.keys().event(id, seq), value);
                 }
-                let head = expected_head + 1;
+                let head = crate::seq_after(expected_head, 1)?;
                 trx.set(&self.keys().event(old, head), archived_value);
                 previous.head_seq = head;
                 self.transition(&trx, previous, SessionState::Completed, now)
@@ -593,7 +597,7 @@ impl Store {
             }
         })
         .await?;
-        Ok((id, archived))
+        Ok((id, rollover.archived))
     }
 
     /// Replace a leased side session with a fresh idle side session.
@@ -623,10 +627,10 @@ impl Store {
             }
         };
         let messages = side_messages(opening, tail);
-        let (prepared, archived_value, archived, new_head) =
-            self.prepare_side_rollover(&messages, expected_head).await?;
+        let rollover = self.prepare_side_rollover(&messages, expected_head).await?;
         self.transaction(|trx| {
-            let (prepared, archived_value) = (&prepared, &archived_value);
+            let (prepared, archived_value) = (&rollover.events, &rollover.archived_value);
+            let new_head = rollover.new_head;
             async move {
                 let now = self.now();
                 self.check_worker_lease(&trx, old, lease, now).await?;
@@ -675,9 +679,7 @@ impl Store {
                     self.transition(&trx, created, SessionState::Runnable, now)
                         .await?;
                 }
-                previous.head_seq = expected_head
-                    .checked_add(1)
-                    .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+                previous.head_seq = crate::seq_after(expected_head, 1)?;
                 self.transition(&trx, previous, SessionState::Completed, now)
                     .await?;
                 write(&trx, &self.keys().session_chain("next", old), &id)?;
@@ -686,38 +688,37 @@ impl Store {
             }
         })
         .await?;
-        Ok((id, archived))
+        Ok((id, rollover.archived))
     }
 
     async fn prepare_side_rollover(
         &self,
         messages: &[swarmy_core::Message],
         expected_head: u64,
-    ) -> Result<(Vec<Vec<u8>>, Vec<u8>, swarmy_core::Event, u64)> {
+    ) -> Result<SideRollover> {
         let mut prepared = Vec::with_capacity(messages.len());
         for (index, message) in messages.iter().enumerate() {
-            let seq = u64::try_from(index)
-                .ok()
-                .and_then(|i| i.checked_add(1))
-                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+            let seq = crate::seq_after(0, index + 1)?;
             let event = swarmy_core::Event::MessageAppended {
                 seq,
                 message: message.clone(),
             };
             prepared.push(self.prepare(&event).await?);
         }
-        let head = expected_head
-            .checked_add(1)
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+        let head = crate::seq_after(expected_head, 1)?;
         let archived = swarmy_core::Event::StateChanged {
             seq: head,
             from: SessionState::Leased,
             to: SessionState::Completed,
         };
         let archived_value = self.prepare(&archived).await?;
-        let new_head = u64::try_from(messages.len())
-            .map_err(|_| StoreError::Storage(crate::StorageError::SequenceOverflow))?;
-        Ok((prepared, archived_value, archived, new_head))
+        let new_head = crate::seq_after(0, messages.len())?;
+        Ok(SideRollover {
+            events: prepared,
+            archived_value,
+            archived,
+            new_head,
+        })
     }
 
     async fn write_side_events(
@@ -733,18 +734,10 @@ impl Store {
         created.head_seq = new_head;
         self.write_session(trx, &created)?;
         for (index, value) in prepared.iter().enumerate() {
-            let seq = u64::try_from(index)
-                .ok()
-                .and_then(|i| i.checked_add(1))
-                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+            let seq = crate::seq_after(0, index + 1)?;
             trx.set(&self.keys().event(id, seq), value);
         }
-        let head = self
-            .session(trx, old)
-            .await?
-            .head_seq
-            .checked_add(1)
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+        let head = crate::seq_after(self.session(trx, old).await?.head_seq, 1)?;
         trx.set(&self.keys().event(old, head), archived_value);
         Ok(())
     }

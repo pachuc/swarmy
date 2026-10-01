@@ -195,9 +195,7 @@ impl Store {
         result: &ToolResult,
     ) -> Result<()> {
         let job = &claim.job;
-        let head = expected_head
-            .checked_add(1)
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+        let head = crate::seq_after(expected_head, 1)?;
         let event = self
             .prepare(&Event::ToolCallCompleted {
                 seq: head,

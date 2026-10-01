@@ -33,13 +33,7 @@ impl Store {
         let mut jobs = Vec::with_capacity(calls.len());
         let mut size = 0;
         for (index, call) in calls.iter().enumerate() {
-            let step = expected_head
-                .checked_add(
-                    u64::try_from(index)
-                        .map_err(|_| StoreError::Storage(crate::StorageError::SequenceOverflow))?,
-                )
-                .and_then(|head| head.checked_add(1))
-                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+            let step = crate::seq_after(expected_head, index + 1)?;
             let request_id = RequestId::for_step(id, step);
             let event = Event::ToolCallRequested {
                 seq: step,

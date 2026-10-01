@@ -74,12 +74,12 @@ impl Gateway {
             {
                 // Recovery may republish the reference with a new stream sequence.
                 // Its delivery count starts at one, so it cannot bound calls.
-                let attempts = self
+                let retry = self
                     .store
                     .record_inference_retry(delivery.claim, Timestamp::now())
                     .await?;
-                if i64::from(attempts) >= self.max_deliver {
-                    warn!(error = %swarmy_core::error_chain(&error), attempts, request_id = %job.request_id, "provider retries exhausted");
+                if i64::from(retry.attempts) >= self.max_deliver {
+                    warn!(error = %swarmy_core::error_chain(&error), attempts = retry.attempts, request_id = %job.request_id, "provider retries exhausted");
                     return Ok(Some(AttemptOutcome {
                         result: Err(error),
                         streamed,
@@ -88,13 +88,14 @@ impl Gateway {
                         entry_kind,
                     }));
                 }
-                let delay = swarmy_core::backoff(Duration::from_millis(100), attempts, 5);
-                // Store the next deadline based on the durable attempt count.
-                warn!(error = %swarmy_core::error_chain(&error), attempts, request_id = %job.request_id, "provider failed; retrying");
+                warn!(error = %swarmy_core::error_chain(&error), attempts = retry.attempts, request_id = %job.request_id, "provider failed; retrying");
                 self.observe_wait(job, turn, swarmy_store::WaitKind::Retry);
                 self.observe_wait(job, turn, swarmy_store::WaitKind::ProviderFailure);
                 self.store.release_inference(delivery.claim).await?;
-                delivery.message.negative_acknowledge(Some(delay)).await?;
+                delivery
+                    .message
+                    .negative_acknowledge(Some(retry.delay))
+                    .await?;
                 Ok(None)
             }
             Err(error) => Ok(Some(AttemptOutcome {
