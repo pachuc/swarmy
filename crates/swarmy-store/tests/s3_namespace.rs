@@ -9,7 +9,7 @@ use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 use object_store::{ObjectStore, PutMode, path::Path};
 use swarmy_config::{BucketCredentials, BucketSpec, GarbageCollection, ObjectPrefix, Settings};
 use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestId};
-use swarmy_store::{Store, blob::ObjectBlobStore};
+use swarmy_store::{Store, blob::{BlobStore, ObjectBlobStore}};
 use swarmy_volume::{ChunkStore, Manifest, ManifestBuilder, gc::collect};
 
 const OBJECTS: usize = 1005;
@@ -232,7 +232,7 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
         "SWARMY_S3_REGION",
     ]);
     settings.s3.bucket = bucket;
-    settings.s3.prefix = swarmy_config::ObjectPrefix::default();
+    settings.s3.prefix = ObjectPrefix::default();
     assert!(
         !settings.s3.bucket.contains('/'),
         "test bucket must be a physical bucket"
@@ -347,7 +347,7 @@ async fn s3_namespace_lists_relative_keys_and_keeps_siblings() {
     if swarmy_testkit::require_stack("SWARMY_S3_ENDPOINT").is_none() {
         return;
     }
-    let mut settings = swarmy_config::Settings::load().unwrap().settings;
+    let mut settings = Settings::load().unwrap().settings;
     settings.s3.prefix = format!("prefix-test-{}", ulid::Ulid::generate())
         .parse()
         .unwrap();

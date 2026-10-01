@@ -4166,6 +4166,7 @@ dependencies = [
  "swarmy-llm",
  "swarmy-sandbox",
  "swarmy-store",
+ "swarmy-testkit",
  "swarmy-version",
  "swarmy-volume",
  "tempfile",
@@ -4299,7 +4300,6 @@ name = "swarmy-core"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "clap",
  "jiff",
  "postcard",
  "serde",
@@ -4379,6 +4379,7 @@ dependencies = [
  "swarmy-harness",
  "swarmy-llm",
  "swarmy-store",
+ "swarmy-testkit",
  "swarmy-version",
  "thiserror 2.0.20",
  "tokio",
@@ -4437,6 +4438,7 @@ dependencies = [
  "swarmy-catalog",
  "swarmy-core",
  "swarmy-llm",
+ "swarmy-testkit",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -4514,6 +4516,7 @@ name = "swarmy-testkit"
 version = "0.1.0"
 dependencies = [
  "async-nats",
+ "clap",
  "foundationdb",
  "serde_json",
  "swarmy-config",
