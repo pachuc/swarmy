@@ -519,6 +519,83 @@ mod retry_tests {
         assert_eq!(response.parts.len(), 1);
     }
 
+    /// A fake provider answering its first turn with one text part. The
+    /// stream yields a single `PartDone` plus completion and no incremental
+    /// deltas, the same shape the scripted services see.
+    fn fake_single_chunk() -> swarmy_llm::fake::FakeProvider {
+        let mut provider = swarmy_llm::fake::FakeProvider::default();
+        provider.responses.insert(
+            0,
+            Response {
+                parts: vec![swarmy_core::Part::Text {
+                    text: "done".into(),
+                }],
+                stop_reason: swarmy_llm::StopReason::EndTurn,
+                usage: swarmy_llm::TokenUsage::default(),
+                quota_remaining: std::collections::BTreeMap::new(),
+                quota_resets: std::collections::BTreeMap::new(),
+            },
+        );
+        provider
+    }
+
+    /// Drive `Gateway::stream` with the fake provider's scripted response:
+    /// it yields only `PartDone` plus completion (zero incremental chunks),
+    /// so the response reports `streamed == Some(false)`. This pins the
+    /// scripted shape the services see; `one_text_delta_plus_part_done_is_single_chunk`
+    /// beside it fails if `PartDone` ever counts as a chunk.
+    #[tokio::test]
+    async fn fake_provider_response_is_unstreamed() {
+        let Some(gateway) = stream_test_gateway().await else {
+            return;
+        };
+        let client: Arc<dyn swarmy_llm::Provider> = Arc::new(fake_single_chunk());
+        let job = stream_test_job();
+        let (response, streamed) = gateway.stream(&client, &job, None, None).await.unwrap();
+        assert_eq!(streamed, Some(false));
+        assert_eq!(response.parts.len(), 1);
+    }
+
+    /// Drive `Gateway::stream` with the fake provider and a turn: its
+    /// `PartDone` delta must start the first-token clock, so the recorded
+    /// turn carries a `first_token` stage for the request. Ignoring
+    /// `PartDone` in `is_first_content` leaves the turn without one.
+    #[tokio::test]
+    async fn part_done_starts_the_first_token_clock() {
+        let Some(gateway) = stream_test_gateway().await else {
+            return;
+        };
+        let client: Arc<dyn swarmy_llm::Provider> = Arc::new(fake_single_chunk());
+        let job = stream_test_job();
+        let turn = MessageId::from_ulid(ulid::Ulid::generate());
+        let (_, streamed) = gateway
+            .stream(&client, &job, None, Some(turn))
+            .await
+            .unwrap();
+        assert_eq!(streamed, Some(false));
+        gateway.store.flush_turn_metrics().await.unwrap();
+        let turns = gateway
+            .store
+            .list_turn_metrics_paged(job.session_id, None, 10, None, None)
+            .await
+            .unwrap();
+        assert_eq!(turns.len(), 1);
+        let request_id = job.request_id.to_string();
+        assert!(
+            turns[0]
+                .stages
+                .iter()
+                .any(|stage| stage.stage == "first_token"
+                    && stage.request_id.as_deref() == Some(request_id.as_str())),
+            "no first-token stage in {:?}",
+            turns[0]
+                .stages
+                .iter()
+                .map(|stage| &stage.stage)
+                .collect::<Vec<_>>(),
+        );
+    }
+
     /// Drive `Gateway::stream` with a failing provider stream. The stream
     /// itself errors, and the caller (`attempt_provider`) records
     /// `streamed: None` for such attempts so failed requests stay out of the

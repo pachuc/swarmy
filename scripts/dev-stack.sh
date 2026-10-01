@@ -220,11 +220,15 @@ NATS
     wait_ready nats curl --fail --silent --show-error --noproxy '*' --max-time 3 http://127.0.0.1:8222/jsz
     if [[ ${SWARMY_DEV_SKIP_S3:-0} != 1 ]]; then
         wait_ready seaweed s3_request http://127.0.0.1:8333/
-        if ! s3_request --head http://127.0.0.1:8333/swarmy >/dev/null 2>&1; then
-            s3_request -X PUT http://127.0.0.1:8333/swarmy >"$dev_dir/logs/s3-bucket.log" 2>&1 \
-                || fail 'Could not create the swarmy bucket; see .dev/logs/s3-bucket.log'
-        fi
-        s3_request --head http://127.0.0.1:8333/swarmy >/dev/null
+        # The S3 namespace test needs its own dedicated empty bucket next to
+        # the development bucket.
+        for bucket in swarmy swarmy-s3-namespace-test; do
+            if ! s3_request --head "http://127.0.0.1:8333/$bucket" >/dev/null 2>&1; then
+                s3_request -X PUT "http://127.0.0.1:8333/$bucket" >"$dev_dir/logs/s3-bucket.log" 2>&1 \
+                    || fail "Could not create the $bucket bucket; see .dev/logs/s3-bucket.log"
+            fi
+            s3_request --head "http://127.0.0.1:8333/$bucket" >/dev/null
+        done
     fi
 
     {
@@ -243,6 +247,7 @@ NATS
             printf 'export SWARMY_S3_ACCESS_KEY=swarmy-dev\n'
             printf 'export SWARMY_S3_SECRET_KEY=swarmy-dev-secret\n'
             printf 'export SWARMY_S3_BUCKET=swarmy\n'
+            printf 'export SWARMY_S3_TEST_BUCKET=swarmy-s3-namespace-test\n'
             printf 'export SWARMY_S3_PREFIX=%q\n' ''
             printf 'export SWARMY_S3_REGION=us-east-1\n'
         fi

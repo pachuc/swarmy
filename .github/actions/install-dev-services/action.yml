@@ -39,7 +39,7 @@ runs:
       run: |
         scripts/dev-stack.sh start
         source .dev/env
-        for name in SWARMY_FDB_CLUSTER_FILE SWARMY_NATS_URL SWARMY_S3_ENDPOINT SWARMY_S3_ACCESS_KEY SWARMY_S3_SECRET_KEY SWARMY_S3_BUCKET SWARMY_S3_REGION; do
+        for name in SWARMY_FDB_CLUSTER_FILE SWARMY_NATS_URL SWARMY_S3_ENDPOINT SWARMY_S3_ACCESS_KEY SWARMY_S3_SECRET_KEY SWARMY_S3_BUCKET SWARMY_S3_TEST_BUCKET SWARMY_S3_REGION; do
           printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
         done
     - if: inputs.mode == 'stop'

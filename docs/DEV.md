@@ -465,22 +465,19 @@ scripts/check-openapi-compat.sh origin/master
 ```
 
 The S3 namespace acceptance test also needs `SWARMY_S3_TEST_BUCKET` naming a
-pre-created, dedicated empty bucket. It refuses a non-empty bucket and cleans
-up its objects and metadata after each case, including assertion failures.
-It tests empty and nested prefixes, more than 1000 objects in one listing,
-sibling isolation, and dry and real collection. For the
-local SeaweedFS stack:
+pre-created, dedicated empty bucket. The dev stack creates
+`swarmy-s3-namespace-test` and exports the variable, so with the stack
+running:
 
 ```bash
 source .dev/env
-export SWARMY_S3_TEST_BUCKET=swarmy-s3-namespace-test
-curl --fail --silent --show-error --noproxy '*' \
-  --aws-sigv4 'aws:amz:us-east-1:s3' \
-  --header 'x-amz-content-sha256: UNSIGNED-PAYLOAD' \
-  --user 'swarmy-dev:swarmy-dev-secret' -X PUT \
-  "http://127.0.0.1:8333/$SWARMY_S3_TEST_BUCKET"
 cargo test -p swarmy-store --test s3_namespace --locked -- --nocapture
 ```
+
+It refuses a non-empty bucket and cleans up its objects and metadata after
+each case, including assertion failures. It tests empty and nested prefixes,
+more than 1000 objects in one listing, sibling isolation, and dry and real
+collection.
 
 The same test runs against cloud S3 by setting the S3 endpoint, credentials,
 region, and a dedicated empty test bucket, with a reachable FoundationDB.
