@@ -51,13 +51,8 @@ async fn import_preserves_all_json_and_file_is_read_only() {
     tokio::fs::write(&source, bytes).await.unwrap();
     let store = FileCredentialStore::new(&source);
     let loaded = store.load().await.unwrap();
-    assert_eq!(loaded.to_json(), &fixture());
-    assert_eq!(
-        Credentials::from_record(&loaded.to_record().unwrap())
-            .unwrap()
-            .to_json(),
-        &fixture()
-    );
+    assert!(loaded == credentials());
+    assert!(Credentials::from_record(&loaded.to_record().unwrap()).unwrap() == credentials());
     assert!(
         OAuthClient::new()
             .unwrap()
@@ -120,7 +115,7 @@ async fn failed_refresh_or_account_change_does_not_replace_credentials() {
         store.save(credentials()).await.unwrap();
         let oauth = OAuthClient::with_issuer(&server.uri()).unwrap();
         assert!(oauth.refresh(&store, &credentials()).await.is_err());
-        assert_eq!(store.load().await.unwrap().to_json(), &fixture());
+        assert!(store.load().await.unwrap() == credentials());
     }
 }
 
@@ -176,8 +171,13 @@ async fn device_code_exchange_persists_codex_layout() {
     .unwrap();
     assert_eq!(saved.account_id(), "account-test");
     assert_eq!(saved.access_token(), "login-access");
-    assert_eq!(saved.to_json()["auth_mode"], "chatgpt");
-    assert!(saved.to_json()["OPENAI_API_KEY"].is_null());
+    let swarmy_core::CredentialKind::OAuth { extra: stored, .. } = saved.to_record().unwrap().kind
+    else {
+        panic!("expected OAuth")
+    };
+    let json: serde_json::Value = serde_json::from_str(&stored["chatgpt_json"]).unwrap();
+    assert!(json["auth_mode"] == "chatgpt");
+    assert!(json["OPENAI_API_KEY"].is_null());
     let requests = server.received_requests().await.unwrap();
     let exchange = requests.last().unwrap();
     let body = std::str::from_utf8(&exchange.body).unwrap();

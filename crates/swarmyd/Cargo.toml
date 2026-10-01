@@ -33,6 +33,7 @@ jiff.workspace = true
 swarmy-core = { workspace = true, features = ["test-support"] }
 swarmy-store = { workspace = true, features = ["test-support"] }
 swarmy-testkit.workspace = true
+swarmy-volume = { workspace = true, features = ["test-support"] }
 
 foundationdb.workspace = true
 tempfile.workspace = true

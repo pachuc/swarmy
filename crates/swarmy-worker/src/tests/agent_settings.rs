@@ -172,7 +172,7 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
             ReasoningEffort::High,
         );
         f.store
-            .set_agent(
+            .set_agent_with_resets(
                 agent.agent_id,
                 &AgentSettings {
                     system_prompt: Some(String::new()),
@@ -183,6 +183,7 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
                     gpu: None,
                     route: None,
                 },
+                &[],
             )
             .await
             .unwrap();

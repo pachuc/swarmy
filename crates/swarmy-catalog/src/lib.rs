@@ -121,11 +121,6 @@ impl Compat {
     }
 
     #[must_use]
-    pub fn thinking_format(&self) -> Option<&str> {
-        self.0.get("thinking_format").and_then(Value::as_str)
-    }
-
-    #[must_use]
     pub fn cache_control_format(&self) -> Option<&str> {
         self.0.get("cache_control_format").and_then(Value::as_str)
     }
@@ -421,7 +416,6 @@ mod tests {
         let compat: Compat = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(compat.supports_temperature(), Some(false));
         assert_eq!(compat.supports_strict_mode(), None);
-        assert_eq!(compat.thinking_format(), None);
         assert_eq!(serde_json::to_value(compat).unwrap(), value);
     }
 

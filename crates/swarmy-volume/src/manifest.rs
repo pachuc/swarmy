@@ -71,6 +71,7 @@ impl Manifest {
     /// Count nonzero data chunks without fetching their payloads.
     /// # Errors
     /// Returns corrupt or missing manifest leaves and object-store failures.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn data_chunk_count(&self, store: &dyn ObjectStore) -> Result<u64> {
         let mut count = 0_u64;
         for index in 0..self.leaves.len() {
@@ -89,6 +90,7 @@ impl Manifest {
     /// Resolve a block without fetching any chunk data.
     /// # Errors
     /// Rejects invalid indices, corrupt leaves, and storage failures.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn chunk_hash(&self, store: &dyn ObjectStore, block: u64) -> Result<ContentHash> {
         let index = self.index(block)?;
         Ok(self.leaf(store, index / BLOCKS_PER_LEAF).await?[index % BLOCKS_PER_LEAF])

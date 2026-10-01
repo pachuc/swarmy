@@ -204,13 +204,6 @@ impl Store {
         .await
     }
 
-    /// Atomically change supplied inference settings, preserving omitted fields.
-    /// # Errors
-    /// Rejects unknown agents, oversized records, and storage failures.
-    pub async fn set_agent(&self, id: AgentId, settings: &AgentSettings) -> Result<AgentRecord> {
-        self.set_agent_with_resets(id, settings, &[]).await
-    }
-
     /// Apply overrides and explicit resets in the same transaction.
     /// # Errors
     /// Rejects unknown agents, missing routes, oversized records, and storage failures.

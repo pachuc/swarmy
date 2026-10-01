@@ -710,12 +710,13 @@ async fn agent_and_session_assignment_validate_routes() {
         .unwrap();
     assert!(matches!(
         f.store
-            .set_agent(
+            .set_agent_with_resets(
                 AgentId::from_ulid(ulid::Ulid::generate()),
                 &AgentSettings {
                     route: Some("missing".into()),
                     ..Default::default()
                 },
+                &[],
             )
             .await,
         Err(StoreError::Domain(

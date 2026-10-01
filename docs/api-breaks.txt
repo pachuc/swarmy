@@ -183,3 +183,4 @@ GET /v1/sessions/{id} removes archived from response properties
 #   over SSH, verify, then restart services (`swarmy remote upgrade` or
 #   `sudo systemctl restart swarmy-*`). Fresh nodes provisioned after this
 #   change already receive the grouped layout.
+# 2026-09-30: EventPayload variants message_appended, tool_call and tool_result and the Message schema are removed. The server never sent them and no client matched them; oasdiff grades the removal as info, so no ignore line is needed.

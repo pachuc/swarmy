@@ -662,7 +662,11 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
         "turn record assembles",
         Duration::from_secs(10),
         async || {
-            let records = f.store.list_turn_metrics(session, None, 10).await.unwrap();
+            let records = f
+                .store
+                .list_turn_metrics_paged(session, None, 10, None, None)
+                .await
+                .unwrap();
             (records.len() == 1
                 && records[0].stages.iter().any(|row| row.stage == "idle")
                 && records[0]

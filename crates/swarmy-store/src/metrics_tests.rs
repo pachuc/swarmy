@@ -335,7 +335,10 @@ mod integration_tests {
             )
             .await
             .unwrap();
-        let records = store.list_turn_metrics(session, None, 10).await.unwrap();
+        let records = store
+            .list_turn_metrics_paged(session, None, 10, None, None)
+            .await
+            .unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].append_to_first_token_ms, Some(2.0));
         assert_eq!(records[0].inference_duration_ms, Some(3.0));
@@ -352,7 +355,7 @@ mod integration_tests {
         );
         assert!(
             store
-                .list_turn_metrics(session, Some(turn), 10)
+                .list_turn_metrics_paged(session, Some(turn), 10, None, None)
                 .await
                 .unwrap()
                 .is_empty()
@@ -419,7 +422,10 @@ mod integration_tests {
             )
             .await
             .unwrap();
-        let records = store.list_turn_metrics(session, None, 10).await.unwrap();
+        let records = store
+            .list_turn_metrics_paged(session, None, 10, None, None)
+            .await
+            .unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].tools.len(), 1);
         assert_eq!(records[0].tools[0].name, "bash");
@@ -576,7 +582,10 @@ mod integration_tests {
             .record_turn_metrics(session, turn, vec![MetricPatch::Stage(idle_event)])
             .await
             .unwrap();
-        let records = store.list_turn_metrics(session, None, 10).await.unwrap();
+        let records = store
+            .list_turn_metrics_paged(session, None, 10, None, None)
+            .await
+            .unwrap();
         assert_eq!(records.len(), 1);
         let record = &records[0];
         assert_eq!(record.tools.len(), 200);
@@ -650,7 +659,10 @@ mod integration_tests {
             }),
         );
         store.flush_turn_metrics().await.unwrap();
-        let records = store.list_turn_metrics(session, None, 10).await.unwrap();
+        let records = store
+            .list_turn_metrics_paged(session, None, 10, None, None)
+            .await
+            .unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].turn_id, turn.to_string());
     }

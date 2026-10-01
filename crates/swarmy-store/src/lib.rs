@@ -243,6 +243,7 @@ impl Store {
     /// Use an explicitly allocated root prefix, primarily for isolated tests.
     /// The metrics drain starts lazily on the first observation or flush
     /// when no async runtime exists yet at construction time.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_subspace(db: Arc<Database>, root: Subspace, blobs: Arc<dyn BlobStore>) -> Self {
         let (metrics_tx, metrics_rx) = metrics_channel();

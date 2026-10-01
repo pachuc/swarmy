@@ -118,14 +118,6 @@ impl CredentialRecord {
         matches!(&self.kind, CredentialKind::OAuth { expires_at, .. }
             if expires_at.as_second() < now.as_second().saturating_add(300))
     }
-
-    #[must_use]
-    pub const fn kind_name(&self) -> &'static str {
-        match self.kind {
-            CredentialKind::ApiKey { .. } => "api_key",
-            CredentialKind::OAuth { .. } => "oauth",
-        }
-    }
 }
 
 #[cfg(test)]

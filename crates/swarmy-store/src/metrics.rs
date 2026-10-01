@@ -405,22 +405,6 @@ impl crate::Store {
         ))
     }
 
-    /// Read a bounded page of per-turn records, ordered by turn id.
-    /// Rows that fail to decode are skipped with a warning so one bad row
-    /// never fails the whole page; storage and API types evolve independently.
-    /// # Errors
-    /// Returns database failures. Callers must still validate `limit` through
-    /// the shared scan bound.
-    pub async fn list_turn_metrics(
-        &self,
-        session: SessionId,
-        after: Option<MessageId>,
-        limit: usize,
-    ) -> Result<Vec<TurnMetrics>> {
-        self.list_turn_metrics_paged(session, after, limit, None, None)
-            .await
-    }
-
     /// Read a page of turns with paging on the per-turn arrays. Very long
     /// turns truncate their chronologically sorted `inference` and `tools`
     /// arrays to the given limits and report the remainder.

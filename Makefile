@@ -77,7 +77,7 @@ check:
 	$(CARGO) test --locked -p swarmy-llm --no-default-features
 	RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --no-deps --locked
 	$(CARGO) deny check licenses bans sources
-	$(CARGO) machete
+	$(CARGO) machete --with-metadata
 	$(CARGO) build --workspace --locked
 	$(CARGO) test --workspace --locked --exclude swarmy-e2e
 	$(CARGO) test --locked -p swarmy-e2e --test gateway --test scheduler --test worker -- --test-threads=1

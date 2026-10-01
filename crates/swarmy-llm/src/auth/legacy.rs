@@ -45,11 +45,6 @@ impl Credentials {
     }
 
     #[must_use]
-    pub fn to_json(&self) -> &Value {
-        &self.0
-    }
-
-    #[must_use]
     pub fn account_id(&self) -> &str {
         // Construction validates this field and the raw value is immutable.
         self.0["tokens"]["account_id"].as_str().unwrap_or_default()

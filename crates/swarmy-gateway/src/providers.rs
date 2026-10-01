@@ -58,26 +58,15 @@ fn changed_providers(
         .collect()
 }
 
-/// Filter the catalog with the configured subset and resolver outcomes.
-#[must_use]
-pub fn provider_set(
+/// Record why configured-out and unknown providers are not served.
+fn skip_unselected(
     catalog: &Catalog,
     selected: Option<&[String]>,
-    mut resolve: impl FnMut(&ProviderInfo) -> Result<(), String>,
-) -> (Vec<String>, BTreeMap<String, String>) {
-    let mut served = Vec::new();
-    let mut skipped = BTreeMap::new();
+    skipped: &mut BTreeMap<String, String>,
+) {
     for provider in catalog.providers() {
-        let result = if selected.is_some_and(|ids| !ids.contains(&provider.id)) {
-            Err("excluded by providers setting".into())
-        } else {
-            resolve(provider)
-        };
-        match result {
-            Ok(()) => served.push(provider.id.clone()),
-            Err(reason) => {
-                skipped.insert(provider.id.clone(), reason);
-            }
+        if selected.is_some_and(|ids| !ids.contains(&provider.id)) {
+            skipped.insert(provider.id.clone(), "excluded by providers setting".into());
         }
     }
     for id in selected.into_iter().flatten() {
@@ -85,7 +74,6 @@ pub fn provider_set(
             skipped.insert(id.clone(), "unknown provider".into());
         }
     }
-    (served, skipped)
 }
 
 impl Providers {
@@ -184,20 +172,7 @@ impl Providers {
             }
         }
         served.sort();
-        for provider in self.catalog.providers() {
-            if self
-                .selected
-                .as_ref()
-                .is_some_and(|ids| !ids.contains(&provider.id))
-            {
-                skipped.insert(provider.id.clone(), "excluded by providers setting".into());
-            }
-        }
-        for id in self.selected.iter().flatten() {
-            if self.catalog.provider(id).is_none() {
-                skipped.insert(id.clone(), "unknown provider".into());
-            }
-        }
+        skip_unselected(&self.catalog, self.selected.as_deref(), &mut skipped);
         let added = served
             .iter()
             .filter(|id| !old.contains(id))
@@ -340,26 +315,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn intersects_catalog_credentials_and_explicit_subset() {
+    fn skip_unselected_records_excluded_and_unknown_providers() {
         let catalog = Catalog::get();
-        let resolver = |provider: &ProviderInfo| {
-            if matches!(provider.id.as_str(), "openai" | "anthropic") {
-                Ok(())
-            } else {
-                Err("missing key".into())
-            }
-        };
-        let (served, skipped) = provider_set(catalog, None, resolver);
-        assert_eq!(served, ["anthropic", "openai"]);
-        assert_eq!(skipped["chatgpt"], "missing key");
-        let (served, skipped) = provider_set(
+        let mut skipped = BTreeMap::new();
+        skip_unselected(catalog, None, &mut skipped);
+        assert!(skipped.is_empty());
+        skip_unselected(
             catalog,
             Some(&["openai".into(), "missing".into()]),
-            resolver,
+            &mut skipped,
         );
-        assert_eq!(served, ["openai"]);
         assert_eq!(skipped["anthropic"], "excluded by providers setting");
         assert_eq!(skipped["missing"], "unknown provider");
+        assert!(!skipped.contains_key("openai"));
     }
 
     #[test]
