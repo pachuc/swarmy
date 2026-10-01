@@ -4,6 +4,7 @@ use super::{ApiFailure, ApiResult, AppState, storage};
 use axum::{Json, http::StatusCode};
 
 /// A client idempotency key, checked once at the API boundary.
+#[derive(Debug)]
 pub(crate) struct IdempotencyKey(String);
 
 impl IdempotencyKey {
@@ -42,16 +43,14 @@ pub(crate) async fn replayed<T: serde::de::DeserializeOwned>(
     key: &str,
 ) -> Result<Option<T>, ApiFailure> {
     if let Some(value) = state.store.api_replay(key).await.map_err(storage)? {
-        return serde_json::from_value(value)
-            .map(Some)
-            .map_err(|cause| {
-                ApiFailure::caused(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "corrupt_replay",
-                    "stored replay response is corrupt",
-                    &cause,
-                )
-            });
+        return serde_json::from_value(value).map(Some).map_err(|cause| {
+            ApiFailure::caused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "corrupt_replay",
+                "stored replay response is corrupt",
+                &cause,
+            )
+        });
     }
     Ok(None)
 }
@@ -103,9 +102,8 @@ mod tests {
 
     #[test]
     fn parse_checks_the_key_once() {
-        let key = IdempotencyKey::parse("abc").unwrap_or_else(|failure| {
-            panic!("a short key parses, got {}", failure.body.code)
-        });
+        let key = IdempotencyKey::parse("abc")
+            .unwrap_or_else(|failure| panic!("a short key parses, got {}", failure.body.code));
         assert_eq!(key.as_str(), "abc");
         assert_eq!(key.scoped("gc:runs"), "gc:runs:abc");
         let longest = "k".repeat(256);

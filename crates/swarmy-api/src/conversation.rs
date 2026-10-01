@@ -1,6 +1,8 @@
 //! Conversation mutations preserve the store-first, nudge-second client path.
 use super::views::session_with_next;
-use super::{ApiFailure, ApiResult, AppState, IdempotencyKey, id, invalid_selection, replay, storage};
+use super::{
+    ApiFailure, ApiResult, AppState, IdempotencyKey, id, invalid_selection, replay, storage,
+};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -98,7 +100,11 @@ pub(crate) async fn create(
                 || body.effort.is_some()
                 || body.route.is_some())
     {
-        return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_session_selection", "new requires agent_id, and agent_id excludes image, provider, model, effort, and route"));
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_session_selection",
+            "new requires agent_id, and agent_id excludes image, provider, model, effort, and route",
+        ));
     }
     let choice = selection(&body)?;
     let choice = if body.agent_id.is_none() {
@@ -204,7 +210,13 @@ pub(crate) async fn set_route(
                 .fetch_session(session_id)
                 .await
                 .map_err(storage)?
-                .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "session_not_found", "session not found"))?;
+                .ok_or_else(|| {
+                    ApiFailure::new(
+                        StatusCode::NOT_FOUND,
+                        "session_not_found",
+                        "session not found",
+                    )
+                })?;
             Ok(Json(
                 session_with_next(
                     &response_state,
@@ -227,7 +239,11 @@ pub(crate) async fn append(
 ) -> ApiResult<api::AppendedMessage> {
     let key = IdempotencyKey::parse(&body.idempotency_key)?;
     if body.text.trim().is_empty() {
-        return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "empty_message", "message text is empty"));
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "empty_message",
+            "message text is empty",
+        ));
     }
     let session_id = id(&text, SessionId::from_ulid)?;
     let scoped = format!("session:{session_id}:append:{}", key.as_str());
@@ -396,7 +412,13 @@ pub(crate) async fn wait_idle(
             .fetch_session(session_id)
             .await
             .map_err(storage)?
-            .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "session_not_found", "session not found"))?;
+            .ok_or_else(|| {
+                ApiFailure::new(
+                    StatusCode::NOT_FOUND,
+                    "session_not_found",
+                    "session not found",
+                )
+            })?;
         if record.state == SessionState::Completed
             || (record.state == SessionState::Idle
                 && query.after.is_none_or(|after| record.head_seq > after))

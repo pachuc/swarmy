@@ -230,16 +230,14 @@ async fn spool(
             )
         })?;
     let path = directory.path().join("disk.ext4");
-    let mut file = tokio::fs::File::create(&path)
-        .await
-        .map_err(|cause| {
-            ApiFailure::caused(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "storage_error",
-                "upload spool write failed",
-                &cause,
-            )
-        })?;
+    let mut file = tokio::fs::File::create(&path).await.map_err(|cause| {
+        ApiFailure::caused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_error",
+            "upload spool write failed",
+            &cause,
+        )
+    })?;
     let mut stream = body.into_data_stream();
     let mut size: u64 = 0;
     while let Some(chunk) = stream.next().await {
@@ -259,9 +257,7 @@ async fn spool(
         if chunk.is_empty() {
             continue;
         }
-        file.write_all(&chunk)
-            .await
-            .map_err(|cause| {
+        file.write_all(&chunk).await.map_err(|cause| {
             ApiFailure::caused(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "storage_error",
@@ -273,16 +269,14 @@ async fn spool(
     if size == 0 {
         return Err(invalid("uploaded image is empty"));
     }
-    file.flush()
-        .await
-        .map_err(|cause| {
-            ApiFailure::caused(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "storage_error",
-                "upload spool write failed",
-                &cause,
-            )
-        })?;
+    file.flush().await.map_err(|cause| {
+        ApiFailure::caused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_error",
+            "upload spool write failed",
+            &cause,
+        )
+    })?;
     drop(file);
     Ok((directory, path, size))
 }

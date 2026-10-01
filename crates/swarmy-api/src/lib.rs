@@ -14,8 +14,8 @@ use std::sync::Arc;
 mod api_failure;
 mod conversation;
 mod gc;
-pub mod images;
 mod idempotency;
+pub mod images;
 mod models;
 mod stream;
 mod views;
@@ -114,9 +114,7 @@ pub(crate) fn volume(value: swarmy_volume::VolumeError) -> ApiFailure {
 type ApiResult<T> = Result<Json<T>, ApiFailure>;
 /// Report a rejected provider/model choice with the catalog's explanation
 /// (unknown ids plus the closest matches) instead of a bare code.
-pub(crate) fn invalid_selection(
-    failure: &swarmy_llm::selection::SelectionError,
-) -> ApiFailure {
+pub(crate) fn invalid_selection(failure: &swarmy_llm::selection::SelectionError) -> ApiFailure {
     ApiFailure::new(
         StatusCode::BAD_REQUEST,
         "invalid_selection",
@@ -429,11 +427,7 @@ async fn show_agent(
     views::agent_value(
         &state,
         record.ok_or_else(|| {
-            ApiFailure::new(
-                StatusCode::NOT_FOUND,
-                "agent_not_found",
-                "agent not found",
-            )
+            ApiFailure::new(StatusCode::NOT_FOUND, "agent_not_found", "agent not found")
         })?,
     )
     .await
@@ -493,7 +487,9 @@ async fn update_agent(
         .get_agent_by_name(&name)
         .await
         .map_err(storage)?
-        .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "agent_not_found", "agent not found"))?;
+        .ok_or_else(|| {
+            ApiFailure::new(StatusCode::NOT_FOUND, "agent_not_found", "agent not found")
+        })?;
     let selection = swarmy_llm::selection::normalize(
         swarmy_core::InferenceSelection {
             provider: body.provider,
@@ -529,26 +525,21 @@ async fn update_agent(
     let store = state.store.clone();
     let detail = state.clone();
     let key = IdempotencyKey::parse(&body.idempotency_key)?;
-    replay(
-        &state,
-        &key,
-        &format!("agents:{name}:update"),
-        async move {
-            let updated = store
-                .set_agent_with_resets(record.agent_id, &settings, &resets)
+    replay(&state, &key, &format!("agents:{name}:update"), async move {
+        let updated = store
+            .set_agent_with_resets(record.agent_id, &settings, &resets)
+            .await
+            .map_err(storage)?;
+        if body.github_token.is_some() || body.clear_github_token {
+            store
+                .set_agent_github_token(record.agent_id, body.github_token.as_deref())
                 .await
                 .map_err(storage)?;
-            if body.github_token.is_some() || body.clear_github_token {
-                store
-                    .set_agent_github_token(record.agent_id, body.github_token.as_deref())
-                    .await
-                    .map_err(storage)?;
-            }
-            // Update returns the same detail shape as create and show, so the
-            // CLI renders the response without a second fetch.
-            views::agent_value(&detail, updated).await.map(Json)
-        },
-    )
+        }
+        // Update returns the same detail shape as create and show, so the
+        // CLI renders the response without a second fetch.
+        views::agent_value(&detail, updated).await.map(Json)
+    })
     .await
 }
 async fn delete_agent(
@@ -558,17 +549,12 @@ async fn delete_agent(
 ) -> ApiResult<api::AgentDeleted> {
     let store = state.store.clone();
     let key = IdempotencyKey::parse(&body.idempotency_key)?;
-    replay(
-        &state,
-        &key,
-        &format!("agents:{name}:delete"),
-        async move {
-            if let Some(record) = store.get_agent_by_name(&name).await.map_err(storage)? {
-                store.delete_agent(record.agent_id).await.map_err(storage)?;
-            }
-            Ok(Json(api::AgentDeleted { deleted: true }))
-        },
-    )
+    replay(&state, &key, &format!("agents:{name}:delete"), async move {
+        if let Some(record) = store.get_agent_by_name(&name).await.map_err(storage)? {
+            store.delete_agent(record.agent_id).await.map_err(storage)?;
+        }
+        Ok(Json(api::AgentDeleted { deleted: true }))
+    })
     .await
 }
 async fn sessions(
@@ -605,7 +591,13 @@ async fn show_session(
         .fetch_session(id)
         .await
         .map_err(storage)?
-        .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "session_not_found", "session not found"))?;
+        .ok_or_else(|| {
+            ApiFailure::new(
+                StatusCode::NOT_FOUND,
+                "session_not_found",
+                "session not found",
+            )
+        })?;
     let mut agents = std::collections::HashMap::new();
     let mut result = views::session_with_next(&state, &record, &mut agents).await?;
     let agent = agents
@@ -627,7 +619,11 @@ async fn session_metrics(
         .map_err(storage)?
         .is_none()
     {
-        return Err(ApiFailure::new(StatusCode::NOT_FOUND, "session_not_found", "session not found"));
+        return Err(ApiFailure::new(
+            StatusCode::NOT_FOUND,
+            "session_not_found",
+            "session not found",
+        ));
     }
     let after = page
         .after
@@ -701,7 +697,11 @@ async fn events(
         .map_err(storage)?
         .is_none()
     {
-        return Err(ApiFailure::new(StatusCode::NOT_FOUND, "session_not_found", "session not found"));
+        return Err(ApiFailure::new(
+            StatusCode::NOT_FOUND,
+            "session_not_found",
+            "session not found",
+        ));
     }
     let records = state
         .store
@@ -762,7 +762,9 @@ async fn show_image(
         .get_image(&name, &ImageTag(tag.clone()))
         .await
         .map_err(storage)?
-        .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "image_not_found", "image not found"))?;
+        .ok_or_else(|| {
+            ApiFailure::new(StatusCode::NOT_FOUND, "image_not_found", "image not found")
+        })?;
     let record = swarmy_core::ImageRecord {
         name: name.clone(),
         tag: ImageTag(tag.clone()),
@@ -773,7 +775,13 @@ async fn show_image(
         .get_manifest(manifest)
         .await
         .map_err(storage)?
-        .ok_or_else(|| ApiFailure::new(StatusCode::INTERNAL_SERVER_ERROR, "image_manifest_missing", "image manifest is missing"))?;
+        .ok_or_else(|| {
+            ApiFailure::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "image_manifest_missing",
+                "image manifest is missing",
+            )
+        })?;
     let scratch = state.store.image_scratch(&record).await.map_err(storage)?;
     Ok(Json(api::Image {
         manifest_id: manifest.to_string(),
@@ -790,7 +798,11 @@ async fn models(
     if let Some(provider) = &query.provider
         && state.catalog.provider(provider).is_none()
     {
-        return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "unknown_provider", "unknown provider"));
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "unknown_provider",
+            "unknown provider",
+        ));
     }
     Ok(Json(
         state
@@ -829,16 +841,14 @@ async fn show_model(
     State(state): State<AppState>,
     Path((provider, name)): Path<(String, String)>,
 ) -> ApiResult<api::Model> {
-    let p = state
-        .catalog
-        .provider(&provider)
-        .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "model_not_found", "model not found"))?;
+    let p = state.catalog.provider(&provider).ok_or_else(|| {
+        ApiFailure::new(StatusCode::NOT_FOUND, "model_not_found", "model not found")
+    })?;
     Ok(Json(views::model(
         p,
-        state
-            .catalog
-            .model(&provider, &name)
-            .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "model_not_found", "model not found"))?,
+        state.catalog.model(&provider, &name).ok_or_else(|| {
+            ApiFailure::new(StatusCode::NOT_FOUND, "model_not_found", "model not found")
+        })?,
     )))
 }
 async fn providers(State(state): State<AppState>) -> Json<Vec<api::Provider>> {
@@ -898,7 +908,13 @@ async fn check_credential(
         .map_err(storage)?
         .into_iter()
         .find(|entry| entry.provider == provider)
-        .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "credential_not_found", "credential not found"))?;
+        .ok_or_else(|| {
+            ApiFailure::new(
+                StatusCode::NOT_FOUND,
+                "credential_not_found",
+                "credential not found",
+            )
+        })?;
     Ok(Json(views::credential(summary)))
 }
 async fn set_credential(
@@ -947,7 +963,13 @@ async fn set_credential(
                 .map_err(storage)?
                 .into_iter()
                 .find(|entry| entry.provider == body.provider && entry.label == body.label)
-                .ok_or_else(|| ApiFailure::new(StatusCode::INTERNAL_SERVER_ERROR, "credential_missing", "credential missing after it was stored"))?;
+                .ok_or_else(|| {
+                    ApiFailure::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "credential_missing",
+                        "credential missing after it was stored",
+                    )
+                })?;
             Ok(Json(views::credential(summary)))
         },
     )
@@ -979,7 +1001,13 @@ async fn put_credential_record(
                 .map_err(storage)?
                 .into_iter()
                 .find(|entry| entry.provider == body.provider && entry.label == body.label)
-                .ok_or_else(|| ApiFailure::new(StatusCode::INTERNAL_SERVER_ERROR, "credential_missing", "credential missing after it was stored"))?;
+                .ok_or_else(|| {
+                    ApiFailure::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "credential_missing",
+                        "credential missing after it was stored",
+                    )
+                })?;
             Ok(Json(views::credential(summary)))
         },
     )
@@ -996,7 +1024,13 @@ async fn check_credential_entry(
         .map_err(storage)?
         .into_iter()
         .find(|entry| entry.provider == provider && entry.label == label)
-        .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "credential_not_found", "credential not found"))?;
+        .ok_or_else(|| {
+            ApiFailure::new(
+                StatusCode::NOT_FOUND,
+                "credential_not_found",
+                "credential not found",
+            )
+        })?;
     Ok(Json(views::credential(summary)))
 }
 fn quota_view(quota: swarmy_store::EntryQuota) -> api::EntryQuotaView {
@@ -1026,7 +1060,11 @@ async fn require_entry(state: &AppState, provider: &str, label: &str) -> Result<
     if exists {
         Ok(())
     } else {
-        Err(ApiFailure::new(StatusCode::NOT_FOUND, "credential_not_found", "credential not found"))
+        Err(ApiFailure::new(
+            StatusCode::NOT_FOUND,
+            "credential_not_found",
+            "credential not found",
+        ))
     }
 }
 
@@ -1048,7 +1086,11 @@ async fn set_entry_quota(
     Json(body): Json<api::SetEntryQuota>,
 ) -> ApiResult<api::EntryQuotaView> {
     if body.limit == 0 || body.window_seconds == 0 {
-        return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_quota", "limit and window_seconds must be greater than zero"));
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_quota",
+            "limit and window_seconds must be greater than zero",
+        ));
     }
     require_entry(&state, &provider, &label).await?;
     let store = state.store.clone();
@@ -1090,63 +1132,38 @@ async fn usage(
     State(state): State<AppState>,
     Query(query): Query<UsageQuery>,
 ) -> ApiResult<api::UsageResponse> {
-    let sent_by = query.by.clone().unwrap_or_else(|| "agent".into());
-    let dimension = swarmy_store::MeteringDimension::parse(&sent_by)
-        .ok_or_else(|| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_dimension", "unknown usage dimension"))?;
-    let group_by = match query.group.as_deref().unwrap_or("day") {
-        "day" => swarmy_store::UsageGroupBy::Day,
-        "week" => swarmy_store::UsageGroupBy::Week,
-        "month" => swarmy_store::UsageGroupBy::Month,
-        "year" => swarmy_store::UsageGroupBy::Year,
-        _ => return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_group", "group must be day, week, month, or year")),
-    };
-    let now = Timestamp::now();
-    let to = query
-        .to
-        .as_deref()
-        .map(|bound| {
-            swarmy_core::time::parse_bound(bound, now)
-                .ok_or_else(|| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_to", "to is not a valid time"))
-        })
-        .transpose()?
-        .unwrap_or(now);
-    let from = query
-        .from
-        .as_deref()
-        .map(|bound| {
-            swarmy_core::time::parse_bound(bound, now)
-                .ok_or_else(|| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_from", "from is not a valid time"))
-        })
-        .transpose()?
-        .unwrap_or_else(|| {
-            to.checked_add(jiff::Span::new().hours(-30 * 24))
-                .unwrap_or(Timestamp::UNIX_EPOCH)
-        });
-    if to <= from {
-        return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_range", "to must be after from"));
-    }
-    if to
-        .as_second()
-        .checked_sub(from.as_second())
-        .is_none_or(|span| span > MAX_USAGE_SPAN_SECONDS)
-    {
-        return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "span_too_large", "usage span exceeds 400 days"));
-    }
+    let params = usage_params(&query)?;
     let groups = match query.key.as_deref() {
-        Some("") => return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_key", "key must not be empty")),
+        Some("") => {
+            return Err(ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_key",
+                "key must not be empty",
+            ));
+        }
         Some(key) => state
             .store
-            .usage(dimension, key, from, to, group_by)
+            .usage(
+                params.dimension,
+                key,
+                params.from,
+                params.to,
+                params.group_by,
+            )
             .await
             .map_err(storage)?,
         None => state
             .store
-            .usage_aggregate(dimension, from, to, group_by)
+            .usage_aggregate(params.dimension, params.from, params.to, params.group_by)
             .await
             .map_err(storage)?,
     };
     if groups.len() > MAX_USAGE_GROUPS {
-        return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "too_many_groups", "usage series exceeds 500 groups"));
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "too_many_groups",
+            "usage series exceeds 500 groups",
+        ));
     }
     let mut total = swarmy_core::UsageTotals::default();
     let mut completions: u64 = 0;
@@ -1155,20 +1172,111 @@ async fn usage(
         completions = completions.saturating_add(group.completions);
     }
     Ok(Json(api::UsageResponse {
-        by: sent_by,
+        by: params.sent_by,
         key: query.key,
-        group: match group_by {
+        group: match params.group_by {
             swarmy_store::UsageGroupBy::Day => "day",
             swarmy_store::UsageGroupBy::Week => "week",
             swarmy_store::UsageGroupBy::Month => "month",
             swarmy_store::UsageGroupBy::Year => "year",
         }
         .into(),
-        from: from.to_string(),
-        to: to.to_string(),
+        from: params.from.to_string(),
+        to: params.to.to_string(),
         groups: groups.iter().map(views::usage_group_view).collect(),
         total: views::totals_view(&total, completions),
     }))
+}
+
+/// The validated usage query: dimension, grouping, and time bounds. Parsing
+/// lives here so the handler only fetches rollups and renders the response.
+struct UsageParams {
+    sent_by: String,
+    dimension: swarmy_store::MeteringDimension,
+    group_by: swarmy_store::UsageGroupBy,
+    from: Timestamp,
+    to: Timestamp,
+}
+
+fn usage_params(query: &UsageQuery) -> Result<UsageParams, ApiFailure> {
+    let sent_by = query.by.clone().unwrap_or_else(|| "agent".into());
+    let dimension = swarmy_store::MeteringDimension::parse(&sent_by).ok_or_else(|| {
+        ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_dimension",
+            "unknown usage dimension",
+        )
+    })?;
+    let group_by = match query.group.as_deref().unwrap_or("day") {
+        "day" => swarmy_store::UsageGroupBy::Day,
+        "week" => swarmy_store::UsageGroupBy::Week,
+        "month" => swarmy_store::UsageGroupBy::Month,
+        "year" => swarmy_store::UsageGroupBy::Year,
+        _ => {
+            return Err(ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_group",
+                "group must be day, week, month, or year",
+            ));
+        }
+    };
+    let now = Timestamp::now();
+    let to = query
+        .to
+        .as_deref()
+        .map(|bound| {
+            swarmy_core::time::parse_bound(bound, now).ok_or_else(|| {
+                ApiFailure::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_to",
+                    "to is not a valid time",
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(now);
+    let from = query
+        .from
+        .as_deref()
+        .map(|bound| {
+            swarmy_core::time::parse_bound(bound, now).ok_or_else(|| {
+                ApiFailure::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_from",
+                    "from is not a valid time",
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or_else(|| {
+            to.checked_add(jiff::Span::new().hours(-30 * 24))
+                .unwrap_or(Timestamp::UNIX_EPOCH)
+        });
+    if to <= from {
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_range",
+            "to must be after from",
+        ));
+    }
+    if to
+        .as_second()
+        .checked_sub(from.as_second())
+        .is_none_or(|span| span > MAX_USAGE_SPAN_SECONDS)
+    {
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "span_too_large",
+            "usage span exceeds 400 days",
+        ));
+    }
+    Ok(UsageParams {
+        sent_by,
+        dimension,
+        group_by,
+        from,
+        to,
+    })
 }
 
 /// Longest usage span the API serves: 400 days. Longer windows fail with
@@ -1303,7 +1411,9 @@ async fn show_route(
             .get_route(&name)
             .await
             .map_err(storage)?
-            .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "route_not_found", "route not found"))?,
+            .ok_or_else(|| {
+                ApiFailure::new(StatusCode::NOT_FOUND, "route_not_found", "route not found")
+            })?,
     )))
 }
 
@@ -1314,29 +1424,34 @@ async fn set_route(
 ) -> ApiResult<api::Route> {
     for step in &body.steps {
         if state.catalog.provider(&step.provider).is_none() {
-            return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_route", "route names an unknown provider"));
+            return Err(ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_route",
+                "route names an unknown provider",
+            ));
         }
     }
     let store = state.store.clone();
     let key = IdempotencyKey::parse(&body.idempotency_key)?;
-    replay(
-        &state,
-        &key,
-        &format!("routes:{name}:set"),
-        async move {
+    replay(&state, &key, &format!("routes:{name}:set"), async move {
+        store
+            .put_route(&name, &api_route_steps(&body.steps))
+            .await
+            .map_err(storage)?;
+        Ok(Json(api_route(
             store
-                .put_route(&name, &api_route_steps(&body.steps))
+                .get_route(&name)
                 .await
-                .map_err(storage)?;
-            Ok(Json(api_route(
-                store
-                    .get_route(&name)
-                    .await
-                    .map_err(storage)?
-                    .ok_or_else(|| ApiFailure::new(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", "route missing after it was stored"))?,
-            )))
-        },
-    )
+                .map_err(storage)?
+                .ok_or_else(|| {
+                    ApiFailure::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "storage_error",
+                        "route missing after it was stored",
+                    )
+                })?,
+        )))
+    })
     .await
 }
 
@@ -1347,18 +1462,17 @@ async fn delete_route(
 ) -> ApiResult<api::RouteDeleted> {
     let store = state.store.clone();
     let key = IdempotencyKey::parse(&body.idempotency_key)?;
-    replay(
-        &state,
-        &key,
-        &format!("routes:{name}:remove"),
-        async move {
-            let deleted = store.delete_route(&name).await.map_err(storage)?;
-            if !deleted {
-                return Err(ApiFailure::new(StatusCode::NOT_FOUND, "route_not_found", "route not found"));
-            }
-            Ok(Json(api::RouteDeleted { deleted }))
-        },
-    )
+    replay(&state, &key, &format!("routes:{name}:remove"), async move {
+        let deleted = store.delete_route(&name).await.map_err(storage)?;
+        if !deleted {
+            return Err(ApiFailure::new(
+                StatusCode::NOT_FOUND,
+                "route_not_found",
+                "route not found",
+            ));
+        }
+        Ok(Json(api::RouteDeleted { deleted }))
+    })
     .await
 }
 
@@ -1379,8 +1493,9 @@ mod store_error_tests {
 
     #[test]
     fn only_non_idle_sessions_get_that_code() {
-        let failure =
-            conversation::session_error(StoreError::Domain(swarmy_store::DomainError::SessionNotIdle));
+        let failure = conversation::session_error(StoreError::Domain(
+            swarmy_store::DomainError::SessionNotIdle,
+        ));
         assert_eq!(failure.status, StatusCode::CONFLICT);
         assert_eq!(failure.body.code, "session_not_idle");
         let failure = conversation::session_error(StoreError::Domain(

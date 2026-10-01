@@ -58,21 +58,37 @@ fn key(log: &LogId) -> String {
 }
 fn session_id(log: &LogId) -> Result<SessionId, ApiFailure> {
     let LogId::Session(text) = log else {
-        return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "unsupported_log", "log kind is not supported here"));
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "unsupported_log",
+            "log kind is not supported here",
+        ));
     };
-    text.parse::<Ulid>()
-        .map(SessionId::from_ulid)
-        .map_err(|_| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_log_id", "log id is not a valid ULID"))
+    text.parse::<Ulid>().map(SessionId::from_ulid).map_err(|_| {
+        ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_log_id",
+            "log id is not a valid ULID",
+        )
+    })
 }
 /// Timeline cursors name the session whose turn observations are followed.
 /// The session must exist, but observations are live-only and never replayed.
 fn timeline_id(log: &LogId) -> Result<SessionId, ApiFailure> {
     let LogId::Timeline(text) = log else {
-        return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "unsupported_log", "log kind is not supported here"));
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "unsupported_log",
+            "log kind is not supported here",
+        ));
     };
-    text.parse::<Ulid>()
-        .map(SessionId::from_ulid)
-        .map_err(|_| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_log_id", "log id is not a valid ULID"))
+    text.parse::<Ulid>().map(SessionId::from_ulid).map_err(|_| {
+        ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_log_id",
+            "log id is not a valid ULID",
+        )
+    })
 }
 async fn validate(state: &AppState, subscription: &Subscription) -> Result<(), ApiFailure> {
     if subscription.cursors.is_empty() || subscription.cursors.len() > MAX_LOGS {
@@ -85,7 +101,11 @@ async fn validate(state: &AppState, subscription: &Subscription) -> Result<(), A
     let mut seen = HashSet::new();
     for cursor in &subscription.cursors {
         if !seen.insert(key(&cursor.log_id)) {
-            return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "duplicate_log", "subscription lists a log twice"));
+            return Err(ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "duplicate_log",
+                "subscription lists a log twice",
+            ));
         }
         let id = match &cursor.log_id {
             LogId::Timeline(_) => timeline_id(&cursor.log_id)?,
@@ -98,7 +118,11 @@ async fn validate(state: &AppState, subscription: &Subscription) -> Result<(), A
             .map_err(storage)?
             .is_none()
         {
-            return Err(ApiFailure::new(StatusCode::NOT_FOUND, "session_not_found", "session not found"));
+            return Err(ApiFailure::new(
+                StatusCode::NOT_FOUND,
+                "session_not_found",
+                "session not found",
+            ));
         }
     }
     Ok(())
@@ -117,12 +141,26 @@ fn encode_cursor(subscription: &Subscription) -> Result<String, ApiFailure> {
 }
 fn decode_cursor(text: &str) -> Result<Subscription, ApiFailure> {
     if text.len() > 8192 {
-        return Err(ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_cursor", "cursor is not valid"));
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_cursor",
+            "cursor is not valid",
+        ));
     }
-    let bytes = URL_SAFE_NO_PAD
-        .decode(text)
-        .map_err(|_| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_cursor", "cursor is not valid"))?;
-    serde_json::from_slice(&bytes).map_err(|_| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_cursor", "cursor is not valid"))
+    let bytes = URL_SAFE_NO_PAD.decode(text).map_err(|_| {
+        ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_cursor",
+            "cursor is not valid",
+        )
+    })?;
+    serde_json::from_slice(&bytes).map_err(|_| {
+        ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_cursor",
+            "cursor is not valid",
+        )
+    })
 }
 
 /// GET /v1/events?subscription=<URL-encoded Subscription JSON>.
@@ -135,31 +173,28 @@ pub(crate) async fn subscribe(
     headers: HeaderMap,
 ) -> Result<Response, ApiFailure> {
     let subscription = if let Some(header) = headers.get("last-event-id") {
-        decode_cursor(
-            header
-                .to_str()
-                .map_err(|_| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_cursor", "cursor is not valid"))?,
-        )?
+        decode_cursor(header.to_str().map_err(|_| {
+            ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_cursor",
+                "cursor is not valid",
+            )
+        })?)?
     } else {
-        serde_json::from_str(
-            query
-                .subscription
-                .as_deref()
-                .ok_or_else(|| {
-                    ApiFailure::new(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_subscription",
-                        "subscription is missing or not valid JSON",
-                    )
-                })?,
-        )
+        serde_json::from_str(query.subscription.as_deref().ok_or_else(|| {
+            ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_subscription",
+                "subscription is missing or not valid JSON",
+            )
+        })?)
         .map_err(|_| {
             ApiFailure::new(
                 StatusCode::BAD_REQUEST,
                 "invalid_subscription",
                 "subscription is missing or not valid JSON",
             )
-        })?;
+        })?
     };
     validate(&state, &subscription).await?;
     // Install the live subscriptions before headers become visible to a client.
@@ -242,7 +277,13 @@ pub(crate) async fn update(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&connection_id)
         .cloned()
-        .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "connection_not_found", "stream connection not found"))?;
+        .ok_or_else(|| {
+            ApiFailure::new(
+                StatusCode::NOT_FOUND,
+                "connection_not_found",
+                "stream connection not found",
+            )
+        })?;
     let mut progress = sender
         .progress
         .lock()
@@ -266,10 +307,13 @@ pub(crate) async fn update(
     }
     // The producer may already be delivering another event. Its progress is
     // monotone, so it can safely catch up beyond this requested cursor.
-    sender
-        .sender
-        .send(subscription.clone())
-        .map_err(|_| ApiFailure::new(StatusCode::NOT_FOUND, "connection_not_found", "stream connection not found"))?;
+    sender.sender.send(subscription.clone()).map_err(|_| {
+        ApiFailure::new(
+            StatusCode::NOT_FOUND,
+            "connection_not_found",
+            "stream connection not found",
+        )
+    })?;
     *progress = subscription;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -116,13 +116,9 @@ mod tests {
         assert_eq!(failure.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(failure.body.code, "storage_error");
         assert_eq!(failure.body.message, "storage operation failed");
-        let logged = String::from_utf8(
-            buffer
-                .lock()
-                .map(|guard| guard.clone())
-                .unwrap_or_default(),
-        )
-        .unwrap_or_default();
+        let logged =
+            String::from_utf8(buffer.lock().map(|guard| guard.clone()).unwrap_or_default())
+                .unwrap_or_default();
         assert!(
             logged.contains("outer failed: disk full"),
             "log must carry the full cause chain, got: {logged}"

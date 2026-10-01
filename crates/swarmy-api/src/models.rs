@@ -75,25 +75,14 @@ pub(crate) async fn probe(
             "provider and model are required",
         ));
     }
-    let provider = state
-        .catalog
-        .provider(&body.provider)
-        .ok_or_else(|| {
-            ApiFailure::new(
-                StatusCode::NOT_FOUND,
-                "model_not_found",
-                "model not found",
-            )
-        })?;
+    let provider = state.catalog.provider(&body.provider).ok_or_else(|| {
+        ApiFailure::new(StatusCode::NOT_FOUND, "model_not_found", "model not found")
+    })?;
     let model = state
         .catalog
         .model(&body.provider, &body.model)
         .ok_or_else(|| {
-            ApiFailure::new(
-                StatusCode::NOT_FOUND,
-                "model_not_found",
-                "model not found",
-            )
+            ApiFailure::new(StatusCode::NOT_FOUND, "model_not_found", "model not found")
         })?;
     let requested = body.effort.map_or(
         swarmy_core::ReasoningEffort::None,
@@ -101,16 +90,13 @@ pub(crate) async fn probe(
     );
     let (effort, _) = model.clamp_effort(requested);
     let auth = if provider.api == swarmy_llm::catalog::Api::Fake {
-        let (script, call_log) = state
-            .fake_files
-            .as_ref()
-            .ok_or_else(|| {
-                ApiFailure::new(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_request",
-                    "this server has no scripted fake provider files",
-                )
-            })?;
+        let (script, call_log) = state.fake_files.as_ref().ok_or_else(|| {
+            ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "this server has no scripted fake provider files",
+            )
+        })?;
         swarmy_llm::ClientAuth::Scripted(Arc::new(
             swarmy_llm::fake::FileFake::from_files(script, call_log)
                 .map_err(|failure| provider_failure(failure.to_string()))?,
