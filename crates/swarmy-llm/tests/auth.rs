@@ -175,8 +175,8 @@ async fn device_code_exchange_persists_codex_layout() {
     else {
         panic!("expected OAuth")
     };
-    let json: serde_json::Value = serde_json::from_str(&stored["chatgpt_json"]).unwrap();
-    assert!(json["auth_mode"] == "chatgpt");
+    let json: Value = serde_json::from_str(&stored["chatgpt_json"]).unwrap();
+    assert_eq!(json["auth_mode"], "chatgpt");
     assert!(json["OPENAI_API_KEY"].is_null());
     let requests = server.received_requests().await.unwrap();
     let exchange = requests.last().unwrap();
