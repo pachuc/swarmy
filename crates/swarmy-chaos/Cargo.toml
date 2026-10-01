@@ -35,4 +35,4 @@ ulid.workspace = true
 
 [dev-dependencies]
 swarmy-llm = { workspace = true, features = ["fake"] }
-swarmy-testkit = { workspace = true, default-features = false }
+swarmy-testkit = { path = "../swarmy-testkit", version = "0.1.0", default-features = false }

@@ -284,9 +284,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
     };
     let prefix = stack.prefix.clone();
     let directory = stack.prefix.clone();
-    let (store, guard) = stack
-        .open_store(Arc::new(MemoryBlobStore::default()))
-        .await;
+    let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
     let bus = Bus::connect(
         &url,
         Config {

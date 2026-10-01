@@ -2,12 +2,12 @@
 
 use std::sync::{Arc, OnceLock};
 
+use crate::require_stack;
 use foundationdb::{
     Database,
     directory::{Directory, DirectoryLayer},
     tuple::Subspace,
 };
-use crate::require_stack;
 use swarmy_store::blob::BlobStore;
 
 /// Boot the `FoundationDB` client exactly once per test process.

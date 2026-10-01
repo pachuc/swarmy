@@ -58,4 +58,3 @@ fn missing_stack<T>(name: &str) -> Option<T> {
     eprintln!("skipping integration test: {name} is unavailable");
     None
 }
-
