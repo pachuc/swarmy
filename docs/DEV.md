@@ -285,7 +285,7 @@ provisioning commands are needed.
 The Makefile looks for the client library in `~/.local/lib`, `/usr/local/lib`,
 `/usr/lib`, and `/usr/lib/x86_64-linux-gnu`, in that order, and passes the first
 match as `SWARMY_FDB_LIB_DIR`. `make install-node` also installs `swarmyd`,
-`make check` runs the three CI commands, and `make uninstall` removes the
+`make check` runs every pull-request CI job, and `make uninstall` removes the
 binaries. Use `scripts/install-dev-tools.sh --prefix /absolute/path` for another
 location, then `make install SWARMY_FDB_LIB_DIR=/absolute/path/lib`. The build embeds that library directory in the
 runtime search path and uses it at link time. The shared build script also adds
