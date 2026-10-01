@@ -14,8 +14,8 @@ workspace = true
 # are not linked here; a `cargo build --workspace` step puts their binaries
 # beside the test profiles before this suite runs.
 [dev-dependencies]
-swarmy-core = { workspace = true, features = ["test-support"] }
-swarmy-testkit.workspace = true
+swarmy-core.workspace = true
+swarmy-testkit = { workspace = true, features = ["script"] }
 swarmy-api.workspace = true
 swarmy-client.workspace = true
 swarmy-bus.workspace = true

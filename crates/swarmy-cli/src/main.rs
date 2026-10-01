@@ -369,7 +369,7 @@ mod docs_command_tests {
         use clap::CommandFactory;
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../");
         let command = crate::Cli::command();
-        swarmy_core::test_support::check_docs_commands(&root, &[("swarmy", &command)])
+        swarmy_testkit::check_docs_commands(&root, &[("swarmy", &command)])
             .expect("documented swarmy commands match the CLI tree");
     }
 }

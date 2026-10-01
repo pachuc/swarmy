@@ -382,13 +382,13 @@ async fn base_image(settings: &swarmy_config::Settings, store: &Store) -> Manife
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_node_scratch_is_local_persistent_and_removed_on_delete() {
     if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n"
-        || swarmy_core::test_support::stack_env_os("SWARMY_FDB_CLUSTER_FILE").is_none()
-        || swarmy_core::test_support::stack_env_os("SWARMY_S3_ENDPOINT").is_none()
+        || swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").is_none()
+        || swarmy_testkit::require_stack("SWARMY_S3_ENDPOINT").is_none()
     {
         eprintln!("skipping scratch acceptance: root and dev stack are required");
         return;
     }
-    boot_network();
+    swarmy_testkit::boot_fdb();
     let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
@@ -768,11 +768,11 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
         return;
     }
     for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
-        if swarmy_core::test_support::stack_env_os(variable).is_none() {
+        if swarmy_testkit::require_stack(variable).is_none() {
             return;
         }
     }
-    boot_network();
+    swarmy_testkit::boot_fdb();
     let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
@@ -905,12 +905,12 @@ async fn network_cycles(node: &Node, store: &Store, head: ManifestId) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_dev_stack_uses_sandbox_loopback() {
-    let Some(image_spec) = swarmy_core::test_support::optional_env("SWARMY_TEST_DEV_IMAGE") else {
+    let Some(image_spec) = swarmy_testkit::optional_env("SWARMY_TEST_DEV_IMAGE") else {
         return;
     };
     // The suite script passes the branch it checked out, so the sandbox
     // builds and tests that branch instead of public master.
-    let Some(branch) = swarmy_core::test_support::optional_env("SWARMY_TEST_BRANCH") else {
+    let Some(branch) = swarmy_testkit::optional_env("SWARMY_TEST_BRANCH") else {
         eprintln!("skipping dev stack acceptance: SWARMY_TEST_BRANCH is not set");
         return;
     };
@@ -918,7 +918,7 @@ async fn root_dev_stack_uses_sandbox_loopback() {
         eprintln!("skipping dev stack acceptance: root is required");
         return;
     }
-    boot_network();
+    swarmy_testkit::boot_fdb();
     let (image_name, image_tag) = image_spec.split_once(':').expect("image must be name:tag");
     let settings = swarmy_testkit::stack_settings();
     let store = store(&settings).await;
@@ -1203,12 +1203,6 @@ async fn snapshot_tool_latency(node: &Node, store: &Store, sandbox: &Sandbox, vo
     );
 }
 
-fn boot_network() {
-    static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
-        std::sync::OnceLock::new();
-    NETWORK.get_or_init(swarmy_store::boot);
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_deleted_computer_stops_call_destroys_sandbox_and_detaches_device() {
     if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
@@ -1220,11 +1214,11 @@ async fn root_deleted_computer_stops_call_destroys_sandbox_and_detaches_device()
         "SWARMY_S3_ENDPOINT",
         "SWARMY_NATS_URL",
     ] {
-        if swarmy_core::test_support::stack_env_os(variable).is_none() {
+        if swarmy_testkit::require_stack(variable).is_none() {
             return;
         }
     }
-    boot_network();
+    swarmy_testkit::boot_fdb();
     let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
@@ -1250,11 +1244,11 @@ async fn root_named_agent_calls_serialize_and_report_occupancy() {
         "SWARMY_S3_ENDPOINT",
         "SWARMY_NATS_URL",
     ] {
-        if swarmy_core::test_support::stack_env_os(variable).is_none() {
+        if swarmy_testkit::require_stack(variable).is_none() {
             return;
         }
     }
-    boot_network();
+    swarmy_testkit::boot_fdb();
     let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
@@ -1284,11 +1278,11 @@ async fn root_bash_yield_spill_stdin_and_web_fetch() {
         "SWARMY_S3_ENDPOINT",
         "SWARMY_NATS_URL",
     ] {
-        if swarmy_core::test_support::stack_env_os(variable).is_none() {
+        if swarmy_testkit::require_stack(variable).is_none() {
             return;
         }
     }
-    boot_network();
+    swarmy_testkit::boot_fdb();
     let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;
@@ -1315,11 +1309,11 @@ async fn root_file_tools_run_on_agent_disk() {
         "SWARMY_S3_ENDPOINT",
         "SWARMY_NATS_URL",
     ] {
-        if swarmy_core::test_support::stack_env_os(variable).is_none() {
+        if swarmy_testkit::require_stack(variable).is_none() {
             return;
         }
     }
-    boot_network();
+    swarmy_testkit::boot_fdb();
     let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;

@@ -7,18 +7,8 @@ use foundationdb::{
     directory::{Directory, DirectoryLayer},
     tuple::Subspace,
 };
+use crate::require_stack;
 use swarmy_store::blob::BlobStore;
-
-/// Read a required dev-stack setting.
-///
-/// This is the one stack gate: a missing setting skips the test locally and
-/// fails under `CI`, so suites never pass silently without the stack. Call
-/// sites write `let Some(value) = require_stack("SWARMY_NATS_URL") else {
-/// return; };`.
-#[must_use = "check the returned option: missing stack settings skip the test locally"]
-pub fn require_stack(name: &str) -> Option<String> {
-    swarmy_core::test_support::stack_env(name)
-}
 
 /// Boot the `FoundationDB` client exactly once per test process.
 pub fn boot_fdb() -> &'static foundationdb::api::NetworkAutoStop {

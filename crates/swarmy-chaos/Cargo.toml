@@ -34,5 +34,5 @@ tracing.workspace = true
 ulid.workspace = true
 
 [dev-dependencies]
-swarmy-core = { workspace = true, features = ["test-support"] }
 swarmy-llm = { workspace = true, features = ["fake"] }
+swarmy-testkit = { workspace = true, default-features = false }

@@ -30,7 +30,6 @@ object_store.workspace = true
 jiff.workspace = true
 
 [dev-dependencies]
-swarmy-core = { workspace = true, features = ["test-support"] }
 swarmy-store = { workspace = true, features = ["test-support"] }
 swarmy-testkit.workspace = true
 

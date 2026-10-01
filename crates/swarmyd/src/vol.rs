@@ -179,7 +179,7 @@ mod docs_command_tests {
             .name("swarmyd")
             .version(swarmy_version::IDENTITY)
             .subcommand(super::VolCli::command());
-        swarmy_core::test_support::check_docs_commands(&root, &[("swarmyd", &command)])
+        swarmy_testkit::check_docs_commands(&root, &[("swarmyd", &command)])
             .expect("documented swarmyd commands match the vol tree");
     }
 }
