@@ -5,7 +5,7 @@ use std::{
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, OnceLock},
+    sync::Arc,
     time::Duration,
 };
 use swarmy_core::{ImageTag, LeaseOwnerId, ManifestId, VolumeId, ignore_best_effort};
@@ -54,15 +54,14 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Option<Self> {
-        static NETWORK: OnceLock<foundationdb::api::NetworkAutoStop> = OnceLock::new();
         if !rustix::process::geteuid().is_root() {
             eprintln!("skipping volume acceptance: run the built test binary with sudo");
             return None;
         }
         for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
-            swarmy_core::test_support::stack_env_os(variable)?;
+            swarmy_testkit::require_stack(variable)?;
         }
-        NETWORK.get_or_init(swarmy_store::boot);
+        swarmy_testkit::boot_fdb();
         let settings = swarmy_testkit::stack_settings();
         let namespace = format!("swarmy-vol-test-{}", ulid::Ulid::generate());
         let store = Store::open(

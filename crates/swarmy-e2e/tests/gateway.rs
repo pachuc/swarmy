@@ -48,14 +48,9 @@ impl Fixture {
             prefix: swarmy_testkit::unique_prefix("gateway"),
         };
         let prefix = stack.prefix.clone();
-        let store = Store::open(
-            Some(std::path::Path::new(&stack.cluster)),
-            Some(std::slice::from_ref(&prefix)),
-            Arc::new(ObjectBlobStore::from_env().unwrap()) as Arc<dyn BlobStore>,
-        )
-        .await
-        .unwrap();
-        let guard = StackGuard::new(&stack);
+        let (store, guard) = stack
+            .open_store(Arc::new(ObjectBlobStore::from_env().unwrap()) as Arc<dyn BlobStore>)
+            .await;
         let bus = Bus::connect(
             &stack.nats_url,
             Config {

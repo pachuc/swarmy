@@ -192,14 +192,9 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         prefix: swarmy_testkit::unique_prefix("scheduler"),
     };
     let prefix = stack.prefix.clone();
+    let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
     let fixture = Fixture {
-        store: Store::open(
-            Some(std::path::Path::new(&stack.cluster)),
-            Some(std::slice::from_ref(&prefix)),
-            Arc::new(MemoryBlobStore::default()),
-        )
-        .await
-        .unwrap(),
+        store,
         bus: Bus::connect(
             &url,
             Config {
@@ -210,7 +205,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         .await
         .unwrap(),
         admin: async_nats::connect(&url).await.unwrap(),
-        guard: Arc::new(tokio::sync::Mutex::new(StackGuard::new(&stack))),
+        guard: Arc::new(tokio::sync::Mutex::new(guard)),
         stack,
         prefix,
         processes: Arc::default(),

@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use super::*;
 use crate::nbd::{NbdServer, serve_connection};
 use crate::{ChunkStore, Manifest};

@@ -1001,7 +1001,7 @@ async fn root_chat_default_image_executes_pwd() {
         eprintln!("skipping root chat test: run the built test with sudo");
         return;
     }
-    let Some(image) = swarmy_core::test_support::optional_env("SWARMY_TEST_IMAGE") else {
+    let Some(image) = swarmy_testkit::optional_env("SWARMY_TEST_IMAGE") else {
         return;
     };
     run(|fixture| async move {

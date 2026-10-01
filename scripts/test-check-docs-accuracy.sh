@@ -2,7 +2,7 @@
 # Exercise scripts/check-docs-accuracy.py against a fixture repository tree.
 # The fixture covers repository paths and --test targets; command names and
 # flags belong to the clap-tree tests in swarmy-cli and swarmyd (through
-# swarmy-core's test-support) against the real command trees. Failing cases
+# swarmy-testkit's check_docs_commands) against the real command trees. Failing cases
 # require exit code 1 with the expected message, so an
 # internal crash (exit 2) cannot pass as a detected problem.
 set -euo pipefail

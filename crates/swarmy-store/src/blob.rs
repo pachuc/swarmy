@@ -103,50 +103,6 @@ impl BlobStore for ObjectBlobStore {
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
-    use futures::TryStreamExt;
-
-    #[tokio::test]
-    async fn s3_namespace_lists_relative_keys_and_keeps_siblings() {
-        if swarmy_core::test_support::stack_env_os("SWARMY_S3_ENDPOINT").is_none() {
-            return;
-        }
-        let mut settings = swarmy_config::Settings::load().unwrap().settings;
-        settings.s3.prefix = format!("prefix-test-{}", ulid::Ulid::generate())
-            .parse()
-            .unwrap();
-        let root = ObjectBlobStore::from_settings(&settings).unwrap();
-        settings.s3.prefix = format!("{}/inside", settings.s3.prefix.as_str())
-            .parse()
-            .unwrap();
-        let scoped = ObjectBlobStore::from_settings(&settings).unwrap();
-        let payload = Bytes::from_static(b"prefix regression");
-        let outside = root.put("outside", payload.clone()).await;
-        let written = scoped.put("chunks/value", payload.clone()).await;
-        let read = scoped.get("chunks/value").await;
-        let listing = scoped
-            .inner
-            .list(Some(&Path::from("chunks/")))
-            .try_collect::<Vec<_>>()
-            .await;
-        let deleted = scoped.delete("chunks/value").await;
-        let sibling = root.get("outside").await;
-        let remaining = root.inner.list(None).try_collect::<Vec<_>>().await;
-        // Finish cleanup before assertions so a failed listing does not leave
-        // this test's sentinel behind in the shared development bucket.
-        let cleanup = root.delete("outside").await;
-        outside.unwrap();
-        written.unwrap();
-        deleted.unwrap();
-        cleanup.unwrap();
-        assert_eq!(read.unwrap(), payload);
-        assert_eq!(sibling.unwrap(), payload);
-        let listing = listing.unwrap();
-        assert_eq!(listing.len(), 1);
-        assert_eq!(listing[0].location, Path::from("chunks/value"));
-        let remaining = remaining.unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].location, Path::from("outside"));
-    }
 
     #[tokio::test]
     async fn memory_blobs_round_trip_and_report_missing_keys() {

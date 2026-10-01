@@ -8,7 +8,7 @@ fn root_bash_disk_and_failure_acceptance() {
         eprintln!("skipping bash acceptance: run the built test with sudo");
         return;
     }
-    let Some(image) = swarmy_core::test_support::optional_env("SWARMY_TEST_IMAGE") else {
+    let Some(image) = swarmy_testkit::optional_env("SWARMY_TEST_IMAGE") else {
         return;
     };
     for variable in [
@@ -16,7 +16,7 @@ fn root_bash_disk_and_failure_acceptance() {
         "SWARMY_NATS_URL",
         "SWARMY_S3_ENDPOINT",
     ] {
-        if swarmy_core::test_support::stack_env_os(variable).is_none() {
+        if swarmy_testkit::require_stack(variable).is_none() {
             return;
         }
     }

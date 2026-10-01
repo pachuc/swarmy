@@ -86,8 +86,8 @@ impl Drop for Fixture {
 
 #[tokio::test]
 async fn dev_up_run_recover_reconfigure_and_down() {
-    if swarmy_core::test_support::stack_env_os("SWARMY_FDB_CLUSTER_FILE").is_none()
-        || swarmy_core::test_support::stack_env_os("SWARMY_NATS_URL").is_none()
+    if swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").is_none()
+        || swarmy_testkit::require_stack("SWARMY_NATS_URL").is_none()
     {
         return;
     }

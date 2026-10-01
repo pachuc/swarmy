@@ -25,6 +25,10 @@ enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
+/// How long in-flight requests may finish after a shutdown signal. Event
+/// streams never end on their own, so the graceful wait is capped.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn main() -> Result<()> {
     swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-api")?;
     swarmy_config::init_tracing();
@@ -62,6 +66,7 @@ async fn run() -> Result<()> {
             })
             .await;
     });
+    let metrics_store = store.clone();
     let mut state = AppState::new(store, bus, token, settings.catalog()?, objects);
     state.credential_keyring = keyring;
     state.gc = settings.gc;
@@ -83,6 +88,28 @@ async fn run() -> Result<()> {
             source,
         })?;
     tracing::info!(address = %listener.local_addr()?, "api ready");
-    axum::serve(listener, router(state)).await?;
+    serve(listener, state, metrics_store).await
+}
+
+/// Serve with a capped graceful wait, then drain queued turn metrics.
+/// Event streams never end on their own, so the graceful wait ends after
+/// `SHUTDOWN_GRACE` even with subscribers attached. The drain runs on
+/// every exit path, including a serve error, so shutdown keeps every write.
+async fn serve(listener: tokio::net::TcpListener, state: AppState, metrics: Store) -> Result<()> {
+    let server = axum::serve(listener, router(state))
+        .with_graceful_shutdown(swarmy_config::shutdown_signal())
+        .into_future();
+    let deadline = swarmy_config::shutdown_signal();
+    let outcome = tokio::select! {
+        result = server => result,
+        () = async {
+            deadline.await;
+            tokio::time::sleep(SHUTDOWN_GRACE).await;
+        } => Ok(()),
+    };
+    if let Err(error) = metrics.flush_turn_metrics().await {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "api metric flush failed");
+    }
+    outcome?;
     Ok(())
 }

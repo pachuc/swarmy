@@ -209,7 +209,7 @@ fn needs_backing_services() -> bool {
         "SWARMY_NATS_URL",
         "SWARMY_S3_ENDPOINT",
     ] {
-        if swarmy_core::test_support::stack_env_os(variable).is_none() {
+        if swarmy_testkit::require_stack(variable).is_none() {
             return false;
         }
     }

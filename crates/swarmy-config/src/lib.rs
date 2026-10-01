@@ -681,14 +681,20 @@ pub fn init_tracing() {
 /// Callers await this instead of `tokio::signal::ctrl_c` directly.
 /// This lives beside the service bootstrap because every service binary
 /// needs it, not because the store owns process signals.
+/// Both handlers install when this is called, not when the future is
+/// first polled, so a caller can create it before slow startup work and
+/// still see a signal that arrives during that work.
 /// # Panics
-/// Panics if the SIGTERM handler cannot be installed.
-pub async fn shutdown_signal() {
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("SIGTERM handler must install");
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {},
-        _ = terminate.recv() => {},
+/// Panics if a signal handler cannot be installed or no Tokio runtime is running.
+pub fn shutdown_signal() -> impl Future<Output = ()> + Send + 'static {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut interrupt = signal(SignalKind::interrupt()).expect("SIGINT handler must install");
+    let mut terminate = signal(SignalKind::terminate()).expect("SIGTERM handler must install");
+    async move {
+        tokio::select! {
+            _ = interrupt.recv() => {},
+            _ = terminate.recv() => {},
+        }
     }
 }
 
