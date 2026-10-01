@@ -194,8 +194,7 @@ The feature-enabled commands always run in CI: the provisioning client is an
 opt-in feature that the workspace commands leave off. The CLI remote step skips
 the self-managed dev-stack test already covered by the workspace step. The e2e
 binaries run serially within each of two parallel CI jobs. Advisory checks
-(`make check-advisories`) run on a weekly schedule rather than blocking pull
-requests.
+(`make check-advisories`) run on every pull request and on the weekly schedule.
 
 Clippy runs with the `all` and `pedantic` groups denied, so write code that
 satisfies it rather than silencing it. `unsafe_code` is denied
@@ -276,7 +275,7 @@ These structural checks fail CI rather than asking for exceptions.
   print its source in its message.
 - `make check-deps`: `cargo deny check licenses bans sources` and
   `cargo machete --with-metadata`, both blocking. `cargo deny check advisories`
-  (`make check-advisories`) runs weekly and does not block pull requests.
+  (`make check-advisories`) runs on every pull request and on the weekly schedule.
   `cargo doc` runs with `-D warnings` in `make check-lint`.
 
 Deliberately not enforced by Clippy: `unwrap_used`, `print_stdout`, and

@@ -15,7 +15,7 @@
 #   make check-remote    remote-feature tests for swarmy-cloud and swarmy-cli
 #   make check-openapi   OpenAPI compatibility against origin/master
 #   make check-scripts   script and fixture tests
-#   make check-advisories  cargo deny advisories (CI runs it weekly, not per pull request)
+#   make check-advisories  cargo deny advisories (CI runs it on every pull request and on the weekly schedule)
 #   make uninstall       remove the installed swarmy binaries
 #
 # The services link against libfdb_c. SWARMY_FDB_LIB_DIR points the build at the
