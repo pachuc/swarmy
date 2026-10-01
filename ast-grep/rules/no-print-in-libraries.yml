@@ -45,4 +45,4 @@ ignores:
   # Test-skip helpers: integration tests call these to log why they skip
   # when the dev stack is absent. `tracing` would be invisible without a
   # subscriber; the eprintln text is the skip record `cargo test` shows.
-  - 'crates/swarmy-core/src/test_support.rs'
+  - 'crates/swarmy-testkit/src/gate.rs'

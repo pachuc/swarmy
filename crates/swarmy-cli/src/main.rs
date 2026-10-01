@@ -364,6 +364,7 @@ fn read_confirmation(message: &str) -> anyhow::Result<String> {
 /// Documented `swarmy ...` commands resolve against the real clap tree.
 #[cfg(test)]
 mod docs_command_tests {
+    #![deny(clippy::disallowed_methods)]
     #[test]
     fn markdown_swarmy_commands_match_the_clap_tree() {
         use clap::CommandFactory;

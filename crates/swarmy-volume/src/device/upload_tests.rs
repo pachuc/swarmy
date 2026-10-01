@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use super::*;
 use std::{
     sync::{Mutex as StdMutex, Weak},
@@ -34,6 +35,10 @@ impl std::fmt::Display for RecordingStore {
 
 #[async_trait::async_trait]
 impl ObjectStore for RecordingStore {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the fake object store's simulated upload latency is the fixture, not a wait"
+    )]
     async fn put_opts(
         &self,
         path: &ObjectPath,

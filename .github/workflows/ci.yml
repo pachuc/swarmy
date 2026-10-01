@@ -30,6 +30,7 @@ jobs:
       - run: scripts/check-public-ids.sh
       - run: scripts/check-docs-accuracy.py
       - run: scripts/check-anyhow-in-libraries.sh
+      - run: scripts/check-test-sleep-ban.py
       - run: npx --yes --package @ast-grep/cli@0.45.3 ast-grep scan --config ast-grep/sgconfig.yml
       - run: cargo fmt --all --check
       - run: cargo build --locked -p swarmy-cli --no-default-features

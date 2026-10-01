@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use super::*;
 #[cfg(test)]
 use super::{

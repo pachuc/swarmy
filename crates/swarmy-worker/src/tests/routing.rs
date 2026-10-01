@@ -143,7 +143,6 @@ impl Fixture {
 
     async fn new() -> Option<Self> {
         let stack = swarmy_testkit::Stack::load("routing")?;
-        let guard = swarmy_testkit::StackGuard::new(&stack);
         let prefix = stack.prefix.clone();
         let mut config = config(stack.nats_url.clone(), &prefix, Arc::default());
         config.harness.tools.register(Box::new(swarmy_tools::Bash));
@@ -156,14 +155,8 @@ impl Fixture {
         let blobs = Arc::new(MemoryBlobStore::default());
         let clock = Arc::new(TestClock::new());
         let tick = clock.clone();
-        let store = Store::open(
-            Some(std::path::Path::new(&stack.cluster)),
-            Some(std::slice::from_ref(&prefix)),
-            blobs.clone(),
-        )
-        .await
-        .unwrap()
-        .with_clock(move || tick.now());
+        let (store, guard) = stack.open_store(blobs.clone()).await;
+        let store = store.with_clock(move || tick.now());
         let bus = Bus::connect(&stack.nats_url, config.bus.clone())
             .await
             .unwrap();

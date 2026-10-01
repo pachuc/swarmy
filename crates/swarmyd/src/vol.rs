@@ -171,6 +171,7 @@ pub(crate) async fn store() -> Result<Store> {
 /// Documented `swarmyd vol ...` commands resolve against the real clap tree.
 #[cfg(test)]
 mod docs_command_tests {
+    #![deny(clippy::disallowed_methods)]
     #[test]
     fn markdown_vol_commands_match_the_clap_tree() {
         use clap::CommandFactory;

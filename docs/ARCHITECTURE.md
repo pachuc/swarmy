@@ -87,7 +87,8 @@ flushes before exit
 
 - **swarmy-testkit** holds the helpers every integration suite shares: the
   dev-stack gate, a cleanup guard, the `eventually` poll helper, a
-  fake-provider script builder, sibling-binary lookup, and the image fixture
+  fake-provider script builder, sibling-binary lookup, the image fixture,
+  and the docs command walker
   ([source](../crates/swarmy-testkit/src/lib.rs)).
 - **swarmy-e2e** owns the real-binary integration suites
   ([manifest](../crates/swarmy-e2e/Cargo.toml)).
