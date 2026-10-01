@@ -4607,7 +4607,6 @@ dependencies = [
  "anyhow",
  "base64",
  "clap",
- "foundationdb",
  "jiff",
  "object_store",
  "rustix",
