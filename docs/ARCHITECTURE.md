@@ -78,8 +78,9 @@ crate in a tier depends on every lower tier.
 
 Services share one bootstrap from `swarmy-config`: `Settings::load` for
 configuration, `init_tracing` for stderr logging, `Store::open_store` for the
-database handle, and `shutdown_signal` (SIGINT or SIGTERM) so every service
-flushes before exit
+database handle, and `shutdown_signal` (SIGINT or SIGTERM), which the API, worker, scheduler,
+gateway, and swarmyd all wait on to shut down cleanly; the four
+control-plane services flush queued turn metrics before exit
 ([config](../crates/swarmy-config/src/lib.rs),
 [store](../crates/swarmy-store/src/lib.rs)).
 

@@ -78,7 +78,10 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut scratch_sweep = tokio::time::interval(Duration::from_secs(10));
     scratch_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    // Created once, before the servers start, so a signal during startup
+    // or while a loop arm runs is still seen on the next pass.
+    let stop = swarmy_config::shutdown_signal();
+    tokio::pin!(stop);
     let mut clients = JoinSet::new();
     let (shutdown, _) = tokio::sync::watch::channel(false);
     let mut memory_server = memory::spawn(bus.clone(), store.clone(), runtime.clone(), node);
@@ -105,8 +108,7 @@ async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
                     if let Err(error) = runtime.sweep_scratch().await { tracing::warn!(error = %swarmy_core::error_chain(&error), "scratch sweep failed"); }
                 }
                 Some(result) = clients.join_next(), if !clients.is_empty() => { result?; }
-                result = tokio::signal::ctrl_c() => { result?; break; }
-                _ = terminate.recv() => break,
+                () = &mut stop => break,
             }
         }
         Ok(())

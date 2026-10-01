@@ -40,7 +40,7 @@ pub(crate) async fn attach(
     );
     let config = config().await?;
     let node = config.node;
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let stop = swarmy_config::shutdown_signal();
     server::attach(
         config,
         id,
@@ -54,9 +54,7 @@ pub(crate) async fn attach(
             )
             .map_err(|error| server::Error::Message(error.to_string()))
         },
-        async move {
-            tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
-        },
+        stop,
     )
     .await?;
     Ok(())
