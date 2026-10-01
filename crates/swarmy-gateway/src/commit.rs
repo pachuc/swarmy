@@ -157,6 +157,8 @@ impl Gateway {
         let attribution = Self::attribution_for(&result, entry, entry_kind);
         self.touch_entry(delivery.provider, attribution.entry.as_deref())
             .await;
+        // The terminal error text is the durable String-schema record the model resumes from; the store layer cannot name the provider error type.
+        // ast-grep-ignore: no-stringified-errors
         let stored_result = result.map_err(|error| error.to_string());
         self.persist_response(
             delivery.job,

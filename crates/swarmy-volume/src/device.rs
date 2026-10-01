@@ -715,6 +715,8 @@ impl VolumeDevice {
             return;
         };
         let device = Arc::clone(self);
+        // Single-flight readahead prefetch, bounded by the try_lock guard.
+        // ast-grep-ignore: no-spawn-in-libraries
         tokio::spawn(async move {
             let _guard = guard;
             let end = (first + u64::from(device.readahead_chunks))

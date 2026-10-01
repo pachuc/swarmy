@@ -245,6 +245,8 @@ impl VolumeWriter {
     #[must_use]
     pub fn background(self: &Arc<Self>, interval: Duration) -> BackgroundUploader {
         let device = self.device.clone();
+        // The settled-chunk uploader; BackgroundUploader stops it on drop.
+        // ast-grep-ignore: no-spawn-in-libraries
         BackgroundUploader(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(interval).await;

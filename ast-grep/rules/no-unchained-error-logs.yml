@@ -3,6 +3,11 @@
 # `error = %error`, or `{error}` in the message, which print only the top
 # message. Tests are out of scope. A value that is not an error (process
 # output, a stored String) gets a name that is not `error`/`err`/`*_error`.
+# A site that genuinely needs an exception carries
+# `// ast-grep-ignore: no-unchained-error-logs` on the line above it, after a
+# comment giving the reason. The shared `ignores:` list below (kept identical
+# across rules by scripts/check-ast-grep-rules.sh) excludes binaries, entry
+# points, and test files.
 id: no-unchained-error-logs
 language: rust
 severity: error
@@ -30,10 +35,22 @@ rule:
 files:
   - 'crates/*/src/**/*.rs'
 ignores:
-  # Tests assert on messages and log freely.
+  # Binaries own their process and output: spawning, printing, unwrapping,
+  # and stringifying errors are unrestricted there.
+  - 'crates/swarmy-cli/src/**'
+  - 'crates/swarmy-chaos/src/**'
+  - 'crates/swarmy-devtools/src/**'
+  - 'crates/swarmy-scheduler/src/**'
+  - 'crates/swarmy-worker/src/**'
+  # swarmyd counts as a binary: its lib.rs declares no modules and its code
+  # lives in the binary (see scripts/check-anyhow-in-libraries.sh).
+  - 'crates/swarmyd/src/**'
+  # Service entry points assemble connections, own their tasks, and report
+  # startup failures.
+  - '**/main.rs'
+  # Test files, and the test-only support module compiled only for tests
+  # (`cfg(any(test, feature = "test-support"))`).
   - '**/tests/**'
   - '**/tests.rs'
   - '**/*tests.rs'
-  # ignore_best_effort logs a generic Debug value that is usually not an
-  # error (a SendError, a &str, a OnceLock value).
-  - 'crates/swarmy-core/src/best_effort.rs'
+  - 'crates/swarmy-core/src/test_support.rs'

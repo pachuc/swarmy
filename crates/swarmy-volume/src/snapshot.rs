@@ -15,6 +15,8 @@ impl SnapshotLoop {
         Fut: Future<Output = Result<(), E>> + Send,
         E: std::error::Error + 'static,
     {
+        // The periodic snapshot loop; SnapshotLoop aborts it on drop.
+        // ast-grep-ignore: no-spawn-in-libraries
         Self(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(period).await;

@@ -1,0 +1,30 @@
+id: no-stringified-errors
+valid:
+  - |
+    fn read(result: Result<u8, std::io::Error>) -> Result<u8, Error> {
+        result.map_err(Error::Io)
+    }
+  - |
+    fn read(result: Result<u8, std::io::Error>) -> Result<u8, Error> {
+        result.map_err(|error| Error::Parse(format!("bad header: {error}")))
+    }
+  - |
+    #[cfg(test)]
+    mod tests {
+        fn text(result: Result<u8, std::io::Error>) -> Result<u8, String> {
+            result.map_err(|error| error.to_string())
+        }
+    }
+invalid:
+  - |
+    fn read(result: Result<u8, std::io::Error>) -> Result<u8, String> {
+        result.map_err(|error| error.to_string())
+    }
+  - |
+    fn read(result: Result<u8, std::io::Error>) -> Result<u8, String> {
+        result.map_err(ToString::to_string)
+    }
+  - |
+    fn read(result: Result<u8, std::io::Error>) -> Result<u8, String> {
+        result.map_err(|e| format!("read failed: {e}"))
+    }

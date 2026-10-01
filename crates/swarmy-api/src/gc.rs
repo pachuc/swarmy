@@ -118,6 +118,8 @@ pub(crate) async fn start(
     };
     let initial = snapshot(&run);
     let background = state.clone();
+    // GC completion outlives the response; the run lease bounds it and the outcome lands in the durable run record.
+    // ast-grep-ignore: no-spawn-in-libraries
     tokio::spawn(async move {
         if let Err(error) = swarmy_volume::gc::complete(
             &background.store,

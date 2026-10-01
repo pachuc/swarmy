@@ -63,6 +63,8 @@ impl Attachment {
             return Err(io::Error::from_raw_os_error(libc::EBUSY));
         }
         let (mut client, server_socket) = UnixStream::pair()?;
+        // The attached NBD server, tied to the Attachment lifetime.
+        // ast-grep-ignore: no-spawn-in-libraries
         let server = tokio::spawn(async move {
             let result = nbd::serve_connection(server_socket, device).await;
             if let Err(error) = &result {
@@ -103,6 +105,8 @@ impl Attachment {
         ioctl(&attachment.file, SET_TIMEOUT, 30)?;
         let kernel_file = Arc::clone(&attachment.file);
         attachment.thread = Some(
+            // The NBD kernel thread; Attachment disconnects and joins it on drop.
+            // ast-grep-ignore: no-spawn-in-libraries
             std::thread::Builder::new()
                 .name("swarmy-nbd".into())
                 .spawn(move || {

@@ -233,6 +233,8 @@ pub(crate) async fn subscribe(
         .id(encode_cursor(&subscription)?)
         .data(serde_json::json!({"connection_id": connection_id}).to_string());
     ignore_best_effort(sender.try_send(initial), "publish initial stream state");
+    // The per-connection SSE producer; it ends when the connection drops.
+    // ast-grep-ignore: no-spawn-in-libraries
     tokio::spawn(produce(
         state.clone(),
         receiver,

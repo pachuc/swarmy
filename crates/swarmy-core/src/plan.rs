@@ -27,6 +27,8 @@ impl UpdatePlanArguments {
     /// # Errors
     /// Rejects malformed steps, unknown statuses, and multiple active steps.
     pub fn parse(value: serde_json::Value) -> Result<Self, String> {
+        // Tool-argument parsing returns the rejection text to the model.
+        // ast-grep-ignore: no-stringified-errors
         let arguments: Self = serde_json::from_value(value).map_err(|error| error.to_string())?;
         arguments.validate()?;
         Ok(arguments)

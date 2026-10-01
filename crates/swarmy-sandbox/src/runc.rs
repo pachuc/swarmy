@@ -876,6 +876,8 @@ impl RuncRuntime {
         let (ready_tx, ready_rx) = oneshot::channel();
         let config = self.config.clone();
         let device_journal = bundle.join("device");
+        // The attached NBD server, owned by ServerTask which aborts it on drop.
+        // ast-grep-ignore: no-spawn-in-libraries
         let mut server = ServerTask(tokio::spawn(server::attach(
             config,
             disk.volume_id,
