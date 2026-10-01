@@ -1332,7 +1332,7 @@ async fn inference_completion_is_atomic_fenced_and_idempotent() {
 
 #[tokio::test]
 async fn inference_retry_counts_deliveries_and_release_reopens_after_backoff() {
-    use swarmy_store::{FenceError, InferenceClaim, RecordedRetry};
+    use swarmy_store::{InferenceClaim, RecordedRetry};
 
     let Some(test) = TestStore::memory() else {
         return;
@@ -1375,26 +1375,18 @@ async fn inference_retry_counts_deliveries_and_release_reopens_after_backoff() {
     assert!(test.store.start_inference(&claim, start).await.unwrap());
     // The gateway counts provider calls per request: recovery republishes with
     // delivery count one, so the durable counter is the only bound.
-    assert_eq!(
-        test.store
-            .record_inference_retry(&claim, start)
-            .await
-            .unwrap(),
-        RecordedRetry {
-            attempts: 1,
-            delay: std::time::Duration::from_millis(100),
-        }
-    );
-    assert_eq!(
-        test.store
-            .record_inference_retry(&claim, start)
-            .await
-            .unwrap(),
-        RecordedRetry {
-            attempts: 2,
-            delay: std::time::Duration::from_millis(200),
-        }
-    );
+    for (attempts, millis) in [(1_u32, 100), (2, 200)] {
+        assert_eq!(
+            test.store
+                .record_inference_retry(&claim, start)
+                .await
+                .unwrap(),
+            RecordedRetry {
+                attempts,
+                delay: std::time::Duration::from_millis(millis)
+            },
+        );
+    }
     // A fresh delivery of the same request must not bypass the backoff.
     let redelivery = InferenceClaim {
         owner: owner(),
@@ -1420,22 +1412,30 @@ async fn inference_retry_counts_deliveries_and_release_reopens_after_backoff() {
         retry,
         RecordedRetry {
             attempts: 3,
-            delay: std::time::Duration::from_millis(400),
-        }
+            delay: std::time::Duration::from_millis(400)
+        },
     );
-    // The returned delay equals the stored `next_at - now`: with the claim
-    // released, a fresh delivery one millisecond early still waits, and one
-    // exactly at the deadline runs.
-    test.store.release_inference(&claim).await.unwrap();
+    assert_retry_delay_matches_deadline(&test.store, &claim, start, retry).await;
+    assert_released_claim_reopens_after_backoff(&test.store, &claim, &redelivery, start).await;
+}
+
+async fn assert_retry_delay_matches_deadline(
+    store: &Store,
+    claim: &swarmy_store::InferenceClaim,
+    start: Timestamp,
+    retry: swarmy_store::RecordedRetry,
+) {
+    // With the claim released, a fresh delivery one millisecond early still
+    // waits, and one exactly at the deadline runs.
+    store.release_inference(claim).await.unwrap();
     let deadline = start.checked_add(retry.delay).unwrap();
-    let early = InferenceClaim {
+    let early = swarmy_store::InferenceClaim {
         owner: owner(),
         expires_at: timestamp(2000),
         ..claim.clone()
     };
     assert!(
-        !test
-            .store
+        !store
             .start_inference(
                 &early,
                 deadline
@@ -1445,43 +1445,40 @@ async fn inference_retry_counts_deliveries_and_release_reopens_after_backoff() {
             .await
             .unwrap()
     );
-    let on_time = InferenceClaim {
+    let on_time = swarmy_store::InferenceClaim {
         owner: owner(),
         expires_at: timestamp(2000),
         ..claim.clone()
     };
-    assert!(
-        test.store
-            .start_inference(&on_time, deadline)
-            .await
-            .unwrap()
-    );
-    test.store.release_inference(&on_time).await.unwrap();
+    assert!(store.start_inference(&on_time, deadline).await.unwrap());
+    store.release_inference(&on_time).await.unwrap();
+}
+
+async fn assert_released_claim_reopens_after_backoff(
+    store: &Store,
+    claim: &swarmy_store::InferenceClaim,
+    redelivery: &swarmy_store::InferenceClaim,
+    start: Timestamp,
+) {
     // The holder's claim stays released, which clears the delivery without
     // clearing the backoff, so the next delivery still waits; a retry without
     // a claim is rejected as replaced.
-    test.store.release_inference(&claim).await.unwrap();
-    assert!(
-        !test
-            .store
-            .start_inference(&redelivery, start)
-            .await
-            .unwrap()
-    );
+    store.release_inference(claim).await.unwrap();
+    assert!(!store.start_inference(redelivery, start).await.unwrap());
     assert!(matches!(
-        test.store.record_inference_retry(&claim, start).await,
-        Err(StoreError::Fence(FenceError::LeaseMismatch))
+        store.record_inference_retry(claim, start).await,
+        Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
     // Three attempts back off 100ms, 200ms, then 400ms, so a fresh delivery
     // after the window restarts the claim: recovery reopens the work instead
     // of leaving it parked behind a released claim.
-    let reopened = InferenceClaim {
+    let reopened = swarmy_store::InferenceClaim {
         owner: owner(),
         expires_at: timestamp(2000),
         ..claim.clone()
     };
     assert!(
-        test.store
+        store
             .start_inference(&reopened, timestamp(1400))
             .await
             .unwrap()

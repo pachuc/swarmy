@@ -530,7 +530,7 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
         swarmy_store::UserMessageAppend {
             sequence: 1,
             fresh: true,
-            started: false,
+            started: false
         }
     );
     assert_eq!(
@@ -541,7 +541,7 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
         swarmy_store::UserMessageAppend {
             sequence: 1,
             fresh: false,
-            started: false,
+            started: false
         }
     );
     assert_eq!(store.read_events(id, 0, 10).await.unwrap().len(), 1);
@@ -577,8 +577,17 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
         .await
         .unwrap();
     assert_ne!(lease, new_lease);
+    assert_queued_pair_then_empty(store, id, &new_lease, 1).await;
+}
+
+async fn assert_queued_pair_then_empty(
+    store: &Store,
+    id: SessionId,
+    lease: &swarmy_core::Lease,
+    head: u64,
+) {
     let delivered = store
-        .deliver_queued(id, 1, &new_lease, &[])
+        .deliver_queued(id, head, lease, &[])
         .await
         .unwrap()
         .events;
@@ -586,10 +595,10 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
         &delivered[..],
         [Event::MessageQueued { .. }, Event::MessageAppended { .. }]
     ));
-    assert_eq!(&store.read_events(id, 1, 10).await.unwrap(), &delivered);
+    assert_eq!(&store.read_events(id, head, 10).await.unwrap(), &delivered);
     assert!(
         store
-            .deliver_queued(id, 3, &new_lease, &[])
+            .deliver_queued(id, head + 2, lease, &[])
             .await
             .unwrap()
             .events
@@ -889,7 +898,7 @@ async fn queued_message_survives_main_and_side_rollover_exactly_once() {
         swarmy_store::UserMessageAppend {
             sequence: 0,
             fresh: true,
-            started: false,
+            started: false
         }
     );
     let Event::MessageAppended {
@@ -938,7 +947,7 @@ async fn queued_message_survives_main_and_side_rollover_exactly_once() {
         swarmy_store::UserMessageAppend {
             sequence: 0,
             fresh: true,
-            started: false,
+            started: false
         }
     );
     let Event::MessageAppended {
