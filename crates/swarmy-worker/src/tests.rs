@@ -219,7 +219,7 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
                             role: MessageRole::User,
                             parts: vec![Part::Text { text: "Please push after the tool".into() }],
                         };
-                        assert!(!store.queue_user_message_idempotent(id, &message, "during-tool").await.unwrap().2);
+                        assert!(!store.queue_user_message_idempotent(id, &message, "during-tool").await.unwrap().started);
                         queued = true;
                     }
                     let now = Timestamp::now();

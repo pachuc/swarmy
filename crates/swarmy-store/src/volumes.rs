@@ -267,11 +267,7 @@ impl Store {
                 return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
             }
             let seq_key = self.keys().volume_lease_seq(id);
-            let seq = read::<u64>(&trx, &seq_key)
-                .await?
-                .unwrap_or(0)
-                .checked_add(1)
-                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+            let seq = crate::seq_after(read::<u64>(&trx, &seq_key).await?.unwrap_or(0), 1)?;
             let lease = Lease {
                 owner,
                 expires_at,

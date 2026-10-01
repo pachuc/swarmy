@@ -527,14 +527,22 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
             .queue_user_message_idempotent(id, &message, "queued-once")
             .await
             .unwrap(),
-        (1, true, false)
+        swarmy_store::UserMessageAppend {
+            sequence: 1,
+            fresh: true,
+            started: false,
+        }
     );
     assert_eq!(
         store
             .queue_user_message_idempotent(id, &message, "queued-once")
             .await
             .unwrap(),
-        (1, false, false)
+        swarmy_store::UserMessageAppend {
+            sequence: 1,
+            fresh: false,
+            started: false,
+        }
     );
     assert_eq!(store.read_events(id, 0, 10).await.unwrap().len(), 1);
     assert!(matches!(
@@ -569,7 +577,11 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
         .await
         .unwrap();
     assert_ne!(lease, new_lease);
-    let delivered = store.deliver_queued(id, 1, &new_lease, &[]).await.unwrap();
+    let delivered = store
+        .deliver_queued(id, 1, &new_lease, &[])
+        .await
+        .unwrap()
+        .events;
     assert!(matches!(
         &delivered[..],
         [Event::MessageQueued { .. }, Event::MessageAppended { .. }]
@@ -580,6 +592,7 @@ async fn queued_input_survives_a_claim_and_is_delivered_only_once() {
             .deliver_queued(id, 3, &new_lease, &[])
             .await
             .unwrap()
+            .events
             .is_empty()
     );
 }
@@ -633,7 +646,11 @@ async fn queued_during_terminal_inference_starts_next_step_in_order() {
         )
         .await
         .unwrap();
-    let delivered = store.deliver_queued(id, 2, &lease, &[]).await.unwrap();
+    let delivered = store
+        .deliver_queued(id, 2, &lease, &[])
+        .await
+        .unwrap()
+        .events;
     assert!(
         matches!(&delivered[..], [Event::MessageQueued { .. }, Event::MessageAppended { message: next, .. }] if next == &message)
     );
@@ -642,6 +659,7 @@ async fn queued_during_terminal_inference_starts_next_step_in_order() {
             .deliver_queued(id, 4, &lease, &[])
             .await
             .unwrap()
+            .events
             .is_empty()
     );
 }
@@ -678,7 +696,11 @@ async fn queued_rows_do_not_corrupt_session_listing_and_large_bodies_use_blobs()
         )
         .await
         .unwrap();
-    let delivered = store.deliver_queued(id, 0, &lease, &[]).await.unwrap();
+    let delivered = store
+        .deliver_queued(id, 0, &lease, &[])
+        .await
+        .unwrap()
+        .events;
     assert!(
         matches!(&delivered[1], Event::MessageAppended { message: next, .. } if next == &message)
     );
@@ -717,7 +739,8 @@ async fn queued_input_survives_an_interrupt_before_newer_input() {
     let events = store
         .deliver_queued(id, session.head_seq, &lease, &[])
         .await
-        .unwrap();
+        .unwrap()
+        .events;
     assert!(matches!(&events[1], Event::MessageAppended { message: next, .. } if next == &message));
 }
 
@@ -753,15 +776,16 @@ async fn queued_input_is_delivered_in_bounded_ordered_batches() {
         .deliver_queued(id, session.head_seq, &lease, &[])
         .await
         .unwrap();
-    assert!(first.len() < 24);
+    assert!(first.events.len() < 24);
     let second = store
-        .deliver_queued(id, first.len() as u64, &lease, &[])
+        .deliver_queued(id, first.head_seq, &lease, &[])
         .await
         .unwrap();
     assert!(!second.is_empty());
     let all = first
+        .events
         .iter()
-        .chain(&second)
+        .chain(&second.events)
         .filter_map(|event| {
             if let Event::MessageAppended { message, .. } = event {
                 Some(message)
@@ -781,6 +805,7 @@ async fn queued_input_is_delivered_in_bounded_ordered_batches() {
             .deliver_queued(id, 24, &lease, &[])
             .await
             .unwrap()
+            .events
             .is_empty()
     );
 }
@@ -805,7 +830,9 @@ async fn drain_transferred_once(store: &Store, id: SessionId, expected: &Message
     assert_eq!(session.state, SessionState::Runnable);
     let lease = live_lease(store, id).await;
     let head = session.head_seq;
-    let delivered = store.deliver_queued(id, head, &lease, &[]).await.unwrap();
+    let delivery = store.deliver_queued(id, head, &lease, &[]).await.unwrap();
+    assert_eq!(delivery.head_seq, head + 2);
+    let delivered = delivery.events;
     assert_eq!(delivered.len(), 2, "{delivered:?}");
     let (
         Event::MessageQueued {
@@ -820,13 +847,12 @@ async fn drain_transferred_once(store: &Store, id: SessionId, expected: &Message
     };
     assert_eq!(queued, expected);
     assert_eq!(appended, expected);
-    assert!(
-        store
-            .deliver_queued(id, head + 2, &lease, &[])
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    let follow_up = store
+        .deliver_queued(id, head + 2, &lease, &[])
+        .await
+        .unwrap();
+    assert_eq!(follow_up.head_seq, head + 2);
+    assert!(follow_up.events.is_empty());
 }
 
 #[tokio::test]
@@ -860,7 +886,11 @@ async fn queued_message_survives_main_and_side_rollover_exactly_once() {
             .queue_user_message_idempotent(main, &waiting, "rollover-once")
             .await
             .unwrap(),
-        (0, true, false)
+        swarmy_store::UserMessageAppend {
+            sequence: 0,
+            fresh: true,
+            started: false,
+        }
     );
     let Event::MessageAppended {
         message: summary, ..
@@ -905,7 +935,11 @@ async fn queued_message_survives_main_and_side_rollover_exactly_once() {
             .queue_user_message_idempotent(side_id, &side_waiting, "side-rollover-once")
             .await
             .unwrap(),
-        (0, true, false)
+        swarmy_store::UserMessageAppend {
+            sequence: 0,
+            fresh: true,
+            started: false,
+        }
     );
     let Event::MessageAppended {
         message: side_summary,

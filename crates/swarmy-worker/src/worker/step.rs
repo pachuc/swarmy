@@ -148,7 +148,7 @@ impl Worker {
         events: &mut Vec<Event>,
         before: &[Event],
     ) -> Result<()> {
-        let delivered = {
+        let delivery = {
             let token = lease.lock().await;
             self.store
                 .deliver_queued(
@@ -159,10 +159,11 @@ impl Worker {
                 )
                 .await?
         };
-        if !delivered.is_empty() {
-            session.head_seq += u64::try_from(delivered.len()).expect("queue bounded");
-            self.publish_events(session.session_id, &delivered).await?;
-            events.extend(delivered);
+        session.head_seq = delivery.head_seq;
+        if !delivery.events.is_empty() {
+            self.publish_events(session.session_id, &delivery.events)
+                .await?;
+            events.extend(delivery.events);
         }
         Ok(())
     }

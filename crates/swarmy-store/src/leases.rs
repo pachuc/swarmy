@@ -148,10 +148,7 @@ impl Store {
         let lease = Lease {
             owner,
             expires_at,
-            seq: session
-                .head_seq
-                .checked_add(1)
-                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?,
+            seq: crate::seq_after(session.head_seq, 1)?,
         };
         self.store_lease(trx, id, &lease)?;
         session.state = SessionState::Leased;

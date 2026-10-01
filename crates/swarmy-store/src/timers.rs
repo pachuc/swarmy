@@ -106,9 +106,7 @@ impl Store {
                 },
                 Err(error) => ToolResult::Error { error },
             };
-            let seq = expected_head
-                .checked_add(1)
-                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+            let seq = crate::seq_after(expected_head, 1)?;
             let event = Event::ToolCallCompleted {
                 seq,
                 request_id,
@@ -310,10 +308,7 @@ impl Store {
         now: Timestamp,
     ) -> Result<(SessionId, Event)> {
         let id = session.session_id;
-        let seq = session
-            .head_seq
-            .checked_add(1)
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+        let seq = crate::seq_after(session.head_seq, 1)?;
         let event = Event::MessageAppended {
             seq,
             message: Message {

@@ -17,7 +17,6 @@ pub use errors::{DomainError, FenceError, Result, StorageError, StoreError};
 mod session;
 pub(crate) use session::{
     SESSION_CHUNK_MARKER, SESSION_MAX_BYTES, SESSION_RECORD_VERSION, StoredSession,
-    StoredSessionCurrent,
 };
 pub mod blob;
 mod computers;
@@ -46,9 +45,10 @@ mod keys;
 #[cfg(test)]
 mod keys_tests;
 mod runnable;
-pub use inference::{InferenceClaim, InferenceCompletion};
+pub use inference::{InferenceClaim, InferenceCompletion, RecordedRetry};
 pub mod metering;
 mod queued;
+pub use queued::{QueueDelivery, UserMessageAppend};
 pub mod quota;
 pub use metering::{DimensionTotal, MeteringDimension, UsageGroup, UsageGroupBy};
 pub use quota::{EntryQuota, ObservedQuota, QuotaConfig, QuotaSource};
@@ -438,9 +438,8 @@ impl Store {
         } else {
             bytes[1..].to_vec()
         };
-        let v: StoredSessionCurrent =
+        let mut session: StoredSession =
             postcard::from_bytes(&payload).map_err(EncodingError::Payload)?;
-        let mut session: StoredSession = v.into();
         // The agent tombstone is authoritative for every named side session.
         // Deleting a computer cannot atomically rewrite an unbounded set
         // of conversations, so keep this one shared fence until queried.
@@ -489,10 +488,7 @@ impl Store {
 
     pub(crate) fn write_session(&self, trx: &Transaction, session: &StoredSession) -> Result<()> {
         let mut bytes = vec![SESSION_RECORD_VERSION];
-        bytes.extend(
-            postcard::to_allocvec(&StoredSessionCurrent::from(session))
-                .map_err(EncodingError::Payload)?,
-        );
+        bytes.extend(postcard::to_allocvec(session).map_err(EncodingError::Payload)?);
         if bytes.len() > SESSION_MAX_BYTES {
             return Err(StoreError::Storage(StorageError::TooLarge));
         }
@@ -707,9 +703,7 @@ impl Store {
         if message.role != swarmy_core::MessageRole::User {
             return Err(StoreError::Domain(DomainError::InvalidMessageRole));
         }
-        let head = expected_head
-            .checked_add(1)
-            .ok_or(StoreError::Storage(StorageError::SequenceOverflow))?;
+        let head = seq_after(expected_head, 1)?;
         let event = Event::MessageAppended {
             seq: head,
             message: message.clone(),
@@ -751,12 +745,7 @@ impl Store {
         fence: Option<(&swarmy_core::Lease, jiff::Timestamp)>,
         wake: bool,
     ) -> Result<u64> {
-        let head = expected_head
-            .checked_add(
-                u64::try_from(events.len())
-                    .map_err(|_| StoreError::Storage(StorageError::TooLarge))?,
-            )
-            .ok_or(StoreError::Storage(StorageError::SequenceOverflow))?;
+        let head = seq_after(expected_head, events.len())?;
         let mut prepared = Vec::with_capacity(events.len());
         let mut size = 0;
         for (event, seq) in events.iter().zip((expected_head..head).map(|n| n + 1)) {
@@ -978,20 +967,46 @@ pub(crate) fn check_head(actual: u64, expected: u64) -> Result<()> {
     Ok(())
 }
 
+/// The sequence number `n` steps after `head`.
+///
+/// Every session head, event sequence, per-key counter, and epoch in the
+/// store advances through this one function, so running past `u64::MAX`
+/// fails with `StorageError::SequenceOverflow` instead of wrapping or
+/// panicking.
+///
+/// # Errors
+/// `StorageError::SequenceOverflow` when `head + n` does not fit in a `u64`.
+pub(crate) fn seq_after(head: u64, n: usize) -> Result<u64> {
+    u64::try_from(n)
+        .ok()
+        .and_then(|n| head.checked_add(n))
+        .ok_or(StoreError::Storage(StorageError::SequenceOverflow))
+}
+
 pub(crate) fn next_cursor(key: &[u8]) -> Vec<u8> {
     let mut next = key.to_vec();
     next.push(0);
     next
 }
 
-async fn scan(
+/// Which end of a range a scan reads from.
+#[derive(Clone, Copy)]
+pub(crate) enum ScanOrder {
+    Forward,
+    Reverse,
+}
+
+/// Read up to `limit` rows of `range` in `order`.
+pub(crate) async fn scan_ordered(
     trx: &Transaction,
     range: (Vec<u8>, Vec<u8>),
     limit: usize,
+    order: ScanOrder,
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     check_limit(limit)?;
     let options = RangeOption {
         limit: Some(limit),
+        reverse: matches!(order, ScanOrder::Reverse),
         ..range.into()
     };
     Ok(trx
@@ -999,6 +1014,14 @@ async fn scan(
         .map_ok(|kv| (kv.key().to_vec(), kv.value().to_vec()))
         .try_collect()
         .await?)
+}
+
+async fn scan(
+    trx: &Transaction,
+    range: (Vec<u8>, Vec<u8>),
+    limit: usize,
+) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    scan_ordered(trx, range, limit, ScanOrder::Forward).await
 }
 
 /// Read every row in `range` inside one transaction, paging by the last key.

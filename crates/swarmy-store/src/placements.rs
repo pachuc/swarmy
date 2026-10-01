@@ -336,9 +336,7 @@ impl Store {
             let record = PlacementRecord {
                 agent_id: agent,
                 node_id: node,
-                epoch: epoch
-                    .checked_add(1)
-                    .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?,
+                epoch: crate::seq_after(epoch, 1)?,
                 expires_at,
                 last_change_reason: if epoch == 0 {
                     PlacementChangeReason::Initial
@@ -455,10 +453,7 @@ impl Store {
                 .map(|claimed| hosting.last_renewed.unwrap_or(claimed).max(claimed));
             let record = PlacementRecord {
                 node_id: node,
-                epoch: current
-                    .epoch
-                    .checked_add(1)
-                    .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?,
+                epoch: crate::seq_after(current.epoch, 1)?,
                 expires_at,
                 last_change_reason: if lost_computer {
                     PlacementChangeReason::Failure
