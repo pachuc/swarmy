@@ -6,9 +6,9 @@
 //! spawn services. The copies drifted (some cleaned up on panic, some did
 //! not) and every poll loop hand-rolled its own sleep. This crate owns one
 //! implementation: the stack gate, a cleanup guard that runs even when a
-//! test panics, an [`eventually`] poll helper, a fake-provider [`Script`]
-//! builder, sibling-binary lookup, the metadata-only image fixture, and the
-//! docs command walker.
+//! test panics, an [`eventually`] poll helper, a fake-provider `Script`
+//! builder (with the `script` feature), sibling-binary lookup, the
+//! metadata-only image fixture, and the docs command walker.
 //!
 //! The `stack` feature (on by default) covers everything that touches
 //! `FoundationDB`, the store, or the bus. Suites that only need the light

@@ -11,10 +11,6 @@ use swarmy_store::{
 };
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one turn with staged writes, inference, and idle checks needs its setup inline"
-)]
 async fn incremental_records_merge_under_one_turn_key() {
     let Some(stack) = swarmy_testkit::Stack::load("turn_metrics") else {
         return;
