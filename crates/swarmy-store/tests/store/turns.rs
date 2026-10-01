@@ -781,7 +781,7 @@ async fn queued_input_is_delivered_in_bounded_ordered_batches() {
         .deliver_queued(id, first.head_seq, &lease, &[])
         .await
         .unwrap();
-    assert!(!second.is_empty());
+    assert!(!second.events.is_empty());
     let all = first
         .events
         .iter()
