@@ -2,8 +2,8 @@
 
 This is the method for running swarmy's own development on the fleet, written
 so that a fresh session (any model, any operator) can pick the work up. Live
-state changes hourly and is not here: read it from tasky (`tasky task order`
-for the `cleanup` goal), `scripts/fleet/fleet status`, and `gh pr list`. The
+state changes hourly and is not here: read it from tasky (`tasky goal list` and
+`tasky task order` for each active goal), `scripts/fleet/fleet status`, and `gh pr list`. The
 owner's standing decisions are in the auto-memory notes for this repository;
 the durable ones are repeated below.
 
@@ -16,9 +16,10 @@ the durable ones are repeated below.
   control node and copy it back (see "Rebuilding the laptop CLI").
 - Operate autonomously. The owner checks in and wants: what merged, what is
   in flight, issues, the current phase, and what remains, in plain English.
-- Review every pull request before merging; use a review subagent for large
-  diffs. Merge on CI green plus, for changes in the areas AGENTS.md lists,
-  the root-only suites on the sandbox node.
+- Build every goal with "The cycle for a goal" below. Review every task
+  branch before integrating it. The goal's one pull request to master merges
+  on CI green, after the batch's local CI run and, for the areas AGENTS.md
+  lists, the root suites on the suite node have passed.
 - Never print credentials. Keys live in `~/api_keys.md`. The permission
   classifier refuses to write tokens onto remote nodes or to grep transcripts
   for keys; do not work around it.
@@ -27,10 +28,8 @@ the durable ones are repeated below.
 - Breaking API changes are acceptable while swarmy is its own only client,
   provided they are recorded in `docs/api-breaks.txt` with a date and reason
   (pull request 173 adds the file and wires it into the compat check).
-- Order of work: the `cleanup` goal first, then the roadmap goals. The
-  cleanup goal must show build time, test time, and lines of code falling;
-  the baseline is `docs/proofs/cleanup-baseline-2026-09.md` and the final
-  measurement task closes the goal.
+- Order of work, as of 2026-10-01: the `hetzner` goal (its migration task
+  waits on the owner's Hetzner account), then the roadmap goals.
 - Keep `~/muse-spark-issues.md` updated with every shortcoming of a worker
   running Muse Spark: date, task id, pull request, commits, what the
   specification asked, what went wrong. The owner uses it for model feedback.
@@ -78,6 +77,11 @@ export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | hea
   (records the pull request in tasky), `fleet release [--force] TASK`,
   `fleet kill TASK`, `fleet resume TASK "text"`, `fleet reset worker-N`,
   `fleet report`, `fleet benchmark`.
+- `scripts/fleet/last-message TASK [COUNT]` prints a worker's final message,
+  which is its report under "The cycle for a goal". Set `FLEET_DRIVER` to
+  run it against another copy of the driver. `fleet collect` and a plain
+  `fleet release` expect a pull request, so in the goal cycle release with
+  `--force`.
 - A task's branch is `swarmy/` plus the last six characters of the task ULID,
   lowercased. State files: `.dev/fleet-dev2/<suffix>.json|.jsonl` and
   `worker-N.meta.json` (provider, model, image the worker was created with;
@@ -101,71 +105,178 @@ export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | hea
   Workers poll long builds with one inference per minute; that is normal and
   cheap on Muse, less so on the subscription.
 
-## The loop for one task
+## The cycle for a goal
 
-1. Launch, then watch `fleet status` (a shell loop comparing worker, task,
-   and state every one or two minutes; strip the age suffix).
-2. When the worker finishes: `fleet collect TASK`, `git fetch`, and review.
-   Read small diffs directly. For large ones, spawn a review subagent with
-   the task body (`tasky task show ID`, JSON), the diff, and the pull request
-   description; ask for numbered verdicts per requested point, defects ranked
-   with file and line, and a one-line mergeable verdict. Do not run cargo on
-   the laptop; the subagent reads code only.
-3. If a round is needed: append `Revision (date): ...` to the task body
-   (`tasky task body ID --file FILE`), numbered points with files and lines
-   and the commands to run; `tasky task fail ID`; `fleet release --force ID`;
-   `fleet launch --worker worker-N ID`. Tell the worker not to start over.
-4. Merge criteria: CI green on the current head. CI builds the branch merged
-   with master, so a branch whose last master merge is stale can fail on code
-   it never touched, and once GitHub marks it CONFLICTING it silently stops
-   running CI until a merge commit is pushed. Trial-merge in a scratch
-   worktree (`git worktree add`) to see the conflicts, then either resolve
-   and push yourself for trivial ones or write a rebase round for the worker.
-5. Root suites run on the suite node dev2-2, which hosts no workers, so
-   stopping its node daemon for a run affects nothing else. They are serial
-   and slow (a full `--plus` run takes forty to sixty minutes), so run only
-   what the change can break, and nothing for docs, CLI-only, test-only,
-   fleet-script, or fixture-covered provider changes: the node suite for
-   swarmyd, sandbox, placement, and hosting; the chaos suites for worker,
-   scheduler, gateway, and bus paths the chaos harness kills; image, vol,
-   and nbd for those crates; stored-format changes for every suite that
-   reads them. State in one line which suite a change could break before
-   queueing. The scripts are
-   in `scripts/node-suites/`; copy them to the node's home directory after
-   changing them. Queue a run detached:
-   `setsid nohup bash ~/suite-queue.sh --at COMMIT --chaos swarmy/xxxxxx >/dev/null 2>&1 </dev/null &`
-   (`--plus` adds the image, vol, and nbd suites to the default node and chaos
-   set; `--node` runs the node suite alone; `--chaos` runs the three chaos
-   suites and `chaos-ci.sh`; `--only "PACKAGE TEST"` runs one suite;
-   `--at COMMIT` pins the commit, because the branch head is read when the
-   run starts and a worker still pushing can leave it uncompilable). Every run takes `~/suite.lock`, so queued runs
-   wait for each other however they were started. Each branch appends
-   `QUEUE_DONE <branch> <mode> SUITES_EXIT=<0|1>` to `~/suite-queue.log`, with
-   the run log at `~/suite-logs/<suffix>-<mode>.log` and each suite's full
-   output at `~/suite-logs/<suffix>-<package>-<test>.log`.
-   `swarmy image build` and the chaos suites need an API, which
-   `root-suites.sh` serves on a loopback port.
+The owner asked on 2026-10-01 that every goal follow this cycle. It was first
+used for cleanup-3, which went from approval to one pull request in about ten
+hours. Its point is to spend CI and root-suite time once per goal instead of
+once per task. It also turns each task into a job a worker can hardly get
+wrong.
 
-   The chaos suites run the service executables (scheduler, worker, gateway,
-   API, node daemon) from `target/debug`; `root-suites.sh` builds them
-   explicitly before any suite runs. Before 2026-09-27 it did not, so the
-   chaos suites ran the executables an earlier branch had left behind and
-   failed within seconds whenever the stored formats differed (for example
-   `unsupported stored value version 2`); a failure like that on a new run
-   is real. An interrupted nbd or node test can leave `/dev/nbdN`
-   attached with no owner, which breaks later nbd tests; `nbd-orphans.sh`
-   runs before every suite and detaches such devices. The suite node's build
-   directory and dev-stack data live on its local NVMe drive
-   (`~/chaos/target` and `~/chaos/.dev` are symbolic links into
-   `/mnt/swarmy-local/suites/`); the 100 GB root disk filled once and made
-   image uploads fail. When stopping anything on a node over SSH, kill by
-   process id: a `pkill -f` pattern also matches the SSH command running it.
-6. Merge with `gh pr merge N --squash --delete-branch` and check its output.
-   Only then `tasky task test`, `pass`, `done`, and `fleet release TASK`. A
-   done task cannot be reopened (a task in the `tasky` project adds a reopen
-   command). Then `git merge --ff-only origin/master` locally.
-7. Flakes: retrigger with an empty commit from a scratch worktree, and record
-   the test in the test-trim task (c05) so it gets fixed there.
+1. **Plan small tasks.** Write the goal and its tasks in tasky. Give each task
+   one concern, so that its diff is a few hundred lines. Split anything
+   bigger, or anything that mixes concerns, before launch. Note which tasks
+   touch the same files; those overlaps are where the merge conflicts will
+   come from.
+2. **Refine every task into a recipe before launch.** Spawn read-only
+   research subagents, one per one or two related tasks, with no cargo. Each
+   one reads the current code and rewrites the body as exact steps:
+   - every file, function and line to change;
+   - every call site, found by grep and listed as a checklist;
+   - the full signature and a short sketch of any new helper;
+   - an out-of-scope list and the pitfalls found while reading;
+   - "Done when" commands with their expected results: `cargo fmt`, the
+     `make check-*` targets, specific tests, and `rg` checks that must print
+     nothing.
+
+   The researchers check every claim in the original body against the code.
+   On cleanup-3 they corrected about a dozen wrong assumptions; one task had
+   33 call sites, not 13. For scripts and config, have the researcher write
+   and test the new files, and put them on a seed branch the workers copy
+   from instead of pasting them into the body. Keep the refined bodies in the
+   scratchpad under the goal's name, and load each one into tasky
+   (`tasky task body`, `tasky task test-plan`) with the delivery footer
+   below appended.
+3. **Create the integration branch.** Run
+   `git push origin master:refs/heads/<goal>` and keep a scratch worktree on
+   it. Do not use tasky dependencies within the goal. A dependent task only
+   becomes ready once its prerequisite is done, and nothing is done until the
+   whole batch reaches master. Control the order by when you launch tasks
+   instead, and start a task that builds on merged work from the integration
+   branch.
+4. **Launch.** Run `fleet launch --worker worker-N --effort high TASK`, then
+   send the standard override with `fleet resume TASK "..."` (text below).
+   Add a sentence when the task must start from the integration branch. Keep
+   every worker busy: when one frees up, launch the next ready recipe before
+   you review its branch.
+5. **When a worker goes idle, read its report** with
+   `scripts/fleet/last-message TASK` before you release it, because release
+   deletes the launch record. The report gives the branch (`swarmy/` plus the
+   task suffix), the head SHA, the "Done when" output, and the deviations.
+   Run `fleet release --force TASK`, then launch the next task on that
+   worker.
+6. **Review every branch before integrating it.** Spawn a review subagent
+   with the refined body, the worker's reported deviations, and the diff
+   against the integration branch. Ask for numbered checks and a merge or
+   fix-first verdict. Also ask it to run
+   `git merge-tree --write-tree origin/<goal> origin/<branch>`. That command
+   shows the textual conflicts, but the reviewer must also look for breaks
+   that git does not report:
+   - a function this branch deletes or gates that other merged work still
+     calls;
+   - a dependency that another merged task made unused, or a feature another
+     task now needs.
+
+   Send real defects back to the worker with `fleet resume`, as one numbered
+   round.
+7. **Integrate with a squash.** Run `git merge --squash origin/<branch>` on
+   the integration worktree. Commit with a clean message: the worker's final
+   commit message, or one you write, plus `tasky <id>` and the co-author
+   trailer. Never keep a "WIP" title. Resolve only trivial conflicts yourself.
+   Do not hand-edit code during integration. Twice on cleanup-3 a quick
+   operator edit did not compile, and a worker had to fix it. Anything beyond
+   a one-line resolution goes to an **integration fixer** task on an idle
+   worker, branched from the integration branch, followed by `cargo fmt` and
+   `make check-lint`.
+8. **Validate in batches on the suite node.** After every few merges, run
+   `suite-queue.sh --at <sha> --ci <goal>`. It runs
+   `scripts/node-suites/ci-local.sh`, every CI job's `make check-*` target,
+   in about fifteen minutes. Always pin `--at`, because every run of a branch
+   writes the same log file. Once all tasks are merged, run `--plus` (the
+   root suites) and a final `--ci` on the head. Reinstall the node scripts in
+   `~` whenever the batch changes them, and compare `sha1sum` against the
+   branch.
+9. **One pull request to master.** Write a description of what the goal
+   fixed, removed and changed, the suite-node validation with its commits,
+   and every tasky id. GitHub CI is the merge gate. Merge with
+   `gh pr merge N --merge` to keep each task's commit. Then run
+   `tasky task test`, `pass` and `done` for every task, then
+   `tasky goal complete`, and fast-forward the local checkout.
+
+The standard override, sent with `fleet resume` after every launch until the
+driver's prompt is changed to match (see `backlog/housekeeping.md`):
+
+> Operator: this overrides the launch instructions. Do NOT open a pull
+> request for this task. Base your branch on origin/master unless the task
+> body says to start from the goal's integration branch. Never commit
+> validation logs or other generated output: keep logs outside the
+> repository (for example in ~). Commit with clear messages, not "WIP".
+> Never wait with one long sleep: check on a background run every few
+> minutes with short commands. Push your branch and finish by reporting the
+> branch name, head SHA and the output of the 'Done when' commands, as the
+> task body's last section says.
+
+The delivery footer appended to every refined body:
+
+> **How to deliver.** Do NOT open a pull request. Work on your task branch.
+> Follow the steps above exactly and in order; if the code does not match
+> what this body says, follow the intent and say what differed. Do not
+> invent extra changes. Before pushing, run every command under "Done when"
+> and make sure each passes, and run `cargo fmt --all` before committing.
+> Push the branch and report its name, the head SHA, the full output of the
+> "Done when" commands, and anything you could not do and why.
+
+Things this cycle has taught:
+
+- The fleet driver's prompt still asks for a pull request and for "WIP"
+  commits. Hence the override message, and hence squashing every branch.
+- The suite node also runs `swarmyd` and a tunnel that forwards the fleet's
+  NATS on port 4222. `ci-local.sh` stops both and restores them on exit, and
+  it refuses to run tests if the dev stack does not start.
+- `check-docs-accuracy.py` refuses to inspect ignored paths behind a
+  symlink. That is why `ci-local.sh` runs from a second checkout (`~/ci-src`)
+  and shares the build directory through `CARGO_TARGET_DIR`.
+- The script tests must run without the dev stack's exported variables, as
+  they do in CI. A leftover `SWARMY_DEV_FDB_PORT` broke them.
+- Tests that a goal switches on run for the first time against the real
+  stack, and they can fail for reasons the task never touched. Hand each
+  such failure to an idle worker as an investigation task that must find the
+  root cause and must not loosen the test.
+
+## The suite node
+
+Root suites run on the suite node dev2-2, which hosts no workers, so
+stopping its node daemon for a run affects nothing else. They are serial
+and slow (a full `--plus` run takes forty to sixty minutes), so run only
+what the change can break, and nothing for docs, CLI-only, test-only,
+fleet-script, or fixture-covered provider changes: the node suite for
+swarmyd, sandbox, placement, and hosting; the chaos suites for worker,
+scheduler, gateway, and bus paths the chaos harness kills; image, vol,
+and nbd for those crates; stored-format changes for every suite that
+reads them. State in one line which suite a change could break before
+queueing. The scripts are
+in `scripts/node-suites/`; copy them to the node's home directory after
+changing them. Queue a run detached:
+`setsid nohup bash ~/suite-queue.sh --at COMMIT --chaos swarmy/xxxxxx >/dev/null 2>&1 </dev/null &`
+(`--ci` runs every CI job's `make check-*` target through `ci-local.sh`; `--plus` adds the image, vol, and nbd suites to the default node and chaos
+set; `--node` runs the node suite alone; `--chaos` runs the three chaos
+suites and `chaos-ci.sh`; `--only "PACKAGE TEST"` runs one suite;
+`--at COMMIT` pins the commit, because the branch head is read when the
+run starts and a worker still pushing can leave it uncompilable). Every run takes `~/suite.lock`, so queued runs
+wait for each other however they were started. Each branch appends
+`QUEUE_DONE <branch> <mode> SUITES_EXIT=<0|1>` to `~/suite-queue.log`, with
+the run log at `~/suite-logs/<suffix>-<mode>.log` and each suite's full
+output at `~/suite-logs/<suffix>-<package>-<test>.log`.
+`swarmy image build` and the chaos suites need an API, which
+`root-suites.sh` serves on a loopback port.
+
+The chaos suites run the service executables (scheduler, worker, gateway,
+API, node daemon) from `target/debug`; `root-suites.sh` builds them
+explicitly before any suite runs. Before 2026-09-27 it did not, so the
+chaos suites ran the executables an earlier branch had left behind and
+failed within seconds whenever the stored formats differed (for example
+`unsupported stored value version 2`); a failure like that on a new run
+is real. An interrupted nbd or node test can leave `/dev/nbdN`
+attached with no owner, which breaks later nbd tests; `nbd-orphans.sh`
+runs before every suite and detaches such devices. The suite node's build
+directory and dev-stack data live on its local NVMe drive
+(`~/chaos/target` and `~/chaos/.dev` are symbolic links into
+`/mnt/swarmy-local/suites/`); the 100 GB root disk filled once and made
+image uploads fail. When stopping anything on a node over SSH, kill by
+process id: a `pkill -f` pattern also matches the SSH command running it.
+
+A test that fails once and passes on a rerun is a flake: note it in the
+handoff memory note, and open a task when the same test flakes again.
 
 ## What review rounds have caught (check these first)
 
@@ -185,13 +296,13 @@ export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | hea
 
 ## Tasky
 
-Project `swarmy`; goals `cleanup` (active, sixteen tasks c00 to c15 plus
-c05a, dependency chain in the goal spec), `dev-fleet` (active: reopen and
-teardown follow-ups), and the roadmap goals. Project `tasky` holds the reopen
-command task. Commands used: `task show|add|body|test-plan|fail|test|pass|
-done|depend|ready|order|pr`, `goal show|add|activate|spec`. Task bodies are
-the specification a worker receives; write them in the style CLAUDE.md
-describes, with files, line regions, commands, and a measurable test plan.
+Project `swarmy`. `tasky goal list` shows the goals and their states, and
+each active goal has one integration branch named after its slug. Project
+`tasky` holds the reopen command task. Commands used: `task show|add|body|
+test-plan|fail|test|pass|done|depend|undepend|ready|order|pr`, `goal
+list|show|add|activate|spec|complete`. Task bodies are the specification a
+worker receives. Write them as the recipes "The cycle for a goal" describes,
+in the style CLAUDE.md asks for.
 
 ## Rebuilding the laptop CLI
 
