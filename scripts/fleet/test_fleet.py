@@ -111,10 +111,11 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
         if os.environ.get('FLEET_COST_FAIL'):
             print("error: connection refused", file=sys.stderr)
             sys.exit(1)
-        # Day and month polls carry different --since values; answer each
-        # from its own variable so the status test pins both down.
-        since = args[args.index('--since') + 1] if '--since' in args else ''
-        if since == datetime.now(timezone.utc).date().isoformat():
+        # Day and month polls differ in --group (their --since dates match
+        # on the first of a month); answer each from its own variable so the
+        # status test pins both down.
+        group = args[args.index('--group') + 1] if '--group' in args else ''
+        if group == 'day':
             value = os.environ.get('FLEET_COST_DAY', '0.0100')
         else:
             value = os.environ.get('FLEET_COST_MONTH', '0.2500')
