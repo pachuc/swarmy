@@ -9,6 +9,8 @@ pub fn check_docs_commands(
     repo_root: &std::path::Path,
     binaries: &[(&str, &clap::Command)],
 ) -> Result<usize, String> {
+    // Docs-command failures are operator-facing text in the String error the check reports.
+    // ast-grep-ignore: no-stringified-errors
     let out = std::process::Command::new("python3")
         .args(["scripts/check-docs-accuracy.py", "--commands"])
         .current_dir(repo_root)
@@ -20,6 +22,8 @@ pub fn check_docs_commands(
             String::from_utf8_lossy(&out.stderr)
         ));
     }
+    // Docs-command failures are operator-facing text in the String error the check reports.
+    // ast-grep-ignore: no-stringified-errors
     let text = String::from_utf8(out.stdout).map_err(|e| format!("docs extractor output: {e}"))?;
     let built: Vec<(String, clap::Command)> = binaries
         .iter()

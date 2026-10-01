@@ -134,6 +134,8 @@ impl Store {
         let output = match call.tool.as_str() {
             "set_timer" => {
                 let args = serde_json::from_value::<SetTimerArguments>(call.arguments.clone());
+                // Timer tool results are model-visible text by schema.
+                // ast-grep-ignore: no-stringified-errors
                 let (args, due_at) = match args
                     .map_err(|error| error.to_string())
                     .and_then(|args| args.due_at(now).map(|due| (args, due)))

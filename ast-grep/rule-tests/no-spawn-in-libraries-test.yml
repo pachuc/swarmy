@@ -1,0 +1,31 @@
+id: no-spawn-in-libraries
+valid:
+  - |
+    fn run() {
+        let child = std::process::Command::new("ls").spawn();
+    }
+  - |
+    async fn run() {
+        tokio::task::spawn_blocking(|| ()).await;
+    }
+  - |
+    #[cfg(test)]
+    mod tests {
+        #[tokio::test]
+        async fn serves() {
+            tokio::spawn(async {});
+        }
+    }
+invalid:
+  - |
+    fn start() {
+        tokio::spawn(async {});
+    }
+  - |
+    fn start() {
+        tokio::task::spawn(async {});
+    }
+  - |
+    fn start(tasks: &mut tokio::task::JoinSet<()>) {
+        tasks.spawn(async {});
+    }

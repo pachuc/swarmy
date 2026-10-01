@@ -1,0 +1,23 @@
+id: no-unwrap-in-libraries
+valid:
+  - |
+    fn first(values: &[u8]) -> u8 {
+        *values.first().expect("callers pass a non-empty slice")
+    }
+  - |
+    fn first(values: &[u8]) -> u8 {
+        values.first().copied().unwrap_or_default()
+    }
+  - |
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn parses() {
+            "1".parse::<u8>().unwrap();
+        }
+    }
+invalid:
+  - |
+    fn first(values: &[u8]) -> u8 {
+        *values.first().unwrap()
+    }

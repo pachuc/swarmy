@@ -77,6 +77,8 @@ pub(crate) fn spawn_metrics_drain(
     writer: MetricsWriter,
     mut rx: tokio::sync::mpsc::Receiver<MetricMsg>,
 ) -> tokio::task::JoinHandle<()> {
+    // The metrics writer drains one channel into batched transactions.
+    // ast-grep-ignore: no-spawn-in-libraries
     tokio::spawn(async move {
         use std::collections::HashMap;
         loop {

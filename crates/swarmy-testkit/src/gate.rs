@@ -33,6 +33,8 @@ pub fn optional_env(name: &str) -> Option<String> {
     if let Ok(value) = std::env::var(name) {
         Some(value)
     } else {
+        // Test-skip helpers log why the test skips; tracing would be invisible without a subscriber.
+        // ast-grep-ignore: no-print-in-libraries
         eprintln!("skipping integration test: optional {name} is unavailable");
         None
     }
@@ -45,6 +47,8 @@ pub fn opt_in_env(name: &str, hint: &str) -> Option<String> {
     if let Ok("1") = std::env::var(name).as_deref() {
         Some("1".to_owned())
     } else {
+        // Test-skip helpers log why the test skips; tracing would be invisible without a subscriber.
+        // ast-grep-ignore: no-print-in-libraries
         eprintln!("skipping opt-in integration test: {hint}");
         None
     }
@@ -55,6 +59,8 @@ fn missing_stack<T>(name: &str) -> Option<T> {
         std::env::var_os("CI").is_none(),
         "CI requires {name} for integration tests"
     );
+    // Test-skip helpers log why the test skips; tracing would be invisible without a subscriber.
+    // ast-grep-ignore: no-print-in-libraries
     eprintln!("skipping integration test: {name} is unavailable");
     None
 }

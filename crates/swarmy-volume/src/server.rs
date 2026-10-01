@@ -363,6 +363,8 @@ fn start_renewal(
     tokio::sync::oneshot::Receiver<crate::VolumeError>,
 ) {
     let (lost_tx, lost_rx) = tokio::sync::oneshot::channel();
+    // The lease-renewal loop; AbortTask aborts it on drop.
+    // ast-grep-ignore: no-spawn-in-libraries
     let task = tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(15)).await;

@@ -150,6 +150,8 @@ impl Providers {
             };
             resolutions.insert(
                 id.clone(),
+                // Skipped-provider reasons are operator-facing text in the String-keyed ProviderChanges schema served by doctor and the models views.
+                // ast-grep-ignore: no-stringified-errors
                 self.auth(provider)
                     .await
                     .map(|_| ())

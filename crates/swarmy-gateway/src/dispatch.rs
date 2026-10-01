@@ -160,6 +160,8 @@ impl DispatchWorker {
         };
         let permit = self.semaphore.clone().acquire_owned().await?;
         let gateway = Arc::clone(gateway);
+        // DispatchWorker's JoinSet owns delivery tasks and aborts them on drop; the semaphore bounds them.
+        // ast-grep-ignore: no-spawn-in-libraries
         self.tasks.spawn(async move {
             let _permit = permit;
             if let Err(error) = gateway.handle(&message).await {
