@@ -1,7 +1,7 @@
 //! Model probes through the control plane's stored credentials. An operator
 //! who ran `swarmy auth set` keeps credentials on the control plane, so the
 //! client asks the API to probe instead of resolving local files.
-use super::{ApiResult, AppState, credential_store, error, failure, storage};
+use super::{ApiFailure, ApiResult, AppState, credential_store, storage};
 use axum::{Json, extract::State, http::StatusCode};
 use futures::StreamExt as _;
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
@@ -42,29 +42,24 @@ impl AuthStore for ClusterAuthStore {
     }
 }
 
-fn provider_failure(provider_text: String) -> (StatusCode, Json<api::ApiError>) {
-    (
+fn provider_failure(provider_text: String) -> ApiFailure {
+    ApiFailure::new(
         StatusCode::BAD_GATEWAY,
-        Json(api::ApiError {
-            code: "provider_failure".into(),
-            message: "provider probe failed".into(),
-            provider_text: Some(provider_text),
-        }),
+        "provider_failure",
+        "provider probe failed",
     )
+    .with_provider_text(provider_text)
 }
 
 /// The server gives up before the client's 300 second wait so a hung
 /// provider surfaces as a probe error rather than a client timeout.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(240);
 
-fn provider_timeout() -> (StatusCode, Json<api::ApiError>) {
-    (
+fn provider_timeout() -> ApiFailure {
+    ApiFailure::new(
         StatusCode::GATEWAY_TIMEOUT,
-        Json(api::ApiError {
-            code: "provider_timeout".into(),
-            message: "provider probe timed out".into(),
-            provider_text: None,
-        }),
+        "provider_timeout",
+        "provider probe timed out",
     )
 }
 
@@ -74,26 +69,34 @@ pub(crate) async fn probe(
 ) -> ApiResult<api::ProbeResult> {
     let started = Instant::now();
     if body.provider.is_empty() || body.model.is_empty() {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_request"));
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "provider and model are required",
+        ));
     }
-    let provider = state
-        .catalog
-        .provider(&body.provider)
-        .ok_or_else(|| error(StatusCode::NOT_FOUND, "model_not_found"))?;
+    let provider = state.catalog.provider(&body.provider).ok_or_else(|| {
+        ApiFailure::new(StatusCode::NOT_FOUND, "model_not_found", "model not found")
+    })?;
     let model = state
         .catalog
         .model(&body.provider, &body.model)
-        .ok_or_else(|| error(StatusCode::NOT_FOUND, "model_not_found"))?;
+        .ok_or_else(|| {
+            ApiFailure::new(StatusCode::NOT_FOUND, "model_not_found", "model not found")
+        })?;
     let requested = body.effort.map_or(
         swarmy_core::ReasoningEffort::None,
         swarmy_core::ReasoningEffort::from,
     );
     let (effort, _) = model.clamp_effort(requested);
     let auth = if provider.api == swarmy_llm::catalog::Api::Fake {
-        let (script, call_log) = state
-            .fake_files
-            .as_ref()
-            .ok_or_else(|| error(StatusCode::BAD_REQUEST, "invalid_request"))?;
+        let (script, call_log) = state.fake_files.as_ref().ok_or_else(|| {
+            ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "this server has no scripted fake provider files",
+            )
+        })?;
         swarmy_llm::ClientAuth::Scripted(Arc::new(
             swarmy_llm::fake::FileFake::from_files(script, call_log)
                 .map_err(|failure| provider_failure(failure.to_string()))?,
@@ -111,14 +114,26 @@ pub(crate) async fn probe(
         Err(_) => return Err(provider_timeout()),
     };
     let effort_value = serde_json::to_value(effort)
-        .ok()
-        .and_then(|value| serde_json::from_value(value).ok())
-        .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))?;
+        .and_then(serde_json::from_value)
+        .map_err(|cause| {
+            ApiFailure::caused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "encoding_error",
+                "effort could not be encoded",
+                &cause,
+            )
+        })?;
     Ok(Json(api::ProbeResult {
         provider: body.provider.clone(),
         model: model.id.clone(),
-        usage: serde_json::to_value(&totals.usage)
-            .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "encoding_error"))?,
+        usage: serde_json::to_value(&totals.usage).map_err(|cause| {
+            ApiFailure::caused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "encoding_error",
+                "usage could not be encoded",
+                &cause,
+            )
+        })?,
         cost_micros: totals.cost_micros,
         effort: effort_value,
         elapsed_seconds: started.elapsed().as_secs_f64(),
@@ -130,7 +145,7 @@ pub(crate) async fn probe(
 async fn resolve_auth(
     state: &AppState,
     body: &api::ProbeModel,
-) -> Result<swarmy_llm::ClientAuth, (StatusCode, Json<api::ApiError>)> {
+) -> Result<swarmy_llm::ClientAuth, ApiFailure> {
     let label = body.label.clone().unwrap_or_else(|| "default".into());
     let record = credential_store(state)?
         .get_entry(CredentialScope::Cluster, &body.provider, &label)
@@ -140,17 +155,21 @@ async fn resolve_auth(
         provider: body.provider.clone(),
         record,
     }))
-    .map_err(|cause| failure(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", &cause))?;
+    .map_err(|cause| {
+        ApiFailure::caused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_error",
+            "credential resolver unavailable",
+            &cause,
+        )
+    })?;
     Ok(swarmy_llm::auth::resolve(&body.provider, &resolver)
         .await
         .map_err(|resolve_error| {
-            (
+            ApiFailure::new(
                 StatusCode::BAD_REQUEST,
-                Json(api::ApiError {
-                    code: "credential_unavailable".into(),
-                    message: resolve_error.to_string(),
-                    provider_text: None,
-                }),
+                "credential_unavailable",
+                resolve_error.to_string(),
             )
         })?
         .auth)
@@ -164,7 +183,7 @@ async fn run_probe(
     auth: swarmy_llm::ClientAuth,
     effort: swarmy_core::ReasoningEffort,
     tools: bool,
-) -> Result<UsageTotals, (StatusCode, Json<api::ApiError>)> {
+) -> Result<UsageTotals, ApiFailure> {
     let client = swarmy_llm::client_for(provider, model, auth)
         .map_err(|failure| provider_failure(failure.to_string()))?;
     let mut request = Request {
@@ -265,7 +284,7 @@ async fn run_probe(
 async fn completion(
     client: &dyn swarmy_llm::Provider,
     request: Request,
-) -> Result<Response, (StatusCode, Json<api::ApiError>)> {
+) -> Result<Response, ApiFailure> {
     let mut stream = client.request(request);
     while let Some(delta) = stream.next().await {
         let delta = delta.map_err(|failure| provider_failure(failure.to_string()))?;

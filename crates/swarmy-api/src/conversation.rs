@@ -1,6 +1,8 @@
 //! Conversation mutations preserve the store-first, nudge-second client path.
 use super::views::session_with_next;
-use super::{ApiResult, AppState, error, failure, id, invalid_selection, replay, storage};
+use super::{
+    ApiFailure, ApiResult, AppState, IdempotencyKey, id, invalid_selection, replay, storage,
+};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -25,51 +27,38 @@ fn keyed_id(key: &str) -> Ulid {
     bytes[6..].copy_from_slice(&hash.as_bytes()[..10]);
     Ulid::from_bytes(bytes)
 }
-pub(super) fn session_error(
-    failure: swarmy_store::StoreError,
-) -> (StatusCode, Json<api::ApiError>) {
+pub(super) fn session_error(failure: swarmy_store::StoreError) -> ApiFailure {
+    let message = failure.to_string();
     match failure {
         swarmy_store::StoreError::Domain(swarmy_store::DomainError::SessionMissing) => {
-            error(StatusCode::NOT_FOUND, "session_not_found")
+            ApiFailure::new(StatusCode::NOT_FOUND, "session_not_found", message)
         }
-        swarmy_store::StoreError::Domain(swarmy_store::DomainError::NothingToInterrupt) => (
-            StatusCode::CONFLICT,
-            Json(api::ApiError {
-                code: "nothing_to_interrupt".into(),
-                message: "session is idle or completed; there is nothing to interrupt".into(),
-                provider_text: None,
-            }),
-        ),
-        swarmy_store::StoreError::Domain(swarmy_store::DomainError::MainSessionClose) => (
-            StatusCode::CONFLICT,
-            Json(api::ApiError {
-                code: "main_session_close".into(),
-                message: "cannot close an agent main session".into(),
-                provider_text: None,
-            }),
-        ),
+        swarmy_store::StoreError::Domain(swarmy_store::DomainError::NothingToInterrupt) => {
+            ApiFailure::new(
+                StatusCode::CONFLICT,
+                "nothing_to_interrupt",
+                "session is idle or completed; there is nothing to interrupt",
+            )
+        }
+        swarmy_store::StoreError::Domain(swarmy_store::DomainError::MainSessionClose) => {
+            ApiFailure::new(
+                StatusCode::CONFLICT,
+                "main_session_close",
+                "cannot close an agent main session",
+            )
+        }
         swarmy_store::StoreError::Domain(swarmy_store::DomainError::SessionNotIdle) => {
-            error(StatusCode::CONFLICT, "session_not_idle")
+            ApiFailure::new(StatusCode::CONFLICT, "session_not_idle", message)
         }
         swarmy_store::StoreError::Fence(swarmy_store::FenceError::StaleSequence {
             actual, ..
-        }) => (
+        }) => ApiFailure::new(
             StatusCode::CONFLICT,
-            Json(api::ApiError {
-                code: "stale_head".into(),
-                message: format!("stale head; actual head is {actual}"),
-                provider_text: None,
-            }),
+            "stale_head",
+            format!("stale head; actual head is {actual}"),
         ),
         other => storage(other),
     }
-}
-
-fn check_key(key: &str) -> Result<(), (StatusCode, Json<api::ApiError>)> {
-    if key.is_empty() || key.len() > 256 {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_idempotency_key"));
-    }
-    Ok(())
 }
 // Parse effort with the core FromStr implementation so an invalid effort has
 // the same error text as the CLI instead of an extractor-generated 422.
@@ -86,9 +75,7 @@ pub(crate) struct CreateSessionBody {
     route: Option<String>,
 }
 
-fn selection(
-    body: &CreateSessionBody,
-) -> Result<InferenceSelection, (StatusCode, Json<api::ApiError>)> {
+fn selection(body: &CreateSessionBody) -> Result<InferenceSelection, ApiFailure> {
     Ok(InferenceSelection {
         provider: body.provider.clone(),
         model: body.model.clone(),
@@ -104,7 +91,7 @@ pub(crate) async fn create(
     State(state): State<AppState>,
     Json(body): Json<CreateSessionBody>,
 ) -> ApiResult<api::Session> {
-    check_key(&body.idempotency_key)?;
+    let key = IdempotencyKey::parse(&body.idempotency_key)?;
     if body.new && body.agent_id.is_none()
         || body.agent_id.is_some()
             && (body.image.is_some()
@@ -113,7 +100,11 @@ pub(crate) async fn create(
                 || body.effort.is_some()
                 || body.route.is_some())
     {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_session_selection"));
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_session_selection",
+            "new requires agent_id, and agent_id excludes image, provider, model, effort, and route",
+        ));
     }
     let choice = selection(&body)?;
     let choice = if body.agent_id.is_none() {
@@ -127,9 +118,8 @@ pub(crate) async fn create(
     };
     let default_image = state.default_image.clone();
     let store = state.store.clone();
-    let replay_key = body.idempotency_key.clone();
     let response_state = state.clone();
-    replay(&state, &replay_key, "sessions:create", async move {
+    replay(&state, &key, "sessions:create", async move {
         let agent = if let Some(text) = &body.agent_id {
             let record = if let Ok(id) = text.parse::<Ulid>() {
                 store.get_agent(AgentId::from_ulid(id)).await
@@ -139,7 +129,7 @@ pub(crate) async fn create(
             .map_err(storage)?;
             Some(
                 record
-                    .ok_or_else(|| error(StatusCode::NOT_FOUND, "agent_not_found"))?
+                    .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "agent_not_found", "agent not found"))?
                     .agent_id,
             )
         } else {
@@ -160,7 +150,7 @@ pub(crate) async fn create(
                 Some(
                     image
                         .or(default_image)
-                        .ok_or_else(|| error(StatusCode::BAD_REQUEST, "missing_image"))?,
+                        .ok_or_else(|| ApiFailure::new(StatusCode::BAD_REQUEST, "missing_image", "no image given and the server has no default image"))?,
                 )
             } else {
                 image
@@ -190,7 +180,7 @@ pub(crate) async fn create(
             .fetch_session(id)
             .await
             .map_err(storage)?
-            .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
+            .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "session_not_found", "session not found"))?;
         Ok(Json(session_with_next(&response_state, &record, &mut std::collections::HashMap::new()).await?))
     })
     .await
@@ -204,11 +194,12 @@ pub(crate) async fn set_route(
     Json(body): Json<api::SetSessionRoute>,
 ) -> ApiResult<api::Session> {
     let session_id = id(&text, SessionId::from_ulid)?;
+    let key = IdempotencyKey::parse(&body.idempotency_key)?;
     let store = state.store.clone();
     let response_state = state.clone();
     replay(
         &state,
-        &body.idempotency_key,
+        &key,
         &format!("sessions:{session_id}:route"),
         async move {
             store
@@ -219,7 +210,13 @@ pub(crate) async fn set_route(
                 .fetch_session(session_id)
                 .await
                 .map_err(storage)?
-                .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
+                .ok_or_else(|| {
+                    ApiFailure::new(
+                        StatusCode::NOT_FOUND,
+                        "session_not_found",
+                        "session not found",
+                    )
+                })?;
             Ok(Json(
                 session_with_next(
                     &response_state,
@@ -240,12 +237,16 @@ pub(crate) async fn append(
     Path(text): Path<String>,
     Json(body): Json<api::AppendMessage>,
 ) -> ApiResult<api::AppendedMessage> {
-    check_key(&body.idempotency_key)?;
+    let key = IdempotencyKey::parse(&body.idempotency_key)?;
     if body.text.trim().is_empty() {
-        return Err(error(StatusCode::BAD_REQUEST, "empty_message"));
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "empty_message",
+            "message text is empty",
+        ));
     }
     let session_id = id(&text, SessionId::from_ulid)?;
-    let scoped = format!("session:{session_id}:append:{}", body.idempotency_key);
+    let scoped = format!("session:{session_id}:append:{}", key.as_str());
     let turn = MessageId::from_ulid(keyed_id(&scoped));
     let message = Message {
         id: turn,
@@ -307,11 +308,12 @@ pub(crate) async fn interrupt(
     Json(body): Json<api::InterruptSession>,
 ) -> ApiResult<api::InterruptOutcome> {
     let session_id = id(&text, SessionId::from_ulid)?;
+    let key = IdempotencyKey::parse(&body.idempotency_key)?;
     let store = state.store.clone();
     let bus = state.bus.clone();
     replay(
         &state,
-        &body.idempotency_key,
+        &key,
         &format!("sessions:{session_id}:interrupt"),
         async move {
             let result = store
@@ -323,7 +325,7 @@ pub(crate) async fn interrupt(
                     .fetch_session(session_id)
                     .await
                     .map_err(storage)?
-                    .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
+                    .ok_or_else(|| ApiFailure::new(StatusCode::NOT_FOUND, "session_not_found", "session not found"))?;
                 if let Some(event) = store
                     .read_events(session_id, current.head_seq.saturating_sub(1), 1)
                     .await
@@ -354,10 +356,11 @@ pub(crate) async fn close(
     Json(body): Json<api::CloseSession>,
 ) -> ApiResult<api::SessionClosed> {
     let session_id = id(&text, SessionId::from_ulid)?;
+    let key = IdempotencyKey::parse(&body.idempotency_key)?;
     let store = state.store.clone();
     replay(
         &state,
-        &body.idempotency_key,
+        &key,
         &format!("sessions:{session_id}:close"),
         async move {
             store
@@ -389,9 +392,10 @@ pub(crate) async fn wait_idle(
         .subscribe_live::<swarmy_core::Event>(LiveFeed::SessionEvents(session_id))
         .await
         .map_err(|cause| {
-            failure(
+            ApiFailure::caused(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "event_feed_unavailable",
+                "live event feed unavailable",
                 &cause,
             )
         })?;
@@ -408,7 +412,13 @@ pub(crate) async fn wait_idle(
             .fetch_session(session_id)
             .await
             .map_err(storage)?
-            .ok_or_else(|| error(StatusCode::NOT_FOUND, "session_not_found"))?;
+            .ok_or_else(|| {
+                ApiFailure::new(
+                    StatusCode::NOT_FOUND,
+                    "session_not_found",
+                    "session not found",
+                )
+            })?;
         if record.state == SessionState::Completed
             || (record.state == SessionState::Idle
                 && query.after.is_none_or(|after| record.head_seq > after))
@@ -419,7 +429,7 @@ pub(crate) async fn wait_idle(
         }
         loop {
             tokio::select! {
-                () = tokio::time::sleep_until(deadline) => return Err(error(StatusCode::REQUEST_TIMEOUT, "wait_timeout")),
+                () = tokio::time::sleep_until(deadline) => return Err(ApiFailure::new(StatusCode::REQUEST_TIMEOUT, "wait_timeout", "session did not become idle before the wait timed out")),
                 _ = fallback.tick() => break,
                 event = live.next(), if live_open => match event {
                     Some(Ok(swarmy_core::Event::StateChanged { to: SessionState::Idle | SessionState::Completed, .. })) => break,
