@@ -319,7 +319,7 @@ pub(crate) async fn update(
 }
 
 #[cfg(feature = "test-support")]
-impl super::AppState {
+impl AppState {
     /// The highest sequence any open event stream has queued for `log`.
     ///
     /// Each connection advances its cursor right after an event enters its

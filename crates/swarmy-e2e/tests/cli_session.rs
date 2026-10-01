@@ -806,10 +806,11 @@ async fn delayed_turn(fixture: &Fixture, id: SessionId) {
         .set_state(id, SessionState::Idle, Some(&lease), Timestamp::now())
         .await
         .unwrap();
+    let counter = fixture.event_reads.clone();
     swarmy_testkit::eventually(
         "the CLI poll tick reads events after Idle",
         WAIT,
-        async || (fixture.event_reads.load(Ordering::SeqCst) > reads).then_some(()),
+        async move || (counter.load(Ordering::SeqCst) > reads).then_some(()),
     )
     .await;
     for event in fixture

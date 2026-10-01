@@ -333,6 +333,17 @@ async fn next(stream: &mut swarmy_client::EventStream) -> api::Event {
         .unwrap()
         .unwrap()
 }
+
+/// Wait for the NATS monitor to report (or stop reporting) a subscription on
+/// `subject`. Both token-delta waits below poll the same endpoint and differ
+/// only in the expected presence, so they share this instead of repeating it.
+async fn wait_monitor(label: &'static str, subject: String, present: bool) {
+    swarmy_testkit::eventually(label, Duration::from_secs(8), async move || {
+        let subscribed = swarmy_testkit::nats_subscribers(&subject).await > 0;
+        (subscribed == present).then_some(())
+    })
+    .await;
+}
 #[tokio::test]
 async fn multiplexed_stream_resumes_and_rejects_rewind() {
     let Some(mut f) = fixture().await else { return };
@@ -362,16 +373,16 @@ async fn multiplexed_stream_resumes_and_rejects_rewind() {
         (api::LogId::Session(b.to_string()), 2)
     );
     f.append(a, "a3").await;
-    // The rewind is only detected if the server already queued a3 on this
-    // connection before the subscription changes.
+    // The rewind is only detected if the server already queued a3.
     let log_a = api::LogId::Session(a.to_string());
+    let queued = f.state.clone();
     swarmy_testkit::eventually(
         "server queues a3 on the open stream",
         Duration::from_secs(8),
-        async || {
-            f.state
+        async move || {
+            queued
                 .queued_sequence(&log_a)
-                .is_some_and(|sequence| sequence >= 3)
+                .is_some_and(|s| s >= 3)
                 .then_some(())
         },
     )
@@ -394,15 +405,8 @@ async fn multiplexed_stream_resumes_and_rejects_rewind() {
     let deltas = f.bus.live_subject(LiveFeed::ApiTokenDeltas(a));
     let dropped = deltas.clone();
     tokio::spawn(async move {
-        // The delta must be published after the stream's producer
-        // re-subscribes with token deltas on, which happens only after the
-        // next item sends the PUT and the producer rebuilds its feeds.
-        swarmy_testkit::eventually(
-            "stream subscribes to a's token deltas",
-            Duration::from_secs(8),
-            async || (swarmy_testkit::nats_subscribers(&deltas).await > 0).then_some(()),
-        )
-        .await;
+        // Publish only after the producer re-subscribes with token deltas on.
+        wait_monitor("stream subscribes to a's token deltas", deltas, true).await;
         bus.publish_live(
             LiveFeed::ApiTokenDeltas(a),
             &LiveTokenDelta {
@@ -427,14 +431,8 @@ async fn multiplexed_stream_resumes_and_rejects_rewind() {
         tokio::time::timeout(Duration::from_millis(200), stream.next_item()).await,
         "drain the first stream item",
     );
-    // The producer drops its token subscription after the change above; wait
-    // for that before publishing, or the dropped-subscription assertion fails.
-    swarmy_testkit::eventually(
-        "stream drops a's token deltas",
-        Duration::from_secs(8),
-        async || (swarmy_testkit::nats_subscribers(&dropped).await == 0).then_some(()),
-    )
-    .await;
+    // Wait for the producer to drop its token subscription before publishing.
+    wait_monitor("stream drops a's token deltas", dropped, false).await;
     f.bus
         .publish_live(
             LiveFeed::ApiTokenDeltas(a),
