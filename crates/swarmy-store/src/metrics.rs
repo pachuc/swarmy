@@ -4,8 +4,7 @@ use std::{
     sync::{Arc, atomic::AtomicU64},
 };
 
-use foundationdb::{Database, RangeOption, Transaction, tuple::Subspace};
-use futures::TryStreamExt;
+use foundationdb::{Database, Transaction, tuple::Subspace};
 use swarmy_core::{AgentId, MessageId, SessionId, TurnEvent, ignore_best_effort};
 
 use crate::{
@@ -78,6 +77,8 @@ pub(crate) fn spawn_metrics_drain(
     writer: MetricsWriter,
     mut rx: tokio::sync::mpsc::Receiver<MetricMsg>,
 ) -> tokio::task::JoinHandle<()> {
+    // The metrics writer drains one channel into batched transactions.
+    // ast-grep-ignore: no-spawn-in-libraries
     tokio::spawn(async move {
         use std::collections::HashMap;
         loop {
@@ -117,25 +118,6 @@ pub(crate) fn spawn_metrics_drain(
             }
         }
     })
-}
-
-pub(crate) async fn scan_reverse(
-    trx: &Transaction,
-    range: (Vec<u8>, Vec<u8>),
-    limit: usize,
-) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    use crate::check_limit;
-    check_limit(limit)?;
-    let options = RangeOption {
-        limit: Some(limit),
-        reverse: true,
-        ..range.into()
-    };
-    Ok(trx
-        .get_ranges_keyvalues(options, false)
-        .map_ok(|kv| (kv.key().to_vec(), kv.value().to_vec()))
-        .try_collect()
-        .await?)
 }
 
 impl MetricsWriter {
@@ -405,22 +387,6 @@ impl crate::Store {
         ))
     }
 
-    /// Read a bounded page of per-turn records, ordered by turn id.
-    /// Rows that fail to decode are skipped with a warning so one bad row
-    /// never fails the whole page; storage and API types evolve independently.
-    /// # Errors
-    /// Returns database failures. Callers must still validate `limit` through
-    /// the shared scan bound.
-    pub async fn list_turn_metrics(
-        &self,
-        session: SessionId,
-        after: Option<MessageId>,
-        limit: usize,
-    ) -> Result<Vec<TurnMetrics>> {
-        self.list_turn_metrics_paged(session, after, limit, None, None)
-            .await
-    }
-
     /// Read a page of turns with paging on the per-turn arrays. Very long
     /// turns truncate their chronologically sorted `inference` and `tools`
     /// arrays to the given limits and report the remainder.
@@ -490,7 +456,10 @@ impl crate::Store {
             let raw = self
                 .transaction(|trx| {
                     let (begin, end) = (begin.clone(), end.clone());
-                    async move { scan_reverse(&trx, (begin, end), take).await }
+                    async move {
+                        crate::scan_ordered(&trx, (begin, end), take, crate::ScanOrder::Reverse)
+                            .await
+                    }
                 })
                 .await?;
             if raw.is_empty() {

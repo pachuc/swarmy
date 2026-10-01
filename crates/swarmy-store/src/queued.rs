@@ -7,6 +7,26 @@ struct QueuedMessage {
     queued_at: jiff::Timestamp,
 }
 
+/// The result of submitting a user message through the idempotent API path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UserMessageAppend {
+    /// The session head after the submission (unchanged when queued behind a busy session).
+    pub sequence: u64,
+    /// False when the key replayed an earlier submission.
+    pub fresh: bool,
+    /// True when the message was appended and the session made runnable;
+    /// false when it waits in the queue.
+    pub started: bool,
+}
+
+/// Events written by [`Store::deliver_queued`] and the session head after them.
+#[derive(Debug)]
+pub struct QueueDelivery {
+    pub events: Vec<Event>,
+    /// Equal to the `head` argument when nothing was delivered.
+    pub head_seq: u64,
+}
+
 impl Store {
     async fn queued_in(
         &self,
@@ -30,7 +50,7 @@ impl Store {
         id: SessionId,
         message: &Message,
         key: &str,
-    ) -> Result<(u64, bool, bool)> {
+    ) -> Result<UserMessageAppend> {
         if message.role != MessageRole::User {
             return Err(StoreError::Domain(DomainError::InvalidMessageRole));
         }
@@ -49,7 +69,11 @@ impl Store {
                 (&replay_key, &counter_key, &message, &prepared);
             async move {
                 if let Some(previous) = read::<(u64, bool)>(&trx, replay_key).await? {
-                    return Ok((previous.0, false, previous.1));
+                    return Ok(UserMessageAppend {
+                        sequence: previous.0,
+                        fresh: false,
+                        started: previous.1,
+                    });
                 }
                 let mut session = self.session(&trx, id).await?;
                 if session.state == SessionState::Completed {
@@ -57,7 +81,7 @@ impl Store {
                 }
                 let idle = session.state == SessionState::Idle;
                 let head = if idle {
-                    session.head_seq + 1
+                    crate::seq_after(session.head_seq, 1)?
                 } else {
                     session.head_seq
                 };
@@ -74,11 +98,8 @@ impl Store {
                     self.transition(&trx, session, SessionState::Runnable, self.now())
                         .await?;
                 } else {
-                    let index = read::<u64>(&trx, counter_key)
-                        .await?
-                        .unwrap_or(0)
-                        .checked_add(1)
-                        .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+                    let index =
+                        crate::seq_after(read::<u64>(&trx, counter_key).await?.unwrap_or(0), 1)?;
                     if scan(
                         &trx,
                         self.keys().queued_space(id).range(),
@@ -94,7 +115,11 @@ impl Store {
                     write(&trx, counter_key, &index)?;
                 }
                 write(&trx, replay_key, &(head, idle))?;
-                Ok((head, true, idle))
+                Ok(UserMessageAppend {
+                    sequence: head,
+                    fresh: true,
+                    started: idle,
+                })
             }
         })
         .await
@@ -106,15 +131,13 @@ impl Store {
     /// after an uncertain commit or a worker restart.
     /// # Errors
     /// Rejects stale leases or heads and storage failures.
-    /// # Panics
-    /// Panics only if a bounded in-memory queue cannot fit in u64.
     pub async fn deliver_queued(
         &self,
         id: SessionId,
         head: u64,
         lease: &Lease,
         before: &[Event],
-    ) -> Result<Vec<Event>> {
+    ) -> Result<QueueDelivery> {
         self.transaction(|trx| {
             async move {
                 self.check_worker_lease(&trx, id, lease, self.now()).await?;
@@ -131,7 +154,7 @@ impl Store {
                         return Err(StoreError::Domain(DomainError::InvalidMessageRole));
                     }
                     let mut event = event.clone();
-                    event.set_seq(head + u64::try_from(events.len()).expect("batch bounded") + 1);
+                    event.set_seq(crate::seq_after(head, events.len() + 1)?);
                     events.push(event);
                 }
                 for (key, item) in &queue {
@@ -141,14 +164,14 @@ impl Store {
                     }
                     queued_bytes += size;
                     delivered_keys.push(key);
-                    let seq = head + u64::try_from(events.len()).expect("queue bounded") + 1;
+                    let seq = crate::seq_after(head, events.len() + 1)?;
                     events.push(Event::MessageQueued {
                         seq,
                         message: item.message.clone(),
                         queued_at: item.queued_at,
                     });
                     events.push(Event::MessageAppended {
-                        seq: seq + 1,
+                        seq: crate::seq_after(seq, 1)?,
                         message: item.message.clone(),
                     });
                 }
@@ -160,10 +183,10 @@ impl Store {
                 }
                 if !events.is_empty() {
                     for key in delivered_keys { trx.clear(key); }
-                    session.head_seq += u64::try_from(events.len()).expect("queue bounded");
+                    session.head_seq = crate::seq_after(head, events.len())?;
                     self.write_session(&trx, &session)?;
                 }
-                Ok(events)
+                Ok(QueueDelivery { head_seq: session.head_seq, events })
             }
         })
         .await

@@ -881,6 +881,8 @@ impl EventStream {
         let http = client.http.clone();
         self.updating = Some(PendingUpdate {
             next,
+            // The subscription PUT task, owned by PendingUpdate.
+            // ast-grep-ignore: no-spawn-in-libraries
             task: tokio::spawn(async move {
                 let response = http.put(url).bearer_auth(&token).json(&body).send().await?;
                 if !response.status().is_success() {

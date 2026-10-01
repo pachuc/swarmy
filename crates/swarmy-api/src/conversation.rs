@@ -253,7 +253,11 @@ pub(crate) async fn append(
         role: MessageRole::User,
         parts: vec![Part::Text { text: body.text }],
     };
-    let (sequence, fresh, started) = if body.queue {
+    let swarmy_store::UserMessageAppend {
+        sequence,
+        fresh,
+        started,
+    } = if body.queue {
         state
             .store
             .queue_user_message_idempotent(session_id, &message, &scoped)
@@ -265,7 +269,11 @@ pub(crate) async fn append(
             .append_user_message_idempotent(session_id, body.expected_head, &message, &scoped)
             .await
             .map_err(session_error)?;
-        (sequence, fresh, true)
+        swarmy_store::UserMessageAppend {
+            sequence,
+            fresh,
+            started: true,
+        }
     };
     if fresh && started {
         let submitted = Bus::turn_event(session_id, turn, TurnStage::Submitted, None);

@@ -84,13 +84,7 @@ impl Store {
         before: &[Event],
         route: Option<SubmitRouteStep>,
     ) -> Result<Event> {
-        let step = expected_head
-            .checked_add(
-                u64::try_from(before.len())
-                    .map_err(|_| StoreError::Storage(crate::StorageError::SequenceOverflow))?,
-            )
-            .and_then(|head| head.checked_add(1))
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+        let step = crate::seq_after(expected_head, before.len() + 1)?;
         if record.seq != step {
             return Err(StoreError::Domain(
                 crate::DomainError::InvalidInferenceRequest,
@@ -113,7 +107,7 @@ impl Store {
             None => None,
         };
         let mut preceding = Vec::with_capacity(before.len());
-        for (event, seq) in before.iter().zip(expected_head + 1..) {
+        for (event, seq) in before.iter().zip(crate::seq_after(expected_head, 1)?..) {
             if !matches!(event, Event::MessageAppended { message, .. }
                 if matches!(message.role, swarmy_core::MessageRole::Tool | swarmy_core::MessageRole::System))
             {
@@ -214,9 +208,7 @@ impl Store {
         lease: &Lease,
         snapshot: &SnapshotRef,
     ) -> Result<Event> {
-        let head = expected_head
-            .checked_add(1)
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+        let head = crate::seq_after(expected_head, 1)?;
         if snapshot.seq != head {
             return Err(StoreError::Domain(crate::DomainError::InvalidSnapshot));
         }

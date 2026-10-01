@@ -1,7 +1,5 @@
 //! Service health is advisory; leases and epochs remain the authority for work.
 use crate::{Result, Store, read, write};
-use foundationdb::RangeOption;
-use futures::TryStreamExt;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use swarmy_core::{NodeRecord, decode};
@@ -102,33 +100,23 @@ impl Store {
                 let mut result = Vec::new();
                 // Both key spaces hold heartbeat-shaped rows; node rows predate
                 // service metadata and decode through the legacy record.
-                let spaces = [
-                    (self.keys().service_heartbeat_space().range(), false),
-                    (self.keys().node_space().range(), true),
-                ];
-                for (range, node) in spaces {
-                    let values: Vec<_> = trx
-                        .get_ranges_keyvalues(RangeOption::from(range), false)
-                        .map_ok(|kv| kv.value().to_vec())
-                        .try_collect()
-                        .await?;
-                    for bytes in values {
-                        let record = if node {
-                            let n: NodeRecord = decode(&bytes)?;
-                            ServiceHeartbeat {
-                                role: ServiceRole::Node,
-                                instance_id: n.node_id.to_string(),
-                                version: "unknown".into(),
-                                host: "unknown".into(),
-                                started_at: n.last_heartbeat,
-                                last_seen: n.last_heartbeat,
-                                detail: ServiceDetail::Capacity(n.capacity),
-                            }
-                        } else {
-                            decode(&bytes)?
-                        };
-                        result.push(record);
-                    }
+                for (_, value) in
+                    crate::scan_all(&trx, self.keys().service_heartbeat_space().range()).await?
+                {
+                    let record: ServiceHeartbeat = decode(&value)?;
+                    result.push(record);
+                }
+                for (_, value) in crate::scan_all(&trx, self.keys().node_space().range()).await? {
+                    let n: NodeRecord = decode(&value)?;
+                    result.push(ServiceHeartbeat {
+                        role: ServiceRole::Node,
+                        instance_id: n.node_id.to_string(),
+                        version: "unknown".into(),
+                        host: "unknown".into(),
+                        started_at: n.last_heartbeat,
+                        last_seen: n.last_heartbeat,
+                        detail: ServiceDetail::Capacity(n.capacity),
+                    });
                 }
                 Ok(result)
             })
@@ -162,11 +150,7 @@ impl Store {
             .unwrap_or(Timestamp::MIN);
         self.transaction(|trx| async move {
             let range = self.keys().service_heartbeat_space().range();
-            let values: Vec<_> = trx
-                .get_ranges_keyvalues(RangeOption::from(range), false)
-                .map_ok(|kv| (kv.key().to_vec(), kv.value().to_vec()))
-                .try_collect()
-                .await?;
+            let values = crate::scan_all(&trx, range).await?;
             let mut count = 0;
             for (key, value) in values {
                 let record: ServiceHeartbeat = decode(&value)?;

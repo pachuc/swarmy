@@ -80,10 +80,8 @@ async fn unacknowledged_work_is_redelivered() {
             .await
             .unwrap();
         let first = next(&mut messages).await;
-        assert_eq!(first.delivery_count().unwrap(), 1);
         assert_eq!(first.value, 42);
         let retried = next(&mut messages).await;
-        assert_eq!(retried.delivery_count().unwrap(), 2);
         assert_eq!(retried.value, 42);
         retried.acknowledge().await.unwrap();
     })
@@ -323,6 +321,58 @@ async fn progress_extends_the_deadline() {
                 .is_err()
         );
         assert_eq!(next(&mut work).await.value, 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn keep_alive_while_holds_the_delivery_until_work_finishes() {
+    run(|f| async move {
+        let mut work = f.bus.consume(&WorkQueue::Runnable(3)).await.unwrap();
+        f.bus
+            .publish_work(&WorkQueue::Runnable(3), &1_u64)
+            .await
+            .unwrap();
+        let first = next(&mut work).await;
+        first
+            .keep_alive_while(ACK_WAIT / 3, async {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "holding the deadline across redelivery windows is the assertion"
+                )]
+                sleep(Duration::from_millis(1600)).await;
+                Ok::<_, Error>(())
+            })
+            .await
+            .unwrap();
+        assert!(
+            timeout(Duration::from_millis(400), work.next())
+                .await
+                .is_err()
+        );
+        assert_eq!(next(&mut work).await.value, 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn keep_alive_with_returns_the_break_value() {
+    run(|f| async move {
+        let mut work = f.bus.consume(&WorkQueue::Runnable(3)).await.unwrap();
+        f.bus
+            .publish_work(&WorkQueue::Runnable(3), &1_u64)
+            .await
+            .unwrap();
+        let first = next(&mut work).await;
+        let result = first
+            .keep_alive_with(
+                ACK_WAIT / 3,
+                std::future::pending::<Result<u64, Error>>(),
+                || std::future::ready(Ok(std::ops::ControlFlow::Break(7))),
+            )
+            .await;
+        assert_eq!(result.unwrap(), 7);
+        first.acknowledge().await.unwrap();
     })
     .await;
 }

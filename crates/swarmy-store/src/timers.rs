@@ -106,9 +106,7 @@ impl Store {
                 },
                 Err(error) => ToolResult::Error { error },
             };
-            let seq = expected_head
-                .checked_add(1)
-                .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+            let seq = crate::seq_after(expected_head, 1)?;
             let event = Event::ToolCallCompleted {
                 seq,
                 request_id,
@@ -136,6 +134,8 @@ impl Store {
         let output = match call.tool.as_str() {
             "set_timer" => {
                 let args = serde_json::from_value::<SetTimerArguments>(call.arguments.clone());
+                // Timer tool results are model-visible text by schema.
+                // ast-grep-ignore: no-stringified-errors
                 let (args, due_at) = match args
                     .map_err(|error| error.to_string())
                     .and_then(|args| args.due_at(now).map(|due| (args, due)))
@@ -310,10 +310,7 @@ impl Store {
         now: Timestamp,
     ) -> Result<(SessionId, Event)> {
         let id = session.session_id;
-        let seq = session
-            .head_seq
-            .checked_add(1)
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+        let seq = crate::seq_after(session.head_seq, 1)?;
         let event = Event::MessageAppended {
             seq,
             message: Message {

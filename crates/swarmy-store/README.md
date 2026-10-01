@@ -6,7 +6,7 @@ runnable work, idempotency, and in-flight requests. Shared records live in
 
 Call `swarmy_store::boot()` once before opening a store. Keep its guard until all
 database handles and tasks have stopped. `Store::open` uses the `swarmy` directory
-by default and accepts a custom directory path. `Store::with_subspace` accepts an
+by default and accepts a custom directory path. `Store::with_subspace` (behind the `test-support` feature) accepts an
 already allocated prefix for isolated tests.
 
 Keys use FoundationDB tuples. Session and owner identifiers use their 16 ULID

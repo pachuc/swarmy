@@ -39,6 +39,8 @@ impl SetTimerArguments {
             return Err("note must contain 1-1024 UTF-8 bytes and not be blank".into());
         }
         match (self.delay_seconds, self.at) {
+            // Tool-argument validation returns the rejection text to the model.
+            // ast-grep-ignore: no-stringified-errors
             (Some(seconds), None) if seconds > 0 => now
                 .checked_add(std::time::Duration::from_secs(seconds))
                 .map_err(|error| error.to_string()),

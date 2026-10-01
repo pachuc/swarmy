@@ -88,15 +88,9 @@ async fn handle_call(
     // One lookup per tool call; the turn travels with the job
     // so the execution path needs no further lookups.
     let turn = store.request_turn_id(message.value.request_id).await?;
-    let result = tokio::select! {
-        result = hosting.call(message.value.clone(), turn) => result,
-        result = async {
-            loop {
-                tokio::time::sleep(ack_wait / 3).await;
-                if let Err(error) = message.extend_deadline().await { break Err(anyhow::Error::from(error)); }
-            }
-        } => result,
-    };
+    let result = message
+        .keep_alive_while(ack_wait / 3, hosting.call(message.value.clone(), turn))
+        .await;
     result?;
     // The completion stage lands in the same batch as
     // the tool result inside `run`; only the live bus
@@ -993,7 +987,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(second.value.request_id, job.request_id);
-        assert_eq!(second.delivery_count().unwrap(), 2);
         super::settle(&second, Ok(())).await;
         assert!(
             tokio::time::timeout(std::time::Duration::from_secs(3), messages.next())

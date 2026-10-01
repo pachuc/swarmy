@@ -4082,7 +4082,6 @@ dependencies = [
  "axum",
  "base64",
  "blake3",
- "foundationdb",
  "futures",
  "jiff",
  "object_store",
@@ -4209,6 +4208,7 @@ dependencies = [
  "serde",
  "serde_json",
  "swarmy-api-types",
+ "swarmy-bus",
  "swarmy-chat",
  "swarmy-client",
  "swarmy-cloud",
@@ -4569,6 +4569,7 @@ dependencies = [
  "swarmy-image",
  "swarmy-store",
  "swarmy-testkit",
+ "swarmy-volume",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -4582,9 +4583,7 @@ name = "swarmy-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-nats",
  "blake3",
- "foundationdb",
  "futures",
  "jiff",
  "rustix",

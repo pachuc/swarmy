@@ -44,7 +44,7 @@ directory, builds the client and the services, and installs them into
 only the service binaries link it. `make install-client` installs just the
 client without the library, `make install-core` the services, and
 `make install-node` adds `swarmyd` for a machine with root. `make check` runs
-the CI commands and `make uninstall` removes the binaries. For a library in
+every pull-request CI job (see `make help`) and `make uninstall` removes the binaries. For a library in
 another location, run `make install SWARMY_FDB_LIB_DIR=/absolute/path/lib`. The library directory is
 embedded in every binary's runtime search path. swarmy adds that prefix's `bin` directory and `~/.local/bin`
 to the search path of its backing-stack subprocesses, so no library or executable

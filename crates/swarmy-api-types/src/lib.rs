@@ -329,14 +329,6 @@ pub enum MessageRole {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct Message {
-    pub id: String,
-    pub session_id: String,
-    pub role: MessageRole,
-    pub text: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Image {
     pub manifest_id: String,
     pub name: String,
@@ -1065,21 +1057,11 @@ impl<'de> Deserialize<'de> for RecordBody {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "StoreRecord carries the full typed session record while the other variants are small ids and text; history pages and live streams are almost entirely StoreRecord, so boxing it would add a heap allocation per event without shrinking those collections"
+)]
 pub enum EventPayload {
-    MessageAppended {
-        message: Message,
-    },
-    ToolCall {
-        turn_id: String,
-        call_id: String,
-        name: String,
-        arguments: serde_json::Value,
-    },
-    ToolResult {
-        turn_id: String,
-        call_id: String,
-        result: serde_json::Value,
-    },
     Idle {
         session_id: String,
     },
@@ -1454,7 +1436,7 @@ pub mod api_paths {
     ),
     components(schemas(
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
-    WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Message, Image, ImageUpload, Model, ProviderApi,
+    WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Image, ImageUpload, Model, ProviderApi,
     Provider, ProbeModel, ProbeResult, CredentialKind, CredentialStatus, Credential, PutCredentialRecord, NodeRole, NodeCapacity,
     Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode,
     StageTiming, InferenceMetric, ToolMetric, ComputerMetric, TurnMetrics, LatencyPercentiles,
@@ -1524,7 +1506,6 @@ mod tests {
         for role in ["user", "assistant", "tool", "system"] {
             check!(MessageRole, role);
         }
-        check!(Message, {"id":"m","session_id":"s","role":"user","text":"hello"});
         check!(Image, {"manifest_id":"i","name":"base","tag":"dev"});
         for api in [
             "AnthropicMessages",
@@ -1597,16 +1578,12 @@ mod tests {
 
     #[test]
     fn event_json_contract() {
-        let message = serde_json::json!({"id":"m","session_id":"s","role":"user","text":"hi"});
         // A durable session-log entry and a live timeline observation both
         // arrive under the `store_record` tag; older clients decode the
         // record as a value, so the tag and field name never change.
         let stored = serde_json::json!({"state_changed":{"seq":1,"from":"runnable","to":"idle"}});
         let observation = serde_json::json!({"session_id":"01J00000000000000000000000","turn_id":"01J00000000000000000000001","stage":"submitted","request_id":null,"clock_id":"boot","monotonic_ns":1,"unix_ns":1});
         let payloads = [
-            serde_json::json!({"type":"message_appended","data":{"message":message}}),
-            serde_json::json!({"type":"tool_call","data":{"turn_id":"t","call_id":"c","name":"bash","arguments":{"command":"ls"}}}),
-            serde_json::json!({"type":"tool_result","data":{"turn_id":"t","call_id":"c","result":{"output":"ok"}}}),
             serde_json::json!({"type":"idle","data":{"session_id":"s"}}),
             serde_json::json!({"type":"token_delta","data":{"turn_id":"t","position":0,"text":"a"}}),
             serde_json::json!({"type":"store_record","data":{"record":stored}}),

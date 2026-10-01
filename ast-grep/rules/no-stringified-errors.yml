@@ -1,24 +1,37 @@
-# Library error types stay typed so callers can match on them; only the
-# files below may erase an error to text, because a String schema or the
-# model needs the text exactly there. A new `.map_err(|error|
-# error.to_string())` in any other library file fails CI; add a thiserror
-# variant instead. (The task text writes the pattern with an elided
-# receiver; ast-grep needs a complete call expression, hence `$X`.)
-# Binaries and tests are out of scope: binaries report to an operator, and
-# tests assert on messages.
+# Library error types stay typed so callers can match on them. The rule
+# matches `.map_err(|e| e.to_string())`, `.map_err(ToString::to_string)`, and
+# `.map_err(|e| format!(..))`, which all erase the error to text. A site
+# where a String schema or the model needs the text carries
+# `// ast-grep-ignore: no-stringified-errors` on its own line directly above
+# it, after a comment line naming that schema. Otherwise add a thiserror
+# variant. Test modules are excluded structurally; the shared `ignores:` list
+# below (kept identical across rules by scripts/check-ast-grep-rules.sh)
+# excludes binaries, entry points, and test files.
 id: no-stringified-errors
 language: rust
 severity: error
 message: >-
-  Do not erase a library error type with map_err to_string; add a thiserror
-  variant so callers keep matching on it. Only the listed tool-result and
-  schema-boundary paths may hand text to the model or operator.
+  Do not erase a library error type to text with map_err; add a thiserror
+  variant so callers keep matching on it. Only a marked tool-result or
+  schema-boundary site may hand text to the model or operator.
 rule:
-  pattern: '$X.map_err(|$E| $E.to_string())'
+  all:
+    - any:
+        - pattern: '$X.map_err(|$E| $E.to_string())'
+        - pattern: '$X.map_err(ToString::to_string)'
+        - pattern: '$X.map_err(|$E| format!($$$))'
+    - not:
+        inside:
+          all:
+            - kind: mod_item
+            - follows:
+                pattern: '#[cfg(test)]'
+          stopBy: end
 files:
   - 'crates/*/src/**/*.rs'
 ignores:
-  # Binaries report failures to an operator; stringifying is fine there.
+  # Binaries own their process and output: spawning, printing, unwrapping,
+  # and stringifying errors are unrestricted there.
   - 'crates/swarmy-cli/src/**'
   - 'crates/swarmy-chaos/src/**'
   - 'crates/swarmy-devtools/src/**'
@@ -27,20 +40,12 @@ ignores:
   # swarmyd counts as a binary: its lib.rs declares no modules and its code
   # lives in the binary (see scripts/check-anyhow-in-libraries.sh).
   - 'crates/swarmyd/src/**'
-  # Service entry points assemble connections and report startup failures.
+  # Service entry points assemble connections, own their tasks, and report
+  # startup failures.
   - '**/main.rs'
-  # Tests assert on messages.
+  # Test files, and the test-only support module compiled only for tests
+  # (`cfg(any(test, feature = "test-support"))`).
   - '**/tests/**'
   - '**/tests.rs'
   - '**/*tests.rs'
-  # Tool-argument parsing returns the rejection text to the model.
-  - 'crates/swarmy-core/src/plan.rs'
-  - 'crates/swarmy-core/src/timer.rs'
-  # Timer tool results are model-visible text by schema.
-  - 'crates/swarmy-store/src/timers.rs'
-  # The terminal error text is the durable String-schema record the model
-  # resumes from; the store layer cannot name the provider error type.
-  - 'crates/swarmy-gateway/src/commit.rs'
-  # Skipped-provider reasons are operator-facing text in the String-keyed
-  # ProviderChanges schema served by doctor and the models views.
-  - 'crates/swarmy-gateway/src/providers.rs'
+  - 'crates/swarmy-core/src/test_support.rs'

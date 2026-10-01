@@ -1,6 +1,6 @@
 //! Gateway dispatch: serving loop, provider advertisement, and delivery handling.
 
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, ops::ControlFlow, sync::Arc, time::Duration};
 
 use crate::{Error, Result};
 use futures::StreamExt;
@@ -12,11 +12,7 @@ use swarmy_store::{
     GatewayProvider, InferenceClaim, ServiceDetail, ServiceHeartbeat, ServiceRole, Store,
     blob::BlobStore,
 };
-use tokio::{
-    sync::Semaphore,
-    task::JoinSet,
-    time::{Instant, interval_at, sleep},
-};
+use tokio::{sync::Semaphore, task::JoinSet, time::sleep};
 use tracing::{error, info, warn};
 use ulid::Ulid;
 
@@ -164,6 +160,8 @@ impl DispatchWorker {
         };
         let permit = self.semaphore.clone().acquire_owned().await?;
         let gateway = Arc::clone(gateway);
+        // DispatchWorker's JoinSet owns delivery tasks and aborts them on drop; the semaphore bounds them.
+        // ast-grep-ignore: no-spawn-in-libraries
         self.tasks.spawn(async move {
             let _permit = permit;
             if let Err(error) = gateway.handle(&message).await {
@@ -426,22 +424,18 @@ impl Gateway {
         claim: &InferenceClaim,
         stored: &InferenceJob,
     ) -> Result<()> {
-        let work = self.process(message, claim, stored);
-        tokio::pin!(work);
-        let period = self.ack_wait / 3;
-        let mut heartbeat = interval_at(Instant::now() + period, period);
-        loop {
-            tokio::select! {
-                result = &mut work => return result,
-                _ = heartbeat.tick() => {
-                    message.extend_deadline().await?;
-                    match self.renew_claim(message, job, claim).await? {
-                        ClaimOutcome::Acknowledged => return Ok(()),
-                        ClaimOutcome::Claimed => {}
-                    }
-                }
-            }
-        }
+        message
+            .keep_alive_with(
+                self.ack_wait / 3,
+                self.process(message, claim, stored),
+                move || async move {
+                    Ok(match self.renew_claim(message, job, claim).await? {
+                        ClaimOutcome::Acknowledged => ControlFlow::Break(()),
+                        ClaimOutcome::Claimed => ControlFlow::Continue(()),
+                    })
+                },
+            )
+            .await
     }
 
     /// Renew the inference claim after extending the deadline. A lost claim
