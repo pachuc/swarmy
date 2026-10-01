@@ -637,6 +637,7 @@ impl Store {
         let rollover = self.prepare_side_rollover(&messages, expected_head).await?;
         self.transaction(|trx| {
             let (prepared, archived_value) = (&rollover.events, &rollover.archived_value);
+            let new_head = rollover.new_head;
             async move {
                 let now = self.now();
                 self.check_worker_lease(&trx, old, lease, now).await?;
@@ -678,15 +679,8 @@ impl Store {
                 );
                 self.create_session_in(&trx, &session, now, None).await?;
                 self.transfer_queued(&trx, old, id).await?;
-                self.write_side_events(
-                    &trx,
-                    id,
-                    old,
-                    &rollover.events,
-                    &rollover.archived_value,
-                    rollover.new_head,
-                )
-                .await?;
+                self.write_side_events(&trx, id, old, prepared, archived_value, new_head)
+                    .await?;
                 if self.has_queued_in(&trx, id).await? {
                     let created = self.session(&trx, id).await?;
                     self.transition(&trx, created, SessionState::Runnable, now)

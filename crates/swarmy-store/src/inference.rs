@@ -28,7 +28,7 @@ struct InferenceRetry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecordedRetry {
     pub attempts: u32,
-    pub delay: std::time::Duration,
+    pub delay: Duration,
 }
 
 /// Inputs to the atomic terminal update. Both success and exhausted retries wake
