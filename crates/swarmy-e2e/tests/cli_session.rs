@@ -12,7 +12,10 @@ use std::{
     future::Future,
     panic::AssertUnwindSafe,
     process::Stdio,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -151,6 +154,7 @@ struct Fixture {
     url: String,
     api_url: String,
     api_token: String,
+    event_reads: Arc<AtomicUsize>,
     guard: Arc<tokio::sync::Mutex<StackGuard>>,
 }
 
@@ -338,12 +342,32 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
     // Keep it below the 15 second test wait but above the 3 second client
     // poll tick the missed-event test measures against.
     api.stream_poll_interval = Duration::from_secs(5);
-    let api_server = tokio::spawn(axum::serve(listener, swarmy_api::router(api)).into_future());
+    // Count the CLI poll tick's event reads: the missed-event test waits for
+    // the tick to observe Idle before live events arrive. Production code is
+    // untouched; this layer only observes.
+    let event_reads = Arc::new(AtomicUsize::new(0));
+    let reads = event_reads.clone();
+    let router = swarmy_api::router(api).layer(axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let reads = reads.clone();
+            async move {
+                if request.method() == axum::http::Method::GET {
+                    let path = request.uri().path().to_owned();
+                    if path.starts_with("/v1/sessions/") && path.ends_with("/events") {
+                        reads.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+                next.run(request).await
+            }
+        },
+    ));
+    let api_server = tokio::spawn(axum::serve(listener, router).into_future());
     let fixture = Fixture {
         store: store.clone(),
         bus: bus.clone(),
         api_url,
         api_token,
+        event_reads,
         cluster: stack.cluster.clone(),
         directory,
         prefix,
@@ -774,19 +798,20 @@ async fn delayed_turn(fixture: &Fixture, id: SessionId) {
         .append_events(id, session.head_seq, &events)
         .await
         .unwrap();
+    // The poll tick must see Idle before SSE: wait for the tick's event read
+    // after the state commit instead of guessing how long the tick takes.
+    let reads = fixture.event_reads.load(Ordering::SeqCst);
     fixture
         .store
         .set_state(id, SessionState::Idle, Some(&lease), Timestamp::now())
         .await
         .unwrap();
-    // Let the client's poll tick observe Idle before SSE arrives. The test
-    // forces the three-second tick to fire mid-sequence, so the real delay
-    // is the point.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the test forces the client poll tick to fire before SSE"
-    )]
-    tokio::time::sleep(Duration::from_millis(3500)).await;
+    swarmy_testkit::eventually(
+        "the CLI poll tick reads events after Idle",
+        WAIT,
+        async || (fixture.event_reads.load(Ordering::SeqCst) > reads).then_some(()),
+    )
+    .await;
     for event in fixture
         .store
         .read_events(id, session.head_seq, 64)
@@ -1125,12 +1150,18 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
         )
         .await
         .unwrap();
+    // The append handler queues its stages; flush them before the loop so no
+    // two writes touch the turn record at once.
+    timeout(WAIT, fixture.store.flush_turn_metrics())
+        .await
+        .unwrap()
+        .unwrap();
     let turn = MessageId::from_ulid(appended.turn_id.parse::<Ulid>().unwrap());
     let request = RequestId::for_step(session, 2);
     // The remaining stages travel the production observation path with real
     // clocks, the way the gateway, worker, and node emit them. Each write is
-    // awaited: spawned writes race under millisecond timing, while production
-    // staggers stages over seconds.
+    // awaited after the append handler's queued stages are flushed, so no
+    // two writes touch the turn record at once.
     for stage in [
         swarmy_core::TurnStage::InferenceStarted,
         swarmy_core::TurnStage::FirstToken,
@@ -1149,14 +1180,6 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
         .await
         .unwrap()
         .unwrap();
-        // Stage the writes a tick apart: spawned stage writes race under
-        // millisecond timing while production staggers stages over seconds,
-        // so the pacing itself is the point.
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "paces spawned stage writes apart so they land in order"
-        )]
-        tokio::time::sleep(Duration::from_millis(2)).await;
     }
     timeout(
         WAIT,
@@ -1178,7 +1201,7 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
     .await
     .unwrap()
     .unwrap();
-    // The spawned stage writes land shortly after; wait for the record.
+    // The flush above committed the queued stages; poll for the record.
     swarmy_testkit::eventually("turn metrics record lands", WAIT, async || {
         let rows = fixture
             .store

@@ -16,6 +16,7 @@ struct Fixture {
     client: Client,
     store: Store,
     bus: Bus,
+    state: AppState,
     address: std::net::SocketAddr,
     server: tokio::task::JoinHandle<Result<(), std::io::Error>>,
     // Held for its Drop: removes the test keys and streams even on panic.
@@ -38,6 +39,7 @@ impl Fixture {
             swarmy_llm::catalog::Catalog::get().clone(),
             Arc::new(object_store::memory::InMemory::new()),
         );
+        self.state = state.clone();
         self.server = tokio::spawn(axum::serve(listener, router(state)).into_future());
     }
     async fn session(&self, name: &str) -> SessionId {
@@ -98,11 +100,12 @@ async fn fixture() -> Option<Fixture> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let client = Client::new(&format!("http://{address}"), "test-token").unwrap();
-    let server = tokio::spawn(axum::serve(listener, router(state)).into_future());
+    let server = tokio::spawn(axum::serve(listener, router(state.clone())).into_future());
     Some(Fixture {
         client,
         store,
         bus,
+        state,
         address,
         server,
         _guard: guard,
@@ -359,15 +362,20 @@ async fn multiplexed_stream_resumes_and_rejects_rewind() {
         (api::LogId::Session(b.to_string()), 2)
     );
     f.append(a, "a3").await;
-    // Let the server's producer deliver the third event before the
-    // subscription changes: the rewind must be detected against a cursor
-    // the producer already advanced, and delivery has no read signal that
-    // does not consume the event the assertions below read.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "orders the subscription change after producer delivery with no peekable signal"
-    )]
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // The rewind is only detected if the server already queued a3 on this
+    // connection before the subscription changes.
+    let log_a = api::LogId::Session(a.to_string());
+    swarmy_testkit::eventually(
+        "server queues a3 on the open stream",
+        Duration::from_secs(8),
+        async || {
+            f.state
+                .queued_sequence(&log_a)
+                .is_some_and(|sequence| sequence >= 3)
+                .then_some(())
+        },
+    )
+    .await;
     let handle = stream.subscription_handle();
     handle.set(sub(&[a, b], true));
     let Err(Error::Api { body, .. }) = stream.next_item().await else {
@@ -383,14 +391,18 @@ async fn multiplexed_stream_resumes_and_rejects_rewind() {
     // The server's progress for both logs is now at the delivered cursors.
     handle.set(desired.clone());
     let bus = f.bus.clone();
+    let deltas = f.bus.live_subject(LiveFeed::ApiTokenDeltas(a));
+    let dropped = deltas.clone();
     tokio::spawn(async move {
-        // The delta must arrive after the subscription change is applied
-        // server-side; no acknowledgment exists, so the delay is the point.
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "orders the delta after the subscription change across an async boundary with no ack"
-        )]
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // The delta must be published after the stream's producer
+        // re-subscribes with token deltas on, which happens only after the
+        // next item sends the PUT and the producer rebuilds its feeds.
+        swarmy_testkit::eventually(
+            "stream subscribes to a's token deltas",
+            Duration::from_secs(8),
+            async || (swarmy_testkit::nats_subscribers(&deltas).await > 0).then_some(()),
+        )
+        .await;
         bus.publish_live(
             LiveFeed::ApiTokenDeltas(a),
             &LiveTokenDelta {
@@ -415,6 +427,14 @@ async fn multiplexed_stream_resumes_and_rejects_rewind() {
         tokio::time::timeout(Duration::from_millis(200), stream.next_item()).await,
         "drain the first stream item",
     );
+    // The producer drops its token subscription after the change above; wait
+    // for that before publishing, or the dropped-subscription assertion fails.
+    swarmy_testkit::eventually(
+        "stream drops a's token deltas",
+        Duration::from_secs(8),
+        async || (swarmy_testkit::nats_subscribers(&dropped).await == 0).then_some(()),
+    )
+    .await;
     f.bus
         .publish_live(
             LiveFeed::ApiTokenDeltas(a),

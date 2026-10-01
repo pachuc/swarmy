@@ -235,6 +235,7 @@ NATS
         printf 'export SWARMY_FDB_CLUSTER_FILE=%q\n' "$dev_dir/fdb.cluster"
         printf 'export SWARMY_DEV_FDB_PORT=%q\n' "$fdb_port"
         printf 'export SWARMY_NATS_URL=nats://127.0.0.1:4222\n'
+        printf 'export SWARMY_NATS_MONITOR_URL=http://127.0.0.1:8222\n'
         if [[ ${SWARMY_DEV_SKIP_S3:-0} == 1 ]]; then
             printf 'export SWARMY_S3_ENDPOINT=%q\n' ''
             printf 'export SWARMY_S3_ACCESS_KEY=%q\n' ''
