@@ -88,22 +88,28 @@ async fn run() -> Result<()> {
             source,
         })?;
     tracing::info!(address = %listener.local_addr()?, "api ready");
+    serve(listener, state, metrics_store).await
+}
+
+/// Serve with a capped graceful wait, then drain queued turn metrics.
+/// Event streams never end on their own, so the graceful wait ends after
+/// `SHUTDOWN_GRACE` even with subscribers attached. The drain runs on
+/// every exit path, including a serve error, so shutdown keeps every write.
+async fn serve(listener: tokio::net::TcpListener, state: AppState, metrics: Store) -> Result<()> {
     let server = axum::serve(listener, router(state))
         .with_graceful_shutdown(swarmy_config::shutdown_signal())
         .into_future();
     let deadline = swarmy_config::shutdown_signal();
-    let served = tokio::select! {
+    let outcome = tokio::select! {
         result = server => result,
         () = async {
             deadline.await;
             tokio::time::sleep(SHUTDOWN_GRACE).await;
         } => Ok(()),
     };
-    // Drain queued turn metrics before exit so shutdown keeps every write,
-    // on every exit path including a serve error.
-    if let Err(error) = metrics_store.flush_turn_metrics().await {
+    if let Err(error) = metrics.flush_turn_metrics().await {
         tracing::warn!(error = %swarmy_core::error_chain(&error), "api metric flush failed");
     }
-    served?;
+    outcome?;
     Ok(())
 }
