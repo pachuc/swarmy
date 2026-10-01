@@ -1475,12 +1475,11 @@ async fn corrupt_image_key_logs_the_full_decode_chain() {
             }
             other => panic!("expected an API error, got {other:?}"),
         }
-        let lines = captured_logs_containing("request failed with storage_error");
+        let lines = captured_logs_containing("request failed");
         assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("stored key or blob is corrupt: ")),
-            "missing full chain in: {lines:?}"
+            lines.iter().any(|line| line.contains("storage_error")
+                && line.contains("stored key or blob is corrupt: ")),
+            "missing storage_error with its full chain in: {lines:?}"
         );
     })
     .await;
