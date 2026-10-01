@@ -33,7 +33,7 @@ struct BenchFixture {
 
 #[tokio::test]
 async fn api_first_fake_token_stays_within_five_ms_of_direct_append() {
-    let Some(_) = swarmy_core::test_support::opt_in_env(
+    let Some(_) = swarmy_testkit::opt_in_env(
         "SWARMY_API_FAKE_BENCH",
         "set SWARMY_API_FAKE_BENCH=1 to run the opt-in API fake benchmark",
     ) else {

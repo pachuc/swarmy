@@ -5,7 +5,7 @@ use swarmy_llm::{ClientAuth, Delta, GenerationSettings, Request, catalog::Catalo
 
 #[tokio::test]
 async fn live_bedrock_turn() {
-    let Some(id) = swarmy_core::test_support::optional_env("SWARMY_BEDROCK_TEST_MODEL") else {
+    let Some(id) = swarmy_testkit::optional_env("SWARMY_BEDROCK_TEST_MODEL") else {
         return;
     };
     let provider = Catalog::get().provider("amazon-bedrock").unwrap();

@@ -381,9 +381,9 @@ mod retry_tests {
     /// live publishes reach NATS.
     async fn stream_test_gateway() -> Option<Gateway> {
         use foundationdb::{Database, tuple::Subspace};
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        let nats_url = swarmy_core::test_support::stack_env("SWARMY_NATS_URL")?;
-        crate::test_network();
+        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+        let nats_url = swarmy_testkit::require_stack("SWARMY_NATS_URL")?;
+        swarmy_testkit::boot_fdb();
         let store = Store::with_subspace(
             Arc::new(Database::new(Some(&cluster)).unwrap()),
             Subspace::all().subspace(&("gateway-stream-tests", ulid::Ulid::generate().to_string())),

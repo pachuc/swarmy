@@ -284,13 +284,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
     };
     let prefix = stack.prefix.clone();
     let directory = stack.prefix.clone();
-    let store = Store::open(
-        Some(std::path::Path::new(&stack.cluster)),
-        Some(std::slice::from_ref(&directory)),
-        Arc::new(MemoryBlobStore::default()),
-    )
-    .await
-    .unwrap();
+    let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
     let bus = Bus::connect(
         &url,
         Config {
@@ -354,7 +348,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         directory,
         prefix,
         url,
-        guard: Arc::new(tokio::sync::Mutex::new(StackGuard::new(&stack))),
+        guard: Arc::new(tokio::sync::Mutex::new(guard)),
     };
     swarmy_testkit::image(&fixture.store).await;
     let result = AssertUnwindSafe(test(fixture.clone())).catch_unwind().await;

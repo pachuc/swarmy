@@ -56,7 +56,6 @@ ulid.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-swarmy-core = { workspace = true, features = ["test-support"] }
 # The image test only polls for a spawned API with eventually(): no stack
 # feature, so this test binary does not link the FoundationDB client (the
 # remote-tests job has none). A direct path dependency because workspace

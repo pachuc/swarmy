@@ -12,10 +12,10 @@ async fn continuous_writes_and_retained_crash_images() {
         eprintln!("skipping snapshot NBD test: execute the built binary with sudo");
         return;
     }
-    let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
+    let Some(cluster) = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE") else {
         return;
     };
-    let _network = swarmy_store::boot();
+    swarmy_testkit::boot_fdb();
     let store = swarmy_store::Store::open(
         Some(Path::new(&cluster)),
         Some(&[format!("boundary-nbd-{}", ulid::Ulid::generate())]),

@@ -97,11 +97,11 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
         "SWARMY_S3_ENDPOINT",
         "SWARMY_NATS_URL",
     ] {
-        if swarmy_core::test_support::stack_env_os(variable).is_none() {
+        if swarmy_testkit::require_stack(variable).is_none() {
             return;
         }
     }
-    boot_network();
+    swarmy_testkit::boot_fdb();
     let mut settings = swarmy_testkit::stack_settings();
     let images = store(&settings).await;
     let base = base_image(&settings, &images).await;

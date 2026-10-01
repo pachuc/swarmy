@@ -95,7 +95,7 @@ async fn openrouter_pkce_exchanges_verifier_for_api_key_in_both_modes() {
 
 #[tokio::test]
 async fn azure_process_helper() {
-    let Some(mode) = swarmy_core::test_support::optional_env("SWARMY_TEST_AZURE_MODE") else {
+    let Some(mode) = swarmy_testkit::optional_env("SWARMY_TEST_AZURE_MODE") else {
         return;
     };
     let ui = Ui {

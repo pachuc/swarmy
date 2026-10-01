@@ -46,7 +46,7 @@ ulid.workspace = true
 [dev-dependencies]
 swarmy-llm = { path = ".", default-features = false, features = ["fake"] }
 rsa.workspace = true
-swarmy-core = { workspace = true, features = ["test-support"] }
+swarmy-testkit = { path = "../swarmy-testkit", version = "0.1.0", default-features = false }
 tempfile.workspace = true
 ulid.workspace = true
 wiremock.workspace = true

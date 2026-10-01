@@ -256,6 +256,9 @@ locally the same way CI does:
 - `scripts/check-anyhow-in-libraries.sh`: library crates use `thiserror`,
   never `anyhow` in `[dependencies]` (`swarmyd` counts as a binary: its
   `lib.rs` declares no modules and it has a binary target). Blocking, milliseconds.
+- `scripts/check-test-sleep-ban.py`: every test root and test module carries
+  `#![deny(clippy::disallowed_methods)]`, so fixed sleeps fail the build.
+  Blocking, seconds.
 - `npx --yes --package @ast-grep/cli@0.45.3 ast-grep scan --config ast-grep/sgconfig.yml`
   (or `npm install --global @ast-grep/cli@0.45.3` once) plus
   `npx --yes --package @ast-grep/cli@0.45.3 ast-grep test --config ast-grep/sgconfig.yml --skip-snapshot-tests`:

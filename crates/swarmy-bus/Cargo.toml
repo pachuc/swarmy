@@ -20,6 +20,5 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-swarmy-core = { workspace = true, features = ["test-support"] }
 swarmy-testkit.workspace = true
 ulid.workspace = true
