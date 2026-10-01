@@ -217,9 +217,7 @@ impl Resolver {
         if provider == "amazon-bedrock"
             && record.status(jiff::Timestamp::now()) == CredentialStatus::Expired
         {
-            return Err(Error::Credentials(
-                swarmy_core::BEDROCK_CONSOLE_KEY_EXPIRED,
-            ));
+            return Err(Error::Credentials(swarmy_core::BEDROCK_CONSOLE_KEY_EXPIRED));
         }
         if record.needs_refresh(jiff::Timestamp::now()) {
             let login: Box<dyn Login> = if provider == "chatgpt" {

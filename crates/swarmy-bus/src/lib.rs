@@ -580,8 +580,10 @@ impl<T> WorkMessage<T> {
         F: Future<Output = Result<R, E>>,
         E: From<Error>,
     {
-        self.keep_alive_with(period, work, || std::future::ready(Ok(ControlFlow::Continue(()))))
-            .await
+        self.keep_alive_with(period, work, || {
+            std::future::ready(Ok(ControlFlow::Continue(())))
+        })
+        .await
     }
 
     /// Like [`Self::keep_alive_while`], but after each successful extension runs
@@ -606,8 +608,7 @@ impl<T> WorkMessage<T> {
         HF: Future<Output = Result<ControlFlow<R>, E>>,
     {
         tokio::pin!(work);
-        let mut ticks =
-            tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+        let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {

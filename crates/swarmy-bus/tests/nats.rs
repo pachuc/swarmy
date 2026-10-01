@@ -347,7 +347,11 @@ async fn keep_alive_while_holds_the_delivery_until_work_finishes() {
             })
             .await
             .unwrap();
-        assert!(timeout(Duration::from_millis(400), work.next()).await.is_err());
+        assert!(
+            timeout(Duration::from_millis(400), work.next())
+                .await
+                .is_err()
+        );
         assert_eq!(next(&mut work).await.value, 1);
     })
     .await;

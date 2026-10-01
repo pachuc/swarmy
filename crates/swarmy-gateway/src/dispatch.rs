@@ -12,11 +12,7 @@ use swarmy_store::{
     GatewayProvider, InferenceClaim, ServiceDetail, ServiceHeartbeat, ServiceRole, Store,
     blob::BlobStore,
 };
-use tokio::{
-    sync::Semaphore,
-    task::JoinSet,
-    time::sleep,
-};
+use tokio::{sync::Semaphore, task::JoinSet, time::sleep};
 use tracing::{error, info, warn};
 use ulid::Ulid;
 
