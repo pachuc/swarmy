@@ -20,23 +20,24 @@ export CI=true
 repo=~/chaos
 # A fixed second checkout of the suite repository: its own .dev directory (the
 # suite checkout's .dev is a symlink to another disk, which git refuses to
-# inspect), a stable path so incremental builds survive between runs, and the
-# suite checkout's build directory shared through a target symlink.
+# inspect) and a stable path so incremental builds survive between runs. It
+# shares the suite checkout's build directory through CARGO_TARGET_DIR, not a
+# symlink, for the same reason.
 src=~/ci-src
 git -C "$repo" fetch -q origin master "$branch" || { echo "checkout failed"; echo "SUITES_EXIT=1"; exit 2; }
 rev=$(git -C "$repo" rev-parse --verify "${REV:-origin/$branch}^{commit}") || { echo "checkout failed"; echo "SUITES_EXIT=1"; exit 2; }
 [ -d "$src" ] || git -C "$repo" worktree add -q --detach "$src" "$rev"
 cd "$src"
-git checkout -q --detach --force "$rev" && git clean -q -fdx -e .dev -e target || { echo "checkout failed"; echo "SUITES_EXIT=1"; exit 2; }
+git checkout -q --detach --force "$rev" && git clean -q -fdx -e .dev || { echo "checkout failed"; echo "SUITES_EXIT=1"; exit 2; }
 echo "== branch $branch at $(git rev-parse --short HEAD)"
-[ -e target ] || ln -s "$(readlink -f "$repo/target")" target
+export CARGO_TARGET_DIR="$(readlink -f "$repo/target")"
 # This node also runs swarmyd and a tunnel that forwards the fleet's NATS on
 # port 4222; stop both so the dev stack owns its ports, as root-suites.sh does.
 sudo systemctl stop swarmyd swarmy-tunnel
 cleanup() { scripts/dev-stack.sh stop >/dev/null 2>&1; sudo systemctl start swarmy-tunnel swarmyd; }
 trap cleanup EXIT
 # The chaos harness builds under sudo and leaves root-owned files in target/.
-sudo chown -R "$(id -un):$(id -gn)" "$(readlink -f target)"
+sudo chown -R "$(id -un):$(id -gn)" "$CARGO_TARGET_DIR"
 rc=0
 run_target() {
   echo "== make $*"
