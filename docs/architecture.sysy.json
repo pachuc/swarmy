@@ -30,8 +30,8 @@
     {
       "id": "auth",
       "kind": "storage",
-      "label": "Credential file",
-      "description": "The Codex-compatible auth.json holding the ChatGPT id, access, and refresh tokens. Refreshes are serialized per account and written atomically with owner-only permissions.",
+      "label": "Credential import file",
+      "description": "A Codex-format auth.json that swarmy auth import reads once and uploads to the encrypted cluster credential store. Gateways never read it; refreshes are fenced by a per-entry lease in the store.",
       "tags": [
         "crates/swarmy-llm"
       ]

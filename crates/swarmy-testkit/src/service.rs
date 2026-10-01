@@ -47,9 +47,8 @@ pub fn bin(name: &str) -> PathBuf {
 
 /// A spawned service killed when the fixture drops, even on panic.
 ///
-/// Suites kept `Vec<Child>` and killed each entry in an explicit cleanup
-/// that a panic skipped. Holding this guard in the fixture kills the process
-/// on both paths.
+/// Holding this guard in the fixture kills the process when the fixture
+/// drops, whether the test passed or panicked.
 pub struct ChildGuard {
     child: Option<tokio::process::Child>,
 }

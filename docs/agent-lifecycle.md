@@ -68,4 +68,4 @@ with `agent create` or `agent set`; `agent set --provider default`,
 `--model default`, or `--effort default` clears that override. These updates
 preserve the agent's identity, computer, and sessions and apply to the next
 inference request. Ephemeral sessions instead persist an `inference` selection
-when created. See [choosing a model](providers.md#choosing-a-model).
+when created. See [choosing a model](providers.md#choosing-and-inspecting-models).
