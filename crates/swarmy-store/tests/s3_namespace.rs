@@ -9,7 +9,10 @@ use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 use object_store::{ObjectStore, PutMode, path::Path};
 use swarmy_config::{BucketCredentials, BucketSpec, GarbageCollection, ObjectPrefix, Settings};
 use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestId};
-use swarmy_store::{Store, blob::{BlobStore, ObjectBlobStore}};
+use swarmy_store::{
+    Store,
+    blob::{BlobStore, ObjectBlobStore},
+};
 use swarmy_volume::{ChunkStore, Manifest, ManifestBuilder, gc::collect};
 
 const OBJECTS: usize = 1005;
