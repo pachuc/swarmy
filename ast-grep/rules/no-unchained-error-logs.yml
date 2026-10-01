@@ -5,9 +5,9 @@
 # output, a stored String) gets a name that is not `error`/`err`/`*_error`.
 # A site that genuinely needs an exception carries
 # `// ast-grep-ignore: no-unchained-error-logs` on the line above it, after a
-# comment giving the reason. The shared `ignores:` list below (kept identical
-# across rules by scripts/check-ast-grep-rules.sh) excludes binaries, entry
-# points, and test files.
+# comment giving the reason. Unlike the four library rules, this rule also
+# covers binaries and entry points: logging an error without its cause chain
+# is wrong in a binary too. Only test files are excluded below.
 id: no-unchained-error-logs
 language: rust
 severity: error
@@ -35,22 +35,7 @@ rule:
 files:
   - 'crates/*/src/**/*.rs'
 ignores:
-  # Binaries own their process and output: spawning, printing, unwrapping,
-  # and stringifying errors are unrestricted there.
-  - 'crates/swarmy-cli/src/**'
-  - 'crates/swarmy-chaos/src/**'
-  - 'crates/swarmy-devtools/src/**'
-  - 'crates/swarmy-scheduler/src/**'
-  - 'crates/swarmy-worker/src/**'
-  # swarmyd counts as a binary: its lib.rs declares no modules and its code
-  # lives in the binary (see scripts/check-anyhow-in-libraries.sh).
-  - 'crates/swarmyd/src/**'
-  # Service entry points assemble connections, own their tasks, and report
-  # startup failures.
-  - '**/main.rs'
-  # Test files, and the test-only support module compiled only for tests
-  # (`cfg(any(test, feature = "test-support"))`).
+  # Tests assert on messages and log freely.
   - '**/tests/**'
   - '**/tests.rs'
   - '**/*tests.rs'
-  - 'crates/swarmy-core/src/test_support.rs'

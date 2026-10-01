@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # ast-grep can share AST matchers between rules (`utils`), but not file
-# globs, so every rule in ast-grep/rules/ repeats the same `ignores:` list of
-# binaries, entry points, and test files. This check keeps those copies
-# identical. It also keeps each exception visible: an `ast-grep-ignore`
-# comment must sit on its own line, name exactly one rule, and follow a
-# comment line that says why the exception applies.
+# globs, so the four library rules repeat the same `ignores:` list of
+# binaries, entry points, and test files. This check keeps those four copies
+# identical. (no-unchained-error-logs is intentionally different: logging an
+# error without its cause chain is wrong in a binary too, so it also covers
+# binaries and entry points.) It also keeps each exception visible: an
+# `ast-grep-ignore` comment must sit on its own line, name exactly one rule,
+# and follow a comment line that says why the exception applies. That
+# suppression check covers every rule, including no-unchained-error-logs.
 cd "$(dirname "$0")/.."
 fail=0
 reference=""
 reference_rule=""
-for rule in ast-grep/rules/*.yml; do
+for rule in \
+    ast-grep/rules/no-spawn-in-libraries.yml \
+    ast-grep/rules/no-stringified-errors.yml \
+    ast-grep/rules/no-unwrap-in-libraries.yml \
+    ast-grep/rules/no-print-in-libraries.yml \
+; do
     block=$(sed -n '/^ignores:$/,$p' "$rule")
     if [[ -z "$block" ]]; then
         echo "error: $rule has no ignores: list" >&2
