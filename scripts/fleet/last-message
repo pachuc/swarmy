@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Print the last assistant messages of the session running a tasky task.
+
+Usage: scripts/fleet/last-message TASK_ID [COUNT]
+
+When a worker goes idle, its final message is its report: the branch and
+head SHA it pushed, the output of the task's "Done when" commands, and any
+deviations. COUNT (default 1) prints that many trailing messages. The
+driver's own helpers find the task's current session, so this works for
+whichever driver FLEET_DRIVER names (default scripts/fleet/fleet).
+"""
+import importlib.machinery
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def load_driver():
+    path = Path(os.environ.get("FLEET_DRIVER", ROOT / "scripts/fleet/fleet")).resolve()
+    # The driver resolves its config and state relative to its checkout.
+    os.chdir(path.parents[2])
+    loader = importlib.machinery.SourceFileLoader("fleet_driver", str(path))
+    spec = importlib.util.spec_from_loader("fleet_driver", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def assistant_texts(events):
+    for event in events:
+        payload = event.get("message_appended") or event.get("inference_completed") or {}
+        message = payload.get("message", {})
+        if message.get("role") != "assistant":
+            continue
+        text = "".join(part.get("text", {}).get("text", "") for part in message.get("parts", []))
+        if text:
+            yield text
+
+
+def main():
+    if len(sys.argv) not in (2, 3):
+        sys.exit(__doc__.strip().splitlines()[2])
+    task_id = sys.argv[1]
+    count = int(sys.argv[2]) if len(sys.argv) == 3 else 1
+    fleet = load_driver()
+    config = fleet.load()
+    _, data = fleet.assignment(config, task_id)
+    session_id = fleet.current_session(config, data["session_id"])
+    texts = list(assistant_texts(fleet.session_events(config, session_id)))
+    for text in texts[-count:]:
+        print("-----")
+        print(text)
+
+
+if __name__ == "__main__":
+    main()

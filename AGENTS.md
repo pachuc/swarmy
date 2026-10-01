@@ -11,7 +11,7 @@ Read `docs/ARCHITECTURE.md` before changing anything: it explains the concepts, 
 services, and the vertical slices the work is organized into. This file is
 the map: what exists, where the plan lives, the decisions behind it, and how
 to resume. When this file and the design disagree, this file describes what
-is true today and the design lags. Each pull request implements one task from
+is true today and the design lags. Each task branch implements one task from
 the plan in tasky, and the task text you were given is the source of truth
 for scope.
 
@@ -75,14 +75,16 @@ measured numbers with raw samples.
   each with what, why, why not now, what it would take, and the trigger that
   brings it back. `backlog/README.md` is the index. When an item is picked
   up it becomes a tasky goal and the file is deleted.
-- **Execution.** Tasks run on long-lived swarmy worker agents driven by
-  `scripts/fleet/fleet` (see `docs/DEV.md`), one pull request per task, three
-  to five in parallel. The orchestrator reviews, reconciles conflicts (one
-  subagent per pull request in its own git worktree, with explicit per-file
-  rules), merges on green CI, and marks the task done. Parallel tasks on
-  shared files (`crates/swarmy-llm/src/lib.rs`, gateway config, `docs/providers.md`)
-  always conflict; expect reconciliation tasks so a shared helper has one
-  owner.
+- **Execution.** A goal is built as a batch. Before launch, every task body
+  is refined into an exact recipe (files, functions, call sites, new
+  signatures, out-of-scope list, and "Done when" commands). Tasks run on
+  long-lived swarmy worker agents driven by `scripts/fleet/fleet` (see
+  `docs/DEV.md`), several in parallel, each on its own branch with no pull
+  request. The operator reviews each branch, squash-merges it into the goal's
+  integration branch, resolves conflicts there, validates the batch on the
+  suite node (every CI job's `make` target plus the root suites), and then
+  opens one pull request to master, which CI gates. The method is in
+  `docs/fleet-operator-handoff.md` ("The cycle for a goal").
 
 ## The plan, September 2026
 
@@ -172,7 +174,7 @@ Cancelled: channels (slice 5, see `backlog/chaty.md`), sandbox-pause-resume
 - **Root-only tests run on real machines, not CI.** A nightly job on a real
   node was built and then dropped in September 2026: automation plus AWS
   secrets was not worth it at this size. The rule is that whoever changes the
-  covered code runs the suites by hand and says so in the pull request.
+  covered code runs the suites by hand and says so in their report.
 
 ## Building and testing
 
@@ -182,8 +184,8 @@ job runs exactly one `make check-<job>` target, and `make check` runs all of
 them in CI order; `make help` lists the targets. Workers run
 `cargo test --locked -p <each crate changed>` while iterating, then merge
 `origin/master` before the final check and run `make check` once with output
-saved to a file and attached to the pull request. Name the crates tested in
-the pull request. Before any command expected to take more than ten minutes,
+saved to a file outside the repository and quoted in the final report. Name
+the crates tested in the report. Before any command expected to take more than ten minutes,
 run `git add -A && git commit -m "WIP" && git push`. `make check` needs the dev
 stack running (`scripts/dev-stack.sh start`, see `docs/DEV.md`). It builds the
 workspace before the end-to-end suites so they find sibling binaries, and it
@@ -309,7 +311,7 @@ these hold:
 Never add an exception to get a task finished, never loosen a lint or a
 threshold in `Cargo.toml`, `clippy.toml`, or CI, and never split a function
 into pieces whose only purpose is to get under a limit. If you believe a lint
-is wrong for the whole codebase, say so in the pull request description and
+is wrong for the whole codebase, say so in your report and
 leave the lint as it is; the operator decides. Reviewers apply this bar using
 `REVIEWER.md`.
 
@@ -343,8 +345,7 @@ absent locally; CI must fail when a required stack setting is missing.
 
 Some suites need root and a real kernel, so they skip on CI's hosted runners
 and are never run automatically. They are run by hand, by whoever changes the
-code they cover, before the pull request is opened. Fleet sandboxes are
-dedicated servers with root and the NBD module loaded, so run them there with sudo:
+code they cover, on a machine with root and the NBD module loaded, with sudo:
 
 | If you changed | Run as root |
 |---|---|
@@ -366,15 +367,16 @@ sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locke
   -p swarmy-volume --test nbd -- --test-threads=1
 ```
 
-Say in the pull request which root suites you ran and their results, or that
-the change touches none of the areas above. A reviewer treats a change in one
-of those areas with no root-suite result as unverified.
+Say in your report which of the areas above your change touches, or that it
+touches none. A change in one of those areas is unverified until the matching
+suites pass on the suite node.
 
 A swarmy fleet worker cannot run them: its sandbox has no sudo and no NBD
 devices, and `swarmy image build` fails there. If you are such a worker and
-your change touches a covered area, say so plainly in the pull request and
-list the suites that need running; the operator runs them on the node before
-merging.
+your change touches a covered area, say so plainly in your report and list
+the suites that need running; the operator runs them on the suite node for the
+whole batch before it goes to master ("The cycle for a goal" in
+`docs/fleet-operator-handoff.md`).
 
 ## Working as a fleet worker
 
@@ -416,16 +418,35 @@ keep its own disk in order. The rules, which the task prompt repeats:
 - Write comments and docs in plain English with straightforward sentences.
   Explain why, not what, and do not use analogies.
 
-## Pull requests
+## Delivering a task
 
-- One task per pull request, on the branch the launcher created. Do not touch
-  files outside the task's scope, and do not weaken lints, tests, or CI.
-- Before marking a pull request ready, check it against `REVIEWER.md`; the
-  reviewer will.
+Goals are built as a batch. Each task runs on its own branch; the operator
+reviews every branch, merges it into the goal's integration branch, and
+validates the whole batch once before a single pull request takes it to
+master. The operator's method is in `docs/fleet-operator-handoff.md`
+("The cycle for a goal"). For a worker that means:
+
+- Do not open a pull request. Push your task branch and finish with a last
+  message that reports the branch name, the head SHA, the full output of the
+  task's "Done when" commands, every place you departed from the task body
+  and why, and anything from the test plan you could not verify and why. The
+  operator reads that message as your report.
+- Base the branch on `origin/master` unless the task body says to start from
+  the goal's integration branch, which holds work your task builds on.
+- Follow the task body's steps in order. If the code does not match what the
+  body says (a line moved, a function was renamed), follow the intent and say
+  what differed. Do not add changes the body does not ask for.
+- Run `cargo fmt --all` before committing and the `make check-*` targets the
+  body names before pushing; each matches one CI job.
+- One task per branch. Do not touch files outside the task's scope, and do
+  not weaken lints, tests, or CI.
 - Commit messages have an imperative subject line and a body explaining why.
-- The pull request description says what was built, lists the exact commands
-  you ran to validate it with their results, and notes anything from the test
-  plan you could not verify in the sandbox and why.
+  Work-in-progress commits pushed for safety are fine; the operator squashes
+  each branch into one commit when integrating.
+- Keep validation logs and other generated output outside the repository
+  (for example under `~`), never in a commit.
+- While a long build or test runs in the background, check on it every few
+  minutes with short commands rather than one long sleep.
 - Never commit secrets, `.dev/`, or `target/`.
 - This repository is public. Never commit, or write into a pull request
   description, comment, or CI log, anything that identifies our running
