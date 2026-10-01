@@ -38,6 +38,7 @@ url.workspace = true
 serde.workspace = true
 fs2.workspace = true
 rustix.workspace = true
+swarmy-bus.workspace = true
 swarmy-config.workspace = true
 swarmy-client.workspace = true
 swarmy-chat.workspace = true

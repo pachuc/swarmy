@@ -4207,6 +4207,7 @@ dependencies = [
  "serde",
  "serde_json",
  "swarmy-api-types",
+ "swarmy-bus",
  "swarmy-chat",
  "swarmy-client",
  "swarmy-cloud",

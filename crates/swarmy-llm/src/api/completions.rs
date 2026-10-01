@@ -78,17 +78,7 @@ impl CompletionsProvider {
             .json(body)
             .send()
             .await?;
-        let status = response.status();
-        if status.is_success() {
-            return Ok(response);
-        }
-        let retry_after = crate::retry::retry_after_header(response.headers());
-        let body = response.text().await?;
-        Err(crate::error::classify_http_failure(
-            status,
-            &body,
-            retry_after,
-        ))
+        crate::error::check_response(response).await
     }
 }
 
@@ -104,12 +94,10 @@ impl Provider for CompletionsProvider {
             {
                 Err(crate::error::stream_error(&response.json::<Value>().await?))?;
             } else {
-                let quota = crate::quota::openai_remaining(response.headers());
-                let resets = crate::quota::openai_resets(response.headers());
+                let quota = crate::quota::QuotaHeaders::openai(response.headers());
                 let mut bytes = response.bytes_stream();
                 let mut parser = CompletionsStream::new(&provider.provider, &provider.model.id);
                 parser.set_quota(quota);
-                parser.set_quota_resets(resets);
                 while let Some(chunk) = bytes.next().await {
                     for delta in parser.push(&chunk?)? { yield delta; }
                     if parser.completed { break; }
@@ -361,8 +349,7 @@ pub struct CompletionsStream {
     tools: BTreeMap<u64, usize>,
     stop_reason: Option<StopReason>,
     usage: TokenUsage,
-    quota_remaining: BTreeMap<String, u64>,
-    quota_resets: BTreeMap<String, u64>,
+    quota: crate::quota::QuotaHeaders,
 }
 
 impl CompletionsStream {
@@ -379,19 +366,12 @@ impl CompletionsStream {
             tools: BTreeMap::new(),
             stop_reason: None,
             usage: TokenUsage::default(),
-            quota_remaining: BTreeMap::new(),
-            quota_resets: BTreeMap::new(),
+            quota: crate::quota::QuotaHeaders::default(),
         }
     }
 
-    /// Capture `OpenAI` remaining-quota headers before streaming starts.
-    pub fn set_quota(&mut self, quota: BTreeMap<String, u64>) {
-        self.quota_remaining = quota;
-    }
-
-    /// Capture reset windows before streaming starts.
-    pub fn set_quota_resets(&mut self, resets: BTreeMap<String, u64>) {
-        self.quota_resets = resets;
+    pub(crate) fn set_quota(&mut self, quota: crate::quota::QuotaHeaders) {
+        self.quota = quota;
     }
 
     /// # Errors
@@ -604,12 +584,13 @@ impl CompletionsStream {
                 part: part.clone(),
             });
         }
+        let (quota_remaining, quota_resets) = self.quota.take();
         deltas.push(Delta::Completed(Response {
             parts,
             stop_reason,
             usage: self.usage.clone(),
-            quota_remaining: std::mem::take(&mut self.quota_remaining),
-            quota_resets: std::mem::take(&mut self.quota_resets),
+            quota_remaining,
+            quota_resets,
         }));
         self.completed = true;
         Ok(())

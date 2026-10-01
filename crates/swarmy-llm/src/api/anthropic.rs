@@ -139,18 +139,7 @@ impl AnthropicProvider {
                 .header("anthropic-version", "2023-06-01"),
             Endpoint::Vertex { source, .. } => builder.bearer_auth(source.token().await?),
         };
-        let response = builder.send().await?;
-        let status = response.status();
-        if status.is_success() {
-            return Ok(response);
-        }
-        let retry_after = crate::retry::retry_after_header(response.headers());
-        let body = response.text().await?;
-        Err(crate::error::classify_http_failure(
-            status,
-            &body,
-            retry_after,
-        ))
+        crate::error::check_response(builder.send().await?).await
     }
 }
 
@@ -160,12 +149,10 @@ impl Provider for AnthropicProvider {
         Box::pin(async_stream::try_stream! {
             let body = request_json(&request, &provider.model, &provider.endpoint)?;
             let response = with_retry(&RetryPolicy::default(), || provider.send(&body)).await?;
-            let quota = crate::quota::anthropic_remaining(response.headers());
-            let resets = crate::quota::anthropic_resets(response.headers());
+            let quota = crate::quota::QuotaHeaders::anthropic(response.headers());
             let mut bytes = response.bytes_stream();
             let mut parser = AnthropicStream::new(&provider.model.id, provider.endpoint.provider());
             parser.set_quota(quota);
-            parser.set_quota_resets(resets);
             while let Some(chunk) = bytes.next().await {
                 for delta in parser.push(&chunk?)? { yield delta; }
                 if parser.completed { break; }
@@ -457,8 +444,7 @@ pub struct AnthropicStream {
     parts: BTreeMap<usize, Part>,
     stop_reason: Option<StopReason>,
     usage: Value,
-    quota_remaining: BTreeMap<String, u64>,
-    quota_resets: BTreeMap<String, u64>,
+    quota: crate::quota::QuotaHeaders,
 }
 
 impl AnthropicStream {
@@ -474,19 +460,12 @@ impl AnthropicStream {
             parts: BTreeMap::new(),
             stop_reason: None,
             usage: json!({}),
-            quota_remaining: BTreeMap::new(),
-            quota_resets: BTreeMap::new(),
+            quota: crate::quota::QuotaHeaders::default(),
         }
     }
 
-    /// Capture Anthropic remaining-quota headers before streaming starts.
-    pub fn set_quota(&mut self, quota: BTreeMap<String, u64>) {
-        self.quota_remaining = quota;
-    }
-
-    /// Capture reset windows before streaming starts.
-    pub fn set_quota_resets(&mut self, resets: BTreeMap<String, u64>) {
-        self.quota_resets = resets;
+    pub(crate) fn set_quota(&mut self, quota: crate::quota::QuotaHeaders) {
+        self.quota = quota;
     }
 
     /// # Errors
@@ -567,12 +546,13 @@ impl AnthropicStream {
                     .stop_reason
                     .take()
                     .ok_or_else(|| Error::Protocol("message_stop without stop reason".into()))?;
+                let (quota_remaining, quota_resets) = self.quota.take();
                 deltas.push(Delta::Completed(Response {
                     parts: std::mem::take(&mut self.parts).into_values().collect(),
                     stop_reason,
                     usage: self.token_usage(),
-                    quota_remaining: std::mem::take(&mut self.quota_remaining),
-                    quota_resets: std::mem::take(&mut self.quota_resets),
+                    quota_remaining,
+                    quota_resets,
                 }));
                 self.completed = true;
             }

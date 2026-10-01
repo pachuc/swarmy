@@ -85,8 +85,8 @@ pub use timer::{
 
 pub mod credential;
 pub use credential::{
-    CredentialBookkeeping, CredentialEntryKind, CredentialKind, CredentialRecord, CredentialScope,
-    CredentialStatus,
+    BEDROCK_CONSOLE_KEY_EXPIRED, CredentialBookkeeping, CredentialEntryKind, CredentialKind,
+    CredentialRecord, CredentialScope, CredentialStatus,
 };
 
 pub mod quota;
