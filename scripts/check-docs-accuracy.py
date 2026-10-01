@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-# Docs accuracy: paths/test targets (default) or documented commands (--commands).
-# --commands prints location, binary, and args split into words (tab-separated,
-# args joined by \x1f, quoted values masked) for the Rust clap walk. Both modes
-# share tracked listing, fence joining, backtick spans, and the backlog/ skip.
+# Docs accuracy: paths, Markdown links and anchors, and test targets (default),
+# or documented commands (--commands). --commands prints location, binary, and
+# args split into words (tab-separated, args joined by \x1f, quoted values
+# masked) for the Rust clap walks in swarmy-cli, swarmyd, and swarmy-chaos. Both
+# modes share tracked listing, fence joining, backtick spans, and the backlog/
+# skip.
 import os
 import re
 import subprocess
 import sys
 import tomllib
+import urllib.parse
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Binaries whose documented commands are walked; each needs a clap-tree test
+# that calls swarmy_testkit::check_docs_commands.
+BINARIES = ("swarmy-chaos", "swarmyd", "swarmy")
 BINARY_PACKAGE = {"swarmy": "swarmy-cli", "swarmyd": "swarmyd"}
-CARGO_BINARY = {"swarmy-cli": "swarmy", "swarmyd": "swarmyd"}
+CARGO_BINARY = {"swarmy-cli": "swarmy", "swarmyd": "swarmyd", "swarmy-chaos": "swarmy-chaos"}
 def fail(message):
     sys.stderr.write("check-docs-accuracy: %s\n" % message)
     sys.exit(2)
@@ -119,6 +125,36 @@ def candidate_rels(text, docdir, root_entries):
             rels.append(r)
     rels = [r for r in rels if not r.startswith("..")]
     return rels or None
+# Inline Markdown links and images: [text](target) or ![alt](target), with an
+# optional "title". Reference-style links are not used in this repository.
+LINK_RE = re.compile(r"\[(?:[^\[\]]|\[[^\]]*\])*\]\(\s*<?([^()\s<>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
+HEADING_RE = re.compile(r"\s{0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*\Z")
+SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
+def heading_slug(text):
+    # GitHub's rule: drop link targets, HTML tags, code and emphasis markers,
+    # lowercase, delete everything but letters, digits, underscores, hyphens,
+    # and spaces, then turn each space into a hyphen.
+    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"<[^>]+>", "", text).replace("`", "").replace("*", "")
+    return re.sub(r"[^\w\- ]", "", text.strip().lower()).replace(" ", "-")
+_anchor_cache = {}
+def anchors(path):
+    # Headings inside fenced code blocks (shell comments) are not anchors.
+    # Repeated headings get -1, -2, ... suffixes, as on GitHub.
+    if path not in _anchor_cache:
+        found, counts = set(), {}
+        with open(os.path.join(ROOT, path), encoding="utf-8") as h:
+            lines = h.read().splitlines()
+        for _, line, in_fence in logical_lines(lines):
+            m = None if in_fence else HEADING_RE.match(line)
+            if m:
+                slug = heading_slug(m.group(2))
+                n = counts.get(slug, 0)
+                counts[slug] = n + 1
+                found.add(slug if n == 0 else "%s-%d" % (slug, n))
+        _anchor_cache[path] = found
+    return _anchor_cache[path]
 def md_files():
     return sorted(p for p in tracked_files() if p.endswith(".md") and not p.startswith("backlog/"))
 def split_args(text):
@@ -162,7 +198,7 @@ def find_invocations(line):
                 j += 1
             hit = False
             for s in reversed(starts):
-                for name in ("swarmyd", "swarmy"):
+                for name in BINARIES:
                     if line[s:].startswith(name):
                         e = s + len(name)
                         nxt = line[e] if e < len(line) else ""
@@ -221,7 +257,7 @@ def command_rows():
     return rows
 class Checker:
     def __init__(self):
-        self.errors, self.seen, self.paths, self.targets = [], set(), 0, 0
+        self.errors, self.seen, self.paths, self.targets, self.links = [], set(), 0, 0, 0
     def error(self, loc, text, msg):
         if (loc, text, msg) not in self.seen:
             self.seen.add((loc, text, msg))
@@ -243,6 +279,21 @@ class Checker:
                     for t in tgts:
                         self.targets += 1
                         self.check_target(p, t, loc, line.strip())
+    def check_links(self, path, line, loc):
+        for m in LINK_RE.finditer(CODE_SPAN_RE.sub("", line)):
+            target = m.group(1)
+            if SCHEME_RE.match(target):
+                continue
+            self.links += 1
+            file_part, _, anchor = target.partition("#")
+            rel = path
+            if file_part:
+                rel = os.path.normpath(os.path.join(os.path.dirname(path), urllib.parse.unquote(file_part)))
+                if rel.startswith("..") or not os.path.exists(os.path.join(ROOT, rel)):
+                    self.error(loc, target, "broken link target")
+                    continue
+            if anchor and rel.endswith(".md") and urllib.parse.unquote(anchor) not in anchors(rel):
+                self.error(loc, target, "unknown link anchor")
     def run(self):
         root_entries = set(os.listdir(ROOT)) - {".git"}
         self.tracked = tracked_files()
@@ -260,6 +311,8 @@ class Checker:
                     self.scan_targets(m.group(1), loc)
                 if in_fence:
                     self.scan_targets(line, loc)
+                else:
+                    self.check_links(path, line, loc)
         ignored = ignored_paths([r for _, _, rels in pending for r in rels for r in (r, r + "/")
                                  if not r.startswith("..")])
         for text, loc, rels in pending:
@@ -277,8 +330,8 @@ class Checker:
             sys.stderr.write("check-docs-accuracy: %d problem(s) in %d markdown file(s)\n"
                              % (len(self.errors), len(files)))
             return 1
-        print("check-docs-accuracy: ok (%d files, %d paths, %d test targets checked)"
-              % (len(files), self.paths, self.targets))
+        print("check-docs-accuracy: ok (%d files, %d paths, %d links, %d test targets checked)"
+              % (len(files), self.paths, self.links, self.targets))
         return 0
 if __name__ == "__main__":
     if "--commands" in sys.argv[1:]:

@@ -373,4 +373,17 @@ mod docs_command_tests {
         swarmy_testkit::check_docs_commands(&root, &[("swarmy", &command)])
             .expect("documented swarmy commands match the CLI tree");
     }
+
+    #[test]
+    fn a_binary_the_docs_never_invoke_fails_the_check() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../");
+        let command = clap::Command::new("swarmy-undocumented");
+        let error =
+            swarmy_testkit::check_docs_commands(&root, &[("swarmy-undocumented", &command)])
+                .expect_err("a walk that extracts no commands must fail");
+        assert!(
+            error.contains("no documented commands extracted for swarmy-undocumented"),
+            "{error}"
+        );
+    }
 }
