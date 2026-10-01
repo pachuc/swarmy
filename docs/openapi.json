@@ -3294,100 +3294,6 @@
               "data": {
                 "type": "object",
                 "required": [
-                  "message"
-                ],
-                "properties": {
-                  "message": {
-                    "$ref": "#/components/schemas/Message"
-                  }
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "message_appended"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "turn_id",
-                  "call_id",
-                  "name",
-                  "arguments"
-                ],
-                "properties": {
-                  "arguments": {},
-                  "call_id": {
-                    "type": "string"
-                  },
-                  "name": {
-                    "type": "string"
-                  },
-                  "turn_id": {
-                    "type": "string"
-                  }
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "tool_call"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
-                  "turn_id",
-                  "call_id",
-                  "result"
-                ],
-                "properties": {
-                  "call_id": {
-                    "type": "string"
-                  },
-                  "result": {},
-                  "turn_id": {
-                    "type": "string"
-                  }
-                }
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "tool_result"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "data",
-              "type"
-            ],
-            "properties": {
-              "data": {
-                "type": "object",
-                "required": [
                   "session_id"
                 ],
                 "properties": {
@@ -3913,29 +3819,6 @@
           }
         ],
         "description": "A log namespace."
-      },
-      "Message": {
-        "type": "object",
-        "required": [
-          "id",
-          "session_id",
-          "role",
-          "text"
-        ],
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "role": {
-            "$ref": "#/components/schemas/MessageRole"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string"
-          }
-        }
       },
       "MessageRole": {
         "type": "string",

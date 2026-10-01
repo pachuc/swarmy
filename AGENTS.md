@@ -177,37 +177,24 @@ Cancelled: channels (slice 5, see `backlog/chaty.md`), sandbox-pause-resume
 ## Building and testing
 
 The toolchain is pinned in `rust-toolchain.toml`; `rustup show` installs it.
-CI runs the full per-pull-request list below. Workers run `cargo test --locked -p <each crate changed>` while iterating, then merge `origin/master` before the final check and run the complete list once with output saved to a file and attached to the pull request. Name the crates tested in the pull request. Before any command expected to take more than ten minutes, run `git add -A && git commit -m "WIP" && git push`. Build the workspace before running end-to-end tests so they can find sibling binaries:
-
-```sh
-scripts/check-public-ids.sh
-scripts/check-docs-accuracy.py
-cargo fmt --all --check
-cargo build --locked -p swarmy-cli --no-default-features
-cargo build --workspace --locked
-cargo test --workspace --locked --exclude swarmy-e2e
-cargo test --locked -p swarmy-e2e --test cli_session -- --test-threads=1
-cargo test --locked -p swarmy-e2e --test gateway --test scheduler --test worker -- --test-threads=1
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --locked -p swarmy-cloud --features remote
-cargo test --locked -p swarmy-cli --features remote -- --skip dev_up_run_recover_reconfigure_and_down
-cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
-cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
-cargo test --locked -p swarmy-llm --no-default-features
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
-cargo deny check licenses bans sources
-cargo machete
-scripts/chaos-ci.sh
-scripts/check-openapi-compat.sh origin/master
-scripts/dev-stack.sh stop # Release fixed ports before the isolated script tests.
-scripts/test-scripts.sh
-```
+The root `Makefile` holds the only list of CI commands. Each pull-request CI
+job runs exactly one `make check-<job>` target, and `make check` runs all of
+them in CI order; `make help` lists the targets. Workers run
+`cargo test --locked -p <each crate changed>` while iterating, then merge
+`origin/master` before the final check and run `make check` once with output
+saved to a file and attached to the pull request. Name the crates tested in
+the pull request. Before any command expected to take more than ten minutes,
+run `git add -A && git commit -m "WIP" && git push`. `make check` needs the dev
+stack running (`scripts/dev-stack.sh start`, see `docs/DEV.md`). It builds the
+workspace before the end-to-end suites so they find sibling binaries, and it
+stops the stack before the script tests, which use the same fixed ports. To
+rerun one CI job, run its target, for example `make check-lint`.
 
 The feature-enabled commands always run in CI: the provisioning client is an
 opt-in feature that the workspace commands leave off. The CLI remote step skips
 the self-managed dev-stack test already covered by the workspace step. The e2e
-binaries run serially within each of two parallel CI jobs. Advisory checks run
-on a weekly schedule rather than blocking pull requests.
+binaries run serially within each of two parallel CI jobs. Advisory checks
+(`make check-advisories`) run on every pull request and on the weekly schedule.
 
 Clippy runs with the `all` and `pedantic` groups denied, so write code that
 satisfies it rather than silencing it. `unsafe_code` is denied
@@ -219,14 +206,9 @@ NBD ioctl wrapper) opt in per function with a reason and a SAFETY comment.
 The authoritative list of mechanical checks; REVIEWER.md does not repeat it.
 The workspace lint table lives in the root `Cargo.toml` `[workspace.lints]`
 (every crate sets `[lints] workspace = true`); numeric thresholds and
-test-only exemptions live in the root `clippy.toml`. Run them locally with:
-
-```sh
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
-cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
-cargo clippy --locked -p swarmy-llm --no-default-features --all-targets -- -D warnings
-```
+test-only exemptions live in the root `clippy.toml`. `make check-lint` runs
+every Clippy pass CI runs, including the `remote`-feature and
+no-default-features passes.
 
 - `clippy::allow_attributes_without_reason`: every `allow` carries a
   `reason = "..."`. Prefer `#[expect(lint, reason = "...")]` so the build
@@ -250,35 +232,51 @@ cargo clippy --locked -p swarmy-llm --no-default-features --all-targets -- -D wa
   condition and fails loudly on timeout. A test whose assertion is silence
   over a window keeps its sleep with an `expect` and a reason.
 
-These structural checks fail CI rather than asking for exceptions. Run them
-locally the same way CI does:
+These structural checks fail CI rather than asking for exceptions.
+`make check-lint` runs them the same way CI does:
 
 - `scripts/check-anyhow-in-libraries.sh`: library crates use `thiserror`,
-  never `anyhow` in `[dependencies]` (`swarmyd` counts as a binary: its
-  `lib.rs` declares no modules and it has a binary target). Blocking, milliseconds.
-- `npx --yes --package @ast-grep/cli@0.45.3 ast-grep scan --config ast-grep/sgconfig.yml`
-  (or `npm install --global @ast-grep/cli@0.45.3` once): the exact,
-  path-scoped `no-spawn-in-libraries`, `no-stringified-errors`,
-  `no-unwrap-in-libraries`, and `no-print-in-libraries` rules in
-  `ast-grep/rules/`. Blocking, under a second. A new `tokio::spawn`,
-  `.map_err(|error| error.to_string())`, `.unwrap()`, or `print!`,
-  `println!`, `eprint!`, or `eprintln!` in a library file fails unless its
-  file's listed exception genuinely applies. Test modules (`#[cfg(test)]
-  mod ...`), integration tests, examples, and binaries are out of scope, so
-  the rules need no per-test-file exceptions. Prefer fixing the code (`?` or
-  `expect` with the invariant, `tracing` or a return value instead of
-  printing); a new exception needs a why-comment meeting the bar below.
+  never the `anyhow` package in `[dependencies]`, including under a renamed
+  key or through `[workspace.dependencies]` (`swarmyd` counts as a binary: its
+  `lib.rs` declares no modules and it has a binary target). Blocking,
+  milliseconds.
+- `scripts/check-test-sleep-ban.py`: every test root and test module carries
+  `#![deny(clippy::disallowed_methods)]`, so fixed sleeps fail the build.
+  Blocking, seconds.
+- The ast-grep rules in `ast-grep/rules/` (ast-grep matches Rust syntax
+  trees; the Makefile pins version 0.45.3 and runs it through `npx`):
+  `no-spawn-in-libraries` (`tokio::spawn`, `tokio::task::spawn`, and
+  one-argument `.spawn(task)` calls such as `JoinSet::spawn`),
+  `no-stringified-errors` (`.map_err(|e| e.to_string())`,
+  `.map_err(ToString::to_string)`, and `.map_err(|e| format!(..))`),
+  `no-unwrap-in-libraries`, `no-print-in-libraries`, and
+  `no-unchained-error-logs` (a tracing macro that keeps an error without
+  logging its cause chain). Blocking, under a second. Test modules
+  (`#[cfg(test)] mod ...`), integration tests, test support, binaries, and
+  entry points are out of scope for the print/spawn/unwrap/stringify rules
+  (the error-chain rule covers binaries too, with only tests out of scope);
+  their shared `ignores:` list must be identical in every rule
+  (`scripts/check-ast-grep-rules.sh`). `ast-grep test` runs each rule's
+  passing and failing cases in `ast-grep/rule-tests/`. There are no per-file
+  exceptions: an allowed call carries `// ast-grep-ignore: <rule-id>` on its
+  own line directly above it, after a comment giving the reason, and a
+  suppression that no longer matches anything fails the scan. Prefer fixing
+  the code (`?` or `expect` with the invariant, `tracing` or a return value
+  instead of printing, an owned task handle); a new suppression is a lint
+  exception and must meet the bar below.
 - Clone report (`clone-report` CI job; locally
   `npx --yes jscpd@5.3.3 --config .jscpd.json`): advisory numbers in the job
   summary for `REVIEWER.md`'s duplication checklist, never a gate.
 - Error logging keeps the cause chain: services log
   `swarmy_core::error_chain(&error)` in an `error` field wherever they keep
   an error instead of returning it, so the log names the underlying failure
-  instead of only the top-level message. A `#[source]` variant must not also
+  instead of only the top-level message. The `no-unchained-error-logs`
+  ast-grep rule enforces this. A `#[source]` variant must not also
   print its source in its message.
-- From the CI hygiene task, all in place: `cargo deny check licenses bans
-  sources` blocking with advisories on a weekly schedule (non-blocking),
-  `cargo machete`, and `cargo doc` with `-D warnings`.
+- `make check-deps`: `cargo deny check licenses bans sources` and
+  `cargo machete --with-metadata`, both blocking. `cargo deny check advisories`
+  (`make check-advisories`) runs on every pull request and on the weekly schedule.
+  `cargo doc` runs with `-D warnings` in `make check-lint`.
 
 Deliberately not enforced by Clippy: `unwrap_used`, `print_stdout`, and
 `print_stderr`. `allow-unwrap-in-tests` covers only `#[cfg(test)]` code, so

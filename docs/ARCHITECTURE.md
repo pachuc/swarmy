@@ -78,8 +78,9 @@ crate in a tier depends on every lower tier.
 
 Services share one bootstrap from `swarmy-config`: `Settings::load` for
 configuration, `init_tracing` for stderr logging, `Store::open_store` for the
-database handle, and `shutdown_signal` (SIGINT or SIGTERM) so every service
-flushes before exit
+database handle, and `shutdown_signal` (SIGINT or SIGTERM), which the API, worker, scheduler,
+gateway, and swarmyd all wait on to shut down cleanly; the four
+control-plane services flush queued turn metrics before exit
 ([config](../crates/swarmy-config/src/lib.rs),
 [store](../crates/swarmy-store/src/lib.rs)).
 
@@ -87,7 +88,8 @@ flushes before exit
 
 - **swarmy-testkit** holds the helpers every integration suite shares: the
   dev-stack gate, a cleanup guard, the `eventually` poll helper, a
-  fake-provider script builder, sibling-binary lookup, and the image fixture
+  fake-provider script builder, sibling-binary lookup, the image fixture,
+  and the docs command walker
   ([source](../crates/swarmy-testkit/src/lib.rs)).
 - **swarmy-e2e** owns the real-binary integration suites
   ([manifest](../crates/swarmy-e2e/Cargo.toml)).

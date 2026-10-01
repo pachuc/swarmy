@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
     cell::{Cell, RefCell},

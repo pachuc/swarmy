@@ -147,18 +147,11 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
     let Some(stack) = swarmy_testkit::Stack::load("worker") else {
         return;
     };
-    let _guard = swarmy_testkit::StackGuard::new(&stack);
     let prefix = stack.prefix.clone();
     let calls = Arc::new(AtomicUsize::new(0));
     let config = config(stack.nats_url.clone(), &prefix, calls.clone());
     let blobs = Arc::new(MemoryBlobStore::default());
-    let store = Store::open(
-        Some(std::path::Path::new(&stack.cluster)),
-        Some(std::slice::from_ref(&prefix)),
-        blobs.clone(),
-    )
-    .await
-    .unwrap();
+    let (store, _guard) = stack.open_store(blobs.clone()).await;
     let bus = Bus::connect(&stack.nats_url, config.bus.clone())
         .await
         .unwrap();
@@ -219,7 +212,7 @@ async fn partial_tool_batch_resumes_with_lease_renewal() {
                             role: MessageRole::User,
                             parts: vec![Part::Text { text: "Please push after the tool".into() }],
                         };
-                        assert!(!store.queue_user_message_idempotent(id, &message, "during-tool").await.unwrap().2);
+                        assert!(!store.queue_user_message_idempotent(id, &message, "during-tool").await.unwrap().started);
                         queued = true;
                     }
                     let now = Timestamp::now();
@@ -319,18 +312,11 @@ async fn deleted_computer_refuses_remote_tools_with_durable_message() {
     let Some(stack) = swarmy_testkit::Stack::load("worker") else {
         return;
     };
-    let _guard = swarmy_testkit::StackGuard::new(&stack);
     let prefix = stack.prefix.clone();
     let calls = Arc::new(AtomicUsize::new(0));
     let config = config(stack.nats_url.clone(), &prefix, calls.clone());
     let blobs = Arc::new(MemoryBlobStore::default());
-    let store = Store::open(
-        Some(std::path::Path::new(&stack.cluster)),
-        Some(std::slice::from_ref(&prefix)),
-        blobs.clone(),
-    )
-    .await
-    .unwrap();
+    let (store, _guard) = stack.open_store(blobs.clone()).await;
     let bus = Bus::connect(&stack.nats_url, config.bus.clone())
         .await
         .unwrap();

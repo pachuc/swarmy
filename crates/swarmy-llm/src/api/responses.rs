@@ -202,12 +202,10 @@ impl ResponsesProvider {
             if let Some(mime) = content_type.filter(|mime| mime != "text/event-stream") {
                 Err(Error::Protocol(format!("expected text/event-stream, got {mime}")))?;
             }
-            let quota = crate::quota::openai_remaining(response.headers());
-            let resets = crate::quota::openai_resets(response.headers());
+            let quota = crate::quota::QuotaHeaders::openai(response.headers());
             let mut bytes = response.bytes_stream();
             let mut parser = ResponsesStream::with_context(&provider.provider_id, &request.settings.model);
             parser.set_quota(quota);
-            parser.set_quota_resets(resets);
             while let Some(chunk) = bytes.next().await {
                 for delta in parser.push(&chunk?)? { yield delta; }
                 if parser.is_completed() { break; }
@@ -242,7 +240,7 @@ impl ResponsesProvider {
         credentials: Option<&Credentials>,
     ) -> Result<reqwest::Response, Error> {
         with_retry(&self.retry_policy, || async {
-            check_response(self.send(body, credentials).await?).await
+            crate::error::check_response(self.send(body, credentials).await?).await
         })
         .await
     }
@@ -305,21 +303,6 @@ impl Provider for ResponsesProvider {
     fn request_for_session(&self, request: Request, session_id: SessionId) -> ProviderStream {
         self.stream(request, Some(session_id))
     }
-}
-
-/// Classify a failed status so the retry loop can honor the server's delay.
-async fn check_response(response: reqwest::Response) -> Result<reqwest::Response, Error> {
-    let status = response.status();
-    if status.is_success() {
-        return Ok(response);
-    }
-    let retry_after = crate::retry::retry_after_header(response.headers());
-    let body = response.text().await?;
-    Err(crate::error::classify_http_failure(
-        status,
-        &body,
-        retry_after,
-    ))
 }
 
 // Responses request normalization and incremental stream parsing.
@@ -549,8 +532,7 @@ pub struct ResponsesStream {
     saw_tool_arguments: bool,
     context: (String, String),
     completed: bool,
-    quota_remaining: BTreeMap<String, u64>,
-    quota_resets: BTreeMap<String, u64>,
+    quota: crate::quota::QuotaHeaders,
 }
 
 impl ResponsesStream {
@@ -564,8 +546,7 @@ impl ResponsesStream {
             text_content: BTreeMap::new(),
             saw_tool_arguments: false,
             completed: false,
-            quota_remaining: BTreeMap::new(),
-            quota_resets: BTreeMap::new(),
+            quota: crate::quota::QuotaHeaders::default(),
         }
     }
 
@@ -588,14 +569,8 @@ impl ResponsesStream {
         self.completed
     }
 
-    /// Capture `OpenAI` remaining-quota headers before streaming starts.
-    pub fn set_quota(&mut self, quota: BTreeMap<String, u64>) {
-        self.quota_remaining = quota;
-    }
-
-    /// Capture reset windows before streaming starts.
-    pub fn set_quota_resets(&mut self, resets: BTreeMap<String, u64>) {
-        self.quota_resets = resets;
+    pub(crate) fn set_quota(&mut self, quota: crate::quota::QuotaHeaders) {
+        self.quota = quota;
     }
 
     /// # Errors
@@ -780,12 +755,13 @@ impl ResponsesStream {
         } else {
             StopReason::EndTurn
         };
+        let (quota_remaining, quota_resets) = self.quota.take();
         deltas.push(Delta::Completed(Response {
             parts,
             stop_reason,
             usage: usage(&response["usage"]),
-            quota_remaining: std::mem::take(&mut self.quota_remaining),
-            quota_resets: std::mem::take(&mut self.quota_resets),
+            quota_remaining,
+            quota_resets,
         }));
         self.completed = true;
         Ok(())

@@ -1,23 +1,41 @@
-# Library crates must not spawn fire-and-forget background tasks: every
-# `tokio::spawn` below is an owned, bounded task whose handle aborts it on
-# drop (or whose lifetime is tied to a connection, run, or single flight).
-# A new spawn in any other library file fails CI. Prefer restructuring so
-# the caller drives the work; list a file here only for a genuinely owned,
-# bounded task, with a why-comment. Binaries and tests are out of scope: a binary owns
-# its process, and tests drive servers in-process.
+# Library crates must not spawn fire-and-forget background tasks. Every
+# spawn in library code is an owned, bounded task whose handle aborts it on
+# drop, or whose lifetime is tied to a connection, run, or single flight.
+# The rule matches `tokio::spawn`, `tokio::task::spawn`, and any one-argument
+# `.spawn(task)` method call (`JoinSet::spawn`, `std::thread::Builder::spawn`);
+# zero-argument `Command::spawn()` calls do not match. Each allowed spawn
+# carries `// ast-grep-ignore: no-spawn-in-libraries` on its own line directly
+# above the call, after a comment line saying who owns the task and what
+# bounds it. Prefer restructuring so the caller drives the work. Test modules
+# are excluded structurally; the shared `ignores:` list below (kept identical
+# across rules by scripts/check-ast-grep-rules.sh) excludes binaries, entry
+# points, and test files.
 id: no-spawn-in-libraries
 language: rust
 severity: error
 message: >-
-  tokio::spawn in library code needs an owned bounded task (a handle that
-  aborts on drop, tied to a connection or run). Own the task and list this
-  file below with a why-comment, or restructure so the caller drives it.
+  Spawning in library code needs an owned bounded task (a handle that aborts
+  on drop, tied to a connection or run). Own the task and mark the call with
+  an ast-grep-ignore comment and its reason, or restructure so the caller
+  drives it.
 rule:
-  pattern: 'tokio::spawn($$$)'
+  all:
+    - any:
+        - pattern: 'tokio::spawn($$$)'
+        - pattern: 'tokio::task::spawn($$$)'
+        - pattern: '$RECV.spawn($TASK)'
+    - not:
+        inside:
+          all:
+            - kind: mod_item
+            - follows:
+                pattern: '#[cfg(test)]'
+          stopBy: end
 files:
   - 'crates/*/src/**/*.rs'
 ignores:
-  # Binaries own their process; spawning is unrestricted there.
+  # Binaries own their process and output: spawning, printing, unwrapping,
+  # and stringifying errors are unrestricted there.
   - 'crates/swarmy-cli/src/**'
   - 'crates/swarmy-chaos/src/**'
   - 'crates/swarmy-devtools/src/**'
@@ -26,34 +44,12 @@ ignores:
   # swarmyd counts as a binary: its lib.rs declares no modules and its code
   # lives in the binary (see scripts/check-anyhow-in-libraries.sh).
   - 'crates/swarmyd/src/**'
-  # Service entry points assemble connections and own their tasks.
+  # Service entry points assemble connections, own their tasks, and report
+  # startup failures.
   - '**/main.rs'
-  # Tests drive fixture servers and clients in-process.
+  # Test files, and the test-only support module compiled only for tests
+  # (`cfg(any(test, feature = "test-support"))`).
   - '**/tests/**'
   - '**/tests.rs'
   - '**/*tests.rs'
-  # Owned bounded background tasks, one file per entry with its reason:
-  # The store's metrics writer drains one channel into batched transactions.
-  - 'crates/swarmy-store/src/metrics.rs'
-  # The volume lease-renewal loop; AbortTask aborts it on drop.
-  - 'crates/swarmy-volume/src/server.rs'
-  # The periodic snapshot loop; SnapshotLoop aborts it on drop.
-  - 'crates/swarmy-volume/src/snapshot.rs'
-  # The settled-chunk uploader; BackgroundUploader stops it on drop.
-  - 'crates/swarmy-volume/src/flush.rs'
-  # Single-flight readahead prefetch, bounded by the try_lock guard.
-  - 'crates/swarmy-volume/src/device.rs'
-  # The attached NBD server, tied to the Attachment lifetime.
-  - 'crates/swarmy-volume/src/kernel.rs'
-  # The attached NBD server, owned by ServerTask which aborts it on drop.
-  - 'crates/swarmy-sandbox/src/runc.rs'
-  # The per-sandbox credential socket loop; drop aborts it.
-  - 'crates/swarmy-sandbox/src/credentials.rs'
-  # The owned subscription PUT task; the file's other spawns are cfg(test)
-  # fixture servers.
-  - 'crates/swarmy-client/src/lib.rs'
-  # GC completion runs past the HTTP response; the run lease bounds it and
-  # the outcome lands in the durable run record.
-  - 'crates/swarmy-api/src/gc.rs'
-  # The per-connection SSE producer; it ends when the connection drops.
-  - 'crates/swarmy-api/src/stream.rs'
+  - 'crates/swarmy-core/src/test_support.rs'

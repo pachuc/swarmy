@@ -10,7 +10,7 @@ workspace = true
 
 # Cloud provider clients are optional so services that only need model
 # metadata or offline protocols can build without the cloud SDKs. The default
-# keeps every provider enabled; the gateway and the CLI forward their own
+# keeps every provider enabled; swarmy-api and swarmy-gateway forward their own
 # features to these, and nothing else enables any.
 [features]
 default = ["azure", "bedrock", "gemini"]
@@ -46,7 +46,7 @@ ulid.workspace = true
 [dev-dependencies]
 swarmy-llm = { path = ".", default-features = false, features = ["fake"] }
 rsa.workspace = true
-swarmy-core = { workspace = true, features = ["test-support"] }
+swarmy-testkit = { path = "../swarmy-testkit", version = "0.1.0", default-features = false }
 tempfile.workspace = true
 ulid.workspace = true
 wiremock.workspace = true

@@ -33,7 +33,7 @@ manifest to `ManifestBuilder::new`. Queue `(block index, chunk hash)` changes
 with `set_chunk` and call `build`. The builder loads and encodes only touched
 leaves and then writes the root. Unchanged leaves retain their hashes; repeated
 updates to a block use the final hash. A no-op update produces no new objects.
-`Manifest::load` fetches the root; `chunk_hash` lazily fetches a leaf. Reads verify
+`Manifest::load` fetches the root; leaves are fetched lazily on read (`chunk_hash`, behind `test-support`, resolves one block for tests). Reads verify
 content addresses, object types, lengths, and final-leaf padding.
 
 Upload chunks before building the manifest. After `build` succeeds, register its

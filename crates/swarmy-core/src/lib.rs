@@ -85,8 +85,8 @@ pub use timer::{
 
 pub mod credential;
 pub use credential::{
-    CredentialBookkeeping, CredentialEntryKind, CredentialKind, CredentialRecord, CredentialScope,
-    CredentialStatus,
+    BEDROCK_CONSOLE_KEY_EXPIRED, CredentialBookkeeping, CredentialEntryKind, CredentialKind,
+    CredentialRecord, CredentialScope, CredentialStatus,
 };
 
 pub mod quota;
@@ -104,8 +104,6 @@ pub struct LiveTokenDelta {
     pub text: String,
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support;
 /// Bounded retry delay shared by durable inference and reconnect loops.
 #[must_use]
 pub fn backoff(base: std::time::Duration, attempt: u32, max_doublings: u32) -> std::time::Duration {

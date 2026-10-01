@@ -493,13 +493,11 @@ async fn stop_services(state: &Path) -> Result<()> {
 
 async fn supervise(state: &Path, binaries: &[PathBuf]) -> Result<()> {
     // Register signal handlers before spawning so down during startup also cleans up.
-    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let stop = swarmy_config::shutdown_signal();
     let mut children = Vec::new();
     let result = tokio::select! {
         result = serve(state, binaries, &mut children) => result,
-        _ = interrupt.recv() => Ok(()),
-        _ = terminate.recv() => Ok(()),
+        () = stop => Ok(()),
     };
     for (name, child) in children.iter_mut().rev() {
         if !state.join(format!("{name}.pid")).exists() && child.try_wait()?.is_none() {

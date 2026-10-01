@@ -9,7 +9,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-swarmy-core.workspace = true
 swarmy-harness.workspace = true
 serde_json.workspace = true
 futures.workspace = true
+
+[dev-dependencies]
+swarmy-core.workspace = true

@@ -30,11 +30,11 @@ Codex workspace was not built.
 
 The port option was implemented and exercised against JSON/SSE fixtures and
 wiremock servers. It keeps device-code login, the token exchange and refresh,
-Codex-compatible JSON storage, and an HTTP Responses SSE client. Dependencies are
-reqwest with default features disabled and rustls enabled, tokio, futures,
-async-stream, base64, fs2, and tempfile, plus the workspace's existing types and
-serialization crates. It has no keyring, proxy discovery customization, identity
-management, FoundationDB, or NATS dependency. **Decision: use this minimal port.**
+Codex-compatible JSON credentials, and an HTTP Responses SSE client. Dependencies
+are reqwest with default features disabled and rustls enabled, tokio, futures,
+async-stream, and base64, plus the workspace's existing types and serialization
+crates. It has no keyring, proxy discovery customization, identity management,
+FoundationDB, or NATS dependency. **Decision: use this minimal port.**
 Upstream changes require reviewing these protocol boundaries and updating the
 fixtures deliberately.
 
@@ -70,7 +70,8 @@ Function arguments are JSON strings on the wire. Encrypted reasoning is requeste
 and the complete reasoning item is preserved under `Part::Reasoning.metadata`'s
 `chatgpt` key for replay. Optional generation settings are only sent when supplied;
 model and backend support for temperature and output limits must be checked by
-the caller. There is no model catalog or automatic model substitution in this task.
+the caller. The request carries the caller's model id unchanged; the provider
+never substitutes another model.
 
 The parser follows the pinned [SSE client](https://raw.githubusercontent.com/openai/codex/rust-v0.153.4/codex-rs/codex-api/src/sse/responses.rs).
 It handles arbitrary UTF-8 chunk boundaries, LF/CRLF/CR, comments, multiline data,
@@ -83,62 +84,70 @@ SSE events are limited to 8 MiB. Partial indices refer to Responses output items
 
 ## Credential ownership
 
-The sandbox operating rules supplied with this task are binding: copies share
-one refresh chain, concurrent refreshers can revoke it, and an account must not
-change under a credential file. No codex-daytona project checkout was available
-in the sandbox; launcher control directories and credential caches were not read.
+ChatGPT credentials live in the cluster credential store, encrypted with the
+cluster keyring, as one labelled entry per account (`default` unless
+`--label` names another). Each entry is an OAuth record: the access token, the
+refresh token, an expiry taken from the access token's `exp` claim (or eight
+days after the last refresh when it has none), and two extra fields. The
+`account_id` field holds the ChatGPT account. The `chatgpt_json` field holds the
+rest of the Codex-format JSON with both tokens removed, so unknown root and token
+fields survive a later refresh or export. Credentials that carry an OpenAI API
+key, or whose `auth_mode` is not `chatgpt`, are rejected.
 
-Use one authoritative credential file per account. All workers using that account
-must use the same store. Every inference call loads the current access token from
-that store. Tokens are refreshed when the access JWT expires within a minute,
-a token without an expiration has not refreshed for eight days, or the backend
-returns 401. Inference retries a 401 once; refresh HTTP requests are never retried
-automatically inside the refresh operation because an uncertain reply may have
-already rotated the chain. If refresh fails or persistence fails after a successful
-exchange, resolve the credentials before retrying work; a new dedicated login may
-be necessary.
+Gateways resolve credentials through `swarmy_llm::auth::Resolver`, backed by
+the cluster store. They never read a credential file. Resolution picks a ready
+entry whose rate-limit breaker is closed. For ChatGPT it returns a live
+credential source instead of copied tokens: every inference call reloads the
+entry from the store, and the source remembers the first account id it saw. If
+the stored account later changes, calls fail with an account-changed error
+instead of silently using the other account.
 
-A process-wide async mutex serializes refresh per account. A file lock named by
-the account hash in the credential directory also serializes cooperating local
-processes. After acquiring both locks, refresh reloads the file and compares the
-observed credentials; a waiting caller returns the already updated tokens. Locks
-remain held through persistence. File locks are advisory: they do not coordinate
-with Codex or independent credential copies. Multiple hosts require a shared
-single refresh owner and an appropriate `CredentialStore` implementation; copying
-files to each host does not establish coordination.
+A token is refreshed when the access token expires within five minutes, when it
+has no expiry and the last refresh is at least eight days old, or when the
+backend answers 401. After a 401 the call refreshes once and retries once.
+Refresh itself is never retried automatically: an uncertain reply may already
+have rotated the refresh chain.
 
-Writes use a separate file lock for account validation, a same-directory temporary
-file with mode 0600, file sync, atomic rename, and directory sync. New directories
-use mode 0700 on Unix. Existing account ids and id-token claims must agree; writes
-cannot switch accounts. A live store also detects external account replacement.
-Import and refresh preserve unknown root and token fields. The fixture round trip
-compares **parsed JSON values**: whitespace and key order can change. The source
-file remains byte-for-byte unchanged. Neither the library nor CLI accepts an
-OpenAI API key for this provider.
+Refresh is coordinated through the store, so it works across gateways on
+different hosts. The refreshing gateway first re-reads the entry; if it no
+longer matches the credentials the call observed, another gateway already
+refreshed it and the new record is used. Otherwise the gateway takes a
+45-second lease on that entry in FoundationDB, reads the entry again under the
+lease, and only then exchanges the refresh token. Other labels keep their own
+leases. A refresh reply for a different account is rejected. A failed
+exchange marks the entry `needs_login`, and the provider reports that it needs
+a new login; run `swarmy auth login chatgpt` again for that entry.
+
+Each account must have exactly one refresh owner. Codex, another swarmy
+cluster, or a copied credential file refreshing the same chain will revoke it.
+Import a Codex file only after stopping the Codex session that owns it.
 
 ## CLI and manual validation
 
-Create a dedicated login:
+Log in with a dedicated account, or import a Codex credential file:
 
 ```sh
-cargo run -p swarmy-cli -- auth --auth-file /tmp/swarmy-dedicated/auth.json login
+swarmy auth login chatgpt
+swarmy auth login chatgpt --label second-account
+swarmy auth import --file /path/to/codex/auth.json
+swarmy auth check chatgpt
 ```
 
-The default destination is `$HOME/.swarmy/auth.json`; `SWARMY_CHATGPT_AUTH` or
-`--auth-file` overrides it. `--json` emits a device-code event before polling and
-a credentials-saved event on success. Tokens are never printed. Import is explicit:
+`swarmy auth login` and `swarmy auth import` run the `swarmy-auth` helper
+(installed by `make install-client`), which keeps the terminal OAuth flow out
+of the main binary. Login runs the device-code flow above and prints the
+verification URL and code; with `--json` it prints a `device_code` event and
+then a `saved` event. Import reads the file without changing it, checks it,
+and prints `imported`. Both upload the record to the cluster through the API
+and never print tokens. Without `--file`, import reads
+`[selection] credential_file` (normally `~/.swarmy/auth.json`; `--auth-file` or
+`SWARMY_CHATGPT_AUTH` override it).
 
-```sh
-cargo run -p swarmy-cli -- auth --auth-file /path/to/swarmy/auth.json import /path/to/codex/auth.json
-```
-
-Stop the original refresh owner before using an imported chain. Import copies
-credentials; it does not create an independent session. Prefer a dedicated login
-when the original Codex session will continue running.
-
-The ignored live test must only use a dedicated login, never a personal Codex or
-launcher credential file. Select the model ids to probe from the account's model
-availability information and run:
+The ignored live test reads a Codex-format credential file directly and never
+refreshes it, so the access token in that file must still be valid. Use a
+file from a dedicated login that nothing else refreshes, never a personal Codex
+or launcher credential file. Select the model ids to probe from the account's
+model availability information and run:
 
 ```sh
 SWARMY_CHATGPT_AUTH=/tmp/swarmy-dedicated/auth.json \
@@ -148,10 +157,9 @@ cargo test -p swarmy-llm --locked --test live -- --ignored
 ```
 
 It sends a short prompt to each selected model and writes a timestamped report of
-successes and failures. The report establishes only the tested models' availability
-at that time. It does not enumerate the account's entire catalog. Without the auth
-environment variable it skips cleanly. This test was intentionally not run in the
-sandbox, so no real account model availability is claimed.
+successes and failures. The report shows only whether the tested models were
+available at that time; it does not list the account's whole catalog. Without
+`SWARMY_CHATGPT_AUTH` the test skips cleanly.
 
 ## Request headers and reasoning replay
 

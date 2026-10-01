@@ -58,6 +58,10 @@ pub enum CredentialStatus {
     NeedsLogin,
 }
 
+/// The one explanation for an expired Amazon Bedrock console key, shown by
+/// the resolver, the Bedrock client and `swarmy auth check`.
+pub const BEDROCK_CONSOLE_KEY_EXPIRED: &str = "Bedrock console API keys expire after twelve hours and are for development only; use an IAM identity for long-lived use";
+
 /// The coarse credential family shown in listings. OAuth entries are
 /// subscriptions; API keys are cloud entries when the bookkeeping says so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,14 +121,6 @@ impl CredentialRecord {
     pub fn needs_refresh(&self, now: Timestamp) -> bool {
         matches!(&self.kind, CredentialKind::OAuth { expires_at, .. }
             if expires_at.as_second() < now.as_second().saturating_add(300))
-    }
-
-    #[must_use]
-    pub const fn kind_name(&self) -> &'static str {
-        match self.kind {
-            CredentialKind::ApiKey { .. } => "api_key",
-            CredentialKind::OAuth { .. } => "oauth",
-        }
     }
 }
 

@@ -498,13 +498,15 @@ async fn wait_idle_wakes_from_live_transition() {
             .await
             .unwrap()
     });
-    // The interrupt must land while the wait-idle request is held server-side;
-    // no registration signal exists, so the ordering delay is the point.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "orders the interrupt after the wait-idle request reaches the server"
-    )]
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // The handler subscribes before its first store read; interrupt only once
+    // it is listening, so the wake comes from the live event.
+    let subject = f.bus.live_subject(LiveFeed::SessionEvents(id));
+    swarmy_testkit::eventually(
+        "wait-idle registers its live subscription",
+        Duration::from_secs(5),
+        async || (swarmy_testkit::nats_subscribers(&subject).await > 0).then_some(()),
+    )
+    .await;
     f.store.interrupt_session(id).await.unwrap();
     assert!(f.store.finish_runnable_interrupt(id).await.unwrap());
     let event = swarmy_core::Event::StateChanged {
@@ -551,6 +553,10 @@ async fn invalid_effort_uses_cli_selection_error() {
 /// Emit the gateway/worker/node stages for one turn through the production
 /// observation path with real clocks, then attach usage and tool data.
 async fn emit_observed_turn(f: &Fixture, session: SessionId, turn: swarmy_core::MessageId) {
+    // The append handler queues its Submitted, Appended and Nudged stages;
+    // flush them before the loop so no two writes touch the turn record at
+    // once.
+    f.store.flush_turn_metrics().await.unwrap();
     let request = swarmy_core::RequestId::for_step(session, 2);
     for stage in [
         swarmy_core::TurnStage::InferenceStarted,
@@ -560,21 +566,14 @@ async fn emit_observed_turn(f: &Fixture, session: SessionId, turn: swarmy_core::
         swarmy_core::TurnStage::ToolCompleted,
         swarmy_core::TurnStage::Idle,
     ] {
-        // Await each write: the spawned production path races under
-        // millisecond timing and can lose read-modify-write updates, so
-        // tests serialize while production staggers stages over seconds.
-        // The pacing itself keeps the spawned writes ordered.
+        // Each write is awaited after the append handler's queued stages are
+        // flushed, so no two writes touch the turn record at once.
         let event = Bus::turn_event(session, turn, stage, Some(request));
         f.bus.record_turn(&event).await;
         f.store
             .record_turn_metrics(session, turn, vec![swarmy_store::MetricPatch::Stage(event)])
             .await
             .unwrap();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "paces spawned stage writes apart so they land in order"
-        )]
-        tokio::time::sleep(Duration::from_millis(2)).await;
     }
     f.store
         .record_turn_metrics(
@@ -653,16 +652,19 @@ async fn durable_turn_metrics_match_the_session_and_agent_api() {
         .unwrap();
     let turn = swarmy_core::MessageId::from_ulid(appended.turn_id.parse::<Ulid>().unwrap());
     emit_observed_turn(&f, session, turn).await;
-    // Observation writes are spawned; poll until the record assembles.
-    // The appended stage arrives from a fire-and-forget write in the append
-    // handler, so it can land after the directly awaited stages below. Poll
-    // for the derived fields the assertions need, not just the stages, so a
-    // fast direct write cannot break the poll before the spawned write lands.
+    // Observation writes are spawned; poll until the record assembles. The
+    // flush above committed the appended stage. Poll for the derived fields
+    // the assertions need, not just the stages, so a fast direct write
+    // cannot break the poll before the spawned write lands.
     let direct = swarmy_testkit::eventually(
         "turn record assembles",
         Duration::from_secs(10),
         async || {
-            let records = f.store.list_turn_metrics(session, None, 10).await.unwrap();
+            let records = f
+                .store
+                .list_turn_metrics_paged(session, None, 10, None, None)
+                .await
+                .unwrap();
             (records.len() == 1
                 && records[0].stages.iter().any(|row| row.stage == "idle")
                 && records[0]

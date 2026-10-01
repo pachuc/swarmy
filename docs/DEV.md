@@ -285,7 +285,7 @@ provisioning commands are needed.
 The Makefile looks for the client library in `~/.local/lib`, `/usr/local/lib`,
 `/usr/lib`, and `/usr/lib/x86_64-linux-gnu`, in that order, and passes the first
 match as `SWARMY_FDB_LIB_DIR`. `make install-node` also installs `swarmyd`,
-`make check` runs the three CI commands, and `make uninstall` removes the
+`make check` runs every pull-request CI job, and `make uninstall` removes the
 binaries. Use `scripts/install-dev-tools.sh --prefix /absolute/path` for another
 location, then `make install SWARMY_FDB_LIB_DIR=/absolute/path/lib`. The build embeds that library directory in the
 runtime search path and uses it at link time. The shared build script also adds
@@ -434,6 +434,7 @@ the calling shell's environment.
 | `SWARMY_FDB_CLUSTER_FILE` | Absolute path to `.dev/fdb.cluster` |
 | `SWARMY_DEV_FDB_PORT` | Chosen local FoundationDB port; also selects the port on a later `start` |
 | `SWARMY_NATS_URL` | `nats://127.0.0.1:4222` |
+| `SWARMY_NATS_MONITOR_URL` | `http://127.0.0.1:8222` |
 | `SWARMY_S3_ENDPOINT` | `http://127.0.0.1:8333` |
 | `SWARMY_S3_ACCESS_KEY` | `swarmy-dev` |
 | `SWARMY_S3_SECRET_KEY` | `swarmy-dev-secret` |
@@ -465,22 +466,19 @@ scripts/check-openapi-compat.sh origin/master
 ```
 
 The S3 namespace acceptance test also needs `SWARMY_S3_TEST_BUCKET` naming a
-pre-created, dedicated empty bucket. It refuses a non-empty bucket and cleans
-up its objects and metadata after each case, including assertion failures.
-It tests empty and nested prefixes, more than 1000 objects in one listing,
-sibling isolation, and dry and real collection. For the
-local SeaweedFS stack:
+pre-created, dedicated empty bucket. The dev stack creates
+`swarmy-s3-namespace-test` and exports the variable, so with the stack
+running:
 
 ```bash
 source .dev/env
-export SWARMY_S3_TEST_BUCKET=swarmy-s3-namespace-test
-curl --fail --silent --show-error --noproxy '*' \
-  --aws-sigv4 'aws:amz:us-east-1:s3' \
-  --header 'x-amz-content-sha256: UNSIGNED-PAYLOAD' \
-  --user 'swarmy-dev:swarmy-dev-secret' -X PUT \
-  "http://127.0.0.1:8333/$SWARMY_S3_TEST_BUCKET"
 cargo test -p swarmy-store --test s3_namespace --locked -- --nocapture
 ```
+
+It refuses a non-empty bucket and cleans up its objects and metadata after
+each case, including assertion failures. It tests empty and nested prefixes,
+more than 1000 objects in one listing, sibling isolation, and dry and real
+collection.
 
 The same test runs against cloud S3 by setting the S3 endpoint, credentials,
 region, and a dedicated empty test bucket, with a reachable FoundationDB.

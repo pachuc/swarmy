@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_methods)]
 use super::*;
 use std::{
     sync::{Mutex as StdMutex, Weak},
@@ -34,6 +35,10 @@ impl std::fmt::Display for RecordingStore {
 
 #[async_trait::async_trait]
 impl ObjectStore for RecordingStore {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the fake object store's simulated upload latency is the fixture, not a wait"
+    )]
     async fn put_opts(
         &self,
         path: &ObjectPath,
@@ -489,10 +494,10 @@ async fn lease_loss_during_flush_rejects_publication_and_keeps_dirty_data() {
     use swarmy_core::{LeaseOwnerId, ManifestId, VolumeId};
     use swarmy_store::{Store, StoreError, blob::MemoryBlobStore};
 
-    let Some(cluster) = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE") else {
+    let Some(cluster) = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE") else {
         return;
     };
-    let _network = swarmy_store::boot();
+    swarmy_testkit::boot_fdb();
     let store = Store::open(
         Some(Path::new(&cluster)),
         Some(&[format!("swarmy-upload-fencing-{}", ulid::Ulid::generate())]),

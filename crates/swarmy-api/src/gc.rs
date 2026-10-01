@@ -1,7 +1,8 @@
 //! Chunk collection runs. Starting a run acquires the collector lease and
 //! returns immediately; the sweep continues in the background and the client
 //! follows its durable run record.
-use super::{ApiResult, AppState, error, failure, storage, volume};
+use super::idempotency::{IdempotencyKey, record_replay, replayed};
+use super::{ApiFailure, ApiResult, AppState, storage, volume};
 use axum::{
     Json,
     extract::{Path, State},
@@ -28,14 +29,11 @@ fn snapshot(run: &swarmy_core::GcRun) -> api::GcRun {
     }
 }
 
-fn busy() -> (StatusCode, Json<api::ApiError>) {
-    (
+fn busy() -> ApiFailure {
+    ApiFailure::new(
         StatusCode::CONFLICT,
-        Json(api::ApiError {
-            code: "gc_busy".into(),
-            message: "another collection run holds the lease".into(),
-            provider_text: None,
-        }),
+        "gc_busy",
+        "another collection run holds the lease",
     )
 }
 
@@ -43,21 +41,21 @@ pub(crate) async fn start(
     State(state): State<AppState>,
     Json(body): Json<api::StartGcRun>,
 ) -> ApiResult<api::GcRun> {
-    if body.idempotency_key.is_empty() || body.idempotency_key.len() > 256 {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_idempotency_key"));
-    }
-    let replay_key = format!("gc:runs:{}", body.idempotency_key);
+    let key = IdempotencyKey::parse(&body.idempotency_key)?;
+    let replay_key = key.scoped("gc:runs");
     {
         let _guard = state.mutation_guard().await;
-        if let Some(value) = state.store.api_replay(&replay_key).await.map_err(storage)? {
-            let run_id: String = serde_json::from_value(value).map_err(|cause| {
-                failure(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay", &cause)
-            })?;
+        if let Some(run_id) = replayed::<String>(&state, &replay_key).await? {
             let owner = run_id
                 .parse::<Ulid>()
                 .map(LeaseOwnerId::from_ulid)
                 .map_err(|cause| {
-                    failure(StatusCode::INTERNAL_SERVER_ERROR, "corrupt_replay", &cause)
+                    ApiFailure::caused(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "corrupt_replay",
+                        "stored replay response is corrupt",
+                        &cause,
+                    )
                 })?;
             // Between the replay-key reservation and the lease acquisition
             // the run record does not exist yet; a concurrent start with the
@@ -77,21 +75,20 @@ pub(crate) async fn start(
     // and a retry would only get a conflict; reserving first means a retry
     // with the same key observes this attempt instead.
     let owner = LeaseOwnerId::from_ulid(Ulid::generate());
-    let reserved = serde_json::to_value(owner.to_string()).expect("run id serializes");
-    {
+    let reserved = {
         let _guard = state.mutation_guard().await;
-        state
-            .store
-            .put_api_replay(&replay_key, reserved.clone())
-            .await
-            .map_err(storage)?;
-    }
+        record_replay(&state, &replay_key, &owner.to_string()).await?
+    };
     // Benchmarks on isolated namespaces pass a short grace for one run; a
     // zero grace would collect chunks still being published, so reject it.
     let mut policy = state.gc;
     if let Some(grace) = body.grace_seconds {
         if grace == 0 {
-            return Err(error(StatusCode::BAD_REQUEST, "invalid_request"));
+            return Err(ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "grace_seconds must be greater than zero",
+            ));
         }
         policy.grace_secs = std::time::Duration::from_secs(grace);
     }
@@ -121,6 +118,8 @@ pub(crate) async fn start(
     };
     let initial = snapshot(&run);
     let background = state.clone();
+    // GC completion outlives the response; the run lease bounds it and the outcome lands in the durable run record.
+    // ast-grep-ignore: no-spawn-in-libraries
     tokio::spawn(async move {
         if let Err(error) = swarmy_volume::gc::complete(
             &background.store,
@@ -160,12 +159,24 @@ pub(crate) async fn show(
     let owner = text
         .parse::<Ulid>()
         .map(LeaseOwnerId::from_ulid)
-        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_id"))?;
+        .map_err(|_| {
+            ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_id",
+                "id is not a valid ULID",
+            )
+        })?;
     let run = state
         .store
         .get_gc_run(owner)
         .await
         .map_err(storage)?
-        .ok_or_else(|| error(StatusCode::NOT_FOUND, "gc_run_not_found"))?;
+        .ok_or_else(|| {
+            ApiFailure::new(
+                StatusCode::NOT_FOUND,
+                "gc_run_not_found",
+                "collection run not found",
+            )
+        })?;
     Ok(Json(snapshot(&run)))
 }

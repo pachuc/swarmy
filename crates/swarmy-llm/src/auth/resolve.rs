@@ -116,34 +116,8 @@ impl Resolver {
             .ok_or_else(|| {
                 Error::Credentials("route step names an entry with no stored credential")
             })?;
-        let (entry, mut record) = (Some(label.to_owned()), record);
-        if record.status(jiff::Timestamp::now()) == CredentialStatus::NeedsLogin {
-            return Err(Error::NeedsLogin(provider.into()));
-        }
-        if provider == "anthropic" && matches!(record.kind, CredentialKind::OAuth { .. }) {
-            return Err(Error::Credentials("Anthropic requires an API key"));
-        }
-        if provider == "amazon-bedrock"
-            && record.status(jiff::Timestamp::now()) == CredentialStatus::Expired
-        {
-            return Err(Error::Credentials(
-                "Bedrock console API keys expire after twelve hours and are for development only; use an IAM identity for long-lived use",
-            ));
-        }
-        if record.needs_refresh(jiff::Timestamp::now()) {
-            let login: Box<dyn Login> = if provider == "chatgpt" {
-                Box::new(self.chatgpt.clone())
-            } else {
-                login_for(provider, None, None)?
-            };
-            record = self
-                .store
-                .refresh(provider, &record, login.as_ref())
-                .await?;
-        }
-        if record.status(jiff::Timestamp::now()) != CredentialStatus::Ready {
-            return Err(Error::NeedsLogin(provider.into()));
-        }
+        let entry = Some(label.to_owned());
+        let record = self.ready_record(provider, record).await?;
         if provider == "chatgpt" {
             let credentials = Credentials::from_record(&record)?;
             let account = OnceLock::new();
@@ -222,9 +196,18 @@ impl Resolver {
         &self,
         provider: &str,
     ) -> Result<(Option<String>, Option<CredentialRecord>), Error> {
-        let Some((label, mut record)) = self.store.get_labelled(provider).await? else {
+        let Some((label, record)) = self.store.get_labelled(provider).await? else {
             return Ok((None, None));
         };
+        Ok((label, Some(self.ready_record(provider, record).await?)))
+    }
+
+    /// Reject unusable stored records and refresh the rest when due.
+    async fn ready_record(
+        &self,
+        provider: &str,
+        mut record: CredentialRecord,
+    ) -> Result<CredentialRecord, Error> {
         if record.status(jiff::Timestamp::now()) == CredentialStatus::NeedsLogin {
             return Err(Error::NeedsLogin(provider.into()));
         }
@@ -234,9 +217,7 @@ impl Resolver {
         if provider == "amazon-bedrock"
             && record.status(jiff::Timestamp::now()) == CredentialStatus::Expired
         {
-            return Err(Error::Credentials(
-                "Bedrock console API keys expire after twelve hours and are for development only; use an IAM identity for long-lived use",
-            ));
+            return Err(Error::Credentials(swarmy_core::BEDROCK_CONSOLE_KEY_EXPIRED));
         }
         if record.needs_refresh(jiff::Timestamp::now()) {
             let login: Box<dyn Login> = if provider == "chatgpt" {
@@ -252,7 +233,7 @@ impl Resolver {
         if record.status(jiff::Timestamp::now()) != CredentialStatus::Ready {
             return Err(Error::NeedsLogin(provider.into()));
         }
-        Ok((label, Some(record)))
+        Ok(record)
     }
 }
 

@@ -181,7 +181,7 @@ struct SocketGuard(PathBuf);
 impl Drop for SocketGuard {
     fn drop(&mut self) {
         if let Err(error) = std::fs::remove_file(&self.0) {
-            tracing::warn!(%error, "socket file removal failed");
+            tracing::warn!(error = %swarmy_core::error_chain(&error), "socket file removal failed");
         }
     }
 }
@@ -242,7 +242,7 @@ pub async fn attach(
             .release_writer_lease(id, &lease, Timestamp::now())
             .await
     {
-        tracing::warn!(%error, "writer lease release after setup failure failed");
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "writer lease release after setup failure failed");
     }
     result
 }
@@ -363,6 +363,8 @@ fn start_renewal(
     tokio::sync::oneshot::Receiver<crate::VolumeError>,
 ) {
     let (lost_tx, lost_rx) = tokio::sync::oneshot::channel();
+    // The lease-renewal loop; AbortTask aborts it on drop.
+    // ast-grep-ignore: no-spawn-in-libraries
     let task = tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(15)).await;
@@ -432,7 +434,7 @@ async fn handle(
                 .await;
             detached?;
             if let Err(error) = writer.release().await {
-                tracing::warn!(%error, "writer lease release after discard failed");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "writer lease release after discard failed");
             }
             return Ok((None, true, None));
         }

@@ -1,0 +1,36 @@
+id: no-print-in-libraries
+valid:
+  - |
+    fn report(count: usize) {
+        tracing::info!(count, "finished");
+    }
+  - |
+    fn render(out: &mut String, count: usize) {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{count}");
+    }
+  - |
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn skips() {
+            eprintln!("skipping: stack unavailable");
+        }
+    }
+invalid:
+  - |
+    fn report(count: usize) {
+        println!("{count}");
+    }
+  - |
+    fn report(count: usize) {
+        print!("{count}");
+    }
+  - |
+    fn report(count: usize) {
+        eprintln!("{count}");
+    }
+  - |
+    fn report(count: usize) {
+        eprint!("{count}");
+    }

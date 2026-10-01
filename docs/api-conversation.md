@@ -35,10 +35,14 @@ The append's durable Runnable index recovers from a missed bus nudge. Turn
 Submitted and Appended timing observations are published once for each fresh
 append, in that order; idempotent retries do not publish a second Submitted.
 
-The opt-in `api_first_fake_token_stays_within_five_ms_of_direct_append` test
-requires a running fake-provider stack and a registered image. On a node with
-that stack, set `SWARMY_TEST_IMAGE=NAME:TAG` and `SWARMY_API_FAKE_BENCH=1`, then
+The latency tests in `crates/swarmy-api/tests/latency.rs` run against the dev
+stack with a built workspace: the fixture registers a metadata-only image and
+spawns its own scheduler, worker, and gateway, so they need no root and no
+registered image. `fake_turn_records_first_token_metrics` runs on every PR
+through `cargo test --workspace`. The fifty-turn
+`api_first_fake_token_stays_within_five_ms_of_direct_append` comparison stays
+opt-in behind `SWARMY_API_FAKE_BENCH=1`, because a 5 ms comparison is noise on
+shared runners. With the stack running, set `SWARMY_API_FAKE_BENCH=1`, then
 run `cargo test --locked -p swarmy-api --test latency -- --nocapture`. It
 collects fifty turns through each path and compares append-to-first-token p95;
-the API p95 must not exceed the direct p95 by more than 5 ms. The fleet sandbox
-cannot run the test because it has no NBD device or registered image.
+the API p95 must not exceed the direct p95 by more than 5 ms.

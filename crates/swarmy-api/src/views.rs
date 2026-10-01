@@ -6,8 +6,8 @@
 //! stored rows keep decoding, and the conversion stays here so the store
 //! never compiles the `OpenAPI` tooling.
 
-use super::{AppState, error, storage};
-use axum::{Json, http::StatusCode};
+use super::{ApiFailure, AppState, storage};
+use axum::http::StatusCode;
 use jiff::Timestamp;
 use swarmy_api_types as api;
 use swarmy_store as store;
@@ -443,7 +443,7 @@ pub(crate) async fn session_with_next(
     state: &AppState,
     record: &swarmy_core::SessionRecord,
     agents: &mut AgentCache,
-) -> Result<api::Session, (StatusCode, Json<api::ApiError>)> {
+) -> Result<api::Session, ApiFailure> {
     let mut result = session(record);
     if record.state == swarmy_core::SessionState::Completed {
         result.next_session = state
@@ -490,7 +490,7 @@ pub(crate) async fn populate_session_detail(
     result: &mut api::Session,
     record: &swarmy_core::SessionRecord,
     agent: Option<&swarmy_core::AgentRecord>,
-) -> Result<(), (StatusCode, Json<api::ApiError>)> {
+) -> Result<(), ApiFailure> {
     if let Some(wait) = state
         .store
         .inference_wait(record.session_id)
@@ -578,7 +578,7 @@ pub(crate) async fn populate_session_detail(
 pub(crate) async fn agent_value(
     state: &AppState,
     record: swarmy_core::AgentRecord,
-) -> Result<api::Agent, (StatusCode, Json<api::ApiError>)> {
+) -> Result<api::Agent, ApiFailure> {
     let agent_id = record.agent_id;
     let placement = state
         .store
@@ -618,7 +618,7 @@ async fn populate_agent_detail(
     agent_id: swarmy_core::AgentId,
     placement: Option<swarmy_core::PlacementRecord>,
     sessions: Vec<swarmy_core::SessionRecord>,
-) -> Result<(), (StatusCode, Json<api::ApiError>)> {
+) -> Result<(), ApiFailure> {
     let totals = state.store.agent_usage(agent_id).await.map_err(storage)?;
     view.usage = Some(totals_view(&totals, 0));
     let (entries, providers) = entry_breakdown(
@@ -660,7 +660,14 @@ async fn populate_agent_detail(
             )
         })
         .transpose()
-        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "snapshot_timestamp"))?;
+        .map_err(|cause| {
+            ApiFailure::caused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "snapshot_timestamp",
+                "snapshot time is out of range",
+                &cause,
+            )
+        })?;
     view.last_snapshot_at = snapshot.map(|at| at.to_string());
     view.last_snapshot_age_seconds =
         snapshot.map(|at| Timestamp::now().duration_since(at).as_secs().max(0));

@@ -22,6 +22,8 @@ impl Credentials {
         // The containing bundle is private to the node; only this agent sees
         // the bind mount. Both root and the agent user can ask for its token.
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))?;
+        // The per-sandbox credential socket loop; drop aborts it.
+        // ast-grep-ignore: no-spawn-in-libraries
         Ok(Self(tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
                 // Bound stalled clients without keeping credentials in a cache.

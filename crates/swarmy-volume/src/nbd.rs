@@ -38,7 +38,7 @@ impl NbdServer {
         loop {
             let (stream, _) = self.listener.accept().await?;
             if let Err(error) = serve_connection(stream, Arc::clone(&self.device)).await {
-                tracing::warn!(%error, "NBD client disconnected with an error");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "NBD client disconnected with an error");
             }
         }
     }
@@ -47,7 +47,7 @@ impl NbdServer {
 impl Drop for NbdServer {
     fn drop(&mut self) {
         if let Err(error) = std::fs::remove_file(&self.path) {
-            tracing::warn!(path = %self.path.display(), %error, "nbd socket file not removed");
+            tracing::warn!(path = %self.path.display(), error = %swarmy_core::error_chain(&error), "nbd socket file not removed");
         }
     }
 }

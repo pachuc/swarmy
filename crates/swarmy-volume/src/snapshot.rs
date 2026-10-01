@@ -13,13 +13,15 @@ impl SnapshotLoop {
     where
         F: FnMut() -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send,
-        E: std::fmt::Display,
+        E: std::error::Error + 'static,
     {
+        // The periodic snapshot loop; SnapshotLoop aborts it on drop.
+        // ast-grep-ignore: no-spawn-in-libraries
         Self(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(period).await;
                 if let Err(error) = snapshot().await {
-                    tracing::warn!(%error, "periodic snapshot failed; will retry next period");
+                    tracing::warn!(error = %swarmy_core::error_chain(&error), "periodic snapshot failed; will retry next period");
                 }
             }
         }))

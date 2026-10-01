@@ -47,12 +47,7 @@ impl Store {
                         .await?
                         .ok_or(StoreError::Domain(crate::DomainError::MissingInferenceWait))?;
                     let request_id = if wait.last_failure_seq == 0 {
-                        RequestId::for_step(
-                            id,
-                            session.head_seq.checked_add(1).ok_or(StoreError::Storage(
-                                crate::StorageError::SequenceOverflow,
-                            ))?,
-                        )
+                        RequestId::for_step(id, crate::seq_after(session.head_seq, 1)?)
                     } else {
                         self.request_from_event(&trx, id, wait.last_failure_seq)
                             .await?
@@ -99,10 +94,7 @@ impl Store {
                     .await?
                     .unwrap_or(RequestId::for_step(
                         id,
-                        session
-                            .head_seq
-                            .checked_add(1)
-                            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?,
+                        crate::seq_after(session.head_seq, 1)?,
                     ))
             };
             self.append_interrupted(&trx, session, request_id, self.now())
@@ -146,10 +138,7 @@ impl Store {
         request_id: RequestId,
         now: Timestamp,
     ) -> Result<()> {
-        let head = session
-            .head_seq
-            .checked_add(1)
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+        let head = crate::seq_after(session.head_seq, 1)?;
         let event = swarmy_core::interrupted_event(head, request_id);
         let value = encode(&StoredValue::Inline(encode(&event)?))?;
         trx.set(&self.keys().event(session.session_id, head), &value);

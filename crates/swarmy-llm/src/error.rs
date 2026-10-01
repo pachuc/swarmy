@@ -115,6 +115,24 @@ pub(crate) fn classify_http_failure(
     provider_error(status, body)
 }
 
+/// Pass a successful provider response through; turn a failed one into a
+/// classified error that carries the server's Retry-After delay, so the
+/// retry loop can honour it.
+///
+/// # Errors
+/// Returns the classified HTTP failure, or the transport error from reading its body.
+pub(crate) async fn check_response(
+    response: reqwest::Response,
+) -> Result<reqwest::Response, Error> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let retry_after = crate::retry::retry_after_header(response.headers());
+    let body = response.text().await?;
+    Err(classify_http_failure(status, &body, retry_after))
+}
+
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]

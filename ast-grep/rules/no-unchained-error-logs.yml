@@ -1,0 +1,41 @@
+# Logged errors keep their cause chain: a tracing macro logs an error as
+# `error = %swarmy_core::error_chain(&error)`, never `%error`, `?error`,
+# `error = %error`, or `{error}` in the message, which print only the top
+# message. Tests are out of scope. A value that is not an error (process
+# output, a stored String) gets a name that is not `error`/`err`/`*_error`.
+# A site that genuinely needs an exception carries
+# `// ast-grep-ignore: no-unchained-error-logs` on the line above it, after a
+# comment giving the reason. Unlike the four library rules, this rule also
+# covers binaries and entry points: logging an error without its cause chain
+# is wrong in a binary too. Only test files are excluded below.
+id: no-unchained-error-logs
+language: rust
+severity: error
+message: >-
+  Log errors with error = %swarmy_core::error_chain(&error) so the cause
+  chain reaches the log.
+rule:
+  all:
+    - kind: macro_invocation
+    - regex: '^(?:tracing::)?(?:error|warn|info|debug|trace)!'
+    - any:
+        - regex: '[(,]\s*[%?](?:[a-z_]+_)?(?:error|err)\b'
+        - regex: '\{(?:[a-z_]+_)?(?:error|err)(?::\?)?\}'
+        - all:
+            - regex: '\b(?:error|err|[a-z_]+_error)\s*=\s*[%?]'
+            - not:
+                regex: '\b(?:error|err|[a-z_]+_error)\s*=\s*%(?:swarmy_core|crate)::error_chain\('
+    - not:
+        inside:
+          all:
+            - kind: mod_item
+            - follows:
+                pattern: '#[cfg(test)]'
+          stopBy: end
+files:
+  - 'crates/*/src/**/*.rs'
+ignores:
+  # Tests assert on messages and log freely.
+  - '**/tests/**'
+  - '**/tests.rs'
+  - '**/*tests.rs'

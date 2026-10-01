@@ -4,13 +4,12 @@ use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
-    sync::LazyLock,
     time::{Duration, Instant},
 };
 use swarmy_api_types as api;
 use swarmy_chat::client_conversation::{Conversation, OpenArgs};
 use swarmy_client::{Client, EventStream};
-use swarmy_core::{MessageId, RequestId, SessionId, ToolResult, TurnEvent, TurnStage};
+use swarmy_core::{MessageId, SessionId, ToolResult, TurnEvent, TurnStage};
 
 #[derive(Serialize)]
 struct Sample {
@@ -34,34 +33,6 @@ async fn timeline_stream(client: &Client, session: &str) -> Result<EventStream> 
     // stages are not missed while the HTTP connection is being opened.
     stream.open().await?;
     Ok(stream)
-}
-
-static CLOCK_ID: LazyLock<String> = LazyLock::new(|| {
-    std::fs::read_to_string("/proc/sys/kernel/random/boot_id").map_or_else(
-        |_| format!("process-{}-{}", std::process::id(), jiff::Timestamp::now()),
-        |id| id.trim().to_owned(),
-    )
-});
-
-/// Capture the boundary before any instrumentation publication awaits.
-fn turn_event(
-    session_id: SessionId,
-    turn_id: MessageId,
-    stage: TurnStage,
-    request_id: Option<RequestId>,
-) -> TurnEvent {
-    let time = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
-    let monotonic_ns = u64::try_from(time.tv_sec).unwrap_or_default() * 1_000_000_000
-        + u64::try_from(time.tv_nsec).unwrap_or_default();
-    TurnEvent {
-        session_id,
-        turn_id,
-        stage,
-        request_id,
-        clock_id: CLOCK_ID.clone(),
-        monotonic_ns,
-        unix_ns: jiff::Timestamp::now().as_nanosecond(),
-    }
 }
 
 pub(crate) async fn run(
@@ -182,7 +153,7 @@ async fn measure(
                     if observation.turn_id == turn_id { events.push(observation); }
                 }
                 stage = stages.recv() => {
-                    if let Some(stage) = stage { events.push(turn_event(id, turn_id, stage, None)); }
+                    if let Some(stage) = stage { events.push(swarmy_bus::Bus::turn_event(id, turn_id, stage, None)); }
                 }
                 outcome = &mut done, if !idle => { outcome?; client_elapsed = start.elapsed(); idle = true; }
             }
@@ -353,7 +324,7 @@ mod tests {
             InputEnabled,
         ]
         .into_iter()
-        .map(|stage| turn_event(id, turn, stage, None))
+        .map(|stage| swarmy_bus::Bus::turn_event(id, turn, stage, None))
         .collect();
         assert!(complete(&events, true));
         for stage in [
@@ -404,7 +375,7 @@ mod clock_tests {
     fn cross_host_intervals_use_wall_time_and_reject_clock_reversal() {
         let id = SessionId::from_ulid(ulid::Ulid::generate());
         let turn = MessageId::from_ulid(ulid::Ulid::generate());
-        let mut start = turn_event(id, turn, TurnStage::Submitted, None);
+        let mut start = swarmy_bus::Bus::turn_event(id, turn, TurnStage::Submitted, None);
         start.monotonic_ns = 100;
         start.unix_ns = 1_000;
         let mut end = start.clone();

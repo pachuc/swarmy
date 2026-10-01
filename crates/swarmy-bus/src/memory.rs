@@ -82,7 +82,7 @@ impl Bus {
             let request = match decode(&message.payload) {
                 Ok(request) => request,
                 Err(error) => {
-                    tracing::warn!(%error, "invalid memory request");
+                    tracing::warn!(error = %swarmy_core::error_chain(&error), "invalid memory request");
                     continue;
                 }
             };

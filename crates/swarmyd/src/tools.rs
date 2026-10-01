@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use swarmy_bus::{Bus, WorkQueue};
+use swarmy_bus::{Bus, WorkMessage, WorkQueue};
 use swarmy_core::{
     LeaseOwnerId, NodeId, PlacedToolClaim, PlacementRecord, ProcessListArguments, Sandbox,
     SandboxArguments, ToolJob, ToolResult, VolumeId,
@@ -47,50 +47,106 @@ async fn serve(
     loop {
         tokio::select! {
             delivery = messages.next() => {
-                let message = delivery.context("node tool subscription closed")??;
+                let message = match delivery {
+                    None => return Err(anyhow::anyhow!("node tool subscription closed")),
+                    Some(Err(error)) => {
+                        tracing::warn!(error = %swarmy_core::error_chain(&error), "node tool delivery failed");
+                        continue;
+                    }
+                    Some(Ok(message)) => message,
+                };
                 let hosting = hosting.clone();
                 let store = store.clone();
                 let bus = bus.clone();
                 calls.spawn(async move {
-                    // One lookup per tool call; the turn travels with the job
-                    // so the execution path needs no further lookups.
-                    let turn = store.request_turn_id(message.value.request_id).await?;
-                    let result = tokio::select! {
-                        result = hosting.call(message.value.clone(), turn) => result,
-                        result = async {
-                            loop {
-                                tokio::time::sleep(ack_wait / 3).await;
-                                if let Err(error) = message.extend_deadline().await { break Err(anyhow::Error::from(error)); }
-                            }
-                        } => result,
-                    };
-                    match result {
-                        Ok(()) => {
-                            // The completion stage lands in the same batch as
-                            // the tool result inside `run`; only the live bus
-                            // event is emitted here, never a second store write.
-                            if let Some(turn) = turn {
-                                bus.record_turn(&Bus::turn_event(message.value.session_id, turn,
-                                    swarmy_core::TurnStage::ToolCompleted, Some(message.value.request_id))).await;
-                            }
-                            if let Some(session) = store.fetch_session(message.value.session_id).await?
-                                && session.state == swarmy_core::SessionState::Runnable
-                                && let Err(error) = bus.nudge(session.session_id, session.head_seq, turn, resend_interval, false).await
-                            {
-                                tracing::warn!(error = %swarmy_core::error_chain(&error), "tool completion nudge failed; scheduler will recover");
-                            }
-                            message.acknowledge().await?;
-                        }
-                        Err(error) => {
-                            tracing::warn!(error = %swarmy_core::error_chain(&*error), request_id = %message.value.request_id, "sandbox tool refused or interrupted");
-                            message.negative_acknowledge(Some(Duration::from_secs(2))).await?;
-                        }
-                    }
-                    Ok::<_, anyhow::Error>(())
+                    let outcome =
+                        handle_call(&message, &store, &hosting, &bus, ack_wait, resend_interval)
+                            .await;
+                    settle(&message, outcome).await;
                 });
             }
-            Some(result) = calls.join_next(), if !calls.is_empty() => { result??; }
+            Some(joined) = calls.join_next(), if !calls.is_empty() => {
+                if let Err(error) = joined {
+                    tracing::error!(error = %swarmy_core::error_chain(&error), "tool call task panicked; NATS redelivers after ack wait");
+                }
+            }
         }
+    }
+}
+
+/// Run one tool call without acknowledging it. Every error returns to the
+/// caller, which releases the message for redelivery; only the live nudge
+/// stays best effort because the scheduler recovers it.
+async fn handle_call(
+    message: &WorkMessage<ToolJob>,
+    store: &Store,
+    hosting: &Arc<crate::hosting::Hosting>,
+    bus: &Bus,
+    ack_wait: Duration,
+    resend_interval: Duration,
+) -> Result<()> {
+    // One lookup per tool call; the turn travels with the job
+    // so the execution path needs no further lookups.
+    let turn = store.request_turn_id(message.value.request_id).await?;
+    let result = message
+        .keep_alive_while(ack_wait / 3, hosting.call(message.value.clone(), turn))
+        .await;
+    result?;
+    // The completion stage lands in the same batch as
+    // the tool result inside `run`; only the live bus
+    // event is emitted here, never a second store write.
+    if let Some(turn) = turn {
+        bus.record_turn(&Bus::turn_event(
+            message.value.session_id,
+            turn,
+            swarmy_core::TurnStage::ToolCompleted,
+            Some(message.value.request_id),
+        ))
+        .await;
+    }
+    if let Some(session) = store.fetch_session(message.value.session_id).await?
+        && session.state == swarmy_core::SessionState::Runnable
+        && let Err(error) = bus
+            .nudge(
+                session.session_id,
+                session.head_seq,
+                turn,
+                resend_interval,
+                false,
+            )
+            .await
+    {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "tool completion nudge failed; scheduler will recover");
+    }
+    Ok(())
+}
+
+/// The only place that acknowledges or releases a tool message. It runs
+/// after `handle_call` returns, so any error means no acknowledgement was
+/// ever sent and the message must be released for redelivery.
+async fn settle(message: &WorkMessage<ToolJob>, outcome: Result<()>) {
+    match outcome {
+        Ok(()) => {
+            if let Err(error) = message.acknowledge().await {
+                tracing::warn!(error = %swarmy_core::error_chain(&error), request_id = %message.value.request_id, "tool call acknowledgement failed; NATS redelivers after ack wait");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(error = %swarmy_core::error_chain(&*error), request_id = %message.value.request_id, "sandbox tool call failed; released for redelivery");
+            release(message).await;
+        }
+    }
+}
+
+/// Release a failed call for redelivery after a short delay. A failed
+/// release needs no further action: the acknowledgement deadline expires
+/// and NATS redelivers anyway.
+async fn release(message: &WorkMessage<ToolJob>) {
+    if let Err(error) = message
+        .negative_acknowledge(Some(Duration::from_secs(2)))
+        .await
+    {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), request_id = %message.value.request_id, "tool call release failed; NATS redelivers after ack wait");
     }
 }
 
@@ -822,13 +878,6 @@ mod tests {
                     .start_exited(&format!("true # {index}"), epoch)
                     .await,
             );
-            // Stagger starts so mtime ordering is deterministic for the
-            // newest-first assertion; the spacing is the point.
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "start-time spacing makes mtime ordering deterministic"
-            )]
-            std::thread::sleep(std::time::Duration::from_millis(2));
         }
         ids
     }
@@ -890,6 +939,61 @@ mod tests {
         let command = record["command"].as_str().unwrap_or_default();
         assert_eq!(command.len(), 512);
         assert!(command.ends_with("..."));
+    }
+
+    #[tokio::test]
+    async fn failed_call_is_released_for_redelivery() {
+        let Some(stack) = swarmy_testkit::Stack::load("toolserver") else {
+            return;
+        };
+        let mut guard = swarmy_testkit::StackGuard::new(&stack);
+        let bus = swarmy_bus::Bus::connect(
+            &stack.nats_url,
+            swarmy_bus::Config {
+                prefix: Some(swarmy_bus::SubjectToken::new(&stack.prefix).unwrap()),
+                ..swarmy_bus::Config::default()
+            },
+        )
+        .await
+        .unwrap();
+        let node = NodeId::from_ulid(ulid::Ulid::generate());
+        let queue = swarmy_bus::WorkQueue::NodeTools(node);
+        bus.setup(std::slice::from_ref(&queue)).await.unwrap();
+        let session = swarmy_core::SessionId::from_ulid(ulid::Ulid::generate());
+        let job = swarmy_core::ToolJob {
+            session_id: session,
+            request_id: swarmy_core::RequestId::for_step(session, 1),
+            call_id: swarmy_core::ToolCallId("bash".into()),
+            step: 1,
+            arguments: swarmy_core::SandboxArguments::Bash(swarmy_core::BashArguments {
+                command: "true".into(),
+                timeout_ms: 120_000,
+                yield_seconds: 10,
+                output_budget_bytes: 32_768,
+            }),
+        };
+        bus.publish_work(&queue, &job).await.unwrap();
+        let mut messages = bus.consume::<swarmy_core::ToolJob>(&queue).await.unwrap();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(10), messages.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.value.request_id, job.request_id);
+        super::settle(&first, Err(anyhow::anyhow!("injected store failure"))).await;
+        let second = tokio::time::timeout(std::time::Duration::from_secs(10), messages.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.value.request_id, job.request_id);
+        super::settle(&second, Ok(())).await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(3), messages.next())
+                .await
+                .is_err()
+        );
+        guard.cleanup().await;
     }
 }
 

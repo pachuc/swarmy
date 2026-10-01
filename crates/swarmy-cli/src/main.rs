@@ -364,12 +364,26 @@ fn read_confirmation(message: &str) -> anyhow::Result<String> {
 /// Documented `swarmy ...` commands resolve against the real clap tree.
 #[cfg(test)]
 mod docs_command_tests {
+    #![deny(clippy::disallowed_methods)]
     #[test]
     fn markdown_swarmy_commands_match_the_clap_tree() {
         use clap::CommandFactory;
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../");
         let command = crate::Cli::command();
-        swarmy_core::test_support::check_docs_commands(&root, &[("swarmy", &command)])
+        swarmy_testkit::check_docs_commands(&root, &[("swarmy", &command)])
             .expect("documented swarmy commands match the CLI tree");
+    }
+
+    #[test]
+    fn a_binary_the_docs_never_invoke_fails_the_check() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../");
+        let command = clap::Command::new("swarmy-undocumented");
+        let error =
+            swarmy_testkit::check_docs_commands(&root, &[("swarmy-undocumented", &command)])
+                .expect_err("a walk that extracts no commands must fail");
+        assert!(
+            error.contains("no documented commands extracted for swarmy-undocumented"),
+            "{error}"
+        );
     }
 }

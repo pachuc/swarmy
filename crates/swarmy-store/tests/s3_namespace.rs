@@ -3,12 +3,16 @@
 //! whole bucket. Set `SWARMY_S3_TEST_BUCKET` in addition to the usual S3/FDB env.
 use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
 
+use bytes::Bytes;
 use foundationdb::tuple::Subspace;
 use futures::{FutureExt, StreamExt, TryStreamExt, stream};
-use object_store::{ObjectStore, path::Path};
-use swarmy_config::{GarbageCollection, Settings};
+use object_store::{ObjectStore, PutMode, path::Path};
+use swarmy_config::{BucketCredentials, BucketSpec, GarbageCollection, ObjectPrefix, Settings};
 use swarmy_core::{CHUNK_SIZE, ContentHash, ImageTag, ManifestId};
-use swarmy_store::{Store, blob::ObjectBlobStore};
+use swarmy_store::{
+    Store,
+    blob::{BlobStore, ObjectBlobStore},
+};
 use swarmy_volume::{ChunkStore, Manifest, ManifestBuilder, gc::collect};
 
 const OBJECTS: usize = 1005;
@@ -18,21 +22,35 @@ fn chunk_path(hash: ContentHash) -> Path {
     Path::from(format!("chunks/{}/{hex}", &hex[..2]))
 }
 
-/// Wait until the orphans age past the collector's grace cutoff. S3
+/// Wait until every orphan ages past the collector's grace cutoff. S3
 /// last-modified has second precision, so once the integer second ticks two
-/// past the write the object is a candidate under any truncation of the
-/// one-second grace cutoff.
-async fn wait_orphans_aged(objects: &Arc<dyn ObjectStore>, path: &Path) {
+/// past the youngest write every object is a candidate under any truncation
+/// of the one-second grace cutoff. One path is not enough: the concurrent
+/// seed writes can span the grace window, so a tail written after the first
+/// path aged would still be too young for the collector to count.
+async fn wait_orphans_aged(objects: &Arc<dyn ObjectStore>, paths: &[Path]) {
     swarmy_testkit::eventually(
         "orphans age past the grace period",
         Duration::from_secs(30),
         async || {
-            let modified = objects.head(path).await.unwrap().last_modified.timestamp();
+            let listed: Vec<object_store::ObjectMeta> = objects
+                .list(Some(&Path::from("chunks/01")))
+                .try_collect()
+                .await
+                .unwrap();
+            if listed.len() != paths.len() {
+                return None;
+            }
+            let youngest = listed
+                .iter()
+                .map(|meta| meta.last_modified.timestamp())
+                .max()
+                .unwrap();
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
-            (now >= u64::try_from(modified).unwrap() + 2).then_some(())
+            (now >= u64::try_from(youngest).unwrap() + 2).then_some(())
         },
     )
     .await;
@@ -46,9 +64,9 @@ async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore)
 
     // S3 last-modified has second precision and the collector truncates its cutoff.
     // Poll the same timestamp source instead of a fixed wait: once the
-    // integer second ticks two past the write, the object is a candidate
-    // under any truncation of the one-second grace cutoff.
-    wait_orphans_aged(&objects, &paths[0]).await;
+    // integer second ticks two past the youngest write, every object is a
+    // candidate under any truncation of the one-second grace cutoff.
+    wait_orphans_aged(&objects, &paths).await;
     let policy = GarbageCollection {
         grace_secs: Duration::from_secs(1),
         ..GarbageCollection::default()
@@ -215,11 +233,11 @@ async fn check_listings(settings: &Settings, objects: &dyn ObjectStore, paths: &
 #[tokio::test]
 async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
     for name in ["SWARMY_S3_ENDPOINT", "SWARMY_FDB_CLUSTER_FILE"] {
-        if swarmy_core::test_support::stack_env_os(name).is_none() {
+        if swarmy_testkit::require_stack(name).is_none() {
             return;
         }
     }
-    let Some(bucket) = swarmy_core::test_support::optional_env("SWARMY_S3_TEST_BUCKET") else {
+    let Some(bucket) = swarmy_testkit::optional_env("SWARMY_S3_TEST_BUCKET") else {
         return;
     };
     let mut settings = swarmy_testkit::test_settings(&[
@@ -231,7 +249,7 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
         "SWARMY_S3_REGION",
     ]);
     settings.s3.bucket = bucket;
-    settings.s3.prefix = swarmy_config::ObjectPrefix::default();
+    settings.s3.prefix = ObjectPrefix::default();
     assert!(
         !settings.s3.bucket.contains('/'),
         "test bucket must be a physical bucket"
@@ -241,7 +259,7 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
         raw.list(None).try_next().await.unwrap().is_none(),
         "SWARMY_S3_TEST_BUCKET must be empty and dedicated to this test"
     );
-    let _network = swarmy_store::boot();
+    swarmy_testkit::boot_fdb();
     let db = Arc::new(swarmy_store::database(&settings.store.cluster_file).unwrap());
     for prefix in ["", "runs/nested"] {
         settings.s3.prefix = prefix.parse().unwrap();
@@ -283,4 +301,104 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
             std::panic::resume_unwind(panic);
         }
     }
+}
+
+#[tokio::test]
+async fn bucket_spec_with_static_keys_round_trips_objects() {
+    // Runs the same object operations through the new bucket description
+    // with static keys and a custom endpoint. Skips without the dev stack.
+    if swarmy_testkit::require_stack("SWARMY_S3_ENDPOINT").is_none() {
+        return;
+    }
+    let loaded = Settings::load().unwrap().settings;
+    let spec = BucketSpec {
+        endpoint: loaded.s3.endpoint.clone(),
+        region: loaded.s3.region.clone(),
+        bucket: loaded.s3.bucket.clone(),
+        prefix: ObjectPrefix::default(),
+        credentials: BucketCredentials::StaticKeys {
+            access_key: loaded.s3.access_key.clone(),
+            secret_key: loaded.s3.secret_key.clone(),
+        },
+        conditional_create: true,
+    };
+    for conditional_create in [true, false] {
+        // The description reaches the client the way the nodes read it:
+        // region filled, coordinates applied to settings.
+        let mut owned = spec.clone();
+        owned.resolve_region(&loaded.s3.region);
+        let mut settings = Settings::default();
+        owned.apply_to_settings(&mut settings);
+        settings.s3.conditional_create = conditional_create;
+        let store = swarmy_store::objects::from_settings(&settings).unwrap();
+        let scope = format!("bucket-spec-test-{}", ulid::Ulid::generate());
+        let path = Path::from(format!("{scope}/object"));
+        store.put(&path, "payload".into()).await.unwrap();
+        assert_eq!(
+            store.get(&path).await.unwrap().bytes().await.unwrap(),
+            "payload"
+        );
+        assert_eq!(store.head(&path).await.unwrap().location, path);
+        // A create-only PUT of identical bytes stays safe in both modes.
+        let result = store
+            .put_opts(&path, "payload".into(), PutMode::Create.into())
+            .await;
+        if conditional_create {
+            assert!(
+                matches!(result, Err(object_store::Error::AlreadyExists { .. })),
+                "unexpected {result:?}"
+            );
+        } else {
+            result.unwrap();
+        }
+        store.delete(&path).await.unwrap();
+        assert!(matches!(
+            store.head(&path).await,
+            Err(object_store::Error::NotFound { .. })
+        ));
+    }
+}
+
+#[tokio::test]
+async fn s3_namespace_lists_relative_keys_and_keeps_siblings() {
+    if swarmy_testkit::require_stack("SWARMY_S3_ENDPOINT").is_none() {
+        return;
+    }
+    let mut settings = Settings::load().unwrap().settings;
+    settings.s3.prefix = format!("prefix-test-{}", ulid::Ulid::generate())
+        .parse()
+        .unwrap();
+    let raw = swarmy_store::objects::from_settings(&settings).unwrap();
+    let root = ObjectBlobStore::new(raw.clone());
+    settings.s3.prefix = format!("{}/inside", settings.s3.prefix.as_str())
+        .parse()
+        .unwrap();
+    let scoped_raw = swarmy_store::objects::from_settings(&settings).unwrap();
+    let scoped = ObjectBlobStore::new(scoped_raw.clone());
+    let payload = Bytes::from_static(b"prefix regression");
+    let outside = root.put("outside", payload.clone()).await;
+    let written = scoped.put("chunks/value", payload.clone()).await;
+    let read = scoped.get("chunks/value").await;
+    let listing = scoped_raw
+        .list(Some(&Path::from("chunks/")))
+        .try_collect::<Vec<_>>()
+        .await;
+    let deleted = scoped.delete("chunks/value").await;
+    let sibling = root.get("outside").await;
+    let remaining = raw.list(None).try_collect::<Vec<_>>().await;
+    // Finish cleanup before assertions so a failed listing does not leave
+    // this test's sentinel behind in the shared development bucket.
+    let cleanup = root.delete("outside").await;
+    outside.unwrap();
+    written.unwrap();
+    deleted.unwrap();
+    cleanup.unwrap();
+    assert_eq!(read.unwrap(), payload);
+    assert_eq!(sibling.unwrap(), payload);
+    let listing = listing.unwrap();
+    assert_eq!(listing.len(), 1);
+    assert_eq!(listing[0].location, Path::from("chunks/value"));
+    let remaining = remaining.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].location, Path::from("outside"));
 }

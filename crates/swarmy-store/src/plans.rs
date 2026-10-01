@@ -34,9 +34,7 @@ impl Store {
                 error: error.clone(),
             },
         };
-        let seq = expected_head
-            .checked_add(1)
-            .ok_or(StoreError::Storage(crate::StorageError::SequenceOverflow))?;
+        let seq = crate::seq_after(expected_head, 1)?;
         let event = Event::ToolCallCompleted {
             seq,
             request_id,

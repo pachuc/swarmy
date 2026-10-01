@@ -524,6 +524,7 @@ impl VolumeDevice {
     /// not hold the dirty-store lock; overwritten generations remain pending.
     /// # Errors
     /// Returns local read or object storage errors. A later call retries failures.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn upload_dirty(&self) -> Result<()> {
         self.upload_settled(Duration::ZERO).await
     }
@@ -715,6 +716,8 @@ impl VolumeDevice {
             return;
         };
         let device = Arc::clone(self);
+        // Single-flight readahead prefetch, bounded by the try_lock guard.
+        // ast-grep-ignore: no-spawn-in-libraries
         tokio::spawn(async move {
             let _guard = guard;
             let end = (first + u64::from(device.readahead_chunks))
@@ -724,7 +727,7 @@ impl VolumeDevice {
                     .await;
             for result in results {
                 if let Err(error) = result {
-                    tracing::debug!(%error, "readahead failed; demand reads will retry");
+                    tracing::debug!(error = %swarmy_core::error_chain(&error), "readahead failed; demand reads will retry");
                 }
             }
         });

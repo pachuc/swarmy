@@ -29,7 +29,7 @@ mod nudge;
 pub mod subjects;
 mod turn;
 
-use std::{future::Future, marker::PhantomData, time::Duration};
+use std::{future::Future, marker::PhantomData, ops::ControlFlow, time::Duration};
 
 use async_nats::jetstream::{
     self,
@@ -303,7 +303,7 @@ impl Bus {
             let request = match decode::<WakeRequest>(&message.payload) {
                 Ok(request) => request,
                 Err(error) => {
-                    tracing::warn!(%error, "invalid scheduler wake request");
+                    tracing::warn!(error = %swarmy_core::error_chain(&error), "invalid scheduler wake request");
                     continue;
                 }
             };
@@ -316,7 +316,7 @@ impl Bus {
             }
             .await;
             if let Err(error) = result {
-                tracing::warn!(session_id = %request.session_id, %error, "wake reply failed");
+                tracing::warn!(session_id = %request.session_id, error = %swarmy_core::error_chain(&error), "wake reply failed");
             }
         }
         Err(Error::Scheduler("wake subscription closed".into()))
@@ -481,6 +481,14 @@ impl Bus {
             payload: PhantomData,
         })
     }
+
+    /// The full NATS subject `feed` publishes on, including the bus prefix.
+    /// Tests ask the server's monitoring endpoint about this subject to wait
+    /// for a reader to subscribe before publishing.
+    #[must_use]
+    pub fn live_subject(&self, feed: LiveFeed) -> String {
+        self.config.subject(&feed.subject())
+    }
 }
 
 pub struct WorkMessages<T> {
@@ -513,13 +521,6 @@ pub struct WorkMessage<T> {
 }
 
 impl<T> WorkMessage<T> {
-    /// Delivery attempts start at one and include negative acknowledgements.
-    /// # Errors
-    /// Returns an error when `JetStream` delivery metadata is malformed.
-    pub fn delivery_count(&self) -> Result<i64, Error> {
-        self.message.info().map(|info| info.delivered).map_err(nats)
-    }
-
     /// Finish this delivery and wait for the server to confirm the acknowledgement.
     ///
     /// # Errors
@@ -561,6 +562,66 @@ impl<T> WorkMessage<T> {
             .ack_with(jetstream::AckKind::Progress)
             .await
             .map_err(nats)
+    }
+
+    /// Run `work` while holding this delivery: one `period` after the call, and
+    /// every `period` after that, extend the ack deadline. Pick a period well
+    /// under the consumer's `ack_wait`; callers use `ack_wait / 3`. Returns
+    /// `work`'s result. Once `work` finishes the deadline is no longer extended
+    /// and the message is neither acknowledged nor rejected: the caller decides.
+    ///
+    /// # Errors
+    /// Returns `work`'s error, or a failed extension converted into `E`; a failed
+    /// extension drops `work` at its current await point.
+    ///
+    /// # Panics
+    /// Panics when `period` is zero.
+    pub async fn keep_alive_while<R, E, F>(&self, period: Duration, work: F) -> Result<R, E>
+    where
+        F: Future<Output = Result<R, E>>,
+        E: From<Error>,
+    {
+        self.keep_alive_with(period, work, || {
+            std::future::ready(Ok(ControlFlow::Continue(())))
+        })
+        .await
+    }
+
+    /// Like [`Self::keep_alive_while`], but after each successful extension runs
+    /// `on_tick`, for example to renew a store lease. `Ok(ControlFlow::Break(value))`
+    /// stops `work` and returns `Ok(value)`; an error stops `work` and is returned.
+    ///
+    /// # Errors
+    /// As [`Self::keep_alive_while`], plus errors from `on_tick`.
+    ///
+    /// # Panics
+    /// Panics when `period` is zero.
+    pub async fn keep_alive_with<R, E, F, H, HF>(
+        &self,
+        period: Duration,
+        work: F,
+        mut on_tick: H,
+    ) -> Result<R, E>
+    where
+        F: Future<Output = Result<R, E>>,
+        E: From<Error>,
+        H: FnMut() -> HF,
+        HF: Future<Output = Result<ControlFlow<R>, E>>,
+    {
+        tokio::pin!(work);
+        let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                result = &mut work => return result,
+                _ = ticks.tick() => {
+                    self.extend_deadline().await?;
+                    if let ControlFlow::Break(value) = on_tick().await? {
+                        return Ok(value);
+                    }
+                }
+            }
+        }
     }
 }
 

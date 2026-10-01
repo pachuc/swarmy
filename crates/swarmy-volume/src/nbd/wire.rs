@@ -208,7 +208,7 @@ async fn write_reply(
         Ok(_) => 0,
         Err(VolumeError::InvalidRequest) => 22,
         Err(error) => {
-            tracing::warn!(%error, command = request.command, offset = request.offset, length = request.length, "NBD request failed");
+            tracing::warn!(error = %swarmy_core::error_chain(error), command = request.command, offset = request.offset, length = request.length, "NBD request failed");
             5
         }
     };

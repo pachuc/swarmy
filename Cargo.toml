@@ -9,11 +9,12 @@ publish = false
 license = "MIT"
 
 [workspace.lints.rust]
-# Deny rather than forbid: the store and volume crates must speak to kernel
-# block-device and VM interfaces and opt back in per module with a justification.
+# Deny rather than forbid, so the two places that need unsafe code (the
+# FoundationDB network boot in swarmy-store and the NBD ioctl wrapper in
+# swarmy-volume) can opt back in per item with a reason and a SAFETY comment.
 unsafe_code = "deny"
-# Part 1 (task n0sxwd): public surface stays minimal and paths stay short.
-# Both are fixed mechanically with `cargo fix`.
+# Keep the public surface minimal and paths short. Both are fixed
+# mechanically with `cargo fix`.
 unreachable_pub = "deny"
 unused_qualifications = "deny"
 
@@ -27,29 +28,26 @@ large_stack_frames = "deny"
 # opts in with its own deny (workspace lints cannot be test-scoped, and
 # production code sleeps legitimately in backoffs and intervals).
 disallowed_methods = "allow"
-# Part 1 (task n0sxwd): exceptions. Kept in one block so the parallel lint
-# task's rebase is trivial. Every `allow` needs a reason; `allow` itself
-# stays legal for lints that only fire under some feature combinations.
+# Every `allow` needs a reason. Prefer `expect`; `allow` stays legal for lints
+# that fire under some feature combinations and not others.
 allow_attributes_without_reason = "deny"
-# Panics: `todo!`, `unimplemented!`, and `dbg!` never land in the tree.
+# `todo!`, `unimplemented!`, and `dbg!` never land in the tree.
 todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
-# Part 2 (task kkr5bd): size, shape, and swallowed errors. Kept in one block
-# so the parallel lint task's rebase is trivial.
-# Complexity and nesting are nursery lints Clippy leaves off; the thresholds
-# in clippy.toml are measured in the task pull request and only real
-# offenders fail. `too_many_lines` (100) and `too_many_arguments` (7) ride
-# along with pedantic at the owners' defaults.
+# Complexity and nesting are nursery lints that Clippy leaves off; their
+# thresholds live in clippy.toml. `too_many_lines` (pedantic, 100 lines) and
+# `too_many_arguments` (in `all`, 7 arguments) apply at Clippy's defaults.
 cognitive_complexity = "deny"
 excessive_nesting = "deny"
 # Swallowed errors: best-effort ignores go through
 # `swarmy_core::ignore_best_effort`, which logs the failure at debug.
-# `map_err_ignore` stays allowed: its 155 sites translate a low-level error
-# into a domain error, and naming the discarded source at each site would be
-# noise, not information (see the task pull request).
+# `map_err_ignore` stays allowed: those sites translate a low-level error into
+# a domain error, and naming the discarded source at each one would be noise.
 let_underscore_must_use = "deny"
 unused_result_ok = "deny"
+# Every unsafe block states the contract it relies on in a SAFETY comment.
+undocumented_unsafe_blocks = "deny"
 
 [workspace.dependencies]
 swarmy-version = { path = "crates/swarmy-version" }
@@ -78,7 +76,6 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 unicode-width = "0.2"
 anyhow = "1"
 axum = "0.8"
-tower = "0.5"
 swarmy-api-types = { path = "crates/swarmy-api-types" }
 swarmy-client = { path = "crates/swarmy-client" }
 swarmy-chat = { path = "crates/swarmy-chat" }
@@ -130,9 +127,10 @@ swarmy-core = { path = "crates/swarmy-core" }
 swarmy-image = { path = "crates/swarmy-image" }
 swarmy-bus = { path = "crates/swarmy-bus" }
 swarmy-cloud = { path = "crates/swarmy-cloud" }
-# Dependents get no swarmy-llm default features. The API, gateway, and CLI
-# enable cloud providers for direct model probes and inference; node-side
-# services do not need their cloud SDKs.
+# Dependents get no swarmy-llm default features. swarmy-api and swarmy-gateway
+# turn the cloud providers back on through their own default features (for
+# direct model probes and inference); every other crate needs only model
+# metadata and the offline protocols, not the cloud SDKs.
 swarmy-llm = { path = "crates/swarmy-llm", default-features = false }
 swarmy-sandbox = { path = "crates/swarmy-sandbox" }
 swarmy-volume = { path = "crates/swarmy-volume" }

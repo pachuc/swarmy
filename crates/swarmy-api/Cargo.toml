@@ -17,6 +17,7 @@ default = ["azure", "bedrock", "gemini"]
 azure = ["swarmy-llm/azure"]
 bedrock = ["swarmy-llm/bedrock"]
 gemini = ["swarmy-llm/gemini"]
+test-support = []
 
 [dependencies]
 async-trait.workspace = true
@@ -31,6 +32,7 @@ swarmy-image.workspace = true
 swarmy-volume.workspace = true
 object_store.workspace = true
 tempfile.workspace = true
+# The fake provider is the default development provider; e2e, chaos and remote acceptance run the real binary against it.
 swarmy-llm = { workspace = true, features = ["fake"] }
 swarmy-version.workspace = true
 jiff.workspace = true
@@ -47,12 +49,13 @@ futures.workspace = true
 async-stream.workspace = true
 
 [dev-dependencies]
-swarmy-core = { workspace = true, features = ["test-support"] }
+swarmy-api = { path = ".", features = ["test-support"] }
 swarmy-store = { workspace = true, features = ["test-support"] }
-swarmy-testkit.workspace = true
+swarmy-testkit = { workspace = true, features = ["script"] }
+tempfile.workspace = true
+tracing-subscriber.workspace = true
 
 swarmy-client.workspace = true
 reqwest.workspace = true
-foundationdb.workspace = true
 object_store.workspace = true
 unicode-width.workspace = true

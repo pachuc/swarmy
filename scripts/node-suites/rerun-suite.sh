@@ -7,7 +7,7 @@ ref=$1; pkg=$2; suite=$3
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 export SWARMY_FDB_LIB_DIR="$HOME/.local/lib"
 cd ~/chaos
-git fetch -q origin "$ref" && git checkout -q -B suite "${REV:-origin/$ref}"
+git fetch -q origin "$ref" && git checkout -q -B suite "${REV:-origin/$ref}" || { echo "checkout failed"; echo "SUITES_EXIT=1"; exit 2; }
 echo "== $ref at $(git rev-parse --short HEAD)"
 sudo systemctl stop swarmyd swarmy-tunnel
 trap "sudo systemctl start swarmy-tunnel swarmyd" EXIT
@@ -27,6 +27,9 @@ CARGO_BUILD_JOBS=8 cargo build --locked --tests -p swarmy-chaos -p swarmyd -p sw
 tail -1 ~/suite-build.log
 sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev 2>&1 | tail -1
 bash "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/nbd-orphans.sh"
-sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev RUST_BACKTRACE=0 "$(command -v cargo)" test --locked -p "$pkg" --test "$suite" -- --test-threads=1 --nocapture 2>&1 | grep -vE "^\s+(Compiling|Finished|Running|Blocking)"
+rc=0
+if sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev RUST_BACKTRACE=0 "$(command -v cargo)" test --locked -p "$pkg" --test "$suite" -- --test-threads=1 --nocapture 2>&1 | { grep -vE "^\s+(Compiling|Finished|Running|Blocking)" || true; }; then :; else rc=1; fi
 scripts/dev-stack.sh stop >/dev/null 2>&1 || true
 echo "RERUN_SUITE_DONE"
+echo "SUITES_EXIT=$rc"
+exit "$rc"

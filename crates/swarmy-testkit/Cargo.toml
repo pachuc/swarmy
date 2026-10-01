@@ -11,19 +11,24 @@ workspace = true
 [features]
 default = ["stack"]
 # The stack feature covers everything that touches FoundationDB, the store,
-# or the bus: the stack gate, the cleanup guard, and the metadata image
-# fixture. Suites that only need the light helpers (`eventually`, sibling
-# binaries, the fake-provider script builder, test settings) disable default
-# features so their test binaries do not link the FoundationDB client.
+# or the bus: the cleanup guard and the metadata image fixture. Suites that
+# only need the light helpers (`eventually`, sibling binaries, the stack
+# gate, test settings, the docs walker) disable default features so their
+# test binaries do not link the FoundationDB client.
 stack = ["dep:swarmy-store", "dep:foundationdb", "dep:async-nats"]
+# The fake-provider script builder needs swarmy-llm's response types; only
+# the e2e suites that drive scripted providers enable it.
+script = ["dep:swarmy-llm"]
 
 [dependencies]
-swarmy-core = { workspace = true, features = ["test-support"] }
+swarmy-core.workspace = true
 swarmy-config.workspace = true
 swarmy-store = { workspace = true, features = ["test-support"], optional = true }
-swarmy-llm.workspace = true
+swarmy-llm = { workspace = true, optional = true }
+clap.workspace = true
 async-nats = { workspace = true, optional = true }
 foundationdb = { workspace = true, optional = true }
+reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 ulid.workspace = true

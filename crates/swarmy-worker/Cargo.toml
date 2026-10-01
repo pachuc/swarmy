@@ -29,9 +29,5 @@ tracing.workspace = true
 ulid.workspace = true
 
 [dev-dependencies]
-swarmy-core = { workspace = true, features = ["test-support"] }
 swarmy-store = { workspace = true, features = ["test-support"] }
 swarmy-testkit.workspace = true
-
-async-nats.workspace = true
-foundationdb.workspace = true

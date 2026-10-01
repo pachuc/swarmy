@@ -14,6 +14,16 @@ fn causes(error: &StoreError) -> Vec<String> {
 }
 
 #[test]
+fn seq_after_stops_at_u64_max() {
+    assert!(matches!(crate::seq_after(u64::MAX - 1, 1), Ok(u64::MAX)));
+    assert!(matches!(crate::seq_after(7, 0), Ok(7)));
+    assert!(matches!(
+        crate::seq_after(u64::MAX, 1),
+        Err(StoreError::Storage(StorageError::SequenceOverflow))
+    ));
+}
+
+#[test]
 fn tuple_unpack_failures_keep_their_cause() {
     let error = StoreError::from(foundationdb::tuple::PackError::MissingBytes);
     assert!(matches!(

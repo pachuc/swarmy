@@ -349,7 +349,10 @@ async fn agent_inference_settings_create_and_independent_updates() {
             expected.reasoning_effort = Some(effort);
         }
         assert_eq!(
-            store.set_agent(expected.agent_id, &patch).await.unwrap(),
+            store
+                .set_agent_with_resets(expected.agent_id, &patch, &[])
+                .await
+                .unwrap(),
             expected
         );
         assert_eq!(
@@ -379,8 +382,8 @@ async fn concurrent_settings_and_rejected_updates(
         ..Default::default()
     };
     let (a, b) = tokio::join!(
-        store.set_agent(expected.agent_id, &prompt),
-        store.set_agent(expected.agent_id, &model)
+        store.set_agent_with_resets(expected.agent_id, &prompt, &[]),
+        store.set_agent_with_resets(expected.agent_id, &model, &[])
     );
     a.unwrap();
     b.unwrap();
@@ -395,7 +398,9 @@ async fn concurrent_settings_and_rejected_updates(
         ..Default::default()
     };
     assert!(matches!(
-        store.set_agent(expected.agent_id, &oversized).await,
+        store
+            .set_agent_with_resets(expected.agent_id, &oversized, &[])
+            .await,
         Err(StoreError::Storage(swarmy_store::StorageError::TooLarge))
     ));
     assert_eq!(
@@ -427,7 +432,7 @@ async fn concurrent_settings_and_rejected_updates(
     store.delete_agent(expected.agent_id).await.unwrap();
     assert!(matches!(
         store
-            .set_agent(expected.agent_id, &AgentSettings::default())
+            .set_agent_with_resets(expected.agent_id, &AgentSettings::default(), &[])
             .await,
         Err(StoreError::Domain(swarmy_store::DomainError::AgentMissing))
     ));
@@ -670,12 +675,13 @@ async fn agent_memory_and_gpu_requirements_are_durable() {
     assert_eq!(agent.requirements.gpu, swarmy_core::GpuRequirement::Shared);
     let updated = test
         .store
-        .set_agent(
+        .set_agent_with_resets(
             agent.agent_id,
             &AgentSettings {
                 memory_mib: Some(3072),
                 ..Default::default()
             },
+            &[],
         )
         .await
         .unwrap();

@@ -240,8 +240,8 @@ mod tests {
     };
 
     fn test_store() -> Option<Store> {
-        let cluster = swarmy_core::test_support::stack_env("SWARMY_FDB_CLUSTER_FILE")?;
-        crate::test_network();
+        let cluster = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE")?;
+        swarmy_testkit::boot_fdb();
         Some(Store::with_subspace(
             Arc::new(Database::new(Some(&cluster)).unwrap()),
             Subspace::all().subspace(&("gateway-login-tests", ulid::Ulid::generate().to_string())),

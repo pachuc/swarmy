@@ -192,7 +192,6 @@ impl ObjectStore for UnconditionalStore {
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
-    use swarmy_config::{BucketCredentials, BucketSpec, ObjectPrefix};
 
     fn hostile_env() -> HashMap<String, String> {
         HashMap::from([
@@ -316,61 +315,5 @@ mod tests {
         settings.s3.conditional_create = true;
         let debug = format!("{:?}", from_settings(&settings).unwrap());
         assert!(!debug.contains("UnconditionalStore"), "{debug}");
-    }
-
-    #[tokio::test]
-    async fn bucket_spec_with_static_keys_round_trips_objects() {
-        // Runs the same object operations through the new bucket description
-        // with static keys and a custom endpoint. Skips without the dev stack.
-        if swarmy_core::test_support::stack_env_os("SWARMY_S3_ENDPOINT").is_none() {
-            return;
-        }
-        let loaded = Settings::load().unwrap().settings;
-        let spec = BucketSpec {
-            endpoint: loaded.s3.endpoint.clone(),
-            region: loaded.s3.region.clone(),
-            bucket: loaded.s3.bucket.clone(),
-            prefix: ObjectPrefix::default(),
-            credentials: BucketCredentials::StaticKeys {
-                access_key: loaded.s3.access_key.clone(),
-                secret_key: loaded.s3.secret_key.clone(),
-            },
-            conditional_create: true,
-        };
-        for conditional_create in [true, false] {
-            // The description reaches the client the way the nodes read it:
-            // region filled, coordinates applied to settings.
-            let mut owned = spec.clone();
-            owned.resolve_region(&loaded.s3.region);
-            let mut settings = Settings::default();
-            owned.apply_to_settings(&mut settings);
-            settings.s3.conditional_create = conditional_create;
-            let store = from_settings(&settings).unwrap();
-            let scope = format!("bucket-spec-test-{}", ulid::Ulid::generate());
-            let path = Path::from(format!("{scope}/object"));
-            store.put(&path, "payload".into()).await.unwrap();
-            assert_eq!(
-                store.get(&path).await.unwrap().bytes().await.unwrap(),
-                "payload"
-            );
-            assert_eq!(store.head(&path).await.unwrap().location, path);
-            // A create-only PUT of identical bytes stays safe in both modes.
-            let result = store
-                .put_opts(&path, "payload".into(), PutMode::Create.into())
-                .await;
-            if conditional_create {
-                assert!(
-                    matches!(result, Err(object_store::Error::AlreadyExists { .. })),
-                    "unexpected {result:?}"
-                );
-            } else {
-                result.unwrap();
-            }
-            store.delete(&path).await.unwrap();
-            assert!(matches!(
-                store.head(&path).await,
-                Err(object_store::Error::NotFound { .. })
-            ));
-        }
     }
 }

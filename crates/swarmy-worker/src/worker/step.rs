@@ -148,7 +148,7 @@ impl Worker {
         events: &mut Vec<Event>,
         before: &[Event],
     ) -> Result<()> {
-        let delivered = {
+        let delivery = {
             let token = lease.lock().await;
             self.store
                 .deliver_queued(
@@ -159,10 +159,11 @@ impl Worker {
                 )
                 .await?
         };
-        if !delivered.is_empty() {
-            session.head_seq += u64::try_from(delivered.len()).expect("queue bounded");
-            self.publish_events(session.session_id, &delivered).await?;
-            events.extend(delivered);
+        session.head_seq = delivery.head_seq;
+        if !delivery.events.is_empty() {
+            self.publish_events(session.session_id, &delivery.events)
+                .await?;
+            events.extend(delivery.events);
         }
         Ok(())
     }
@@ -324,14 +325,14 @@ impl Worker {
                     Event::InferenceFailed { .. } | Event::InferenceCompleted { .. }
                 )
             }) {
-                let error = error.clone();
-                tracing::warn!(session_id = %session.session_id, %error, "summary inference failed permanently");
+                let reason = error.clone();
+                tracing::warn!(session_id = %session.session_id, %reason, "summary inference failed permanently");
                 let notice = swarmy_core::Message {
                     id: MessageId::from_ulid(Ulid::generate()),
                     role: swarmy_core::MessageRole::System,
                     parts: vec![swarmy_core::Part::Text {
                         text: format!(
-                            "Summary inference failed permanently; this session could not continue automatically. Error: {error}"
+                            "Summary inference failed permanently; this session could not continue automatically. Error: {reason}"
                         ),
                     }],
                 };

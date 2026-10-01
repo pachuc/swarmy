@@ -2154,7 +2154,7 @@ dependencies = [
  "http 1.5.0",
  "hyper 1.11.1",
  "hyper-util",
- "rustls 0.23.44",
+ "rustls 0.23.45",
  "rustls-native-certs",
  "tokio",
  "tokio-rustls 0.26.5",
@@ -3132,7 +3132,7 @@ dependencies = [
  "quinn-proto",
  "quinn-udp",
  "rustc-hash 2.1.3",
- "rustls 0.23.44",
+ "rustls 0.23.45",
  "socket2 0.6.5",
  "thiserror 2.0.20",
  "tokio",
@@ -3153,7 +3153,7 @@ dependencies = [
  "rand_pcg",
  "ring",
  "rustc-hash 2.1.3",
- "rustls 0.23.44",
+ "rustls 0.23.45",
  "rustls-pki-types",
  "slab",
  "thiserror 2.0.20",
@@ -3414,7 +3414,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "quinn",
- "rustls 0.23.44",
+ "rustls 0.23.45",
  "rustls-native-certs",
  "rustls-pki-types",
  "serde",
@@ -3562,9 +3562,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.44"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "once_cell",
  "ring",
@@ -4082,13 +4082,13 @@ dependencies = [
  "axum",
  "base64",
  "blake3",
- "foundationdb",
  "futures",
  "jiff",
  "object_store",
  "reqwest",
  "serde",
  "serde_json",
+ "swarmy-api",
  "swarmy-api-types",
  "swarmy-bus",
  "swarmy-client",
@@ -4104,6 +4104,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "ulid",
  "unicode-width",
  "utoipa",
@@ -4166,6 +4167,7 @@ dependencies = [
  "swarmy-llm",
  "swarmy-sandbox",
  "swarmy-store",
+ "swarmy-testkit",
  "swarmy-version",
  "swarmy-volume",
  "tempfile",
@@ -4206,6 +4208,7 @@ dependencies = [
  "serde",
  "serde_json",
  "swarmy-api-types",
+ "swarmy-bus",
  "swarmy-chat",
  "swarmy-client",
  "swarmy-cloud",
@@ -4299,7 +4302,6 @@ name = "swarmy-core"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "clap",
  "jiff",
  "postcard",
  "serde",
@@ -4379,6 +4381,7 @@ dependencies = [
  "swarmy-harness",
  "swarmy-llm",
  "swarmy-store",
+ "swarmy-testkit",
  "swarmy-version",
  "thiserror 2.0.20",
  "tokio",
@@ -4437,6 +4440,7 @@ dependencies = [
  "swarmy-catalog",
  "swarmy-core",
  "swarmy-llm",
+ "swarmy-testkit",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -4514,7 +4518,9 @@ name = "swarmy-testkit"
 version = "0.1.0"
 dependencies = [
  "async-nats",
+ "clap",
  "foundationdb",
+ "reqwest",
  "serde_json",
  "swarmy-config",
  "swarmy-core",
@@ -4563,6 +4569,7 @@ dependencies = [
  "swarmy-image",
  "swarmy-store",
  "swarmy-testkit",
+ "swarmy-volume",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -4576,9 +4583,7 @@ name = "swarmy-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-nats",
  "blake3",
- "foundationdb",
  "futures",
  "jiff",
  "rustix",
@@ -4604,7 +4609,6 @@ dependencies = [
  "anyhow",
  "base64",
  "clap",
- "foundationdb",
  "jiff",
  "object_store",
  "rustix",
@@ -4820,7 +4824,7 @@ version = "0.26.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0c85f2c3ef0b1cd58b36682f4b17aaa995f0e5db534d85692b4903abce21f67"
 dependencies = [
- "rustls 0.23.44",
+ "rustls 0.23.45",
  "tokio",
 ]
 

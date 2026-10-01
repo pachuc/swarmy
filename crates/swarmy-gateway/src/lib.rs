@@ -1,4 +1,6 @@
-//! Provider discovery shared by the gateway and local diagnostics.
+//! The inference gateway engine: claims inference work from the bus,
+//! resolves provider credentials, streams provider responses, and commits
+//! terminal events to the store. `main.rs` only assembles and serves it.
 mod attempt;
 mod commit;
 pub mod config;
@@ -41,13 +43,3 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
-
-/// Boot the `FoundationDB` network once per test process. The engine and
-/// credential test modules share this instead of keeping separate guards:
-/// the client library panics if the API version is selected twice.
-#[cfg(test)]
-pub(crate) fn test_network() {
-    static NETWORK: std::sync::OnceLock<foundationdb::api::NetworkAutoStop> =
-        std::sync::OnceLock::new();
-    NETWORK.get_or_init(swarmy_store::boot);
-}

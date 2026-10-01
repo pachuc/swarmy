@@ -150,6 +150,36 @@ pub(crate) fn anthropic_resets(headers: &reqwest::header::HeaderMap) -> BTreeMap
         .collect()
 }
 
+/// Remaining-quota and reset headers captured before a stream starts and
+/// handed to the final `Response` once.
+#[derive(Debug, Default)]
+pub(crate) struct QuotaHeaders {
+    remaining: BTreeMap<String, u64>,
+    resets: BTreeMap<String, u64>,
+}
+
+impl QuotaHeaders {
+    pub(crate) fn openai(headers: &reqwest::header::HeaderMap) -> Self {
+        Self {
+            remaining: openai_remaining(headers),
+            resets: openai_resets(headers),
+        }
+    }
+    pub(crate) fn anthropic(headers: &reqwest::header::HeaderMap) -> Self {
+        Self {
+            remaining: anthropic_remaining(headers),
+            resets: anthropic_resets(headers),
+        }
+    }
+    /// Move `(remaining, resets)` out, leaving both empty.
+    pub(crate) fn take(&mut self) -> (BTreeMap<String, u64>, BTreeMap<String, u64>) {
+        (
+            std::mem::take(&mut self.remaining),
+            std::mem::take(&mut self.resets),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]

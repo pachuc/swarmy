@@ -406,10 +406,11 @@ async fn gc_run_starts_sweeps_and_reports_counts() {
     let Some(fixture) = Fixture::new().await else {
         return;
     };
+    let key = Ulid::generate().to_string();
     let started = fixture
         .client
         .start_gc_run(&api::StartGcRun {
-            idempotency_key: Ulid::generate().to_string(),
+            idempotency_key: key.clone(),
             dry_run: true,
             grace_seconds: None,
         })
@@ -427,6 +428,16 @@ async fn gc_run_starts_sweeps_and_reports_counts() {
     assert!(run.error.is_none());
     assert_eq!(run.deleted, 0);
     // Retrying the start with the same key returns the same run.
+    let retried = fixture
+        .client
+        .start_gc_run(&api::StartGcRun {
+            idempotency_key: key,
+            dry_run: true,
+            grace_seconds: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(retried.run_id, started.run_id);
     let missing = fixture.client.gc_run("01ARZ3NDEKTSV4RRFFQ69G5FAV").await;
     assert!(missing.is_err());
 }

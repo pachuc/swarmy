@@ -266,7 +266,7 @@ impl RuncRuntime {
             )
             .await
         {
-            tracing::warn!(%id, %error, "scratch size report failed");
+            tracing::warn!(%id, error = %swarmy_core::error_chain(&error), "scratch size report failed");
         }
         Ok(())
     }
@@ -744,7 +744,7 @@ impl RuncRuntime {
             {
                 // A detach error may arrive after the device was disconnected.
                 // Finish local cleanup even if the control reply reports failure.
-                tracing::warn!(%error, "forcing attachment shutdown after discard error");
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "forcing attachment shutdown after discard error");
                 if let Some(server) = &running.server {
                     server.0.abort();
                 }
@@ -762,7 +762,7 @@ impl RuncRuntime {
         if publish {
             outcome?;
         } else if let Err(error) = outcome {
-            tracing::warn!(%error, "discarded failed attachment");
+            tracing::warn!(error = %swarmy_core::error_chain(&error), "discarded failed attachment");
         }
         Ok(forced)
     }
@@ -876,6 +876,8 @@ impl RuncRuntime {
         let (ready_tx, ready_rx) = oneshot::channel();
         let config = self.config.clone();
         let device_journal = bundle.join("device");
+        // The attached NBD server, owned by ServerTask which aborts it on drop.
+        // ast-grep-ignore: no-spawn-in-libraries
         let mut server = ServerTask(tokio::spawn(server::attach(
             config,
             disk.volume_id,
