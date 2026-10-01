@@ -104,18 +104,7 @@ impl GeminiProvider {
             ClientAuth::Vertex { source, .. } => builder.bearer_auth(source.token().await?),
             _ => return Err(Error::Credentials("missing Gemini credentials")),
         };
-        let response = builder.send().await?;
-        let status = response.status();
-        if status.is_success() {
-            return Ok(response);
-        }
-        let retry_after = crate::retry::retry_after_header(response.headers());
-        let body = response.text().await?;
-        Err(crate::error::classify_http_failure(
-            status,
-            &body,
-            retry_after,
-        ))
+        crate::error::check_response(builder.send().await?).await
     }
 }
 

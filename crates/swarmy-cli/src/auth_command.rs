@@ -228,7 +228,7 @@ async fn check(provider: Option<String>, label: Option<String>, json: bool) -> R
     ensure!(
         ready,
         if expired_bedrock {
-            "Bedrock console API keys expire after twelve hours and are for development only; use an IAM identity for long-lived use"
+            swarmy_core::BEDROCK_CONSOLE_KEY_EXPIRED
         } else {
             "one or more credentials are expired or need login"
         }

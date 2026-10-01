@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Write, sync::Arc};
+use std::{collections::HashMap, fmt::Write, ops::ControlFlow, sync::Arc};
 
 use anyhow::{Context, Result, ensure};
 use jiff::Timestamp;
@@ -16,7 +16,7 @@ use swarmy_store::{
 };
 use tokio::{
     sync::Mutex,
-    time::{Instant, MissedTickBehavior, interval, interval_at},
+    time::{MissedTickBehavior, interval},
 };
 use ulid::Ulid;
 
@@ -240,35 +240,29 @@ impl Worker {
             turn,
         };
         let heartbeat_lease = ctx.lease.clone();
-        tokio::select! {
-            result = self.step(&mut ctx) => {
-                if result.is_err() { self.placements.invalidate(session.agent_id).await; }
-                result?;
-            },
-            result = self.heartbeat(id, &heartbeat_lease, message) => result?,
-        }
+        let period = (self.config.lease_duration / 3).min(self.config.bus.ack_wait / 3);
+        let step = async {
+            let result = self.step(&mut ctx).await;
+            if result.is_err() {
+                self.placements.invalidate(session.agent_id).await;
+            }
+            result
+        };
+        let lease = &heartbeat_lease;
+        message
+            .keep_alive_with(period, step, move || self.renew_held_lease(id, lease))
+            .await?;
         message.acknowledge().await?;
         Ok(())
     }
 
-    async fn heartbeat(
-        &self,
-        id: SessionId,
-        lease: &HeldLease,
-        message: &WorkMessage<Nudge>,
-    ) -> Result<()> {
-        let period = (self.config.lease_duration / 3).min(self.config.bus.ack_wait / 3);
-        let mut ticks = interval_at(Instant::now() + period, period);
-        ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        loop {
-            ticks.tick().await;
-            message.extend_deadline().await?;
-            if lease.is_held().await {
-                lease
-                    .renew(&self.store, id, self.now(), self.config.lease_duration)
-                    .await?;
-            }
+    async fn renew_held_lease(&self, id: SessionId, lease: &HeldLease) -> Result<ControlFlow<()>> {
+        if lease.is_held().await {
+            lease
+                .renew(&self.store, id, self.now(), self.config.lease_duration)
+                .await?;
         }
+        Ok(ControlFlow::Continue(()))
     }
 }
 

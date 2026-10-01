@@ -216,9 +216,7 @@ fn service_error(code: &str, message: Option<&str>) -> Error {
         _ if code.contains("Expired")
             || message.is_some_and(|m| m.to_ascii_lowercase().contains("expired")) =>
         {
-            Error::Credentials(
-                "Bedrock console API keys expire after twelve hours and are for development only; use an IAM identity for long-lived use",
-            )
+            Error::Credentials(swarmy_core::BEDROCK_CONSOLE_KEY_EXPIRED)
         }
         _ => Error::Protocol(format!(
             "Bedrock {code}: {}",
