@@ -3,8 +3,13 @@
 /// Check documented invocations against the real clap trees. The Python
 /// extractor prints location, binary, `\x1f`-joined args, and source per line.
 ///
+/// Every binary in `binaries` must have at least one documented invocation:
+/// zero extracted commands means the extractor or the binary name broke, and
+/// an empty walk would otherwise pass without checking anything.
+///
 /// # Errors
-/// Returns the joined unknown commands and flags when docs name none in the tree.
+/// Returns the joined unknown commands and flags, and names each binary whose
+/// documented commands the extractor did not find.
 pub fn check_docs_commands(
     repo_root: &std::path::Path,
     binaries: &[(&str, &clap::Command)],
@@ -31,6 +36,7 @@ pub fn check_docs_commands(
         .collect();
     let mut problems = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let mut walked = std::collections::HashSet::new();
     let mut checked = 0;
     for line in text.lines() {
         let mut p = line.splitn(4, '\t');
@@ -47,6 +53,7 @@ pub fn check_docs_commands(
             continue;
         }
         checked += 1;
+        walked.insert(bin);
         if let Some(msg) = walk(&tokens, root) {
             let full = format!("{loc}: {msg}: {}", src.trim());
             if seen.insert(full.clone()) {
@@ -54,11 +61,18 @@ pub fn check_docs_commands(
             }
         }
     }
+    for (name, _) in binaries {
+        if !walked.contains(name) {
+            problems.push(format!(
+                "no documented commands extracted for {name}; check the binary name and scripts/check-docs-accuracy.py --commands"
+            ));
+        }
+    }
     if problems.is_empty() {
         Ok(checked)
     } else {
         Err(format!(
-            "{} unknown documented command(s):\n{}",
+            "{} documented command problem(s):\n{}",
             problems.len(),
             problems.join("\n")
         ))

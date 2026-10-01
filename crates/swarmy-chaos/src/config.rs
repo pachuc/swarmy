@@ -165,3 +165,17 @@ pub(crate) fn with_stack() -> Result<()> {
     ensure!(status.success(), "chaos child exited with {status}");
     Ok(())
 }
+
+/// Documented `swarmy-chaos ...` flags resolve against the real clap tree.
+#[cfg(test)]
+mod docs_command_tests {
+    #![deny(clippy::disallowed_methods)]
+    #[test]
+    fn markdown_chaos_commands_match_the_clap_tree() {
+        use clap::CommandFactory;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../");
+        let command = super::Config::command();
+        swarmy_testkit::check_docs_commands(&root, &[("swarmy-chaos", &command)])
+            .expect("documented swarmy-chaos flags match the chaos clap tree");
+    }
+}

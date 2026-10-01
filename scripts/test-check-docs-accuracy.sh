@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Exercise scripts/check-docs-accuracy.py against a fixture repository tree.
-# The fixture covers repository paths and --test targets; command names and
-# flags belong to the clap-tree tests in swarmy-cli and swarmyd (through
-# swarmy-testkit's check_docs_commands) against the real command trees. Failing cases
+# The fixture covers repository paths, Markdown link targets and anchors, and
+# --test targets; command names and flags belong to the clap-tree tests in
+# swarmy-cli, swarmyd, and swarmy-chaos (through swarmy-testkit's
+# check_docs_commands) against the real command trees. Failing cases
 # require exit code 1 with the expected message, so an
 # internal crash (exit 2) cannot pass as a detected problem.
 set -euo pipefail
@@ -24,7 +25,17 @@ EOF
 
 printf '/.local/\n' >"$work/.gitignore"
 printf '# fixture root doc\n' >"$work/README.md"
-printf '# fixture other doc\n' >"$work/other.md"
+cat >"$work/other.md" <<'EOF'
+# fixture other doc
+
+## Setup
+
+## Setup
+
+```sh
+# not a heading
+```
+EOF
 
 # Always-valid references: real paths, real test targets, runtime-ignored
 # paths, and prose the extractor must skip. Commands are inert text to this
@@ -43,6 +54,12 @@ Placeholders `PROVIDER/LABEL`, `bucket/key`, and `openai/model-x`, the URL
 row below are not repository paths or test targets:
 
 | swarmy | widget |
+
+Links: [root](../README.md), [other](../other.md#fixture-other-doc), the
+repeated heading [second setup](../other.md#setup-1), this page's
+[top](#fixture), a [directory](../crates/swarmy-fake), an
+[external page](https://example.com/missing.md#nowhere), and the code span
+`[not a link](missing.md)`.
 EOF
 
 cat >"$work/backlog/future.md" <<'EOF'
@@ -105,6 +122,18 @@ check_fail "unknown test target fails" "unknown test target"
 
 add_case x 'Run `cargo test -p swarmy-fake --test missing` as root.'
 check_fail "unknown cargo test target fails" "unknown test target"
+
+add_case x 'See [the guide](missing.md).'
+check_fail "broken link target fails" "broken link target: missing.md"
+
+add_case x 'See [setup](../other.md#no-such-section).'
+check_fail "unknown anchor fails" "unknown link anchor: ../other.md#no-such-section"
+
+add_case x 'A shell comment in a fence is no heading: [x](../other.md#not-a-heading).'
+check_fail "fenced heading is not an anchor" "unknown link anchor: ../other.md#not-a-heading"
+
+add_case x 'This page has no [such part](#nowhere).'
+check_fail "unknown same-page anchor fails" "unknown link anchor: #nowhere"
 
 # Back to green after removing the bad case file.
 rm "$work/docs/case.md"

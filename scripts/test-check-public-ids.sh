@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# The public-ids check flags real infrastructure identifiers but passes cargo
-# test binary names, whose 16-digit hashes only look like EBS volume ids.
+# The public-ids check flags real infrastructure identifiers (instance,
+# volume, security group, subnet, and snapshot ids, account ids in context,
+# benchmark buckets, and public IPv4 addresses) but passes look-alikes: cargo
+# test binary names, readable test names, placeholders, private and
+# documentation addresses, and version strings.
 # Failing cases require exit code 1 with the flagged line, so a crash cannot
 # pass as a detection.
 set -euo pipefail
@@ -89,6 +92,58 @@ drop_case ids.txt
 add_case ids.txt 'bucket gs://swarmy-bench-<id-1> checked'
 check_pass "redacted benchmark placeholder passes"
 drop_case ids.txt
+
+# Addresses in the documentation, loopback, private, and link-local ranges
+# pass, as do netmasks, version strings, and numbers that are not addresses.
+add_case ips.txt 'listen 127.0.0.1:8080, 10.1.2.3, 172.20.0.5, 192.168.1.10, 169.254.169.254'
+check_pass "private and loopback addresses pass"
+drop_case ips.txt
+add_case ips.txt 'example 192.0.2.10 198.51.100.7 203.0.113.11, bind 0.0.0.0, mask 255.255.255.0'
+check_pass "documentation addresses and netmasks pass"
+drop_case ips.txt
+add_case ips.txt 'version 1.2.3.4.5, tag v8.8.8.8, not an address 300.1.1.1'
+check_pass "version strings pass"
+drop_case ips.txt
+
+# Public addresses fail. They are built at runtime so this file never
+# contains a flaggable literal.
+public_ip=$(printf '%s.%s.%s.%s' 8 8 8 8)
+add_case ips.txt "resolver ${public_ip}"
+check_fail "public IPv4 address fails" "${public_ip}"
+drop_case ips.txt
+outside_ip=$(printf '%s.%s.%s.%s' 172 32 0 1)
+add_case ips.txt "peer ${outside_ip}"
+check_fail "address just outside 172.16.0.0/12 fails" "${outside_ip}"
+drop_case ips.txt
+
+# Readable test names are not resource ids.
+add_case ids.txt 'group sg-test in subnet-only, snapshot snap-in'
+check_pass "readable resource names pass"
+drop_case ids.txt
+
+# Security group, subnet, and snapshot ids have 8 or 17 hex digits.
+for kind in sg subnet snap; do
+    for digits in 01234567 0123456789abcdef0; do
+        resource_id="${kind}-${digits}"
+        add_case ids.txt "resource ${resource_id} ready"
+        check_fail "${kind} id with ${#digits} digits fails" "${resource_id}"
+        drop_case ids.txt
+    done
+done
+
+# A 12-digit account id counts only where the context names it.
+add_case ids.txt 'role arn:aws:iam::<account-id>:role/x, profile arn:aws:bedrock:eu-west-1:123:inference-profile/m, elapsed 123456789012'
+check_pass "placeholders, short test ids, and bare numbers pass"
+drop_case ids.txt
+account=$(printf '%s%s' 123456 789012)
+for line in "role arn:aws:iam::${account}:role/x" \
+    "image ${account}.dkr.ecr.us-east-1.amazonaws.com/x" \
+    "\"OwnerId\": \"${account}\"," \
+    "AWS_ACCOUNT_ID=${account}"; do
+    add_case ids.txt "$line"
+    check_fail "account id in: ${line}" "${account}"
+    drop_case ids.txt
+done
 
 check_pass "fixture green again"
 

@@ -95,6 +95,33 @@ anyhow.workspace = true
 EOF
 check "target-specific anyhow fails" 1
 
+# A renamed dependency still pulls in anyhow: the inline-table form.
+fixture 'mod worker;' <<'EOF'
+[dependencies]
+errors = { package = "anyhow", version = "1" }
+EOF
+check "inline renamed anyhow fails" 1
+
+# The table form of a renamed dependency.
+fixture 'mod worker;' <<'EOF'
+[dependencies.errors]
+package = "anyhow"
+version = "1"
+EOF
+check "table-form renamed anyhow fails" 1
+
+# A rename declared once in [workspace.dependencies] and inherited.
+cat >"$work/Cargo.toml" <<'EOF'
+[workspace.dependencies]
+errors = { package = "anyhow", version = "1" }
+EOF
+fixture 'mod worker;' <<'EOF'
+[dependencies]
+errors.workspace = true
+EOF
+check "workspace-renamed anyhow fails" 1
+rm "$work/Cargo.toml"
+
 # The real workspace passes after the anyhow migrations.
 if ! bash "$repo_dir/scripts/check-anyhow-in-libraries.sh" >"$work/out.log" 2>&1; then
     printf 'check-anyhow-in-libraries test failed for the real workspace\n'
