@@ -1057,6 +1057,10 @@ impl<'de> Deserialize<'de> for RecordBody {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "StoreRecord carries the full typed session record while the other variants are small ids and text, but each payload is built once per streamed event and matched immediately: boxing would add a heap allocation per event to shrink a value that never accumulates"
+)]
 pub enum EventPayload {
     Idle {
         session_id: String,
