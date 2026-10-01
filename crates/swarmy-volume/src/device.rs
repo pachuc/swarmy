@@ -524,6 +524,7 @@ impl VolumeDevice {
     /// not hold the dirty-store lock; overwritten generations remain pending.
     /// # Errors
     /// Returns local read or object storage errors. A later call retries failures.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn upload_dirty(&self) -> Result<()> {
         self.upload_settled(Duration::ZERO).await
     }

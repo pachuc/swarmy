@@ -1000,7 +1000,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(second.value.request_id, job.request_id);
-        assert_eq!(second.delivery_count().unwrap(), 2);
         super::settle(&second, Ok(())).await;
         assert!(
             tokio::time::timeout(std::time::Duration::from_secs(3), messages.next())

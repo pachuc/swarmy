@@ -76,7 +76,6 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 unicode-width = "0.2"
 anyhow = "1"
 axum = "0.8"
-tower = "0.5"
 swarmy-api-types = { path = "crates/swarmy-api-types" }
 swarmy-client = { path = "crates/swarmy-client" }
 swarmy-chat = { path = "crates/swarmy-chat" }

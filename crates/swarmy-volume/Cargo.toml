@@ -10,6 +10,12 @@ license.workspace = true
 [lints]
 workspace = true
 
+# Test-only volume entry points used by integration tests across crates.
+# Test crates enable it through dev-dependencies with no command change;
+# unit tests inside this crate see the same functions through `cfg(test)`.
+[features]
+test-support = []
+
 [dependencies]
 async-trait.workspace = true
 swarmy-config.workspace = true
@@ -34,6 +40,10 @@ tempfile.workspace = true
 
 [dev-dependencies]
 swarmy-testkit.workspace = true
+# The crate enables its own test-support feature for its integration tests,
+# so `cargo test -p swarmy-volume` alone compiles the gated helpers without
+# relying on other crates' dev-dependencies to unify the feature.
+swarmy-volume = { path = ".", features = ["test-support"] }
 async-trait.workspace = true
 tracing-subscriber.workspace = true
 # Only the S3 compatibility probe example uses these; the library never links

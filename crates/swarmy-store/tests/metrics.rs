@@ -91,7 +91,7 @@ async fn incremental_records_merge_under_one_turn_key() {
         )
         .await
         .unwrap();
-    let records = store.list_turn_metrics(session, None, 10).await.unwrap();
+    let records = store.list_turn_metrics_paged(session, None, 10, None, None).await.unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].append_to_first_token_ms, Some(2.0));
     assert_eq!(records[0].inference_duration_ms, Some(3.0));
@@ -108,7 +108,7 @@ async fn incremental_records_merge_under_one_turn_key() {
     );
     assert!(
         store
-            .list_turn_metrics(session, Some(turn), 10)
+            .list_turn_metrics_paged(session, Some(turn, None, None), 10)
             .await
             .unwrap()
             .is_empty()
@@ -164,7 +164,7 @@ async fn batched_tool_patches_merge_in_one_transaction() {
         )
         .await
         .unwrap();
-    let records = store.list_turn_metrics(session, None, 10).await.unwrap();
+    let records = store.list_turn_metrics_paged(session, None, 10, None, None).await.unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].tools.len(), 1);
     assert_eq!(records[0].tools[0].name, "bash");
@@ -310,7 +310,7 @@ async fn long_turn_with_two_hundred_tools_and_one_hundred_requests_reads_back_co
         .record_turn_metrics(session, turn, vec![MetricPatch::Stage(idle_event)])
         .await
         .unwrap();
-    let records = store.list_turn_metrics(session, None, 10).await.unwrap();
+    let records = store.list_turn_metrics_paged(session, None, 10, None, None).await.unwrap();
     assert_eq!(records.len(), 1);
     let record = &records[0];
     assert_eq!(record.tools.len(), 200);
@@ -373,7 +373,7 @@ async fn queued_metrics_are_visible_after_flush() {
         }),
     );
     store.flush_turn_metrics().await.unwrap();
-    let records = store.list_turn_metrics(session, None, 10).await.unwrap();
+    let records = store.list_turn_metrics_paged(session, None, 10, None, None).await.unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].turn_id, turn.to_string());
 }

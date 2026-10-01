@@ -1182,7 +1182,7 @@ async fn record_metrics_turn(fixture: &Fixture) -> (String, String) {
     swarmy_testkit::eventually("turn metrics record lands", WAIT, async || {
         let rows = fixture
             .store
-            .list_turn_metrics(session, None, 64)
+            .list_turn_metrics_paged(session, None, 64, None, None)
             .await
             .unwrap();
         (rows.len() == 1

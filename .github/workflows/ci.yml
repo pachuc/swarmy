@@ -152,7 +152,7 @@ jobs:
         with:
           tool: cargo-machete@0.9.2
       - run: cargo deny check licenses bans sources
-      - run: cargo machete
+      - run: cargo machete --with-metadata
   clone-report:
     # Advisory only: clone detectors are fuzzy, so a threshold gate would get
     # gamed. Reviewers use the published numbers with REVIEWER.md's

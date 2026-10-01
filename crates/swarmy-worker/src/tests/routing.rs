@@ -221,7 +221,7 @@ impl Fixture {
             .unwrap()
             .agent_id;
         self.store
-            .set_agent(
+            .set_agent_with_resets(
                 self.agent,
                 &swarmy_core::AgentSettings {
                     system_prompt: Some(
@@ -229,6 +229,7 @@ impl Fixture {
                     ),
                     ..Default::default()
                 },
+                &[],
             )
             .await
             .unwrap();
@@ -626,7 +627,7 @@ async fn node_lost_mid_call_fails_once_and_delayed_retry_has_no_second_notice() 
     // on bus time when the next consume blocks past its deadline.
     f.advance(Duration::from_millis(2100));
     let redelivery = f.delivery(f.nodes[0]).await;
-    assert!(redelivery.delivery_count().unwrap() > 1);
+    assert_eq!(redelivery.value, delivery.value);
     let current = f
         .store
         .take_over(

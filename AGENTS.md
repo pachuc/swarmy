@@ -196,7 +196,7 @@ cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnin
 cargo test --locked -p swarmy-llm --no-default-features
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 cargo deny check licenses bans sources
-cargo machete
+cargo machete --with-metadata
 scripts/chaos-ci.sh
 scripts/check-openapi-compat.sh origin/master
 scripts/dev-stack.sh stop # Release fixed ports before the isolated script tests.

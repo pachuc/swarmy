@@ -44,4 +44,4 @@ rand.workspace = true
 swarmy-store = { path = ".", features = ["test-support"] }
 swarmy-testkit.workspace = true
 tempfile.workspace = true
-swarmy-volume.workspace = true
+swarmy-volume = { workspace = true, features = ["test-support"] }
