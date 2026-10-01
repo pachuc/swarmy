@@ -249,8 +249,10 @@ impl Worker {
             result
         };
         let lease = &heartbeat_lease;
-        message
-            .keep_alive_with(period, step, move || self.renew_held_lease(id, lease))
+        // Box the combined keep-alive future: the step holds the full turn
+        // state and would otherwise push the handler past the pedantic
+        // future-size limit.
+        Box::pin(message.keep_alive_with(period, step, move || self.renew_held_lease(id, lease)))
             .await?;
         message.acknowledge().await?;
         Ok(())
