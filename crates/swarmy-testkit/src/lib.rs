@@ -1,14 +1,13 @@
 //! Shared helpers for integration tests that need the dev stack.
 //!
-//! Before this crate, every suite re-implemented the same fixture: check the
-//! stack environment, boot the `FoundationDB` client, open a store under a
-//! unique directory prefix, connect a bus under a unique subject prefix, and
-//! spawn services. The copies drifted (some cleaned up on panic, some did
-//! not) and every poll loop hand-rolled its own sleep. This crate owns one
-//! implementation: the stack gate, a cleanup guard that runs even when a
-//! test panics, an [`eventually`] poll helper, a fake-provider `Script`
-//! builder (with the `script` feature), sibling-binary lookup, the
-//! metadata-only image fixture, and the docs command walker.
+//! Each fixture the suites share has one implementation here: the stack gate
+//! (`require_stack`) that skips a test locally and fails it under `CI` when a
+//! stack setting is missing; a cleanup guard (`StackGuard`) that releases the
+//! test's store keys and bus streams even when the test panics; the
+//! [`eventually`] poll helper; the fake-provider `Script` builder (with the
+//! `script` feature); sibling-binary lookup (`bin`) with a kill-on-drop
+//! `ChildGuard`; the metadata-only `image` fixture; and the docs command
+//! walker.
 //!
 //! The `stack` feature (on by default) covers everything that touches
 //! `FoundationDB`, the store, or the bus. Suites that only need the light

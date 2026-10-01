@@ -1,4 +1,4 @@
-//! Fake-provider script builder replacing hand-built response literals.
+//! Fake-provider script builder for tests.
 
 use std::{collections::BTreeMap, path::Path};
 
@@ -7,12 +7,11 @@ use swarmy_llm::{Response, StopReason, TokenUsage};
 
 /// Builds the `script.json` a fake-provider service reads.
 ///
-/// The suites each hand-built `Response { .. }` literals with empty quota
-/// maps and ad-hoc failure envelopes. One builder keeps the shape: a shared
-/// answer text for unscripted turns, tool calls pinned to their turn,
-/// per-turn usage for cost assertions, full part overrides for reasoning and
-/// mixed text-plus-tool turns, and failures (rate limits or auth errors)
-/// that recover after their turns.
+/// One builder covers every scripted shape: a shared answer text for
+/// unscripted turns, tool calls pinned to their turn, per-turn usage for cost
+/// assertions, full part overrides for reasoning and mixed text-plus-tool
+/// turns, and failures (rate limits or auth errors) that recover after their
+/// turns.
 #[derive(Default)]
 pub struct Script {
     answer: Option<String>,

@@ -1,18 +1,15 @@
-//! Poll-until-ready helper replacing hand-rolled sleep loops.
+//! Poll-until-ready helper for tests.
 
 use std::time::Duration;
 
 /// Poll `probe` until it returns `Some`, or panic with `label` after `budget`.
 ///
-/// Every poll loop in the suites had its own interval and its own silent
-/// timeout. One helper keeps the shape identical everywhere: short ticks so
-/// fast machines finish quickly, a budget that fails loudly instead of
-/// hanging the suite, and a label naming the condition so the failure points
-/// at the missing state rather than a bare timeout line.
+/// Probes run every 20 milliseconds, so fast machines finish quickly. The
+/// budget fails the test loudly instead of hanging the suite, and the label
+/// names the awaited condition, so a timeout points at the missing state.
 ///
 /// Each probe call runs under the remaining budget, so a hung probe fails
-/// the test the way the old `timeout()` wrappers did instead of stalling
-/// the suite past the budget.
+/// the test instead of stalling the suite past the budget.
 ///
 /// # Panics
 /// Panics when `budget` elapses before `probe` returns `Some`.

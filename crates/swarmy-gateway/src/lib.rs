@@ -1,4 +1,6 @@
-//! Provider discovery shared by the gateway and local diagnostics.
+//! The inference gateway engine: claims inference work from the bus,
+//! resolves provider credentials, streams provider responses, and commits
+//! terminal events to the store. `main.rs` only assembles and serves it.
 mod attempt;
 mod commit;
 pub mod config;

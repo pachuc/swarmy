@@ -1,23 +1,21 @@
-# Clippy thresholds and test exemptions. Workspace lints live in the root
-# `Cargo.toml` `[workspace.lints]`; only numeric thresholds and test-only
-# exemptions live here.
+# Clippy thresholds and the test-only method ban. The workspace lint table
+# lives in the root `Cargo.toml` `[workspace.lints]`; this file holds only
+# what Clippy reads from a configuration file.
 #
-# Complexity: 96 functions exceed 15, 40 exceed 20, 21 exceed 25; the 21
-# were split by concern and what remains over 25 is genuinely too complex
-# to keep. Nesting: depth 8 is the observed maximum; only real offenders
-# fail at 6.
+# `cognitive_complexity` and `excessive_nesting` are denied in the workspace
+# table. These thresholds sit above ordinary code, so a failure marks a
+# function that needs splitting, not a style nit.
 cognitive-complexity-threshold = 25
 excessive-nesting-threshold = 6
 
-# Testkit task (kkc45e): fixed sleeps in tests hide timing assumptions: a
-# suite that sleeps past a lease passes on fast machines and flakes on slow
-# ones. Test code polls with `swarmy_testkit::eventually` instead, which names
-# the awaited condition and fails loudly on timeout. Each test target opts
-# into the ban with `#![deny(clippy::disallowed_methods)]` at its root
-# (workspace lints cannot be test-scoped, and production code sleeps
-# legitimately). A test whose assertion *is* silence over a window
-# (quiescence over a redelivery interval, a genuinely slow tool) keeps its
-# sleep with an `expect` and a reason.
+# Fixed sleeps in tests hide timing assumptions: a suite that sleeps past a
+# lease passes on fast machines and flakes on slow ones. Test code polls with
+# `swarmy_testkit::eventually` instead, which names the awaited condition and
+# fails loudly on timeout. Each test target opts into the ban with
+# `#![deny(clippy::disallowed_methods)]` at its root (workspace lints cannot be
+# test-scoped, and production code sleeps legitimately). A test whose
+# assertion is silence over a window (quiescence over a redelivery interval,
+# a genuinely slow tool) keeps its sleep with an `expect` and a reason.
 disallowed-methods = [
   { path = "tokio::time::sleep", reason = "use swarmy_testkit::eventually instead of fixed sleeps in tests" },
   { path = "std::thread::sleep", reason = "use swarmy_testkit::eventually instead of fixed sleeps in tests" },
