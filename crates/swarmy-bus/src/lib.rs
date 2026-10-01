@@ -481,6 +481,14 @@ impl Bus {
             payload: PhantomData,
         })
     }
+
+    /// The full NATS subject `feed` publishes on, including the bus prefix.
+    /// Tests ask the server's monitoring endpoint about this subject to wait
+    /// for a reader to subscribe before publishing.
+    #[must_use]
+    pub fn live_subject(&self, feed: LiveFeed) -> String {
+        self.config.subject(&feed.subject())
+    }
 }
 
 pub struct WorkMessages<T> {

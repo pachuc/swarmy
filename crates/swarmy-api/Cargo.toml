@@ -17,6 +17,7 @@ default = ["azure", "bedrock", "gemini"]
 azure = ["swarmy-llm/azure"]
 bedrock = ["swarmy-llm/bedrock"]
 gemini = ["swarmy-llm/gemini"]
+test-support = []
 
 [dependencies]
 async-trait.workspace = true
@@ -48,6 +49,7 @@ futures.workspace = true
 async-stream.workspace = true
 
 [dev-dependencies]
+swarmy-api = { path = ".", features = ["test-support"] }
 swarmy-store = { workspace = true, features = ["test-support"] }
 swarmy-testkit = { workspace = true, features = ["script"] }
 tempfile.workspace = true

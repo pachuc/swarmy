@@ -320,6 +320,34 @@ pub(crate) async fn update(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[cfg(feature = "test-support")]
+impl AppState {
+    /// The highest sequence any open event stream has queued for `log`.
+    ///
+    /// Each connection advances its cursor right after an event enters its
+    /// outgoing queue, so this is exactly "the server has delivered it, even
+    /// if the client has not read it". Tests wait on this before changing a
+    /// subscription whose rejection depends on delivered progress.
+    #[must_use]
+    pub fn queued_sequence(&self, log: &LogId) -> Option<u64> {
+        self.stream_connections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .filter_map(|connection| {
+                connection
+                    .progress
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .cursors
+                    .iter()
+                    .find(|cursor| cursor.log_id == *log)
+                    .map(|cursor| cursor.sequence)
+            })
+            .max()
+    }
+}
+
 struct ConnectionGuard {
     id: String,
     registry: Registry,

@@ -26,6 +26,7 @@ mod service;
 mod settings;
 #[cfg(feature = "stack")]
 mod stack;
+mod subscribers;
 
 pub use docs::check_docs_commands;
 pub use eventually::eventually;
@@ -38,3 +39,4 @@ pub use service::{ChildGuard, bin};
 pub use settings::{require_api_endpoint, stack_settings, test_settings};
 #[cfg(feature = "stack")]
 pub use stack::{Stack, StackGuard, boot_fdb, unique_prefix};
+pub use subscribers::nats_subscribers;

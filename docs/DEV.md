@@ -434,6 +434,7 @@ the calling shell's environment.
 | `SWARMY_FDB_CLUSTER_FILE` | Absolute path to `.dev/fdb.cluster` |
 | `SWARMY_DEV_FDB_PORT` | Chosen local FoundationDB port; also selects the port on a later `start` |
 | `SWARMY_NATS_URL` | `nats://127.0.0.1:4222` |
+| `SWARMY_NATS_MONITOR_URL` | `http://127.0.0.1:8222` |
 | `SWARMY_S3_ENDPOINT` | `http://127.0.0.1:8333` |
 | `SWARMY_S3_ACCESS_KEY` | `swarmy-dev` |
 | `SWARMY_S3_SECRET_KEY` | `swarmy-dev-secret` |

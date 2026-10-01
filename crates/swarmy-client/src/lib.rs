@@ -1438,6 +1438,7 @@ mod tests {
         // never replays the same cursors as a rewind.
         let (sent, mut received) = tokio::sync::mpsc::channel::<api::Subscription>(8);
         let puts = Arc::new(AtomicU64::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
         let app = Router::new()
             .route(
                 "/v1/events",
@@ -1455,20 +1456,16 @@ mod tests {
                 "/v1/events/connection/subscription",
                 put({
                     let puts = puts.clone();
+                    let release = release.clone();
                     move |State(sent): State<tokio::sync::mpsc::Sender<api::Subscription>>,
                           Json(sub): Json<api::Subscription>| {
                         let puts = puts.clone();
+                        let release = release.clone();
                         async move {
                             puts.fetch_add(1, Ordering::SeqCst);
-                            // Hold the response long enough that the test can
-                            // drop the awaiting future mid-update: the hold
-                            // must outlast the test's 50 ms poll, so a fixed
-                            // delay is the assertion setup, not a wait.
-                            #[expect(
-                                clippy::disallowed_methods,
-                                reason = "holding the PUT past the test's 50 ms poll is the setup"
-                            )]
-                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            // Hold the response until the test has dropped
+                            // the awaiting future mid-update.
+                            release.acquire().await.unwrap().forget();
                             sent.send(sub).await.unwrap();
                             HttpStatus::NO_CONTENT
                         }
@@ -1522,6 +1519,7 @@ mod tests {
         )
         .await;
         drop(cancelled);
+        release.add_permits(1);
         // Let the owned PUT task finish and record the applied selection.
         let applied = tokio::time::timeout(Duration::from_secs(2), received.recv())
             .await
@@ -1529,14 +1527,8 @@ mod tests {
             .unwrap();
         assert_eq!(applied, updated);
         // The applied selection is recorded inside the next next_item()
-        // call, and the stored PUT task's JoinHandle is private to the
-        // stream: no external signal marks it done. Beat once before the
-        // quiet assertion so it does not race the task's final poll.
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "no external signal marks the stored PUT task done; the beat precedes the quiet assertion"
-        )]
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // call, which awaits the stored PUT task whether or not it has
+        // finished; the timeout below already covers it.
         // The next update finishes the stored task instead of sending the
         // same cursors again, then waits for new-feed events.
         assert!(

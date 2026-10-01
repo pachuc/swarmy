@@ -878,13 +878,6 @@ mod tests {
                     .start_exited(&format!("true # {index}"), epoch)
                     .await,
             );
-            // Stagger starts so mtime ordering is deterministic for the
-            // newest-first assertion; the spacing is the point.
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "start-time spacing makes mtime ordering deterministic"
-            )]
-            std::thread::sleep(std::time::Duration::from_millis(2));
         }
         ids
     }
