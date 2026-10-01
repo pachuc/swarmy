@@ -111,7 +111,7 @@ async fn incremental_records_merge_under_one_turn_key() {
     );
     assert!(
         store
-            .list_turn_metrics_paged(session, Some(turn, None, None), 10)
+            .list_turn_metrics_paged(session, Some(turn), 10, None, None)
             .await
             .unwrap()
             .is_empty()
