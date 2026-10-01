@@ -13,6 +13,9 @@ concurrency:
 env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
+# Every job's commands live in one Makefile target (make check-<job>), and
+# `make check` runs the pull-request jobs in this order. Change commands in the
+# Makefile, not here. clone-report is advisory and stays inline.
 jobs:
   lint:
     if: github.event_name != 'schedule'
@@ -27,19 +30,7 @@ jobs:
         with:
           shared-key: lint
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - run: scripts/check-public-ids.sh
-      - run: scripts/check-docs-accuracy.py
-      - run: scripts/check-anyhow-in-libraries.sh
-      - run: scripts/check-test-sleep-ban.py
-      - run: npx --yes --package @ast-grep/cli@0.45.3 ast-grep scan --config ast-grep/sgconfig.yml
-      - run: npx --yes --package @ast-grep/cli@0.45.3 ast-grep test --config ast-grep/sgconfig.yml --skip-snapshot-tests
-      - run: cargo fmt --all --check
-      - run: cargo build --locked -p swarmy-cli --no-default-features
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
-      - run: cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
-      - run: cargo test --locked -p swarmy-llm --no-default-features
-      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+      - run: make check-lint
   workspace-tests:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -54,8 +45,7 @@ jobs:
           shared-key: workspace-build
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - uses: ./.github/actions/install-dev-services
-      - run: cargo build --workspace --locked
-      - run: cargo test --workspace --locked --exclude swarmy-e2e
+      - run: make check-workspace-tests
       - name: Stop development services
         if: always()
         uses: ./.github/actions/install-dev-services
@@ -75,9 +65,7 @@ jobs:
           shared-key: workspace-build
           save-if: false
       - uses: ./.github/actions/install-dev-services
-      - run: cargo build --workspace --locked
-      - run: cargo test --locked -p swarmy-e2e --test gateway --test scheduler --test worker -- --test-threads=1
-      - run: scripts/chaos-ci.sh
+      - run: make check-e2e
       - name: Stop development services
         if: always()
         uses: ./.github/actions/install-dev-services
@@ -97,8 +85,7 @@ jobs:
           shared-key: workspace-build
           save-if: false
       - uses: ./.github/actions/install-dev-services
-      - run: cargo build --workspace --locked
-      - run: cargo test --locked -p swarmy-e2e --test cli_session -- --test-threads=1
+      - run: make check-cli-session
       - name: Stop development services
         if: always()
         uses: ./.github/actions/install-dev-services
@@ -117,8 +104,7 @@ jobs:
         with:
           shared-key: remote-tests
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - run: cargo test --locked -p swarmy-cloud --features remote
-      - run: cargo test --locked -p swarmy-cli --features remote -- --skip dev_up_run_recover_reconfigure_and_down
+      - run: make check-remote
   openapi-compat:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -128,7 +114,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Check OpenAPI compatibility
-        run: scripts/check-openapi-compat.sh origin/master
+        run: make check-openapi
   script-tests:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -138,7 +124,7 @@ jobs:
       - uses: ./.github/actions/install-dev-services
         with:
           mode: install
-      - run: scripts/test-scripts.sh
+      - run: make check-scripts
   dependency-policy:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -151,8 +137,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-machete@0.9.2
-      - run: cargo deny check licenses bans sources
-      - run: cargo machete --with-metadata
+      - run: make check-deps
   clone-report:
     # Advisory only: clone detectors are fuzzy, so a threshold gate would get
     # gamed. Reviewers use the published numbers with REVIEWER.md's
@@ -199,4 +184,4 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny@0.20.2
-      - run: cargo deny check advisories
+      - run: make check-advisories

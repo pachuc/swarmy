@@ -14,6 +14,7 @@ bash scripts/test-check-anyhow-in-libraries.sh
 bash scripts/test-check-test-sleep-ban.sh
 bash scripts/test-check-docs-accuracy.sh
 bash scripts/test-check-public-ids.sh
+bash scripts/test-check-ast-grep-rules.sh
 bash scripts/test-remote-upgrade.sh
 bash scripts/test-remote-s3-env.sh
 bash scripts/test-migrate-config.sh
