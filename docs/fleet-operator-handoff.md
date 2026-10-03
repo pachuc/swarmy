@@ -12,8 +12,8 @@ the durable ones are repeated below.
 - The laptop is a personal gaming machine and a control plane only. Run only
   light commands on it: the fleet driver, tasky, `gh`, `ssh`, short `swarmy`
   calls, Python unit tests, `rustfmt` on single files. Never `cargo build`,
-  `cargo test`, or `cargo clippy` locally. Build a laptop CLI on the dev2
-  control node and copy it back (see "Rebuilding the laptop CLI").
+  `cargo test`, or `cargo clippy` locally. Build a laptop CLI on the Hetzner
+  server and copy it back (see "Rebuilding the laptop CLI").
 - Operate autonomously. The owner checks in and wants: what merged, what is
   in flight, issues, the current phase, and what remains, in plain English.
 - Build every goal with "The cycle for a goal" below. Review every task
@@ -36,38 +36,50 @@ the durable ones are repeated below.
 
 ## The swarm
 
-- `dev2`: control node `dev2` (m6i.xlarge, no sandboxes); worker node
-  `dev2-3` (m6id.8xlarge, four sandboxes at 24 GiB each); and suite node
-  `dev2-2` (m6id.4xlarge, `SWARMY_NODE_SANDBOXES=0` in `/etc/swarmy/node.env`,
-  so it takes no workers and runs the root-only suites). Addresses, instance
-  ids, and the bucket name are in the local remote state (`swarmy remote
-  status`, `.swarmy/remote/`), never in the repository. Images
-  `base-ubuntu:dev2` and `swarmy-dev:dev2`. The earlier `dev` swarm was
-  retired on 2026-09-26.
-- Tunnel: `swarmy remote connect dev2`. Local ports are fixed, so only one
+- `hz` (since 2026-10-02): one dedicated server rented from Hetzner's server
+  auction (16-core i9-12900K, 128 GB, two NVMe drives mirrored, Ubuntu 24.04),
+  adopted with `swarmy remote adopt` (REMOTE.md, "Existing hosts"). The same
+  machine runs the control plane (`--services node`) and the node, with four
+  sandboxes on local storage `dir:/srv/swarmy-local`. The bucket is Hetzner
+  Object Storage with static keys. Images `base-ubuntu:hz` and
+  `swarmy-dev:hz`. Addresses, server numbers, the bucket name and every
+  credential live outside the repository: `~/swarmy-infra.md` and
+  `~/api_keys.md` on the laptop, and `.swarmy/remote/`.
+- The suite node is a second, smaller auction server that is not part of the
+  swarm; it runs the root suites and the local CI ("The suite node").
+- AWS is gone: the `dev2` swarm, the earlier `dev` swarm, their buckets and
+  images were decommissioned on 2026-10-01.
+- Tunnel: `swarmy remote connect hz`. Local ports are fixed, so only one
   swarm can be connected at a time. Plain `swarmy` commands that need the API
-  take `--remote dev2`. `swarmy remote ls` shows nodes, services, images.
-- SSH helpers: `~/.local/bin/ssh-dev2.sh "cmd"` and `ssh-dev2-2.sh "cmd"`
-  (keys under `.swarmy/remote/`). Long commands on a node run detached:
+  take `--remote hz`. `swarmy remote ls` shows nodes, services, images.
+- SSH: the laptop's `~/.ssh/config` has an alias for each server, using the
+  key registered in Robot as `swarmy-fleet`; `swarmy remote` keeps its own
+  keys under `.swarmy/remote/`. Long commands on a server run detached:
   `setsid nohup bash script.sh > log 2>&1 < /dev/null &`.
+- Images: `swarmy image build` builds on the machine it runs on and needs
+  root, so build on the server the way `adopt` builds the base image: as root
+  in the service user's checkout, with `/etc/swarmy/node.env` sourced, run
+  `/usr/local/bin/swarmy image build images/swarmy-dev --name swarmy-dev --tag hz`.
 - Upgrade: `git merge --ff-only origin/master` locally first (upgrade ships
-  the local checkout), then `swarmy remote upgrade dev2` detached with a log;
-  about six minutes. Do it when workers are idle.
-- Approved, not started: a larger sandbox node (m6id.8xlarge, four workers at
-  about 24 GiB each so builds can use several jobs) through
-  `swarmy remote add-node dev2 --instance-type ... --disk-gb ... --sandboxes 4`,
-  and a separate node for a self-hosted CI runner (task c05a). Do both
-  between cleanup waves, since migrating workers drains the fleet. Registering
-  the runner needs a GitHub registration token with repository admin rights;
-  the owner mints it.
+  the local checkout), then `swarmy remote upgrade hz` detached with a log.
+  Do it when workers are idle.
+- Hetzner itself: dedicated servers are managed through the Robot webservice
+  (order, SSH keys, rescue system, reset), with its login in `~/api_keys.md`;
+  Object Storage keys can only be created in the Cloud Console. Ask the owner
+  before ordering anything, because orders bill the account. Auction servers
+  ordered through the API arrive IPv6-only: add the `primary_ipv4` add-on
+  (it needs a `reason`), because GitHub has no IPv6. A new account's further
+  orders go to manual review, and the API answers 412 meanwhile. Install
+  Ubuntu from the rescue system with `bash -ic "installimage -a -c FILE"`, and
+  reboot the rescue system first if an address was added after it booted.
 
 ## The fleet driver
 
 `scripts/fleet/fleet` (Python, tests in `scripts/fleet/test_fleet.py`).
-Config `scripts/fleet/fleet.toml` (gitignored, mode 600): remote `dev2`,
-provider `chatgpt`, model `gpt-6-sol`, effort medium, four workers,
-`memory_mib = 8192`, image `swarmy-dev:dev2`, `state_dir` `.dev/fleet-dev2`,
-and the GitHub token. Get the token for `gh` with
+Config `scripts/fleet/fleet.toml` (gitignored, mode 600): remote `hz`,
+provider `openrouter`, model `meta/muse-spark-1.3-contributor`, effort
+medium, four workers, `memory_mib = 24576`, image `swarmy-dev:hz`,
+`state_dir` `.dev/fleet-hz`, and the GitHub token. Get the token for `gh` with
 
 ```sh
 export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | head -1 | sed -E 's/.*= *"([^"]+)".*/\1/')
@@ -83,24 +95,27 @@ export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | hea
   `fleet release` expect a pull request, so in the goal cycle release with
   `--force`.
 - A task's branch is `swarmy/` plus the last six characters of the task ULID,
-  lowercased. State files: `.dev/fleet-dev2/<suffix>.json|.jsonl` and
+  lowercased. State files: `.dev/fleet-hz/<suffix>.json|.jsonl` and
   `worker-N.meta.json` (provider, model, image the worker was created with;
   `launch` matches an idle worker on provider and model).
-- Workers created on OpenRouter Muse must be re-pointed once idle to use the
-  subscription: `swarmy --remote dev2 agent set worker-N --provider chatgpt
-  --model gpt-6-sol --route subscription`, then edit the meta file to
-  provider `chatgpt`, model `gpt-6-sol`. The route `subscription` on dev2 is
-  `chatgpt/default=gpt-6-sol` then `openrouter/default=meta/muse-spark-1.3-contributor`,
-  so workers fail over to Muse when the subscription depletes.
-- ChatGPT login expires; when `swarmy --remote dev2 auth ls` shows
-  `needs_login`, the owner runs `swarmy --remote dev2 auth login chatgpt`
+- The `hz` cluster's credential store holds only the OpenRouter key. Before
+  workers can use the ChatGPT subscription, import the owner's credential
+  (`swarmy auth import --remote hz`; `adopt --copy-credential` put the file
+  on the server) and create a route `subscription` that tries
+  `chatgpt/default=gpt-6-sol` then `openrouter/default=meta/muse-spark-1.3-contributor`
+  (`swarmy auth routes`), so workers fail over to Muse when the subscription
+  depletes. Then re-point idle workers with `swarmy --remote hz agent set
+  worker-N --provider chatgpt --model gpt-6-sol --route subscription` and
+  edit each meta file to provider `chatgpt`, model `gpt-6-sol`.
+- ChatGPT login expires; when `swarmy --remote hz auth ls` shows
+  `needs_login`, the owner runs `swarmy --remote hz auth login chatgpt`
   (device code in a browser).
-- Steering a busy worker: `swarmy --remote dev2 --json session interrupt ID`,
+- Steering a busy worker: `swarmy --remote hz --json session interrupt ID`,
   wait for `fleet status` to show idle, then
-  `swarmy --remote dev2 --json run --session ID "message"`. The interrupt
+  `swarmy --remote hz --json run --session ID "message"`. The interrupt
   drops only the in-flight tool call. `fleet kill` removes the launch record,
   so use it only when abandoning a task. Session logs:
-  `swarmy --remote dev2 --json session show ID` (one JSON event per line).
+  `swarmy --remote hz --json session show ID` (one JSON event per line).
 - `fleet status` follows the current session after compaction.
   Workers poll long builds with one inference per minute; that is normal and
   cheap on Muse, less so on the subscription.
@@ -235,7 +250,7 @@ Things this cycle has taught:
 
 ## The suite node
 
-Root suites run on the suite node dev2-2, which hosts no workers, so
+Root suites run on the suite node, which hosts no workers, so
 stopping its node daemon for a run affects nothing else. They are serial
 and slow (a full `--plus` run takes forty to sixty minutes), so run only
 what the change can break, and nothing for docs, CLI-only, test-only,
@@ -306,13 +321,13 @@ in the style CLAUDE.md asks for.
 
 ## Rebuilding the laptop CLI
 
-On the dev2 control node (`~/swarmy` is a copy of the checkout the last
-upgrade shipped): `cargo build --release --locked -p swarmy-cli --features
-remote`, detached with a log. Copy `target/release/swarmy` back, fix its
-library path with `uvx patchelf --set-rpath
-/home/pachu/.local/lib:/usr/lib:/usr/local/lib:/usr/lib/x86_64-linux-gnu`,
-and replace the running binary by copying to `swarmy.new` and renaming
-(`cp` onto a busy binary fails). Keep a backup under `~/.cargo/bin/`.
+On the Hetzner server, as root in `/root/cli-build` (a plain clone of the
+repository): `git fetch` and check out `origin/master`, then `cargo build
+--release --locked -p swarmy-cli --features remote` (about two minutes).
+Copy `target/release/swarmy` back and replace the running binary by copying
+to `swarmy.new` and renaming (`cp` onto a busy binary fails). The CLI does
+not link the FoundationDB client, so it needs no library-path fix. Keep a
+backup under `~/.cargo/bin/`.
 
 ## Where things are
 
@@ -321,4 +336,5 @@ and replace the running binary by copying to `swarmy.new` and renaming
 - `backlog/build-time.md`, `backlog/final-qa.md`: pinned discussions.
 - `scripts/node-suites/`: the node-side suite scripts.
 - `~/muse-spark-issues.md`: the model issue log.
-- `.dev/fleet-dev2/`: driver state; `.dev/fleet/`: the retired dev swarm's.
+- `.dev/fleet-hz/`: driver state; `.dev/fleet-dev2/` and `.dev/fleet/`: the retired AWS swarms'.
+- `~/swarmy-infra.md` and `~/api_keys.md` (laptop only): infrastructure facts and secrets.

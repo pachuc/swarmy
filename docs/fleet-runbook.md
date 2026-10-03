@@ -1,7 +1,8 @@
 # Fleet runbook
 
-How swarmy's own development runs on swarmy: a long-lived split swarm on one
-EC2 node, a pool of worker agents, and the driver in `scripts/fleet/`. This
+How swarmy's own development runs on swarmy: a long-lived swarm on one
+Hetzner dedicated server, a pool of worker agents, and the driver in
+`scripts/fleet/`. This
 is the manual version of what the swarm-model and cloud-topology goals will
 automate; every step here is a plain command.
 

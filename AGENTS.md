@@ -160,10 +160,11 @@ Cancelled: channels (slice 5, see `backlog/chaty.md`), sandbox-pause-resume
   per client; token deltas opt in; idempotency keys on every mutation; a
   WebSocket only for ephemeral bidirectional traffic. gRPC and WebSocket-first
   were considered and rejected for a browser GUI and third-party clients.
-- **The fleet is moving from EC2 to Hetzner dedicated servers.** EC2 with
-  our own node provider was the first cloud target; the hetzner goal moves
-  the fleet to Hetzner dedicated servers with `remote adopt`. Kubernetes is
-  a later packaging target; see `backlog/kubernetes-packaging.md`.
+- **The fleet runs on Hetzner dedicated servers.** EC2 with our own node
+  provider was the first cloud target; since 2026-10-02 the fleet runs on
+  Hetzner dedicated servers adopted with `remote adopt`, and AWS is
+  decommissioned. Kubernetes is a later packaging target; see
+  `backlog/kubernetes-packaging.md`.
 - **One client binary, one core binary.** The client never links the
   FoundationDB library; it fetches and ships the matching `swarmy-core`.
 - **Swarmy is in development, so format changes are clean breaks, not
