@@ -36,12 +36,19 @@ pub(crate) async fn run(command: crate::image_command::Command, json: bool) -> R
                 let loaded = swarmy_config::Settings::load_base()?;
                 let path = loaded.path.context("no configuration file to update; run swarmy dev up first or set SWARMY_DEFAULT_IMAGE")?;
                 crate::dev::set_default_image(&path, &image)?;
-                println!(
-                    "default_image = {image} in {}; run swarmy dev up to restart the API with it",
-                    path.display()
-                );
-                if std::env::var_os("SWARMY_DEFAULT_IMAGE").is_some() {
-                    println!("note: SWARMY_DEFAULT_IMAGE overrides it");
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"default_image": image, "config": path})
+                    );
+                } else {
+                    println!(
+                        "default_image = {image} in {}; run swarmy dev up to restart the API with it",
+                        path.display()
+                    );
+                    if std::env::var_os("SWARMY_DEFAULT_IMAGE").is_some() {
+                        println!("note: SWARMY_DEFAULT_IMAGE overrides it");
+                    }
                 }
             }
             Ok(())
@@ -116,6 +123,7 @@ pub(crate) async fn build(
     let (recipe, directory, directory_name) = Recipe::load(&path)?;
     let name = name.unwrap_or(directory_name);
     validate_label(&name)?;
+    validate_sandbox(&recipe.sandbox)?;
     // The ext4 file is built locally; chunk publication and registration run
     // on the control plane so the client never needs object store credentials.
     let (image, sandbox) = tokio::task::spawn_blocking(move || {
@@ -156,6 +164,14 @@ pub(crate) async fn build(
     Ok(())
 }
 
+fn validate_sandbox(sandbox: &swarmy_image::SandboxRecipe) -> Result<()> {
+    anyhow::ensure!(
+        sandbox.memory_mib.is_none_or(|m| m > 0),
+        "sandbox memory_mib must be positive"
+    );
+    Ok(())
+}
+
 /// Publish a local sparse ext4 through the control plane and print the result.
 async fn register(
     name: &str,
@@ -164,10 +180,7 @@ async fn register(
     sandbox: &swarmy_image::SandboxRecipe,
     json: bool,
 ) -> Result<swarmy_api_types::ImageUpload> {
-    anyhow::ensure!(
-        sandbox.memory_mib.is_none_or(|m| m > 0),
-        "sandbox memory_mib must be positive"
-    );
+    validate_sandbox(sandbox)?;
     let (client, endpoint) = swarmy_client::api_client::connect()?;
     let uploaded = swarmy_client::api_client::call_upload(
         &endpoint,
@@ -222,7 +235,14 @@ pub(crate) async fn pull_release_image(
     let (client, endpoint) = swarmy_client::api_client::connect()?;
     match client.image("base-ubuntu", tag).await {
         Ok(_) => {
-            println!("{} is already registered", release_image(tag));
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"image": release_image(tag), "registered": false})
+                );
+            } else {
+                println!("{} is already registered", release_image(tag));
+            }
             return Ok(Some(false));
         }
         Err(swarmy_client::Error::Api { body, .. }) if body.code == "image_not_found" => {}

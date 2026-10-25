@@ -459,7 +459,9 @@ Every ensure checks the release-wide SHA256SUMS and replaces a changed archive;
 when the server cannot be reached, a complete verified cache is reused with a
 warning. SHA-256 checksums protect integrity, but releases are not signed.
 
-To test locally with a fake release (requires patchelf and clang):
+To test locally with a fake release (requires patchelf and clang; the image
+line also requires passwordless sudo, debootstrap, e2fsprogs, and several
+minutes to build):
 
 ```sh
 make release-package RELEASE_COMPONENT=core RELEASE_DIR=target/fake-release/v0.1.0

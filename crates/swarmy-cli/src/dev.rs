@@ -449,7 +449,7 @@ async fn up(
     if remote.is_none() && !no_image {
         match settings.selection.default_image.as_deref() {
             None => match crate::image::pull_release_image(
-                &image_cache()?,
+                &layout.state_dir.join("images"),
                 swarmy_version::RELEASE_TAG,
                 swarmy_cloud::release::Target::host()?,
                 false,

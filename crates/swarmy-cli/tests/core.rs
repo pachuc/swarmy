@@ -31,6 +31,10 @@ impl Fixture {
                 command.env_remove(key);
             }
         }
+        command.env(
+            "SWARMY_CORE_TEST_DEFAULT_IMAGE_LOG",
+            self.root.path().join("default-images"),
+        );
         if let Some(url) = release {
             command.env("SWARMY_RELEASE_BASE_URL", url);
         }
@@ -58,7 +62,7 @@ fn executable(path: &Path) {
 }
 fn core_script(identity: &str) -> String {
     format!(
-        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'swarmy-core {identity}'; exit 0; fi\ncase \"$1\" in scheduler) echo 'scheduler started';; worker) echo 'worker ready';; gateway) echo 'gateway ready';; api) echo 'api ready';; esac\nexec /bin/sleep 600\n"
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'swarmy-core {identity}'; exit 0; fi\ncase \"$1\" in scheduler) echo 'scheduler started';; worker) echo 'worker ready';; gateway) echo 'gateway ready';; api) if [ -n \"$SWARMY_CORE_TEST_DEFAULT_IMAGE_LOG\" ]; then printf '%s\n' \"$SWARMY_DEFAULT_IMAGE\" >> \"$SWARMY_CORE_TEST_DEFAULT_IMAGE_LOG\"; fi; echo 'api ready';; esac\nexec /bin/sleep 600\n"
     )
 }
 fn release(identity: &str) -> String {
@@ -224,6 +228,11 @@ fn dev_up_registers_the_release_image() {
         swarmy_config::Settings::read(&fixture.root.path().join(".swarmy/config.toml")).unwrap();
     assert_eq!(
         settings.selection.default_image.as_deref(),
+        Some(format!("base-ubuntu:{tag}").as_str())
+    );
+    let images = fs::read_to_string(fixture.root.path().join("default-images")).unwrap();
+    assert_eq!(
+        images.lines().last(),
         Some(format!("base-ubuntu:{tag}").as_str())
     );
     let requests = requests.lock().unwrap();
