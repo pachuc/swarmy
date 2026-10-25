@@ -118,6 +118,17 @@ mod scratch_pressure_tests {
     }
 }
 
+/// Run rootfs file I/O off the async runtime. This process serves the rootfs
+/// over NBD, so a worker blocked on a cache miss can prevent the server from
+/// handling that same request until the kernel times out the device.
+async fn rootfs_io<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| Error::Operation(error.to_string()))?
+}
+
 /// One runtime per node state directory. An exclusive lock fences local daemons.
 pub struct RuncRuntime {
     root: PathBuf,
@@ -350,45 +361,50 @@ impl RuncRuntime {
         Ok(())
     }
 
-    fn prepare_scratch(&self, id: AgentId, paths: &[String]) -> Result<()> {
+    async fn prepare_scratch(&self, id: AgentId, paths: &[String]) -> Result<()> {
         if paths.is_empty() {
             return Ok(());
         }
+        // mkdir on the NBD rootfs can wait for a request served by this process.
         let rootfs = self.bundle(id).join("rootfs");
-        let agent = std::fs::metadata(rootfs.join("home/agent"))?;
         let computer = self.scratch_root.join(id.to_string());
-        std::fs::create_dir_all(&computer)?;
-        for (index, path) in paths.iter().enumerate() {
-            let relative = Path::new(path)
-                .strip_prefix("/")
-                .map_err(|_| Error::State)?;
-            if relative.as_os_str().is_empty()
-                || relative
-                    .components()
-                    .any(|part| !matches!(part, std::path::Component::Normal(_)))
-            {
-                return Err(Error::Operation("invalid scratch path".into()));
-            }
-            let mut target = rootfs.clone();
-            for part in relative.components() {
-                target.push(part);
-                if target
-                    .symlink_metadata()
-                    .is_ok_and(|meta| meta.file_type().is_symlink())
+        let paths = paths.to_vec();
+        rootfs_io(move || {
+            let agent = std::fs::metadata(rootfs.join("home/agent"))?;
+            std::fs::create_dir_all(&computer)?;
+            for (index, path) in paths.iter().enumerate() {
+                let relative = Path::new(path)
+                    .strip_prefix("/")
+                    .map_err(|_| Error::State)?;
+                if relative.as_os_str().is_empty()
+                    || relative
+                        .components()
+                        .any(|part| !matches!(part, std::path::Component::Normal(_)))
                 {
-                    return Err(Error::Operation("scratch path traverses symlink".into()));
+                    return Err(Error::Operation("invalid scratch path".into()));
+                }
+                let mut target = rootfs.clone();
+                for part in relative.components() {
+                    target.push(part);
+                    if target
+                        .symlink_metadata()
+                        .is_ok_and(|meta| meta.file_type().is_symlink())
+                    {
+                        return Err(Error::Operation("scratch path traverses symlink".into()));
+                    }
+                }
+                std::fs::create_dir_all(&target)?;
+                let source = computer.join(index.to_string());
+                std::fs::create_dir_all(&source)?;
+                std::os::unix::fs::chown(&source, Some(agent.uid()), Some(agent.gid()))?;
+                if path == "/tmp" {
+                    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o1777))?;
                 }
             }
-            std::fs::create_dir_all(&target)?;
-            let source = computer.join(index.to_string());
-            std::fs::create_dir_all(&source)?;
-            std::os::unix::fs::chown(&source, Some(agent.uid()), Some(agent.gid()))?;
-            if path == "/tmp" {
-                std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o1777))?;
-            }
-        }
-        std::fs::write(computer.join(".hosted"), b"")?;
-        Ok(())
+            std::fs::write(computer.join(".hosted"), b"")?;
+            Ok(())
+        })
+        .await
     }
 
     fn bundle(&self, id: AgentId) -> PathBuf {
@@ -419,35 +435,40 @@ impl RuncRuntime {
         {
             return Err(Error::State);
         }
-        let mut path = self.bundle(agent).join("rootfs").canonicalize()?;
-        for part in relative.components() {
-            path.push(part);
-            match path.symlink_metadata() {
-                Ok(metadata) if metadata.file_type().is_symlink() => return Err(Error::State),
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-                Err(error) => return Err(error.into()),
+        let rootfs = self.bundle(agent).join("rootfs");
+        let relative = relative.to_path_buf();
+        rootfs_io(move || {
+            let mut path = rootfs.canonicalize()?;
+            for part in relative.components() {
+                path.push(part);
+                match path.symlink_metadata() {
+                    Ok(metadata) if metadata.file_type().is_symlink() => return Err(Error::State),
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+                    Err(error) => return Err(error.into()),
+                }
             }
-        }
-        let mut entries = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
-        entries.sort_by_key(std::fs::DirEntry::file_name);
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        for entry in entries {
-            let meta = entry.path().symlink_metadata()?;
-            if meta.is_file() {
-                entry.file_name().hash(&mut hash);
-                (
-                    meta.ino(),
-                    meta.len(),
-                    meta.mtime(),
-                    meta.mtime_nsec(),
-                    meta.ctime(),
-                    meta.ctime_nsec(),
-                )
-                    .hash(&mut hash);
+            let mut entries = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
+            entries.sort_by_key(std::fs::DirEntry::file_name);
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            for entry in entries {
+                let meta = entry.path().symlink_metadata()?;
+                if meta.is_file() {
+                    entry.file_name().hash(&mut hash);
+                    (
+                        meta.ino(),
+                        meta.len(),
+                        meta.mtime(),
+                        meta.mtime_nsec(),
+                        meta.ctime(),
+                        meta.ctime_nsec(),
+                    )
+                        .hash(&mut hash);
+                }
             }
-        }
-        Ok(hash.finish())
+            Ok(hash.finish())
+        })
+        .await
     }
 
     /// Whether this node currently has the agent's computer open.
@@ -610,7 +631,7 @@ impl RuncRuntime {
         // An image may provide its own PID 1 for background services. Older
         // images keep the inert init used before this hook was introduced.
         let init = bundle.join("rootfs/usr/local/libexec/swarmy-init");
-        config["process"]["args"] = if init.is_file() {
+        config["process"]["args"] = if rootfs_io(move || Ok(init.is_file())).await? {
             serde_json::json!(["/bin/sh", "/usr/local/libexec/swarmy-init"])
         } else {
             serde_json::json!(["/bin/sleep", "infinity"])
@@ -641,8 +662,16 @@ impl RuncRuntime {
         .map(str::to_owned)
         .collect();
         let environment = bundle.join("rootfs/etc/swarmy/environment");
-        if environment.is_file() {
-            for variable in parse_image_environment(&std::fs::read_to_string(environment)?)? {
+        let image_environment = rootfs_io(move || {
+            if environment.is_file() {
+                Ok(Some(std::fs::read_to_string(environment)?))
+            } else {
+                Ok(None)
+            }
+        })
+        .await?;
+        if let Some(image_environment) = image_environment {
+            for variable in parse_image_environment(&image_environment)? {
                 let key = variable.split_once('=').ok_or(Error::State)?.0;
                 env.retain(|existing| !existing.starts_with(&format!("{key}=")));
                 env.push(variable);
@@ -930,7 +959,7 @@ impl RuncRuntime {
                 id,
             )?;
             self.running(id).await?.lock().await.credentials = Some(credentials);
-            self.prepare_scratch(id, &scratch)?;
+            self.prepare_scratch(id, &scratch).await?;
             self.start(id, &scratch, memory_mib).await?;
             if !scratch.is_empty() {
                 self.config
