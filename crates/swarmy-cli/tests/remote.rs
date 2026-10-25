@@ -5,17 +5,27 @@ use std::{
     process::{Command, Output},
 };
 
-fn cli(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_swarmy"))
+fn cli_command(root: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_swarmy"));
+    command
         .current_dir(root)
         .env("HOME", root)
         .env("XDG_CONFIG_HOME", root)
         .env("SWARMY_STATE_DIR", root.join(".swarmy"))
         .env_remove("SWARMY_REMOTE")
         .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
-        .args(args)
-        .output()
-        .unwrap()
+        .args(args);
+    command
+}
+
+fn cli_with_env(root: &Path, args: &[&str], extra_env: &[(&str, String)]) -> Output {
+    let mut command = cli_command(root, args);
+    command.envs(extra_env.iter().map(|(key, value)| (*key, value)));
+    command.output().unwrap()
+}
+
+fn cli(root: &Path, args: &[&str]) -> Output {
+    cli_with_env(root, args, &[])
 }
 
 fn fixture(root: &Path) {
@@ -336,16 +346,11 @@ fn upgrade_without_a_checkout_uploads_node_files_and_release_binaries() {
         &host_target(),
         "#!/bin/sh\n",
     ));
-    let output = Command::new(env!("CARGO_BIN_EXE_swarmy"))
-        .current_dir(root.path())
-        .env("HOME", root.path())
-        .env("XDG_CONFIG_HOME", root.path())
-        .env("SWARMY_STATE_DIR", root.path().join(".swarmy"))
-        .env("SWARMY_RELEASE_BASE_URL", format!("http://{addr}"))
-        .env("PATH", format!("{}:/usr/bin:/bin", root.path().display()))
-        .args(["remote", "upgrade", "test"])
-        .output()
-        .unwrap();
+    let output = cli_with_env(
+        root.path(),
+        &["remote", "upgrade", "test"],
+        &[("SWARMY_RELEASE_BASE_URL", format!("http://{addr}"))],
+    );
     assert!(
         output.status.success(),
         "{}",
@@ -380,7 +385,11 @@ fn upgrade_without_a_checkout_uploads_node_files_and_release_binaries() {
 fn development_client_outside_a_checkout_refuses_before_ssh() {
     let root = tempfile::tempdir().unwrap();
     fixture(root.path());
-    let output = cli(root.path(), &["remote", "upgrade", "test"]);
+    fake_upgrade_host(root.path());
+    let output = cli_command(root.path(), &["remote", "upgrade", "test"])
+        .env_remove("SWARMY_RELEASE_BASE_URL")
+        .output()
+        .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

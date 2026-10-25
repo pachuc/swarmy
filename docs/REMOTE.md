@@ -32,7 +32,7 @@ hand, never `.swarmy/` or `.dev/`. Alternatively, re-provision.
 
 The default laptop-services mode runs scheduler, worker, and gateway on the
 client, while `--services node` runs them under systemd on the control node.
-A release client needs `ssh`, `ssh-keygen`, and `rsync` 3.2.3 or newer (for `--mkpath`). A client built with the `remote` cargo feature
+The client needs `ssh`, `ssh-keygen`, and `rsync` 3.2.3 or newer (for `--mkpath`). A client built with the `remote` cargo feature
 provides the `remote` subcommands below; `make install-client` enables it,
 while a plain `cargo build` leaves it out for the slimmer node binary and
 such a binary rejects `remote` invocations with an error. AWS credentials use the SDK's standard credential chain.
@@ -52,7 +52,7 @@ region = "us-east-1"
 disk_gb = 100
 managed_by_tag = "swarmy"
 # bucket = "NAME"
-# Login owning the checkout and the node units. Plain servers use the
+# Login owning the node directory and the node units. Plain servers use the
 # default `swarmy`; EC2 launches write `ubuntu` explicitly.
 # service_user = "swarmy"
 # Local disk for sandbox data: a block device to format and mount at
