@@ -192,6 +192,10 @@ async fn authorize(
 }
 
 /// Construct the router without binding a socket so integration tests can serve it in-process.
+///
+/// # Panics
+///
+/// Panics if the generated `OpenAPI` document cannot be serialized to JSON.
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/v1/doctor", get(doctor))
@@ -257,9 +261,13 @@ pub fn router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize));
     // Health, the OpenAPI document, and the rendered reference are public so
     // every swarm documents itself at its own version without a token.
+    // Swagger UI 10 uses utoipa 6, while the API schema still uses utoipa 5.
+    // JSON preserves the generated document without changing its public route.
+    let openapi = serde_json::to_value(api::ApiDocument::openapi())
+        .expect("generated OpenAPI document is serializable");
     Router::new()
         .route("/v1/health", get(health))
-        .merge(SwaggerUi::new("/v1/docs").url("/v1/openapi.json", api::ApiDocument::openapi()))
+        .merge(SwaggerUi::new("/v1/docs").external_url_unchecked("/v1/openapi.json", openapi))
         .merge(protected)
         .with_state(state)
 }

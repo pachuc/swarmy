@@ -63,11 +63,13 @@ aws-sdk-bedrockruntime = { version = "1", default-features = false, features = [
 aws-smithy-types = { version = "1", default-features = false }
 # The provisioning SDKs stay out of the default build (swarmy-cli gates them
 # behind its opt-in `remote` feature) and skip the aws-lc default HTTPS
-# client. S3 keeps `sigv4a` and `http-1x` from its defaults; the other three
-# SDKs' defaults add nothing beyond `rustls` and `rt-tokio`.
+# client. S3 keeps `http-1x` but drops `sigv4a`: swarmy never signs SigV4a
+# requests, and that feature pulls crypto-bigint 0.5 (RUSTSEC-2026-0387,
+# no patched 0.5). The other three SDKs' defaults add nothing beyond
+# `rustls` and `rt-tokio`.
 aws-sdk-ec2 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-sdk-ssm = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
-aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "rt-tokio", "sigv4a", "http-1x"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "rt-tokio", "http-1x"] }
 aws-sdk-iam = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 portable-pty = "0.9"
 vt100 = "0.16"
@@ -110,7 +112,7 @@ utoipa = "5"
 # Vendored Swagger UI embeds the viewer at build time: the default features
 # would download it from GitHub with system curl on every cold build, which
 # --locked does not cover and offline node builds cannot reach.
-utoipa-swagger-ui = { version = "9", features = ["axum"], default-features = false }
+utoipa-swagger-ui = { version = "10", features = ["axum"], default-features = false }
 thiserror = "2"
 toml = "0.8"
 shell-words = "1"
