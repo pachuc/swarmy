@@ -173,19 +173,19 @@ mod tests {
                     .chars()
                     .take_while(|c| c.is_ascii_alphanumeric() || "_.-".contains(*c))
                     .collect();
-                if !name.is_empty() {
+                if name.ends_with(".sh") {
                     refs.push(normalize(&directory.join(name)));
                 }
             }
             let mut rest = line;
             while let Some(start) = rest.find("scripts/") {
-                rest = &rest[start..];
+                rest = &rest[start + "scripts/".len()..];
                 let name: String = rest
                     .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric() || "_/.-".contains(*c))
+                    .take_while(|c| c.is_ascii_alphanumeric() || "_.-".contains(*c))
                     .collect();
                 if name.ends_with(".sh") {
-                    refs.push(name.clone());
+                    refs.push(format!("scripts/{name}"));
                 }
                 rest = &rest[name.len()..];
             }

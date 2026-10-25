@@ -276,3 +276,116 @@ fn node_services_dev_up_needs_no_local_binaries_and_preserves_remote_on_down() {
     assert!(down.status.success());
     assert!(String::from_utf8_lossy(&down.stdout).contains("remote stack preserved"));
 }
+
+fn fake_upgrade_host(root: &Path) {
+    let ssh = root.join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            r#"#!/bin/bash
+last="${{@: -1}}"
+printf '%s\n' "$last" >> '{}/ssh-commands'
+case "$last" in
+  'bash -s')
+    file='{}/piped-'$(ls '{}/piped-'* 2>/dev/null | wc -l)
+    cat > "$file"
+    if grep -q service_home_for "$file"; then printf '/home/fake\n'; fi ;;
+  'uname -m') uname -m ;;
+  *'swarmy-core --version'*) printf 'swarmy-core test\n' ;;
+  *'remote-upgrade.sh'*) printf '{{"node":"","changed":[],"restarted":[],"elapsed_seconds":0}}\n' ;;
+esac
+"#,
+            root.display(),
+            root.display(),
+            root.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let rsync = root.join("rsync");
+    std::fs::write(
+        &rsync,
+        format!(
+            r#"#!/bin/bash
+printf '%s\n' "$@" >> '{}/rsync-args'
+mkdir -p '{}/uploaded-files' '{}/uploaded-release'
+for a in "$@"; do
+    if [[ -d $a ]]; then cp -R "$a/." '{}/uploaded-files/'; fi
+    if [[ -f $a ]]; then cp "$a" '{}/uploaded-release/'; fi
+done
+"#,
+            root.display(),
+            root.display(),
+            root.display(),
+            root.display(),
+            root.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&rsync, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn upgrade_without_a_checkout_uploads_node_files_and_release_binaries() {
+    use swarmy_testkit::release::{fake_release, host_target, serve_files};
+    let root = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    fake_upgrade_host(root.path());
+    let addr = serve_files(fake_release(
+        swarmy_version::RELEASE_TAG,
+        &host_target(),
+        "#!/bin/sh\n",
+    ));
+    let output = Command::new(env!("CARGO_BIN_EXE_swarmy"))
+        .current_dir(root.path())
+        .env("HOME", root.path())
+        .env("XDG_CONFIG_HOME", root.path())
+        .env("SWARMY_STATE_DIR", root.path().join(".swarmy"))
+        .env("SWARMY_RELEASE_BASE_URL", format!("http://{addr}"))
+        .env("PATH", format!("{}:/usr/bin:/bin", root.path().display()))
+        .args(["remote", "upgrade", "test"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    assert_eq!(
+        std::fs::read(root.path().join("uploaded-files/scripts/remote-upgrade.sh")).unwrap(),
+        std::fs::read(repo.join("scripts/remote-upgrade.sh")).unwrap()
+    );
+    assert!(
+        root.path()
+            .join("uploaded-files/images/base-ubuntu/recipe.toml")
+            .exists()
+    );
+    assert!(!root.path().join("uploaded-files/Cargo.toml").exists());
+    assert!(!root.path().join("uploaded-files/crates").exists());
+    for file in ["swarmy-core", "libfdb_c.so"] {
+        assert!(root.path().join("uploaded-release").join(file).exists());
+    }
+    let args = std::fs::read_to_string(root.path().join("rsync-args")).unwrap();
+    assert!(args.contains("--include=/scripts/***"));
+    assert!(args.contains("/home/fake/swarmy/"));
+    assert!(
+        std::fs::read_to_string(root.path().join("ssh-commands"))
+            .unwrap()
+            .contains("bash scripts/remote-upgrade.sh node all 600 prebuilt")
+    );
+}
+
+#[test]
+fn development_client_outside_a_checkout_refuses_before_ssh() {
+    let root = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    let output = cli(root.path(), &["remote", "upgrade", "test"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("SWARMY_RELEASE_BASE_URL") && stderr.contains("checkout"),
+        "{stderr}"
+    );
+    assert!(!root.path().join("ssh-commands").exists());
+}
