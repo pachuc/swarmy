@@ -280,6 +280,7 @@ pub async fn adopt_key(node: &RemoteNode, source: &Path) -> Result<()> {
 /// Provisions a fresh node from this repository checkout.
 pub struct Ssh {
     repo: PathBuf,
+    release: Option<(crate::release::Release, PathBuf)>,
 }
 
 impl Ssh {
@@ -297,7 +298,81 @@ impl Ssh {
                 crate::Error::other("run remote provisioning from a swarmy repository checkout")
             })?
             .to_owned();
-        Ok(Self { repo })
+        Ok(Self {
+            repo,
+            release: None,
+        })
+    }
+
+    /// Configure optional verified release artifacts for provisioning.
+    #[must_use]
+    pub fn with_release(
+        mut self,
+        release: Option<crate::release::Release>,
+        cache: PathBuf,
+    ) -> Self {
+        self.release = release.map(|release| (release, cache));
+        self
+    }
+
+    async fn node_target(node: &RemoteNode, address: &str) -> Result<crate::release::Target> {
+        let output = run_output(
+            base(node)?.arg(address).arg("uname -m"),
+            "read node architecture",
+        )
+        .await?;
+        crate::release::Target::from_uname(String::from_utf8(output.stdout)?.trim())
+    }
+
+    /// Upload verified binaries for the node architecture; development clients build on the node.
+    async fn upload_release(
+        &self,
+        node: &RemoteNode,
+        address: &str,
+        repo: &str,
+        stack: bool,
+    ) -> Result<bool> {
+        let Some((release, cache)) = &self.release else {
+            return Ok(false);
+        };
+        let target = Self::node_target(node, address).await?;
+        cloud_out!(
+            "Uploading swarmy {} release binaries for {}",
+            release.tag(),
+            target.triple()
+        );
+        let core = release
+            .ensure(cache, crate::release::Component::Core, target)
+            .await?;
+        let mut sources = vec![core.join("swarmy-core"), core.join("libfdb_c.so")];
+        if stack {
+            let client = release
+                .ensure(cache, crate::release::Component::Client, target)
+                .await?;
+            sources.push(client.join("swarmy"));
+        }
+        let mut transport = vec!["ssh".to_owned()];
+        transport.extend(arguments(node)?);
+        checked(
+            Command::new("rsync")
+                .args(["-a", "--mkpath", "-e"])
+                .arg(shell_words::join(transport))
+                .args(&sources)
+                .arg(format!("{address}:{repo}/.swarmy/release/")),
+            "upload release binaries",
+        )
+        .await?;
+        let user = service_user(node)?;
+        checked(
+            base(node)?.arg(address).arg(format!(
+                "sudo chown {user}:{user} {} && sudo chown -R {user}:{user} {}",
+                shell_words::quote(&format!("{repo}/.swarmy")),
+                shell_words::quote(&format!("{repo}/.swarmy/release")),
+            )),
+            "hand release binaries to service user",
+        )
+        .await?;
+        Ok(true)
     }
 
     /// Resolve before launching so missing recipes cannot leave cloud resources behind.
@@ -416,7 +491,7 @@ impl Ssh {
     /// # Errors
     ///
     /// Reports SSH, rsync, and remote package installation failures.
-    pub async fn copy_checkout(&self, node: &RemoteNode, address: &str) -> Result<()> {
+    pub async fn copy_checkout(&self, node: &RemoteNode, address: &str) -> Result<String> {
         // Dedicated servers boot without cloud-init; only wait where it exists.
         checked(base(node)?.arg(address)
             .arg("command -v rsync >/dev/null || (if command -v cloud-init >/dev/null 2>&1; then sudo cloud-init status --wait; fi; sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y rsync)"), "prepare remote rsync").await?;
@@ -463,7 +538,7 @@ impl Ssh {
             "hand copied checkout to service user",
         )
         .await?;
-        Ok(())
+        Ok(repo)
     }
 
     /// Report uncommitted paths while ignoring Python bytecode caches.
@@ -535,7 +610,8 @@ impl Ssh {
         drain_timeout: Duration,
         stack: bool,
     ) -> Result<serde_json::Value> {
-        self.copy_checkout(node, address).await?;
+        let repo = self.copy_checkout(node, address).await?;
+        let prebuilt = self.upload_release(node, address, &repo, stack).await?;
         let mode = if stack { "stack" } else { "node" };
         let services = if services_only {
             "services-only"
@@ -545,9 +621,10 @@ impl Ssh {
         let user = service_user(node)?;
         // Bash resolves the checkout through `~user`; Rust passes only the login.
         let script = format!(
-            "cd {} && bash scripts/remote-upgrade.sh {mode} {services} {}",
+            "cd {} && bash scripts/remote-upgrade.sh {mode} {services} {} {}",
             tilde_repo(&user),
-            drain_timeout.as_secs()
+            drain_timeout.as_secs(),
+            if prebuilt { "prebuilt" } else { "build" }
         );
         let mut remote = base(node)?;
         remote.arg(address).arg(script).stderr(Stdio::inherit());
@@ -568,7 +645,10 @@ impl Ssh {
     ) -> Result<String> {
         let address = wait_ssh(node).await?;
         cloud_out!("Copying repository checkout");
-        self.copy_checkout(node, &address).await?;
+        let repo = self.copy_checkout(node, &address).await?;
+        let prebuilt = self
+            .upload_release(node, &address, &repo, primary.is_none())
+            .await?;
         let service_ip: std::net::Ipv4Addr =
             primary
                 .unwrap_or(node)
@@ -603,7 +683,13 @@ impl Ssh {
         } else {
             "stack"
         };
-        cloud_out!("Provisioning node and building release binaries (this takes several minutes)");
+        if prebuilt {
+            cloud_out!("Provisioning node from release binaries");
+        } else {
+            cloud_out!(
+                "Provisioning node and building release binaries (this takes several minutes)"
+            );
+        }
         // Static S3 keys travel on SSH stdin into a root-owned file, never on
         // a command line. The provisioning script merges them into the 0600
         // node environment without printing them.
@@ -618,6 +704,7 @@ impl Ssh {
                     &node.region,
                     node.sandboxes,
                     node,
+                    prebuilt,
                 )?
             }),
             "provision remote node",
@@ -672,6 +759,7 @@ fn provisioning_command(
     fallback_region: &str,
     sandboxes: u32,
     node: &RemoteNode,
+    prebuilt: bool,
 ) -> Result<String> {
     let (bucket, region, endpoint, prefix, conditional_create, static_keys) = match spec {
         Some(spec) => (
@@ -691,7 +779,7 @@ fn provisioning_command(
     let user = service_user(node)?;
     // Bash resolves `~user` through the passwd entry; Rust passes only the login.
     Ok(format!(
-        "cd {} && bash scripts/remote-provision.sh {mode} {service_ip} {} {} {} {} {conditional_create} {static_keys} {sandboxes} {} {}",
+        "cd {} && bash scripts/remote-provision.sh {mode} {service_ip} {} {} {} {} {conditional_create} {static_keys} {sandboxes} {} {} {prebuilt}",
         tilde_repo(&user),
         shell_words::quote(bucket),
         shell_words::quote(region),
@@ -970,6 +1058,7 @@ mod tests {
         std::fs::write(dir.path().join("untracked.rs"), "code").unwrap();
         let changes = Ssh {
             repo: dir.path().to_owned(),
+            release: None,
         }
         .checkout_changes()
         .unwrap();
@@ -1016,7 +1105,10 @@ mod tests {
             std::fs::create_dir_all(repo.join(recipe)).unwrap();
             std::fs::write(repo.join(recipe).join("recipe.toml"), "").unwrap();
         }
-        let host = Ssh { repo: repo.clone() };
+        let host = Ssh {
+            repo: repo.clone(),
+            release: None,
+        };
         assert_eq!(
             host.image_recipe(std::path::Path::new("images/custom"))
                 .unwrap(),
@@ -1127,12 +1219,22 @@ mod provisioning_command_tests {
     fn sandbox_limit_is_passed_to_both_node_modes() {
         let ip = "10.0.0.1".parse().unwrap();
         assert_eq!(
-            provisioning_command("stack", ip, None, "us-east-1", 0, &node()).unwrap(),
-            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 '' '' true false 0 swarmy /dev/nvme1n1"
+            provisioning_command("stack", ip, None, "us-east-1", 0, &node(), false).unwrap(),
+            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 '' '' true false 0 swarmy /dev/nvme1n1 false"
         );
         assert_eq!(
-            provisioning_command("node", ip, None, "us-east-1", 4, &node()).unwrap(),
-            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh node 10.0.0.1 '' us-east-1 '' '' true false 4 swarmy /dev/nvme1n1"
+            provisioning_command("node", ip, None, "us-east-1", 4, &node(), false).unwrap(),
+            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh node 10.0.0.1 '' us-east-1 '' '' true false 4 swarmy /dev/nvme1n1 false"
+        );
+    }
+
+    #[test]
+    fn prebuilt_is_passed_as_twelfth_argument() {
+        let ip = "10.0.0.1".parse().unwrap();
+        assert!(
+            provisioning_command("node", ip, None, "us-east-1", 4, &node(), true)
+                .unwrap()
+                .ends_with(" /dev/nvme1n1 true")
         );
     }
 
@@ -1147,8 +1249,8 @@ mod provisioning_command_tests {
         .unwrap();
         assert_eq!(legacy.service_user(), "ubuntu");
         assert_eq!(
-            provisioning_command("stack", ip, None, "us-east-1", 0, &legacy).unwrap(),
-            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 '' '' true false 0 ubuntu ''"
+            provisioning_command("stack", ip, None, "us-east-1", 0, &legacy, false).unwrap(),
+            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 '' '' true false 0 ubuntu '' false"
         );
     }
 
@@ -1166,8 +1268,8 @@ mod provisioning_command_tests {
         .unwrap();
         assert_eq!(existing.service_user(), "ubuntu");
         assert_eq!(
-            provisioning_command("stack", ip, None, "us-east-1", 0, &existing).unwrap(),
-            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 '' '' true false 0 ubuntu ''"
+            provisioning_command("stack", ip, None, "us-east-1", 0, &existing, false).unwrap(),
+            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 '' '' true false 0 ubuntu '' false"
         );
     }
 
@@ -1189,10 +1291,10 @@ mod provisioning_command_tests {
         // The bucket region falls back to the remote region; the create-only
         // switch and the static signal travel positionally. Keys never do.
         let command =
-            provisioning_command("stack", ip, Some(&spec), "eu-west-1", 4, &node()).unwrap();
+            provisioning_command("stack", ip, Some(&spec), "eu-west-1", 4, &node(), false).unwrap();
         assert_eq!(
             command,
-            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 test-bucket eu-west-1 https://objects.example.invalid runs/team false true 4 swarmy /dev/nvme1n1"
+            "cd ~swarmy/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 test-bucket eu-west-1 https://objects.example.invalid runs/team false true 4 swarmy /dev/nvme1n1 false"
         );
         assert!(!command.contains("test-access"));
         assert!(!command.contains("test-secret"));
@@ -1205,6 +1307,7 @@ mod provisioning_command_tests {
         use tokio::io::AsyncWriteExt;
         let host = super::Ssh {
             repo: repo.to_owned(),
+            release: None,
         };
         let mut script = host.piped_env().unwrap();
         assert!(!script.contains("remote-s3-env.sh"));

@@ -35,6 +35,7 @@ if [[ -n $bucket_endpoint ]] && [[ -z $bucket ]]; then
     exit 1
 fi
 [[ $bucket_conditional_create == true || $bucket_conditional_create == false ]] || { echo 'Expected bucket conditional_create true or false' >&2; exit 1; }
+[[ $prebuilt == true || $prebuilt == false ]] || { echo 'Expected prebuilt true or false' >&2; exit 1; }
 [[ $bucket_static == true || $bucket_static == false ]] || { echo 'Expected bucket static true or false' >&2; exit 1; }
 [[ $mode == stack || $mode == node ]] || { echo 'Expected stack or node mode' >&2; exit 1; }
 [[ $service_address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
@@ -58,8 +59,9 @@ export DEBIAN_FRONTEND=noninteractive
 # Dedicated servers boot stock Ubuntu without cloud-init; only cloud images wait.
 wait_for_cloud_init
 sudo apt-get update
-sudo -E apt-get install -y build-essential pkg-config libssl-dev clang libclang-dev curl rsync \
-    runc passt iproute2 util-linux e2fsprogs debootstrap
+packages=(curl rsync runc passt iproute2 util-linux e2fsprogs debootstrap)
+if [[ $prebuilt == false ]]; then packages+=(build-essential pkg-config libssl-dev clang libclang-dev); fi
+sudo -E apt-get install -y "${packages[@]}"
 printf 'nbd\nublk_drv\n' | sudo tee /etc/modules-load.d/swarmy.conf >/dev/null
 # Some Ubuntu kernels ship these drivers outside the base package.
 if ! sudo modprobe nbd nbds_max=64 || ! sudo modprobe ublk_drv; then
@@ -106,41 +108,54 @@ fi
 # Keep node identity, backing data, and configuration on the root disk.
 [[ -e .swarmy/config.toml ]] || touch .swarmy/config.toml
 
-if ! command -v rustup >/dev/null && [[ ! -x $HOME/.cargo/bin/rustup ]]; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/swarmy-rustup.sh
-    sh /tmp/swarmy-rustup.sh -y --profile minimal --default-toolchain none
+if [[ $prebuilt == false ]]; then
+    if ! command -v rustup >/dev/null && [[ ! -x $HOME/.cargo/bin/rustup ]]; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/swarmy-rustup.sh
+        sh /tmp/swarmy-rustup.sh -y --profile minimal --default-toolchain none
+    fi
+    export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+    rustup show
 fi
-export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
-rustup show
 # A version marker avoids downloading the backing tools again on a rerun.
 tools_hash=$(sha256sum scripts/install-dev-tools.sh | cut -d' ' -f1)
 if [[ ! -f .swarmy/remote-tools-version || $(<.swarmy/remote-tools-version) != "$tools_hash" ]]; then
     bash scripts/install-dev-tools.sh
     printf '%s\n' "$tools_hash" > .swarmy/remote-tools-version
 fi
-# Check available memory after installing tools, before the expensive release build.
-# The node CLI excludes provisioning SDKs, but the services still need headroom.
-mem_available_kib=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)
-mem_total_kib=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
-if (( mem_available_kib < 6 * 1024 * 1024 )); then
-    printf 'Release build needs at least 6 GiB available memory; this machine has %s MiB total and %s MiB available. Use at least an 8 GiB machine, or free memory before provisioning.\n' \
-        "$((mem_total_kib / 1024))" "$((mem_available_kib / 1024))" >&2
-    exit 1
+if [[ $prebuilt == false ]]; then
+    # Check available memory after installing tools, before the expensive release build.
+    # The node CLI excludes provisioning SDKs, but the services still need headroom.
+    mem_available_kib=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)
+    mem_total_kib=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
+    if (( mem_available_kib < 6 * 1024 * 1024 )); then
+        printf 'Release build needs at least 6 GiB available memory; this machine has %s MiB total and %s MiB available. Use at least an 8 GiB machine, or free memory before provisioning.\n' \
+            "$((mem_total_kib / 1024))" "$((mem_available_kib / 1024))" >&2
+        exit 1
+    fi
+    build_started=$SECONDS
+    # Packages from the shared table (the CLI package differs, so it builds
+    # separately with its own feature flags). read_shared_list fails loudly:
+    # an empty package list would become a whole-workspace build.
+    if [[ $mode == stack ]]; then
+        SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p "$(swarmy_cli_package)" --no-default-features
+    fi
+    read_shared_list build_args swarmy_mode_build_args "$mode"
+    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}"
+    bin_dir=$repo_dir/target/release
+else
+    bin_dir=$(release_bundle_dir "$repo_dir")
+    check_release_bundle "$bin_dir" "$mode"
+    install_core_library "$bin_dir/libfdb_c.so"
 fi
-build_started=$SECONDS
-# Packages from the shared table (the CLI package differs, so it builds
-# separately with its own feature flags). read_shared_list fails loudly:
-# an empty package list would become a whole-workspace build.
-if [[ $mode == stack ]]; then
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p "$(swarmy_cli_package)" --no-default-features
-fi
-read_shared_list build_args swarmy_mode_build_args "$mode"
-SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}"
 # Install from the shared binary list so the install can never name a binary
 # teardown misses. Only built binaries are present, selected per mode above.
 read_shared_list install_binaries swarmy_mode_binaries "$mode"
-sudo install -m 0755 "${install_binaries[@]/#/target/release/}" /usr/local/bin/
-printf 'Release build took %s seconds\n' "$((SECONDS - build_started))"
+sudo install -m 0755 "${install_binaries[@]/#/$bin_dir/}" /usr/local/bin/
+if [[ $prebuilt == true ]]; then
+    printf 'Installed release binaries from %s\n' "$bin_dir"
+else
+    printf 'Release build took %s seconds\n' "$((SECONDS - build_started))"
+fi
 sudo install -d -m 0755 /etc/swarmy
 sudo install -m 0600 /dev/null /etc/swarmy/node.env
 node_environment "$repo_dir" "$sandboxes" "$local_mount" "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix" "$bucket_conditional_create" "$bucket_static" | sudo tee /etc/swarmy/node.env >/dev/null

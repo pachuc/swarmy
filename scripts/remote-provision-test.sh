@@ -11,7 +11,7 @@ for invalid in -1 word 1.5 4294967296; do
 done
 # Every provisioning argument lands in the variable the SSH command sends it
 # as; defaults match a bare `remote up` with no bucket.
-parse_provision_args node 10.0.0.2 test-bucket eu-west-1 https://objects.example.invalid runs/team false true 4 deploy-user dir:/srv/data
+parse_provision_args node 10.0.0.2 test-bucket eu-west-1 https://objects.example.invalid runs/team false true 4 deploy-user dir:/srv/data true
 [[ $mode == node ]]
 [[ $service_address == 10.0.0.2 ]]
 [[ $bucket == test-bucket ]]
@@ -23,6 +23,7 @@ parse_provision_args node 10.0.0.2 test-bucket eu-west-1 https://objects.example
 [[ $sandboxes == 4 ]]
 [[ $service_user == deploy-user ]]
 [[ $local_storage == dir:/srv/data ]]
+[[ $prebuilt == true ]]
 parse_provision_args
 [[ $mode == stack ]]
 [[ $service_address == 127.0.0.1 ]]
@@ -35,6 +36,20 @@ parse_provision_args
 [[ $sandboxes == 64 ]]
 [[ $service_user == swarmy ]]
 [[ -z $local_storage ]]
+[[ $prebuilt == false ]]
+[[ $(release_bundle_dir /x) == /x/.swarmy/release ]]
+bundle=$(mktemp -d)
+trap 'rm -rf "$bundle"' EXIT
+printf '#!/bin/sh\n' > "$bundle/swarmy-core"
+chmod +x "$bundle/swarmy-core"
+touch "$bundle/libfdb_c.so"
+check_release_bundle "$bundle" node
+if check_release_bundle "$bundle" stack 2>/dev/null; then echo 'stack accepted missing client' >&2; exit 1; fi
+printf '#!/bin/sh\n' > "$bundle/swarmy"
+chmod +x "$bundle/swarmy"
+check_release_bundle "$bundle" stack
+rm "$bundle/libfdb_c.so"
+if check_release_bundle "$bundle" node 2>/dev/null; then echo 'accepted missing library' >&2; exit 1; fi
 zero=$(node_environment /tmp/checkout 0 /this-mount-does-not-exist)
 [[ $zero == *'SWARMY_NODE_ROLES=volume'* ]]
 [[ $zero == *'SWARMY_NODE_SANDBOXES=0'* ]]

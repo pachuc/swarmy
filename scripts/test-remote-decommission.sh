@@ -11,7 +11,7 @@ fake=$(mktemp -d)
 trap 'rm -rf "$fake"' EXIT
 export FAKE_ROOT=$fake
 mkdir -p "$fake/bin" "$fake/etc/systemd/system" "$fake/usr/local/bin" \
-    "$fake/etc/modules-load.d" "$fake/etc/swarmy" "$fake/home/decomm-swarmy/swarmy"
+    "$fake/etc/modules-load.d" "$fake/etc/ld.so.conf.d" "$fake/usr/local/lib/swarmy" "$fake/etc/swarmy" "$fake/home/decomm-swarmy/swarmy"
 
 # Stub sudo: run the command with absolute paths redirected under the fake
 # root, so the test never touches the real filesystem.
@@ -29,7 +29,11 @@ cat > "$fake/bin/systemctl" <<'STUB'
 printf '%s\n' "$*" >> "$FAKE_ROOT/systemctl.log"
 exit 0
 STUB
-chmod +x "$fake/bin/sudo" "$fake/bin/systemctl"
+cat > "$fake/bin/ldconfig" <<'STUB'
+#!/usr/bin/env bash
+printf 'ldconfig\n' >> "$FAKE_ROOT/ldconfig.log"
+STUB
+chmod +x "$fake/bin/sudo" "$fake/bin/systemctl" "$fake/bin/ldconfig"
 export PATH="$fake/bin:$PATH"
 : > "$fake/systemctl.log"
 
@@ -42,7 +46,8 @@ while IFS= read -r binary; do
     touch "$fake/usr/local/bin/$binary"
 done < <(swarmy_binary_names)
 printf 'nbd\nublk_drv\n' > "$fake/etc/modules-load.d/swarmy.conf"
-printf 'secret=fixture\n' > "$fake/etc/swarmy/node.env"
+touch "$fake/usr/local/lib/swarmy/libfdb_c.so" "$fake/etc/ld.so.conf.d/swarmy.conf"
+printf 'secret=fixture\n'  > "$fake/etc/swarmy/node.env"
 touch "$fake/home/decomm-swarmy/swarmy/checkout-marker"
 printf 'LABEL=swarmy-local /mnt/swarmy-local ext4 defaults,nofail 0 2\n' > "$fake/etc/fstab"
 
@@ -63,6 +68,8 @@ grep -qxF "daemon-reload" "$fake/systemctl.log" || { echo "units never reloaded"
 # No swarmy unit, binary, module config, node environment, or checkout remains.
 [[ -z $(ls -A "$fake/etc/systemd/system") ]] || { echo "unit files remain" >&2; exit 1; }
 [[ -z $(ls -A "$fake/usr/local/bin") ]] || { echo "binaries remain" >&2; exit 1; }
+[[ ! -e $fake/usr/local/lib/swarmy && ! -e $fake/etc/ld.so.conf.d/swarmy.conf ]]
+grep -qx ldconfig "$fake/ldconfig.log"
 [[ ! -e $fake/etc/modules-load.d/swarmy.conf ]] || { echo "modules config remains" >&2; exit 1; }
 [[ ! -e $fake/etc/swarmy ]] || { echo "node environment remains" >&2; exit 1; }
 [[ ! -e $fake/home/decomm-swarmy/swarmy ]] || { echo "checkout remains" >&2; exit 1; }
@@ -73,6 +80,12 @@ grep -qxF 'LABEL=swarmy-local /mnt/swarmy-local ext4 defaults,nofail 0 2' "$fake
 
 # Rerunning after a complete teardown still succeeds (a retried down is a no-op).
 bash scripts/remote-decommission.sh decomm-swarmy
+
+mkdir -p "$fake/src"
+touch "$fake/src/libfdb_c.so"
+(cd "$fake/src" && install_core_library libfdb_c.so)
+[[ -f $fake/usr/local/lib/swarmy/libfdb_c.so ]]
+[[ $(cat "$fake/etc/ld.so.conf.d/swarmy.conf") == /usr/local/lib/swarmy ]]
 
 # The piped probe with no checkout: a leftover swarmyd.service unit file
 # fails with the checkout-is-missing error (the glob must cover swarmyd,

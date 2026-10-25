@@ -1,5 +1,8 @@
 //! In-place upgrades keep the remote state and all instance identities intact.
-use std::time::{Duration, Instant};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use crate::Result;
 use serde::{Deserialize, Serialize};
@@ -51,10 +54,11 @@ pub(super) async fn command(
     state: &super::state::State,
     name: &str,
     mut options: Options,
+    cache: &Path,
 ) -> Result<()> {
     let _lock = state.lock()?;
     let node = state.require(name)?;
-    let host = ssh::Ssh::discover()?;
+    let host = super::provisioning_host(cache)?;
     options.dirty_paths = host.checkout_changes()?;
     run(&host, &node, options).await.map(|_| ())
 }

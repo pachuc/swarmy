@@ -2,7 +2,7 @@
 # Helpers sourced by remote-provision.sh, remote-upgrade.sh,
 # remote-services.sh, and their no-sudo argument tests.
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-s3-env.sh"
-# Read the eleven positional arguments of remote-provision.sh into named
+# Read the twelve positional arguments of remote-provision.sh into named
 # settings. One definition of the order, shared by the script and its
 # argument test; the SSH provisioning command sends them in this order.
 parse_provision_args() {
@@ -17,6 +17,30 @@ parse_provision_args() {
     sandboxes=$(parse_sandbox_count "${9-64}")
     service_user=${10:-swarmy}
     local_storage=${11:-}
+    prebuilt=${12:-false}
+}
+
+# Where the client uploads release binaries inside the checkout.
+release_bundle_dir() { printf '%s/.swarmy/release\n' "${1:?checkout}"; }
+
+# Validate all binaries for a mode before installing any of them.
+check_release_bundle() {
+    local dir=$1 mode=$2 binaries binary
+    read_shared_list binaries swarmy_mode_binaries "$mode" || return 1
+    for binary in "${binaries[@]}"; do
+        [[ -f $dir/$binary && -x $dir/$binary ]] || { echo "Missing uploaded release binary: $dir/$binary" >&2; return 1; }
+    done
+    [[ -f $dir/libfdb_c.so ]] || { echo "Missing uploaded libfdb_c.so in $dir" >&2; return 1; }
+}
+
+swarmy_core_library_dir() { printf '/usr/local/lib/swarmy\n'; }
+install_core_library() {
+    local dir
+    dir=$(swarmy_core_library_dir)
+    sudo install -d -m 0755 "$dir" /etc/ld.so.conf.d
+    sudo install -m 0644 "$1" "$dir/libfdb_c.so"
+    printf '%s\n' "$dir" | sudo tee /etc/ld.so.conf.d/swarmy.conf >/dev/null
+    sudo ldconfig
 }
 
 parse_sandbox_count() {
@@ -317,6 +341,9 @@ decommission_remove() {
     for binary in "${binaries[@]}"; do
         sudo rm -f "/usr/local/bin/$binary"
     done
+    sudo rm -rf "$(swarmy_core_library_dir)"
+    sudo rm -f /etc/ld.so.conf.d/swarmy.conf
+    sudo ldconfig
     sudo rm -f /etc/modules-load.d/swarmy.conf
     sudo rm -rf /etc/swarmy
     service_repo=$(service_repo_for "$service_user")
