@@ -198,7 +198,9 @@ export PATH=$scenario/stubs:$PATH
 set_unit_inputs stack "$(id -un)" '' false ''
 render_unit swarmy-stack.service > "$SWARMY_SYSTEMD_DIR/swarmy-stack.service"
 printf '[Service]\nExecStart=/usr/local/bin/swarmyd\n' > "$SWARMY_SYSTEMD_DIR/swarmyd.service"
-printf '[Service]\nExecStart=/usr/local/bin/swarmy-scheduler\n' > "$SWARMY_SYSTEMD_DIR/swarmy-scheduler.service"
+for role in scheduler worker gateway api; do
+    printf '[Service]\nExecStart=/usr/local/bin/swarmy-%s\n' "$role" > "$SWARMY_SYSTEMD_DIR/swarmy-$role.service"
+done
 printf 'SWARMY_S3_ENDPOINT=http://127.0.0.1:8333\n' > "$SWARMY_ETC_DIR/node.env"
 printf '[api]\ntoken = "existing"\n' > "$node_repo/.swarmy/config.toml"
 for binary in swarmy swarmy-core libfdb_c.so; do
@@ -213,14 +215,18 @@ python3 - "$scenario/first.json" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding='utf-8') as file:
     data = json.load(file)
-assert data['units'] == ['swarmyd.service', 'swarmy-scheduler.service'], data
+assert data['units'] == ['swarmyd.service', 'swarmy-scheduler.service',
+                         'swarmy-worker.service', 'swarmy-gateway.service',
+                         'swarmy-api.service'], data
 PY
 [[ ! -f $node_repo/.swarmy/upgrade-pending-units ]]
 for binary in swarmyd swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api; do
     [[ ! -f $node_root/usr/local/bin/$binary ]]
 done
 [[ $(grep -c '^daemon-reload$' "$node_root/systemctl.log") == 1 ]]
-[[ $(grep -n '^restart swarmy-scheduler.service$' "$node_root/systemctl.log" | cut -d: -f1) -lt $(grep -n '^restart swarmyd.service$' "$node_root/systemctl.log" | cut -d: -f1) ]]
+for role in scheduler worker gateway api; do
+    [[ $(grep -n "^restart swarmy-$role.service$" "$node_root/systemctl.log" | head -1 | cut -d: -f1) -lt $(grep -n '^restart swarmyd.service$' "$node_root/systemctl.log" | head -1 | cut -d: -f1) ]]
+done
 if grep -q 'restart swarmy-stack.service' "$node_root/systemctl.log"; then echo 'stack unit restarted' >&2; exit 1; fi
 bash "$node_repo/scripts/remote-upgrade.sh" stack all 5 prebuilt > "$scenario/second.json"
 python3 - "$scenario/second.json" <<'PY'
