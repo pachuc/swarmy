@@ -9,7 +9,7 @@ services=$2
 drain_timeout=$3
 source_mode=${4:-build}
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-# Builds run as the checkout owner; a bootstrap login re-enters as that user.
+# Builds run as the node directory owner; a bootstrap login re-enters as that user.
 repo_owner=$(stat -c %U "$repo_dir")
 if [[ $(id -un) != "$repo_owner" ]]; then
     exec sudo -H -u "$repo_owner" bash "$0" "$@"

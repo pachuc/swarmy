@@ -390,9 +390,9 @@ impl Ssh {
         Ok(String::from_utf8(output.stdout)?)
     }
 
-    /// Run the checkout's `ensure_service_user` on the host before the first
+    /// Run the embedded `ensure_service_user` on the host before the first
     /// copy, so a root login gains a destination owned by its owner. The helper
-    /// script is piped over stdin because the checkout is not on the host yet;
+    /// script is piped over stdin because the node directory is not on the host yet;
     /// user creation, sudoers, and path resolution stay in the one bash
     /// implementation instead of being repeated in Rust. Returns the
     /// host-resolved home for the rsync destination; every later command
@@ -544,7 +544,7 @@ impl Ssh {
             "all"
         };
         let user = service_user(node)?;
-        // Bash resolves the checkout through `~user`; Rust passes only the login.
+        // Bash resolves the node directory through `~user`; Rust passes only the login.
         let script = format!(
             "cd {} && bash {} {mode} {services} {} {}",
             tilde_repo(&user),
@@ -638,7 +638,7 @@ impl Ssh {
     /// Stop swarmy services on an adopted host and remove its units,
     /// binaries, node environment, and node directory. Pipes the embedded
     /// `decommission_probe` over stdin (so no checkout is needed on the
-    /// host), which runs the shared teardown when the checkout is present,
+    /// host), which runs the shared teardown when the node directory is present,
     /// fails loudly when units remain without one, and no-ops when nothing
     /// remains. `/etc/swarmy` goes because it holds static bucket keys and
     /// copied credentials. Local sandbox disk data, the service user, the

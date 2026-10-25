@@ -2,7 +2,7 @@
 # Provision the node directory the client uploaded (scripts/ and images/, plus .swarmy/release/ from a release client or source/ from a development client). Safe to rerun.
 # Arguments: MODE SERVICE_ADDRESS [BUCKET] [BUCKET_REGION] [BUCKET_ENDPOINT]
 #   [BUCKET_PREFIX] [CONDITIONAL_CREATE] [STATIC] [SANDBOXES] [SERVICE_USER]
-#   [LOCAL_STORAGE]. SERVICE_USER owns the checkout and the
+#   [LOCAL_STORAGE]. SERVICE_USER owns the node directory and the
 #   units (default swarmy); LOCAL_STORAGE is a block device to format and
 #   mount at /mnt/swarmy-local or dir:/path for an existing directory.
 #   Sandbox nodes require it; control-only nodes use the root disk.
