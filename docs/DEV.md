@@ -375,7 +375,8 @@ Each client archive is named `swarmy-<target>.tar.gz` and contains
 `swarmy-core-<target>.tar.gz` and contain `swarmy-core-<target>/swarmy-core`
 and `swarmy-core-<target>/libfdb_c.so`. The core loads its bundled
 FoundationDB 7.3.79 client through an `$ORIGIN` rpath; keep the two files
-together. Nodes need no FoundationDB installation for this binary.
+together. Packaging checks the upstream library against its published SHA-256
+checksum. Nodes need no FoundationDB installation for this binary.
 
 Each release includes one `SHA256SUMS` for all six archives. Download it with
 the archives and verify using `sha256sum -c --ignore-missing SHA256SUMS`.

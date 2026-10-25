@@ -83,7 +83,7 @@ enum Command {
     Doctor,
     /// Print the version of this CLI
     Version {
-        /// Print the release tag (v<version>) whose archives match this client
+        /// Print the release tag (`v<version>`) whose archives match this client
         #[arg(long)]
         release: bool,
     },
