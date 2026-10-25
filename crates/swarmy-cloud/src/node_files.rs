@@ -182,7 +182,10 @@ mod tests {
                     .chars()
                     .take_while(|c| c.is_ascii_alphanumeric() || "_.-".contains(*c))
                     .collect();
-                if name.ends_with(".sh") {
+                if Path::new(&name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("sh"))
+                {
                     refs.push(normalize(&directory.join(name)));
                 }
             }
@@ -193,13 +196,35 @@ mod tests {
                     .chars()
                     .take_while(|c| c.is_ascii_alphanumeric() || "_.-".contains(*c))
                     .collect();
-                if name.ends_with(".sh") {
+                if Path::new(&name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("sh"))
+                {
                     refs.push(format!("scripts/{name}"));
                 }
                 rest = &rest[name.len()..];
             }
         }
         refs
+    }
+
+    fn recipe_references(text: &str, dir: &Path) -> Vec<String> {
+        let recipe: toml::Value = text.parse().unwrap();
+        let Some(source) = recipe.get("source") else {
+            return Vec::new();
+        };
+        let mut scripts = Vec::new();
+        if let Some(script) = source.get("script").and_then(toml::Value::as_str) {
+            scripts.push(normalize(&dir.join(script)));
+        }
+        if let Some(entries) = source.get("scripts").and_then(toml::Value::as_array) {
+            scripts.extend(
+                entries
+                    .iter()
+                    .map(|entry| normalize(&dir.join(entry.as_str().unwrap()))),
+            );
+        }
+        scripts
     }
 
     #[test]
@@ -231,17 +256,7 @@ mod tests {
                 pending.extend(script_references(&text, dir));
             }
             if path.ends_with("recipe.toml") {
-                let recipe: toml::Value = text.parse().unwrap();
-                if let Some(source) = recipe.get("source") {
-                    if let Some(script) = source.get("script").and_then(toml::Value::as_str) {
-                        pending.push(normalize(&dir.join(script)));
-                    }
-                    if let Some(scripts) = source.get("scripts").and_then(toml::Value::as_array) {
-                        for script in scripts {
-                            pending.push(normalize(&dir.join(script.as_str().unwrap())));
-                        }
-                    }
-                }
+                pending.extend(recipe_references(&text, dir));
             }
         }
         let bundled: BTreeSet<_> = FILES.iter().map(|(path, _)| (*path).to_owned()).collect();
