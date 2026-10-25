@@ -1274,13 +1274,14 @@ pub mod api_paths {
         params(
             ("name" = String, Query, description = "Image name"),
             ("tag" = String, Query, description = "Image tag"),
+            ("size" = u64, Query, description = "Logical image size in bytes, a positive multiple of the chunk size"),
             ("idempotency_key" = String, Query, description = "Retry key for this upload"),
             ("scratch" = Option<String>, Query, description = "Comma-separated sandbox scratch paths"),
             ("memory_mib" = Option<u64>, Query, description = "Sandbox memory requirement"),
             ("display" = Option<bool>, Query, description = "Image needs a display server"),
         ),
-        request_body(content = inline(Vec<u8>), description = "Raw ext4 image bytes"),
-        responses((status = 200, body = ImageUpload), (status = 400, body = ApiError)))]
+        request_body(content = inline(Vec<u8>), description = "Data extents of the sparse ext4 image: repeated records of offset (u64 LE), length (u64 LE), then length bytes; ascending, non-overlapping; uncovered bytes are zero"),
+        responses((status = 200, body = ImageUpload), (status = 400, body = ApiError), (status = 413, body = ApiError)))]
     pub fn upload_image() {}
     #[utoipa::path(post, path = "/v1/gc/runs",
         request_body = StartGcRun,

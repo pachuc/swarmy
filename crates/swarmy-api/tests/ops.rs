@@ -274,6 +274,13 @@ async fn upload_rejects_bodies_over_the_configured_limit() {
         .unwrap()
         .set_len(u64::from(CHUNK_SIZE))
         .unwrap();
+    use std::os::unix::fs::FileExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&raw)
+        .unwrap()
+        .write_all_at(&vec![1u8; CHUNK_SIZE as usize], 0)
+        .unwrap();
     // The server rejects an oversized body from the `Content-Length` header
     // without draining it, so the client still streaming the body may
     // observe a broken pipe instead of the 413. Both outcomes reject the
@@ -329,7 +336,7 @@ async fn upload_with_length_stops_before_streaming_the_body() {
         }
     };
     let url = format!(
-        "{}/v1/images/uploads?name=ops&tag=oversize-length&idempotency_key={}",
+        "{}/v1/images/uploads?name=ops&tag=oversize-length&idempotency_key={}&size={total}",
         fixture.base,
         Ulid::generate()
     );
@@ -350,6 +357,114 @@ async fn upload_with_length_stops_before_streaming_the_body() {
         pulled < total,
         "server read {pulled} of {total} bytes before rejecting"
     );
+}
+
+/// Holes count toward the logical image but not the upload ceiling.
+#[tokio::test]
+async fn sparse_upload_counts_only_data_against_the_limit() {
+    use std::os::unix::fs::FileExt;
+    let Some(fixture) = Fixture::with_upload_max(2 * u64::from(CHUNK_SIZE)).await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let raw = dir.path().join("disk.ext4");
+    let file = std::fs::File::create(&raw).unwrap();
+    file.set_len(8 * u64::from(CHUNK_SIZE)).unwrap();
+    let data: Vec<u8> = (0..CHUNK_SIZE).map(|i| (i % 251) as u8 + 1).collect();
+    file.write_all_at(&data, 5 * u64::from(CHUNK_SIZE)).unwrap();
+    let uploaded = upload_image(
+        &fixture,
+        &raw,
+        "sparse",
+        &Ulid::generate().to_string(),
+        &[],
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(uploaded.size, 8 * u64::from(CHUNK_SIZE));
+    assert_eq!(uploaded.chunks_total, 8);
+    assert_eq!(uploaded.chunks_stored, 1);
+    assert_eq!(uploaded.chunks_uploaded, 1);
+    let expected =
+        swarmy_volume::image::upload_image(&raw, Arc::new(object_store::memory::InMemory::new()))
+            .await
+            .unwrap();
+    assert_eq!(
+        uploaded.header.root_hash,
+        expected.header.root_hash.to_string()
+    );
+}
+
+/// Three data chunks exceed a two-chunk body ceiling even with holes between them.
+#[tokio::test]
+async fn sparse_upload_with_data_over_the_limit_is_rejected() {
+    use std::os::unix::fs::FileExt;
+    let Some(fixture) = Fixture::with_upload_max(2 * u64::from(CHUNK_SIZE)).await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let raw = dir.path().join("disk.ext4");
+    let file = std::fs::File::create(&raw).unwrap();
+    file.set_len(8 * u64::from(CHUNK_SIZE)).unwrap();
+    for index in [1, 4, 6] {
+        file.write_all_at(
+            &vec![1u8; CHUNK_SIZE as usize],
+            index * u64::from(CHUNK_SIZE),
+        )
+        .unwrap();
+    }
+    match upload_image(
+        &fixture,
+        &raw,
+        "over-limit",
+        &Ulid::generate().to_string(),
+        &[],
+        None,
+    )
+    .await
+    {
+        Err(swarmy_client::Error::Api { status, body }) => {
+            assert_eq!(status, reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+            assert_eq!(body.code, "image_too_large");
+        }
+        Err(swarmy_client::Error::Transport(_)) => {}
+        other => panic!("oversized upload must be rejected: {other:?}"),
+    }
+}
+
+/// Malformed framing and invalid logical sizes receive invalid_request.
+#[tokio::test]
+async fn upload_rejects_malformed_extents() {
+    let Some(fixture) = Fixture::new().await else {
+        return;
+    };
+    let size = 2 * u64::from(CHUNK_SIZE);
+    let mut outside = Vec::new();
+    outside.extend_from_slice(&size.to_le_bytes());
+    outside.extend_from_slice(&1u64.to_le_bytes());
+    outside.push(1);
+    for (body, logical_size) in [
+        (outside, size),
+        (vec![0; 8], size),
+        (vec![], u64::from(CHUNK_SIZE) + 1),
+    ] {
+        let url = format!(
+            "{}/v1/images/uploads?name=ops&tag=malformed&idempotency_key={}&size={logical_size}",
+            fixture.base,
+            Ulid::generate()
+        );
+        let response = reqwest::Client::new()
+            .post(url)
+            .bearer_auth("test-token")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        let error: api::ApiError = response.json().await.unwrap();
+        assert_eq!(error.code, "invalid_request");
+    }
 }
 
 #[tokio::test]
