@@ -311,7 +311,7 @@ fn downloaded_core_with_other_identity_is_refused() {
 #[test]
 fn run_refuses_a_mismatched_api_core() {
     let fixture = Fixture::new();
-    let body = serde_json::json!({"version":"9.9.9","git_commit":"other","api_version":swarmy_api_types::API_VERSION,"default_provider":"fake","services":[],"node_count":0}).to_string();
+    let body = serde_json::json!({"version":"9.9.9","git_commit":"other","api_version":swarmy_api_types::API_VERSION,"default_provider":"fake","services":[{"role":"worker","instance_id":"w","version":"test","alive":true,"last_seen":"now"},{"role":"scheduler","instance_id":"s","version":"test","alive":true,"last_seen":"now"},{"role":"gateway","instance_id":"g","version":"test","alive":true,"last_seen":"now","providers":["fake"]}],"node_count":0}).to_string();
     let address = serve_files(vec![("/v1/health".to_owned(), body.into_bytes())]);
     fs::create_dir_all(fixture.root.path().join(".swarmy")).unwrap();
     fs::write(
