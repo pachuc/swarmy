@@ -98,12 +98,12 @@ struct Fixture {
     _guard: swarmy_testkit::StackGuard,
 }
 
-/// A shared manual clock for the store and the worker. Lease-expiry tests
-/// advance it past the expiry instead of sleeping out real time; both the
-/// store's transactional checks and the worker's resolution read the same
-/// instant, so expiry is deterministic.
+/// A shared clock for the store and worker. It advances with real time so
+/// heartbeats extend the lease, and tests can also jump past expiry without
+/// sleeping. Both transactional checks and worker resolution see the same time.
 struct TestClock {
     start: Timestamp,
+    started: tokio::time::Instant,
     offset_ms: AtomicI64,
 }
 
@@ -111,14 +111,16 @@ impl TestClock {
     fn new() -> Self {
         Self {
             start: Timestamp::now(),
+            started: tokio::time::Instant::now(),
             offset_ms: AtomicI64::new(0),
         }
     }
 
     fn now(&self) -> Timestamp {
         let offset_ms = self.offset_ms.load(Ordering::SeqCst).max(0);
+        let elapsed = self.started.elapsed();
         self.start
-            .checked_add(Duration::from_millis(u64::try_from(offset_ms).unwrap()))
+            .checked_add(elapsed + Duration::from_millis(u64::try_from(offset_ms).unwrap()))
             .unwrap()
     }
 
