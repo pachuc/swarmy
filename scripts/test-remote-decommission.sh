@@ -78,14 +78,14 @@ grep -qx ldconfig "$fake/ldconfig.log"
 [[ -d $fake/home/decomm-swarmy ]] || { echo "service home removed" >&2; exit 1; }
 grep -qxF 'LABEL=swarmy-local /mnt/swarmy-local ext4 defaults,nofail 0 2' "$fake/etc/fstab" || { echo "fstab line changed" >&2; exit 1; }
 
+# Rerunning after a complete teardown still succeeds (a retried down is a no-op).
+bash scripts/remote-decommission.sh decomm-swarmy
+
 mkdir -p "$fake/src"
 touch "$fake/src/libfdb_c.so"
 (cd "$fake/src" && install_core_library libfdb_c.so)
 [[ -f $fake/usr/local/lib/swarmy/libfdb_c.so ]]
 [[ $(cat "$fake/etc/ld.so.conf.d/swarmy.conf") == /usr/local/lib/swarmy ]]
-
-# Rerunning after a complete teardown still succeeds (a retried down is a no-op).
-bash scripts/remote-decommission.sh decomm-swarmy
 
 # The piped probe with no checkout: a leftover swarmyd.service unit file
 # fails with the checkout-is-missing error (the glob must cover swarmyd,
