@@ -13,7 +13,7 @@ for args in 'node all -1' 'node all x' 'bad all 60' 'stack bad 60' 'stack all' '
     fi
 done
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap 'if [[ ${root_repo_link:-} ]]; then rm -f "$root_repo_link"; fi; rm -rf "$work"' EXIT
 printf 'before' > "$work/old"
 printf 'before' > "$work/new"
 if binary_changed "$work/old" "$work/new"; then
@@ -102,7 +102,7 @@ stack_mtime=$(stat -c %Y "$SWARMY_SYSTEMD_DIR/swarmy-stack.service")
 changed=()
 reconcile_units changed swarmy-stack.service swarmyd.service swarmy-scheduler.service
 [[ ${changed[*]} == 'swarmyd.service swarmy-scheduler.service' ]]
-! grep -q swarmy-stack.service "$root/install.log"
+if grep -q swarmy-stack.service "$root/install.log"; then echo 'stack unit was reinstalled' >&2; exit 1; fi
 [[ $(sha256sum "$SWARMY_SYSTEMD_DIR/swarmy-stack.service") == "$stack_hash" ]]
 [[ $(stat -c %Y "$SWARMY_SYSTEMD_DIR/swarmy-stack.service") == "$stack_mtime" ]]
 [[ $(wc -l < "$root/systemctl.log") == 1 ]]
@@ -135,3 +135,99 @@ if unit_inputs_for_upgrade stack swarmy 2>/dev/null; then echo 'accepted mismatc
 systemctl() { return 99; }
 unit_restart_wanted fake.service /missing/binary fake.service
 printf 'remote upgrade unit reconciliation: ok\n'
+
+# Exercise the SSH entrypoint against a pre-units.env node without touching host units.
+scenario=$work/entrypoint
+mkdir -p "$scenario/home/swarmy/scripts" "$scenario/home/swarmy/.swarmy/release" \
+    "$scenario/root/etc/systemd/system" "$scenario/root/etc/swarmy" \
+    "$scenario/root/usr/local/bin" "$scenario/stubs"
+cp scripts/remote-{upgrade.sh,upgrade-lib.sh,provision-env.sh,s3-env.sh} "$scenario/home/swarmy/scripts/"
+node_repo=$scenario/home/swarmy
+if [[ $(id -un) == root ]]; then
+    # service_home_for deliberately hardcodes root's home.
+    [[ ! -e /root/swarmy && ! -L /root/swarmy ]] || { echo '/root/swarmy already exists; cannot isolate upgrade test' >&2; exit 1; }
+    ln -s "$node_repo" /root/swarmy
+    root_repo_link=/root/swarmy
+    node_repo=/root/swarmy
+fi
+node_root=$scenario/root
+cat > "$scenario/stubs/getent" <<'STUB'
+#!/usr/bin/env bash
+if [[ $1 == passwd && $2 == "$(id -un)" ]]; then
+    printf '%s:x:1000:1000::%s:/bin/bash\n' "$2" "$TEST_NODE_HOME"
+else
+    command /usr/bin/getent "$@"
+fi
+STUB
+cat > "$scenario/stubs/systemctl" <<'STUB'
+#!/usr/bin/env bash
+case $1 in
+    cat) [[ -f $SWARMY_SYSTEMD_DIR/$2 ]] ;;
+    show) printf '0\n' ;;
+    *) printf '%s\n' "$*" >> "$TEST_NODE_ROOT/systemctl.log" ;;
+esac
+STUB
+cat > "$scenario/stubs/sudo" <<'STUB'
+#!/usr/bin/env bash
+[[ $1 == -n ]] && shift
+case $1 in
+    install)
+        args=("$@")
+        last=$(( ${#args[@]} - 1 ))
+        dest=${args[last]}
+        [[ $dest == /usr/local/* || $dest == /etc/* ]] && args[last]="$TEST_NODE_ROOT$dest"
+        if [[ ${args[1]} == -d ]]; then
+            for ((i=3; i<=last; i++)); do
+                [[ ${args[i]} == /usr/local/* || ${args[i]} == /etc/* ]] && args[i]="$TEST_NODE_ROOT${args[i]}"
+            done
+        fi
+        command "${args[@]}" ;;
+    tee) if [[ $2 == "$TEST_NODE_ROOT"/* ]]; then command tee "$2"; else command tee "$TEST_NODE_ROOT$2"; fi ;;
+    ldconfig) : ;;
+    systemctl) shift; systemctl "$@" ;;
+    sh) printf '[]\n' ;;
+    rm) shift; command rm -f "$TEST_NODE_ROOT${@: -1}" ;;
+    *) command "$@" ;;
+esac
+STUB
+chmod +x "$scenario/stubs/"*
+export TEST_NODE_HOME=$scenario/home TEST_NODE_ROOT=$node_root
+export SWARMY_SYSTEMD_DIR=$node_root/etc/systemd/system SWARMY_ETC_DIR=$node_root/etc/swarmy
+export PATH=$scenario/stubs:$PATH
+# Keep the backing unit identical so the upgrade must not reinstall it.
+set_unit_inputs stack "$(id -un)" '' false ''
+render_unit swarmy-stack.service > "$SWARMY_SYSTEMD_DIR/swarmy-stack.service"
+printf '[Service]\nExecStart=/usr/local/bin/swarmyd\n' > "$SWARMY_SYSTEMD_DIR/swarmyd.service"
+printf '[Service]\nExecStart=/usr/local/bin/swarmy-scheduler\n' > "$SWARMY_SYSTEMD_DIR/swarmy-scheduler.service"
+printf 'SWARMY_S3_ENDPOINT=http://127.0.0.1:8333\n' > "$SWARMY_ETC_DIR/node.env"
+printf '[api]\ntoken = "existing"\n' > "$node_repo/.swarmy/config.toml"
+for binary in swarmy swarmy-core libfdb_c.so; do
+    printf '#!/usr/bin/env bash\necho "[]"\n' > "$node_repo/.swarmy/release/$binary"
+    chmod +x "$node_repo/.swarmy/release/$binary"
+done
+for binary in swarmyd swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api; do
+    touch "$node_root/usr/local/bin/$binary"
+done
+bash "$node_repo/scripts/remote-upgrade.sh" stack all 5 prebuilt > "$scenario/first.json"
+python3 - "$scenario/first.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as file:
+    data = json.load(file)
+assert data['units'] == ['swarmyd.service', 'swarmy-scheduler.service'], data
+PY
+[[ ! -f $node_repo/.swarmy/upgrade-pending-units ]]
+for binary in swarmyd swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api; do
+    [[ ! -f $node_root/usr/local/bin/$binary ]]
+done
+[[ $(grep -c '^daemon-reload$' "$node_root/systemctl.log") == 1 ]]
+[[ $(grep -n '^restart swarmy-scheduler.service$' "$node_root/systemctl.log" | cut -d: -f1) -lt $(grep -n '^restart swarmyd.service$' "$node_root/systemctl.log" | cut -d: -f1) ]]
+if grep -q 'restart swarmy-stack.service' "$node_root/systemctl.log"; then echo 'stack unit restarted' >&2; exit 1; fi
+bash "$node_repo/scripts/remote-upgrade.sh" stack all 5 prebuilt > "$scenario/second.json"
+python3 - "$scenario/second.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as file:
+    data = json.load(file)
+assert data['units'] == [], data
+PY
+[[ $(grep -c '^daemon-reload$' "$node_root/systemctl.log") == 1 ]]
+printf 'remote upgrade entrypoint: ok\n'

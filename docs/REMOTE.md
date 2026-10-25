@@ -144,8 +144,10 @@ Provisioning records unit settings in `/etc/swarmy/units.env`. For older nodes,
 upgrade derives those settings once from installed units and `node.env`, then
 records them. Units still waiting for restart are kept in
 `.swarmy/upgrade-pending-units` and retried on the next upgrade. `--services-only`
-rewrites only installed service units; it leaves the node and backing units and
-any old binary still referenced by an installed unit. A full upgrade completes
+rewrites only installed service units; it neither rewrites nor restarts the node
+or backing units, and it never restarts the node role. It leaves any old binary
+still referenced by an installed unit. Restarting the node evicts every
+placement, so drain it first. A full upgrade completes
 that work. `--drain-timeout SECONDS` defaults to 600. `--allow-dirty` applies
 only to development clients. `--json` reports `changed` binaries, `units`
 rewritten, and `restarted` roles per node. A missing API token is filled once

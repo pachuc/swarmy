@@ -68,11 +68,14 @@ for unit in "${service_units[@]}"; do
 done
 changed_units=()
 reconcile_units changed_units "${reconcile[@]}"
+# Persist changed unit text before diagnostics or restart decisions can fail.
+pending_file=.swarmy/upgrade-pending-units
+previous_pending=()
+if [[ -f $pending_file ]]; then mapfile -t previous_pending < "$pending_file"; fi
+printf '%s\n' "${changed_units[@]}" "${previous_pending[@]}" > "$pending_file"
 if unit_listed "$backing_unit" "${changed_units[@]}"; then
     echo "$backing_unit changed; upgrade never restarts backing services, so it takes effect at its next restart or reboot" >&2
 fi
-# Record text changes before restarting so a failed run retries them.
-pending_file=.swarmy/upgrade-pending-units
 restart_units=()
 for unit in "${changed_units[@]}"; do
     [[ $unit == "$backing_unit" ]] || restart_units+=("$unit")
@@ -147,7 +150,7 @@ for unit in "${restart_units[@]}"; do
 done
 if (( ${#remaining[@]} )); then printf '%s\n' "${remaining[@]}" > "$pending_file"; else rm -f "$pending_file"; fi
 remove_unreferenced_retired_binaries
-python3 - "${changed[*]}" "${changed_units[*]}" "${restarted[*]}" "$((SECONDS - started))" <<'PYJSON'
+python3 - "${changed[*]}" "${changed_units[*]}" "${restarted[*]}" "$((SECONDS - started))" <<'PY'
 import json, sys
 print(json.dumps(dict(node='', changed=sys.argv[1].split(), units=sys.argv[2].split(), restarted=sys.argv[3].split(), elapsed_seconds=float(sys.argv[4]))))
-PYJSON
+PY
