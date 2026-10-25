@@ -794,8 +794,10 @@ mod layout_tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     fn loaded(path: Option<PathBuf>, root: &Path, state_dir: PathBuf) -> swarmy_config::Loaded {
-        let mut settings = Settings::default();
-        settings.state_dir = state_dir;
+        let settings = Settings {
+            state_dir,
+            ..Settings::default()
+        };
         swarmy_config::Loaded {
             path,
             root: root.to_owned(),
