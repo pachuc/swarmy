@@ -4,10 +4,7 @@ use swarmy_volume::VolumeWriter;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn continuous_writes_and_retained_crash_images() {
-    ignore_best_effort(
-        tracing_subscriber::fmt().with_test_writer().try_init(),
-        "install test log subscriber",
-    );
+    install_test_subscriber();
     if !swarmy_testkit::require_root_host(
         "snapshot NBD test",
         &["mkfs.ext4", "mount", "umount", "python3"],
@@ -107,6 +104,13 @@ async fn continuous_writes_and_retained_crash_images() {
     );
     eprintln!(
         "all four retained crash images mounted, ran Bash checks, matched boundary-data SHA-256, and passed e2fsck"
+    );
+}
+
+fn install_test_subscriber() {
+    ignore_best_effort(
+        tracing_subscriber::fmt().with_test_writer().try_init(),
+        "install test log subscriber",
     );
 }
 
