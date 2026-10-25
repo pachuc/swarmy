@@ -588,8 +588,7 @@ impl<T> WorkMessage<T> {
     }
 
     /// Like [`Self::keep_alive_while`], but after each successful extension runs
-    /// `on_tick`, for example to renew a store lease. `Ok(ControlFlow::Break(value))`
-    /// stops `work` and returns `Ok(value)`; an error stops `work` and is returned.
+    /// `on_tick`, for example to renew a store lease.
     /// `on_tick` runs concurrently with `work`: `work` keeps being polled while
     /// `on_tick` awaits, so `on_tick` may wait on a lock `work` holds. When
     /// `work` finishes first, an in-flight `on_tick` is dropped at its await

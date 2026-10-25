@@ -49,8 +49,10 @@ for shell in "${shells[@]}"; do
     # shellcheck disable=SC2016 # The PATH in the output is intentionally literal.
     grep -qF 'export PATH="'"$work"'/home/.local/bin:$PATH"' "$work/out" || fail 'missing PATH hint'
 done
+shell=sh
 path_extra="$work/home/.local/bin" run >"$work/out"
 ! grep -qF 'export PATH' "$work/out" || fail 'unneeded PATH hint'
+test "$("$work/home/.local/bin/swarmy")" = 'swarmy 9.9.9 x86_64-unknown-linux-gnu' || fail 'overwritten binary'
 rm -rf "${work:?}/home"
 os=Darwin arch=arm64 run >"$work/out"
 test "$("$work/home/.local/bin/swarmy")" = 'swarmy 9.9.9 aarch64-apple-darwin' || fail 'macOS mapping'

@@ -83,7 +83,8 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
             "Run swarmy dev install-tools (scripts/install-dev-tools.sh from a checkout). swarmy searches PATH, the install prefix's bin directory, and ~/.local/bin automatically; add another location to PATH if needed."));
         }
     }
-    for name in ["swarmy-core"] {
+    {
+        let name = "swarmy-core";
         // Companions are exec'd beside the CLI; services honor the caller's PATH.
         let executable = crate::dev::service_binary(name);
         let result = match executable {

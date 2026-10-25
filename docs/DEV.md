@@ -267,6 +267,7 @@ system-wide, `make install` finds them in `/usr/local/lib` or `/usr/lib`.
 
 Without a checkout, `swarmy dev install-tools` runs the same compiled-in script.
 It accepts `--prefix DIRECTORY` to select another installation root.
+
 From the checkout:
 
 ```sh
@@ -290,6 +291,10 @@ and IAM SDKs behind the `swarmy remote` provisioning commands. A plain
 `cargo build -p swarmy-cli` leaves that feature off for the slimmer node
 binary; add `--features remote` to a plain cargo invocation when the
 provisioning commands are needed.
+
+### Service binary
+
+`swarmy-core` runs `scheduler`, `worker`, `gateway`, `api`, `node`, and `vol` roles. Run `swarmy-core --version` to check its identity. The `node` role needs root and NBD.
 
 The Makefile looks for the client library in `~/.local/lib`, `/usr/local/lib`,
 `/usr/lib`, and `/usr/lib/x86_64-linux-gnu`, in that order, and passes the first
@@ -372,16 +377,6 @@ both save credentials through the API. Node installs omit it.
 
 ## Release builds
 
-### Install a release
-
-`scripts/install.sh` installs the client from a GitHub release with optional
-`--version vX.Y.Z` and `--prefix DIRECTORY` flags. The raw URL on master serves
-the installer, so changes reach users when merged. `SWARMY_INSTALL_BASE_URL`,
-`SWARMY_INSTALL_OS`, and `SWARMY_INSTALL_ARCH` are test hooks for overriding
-the release URL and detected platform. `scripts/test-install.sh` exercises
-fake releases in `make check-scripts`.
-
-
 A `v*` tag runs `.github/workflows/release.yml` to build and publish release
 archives. Pull requests touching the workflow or `scripts/release.sh`, and
 manual workflow runs, build all targets without publishing. Native runners
@@ -411,6 +406,15 @@ and generates a checksum file. Override `RELEASE_COMPONENT=core`,
 `RELEASE_TARGET=...`, and `RELEASE_DIR=...` to package a different target.
 Core builds need patchelf, clang, and libclang-dev. `CORE_BIN_PACKAGE` names
 the cargo package that builds the `swarmy-core` binary.
+
+### Install a release
+
+`scripts/install.sh` installs the client from a GitHub release with optional
+`--version vX.Y.Z` and `--prefix DIRECTORY` flags. The raw URL on master serves
+the installer, so changes reach users when merged. `SWARMY_INSTALL_BASE_URL`,
+`SWARMY_INSTALL_OS`, and `SWARMY_INSTALL_ARCH` are test hooks for overriding
+the release URL and detected platform. `scripts/test-install.sh` exercises
+fake releases in `make check-scripts`.
 
 ## Manual reference
 
@@ -666,6 +670,3 @@ must survive node failure. The default prompt explains how to save memory and
 that conversations may be summarized; `{memory_dir}` in a configured system
 prompt expands to the selected directory.
 
-### Service binary
-
-`swarmy-core` runs `scheduler`, `worker`, `gateway`, `api`, `node`, and `vol` roles. Run `swarmy-core --version` to check its identity. The `node` role needs root and NBD.

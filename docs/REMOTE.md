@@ -180,6 +180,8 @@ all instances are confirmed terminated or never launched, even if key-pair
 cleanup is denied. If an instance could still exist, it retains state for retry.
 The bucket, objects, IAM role, and instance profile remain for reuse.
 
+All service units share one `swarmy-core` executable. `swarmyd.service` runs `/usr/local/bin/swarmy-core node` as root; it needs NBD and runc. Service units run `swarmy-core scheduler`, `swarmy-core worker`, `swarmy-core gateway`, and `swarmy-core api`. A changed core restarts each service unit; the node unit restarts only after the drain.
+
 On the node, `sudo systemctl status swarmy-stack swarmyd` shows the services,
 and `sudo journalctl -u swarmyd -f` follows node logs. The provisioning script
 writes `/etc/swarmy/node.env`, enables both units at boot, and configures
@@ -1124,4 +1126,3 @@ timer was removed; do not expect a scheduled root run. Use the scripts in
 results in the pull request. CI's reduced chaos checks are defined in
 [ci.yml](../.github/workflows/ci.yml).
 
-All service units share one `swarmy-core` executable. `swarmyd.service` runs `/usr/local/bin/swarmy-core node` as root; it needs NBD and runc. Service units run `swarmy-core scheduler`, `swarmy-core worker`, `swarmy-core gateway`, and `swarmy-core api`. A changed core restarts each service unit; the node unit restarts only after the drain.

@@ -76,6 +76,21 @@ pub struct Client {
 
 /// Base budget for image uploads, covering server-side chunking and storage
 /// of even a tiny image before it answers.
+const UPLOAD_BASE_SECS: u64 = 120;
+/// Sustained throughput assumed when sizing the upload timeout. The server
+/// spools the whole body, chunks it, and uploads to object storage before
+/// answering, so a fixed request timeout would fail real images.
+const UPLOAD_BYTES_PER_SEC: u64 = 8 * 1024 * 1024;
+
+/// Timeout for an image upload of `size_bytes`, proportional to the body
+/// size. The 8 GiB base image needs minutes of server work, far beyond the
+/// default request timeout.
+#[must_use]
+pub fn upload_timeout(size_bytes: u64) -> Duration {
+    Duration::from_secs(UPLOAD_BASE_SECS + size_bytes / UPLOAD_BYTES_PER_SEC)
+}
+
+/// Bytes of offset and length framing before each data extent in an image upload.
 const EXTENT_HEADER_BYTES: u64 = 16;
 
 /// Byte ranges of `file` that hold data, from `SEEK_DATA`/`SEEK_HOLE`, as (offset, length).
@@ -98,20 +113,6 @@ fn data_extents(file: &std::fs::File) -> std::io::Result<Vec<(u64, u64)>> {
         offset = end;
     }
     Ok(extents)
-}
-
-const UPLOAD_BASE_SECS: u64 = 120;
-/// Sustained throughput assumed when sizing the upload timeout. The server
-/// spools the whole body, chunks it, and uploads to object storage before
-/// answering, so a fixed request timeout would fail real images.
-const UPLOAD_BYTES_PER_SEC: u64 = 8 * 1024 * 1024;
-
-/// Timeout for an image upload of `size_bytes`, proportional to the body
-/// size. The 8 GiB base image needs minutes of server work, far beyond the
-/// default request timeout.
-#[must_use]
-pub fn upload_timeout(size_bytes: u64) -> Duration {
-    Duration::from_secs(UPLOAD_BASE_SECS + size_bytes / UPLOAD_BYTES_PER_SEC)
 }
 
 /// Timeout for one API request. Image uploads use [`upload_timeout`],
@@ -469,7 +470,7 @@ impl Client {
                 async move {
                     let mut file = tokio::fs::File::open(&path).await?;
                     file.seek(std::io::SeekFrom::Start(offset)).await?;
-                    let mut header = Vec::with_capacity(16);
+                    let mut header = Vec::with_capacity(EXTENT_HEADER_BYTES as usize);
                     header.extend_from_slice(&offset.to_le_bytes());
                     header.extend_from_slice(&length.to_le_bytes());
                     let head =
