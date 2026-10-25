@@ -88,7 +88,16 @@ pub fn write_to(dir: &Path) -> Result<()> {
         fs::write(&file, contents)?;
         fs::set_permissions(
             &file,
-            fs::Permissions::from_mode(if path.ends_with(".sh") { 0o755 } else { 0o644 }),
+            fs::Permissions::from_mode(
+                if Path::new(path)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("sh"))
+                {
+                    0o755
+                } else {
+                    0o644
+                },
+            ),
         )?;
     }
     Ok(())
@@ -215,7 +224,10 @@ mod tests {
             }
             let text = fs::read_to_string(root.join(&path)).unwrap();
             let dir = Path::new(&path).parent().unwrap();
-            if path.ends_with(".sh") {
+            if Path::new(path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("sh"))
+            {
                 pending.extend(script_references(&text, dir));
             }
             if path.ends_with("recipe.toml") {
@@ -283,7 +295,10 @@ mod tests {
             0o755
         );
         for &(path, _) in FILES {
-            if path.ends_with(".sh") {
+            if Path::new(path)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("sh"))
+            {
                 assert_eq!(
                     fs::metadata(dir.path().join(path))
                         .unwrap()

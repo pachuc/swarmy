@@ -740,12 +740,13 @@ async fn copy_source(
     let settings = swarmy_config::Settings::load_base()?.settings;
     let credential = &settings.selection.credential_file;
     let mut copy = Command::new("rsync");
-    for relative in credential_excludes(&checkout, credential)
-        .into_iter()
-        .chain(credential_excludes(
-            &checkout,
-            &swarmy_config::Keyring::path()?,
-        ))
+    for relative in
+        credential_excludes(checkout, credential)
+            .into_iter()
+            .chain(credential_excludes(
+                checkout,
+                &swarmy_config::Keyring::path()?,
+            ))
     {
         copy.arg(format!("--exclude=/{}", relative.display()));
     }
