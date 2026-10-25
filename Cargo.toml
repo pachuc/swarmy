@@ -112,7 +112,7 @@ utoipa = "5"
 # Vendored Swagger UI embeds the viewer at build time: the default features
 # would download it from GitHub with system curl on every cold build, which
 # --locked does not cover and offline node builds cannot reach.
-utoipa-swagger-ui = { version = "9", features = ["axum"], default-features = false }
+utoipa-swagger-ui = { version = "10", features = ["axum"], default-features = false }
 thiserror = "2"
 toml = "0.8"
 shell-words = "1"
