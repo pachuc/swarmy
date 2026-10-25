@@ -59,6 +59,9 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = self.run(&self.path("a"), &["dev", "down"], None);
+        if self.path("repo/sub").is_dir() {
+            let _ = self.run(&self.path("repo/sub"), &["dev", "down"], None);
+        }
     }
 }
 #[test]
@@ -92,6 +95,19 @@ fn dev_up_status_down_work_without_a_checkout() {
         "{status}"
     );
     assert!(status.contains("api: up"), "{status}");
+    let logs = Command::new("timeout")
+        .args(["-s", "INT", "2", CLI, "dev", "logs", "api"])
+        .current_dir(f.path("b"))
+        .env("HOME", f.path("home"))
+        .env("XDG_CONFIG_HOME", f.path("config"))
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&logs.stdout).contains("api ready"),
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&logs.stdout),
+        String::from_utf8_lossy(&logs.stderr)
+    );
     let down = f.ok(&f.path("c"), &["dev", "down"], None);
     assert!(down.contains("services and stack: down"), "{down}");
     assert!(!stack.running());

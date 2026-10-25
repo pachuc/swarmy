@@ -136,17 +136,20 @@ impl Layout {
         } else {
             root.join(state_dir)
         };
-        let stack = environment.get("SWARMY_DEV_DIR").map_or_else(
-            || repo.map_or_else(|| state_dir.join("stack"), |repo| repo.join(".dev")),
-            |dir| {
-                let path = PathBuf::from(dir);
-                if path.is_absolute() {
-                    path
-                } else {
-                    cwd.join(path)
-                }
-            },
-        );
+        let stack = environment
+            .get("SWARMY_DEV_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map_or_else(
+                || repo.map_or_else(|| state_dir.join("stack"), |repo| repo.join(".dev")),
+                |dir| {
+                    let path = PathBuf::from(dir);
+                    if path.is_absolute() {
+                        path
+                    } else {
+                        cwd.join(path)
+                    }
+                },
+            );
         Ok(Self {
             config,
             root,
@@ -887,6 +890,21 @@ mod layout_tests {
                 .unwrap()
                 .stack,
             cwd.join("elsewhere")
+        );
+    }
+    #[test]
+    fn empty_dev_dir_uses_default_stack() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path();
+        let env = BTreeMap::from([
+            ("HOME".into(), cwd.display().to_string()),
+            ("SWARMY_DEV_DIR".into(), String::new()),
+        ]);
+        assert_eq!(
+            Layout::resolve(loaded(None, cwd, cwd.join(".swarmy")), cwd, &env)
+                .unwrap()
+                .stack,
+            cwd.join(".swarmy/stack")
         );
     }
     #[test]
