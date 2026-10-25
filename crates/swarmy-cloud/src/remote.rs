@@ -231,18 +231,19 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
     // The base settings are enough here: provisioning does not use the selected tunnel profile.
     let loaded = Settings::load_base()?;
     let state_dir = PathBuf::from(&loaded.settings.state_dir);
+    let cache = state_dir.join("core");
     let state = State::open(&state_dir.join("remote"))?;
     match command {
         Command::Up { .. } => {
-            Box::pin(run_up(&state, loaded.settings, command)).await?;
+            Box::pin(run_up(&state, loaded.settings, command, &cache)).await?;
             Ok(RunOutcome::Completed)
         }
         Command::Adopt { .. } => {
-            Box::pin(run_adopt(&state, loaded.settings, command)).await?;
+            Box::pin(run_adopt(&state, loaded.settings, command, &cache)).await?;
             Ok(RunOutcome::Completed)
         }
         Command::AddNode { .. } => {
-            Box::pin(run_add_node(&state, loaded.settings, command)).await?;
+            Box::pin(run_add_node(&state, loaded.settings, command, &cache)).await?;
             Ok(RunOutcome::Completed)
         }
         Command::Upgrade {
@@ -255,6 +256,7 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
                 &state,
                 &name,
                 upgrade::Options::new(allow_dirty, services_only, drain_timeout, json),
+                &cache,
             )
             .await?;
             Ok(RunOutcome::Completed)
@@ -367,7 +369,28 @@ fn resolve_recipe(host: &ssh::Ssh, no_image: bool, image_recipe: &Path) -> Resul
 }
 
 /// Launch and provision the first node of a remote.
-async fn run_up(state: &State, mut settings: Settings, command: Command) -> Result<()> {
+fn provisioning_host(cache: &Path) -> Result<ssh::Ssh> {
+    let release = crate::release::Release::for_client()?;
+    if let Some(release) = &release {
+        cloud_out!(
+            "Using swarmy {} release binaries; nothing is built on the node",
+            release.tag()
+        );
+    } else {
+        cloud_out!(
+            "Development client {}: the node builds swarmy-core from the copied checkout",
+            swarmy_version::IDENTITY
+        );
+    }
+    Ok(ssh::Ssh::discover()?.with_release(release, cache.to_owned()))
+}
+
+async fn run_up(
+    state: &State,
+    mut settings: Settings,
+    command: Command,
+    cache: &Path,
+) -> Result<()> {
     let Command::Up {
         name,
         bucket,
@@ -384,7 +407,7 @@ async fn run_up(state: &State, mut settings: Settings, command: Command) -> Resu
     };
     let _lock = state.lock()?;
     swarmy_config::validate_remote_name(&name)?;
-    let host = ssh::Ssh::discover()?;
+    let host = provisioning_host(cache)?;
     let recipe = resolve_recipe(&host, no_image, &image_recipe)?;
     if let Some(services) = services {
         settings.remote.services = services;
@@ -420,7 +443,12 @@ async fn run_up(state: &State, mut settings: Settings, command: Command) -> Resu
 /// shared provisioning `up` runs after its machine is ready (services,
 /// image build) runs against its address. No machine is created and no
 /// cloud machine call happens.
-async fn run_adopt(state: &State, mut settings: Settings, command: Command) -> Result<()> {
+async fn run_adopt(
+    state: &State,
+    mut settings: Settings,
+    command: Command,
+    cache: &Path,
+) -> Result<()> {
     let Command::Adopt {
         name,
         host: address,
@@ -440,7 +468,7 @@ async fn run_adopt(state: &State, mut settings: Settings, command: Command) -> R
     };
     let _lock = state.lock()?;
     swarmy_config::validate_remote_name(&name)?;
-    let host = ssh::Ssh::discover()?;
+    let host = provisioning_host(cache)?;
     let recipe = resolve_recipe(&host, no_image, &image_recipe)?;
     if let Some(services) = services {
         settings.remote.services = services;
@@ -478,7 +506,12 @@ async fn run_adopt(state: &State, mut settings: Settings, command: Command) -> R
 }
 
 /// Join another node to an existing remote over its private network.
-async fn run_add_node(state: &State, mut settings: Settings, command: Command) -> Result<()> {
+async fn run_add_node(
+    state: &State,
+    mut settings: Settings,
+    command: Command,
+    cache: &Path,
+) -> Result<()> {
     let Command::AddNode {
         name,
         sandboxes,
@@ -505,7 +538,7 @@ async fn run_add_node(state: &State, mut settings: Settings, command: Command) -
     };
     let _lock = state.lock()?;
     let node = state.require(&name)?;
-    let host = ssh::Ssh::discover()?;
+    let host = provisioning_host(cache)?;
     let launch = node.launch_settings.clone().ok_or_else(|| {
         crate::Error::other(
             "remote has no saved launch configuration; recreate it with remote up before adding nodes",

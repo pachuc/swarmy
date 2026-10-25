@@ -4,11 +4,17 @@ This is the operations guide for provisioning, upgrades, recovery and teardown.
 For fleet-driver commands see [fleet-runbook.md](fleet-runbook.md).
 
 Run `swarmy remote up NAME` from a swarmy checkout to launch one Ubuntu 24.04
-EC2 node, copy the checkout, build the release binaries, and start FoundationDB,
+EC2 node, copy the checkout, install the binaries, and start FoundationDB,
 NATS, SeaweedFS, and swarmyd under systemd. As its last step, `up` builds
 `images/base-ubuntu` as root with `/etc/swarmy/node.env` and registers
 `base-ubuntu:NAME` in the stack's store. Progress is streamed through SSH and
 the image build duration is printed separately from the total provisioning time.
+Release clients fetch and verify binaries matching the client, then upload them over
+SSH; nothing is built on the node. Development clients still build on the node.
+The client chooses the node architecture with `uname -m` and stores the uploaded
+bundle in the checkout at `.swarmy/release/`. For a pre-release test, set
+`SWARMY_RELEASE_BASE_URL` to an HTTPS release asset endpoint (HTTP is allowed
+only on loopback).
 The default laptop-services mode runs scheduler, worker, and gateway on the
 client, while `--services node` runs them under systemd on the control node.
 The local machine needs `ssh`, `ssh-keygen`, and `rsync`. A client built with the `remote` cargo feature
@@ -110,7 +116,8 @@ local CLI version and every node's installed `swarmy-core` version before copyin
 anything. Joining nodes upgrade first; the first node, which owns the backing
 services, upgrades last. The upgrade uses the provisioning rsync exclusions and
 keeps instances, disks, node state, and `/etc/swarmy/node.env` unchanged. It
-rebuilds the release binaries, installs changed binaries, and restarts installed service units whose running executables differ from the
+uploads verified release binaries for release clients (or builds on the node
+for development clients), installs changed binaries, and restarts installed service units whose running executables differ from the
 installed binaries. A changed node daemon restarts last, after its managed
 sandbox commands finish; restarting it evicts every placement on that node,
 even though they are idle after the drain. `--drain-timeout SECONDS`
@@ -124,6 +131,9 @@ FoundationDB, NATS, or object store. On a node serving the API, the upgrade
 also fills a missing `[api]` token in the node's `.swarmy/config.toml` without
 rotating an existing one, and restarts the API when the fill changed it, so
 nodes provisioned before token provisioning start accepting requests.
+The script accepts `build` or `prebuilt` as its optional fourth argument.
+Development-client upgrades on release-provisioned nodes fail without a Rust
+toolchain; use a release client or `SWARMY_RELEASE_BASE_URL` instead.
 `remote ls` reports each remote's token state as `set`, `missing`, or
 `not-applicable`.
 
@@ -187,7 +197,8 @@ and `sudo journalctl -u swarmyd -f` follows node logs. The provisioning script
 writes `/etc/swarmy/node.env`, enables both units at boot, and configures
 `Restart=always` for swarmyd. To rerun provisioning, use
 `cd ~/swarmy && bash scripts/remote-provision.sh stack PRIVATE_IP BUCKET REGION SANDBOXES SERVICE_USER LOCAL_STORAGE` on the first
-node (`SERVICE_USER` defaults to `swarmy`; sandbox nodes require a block
+node (the twelfth positional argument `PREBUILT` is `true` for an uploaded
+release bundle, otherwise `false`; `SERVICE_USER` defaults to `swarmy`; sandbox nodes require a block
 device or `dir:/path` as `LOCAL_STORAGE`). Joining nodes run swarmyd and `swarmy-tunnel.service`; rerun their
 provisioning with `node FIRST_NODE_PRIVATE_IP BUCKET REGION SANDBOXES SERVICE_USER LOCAL_STORAGE` instead. Their cluster file is
 copied from the first node, preserving its cluster identity and loopback
@@ -994,7 +1005,7 @@ special files. Use an absolute directory without symlink components. See
 
 | Piece | Value | Why |
 |---|---|---|
-| Control node | minimum `m6i.large` (8 GiB RAM), 40 GiB root disk, `--sandboxes 0` | release build needs at least 6 GiB available; node CLI omits EC2 provisioning SDKs |
+| Control node | minimum `m6i.large` (8 GiB RAM), 40 GiB root disk, `--sandboxes 0` | on-node builds need at least 6 GiB available; release provisioning does not build |
 | Sandbox node | `m6id.4xlarge`, 100 GiB root disk, local NVMe | worker builds use instance-store scratch |
 | Sandboxes per sandbox node | 4 | one worker per lane |
 | Control plane | on the node (`--services node`) | the laptop can disconnect |
@@ -1003,12 +1014,18 @@ special files. Use an absolute directory without symlink components. See
 | Scratch | local NVMe at `/mnt/swarmy-local/scratch`; `/home/agent/.cargo-target` and `/tmp` in each worker | build outputs stay warm on the same node without entering snapshots or S3 |
 | Cost | check current EC2 prices for both shapes, plus S3 and inference | separate control and sandbox nodes |
 
-The node build uses the default features, which omit provisioning commands
+Release provisioning installs `libfdb_c.so` to `/usr/local/lib/swarmy/` and
+registers the directory through `/etc/ld.so.conf.d/swarmy.conf` and `ldconfig`.
+The `LD_LIBRARY_PATH` in node.env points to `~/.local/lib` and takes precedence
+under systemd; both copies are FoundationDB 7.3.79. Decommission removes the
+system library and loader configuration.
+
+The development node build uses the default features, which omit provisioning commands
 and the EC2, S3, IAM, and SSM clients; those belong on the laptop, where
 `make install` builds the client with the `remote` feature. A 6 GiB fleet
 sandbox measured 957,428 KiB peak resident memory for the release build without
 the `remote` feature. The build with it reached 6,123,248 KiB in the EC2
-compiler and was killed by its memory limit. The node checks for 6 GiB
+compiler and was killed by its memory limit. Development provisioning checks for 6 GiB
 `MemAvailable` before building; use at least an 8 GiB instance so the OS and
 backing services have room too. Inference's Bedrock SDK remains part of the
 session binary; the node build omits the provisioning clients, not inference.

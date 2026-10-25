@@ -7,6 +7,7 @@ upgrade_args "$@" || exit 2
 mode=$1
 services=$2
 drain_timeout=$3
+source_mode=${4:-build}
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # Builds run as the checkout owner; a bootstrap login re-enters as that user.
 repo_owner=$(stat -c %U "$repo_dir")
@@ -17,23 +18,27 @@ fi
 cd "$repo_dir"
 started=$SECONDS
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
-# rsync preserves timestamps; a different commit can otherwise look older to cargo.
-find crates -type f \( -name '*.rs' -o -name 'build.rs' \) -exec touch {} +
-# Binaries and their packages come from the shared table (the CLI package
-# differs, so it builds separately with its own feature flags).
-# read_shared_list fails loudly: an empty list would become a
-# whole-workspace build or a no-op install loop.
-if [[ $mode == stack ]]; then
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p "$(swarmy_cli_package)" --no-default-features >&2
+if [[ $source_mode == prebuilt ]]; then
+    bin_dir=$(release_bundle_dir "$repo_dir")
+    check_release_bundle "$bin_dir" "$mode"
+    install_core_library "$bin_dir/libfdb_c.so"
+else
+    command -v cargo >/dev/null || { echo 'This node has no Rust toolchain (it was provisioned from release binaries); upgrade it with a release client or SWARMY_RELEASE_BASE_URL' >&2; exit 1; }
+    # rsync preserves timestamps; a different commit can otherwise look older to cargo.
+    find crates -type f \( -name '*.rs' -o -name 'build.rs' \) -exec touch {} +
+    if [[ $mode == stack ]]; then
+        SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p "$(swarmy_cli_package)" --no-default-features >&2
+    fi
+    read_shared_list build_args swarmy_mode_build_args "$mode"
+    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}" >&2
+    bin_dir=$repo_dir/target/release
 fi
-read_shared_list build_args swarmy_mode_build_args "$mode"
-SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}" >&2
 read_shared_list binaries swarmy_mode_binaries "$mode"
 changed=()
 restarted=()
 for binary in "${binaries[@]}"; do
-    if binary_changed "/usr/local/bin/$binary" "target/release/$binary"; then
-        sudo -n install -m 0755 "target/release/$binary" "/usr/local/bin/$binary"
+    if binary_changed "/usr/local/bin/$binary" "$bin_dir/$binary"; then
+        sudo -n install -m 0755 "$bin_dir/$binary" "/usr/local/bin/$binary"
         changed+=("$binary")
     else
         result=$?
@@ -85,7 +90,7 @@ if unit_needs_restart "$node_unit" "$node_binary_path"; then
     else
         deadline=$((SECONDS + drain_timeout))
         while true; do
-            busy=$(sudo -n sh -c "cd $repo_dir && set -a && . /etc/swarmy/node.env && set +a && exec $repo_dir/target/release/$(swarmy_core_binary) $node_role --upgrade-processes")
+            busy=$(sudo -n sh -c "cd $repo_dir && set -a && . /etc/swarmy/node.env && set +a && exec $bin_dir/$(swarmy_core_binary) $node_role --upgrade-processes")
             [[ $busy == '[]' ]] && break
             echo "Waiting for running sandbox commands: $busy" >&2
             if (( SECONDS >= deadline )); then

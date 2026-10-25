@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Kept independent of sudo so upgrade decisions can be tested locally.
 upgrade_args() {
-    if [[ $# != 3 || ( $1 != stack && $1 != node ) || ( $2 != all && $2 != services-only ) || ! $3 =~ ^[0-9]+$ ]]; then
-        echo 'Usage: remote-upgrade.sh {stack|node} {all|services-only} DRAIN_TIMEOUT_SECONDS' >&2
+    if [[ ( $# != 3 && $# != 4 ) || ( $1 != stack && $1 != node ) || ( $2 != all && $2 != services-only ) || ! $3 =~ ^[0-9]+$ || ( $# == 4 && $4 != build && $4 != prebuilt ) ]]; then
+        echo 'Usage: remote-upgrade.sh {stack|node} {all|services-only} DRAIN_TIMEOUT_SECONDS [build|prebuilt]' >&2
         return 1
     fi
 }

@@ -3,7 +3,9 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-upgrade-lib.sh"
 upgrade_args stack all 600
 upgrade_args node services-only 1
-for args in 'node all -1' 'node all x' 'bad all 60' 'stack bad 60' 'stack all'; do
+upgrade_args stack all 600 prebuilt
+upgrade_args node all 5 build
+for args in 'node all -1' 'node all x' 'bad all 60' 'stack bad 60' 'stack all' 'stack all 600 other' 'stack all 600 prebuilt extra'; do
     read -r -a parts <<< "$args"
     if upgrade_args "${parts[@]}" >/dev/null 2>&1; then
         echo "accepted invalid upgrade arguments: $args" >&2
