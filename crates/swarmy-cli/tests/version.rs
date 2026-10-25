@@ -133,7 +133,7 @@ fn stale_path_service_is_refused_before_starting_or_stopping_anything() {
 
 #[test]
 fn override_starts_stale_path_service() {
-    let mut fixture = Fixture::new();
+    let fixture = Fixture::new();
     fixture.core("0.1.0 (stale)");
     fixture.assert_started(true);
 }
@@ -142,7 +142,6 @@ fn override_starts_stale_path_service() {
 fn doctor_reports_each_identity_and_flags_stale_service() {
     let fixture = Fixture::new();
     // Avoid unrelated network probes: an invalid config still permits version checks.
-    fs::create_dir(fixture.root.path().join(".swarmy")).unwrap();
     fs::write(fixture.root.path().join(".swarmy/config.toml"), "invalid").unwrap();
     fixture.core("0.1.0 (stale)");
     let output = fixture.run(&["doctor", "--json"]);
@@ -191,7 +190,7 @@ fn cli_reports_identity_in_text_and_json() {
 
 #[test]
 fn failed_version_probe_is_refused() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
     script(
         &fixture.root.path().join("bin/swarmy-core"),
         "echo 'old worker does not understand --version' >&2\nexit 2",
