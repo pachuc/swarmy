@@ -195,7 +195,7 @@ async fn authorize(
 ///
 /// # Panics
 ///
-/// Panics if the generated OpenAPI document cannot be serialized to JSON.
+/// Panics if the generated `OpenAPI` document cannot be serialized to JSON.
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/v1/doctor", get(doctor))
