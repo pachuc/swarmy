@@ -669,4 +669,3 @@ has the same durability as other home-disk files: use `checkpoint` when facts
 must survive node failure. The default prompt explains how to save memory and
 that conversations may be summarized; `{memory_dir}` in a configured system
 prompt expands to the selected directory.
-
