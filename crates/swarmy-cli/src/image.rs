@@ -131,15 +131,15 @@ pub(crate) async fn build(
         let destination = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&output)?;
+            .open(output)?;
         drop(destination);
         // A same-filesystem output can reuse the completed image without
         // allocating a second copy of a large development cache.
-        if std::fs::rename(image.path(), &output).is_err() {
+        if std::fs::rename(image.path(), output).is_err() {
             let status = std::process::Command::new("cp")
                 .args(["--sparse=always", "--"])
                 .arg(image.path())
-                .arg(&output)
+                .arg(output)
                 .status()?;
             anyhow::ensure!(status.success(), "copying ext4 image failed: {status}");
         }

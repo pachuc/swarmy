@@ -226,15 +226,15 @@ fn dev_up_registers_the_release_image() {
         settings.selection.default_image.as_deref(),
         Some(format!("base-ubuntu:{tag}").as_str())
     );
-    assert_eq!(
-        requests
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|r| r.method == "POST")
-            .count(),
-        1
-    );
+    let requests = requests.lock().unwrap();
+    let posts: Vec<_> = requests
+        .iter()
+        .filter(|request| request.method == "POST")
+        .collect();
+    assert_eq!(posts.len(), 1);
+    assert!(posts[0].path_and_query.contains("name=base-ubuntu"));
+    assert!(posts[0].body_len < 16 * 1024 * 1024);
+    assert_eq!(posts[0].first_offset, Some(0));
     assert!(
         fixture
             .root

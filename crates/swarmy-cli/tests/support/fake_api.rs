@@ -77,7 +77,7 @@ pub(crate) fn serve(registered: bool) -> (SocketAddr, Arc<Mutex<Vec<Request>>>) 
             } else if method == "POST" && path_and_query.starts_with("/v1/images/uploads") {
                 (
                     "200 OK",
-                    serde_json::json!({"name":"base-ubuntu", "tag":swarmy_version::RELEASE_TAG, "manifest_id":"test", "header":{"size":16777216,"chunk_size":262144,"root_hash":"test"}, "size":16777216,"chunks_total":64,"chunks_stored":1,"chunks_uploaded":1}),
+                    serde_json::json!({"name":"base-ubuntu", "tag":swarmy_version::RELEASE_TAG, "manifest_id":"test", "header":{"size":16_777_216,"chunk_size":262_144,"root_hash":"test"}, "size":16_777_216,"chunks_total":64,"chunks_stored":1,"chunks_uploaded":1}),
                 )
             } else {
                 (

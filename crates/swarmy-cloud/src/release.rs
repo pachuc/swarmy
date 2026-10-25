@@ -172,6 +172,15 @@ impl Release {
             self.tag
         ))?)
     }
+    fn digest(&self, sums: &str, asset: &str, component: Component) -> Result<String> {
+        expected_digest(sums, asset).map_err(|_| {
+            Error::other(format!(
+                "SHA256SUMS for {} has no entry for {asset}; {}",
+                self.tag,
+                component.missing_hint()
+            ))
+        })
+    }
     /// Fetch SHA256SUMS on every invocation, reusing a verified cache if offline.
     /// # Errors
     /// Returns an error for missing releases, invalid checksums, or failed downloads.
@@ -211,13 +220,7 @@ impl Release {
             )));
         }
         let sums = response.error_for_status()?.text().await?;
-        let expected = expected_digest(&sums, &asset).map_err(|_| {
-            Error::other(format!(
-                "SHA256SUMS for {} has no entry for {asset}; {}",
-                self.tag,
-                component.missing_hint()
-            ))
-        })?;
+        let expected = self.digest(&sums, &asset, component)?;
         if let Some(dir) = self.cached(cache, component, target)
             && fs::read_to_string(dir.join(".sha256")).await?.trim() == expected
         {

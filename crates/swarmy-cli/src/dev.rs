@@ -321,7 +321,7 @@ pub(crate) fn core_cache() -> Result<PathBuf> {
 pub(crate) fn image_cache() -> Result<PathBuf> {
     Ok(Layout::discover()?.state_dir.join("images"))
 }
-/// Set selection.default_image in CONFIG, keeping the rest of the file.
+/// Set `selection.default_image` in CONFIG, keeping the rest of the file.
 pub(crate) fn set_default_image(config: &Path, image: &str) -> Result<()> {
     let mut settings = Settings::read(config)?;
     settings.selection.default_image = Some(image.to_owned());
