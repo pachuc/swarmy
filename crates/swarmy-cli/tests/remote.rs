@@ -289,7 +289,7 @@ case "$last" in
   'bash -s')
     file='{}/piped-'$(ls '{}/piped-'* 2>/dev/null | wc -l)
     cat > "$file"
-    if grep -q service_home_for "$file"; then printf '/home/fake\n'; fi ;;
+    if ! grep -q '^list_installed_control_units$' "$file"; then printf '/home/fake\n'; fi ;;
   'uname -m') uname -m ;;
   *'swarmy-core --version'*) printf 'swarmy-core test\n' ;;
   *'remote-upgrade.sh'*) printf '{{"node":"","changed":[],"restarted":[],"elapsed_seconds":0}}\n' ;;
