@@ -1201,15 +1201,12 @@ mod tests {
         for &(offset, length) in &extents {
             assert!(offset >= previous && offset + length <= size);
             previous = offset + length;
-            let mut read = vec![0; length as usize];
+            let mut read = vec![0; usize::try_from(length).unwrap()];
             file.read_exact_at(&mut read, offset).unwrap();
             for written in [3 * chunk, 6 * chunk + 100] {
                 if offset <= written && written + data.len() as u64 <= previous {
-                    assert_eq!(
-                        &read
-                            [(written - offset) as usize..(written - offset) as usize + data.len()],
-                        data
-                    );
+                    let index = usize::try_from(written - offset).unwrap();
+                    assert_eq!(&read[index..index + data.len()], data);
                 }
             }
         }
