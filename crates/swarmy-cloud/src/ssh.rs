@@ -298,8 +298,12 @@ pub struct Ssh {
 /// # Errors
 /// Explains how to supply release binaries when outside a checkout.
 pub fn find_checkout(cwd: &Path) -> Result<PathBuf> {
-    cwd.ancestors().find(|p| p.join(crate::node_files::PROVISION).is_file())
-        .map(Path::to_owned).ok_or_else(|| crate::Error::other("this development build of swarmy has no release binaries for the node: run it inside a swarmy checkout so the node can build from it, or set SWARMY_RELEASE_BASE_URL (see docs/REMOTE.md)"))
+    cwd.ancestors()
+        .find(|p| p.join(crate::node_files::PROVISION).is_file())
+        .map(Path::to_owned)
+        .ok_or_else(|| {
+            crate::Error::other("this development build of swarmy has no release binaries for the node: run it inside a swarmy checkout so the node can build from it, or set SWARMY_RELEASE_BASE_URL (see docs/REMOTE.md)")
+        })
 }
 
 impl Ssh {
@@ -436,6 +440,7 @@ impl Ssh {
     }
 
     async fn prepare_host(&self, node: &RemoteNode, address: &str) -> Result<String> {
+        // Dedicated servers boot without cloud-init, so wait only when it is present.
         checked(base(node)?.arg(address)
             .arg("command -v rsync >/dev/null || (if command -v cloud-init >/dev/null 2>&1; then sudo cloud-init status --wait; fi; sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y rsync)"), "prepare remote rsync").await?;
         let home = self

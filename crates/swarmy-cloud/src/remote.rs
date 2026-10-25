@@ -282,8 +282,8 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
                 return Ok(RunOutcome::NeedsConfirmation { plan });
             }
             // The one provider branch for teardown: existing-host remotes
-            // need SSH for host decommissioning, while AWS teardown needs no
-            // checkout, so discovery stays lazy. Cloud calls never branch:
+            // need SSH for host decommissioning, while teardown needs neither a
+            // checkout nor binaries. Cloud calls never branch:
             // the substrate refuses machine operations for existing hosts.
             if node.cloud_settings().provider == swarmy_config::Provider::Existing {
                 let host = ssh::Ssh::teardown();
