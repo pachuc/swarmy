@@ -7,7 +7,6 @@ binary="$repo/target/debug/swarmy"
 core_binary="$repo/target/debug/swarmy-core"
 [[ -x $binary ]] || { echo 'Build swarmy-cli --bins first.' >&2; exit 1; }
 [[ -x $core_binary ]] || { echo 'Build swarmy-core-bin first.' >&2; exit 1; }
-[[ -x $core_binary ]] || { echo 'Build swarmy-core-bin first.' >&2; exit 1; }
 # Image builds and collection run through the API; volume tools moved to the
 # node daemon. The API needs a token, generated here for this isolated run.
 export SWARMY_API_URL="${SWARMY_API_URL:-http://127.0.0.1:18743}"

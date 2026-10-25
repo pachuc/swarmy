@@ -43,7 +43,7 @@ async fn serve(args: Vec<OsString>) -> anyhow::Result<()> {
 }
 
 // Flush even when the scheduler loop failed so turn metrics survive shutdown.
-async fn flush_metrics(store: &swarmy_store::Store) {
+async fn flush_metrics(store: &Store) {
     if let Err(error) = store.flush_turn_metrics().await {
         tracing::warn!(error = %swarmy_core::error_chain(&error), "scheduler metric flush failed");
     }

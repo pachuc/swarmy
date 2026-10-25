@@ -14,7 +14,7 @@ use swarmy_store::{Store, StoreError, blob::MemoryBlobStore};
 #[test]
 fn vol_help_lists_subcommands_and_attach_requires_root() {
     let binary = swarmy_testkit::bin("swarmy-core");
-    let output = Command::new(binary)
+    let output = Command::new(&binary)
         .args(["vol", "--help"])
         .output()
         .unwrap();
@@ -34,7 +34,7 @@ fn vol_help_lists_subcommands_and_attach_requires_root() {
         assert!(help.contains(name));
     }
     if !rustix::process::geteuid().is_root() {
-        let output = Command::new(binary)
+        let output = Command::new(&binary)
             .args(["vol", "attach", &ulid::Ulid::generate().to_string()])
             .output()
             .unwrap();

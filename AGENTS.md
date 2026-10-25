@@ -360,7 +360,7 @@ service started against the dev stack. After `scripts/dev-stack.sh start` and
 `source .dev/env`, start `./target/debug/swarmy-core api` with `SWARMY_API_LISTEN`
 set to a loopback address and `SWARMY_API_TOKEN` set to any string, export
 `SWARMY_API_URL` and the same token, then run `sudo -E ./target/debug/swarmy
-image build images/base-ubuntu --tag dev`. The suite command shape is then:
+image build images/base-ubuntu --tag dev`. Run `cargo build --locked -p swarmy-core-bin` first: the swarmyd suites launch the sibling `swarmy-core`. The suite command shape is then:
 
 ```sh
 sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked \
