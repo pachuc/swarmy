@@ -274,15 +274,12 @@ pub(crate) async fn resolve_core(
     let label = source.label();
     let fix = source.fix()?;
     let path = match source {
-        CoreSource::Explicit(path) => {
-            let canonical = path.canonicalize().with_context(|| {
-                format!(
-                    "--core-bin/SWARMY_CORE_BIN {} does not exist",
-                    path.display()
-                )
-            })?;
-            canonical
-        }
+        CoreSource::Explicit(path) => path.canonicalize().with_context(|| {
+            format!(
+                "--core-bin/SWARMY_CORE_BIN {} does not exist",
+                path.display()
+            )
+        })?,
         CoreSource::Release(release) => {
             let cache = core_cache()?;
             release

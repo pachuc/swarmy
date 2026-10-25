@@ -50,7 +50,7 @@ pub fn serve_files(files: Vec<(String, Vec<u8>)>) -> SocketAddr {
             if connection.write_all(header.as_bytes()).is_err() {
                 continue;
             }
-            let _ = connection.write_all(body);
+            drop(connection.write_all(body));
         }
     });
     addr

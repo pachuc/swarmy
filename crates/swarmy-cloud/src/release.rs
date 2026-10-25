@@ -322,8 +322,16 @@ mod tests {
             assert!(Release::new(url, "v1").is_ok());
         }
         for url in ["http://example.com", "file:///x"] {
-            assert!(Release::new(url, "v1").is_err());
+            let error = Release::new(url, "v1").unwrap_err();
+            assert!(error.to_string().contains(&format!("{BASE_URL_ENV}={url}")));
         }
+        let error = Release::new("not a url", "v1").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{BASE_URL_ENV}=not a url"))
+        );
+        assert!(std::error::Error::source(&error).is_some());
         assert_eq!(
             Release::new("http://localhost:1234/base/", "v1")
                 .unwrap()
