@@ -741,6 +741,9 @@ impl Conversation {
     /// Only warn when a tool is pending: plain chat does not need a node.
     /// A health count of zero is authoritative for live nodes, unlike the
     /// doctor's registered-node list, which includes stale registrations.
+    ///
+    /// # Errors
+    /// Returns an error if the API health request fails.
     pub async fn no_sandbox_node(&self) -> Result<bool> {
         no_sandbox_node(&self.client, &self.endpoint).await
     }
@@ -774,7 +777,7 @@ impl Conversation {
             };
             let item = tokio::select! {
                 item = next => Some(item?),
-                _ = tokio::time::sleep(Duration::from_secs(5)), if tool_pending && !warned => {
+                () = tokio::time::sleep(Duration::from_secs(5)), if tool_pending && !warned => {
                     if self.no_sandbox_node().await? {
                         emit(TurnOutput::NoSandboxNode);
                         warned = true;
