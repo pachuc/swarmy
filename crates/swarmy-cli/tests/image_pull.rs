@@ -127,6 +127,7 @@ fn image_pull_refuses_a_corrupt_asset() {
         &["image", "pull"],
         Some(&format!("http://{address}")),
     );
+    assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("checksum mismatch"));
     assert!(!requests.lock().unwrap().iter().any(|r| r.method == "POST"));
 }
@@ -148,6 +149,24 @@ fn image_pull_skips_a_registered_image() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("already registered"));
+    let json_output = run(
+        home.path(),
+        &["--json", "image", "pull"],
+        Some(&format!("http://{address}")),
+    );
+    assert!(
+        json_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json_output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&json_output.stdout).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "image": format!("base-ubuntu:{}", swarmy_version::RELEASE_TAG),
+            "registered": false
+        })
+    );
     assert!(!requests.lock().unwrap().iter().any(|r| r.method == "POST"));
 }
 #[test]
