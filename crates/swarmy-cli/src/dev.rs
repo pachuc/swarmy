@@ -2,6 +2,7 @@ use swarmy_cloud::ssh as remote_ssh;
 mod process;
 
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::Write,
     os::unix::fs::OpenOptionsExt,
@@ -30,6 +31,9 @@ const SERVICES: [(&str, &str); 4] = [
 /// The backing tool installer is compiled in so it needs no checkout.
 /// The script remains the source for make, remote provisioning, and image setup.
 const INSTALL_DEV_TOOLS: &str = include_str!("../../../scripts/install-dev-tools.sh");
+/// The backing stack script is compiled in so `dev` needs no checkout; it runs
+/// with SWARMY_DEV_DIR. The file remains the source for make, CI, and nodes.
+const DEV_STACK: &str = include_str!("../../../scripts/dev-stack.sh");
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Subcommand)]
@@ -70,44 +74,85 @@ pub(crate) enum DevService {
 }
 
 struct Layout {
+    /// File dev up creates or updates.
     config: PathBuf,
+    /// Anchor for relative paths and services' cwd.
     root: PathBuf,
+    /// Resolved state directory containing dev/ and core/.
+    state_dir: PathBuf,
+    /// Supervised service state under state_dir/dev.
     state: PathBuf,
-    repo: PathBuf,
+    /// Backing stack directory passed as SWARMY_DEV_DIR.
+    stack: PathBuf,
 }
 
 impl Layout {
     fn discover() -> Result<Self> {
         let loaded = Settings::load_base()?;
         let cwd = std::env::current_dir()?;
+        let environment = [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "SWARMY_DEV_DIR",
+            "SWARMY_STATE_DIR",
+        ]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok().map(|value| (key.to_owned(), value)))
+        .collect();
+        Self::resolve(loaded, &cwd, &environment)
+    }
+
+    fn resolve(
+        loaded: swarmy_config::Loaded,
+        cwd: &Path,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<Self> {
         let repo = cwd
             .ancestors()
             .find(|dir| dir.join("scripts/dev-stack.sh").is_file())
-            .map_or_else(
-                || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
-                Path::to_owned,
-            )
-            .canonicalize()
-            .context("cannot locate the checkout containing scripts/dev-stack.sh")?;
-        let root = if loaded.path.is_some() {
-            loaded.root
-        } else if cwd.starts_with(&repo) {
-            repo.clone()
+            .map(Path::canonicalize)
+            .transpose()?;
+        let found = loaded.path.is_some();
+        let (config, root) = if let Some(path) = loaded.path {
+            (path, loaded.root)
+        } else if let Some(repo) = &repo {
+            (repo.join(".swarmy/config.toml"), repo.clone())
         } else {
-            cwd
+            let config = Settings::user_config_path(environment).context(
+                "set HOME (or XDG_CONFIG_HOME), or run swarmy dev inside a checkout or a directory with .swarmy/config.toml",
+            )?;
+            let home = environment
+                .get("HOME")
+                .context("set HOME for swarmy dev state")?;
+            (config, PathBuf::from(home))
         };
-        let config = loaded
-            .path
-            .unwrap_or_else(|| root.join(".swarmy/config.toml"));
-        let state = config
-            .parent()
-            .context("configuration has no parent")?
-            .join("dev");
+        let state_dir = if found || environment.contains_key("SWARMY_STATE_DIR") {
+            loaded.settings.state_dir
+        } else {
+            root.join(Settings::default().state_dir)
+        };
+        let state_dir = if state_dir.is_absolute() {
+            state_dir
+        } else {
+            root.join(state_dir)
+        };
+        let stack = environment.get("SWARMY_DEV_DIR").map_or_else(
+            || repo.map_or_else(|| state_dir.join("stack"), |repo| repo.join(".dev")),
+            |dir| {
+                let path = PathBuf::from(dir);
+                if path.is_absolute() {
+                    path
+                } else {
+                    cwd.join(path)
+                }
+            },
+        );
         Ok(Self {
             config,
             root,
-            state,
-            repo,
+            state: state_dir.join("dev"),
+            state_dir,
+            stack,
         })
     }
 
@@ -168,7 +213,7 @@ pub(crate) async fn run(command: Command, json: bool, allow_version_mismatch: bo
     }
 }
 
-/// Reject `--json` and discover the checkout layout for human-output `dev`
+/// Reject `--json` and discover the dev layout for human-output `dev`
 /// commands. `dev` manages local processes with progress lines, so it has no
 /// JSON rendering; the explicit rejection keeps `--json dev` from silently
 /// printing text.
@@ -198,13 +243,23 @@ fn write_private(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
+/// `bash -c SCRIPT NAME`: run a compiled-in script; NAME becomes its $0.
+fn embedded(script: &str, name: &str) -> Process {
+    let mut command = Process::new("bash");
+    command.arg("-c").arg(script).arg(name);
+    command
+}
+
 async fn stack(layout: &Layout, action: &str) -> Result<String> {
-    let output = Process::new(layout.repo.join("scripts/dev-stack.sh"))
-        .process_group(0)
-        .env("PATH", crate::tools::search_path()?)
+    let output = embedded(DEV_STACK, "swarmy dev stack")
         .arg(action)
+        .env("SWARMY_DEV_DIR", &layout.stack)
+        .env("PATH", crate::tools::search_path()?)
+        .stdin(Stdio::null())
+        .process_group(0)
         .output()
-        .await?;
+        .await
+        .context("cannot run bash for the dev stack")?;
     ensure!(
         output.status.success(),
         "dev stack {action} failed: {}\n{}",
@@ -239,15 +294,9 @@ pub(crate) struct ResolvedCore {
     pub(crate) source: &'static str,
     pub(crate) fix: String,
 }
+/// `<state_dir>/core` for the layout `swarmy dev` uses.
 pub(crate) fn core_cache() -> Result<PathBuf> {
-    let loaded = Settings::load_base()?;
-    let state = &loaded.settings.state_dir;
-    Ok(if state.is_absolute() {
-        state.clone()
-    } else {
-        loaded.root.join(state)
-    }
-    .join("core"))
+    Ok(Layout::discover()?.state_dir.join("core"))
 }
 pub(crate) async fn resolve_core(
     core_bin: Option<PathBuf>,
@@ -438,7 +487,7 @@ async fn up(
     let stack_pids = ["fdb", "nats", "seaweed"]
         .into_iter()
         .filter_map(|name| {
-            Identity::read(&layout.repo.join(format!(".dev/{name}.pid")))
+            Identity::read(&layout.stack.join(format!("{name}.pid")))
                 .map(|id| format!("{name}={}", id.pid))
         })
         .collect::<Vec<_>>();
@@ -468,7 +517,7 @@ async fn prepare_stack(layout: &Layout, remote: Option<&str>) -> Result<()> {
             .filter(|line| line.contains(": up (pid "))
             .count()
             != 3
-            || !layout.repo.join(".dev/env").is_file()
+            || !layout.stack.join("env").is_file()
         {
             stack(layout, "start").await?;
         }
@@ -497,8 +546,7 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
         Settings::default()
     };
     if !remote {
-        let exports =
-            swarmy_config::parse_exports(&fs::read_to_string(layout.repo.join(".dev/env"))?)?;
+        let exports = swarmy_config::parse_exports(&fs::read_to_string(layout.stack.join("env"))?)?;
         settings.apply_environment(&exports)?;
     }
     if settings.selection.credential_file.as_os_str().is_empty() {
@@ -510,6 +558,9 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
     if settings.api.token.is_empty() {
         // A usable API must reject unauthenticated traffic, including on loopback.
         settings.api.token = ulid::Ulid::generate().to_string();
+    }
+    if let Some(parent) = layout.config.parent() {
+        fs::create_dir_all(parent)?;
     }
     write_private(&layout.config, &settings.to_toml()?)?;
     // Load again so environment overrides win, without persisting those overrides.
@@ -668,7 +719,7 @@ async fn status(layout: &Layout) -> Result<()> {
     let stack = ["fdb", "nats", "seaweed"]
         .into_iter()
         .filter_map(|name| {
-            Identity::read(&layout.repo.join(format!(".dev/{name}.pid")))
+            Identity::read(&layout.stack.join(format!("{name}.pid")))
                 .map(|identity| (name, identity))
         })
         .collect::<Vec<_>>();
@@ -723,11 +774,7 @@ async fn logs(state: &Path, service: Option<&str>) -> Result<()> {
 
 /// Run the embedded installer with bash, inheriting stdio so download progress shows.
 async fn install_tools(prefix: Option<&Path>) -> Result<()> {
-    let mut command = Process::new("bash");
-    command
-        .arg("-c")
-        .arg(INSTALL_DEV_TOOLS)
-        .arg("swarmy dev install-tools");
+    let mut command = embedded(INSTALL_DEV_TOOLS, "swarmy dev install-tools");
     if let Some(prefix) = prefix {
         command.arg("--prefix").arg(prefix);
     }
@@ -740,4 +787,120 @@ async fn install_tools(prefix: Option<&Path>) -> Result<()> {
         "backing tool installation failed ({status})"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod layout_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    fn loaded(path: Option<PathBuf>, root: &Path, state_dir: PathBuf) -> swarmy_config::Loaded {
+        let mut settings = Settings::default();
+        settings.state_dir = state_dir;
+        swarmy_config::Loaded {
+            path,
+            root: root.to_owned(),
+            settings,
+        }
+    }
+    #[test]
+    fn checkout_without_config_keeps_repo_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("scripts")).unwrap();
+        fs::write(repo.join("scripts/dev-stack.sh"), "").unwrap();
+        let cwd = repo.join("crates/x");
+        fs::create_dir_all(&cwd).unwrap();
+        let layout = Layout::resolve(
+            loaded(None, &cwd, cwd.join(".swarmy")),
+            &cwd,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(layout.config, repo.join(".swarmy/config.toml"));
+        assert_eq!(layout.root, repo);
+        assert_eq!(layout.state, repo.join(".swarmy/dev"));
+        assert_eq!(layout.stack, repo.join(".dev"));
+    }
+    #[test]
+    fn no_checkout_uses_user_config_and_home_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("cwd");
+        let home = temp.path().join("home");
+        let mut env = BTreeMap::from([("HOME".into(), home.display().to_string())]);
+        let make = |env: &BTreeMap<_, _>| {
+            Layout::resolve(loaded(None, &cwd, cwd.join(".swarmy")), &cwd, env).unwrap()
+        };
+        let layout = make(&env);
+        assert_eq!(layout.config, home.join(".config/swarmy/config.toml"));
+        assert_eq!(layout.root, home);
+        assert_eq!(layout.state_dir, home.join(".swarmy"));
+        assert_eq!(layout.stack, home.join(".swarmy/stack"));
+        env.insert(
+            "XDG_CONFIG_HOME".into(),
+            temp.path().join("xdg").display().to_string(),
+        );
+        assert_eq!(
+            make(&env).config,
+            temp.path().join("xdg/swarmy/config.toml")
+        );
+    }
+    #[test]
+    fn discovered_config_wins_and_supplies_state_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("cwd");
+        let root = temp.path().join("project");
+        let state = temp.path().join("custom");
+        let layout = Layout::resolve(
+            loaded(Some(root.join(".swarmy/config.toml")), &root, state.clone()),
+            &cwd,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(layout.root, root);
+        assert_eq!(layout.state_dir, state);
+    }
+    #[test]
+    fn state_dir_env_applies_without_a_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path();
+        let state = cwd.join("other");
+        let env = BTreeMap::from([
+            ("HOME".into(), cwd.display().to_string()),
+            ("SWARMY_STATE_DIR".into(), state.display().to_string()),
+        ]);
+        assert_eq!(
+            Layout::resolve(loaded(None, cwd, state.clone()), cwd, &env)
+                .unwrap()
+                .state_dir,
+            state
+        );
+    }
+    #[test]
+    fn dev_dir_override_is_absolute() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path();
+        let env = BTreeMap::from([
+            ("HOME".into(), cwd.display().to_string()),
+            ("SWARMY_DEV_DIR".into(), "elsewhere".into()),
+        ]);
+        assert_eq!(
+            Layout::resolve(loaded(None, cwd, cwd.join(".swarmy")), cwd, &env)
+                .unwrap()
+                .stack,
+            cwd.join("elsewhere")
+        );
+    }
+    #[test]
+    fn no_home_no_checkout_no_config_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path();
+        let error = Layout::resolve(
+            loaded(None, cwd, cwd.join(".swarmy")),
+            cwd,
+            &BTreeMap::new(),
+        )
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("HOME"));
+    }
 }

@@ -7,6 +7,7 @@ use std::{
 };
 
 use serde_json::Value;
+use swarmy_testkit::FakeStack;
 
 const CLI: &str = env!("CARGO_BIN_EXE_swarmy");
 const SERVICES: [(&str, &str); 4] = [
@@ -21,26 +22,24 @@ fn script(path: &Path, body: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-struct Fixture(tempfile::TempDir);
+struct Fixture {
+    root: tempfile::TempDir,
+    stack: FakeStack,
+}
 
 impl Fixture {
     fn new() -> Self {
-        let fixture = Self(tempfile::tempdir().unwrap());
-        for directory in ["scripts", "bin", ".dev"] {
-            fs::create_dir(fixture.0.path().join(directory)).unwrap();
-        }
-        fs::write(fixture.0.path().join(".dev/env"), "").unwrap();
-        script(
-            &fixture.0.path().join("scripts/dev-stack.sh"),
-            "echo called >> stack-calls\nif [ \"$1\" = status ]; then\n  echo 'fdb: up (pid 1)'\n  echo 'nats: up (pid 2)'\n  echo 'seaweed: up (pid 3)'\nfi",
-        );
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("bin")).unwrap();
+        let stack = FakeStack::start(&root.path().join(".swarmy/stack"));
+        let fixture = Self { root, stack };
         fixture.core(swarmy_version::IDENTITY);
         fixture
     }
 
     fn core(&self, identity: &str) {
         script(
-            &self.0.path().join("bin/swarmy-core"),
+            &self.root.path().join("bin/swarmy-core"),
             &format!(
                 "if [ \"$1\" = --version ]; then echo 'swarmy-core {identity}'; exit 0; fi
 case \"$1\" in
@@ -63,12 +62,12 @@ exec /bin/sleep 600"
         }
         command
             .args(args)
-            .current_dir(self.0.path())
-            .env("HOME", self.0.path())
-            .env("XDG_CONFIG_HOME", self.0.path().join("config"))
+            .current_dir(self.root.path())
+            .env("HOME", self.root.path())
+            .env("XDG_CONFIG_HOME", self.root.path().join("config"))
             .env(
                 "PATH",
-                format!("{}:/usr/bin:/bin", self.0.path().join("bin").display()),
+                format!("{}:/usr/bin:/bin", self.root.path().join("bin").display()),
             )
             .output()
             .unwrap()
@@ -112,7 +111,7 @@ fn matching_path_services_start() {
 
 #[test]
 fn stale_path_service_is_refused_before_starting_or_stopping_anything() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
     fixture.core("0.1.0 (stale)");
     let output = fixture.run(&["dev", "up"]);
     assert!(!output.status.success());
@@ -122,13 +121,19 @@ fn stale_path_service_is_refused_before_starting_or_stopping_anything() {
     assert!(stderr.contains("0.1.0 (stale)"), "{stderr}");
     assert!(stderr.contains("cargo install --locked --path"), "{stderr}");
     assert!(stderr.contains("--allow-version-mismatch"), "{stderr}");
-    assert!(!fixture.0.path().join("stack-calls").exists());
-    assert!(!fixture.0.path().join(".swarmy/dev/supervisor.pid").exists());
+    assert!(fixture.stack.running());
+    assert!(
+        !fixture
+            .root
+            .path()
+            .join(".swarmy/dev/supervisor.pid")
+            .exists()
+    );
 }
 
 #[test]
 fn override_starts_stale_path_service() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
     fixture.core("0.1.0 (stale)");
     fixture.assert_started(true);
 }
@@ -137,8 +142,8 @@ fn override_starts_stale_path_service() {
 fn doctor_reports_each_identity_and_flags_stale_service() {
     let fixture = Fixture::new();
     // Avoid unrelated network probes: an invalid config still permits version checks.
-    fs::create_dir(fixture.0.path().join(".swarmy")).unwrap();
-    fs::write(fixture.0.path().join(".swarmy/config.toml"), "invalid").unwrap();
+    fs::create_dir(fixture.root.path().join(".swarmy")).unwrap();
+    fs::write(fixture.root.path().join(".swarmy/config.toml"), "invalid").unwrap();
     fixture.core("0.1.0 (stale)");
     let output = fixture.run(&["doctor", "--json"]);
     assert!(!output.status.success());
@@ -188,7 +193,7 @@ fn cli_reports_identity_in_text_and_json() {
 fn failed_version_probe_is_refused() {
     let fixture = Fixture::new();
     script(
-        &fixture.0.path().join("bin/swarmy-core"),
+        &fixture.root.path().join("bin/swarmy-core"),
         "echo 'old worker does not understand --version' >&2\nexit 2",
     );
     let output = fixture.run(&["dev", "up"]);
@@ -199,14 +204,14 @@ fn failed_version_probe_is_refused() {
         "{stderr}"
     );
     assert!(stderr.contains("cargo install"), "{stderr}");
-    assert!(!fixture.0.path().join("stack-calls").exists());
+    assert!(fixture.stack.running());
 }
 
 #[test]
 fn mismatch_keeps_existing_supervisor_running() {
     let fixture = Fixture::new();
     fixture.assert_started(false);
-    let pid_file = fixture.0.path().join(".swarmy/dev/supervisor.pid");
+    let pid_file = fixture.root.path().join(".swarmy/dev/supervisor.pid");
     let before = fs::read(&pid_file).unwrap();
     fixture.core("0.0.1 (old)");
     let output = fixture.run(&["dev", "up"]);

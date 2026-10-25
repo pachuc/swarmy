@@ -29,6 +29,7 @@ impl Fixture {
         let mut command = AsyncCommand::new(CLI);
         command
             .current_dir(self.files.path())
+            .env("SWARMY_DEV_DIR", self.repo.join(".dev"))
             .env("HOME", self.files.path())
             .args(args)
             .kill_on_drop(true);
