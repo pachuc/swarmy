@@ -521,8 +521,9 @@ impl Ssh {
         Ok(String::from_utf8(output.stdout)?.trim().to_owned())
     }
 
-    /// Update binaries on a node, install changed binaries, and restart
-    /// service units whose unit file or running executable changed.
+    /// Upgrade a node: install changed binaries, rewrite unit files that differ
+    /// from the provisioning text, and restart service units whose unit file
+    /// or running executable changed.
     ///
     /// # Errors
     ///
