@@ -522,7 +522,7 @@ impl Ssh {
     }
 
     /// Update binaries on a node, install changed binaries, and restart
-    /// service units whose running executables differ.
+    /// service units whose unit file or running executable changed.
     ///
     /// # Errors
     ///

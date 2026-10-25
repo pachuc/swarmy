@@ -2173,6 +2173,7 @@ impl super::upgrade::UpgradeHost for FakeUpgradeHost {
         std::future::ready(Ok(super::upgrade::Summary {
             node: node.name.clone(),
             changed: vec!["swarmy-core".into()],
+            units: vec!["swarmyd.service".into()],
             restarted: if services_only {
                 vec!["gateway".into()]
             } else {
@@ -2298,6 +2299,7 @@ async fn upgrade_json_has_one_complete_object_per_node() {
         let value: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert!(value.is_object());
         assert!(value["changed"].is_array());
+        assert!(value["units"].is_array());
         assert!(value["restarted"].is_array());
         assert!(value["elapsed_seconds"].is_number());
     }
@@ -3714,4 +3716,12 @@ async fn down_existing_keeps_the_bucket_until_every_host_is_torn_down() {
             .any(|entry| entry == "bucket test-bucket")
     );
     assert!(state.read("static-test").unwrap().is_none());
+}
+
+#[test]
+fn upgrade_summary_accepts_old_json() {
+    let summary: super::upgrade::Summary =
+        serde_json::from_str(r#"{"node":"","changed":[],"restarted":[],"elapsed_seconds":0}"#)
+            .unwrap();
+    assert!(summary.units.is_empty());
 }

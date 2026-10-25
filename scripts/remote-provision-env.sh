@@ -247,6 +247,203 @@ swarmy_agent_unit() {
     swarmy_unit_table | awk -F: '$4 == "agent" { print $1 }'
 }
 
+# Unit inputs are recorded separately from the secret node environment.
+swarmy_systemd_dir() { printf '%s\n' "${SWARMY_SYSTEMD_DIR:-/etc/systemd/system}"; }
+swarmy_etc_dir() { printf '%s\n' "${SWARMY_ETC_DIR:-/etc/swarmy}"; }
+swarmy_unit_inputs_file() { printf '%s/units.env\n' "$(swarmy_etc_dir)"; }
+
+set_unit_user() {
+    validate_service_user "${1-}" || return 1
+    unit_user=$1
+    unit_home=$(service_home_for "$unit_user")
+    unit_repo=$(service_repo_for "$unit_user")
+}
+
+set_unit_inputs() {
+    local mode=${1-} user=${2-} primary=${3-} tunnel_s3=${4-} mount=${5-}
+    [[ $mode == stack || $mode == node ]] || { echo "invalid unit mode: $mode" >&2; return 1; }
+    set_unit_user "$user" || return 1
+    if [[ $mode == node || -n $primary ]]; then
+        [[ $primary =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid primary address: $primary" >&2; return 1; }
+    fi
+    [[ $tunnel_s3 == true || $tunnel_s3 == false ]] || { echo 'tunnel S3 forward must be true or false' >&2; return 1; }
+    [[ -z $mount || $mount =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "invalid mount path: $mount" >&2; return 1; }
+    unit_mode=$mode unit_primary=$primary unit_tunnel_s3=$tunnel_s3 unit_mount=$mount
+}
+
+unit_inputs_text() {
+    printf 'SWARMY_UNIT_MODE=%s\nSWARMY_UNIT_USER=%s\nSWARMY_UNIT_PRIMARY=%s\nSWARMY_UNIT_TUNNEL_S3=%s\nSWARMY_UNIT_MOUNT=%s\n' \
+        "$unit_mode" "$unit_user" "$unit_primary" "$unit_tunnel_s3" "$unit_mount"
+}
+
+record_unit_inputs() {
+    local file
+    file=$(swarmy_unit_inputs_file)
+    sudo -n install -d -m 0755 "$(dirname "$file")" || return 1
+    unit_inputs_text | sudo -n tee "$file" >/dev/null || return 1
+    sudo -n chmod 0644 "$file"
+}
+
+# Treat the recorded file as data, not shell code.
+load_unit_inputs() {
+    local file=${1-} key value mode='' user='' primary='' tunnel_s3='' mount=''
+    while IFS='=' read -r key value; do
+        case $key in
+            SWARMY_UNIT_MODE) mode=$value ;;
+            SWARMY_UNIT_USER) user=$value ;;
+            SWARMY_UNIT_PRIMARY) primary=$value ;;
+            SWARMY_UNIT_TUNNEL_S3) tunnel_s3=$value ;;
+            SWARMY_UNIT_MOUNT) mount=$value ;;
+            '') ;;
+            *) echo "unknown setting $key in $file" >&2; return 1 ;;
+        esac
+    done < "$file" || return 1
+    set_unit_inputs "$mode" "$user" "$primary" "$tunnel_s3" "$mount"
+}
+
+render_stack_unit() {
+    : "${unit_repo:?unit inputs not set}"
+    cat <<UNIT
+[Unit]
+Description=Swarmy backing services (FoundationDB, NATS, optional SeaweedFS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=$unit_user
+WorkingDirectory=$unit_repo
+Environment=HOME=$unit_home
+EnvironmentFile=/etc/swarmy/node.env
+Environment=PATH=$unit_home/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin
+# systemd owns these processes, so stale state from an interrupted boot is safe to clear.
+ExecStartPre=/usr/bin/rm -f $unit_repo/.dev/fdb.pid $unit_repo/.dev/nats.pid $unit_repo/.dev/seaweed.pid
+ExecStartPre=-/usr/bin/rmdir $unit_repo/.dev/lock
+ExecStart=/bin/bash $unit_repo/scripts/dev-stack.sh start
+ExecStop=/bin/bash $unit_repo/scripts/dev-stack.sh stop
+TimeoutStartSec=300
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+render_tunnel_unit() {
+    : "${unit_primary:?unit inputs not set}"
+    local s3_forward=''
+    if [[ $unit_tunnel_s3 == true ]]; then s3_forward=' -L 127.0.0.1:8333:127.0.0.1:8333'; fi
+    cat <<UNIT
+[Unit]
+Description=Swarmy tunnel to first node backing services
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=$unit_user
+ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i /etc/swarmy/tunnel-key -L 127.0.0.1:4500:127.0.0.1:4500 -L 127.0.0.1:4222:127.0.0.1:4222$s3_forward $unit_user@$unit_primary
+ExecStartPost=/bin/bash -c 'for attempt in {1..30}; do if (echo > /dev/tcp/127.0.0.1/4500) 2>/dev/null; then exit 0; fi; sleep 1; done; exit 1'
+Restart=always
+RestartSec=5
+TimeoutStartSec=40
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+render_node_unit() {
+    : "${unit_mode:?unit inputs not set}"
+    local stack_dependency dependency_kind=Wants mount_requirement='' node_unit
+    stack_dependency=$(swarmy_mode_backing_unit "$unit_mode") || return 1
+    node_unit=$(swarmy_agent_unit) || return 1
+    # Keep the node role running across tunnel reconnects; its clients reconnect too.
+    if [[ $unit_mode == stack ]]; then dependency_kind=Requires; fi
+    if [[ -n $unit_mount ]]; then mount_requirement="RequiresMountsFor=$unit_mount"; fi
+    cat <<UNIT
+[Unit]
+Description=Swarmy node agent (swarmy-core node)
+$dependency_kind=$stack_dependency
+After=network-online.target $stack_dependency systemd-modules-load.service
+Wants=network-online.target
+${mount_requirement}
+
+[Service]
+WorkingDirectory=$unit_repo
+EnvironmentFile=/etc/swarmy/node.env
+ExecStart=/usr/local/bin/$(swarmy_core_binary) $(swarmy_unit_role "$node_unit")
+Restart=always
+RestartSec=5
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+render_service_unit() {
+    local unit=${1:?unit} role short stack_unit
+    : "${unit_repo:?unit inputs not set}"
+    role=$(swarmy_unit_role "$unit")
+    [[ -n $role ]] || { echo "unknown service unit $unit" >&2; return 1; }
+    short=${unit#swarmy-}; short=${short%.service}
+    stack_unit=$(swarmy_mode_backing_unit stack) || return 1
+    cat <<UNIT
+[Unit]
+Description=Swarmy $short
+Requires=$stack_unit
+After=network-online.target $stack_unit
+
+[Service]
+Type=exec
+User=$unit_user
+WorkingDirectory=$unit_repo
+EnvironmentFile=/etc/swarmy/node.env
+Environment=HOME=$unit_home
+Environment=TOKIO_WORKER_THREADS=2
+ExecStart=/usr/local/bin/$(swarmy_core_binary) $role
+Restart=always
+RestartSec=2
+TimeoutStopSec=40
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+render_unit() {
+    local unit=${1-} kind
+    kind=$(swarmy_unit_table | awk -F: -v unit="$unit" '$1 == unit { print $4 }')
+    case $kind in
+        backing)
+            if [[ $unit == "$(swarmy_mode_backing_unit stack)" ]]; then render_stack_unit
+            else render_tunnel_unit; fi ;;
+        agent) render_node_unit ;;
+        service) render_service_unit "$unit" ;;
+        *) echo "no renderer for unit $unit" >&2; return 1 ;;
+    esac
+}
+
+# Render all before installing any; only install bytewise differences.
+write_units() {
+    local -n __written=${1:?result array}
+    shift
+    local dir stage unit
+    dir=$(swarmy_systemd_dir)
+    stage=$(mktemp -d) || return 1
+    for unit in "$@"; do
+        render_unit "$unit" > "$stage/$unit" || { rm -rf "$stage"; return 1; }
+    done
+    for unit in "$@"; do
+        if [[ -f $dir/$unit ]] && cmp -s "$stage/$unit" "$dir/$unit"; then continue; fi
+        sudo -n install -m 0644 "$stage/$unit" "$dir/$unit" || { rm -rf "$stage"; return 1; }
+        __written+=("$unit")
+    done
+    rm -rf "$stage"
+}
+
 # Backing-service unit of a mode (stack or tunnel): the role both install
 # paths and unit files read instead of spelling the name.
 swarmy_mode_backing_unit() {
