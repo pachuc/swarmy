@@ -59,7 +59,8 @@ async fn start() -> Result<()> {
     let heartbeat_store = store.clone();
     let started = jiff::Timestamp::now();
     let instance_id = ulid::Ulid::generate().to_string();
-    tokio::spawn(async move {
+    let heartbeat_id = instance_id.clone();
+    let heartbeat = tokio::spawn(async move {
         heartbeat_store
             .heartbeat_loop(HeartbeatSpec {
                 role: ServiceRole::Api,
@@ -93,7 +94,15 @@ async fn start() -> Result<()> {
             source,
         })?;
     tracing::info!(address = %listener.local_addr()?, "api ready");
-    serve(listener, state, metrics_store).await
+    let outcome = serve(listener, state, metrics_store.clone()).await;
+    heartbeat.abort();
+    if let Err(error) = metrics_store
+        .remove_service_heartbeat(&ServiceRole::Api, &heartbeat_id, started)
+        .await
+    {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "api heartbeat cleanup failed");
+    }
+    outcome
 }
 
 /// Serve with a capped graceful wait, then drain queued turn metrics.

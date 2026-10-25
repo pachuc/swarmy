@@ -90,6 +90,13 @@ impl Gateway {
         if let Err(error) = self.store.flush_turn_metrics().await {
             warn!(error = %swarmy_core::error_chain(&error), "gateway metric flush failed");
         }
+        if let Err(error) = self
+            .store
+            .remove_service_heartbeat(&ServiceRole::Gateway, &self.health_id, self.started_at)
+            .await
+        {
+            warn!(error = %swarmy_core::error_chain(&error), "gateway heartbeat cleanup failed");
+        }
         outcome
     }
 

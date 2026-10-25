@@ -29,25 +29,35 @@ async fn serve(config: config::Config, settings: swarmy_config::Settings) -> Res
     let partitions: Vec<u16> = config.partitions.iter().copied().collect();
     let mut consumers = subscribe_partitions(&services.bus, &partitions, send).await?;
     let worker = worker::Worker::new(services.store.clone(), services.bus, services.blobs, config);
+    let health_id = worker.owner.to_string();
+    let started_at = Timestamp::now();
     let health = services.store.heartbeat_loop(HeartbeatSpec {
         role: ServiceRole::Worker,
-        instance_id: worker.owner.to_string(),
+        instance_id: health_id.clone(),
         version: env!("CARGO_PKG_VERSION").into(),
-        started_at: Timestamp::now(),
+        started_at,
         detail: ServiceDetail::Partitions(partitions),
         expire_stale: false,
     });
     tracing::info!(owner = %worker.owner, "worker ready");
     // The supervised loops hold their buffers and subscriptions inline; keep
     // the combined future off the parent's stack.
-    Box::pin(supervise(
+    let outcome = Box::pin(supervise(
         &services.store,
         &worker,
         health,
         &mut consumers,
         receive,
     ))
-    .await
+    .await;
+    if let Err(error) = services
+        .store
+        .remove_service_heartbeat(&ServiceRole::Worker, &health_id, started_at)
+        .await
+    {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "worker heartbeat cleanup failed");
+    }
+    outcome
 }
 
 /// Open connections shared by every worker loop: the store, the object

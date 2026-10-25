@@ -33,12 +33,18 @@ async fn serve(args: Vec<OsString>) -> anyhow::Result<()> {
     let id = ulid::Ulid::generate().to_string();
     let outcome = tokio::select! {
         result = scheduler.run() => result,
-        () = health::run(&store, id, started, partitions) => Ok(()),
+        () = health::run(&store, id.clone(), started, partitions) => Ok(()),
         () = gc::run(&store, objects, settings.gc, settings.metering) => Ok(()),
         () = ephemeral::run(&store, settings.scheduler.ephemeral_retention_secs) => Ok(()),
         () = swarmy_config::shutdown_signal() => Ok(()),
     };
     flush_metrics(&store).await;
+    if let Err(error) = store
+        .remove_service_heartbeat(&swarmy_store::ServiceRole::Scheduler, &id, started)
+        .await
+    {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "scheduler heartbeat cleanup failed");
+    }
     outcome
 }
 
