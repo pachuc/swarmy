@@ -3,6 +3,14 @@
 Recorded 2026-09-21. Small chores that do not deserve a goal but should not
 be forgotten. Do them opportunistically alongside related work.
 
+- **Snapshot freeze blocks writers for 50-70 ms on the Hetzner suite node.**
+  `swarmy-volume --test nbd` `boundaries::continuous_writes_and_retained_crash_images`
+  asserts the largest writer gap during a snapshot stays under 30 ms. It
+  passed on the AWS suite node but fails on the Hetzner one (two NVMe drives
+  in software RAID1) on master and on every later branch, with gaps of 49 to
+  68 ms, so it is the host, not a regression. Find where the freeze time goes
+  (fsfreeze and journal commit through NBD, the flush to the chunk store, or
+  RAID1 write latency) and either cut it or set a justified bound per host.
 - **The unbuilt `swarmy-guest` proposal** was retired in the
   [roadmap](../docs/ROADMAP.md); runc exec and node tool helpers are the
   implemented path. No guest crate is planned.
