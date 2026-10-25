@@ -137,6 +137,7 @@ impl Aws {
     pub async fn new(region: &str) -> Self {
         let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .region(aws_config::Region::new(region.to_owned()))
+            .http_client(swarmy_aws::https_client())
             .load()
             .await;
         Self {

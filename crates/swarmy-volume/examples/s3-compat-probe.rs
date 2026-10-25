@@ -183,6 +183,7 @@ fn object_client(coordinates: &Coordinates) -> Result<Arc<dyn ObjectStore>, Stri
 /// requests, the same shape `remote up` uses for `HeadBucket`.
 fn bucket_client(coordinates: &Coordinates) -> aws_sdk_s3::Client {
     let config = aws_sdk_s3::config::Builder::new()
+        .http_client(swarmy_aws::https_client())
         .behavior_version(BehaviorVersion::latest())
         .region(Region::new(coordinates.region.clone()))
         .endpoint_url(coordinates.endpoint.clone())

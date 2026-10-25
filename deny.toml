@@ -6,48 +6,6 @@ all-features = true
 # Each ignore names the affected line, why it is reachable, and what unblocks
 # the upgrade. Re-check on every lock refresh; drop the entry once resolved.
 ignore = [
-    # Marvin timing side channel in rsa 0.9.10. It reaches the tree only as a
-    # swarmy-llm dev-dependency for test JWT fixtures (no normal-edge parent);
-    # production TLS never links rsa, and upstream ships no patched release.
-    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.10 is dev-only test fixtures, never production TLS; no patched release upstream" },
-    # URI name constraints ignored in rustls-webpki. Only the 0.101.7 line is
-    # affected (the reqwest line already uses patched 0.103.15); 0.101.7 comes
-    # via rustls 0.21 in the AWS SDK HTTP stack, so the upgrade waits on the
-    # SDKs leaving rustls 0.21. Exploitation additionally needs a misissued
-    # certificate past signature verification.
-    { id = "RUSTSEC-2026-0098", reason = "only the AWS SDK's rustls-webpki 0.101.7 line is affected; upgrade waits on the SDKs leaving rustls 0.21" },
-    # Wildcard names accepted under DNS name constraints in rustls-webpki.
-    # Same affected line and upgrade path as RUSTSEC-2026-0098 above.
-    { id = "RUSTSEC-2026-0099", reason = "only the AWS SDK's rustls-webpki 0.101.7 line is affected; upgrade waits on the SDKs leaving rustls 0.21" },
-    # Reachable panic on an empty BIT STRING in CRL parsing in rustls-webpki.
-    # Same affected line and upgrade path as RUSTSEC-2026-0098 above; swarmy
-    # never configures CRLs, so parsing is unreachable in practice.
-    { id = "RUSTSEC-2026-0104", reason = "only the AWS SDK's rustls-webpki 0.101.7 line is affected and swarmy configures no CRLs; upgrade waits on the SDKs leaving rustls 0.21" },
-    # Quadratic duplicate-attribute check in quick-xml 0.38.4, reached via
-    # object_store 0.12 parsing S3 XML from our own SeaweedFS or cloud
-    # endpoints. Upgrade to >= 0.41 waits on object_store moving past 0.12.
-    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.38.4 parses only our own S3 endpoints via object_store 0.12; upgrade waits on object_store" },
-    # Namespace memory exhaustion in quick-xml 0.38.4. Same reachability and
-    # upgrade path as RUSTSEC-2026-0194 above.
-    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.38.4 parses only our own S3 endpoints via object_store 0.12; upgrade waits on object_store" },
-    # Unbounded empty DATA frames in h2 0.3.27, reached via the AWS SDK hyper
-    # 0.14 stack (remote feature only); the reqwest line already uses patched
-    # 0.4.19. Upgrade waits on the SDKs moving to hyper 1.
-    { id = "RUSTSEC-2026-0258", reason = "only the AWS SDK's h2 0.3.27 line is affected; upgrade waits on the SDKs moving to hyper 1" },
-    # Debug impls of rustls client session values print TLS secrets. Only the
-    # AWS SDK's rustls 0.21.12 line is still affected (the reqwest line uses
-    # patched 0.23.46); swarmy installs no custom ClientSessionStore and never
-    # formats session values. No patched 0.21 release exists; removal needs
-    # the SDK clients moved to aws-smithy-http-client's rustls-ring connector.
-    { id = "RUSTSEC-2026-0346", reason = "only the AWS SDK's rustls 0.21.12 line is affected and swarmy has no custom session store; upgrade waits on the SDKs leaving rustls 0.21" },
-    # Unauthenticated ServerHello downgrades later connections from hybrid
-    # post-quantum key exchange. rustls 0.21 never offers post-quantum groups,
-    # so there is nothing to downgrade; same upgrade path as RUSTSEC-2026-0346.
-    { id = "RUSTSEC-2026-0349", reason = "AWS SDK's rustls 0.21.12 offers no post-quantum groups to downgrade; upgrade waits on the SDKs leaving rustls 0.21" },
-    # Distrusted emSign intermediates accepted by rustls-webpki. The reqwest
-    # line uses patched 0.103.16; only 0.101.7 under the AWS SDK's rustls 0.21
-    # remains, talking only to AWS/S3 endpoints. Same path as RUSTSEC-2026-0098.
-    { id = "RUSTSEC-2026-0382", reason = "only the AWS SDK's rustls-webpki 0.101.7 line is affected; upgrade waits on the SDKs leaving rustls 0.21" },
 ]
 
 [licenses]

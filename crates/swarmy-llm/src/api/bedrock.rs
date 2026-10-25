@@ -72,7 +72,8 @@ impl BedrockProvider {
         self.client
             .get_or_init(|| async {
                 let mut loader = aws_config::defaults(BehaviorVersion::latest())
-                    .region(Region::new(self.region.clone()));
+                    .region(Region::new(self.region.clone()))
+                    .http_client(swarmy_aws::https_client());
                 // Bearer auth must not probe instance metadata or require signing credentials.
                 if self.bearer_token.is_some() {
                     loader = loader.no_credentials();
