@@ -156,7 +156,7 @@ impl Drop for Mount<'_> {
 async fn root_ext4_mount_round_trip_and_independent_rebuild() {
     if !swarmy_testkit::require_root_host(
         "root_ext4_mount_round_trip_and_independent_rebuild",
-        &["e2fsck", "mount", "umount"],
+        &["mke2fs", "debugfs", "e2fsck", "mount", "umount"],
     ) {
         return;
     }
@@ -223,7 +223,7 @@ async fn root_ext4_mount_round_trip_and_independent_rebuild() {
 fn root_shell_recipe_runs_inside_copied_seed() {
     if !swarmy_testkit::require_root_host(
         "root_shell_recipe_runs_inside_copied_seed",
-        &["ldd", "debugfs"],
+        &["mke2fs", "debugfs", "ldd"],
     ) {
         return;
     }
@@ -272,7 +272,7 @@ fn root_shell_recipe_runs_inside_copied_seed() {
 fn root_oci_recipe_applies_layer_deletions() {
     if !swarmy_testkit::require_root_host(
         "root_oci_recipe_applies_layer_deletions",
-        &["skopeo", "umoci", "mount", "umount"],
+        &["mke2fs", "debugfs", "skopeo", "umoci", "mount", "umount"],
     ) {
         return;
     }

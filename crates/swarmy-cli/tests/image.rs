@@ -203,7 +203,14 @@ fn core_vol_json(arguments: &[&str]) -> serde_json::Value {
 fn needs_backing_services() -> bool {
     if !swarmy_testkit::require_root_host(
         "image acceptance",
-        &["debootstrap", "mkfs.ext4", "mount", "umount", "chroot"],
+        &[
+            "debootstrap",
+            "mke2fs",
+            "debugfs",
+            "mount",
+            "umount",
+            "chroot",
+        ],
     ) {
         return false;
     }
