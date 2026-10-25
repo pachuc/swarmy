@@ -237,4 +237,5 @@ fn version_release_prints_the_matching_tag() {
     let version: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(version["tag"], swarmy_version::RELEASE_TAG);
     assert_eq!(version["version"], swarmy_version::VERSION);
+    assert_eq!(version["release_build"], false);
 }

@@ -7,6 +7,9 @@ use std::{
 
 use clap::Parser;
 
+/// True only for binaries built by scripts/release.sh (`SWARMY_RELEASE_BUILD=1`).
+pub const RELEASE_BUILD: bool = cfg!(swarmy_release_build);
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const GIT_COMMIT: &str = env!("SWARMY_GIT_COMMIT");
 /// The git tag whose release assets match this build: `v` plus the package version.

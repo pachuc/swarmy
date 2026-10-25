@@ -416,6 +416,36 @@ the installer, so changes reach users when merged. `SWARMY_INSTALL_BASE_URL`,
 the release URL and detected platform. `scripts/test-install.sh` exercises
 fake releases in `make check-scripts`.
 
+## The core binary
+
+`swarmy core ensure [--core-bin PATH] [--target TRIPLE]` locates the matching
+Linux core and prints its path. `swarmy dev up --core-bin PATH` or
+`SWARMY_CORE_BIN` selects an explicit executable first. Release builds fetch
+and verify the matching release next; development builds instead find
+`swarmy-core` beside the CLI (or on PATH), so `cargo build && target/debug/swarmy
+dev up` still works. Set `SWARMY_RELEASE_BASE_URL` to force release selection
+in development; it accepts HTTPS, or HTTP on loopback only.
+
+Archives live under the configured state directory's `core/<tag>/` cache.
+Every ensure checks the release-wide SHA256SUMS and replaces a changed archive;
+when the server cannot be reached, a complete verified cache is reused with a
+warning. SHA-256 checksums protect integrity, but releases are not signed.
+
+To test locally with a fake release (requires patchelf and clang):
+
+```sh
+make release-package RELEASE_COMPONENT=core RELEASE_DIR=target/fake-release/v0.1.0
+make release-package RELEASE_COMPONENT=client RELEASE_DIR=target/fake-release/v0.1.0
+scripts/release.sh checksums target/fake-release/v0.1.0
+python3 -m http.server --bind 127.0.0.1 --directory target/fake-release 8765
+SWARMY_RELEASE_BASE_URL=http://127.0.0.1:8765 swarmy dev up
+```
+
+`swarmy doctor` checks `core version`. `run`, `chat`, and `bench` refuse an API
+core built from a different version or commit. Upgrade the core (`swarmy dev up`
+locally or `swarmy remote upgrade NAME`) or pass the global
+`--allow-version-mismatch` flag to proceed with a warning.
+
 ## Manual reference
 
 ### Run only the backing stack

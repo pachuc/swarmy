@@ -35,6 +35,7 @@ macro_rules! cloud_err {
 }
 
 mod command;
+pub mod release;
 pub mod ssh;
 pub use command::{BucketArgs, Command, select};
 #[cfg(feature = "remote")]
@@ -174,6 +175,8 @@ macro_rules! other_from {
 
 other_from!(
     std::io::Error,
+    reqwest::Error,
+    url::ParseError,
     serde_json::Error,
     toml::de::Error,
     std::string::FromUtf8Error,

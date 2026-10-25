@@ -36,9 +36,9 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) enum Command {
     /// Start the backing stack and supervised services in the background
     Up {
-        /// Start even when a service reports a different or unavailable version
-        #[arg(long)]
-        allow_version_mismatch: bool,
+        /// Run this swarmy-core instead of the matching release
+        #[arg(long, env = "SWARMY_CORE_BIN", value_name = "PATH")]
+        core_bin: Option<PathBuf>,
     },
     /// Stop the services, supervisor, and backing stack, preserving data
     Down,
@@ -126,18 +126,16 @@ impl Layout {
     }
 }
 
-pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
+pub(crate) async fn run(command: Command, json: bool, allow_version_mismatch: bool) -> Result<()> {
     // One match owns every variant. The supervisor is spawned without flags
     // by `dev up`, so it never takes the human-output path; every other arm
     // rejects `--json` and discovers the layout through one helper.
     match command {
         Command::Supervise { state, core } => supervise(&state, &core).await,
-        Command::Up {
-            allow_version_mismatch,
-        } => {
+        Command::Up { core_bin } => {
             let layout = local(json)?;
             let _lock = layout.lock()?;
-            up(&layout, allow_version_mismatch).await
+            up(&layout, allow_version_mismatch, core_bin).await
         }
         Command::Down => {
             let layout = local(json)?;
@@ -216,16 +214,106 @@ async fn stack(layout: &Layout, action: &str) -> Result<String> {
     Ok(String::from_utf8(output.stdout)?)
 }
 
-async fn check_versions(allow_version_mismatch: bool) -> Result<PathBuf> {
-    let core = service_binary("swarmy-core")?;
-    if let Err(error) = version_check(&core, "swarmy-core").await {
-        let message = format!("{error}. Reinstall from the CLI checkout: {REINSTALL}");
+pub(crate) enum CoreSource {
+    Explicit(PathBuf),
+    Release(swarmy_cloud::release::Release),
+    Development,
+}
+impl CoreSource {
+    pub(crate) fn select(core_bin: Option<PathBuf>) -> Result<Self> {
+        if let Some(path) = core_bin {
+            return Ok(Self::Explicit(path));
+        }
+        Ok(swarmy_cloud::release::Release::for_client()?.map_or(Self::Development, Self::Release))
+    }
+    pub(crate) const fn label(&self) -> &'static str {
+        match self {
+            Self::Explicit(_) => "explicit",
+            Self::Release(_) => "release",
+            Self::Development => "development",
+        }
+    }
+}
+pub(crate) struct ResolvedCore {
+    pub(crate) path: PathBuf,
+    pub(crate) source: &'static str,
+    pub(crate) fix: String,
+}
+pub(crate) fn core_cache() -> Result<PathBuf> {
+    let loaded = Settings::load_base()?;
+    let state = &loaded.settings.state_dir;
+    Ok(if state.is_absolute() {
+        state.clone()
+    } else {
+        loaded.root.join(state)
+    }
+    .join("core"))
+}
+pub(crate) async fn resolve_core(
+    core_bin: Option<PathBuf>,
+    target: Option<swarmy_cloud::release::Target>,
+) -> Result<ResolvedCore> {
+    use swarmy_cloud::release::{Component, Target};
+    let source = CoreSource::select(core_bin)?;
+    let label = source.label();
+    let (path, fix) = match source {
+        CoreSource::Explicit(path) => {
+            let canonical = path.canonicalize().with_context(|| {
+                format!(
+                    "--core-bin/SWARMY_CORE_BIN {} does not exist",
+                    path.display()
+                )
+            })?;
+            let fix = format!(
+                "Rebuild {} at commit {} (cargo build -p swarmy-core-bin) or unset --core-bin/SWARMY_CORE_BIN",
+                path.display(),
+                swarmy_version::GIT_COMMIT
+            );
+            (canonical, fix)
+        }
+        CoreSource::Release(release) => {
+            let cache = core_cache()?;
+            let fix = format!(
+                "Remove {}/{} and run swarmy dev up again to download {}",
+                cache.display(),
+                release.tag(),
+                release.tag()
+            );
+            (
+                release
+                    .ensure(
+                        &cache,
+                        Component::Core,
+                        target.map_or_else(Target::host, Ok)?,
+                    )
+                    .await?
+                    .join("swarmy-core"),
+                fix,
+            )
+        }
+        CoreSource::Development => (
+            service_binary("swarmy-core")?,
+            format!("Reinstall from the CLI checkout: {REINSTALL}"),
+        ),
+    };
+    Ok(ResolvedCore {
+        path,
+        source: label,
+        fix,
+    })
+}
+pub(crate) async fn check_versions(
+    core: &ResolvedCore,
+    allow_version_mismatch: bool,
+) -> Result<()> {
+    if let Err(error) = version_check(&core.path, "swarmy-core").await {
+        let message = format!("{error}. {}", core.fix);
         if !allow_version_mismatch {
             bail!("{message}\nUse --allow-version-mismatch to override.");
         }
         eprintln!("warning: {message} (--allow-version-mismatch)");
     }
-    Ok(core)
+    Ok(())
 }
 
 async fn node_services(layout: &Layout) -> Result<bool> {
@@ -271,12 +359,17 @@ fn ensure_keyring() -> Result<()> {
     Ok(())
 }
 
-async fn up(layout: &Layout, allow_version_mismatch: bool) -> Result<()> {
+async fn up(
+    layout: &Layout,
+    allow_version_mismatch: bool,
+    core_bin: Option<PathBuf>,
+) -> Result<()> {
     if node_services(layout).await? {
         return Ok(());
     }
     ensure_keyring()?;
-    let core = check_versions(allow_version_mismatch).await?;
+    let core = resolve_core(core_bin, None).await?;
+    check_versions(&core, allow_version_mismatch).await?;
     fs::create_dir_all(layout.state.join("logs"))?;
     let survivors: Vec<_> = ["supervisor", "scheduler", "worker", "gateway", "api"]
         .into_iter()
@@ -298,7 +391,7 @@ async fn up(layout: &Layout, allow_version_mismatch: bool) -> Result<()> {
         .arg("dev")
         .arg("supervise")
         .arg(&layout.state)
-        .arg(&core)
+        .arg(&core.path)
         .current_dir(&layout.root)
         .envs(settings.environment())
         .env("RUST_LOG", "info")

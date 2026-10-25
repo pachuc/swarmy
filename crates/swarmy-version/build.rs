@@ -9,6 +9,11 @@ fn git(arguments: &[&str]) -> Option<String> {
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=SWARMY_RELEASE_BUILD");
+    println!("cargo::rustc-check-cfg=cfg(swarmy_release_build)");
+    if std::env::var("SWARMY_RELEASE_BUILD").as_deref() == Ok("1") {
+        println!("cargo:rustc-cfg=swarmy_release_build");
+    }
     // HEAD can be symbolic, detached, or in a worktree. Watch both it and its
     // resolved ref so an incremental build cannot keep the previous identity.
     for name in ["HEAD", "packed-refs"] {

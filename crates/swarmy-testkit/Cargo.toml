@@ -29,6 +29,8 @@ clap.workspace = true
 async-nats = { workspace = true, optional = true }
 foundationdb = { workspace = true, optional = true }
 reqwest.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 ulid.workspace = true

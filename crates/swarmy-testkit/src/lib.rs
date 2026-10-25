@@ -20,6 +20,7 @@ mod eventually;
 mod gate;
 #[cfg(feature = "stack")]
 mod image;
+pub mod release;
 #[cfg(feature = "script")]
 mod script;
 mod service;
