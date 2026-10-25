@@ -224,7 +224,7 @@ mod tests {
             }
             let text = fs::read_to_string(root.join(&path)).unwrap();
             let dir = Path::new(&path).parent().unwrap();
-            if Path::new(path)
+            if Path::new(&path)
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("sh"))
             {
@@ -261,7 +261,7 @@ mod tests {
             "./images/swarmy-dev/",
             "images/base-desktop",
         ] {
-            assert!(recipe(Path::new(path)).is_ok());
+            assert!(recipe(Path::new(&path)).is_ok());
         }
         for path in [
             "images/custom",
@@ -269,7 +269,7 @@ mod tests {
             "images/../scripts",
             "images/common",
         ] {
-            let error = recipe(Path::new(path)).unwrap_err().to_string();
+            let error = recipe(Path::new(&path)).unwrap_err().to_string();
             assert!(
                 error.contains("images/base-ubuntu")
                     && error.contains("images/base-desktop")
@@ -295,7 +295,7 @@ mod tests {
             0o755
         );
         for &(path, _) in FILES {
-            if Path::new(path)
+            if Path::new(&path)
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("sh"))
             {

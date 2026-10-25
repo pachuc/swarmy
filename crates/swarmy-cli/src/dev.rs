@@ -28,12 +28,6 @@ const SERVICES: [(&str, &str); 4] = [
     ("gateway", "gateway ready"),
     ("api", "api ready"),
 ];
-/// The backing tool installer is compiled in so it needs no checkout.
-/// The script remains the source for make, remote provisioning, and image setup.
-
-/// The backing stack script is compiled in so `dev` needs no checkout; it runs
-/// with `SWARMY_DEV_DIR`. The file remains the source for make, CI, and nodes.
-
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Subcommand)]
@@ -251,6 +245,7 @@ fn embedded(script: &str, name: &str) -> Process {
 }
 
 async fn stack(layout: &Layout, action: &str) -> Result<String> {
+    // The same compiled-in script is used by the node and local dev stack.
     let output = embedded(swarmy_cloud::node_files::DEV_STACK, "swarmy dev stack")
         .arg(action)
         .env("SWARMY_DEV_DIR", &layout.stack)
