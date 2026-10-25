@@ -483,7 +483,7 @@ impl Worker {
     /// Failover happens at attempt boundaries. The store chooses the next
     /// usable route step (or earliest retry) and commits that decision with
     /// the wait, so a retried worker cannot select a different step.
-    pub(super) async fn failover_or_park(
+    pub(crate) async fn failover_or_park(
         &self,
         session: &mut SessionRecord,
         lease: &HeldLease,
@@ -494,9 +494,10 @@ impl Worker {
     ) -> Result<bool> {
         let (error, failure_kind) = failure;
         let outcome = {
-            let token = lease.lock().await;
+            let mut token = lease.lock().await;
             let lease_ref = token.as_ref().context("lease released")?;
-            self.store
+            let outcome = self
+                .store
                 .failover_route_step(
                     session.session_id,
                     lease_ref,
@@ -510,8 +511,17 @@ impl Worker {
                     },
                     super::route_selection(session, &self.config, now),
                 )
-                .await?
+                .await?;
+            if matches!(outcome.action, FailoverAction::Park) {
+                token.release();
+            }
+            outcome
         };
+        #[cfg(test)]
+        if let Some((written, resume)) = self.route_write_pause.lock().await.take() {
+            written.notify_one();
+            resume.notified().await;
+        }
         match outcome.action {
             FailoverAction::AdvanceTo(step) => {
                 warn_on_route_fallback(session, outcome.route.as_deref(), &outcome.skipped);
@@ -522,7 +532,6 @@ impl Worker {
             FailoverAction::Park => {
                 warn_on_route_fallback(session, outcome.route.as_deref(), &outcome.skipped);
                 session.route_step = 0;
-                lease.release().await;
                 Ok(true)
             }
             // The failure was already handled before a restart or lease
