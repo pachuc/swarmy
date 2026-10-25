@@ -1,6 +1,6 @@
 //! Gateway service wiring: parse args, connect to the store, bus, and
 //! providers, then serve until shutdown. The engine lives in the library
-//! modules (`dispatch`, `attempt`, `commit`); this binary only assembles it.
+//! modules (`dispatch`, `attempt`, `commit`); this role assembles it.
 
 use std::{ffi::OsString, sync::Arc};
 

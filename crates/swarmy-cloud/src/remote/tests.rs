@@ -2277,7 +2277,7 @@ async fn upgrade_orders_nodes_and_respects_drain_and_dirty_checkout() {
     assert!(
         summaries
             .iter()
-            .all(|summary| !summary.restarted.contains(&"swarmyd".to_owned()))
+            .all(|summary| !summary.restarted.contains(&"node".to_owned()))
     );
 }
 
