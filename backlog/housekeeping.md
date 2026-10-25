@@ -3,16 +3,13 @@
 Recorded 2026-09-21. Small chores that do not deserve a goal but should not
 be forgotten. Do them opportunistically alongside related work.
 
-- **The fleet driver still assumes one pull request per task.** Its launch
-  prompt (`prompt()` in `scripts/fleet/fleet`) asks the worker to open a pull
-  request and to push "WIP" commits, and `collect` and a plain `release`
-  look for that pull request. Goals are now built as a batch with no
-  per-task pull requests ("The cycle for a goal" in
-  `docs/fleet-operator-handoff.md`), so the operator sends an override with
-  `fleet resume` after every launch and releases with `--force`. Change the
-  prompt to the branch-delivery wording (report the branch, the head SHA and
-  the "Done when" output), give `collect` a branch mode, and let `release`
-  accept a branch that has been merged into an integration branch.
+- **The fleet driver's `collect` and `release` still assume one pull
+  request per task.** The launch prompt now asks for branch delivery (no
+  pull request; report the branch, head SHA and "Done when" output), but
+  `collect` and a plain `release` still look for a pull request, so the
+  operator releases with `--force` after reading the report with
+  `scripts/fleet/last-message`. Give `collect` a branch mode and let
+  `release` accept a branch merged into an integration branch.
 - **The unbuilt `swarmy-guest` proposal** was retired in the
   [roadmap](../docs/ROADMAP.md); runc exec and node tool helpers are the
   implemented path. No guest crate is planned.
