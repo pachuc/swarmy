@@ -8,8 +8,10 @@ async fn continuous_writes_and_retained_crash_images() {
         tracing_subscriber::fmt().with_test_writer().try_init(),
         "install test log subscriber",
     );
-    if command("id", &["-u"]).await.trim() != "0" {
-        eprintln!("skipping snapshot NBD test: execute the built binary with sudo");
+    if !swarmy_testkit::require_root_host(
+        "snapshot NBD test",
+        &["mkfs.ext4", "mount", "umount", "python3"],
+    ) {
         return;
     }
     let Some(cluster) = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE") else {

@@ -77,14 +77,14 @@ pub fn require_root_host(test: &str, tools: &[&str]) -> bool {
         .output()
         .is_ok_and(|output| output.status.success() && output.stdout == b"0\n")
     {
-        if !std::path::Path::new("/dev/nbd0").exists() {
-            Some("/dev/nbd0 is unavailable".to_owned())
-        } else {
+        if std::path::Path::new("/dev/nbd0").exists() {
             let path = std::env::var_os("PATH").unwrap_or_default();
             tools
                 .iter()
                 .find(|tool| !tool_on_path(tool, &path))
                 .map(|tool| format!("{tool} is not on PATH"))
+        } else {
+            Some("/dev/nbd0 is unavailable".to_owned())
         }
     } else {
         Some("root is required".to_owned())
