@@ -281,7 +281,11 @@ pub(crate) async fn resolve_core(
             );
             (
                 release
-                    .ensure(&cache, Component::Core, target.unwrap_or(Target::host()?))
+                    .ensure(
+                        &cache,
+                        Component::Core,
+                        target.map_or_else(Target::host, Ok)?,
+                    )
                     .await?
                     .join("swarmy-core"),
                 fix,

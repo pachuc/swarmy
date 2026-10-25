@@ -23,7 +23,7 @@ pub(crate) async fn run(
         .as_deref()
         .map(Target::parse)
         .transpose()?
-        .unwrap_or(Target::host()?);
+        .map_or_else(Target::host, Ok)?;
     let core = crate::dev::resolve_core(core_bin, Some(target)).await?;
     if Some(target) == Target::host().ok() {
         crate::dev::check_versions(&core, allow_version_mismatch).await?;

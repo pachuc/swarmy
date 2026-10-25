@@ -148,7 +148,11 @@ impl Release {
         .then_some(dir)
     }
     fn url(&self, asset: &str) -> Result<url::Url> {
-        Ok(self.base.join(&format!("{}/{asset}", self.tag))?)
+        Ok(url::Url::parse(&format!(
+            "{}/{}/{asset}",
+            self.base.as_str().trim_end_matches('/'),
+            self.tag
+        ))?)
     }
     /// Fetch SHA256SUMS on every invocation, reusing a verified cache if offline.
     /// # Errors
@@ -317,12 +321,12 @@ mod tests {
             assert!(Release::new(url, "v1").is_err());
         }
         assert_eq!(
-            Release::new("http://localhost:1234/", "v1")
+            Release::new("http://localhost:1234/base/", "v1")
                 .unwrap()
                 .url("SHA256SUMS")
                 .unwrap()
                 .as_str(),
-            "http://localhost:1234/v1/SHA256SUMS"
+            "http://localhost:1234/base/v1/SHA256SUMS"
         );
         assert!(Release::select(None, false).unwrap().is_none());
         assert!(Release::select(None, true).unwrap().is_some());
