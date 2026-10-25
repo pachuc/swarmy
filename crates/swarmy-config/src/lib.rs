@@ -498,7 +498,8 @@ impl Default for MemorySettings {
     }
 }
 
-/// Image uploads: largest streamed upload the API accepts, in bytes.
+/// Image uploads: largest upload body the API accepts, in bytes: the image's
+/// data extents plus 16 bytes each; holes in the sparse image do not count.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ImageSettings {

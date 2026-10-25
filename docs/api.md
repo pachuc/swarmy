@@ -29,7 +29,7 @@ start time, and optional finish time.
 append messages but never edit old ones.
 
 **Images** identify built computer roots by name and tag. Clients register
-already built images; they do not edit image manifests via this API.
+already built images; they do not edit image manifests via this API. Uploads carry only the data extents of the sparse ext4 file plus its logical size, and `image.upload_max_bytes` (`SWARMY_IMAGE_UPLOAD_MAX_BYTES`, default 16 GiB) limits the data, not the virtual disk size.
 
 **Models** identify provider models and their context windows. Clients
 select them for inference but do not edit catalog records.

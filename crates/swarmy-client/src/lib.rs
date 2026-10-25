@@ -1,12 +1,13 @@
 #![deny(unreachable_pub)]
 //! HTTP client for the versioned swarmy API. No control-plane service libraries are linked.
 pub mod api_client;
-use futures_util::{Stream, StreamExt};
+use futures_util::{Stream, StreamExt, TryStreamExt};
 use reqwest::{Method, Response, StatusCode};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{collections::HashMap, pin::Pin, time::Duration};
 use swarmy_api_types as api;
 use thiserror::Error;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::watch;
 
 #[derive(Debug, Error)]
@@ -75,6 +76,30 @@ pub struct Client {
 
 /// Base budget for image uploads, covering server-side chunking and storage
 /// of even a tiny image before it answers.
+const EXTENT_HEADER_BYTES: u64 = 16;
+
+/// Byte ranges of `file` that hold data, from `SEEK_DATA`/`SEEK_HOLE`, as (offset, length).
+fn data_extents(file: &std::fs::File) -> std::io::Result<Vec<(u64, u64)>> {
+    use rustix::fs::SeekFrom;
+    let size = file.metadata()?.len();
+    let mut offset = 0;
+    let mut extents = Vec::new();
+    while offset < size {
+        let start = match rustix::fs::seek(file, SeekFrom::Data(offset)) {
+            Ok(start) => start,
+            Err(rustix::io::Errno::NXIO) => break,
+            Err(error) => return Err(error.into()),
+        };
+        let end = rustix::fs::seek(file, SeekFrom::Hole(start))?.min(size);
+        if end <= start {
+            return Err(std::io::Error::other("SEEK_HOLE did not advance"));
+        }
+        extents.push((start, end - start));
+        offset = end;
+    }
+    Ok(extents)
+}
+
 const UPLOAD_BASE_SECS: u64 = 120;
 /// Sustained throughput assumed when sizing the upload timeout. The server
 /// spools the whole body, chunks it, and uploads to object storage before
@@ -426,12 +451,37 @@ impl Client {
         if let Some(memory) = upload.memory_mib {
             query.push(("memory_mib".into(), memory.to_string()));
         }
-        let file = tokio::fs::File::open(upload.file).await?;
-        // The size is known, so send a fixed `Content-Length` instead of a
-        // chunked body. The server rejects an oversized upload from the header
-        // before spooling gigabytes it would only delete.
-        let len = file.metadata().await.map_or(0, |metadata| metadata.len());
-        let stream = tokio_util::io::ReaderStream::new(file);
+        let file = std::fs::File::open(upload.file)?;
+        let size = file.metadata()?.len();
+        let extents = data_extents(&file)?;
+        drop(file);
+        query.push(("size".into(), size.to_string()));
+        // The body length counts only data and framing, so the server can
+        // reject it from the header without reading the extents.
+        let len = extents
+            .iter()
+            .map(|&(_, length)| EXTENT_HEADER_BYTES + length)
+            .sum::<u64>();
+        let path = upload.file.to_path_buf();
+        let stream = futures_util::stream::iter(extents)
+            .then(move |(offset, length)| {
+                let path = path.clone();
+                async move {
+                    let mut file = tokio::fs::File::open(&path).await?;
+                    file.seek(std::io::SeekFrom::Start(offset)).await?;
+                    let mut header = Vec::with_capacity(16);
+                    header.extend_from_slice(&offset.to_le_bytes());
+                    header.extend_from_slice(&length.to_le_bytes());
+                    let head =
+                        futures_util::stream::once(std::future::ready(Ok::<_, std::io::Error>(
+                            bytes::Bytes::from(header),
+                        )));
+                    Ok::<_, std::io::Error>(
+                        head.chain(tokio_util::io::ReaderStream::new(file.take(length))),
+                    )
+                }
+            })
+            .try_flatten();
         let response = self
             .http
             .post(self.url("images/uploads"))
@@ -1134,6 +1184,39 @@ fn parse_frame(frame: &str) -> Result<ParsedFrame, Error> {
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
+    #[test]
+    fn data_extents_cover_written_data_and_skip_holes() {
+        use std::os::unix::fs::FileExt;
+        let file = tempfile::tempfile().unwrap();
+        let chunk = 256 * 1024;
+        let size = 8 * chunk;
+        file.set_len(size).unwrap();
+        let data = vec![0xAB; 4096];
+        for offset in [3 * chunk, 6 * chunk + 100] {
+            file.write_all_at(&data, offset).unwrap();
+        }
+        let extents = data_extents(&file).unwrap();
+        assert!(extents.iter().map(|&(_, len)| len).sum::<u64>() < size);
+        let mut previous = 0;
+        for &(offset, length) in &extents {
+            assert!(offset >= previous && offset + length <= size);
+            previous = offset + length;
+            let mut read = vec![0; usize::try_from(length).unwrap()];
+            file.read_exact_at(&mut read, offset).unwrap();
+            for written in [3 * chunk, 6 * chunk + 100] {
+                if offset <= written && written + data.len() as u64 <= previous {
+                    let index = usize::try_from(written - offset).unwrap();
+                    assert_eq!(&read[index..index + data.len()], data);
+                }
+            }
+        }
+        for written in [3 * chunk, 6 * chunk + 100] {
+            assert!(extents.iter().any(
+                |&(start, len)| start <= written && written + data.len() as u64 <= start + len
+            ));
+        }
+    }
+
     use super::*;
     use axum::{
         Json, Router,
