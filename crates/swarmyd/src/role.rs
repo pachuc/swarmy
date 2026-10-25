@@ -1,11 +1,5 @@
-mod hosting;
-mod memory;
-mod service;
-mod tools;
-mod upgrade;
-mod vol;
-mod vol_command;
-mod vol_server;
+use crate::{hosting, memory, service, tools, upgrade, vol};
+use std::ffi::OsString;
 
 use anyhow::{Result, ensure};
 use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
@@ -15,33 +9,40 @@ use swarmy_store::Store;
 use swarmy_volume::server::ServerConfig;
 use tokio::{net::UnixListener, task::JoinSet};
 
-fn main() -> Result<()> {
-    let upgrade_processes =
-        std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--upgrade-processes"));
-    // Developer volume tools run from this binary: attach and snapshot need
-    // local devices and the store, neither of which the client links.
-    let vol_command = std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("vol"));
-    if !upgrade_processes && !vol_command {
-        swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmyd")?;
+/// Run the node role, including the upgrade drain command.
+///
+/// # Errors
+/// Returns startup or service failures.
+pub fn run(args: Vec<OsString>) -> Result<()> {
+    let upgrade_processes = args.first().is_some_and(|arg| arg == "--upgrade-processes");
+    if !upgrade_processes {
+        swarmy_version::parse_from::<swarmy_version::ServiceArgs>("swarmy-core node", args)?;
     }
     swarmy_config::init_tracing();
     let loaded = swarmy_config::Settings::load()?;
     let _network = swarmy_store::boot();
-    if vol_command {
-        let runtime = tokio::runtime::Runtime::new()?;
-        return runtime.block_on(vol::run_cli());
-    }
     let runtime = tokio::runtime::Runtime::new()?;
     if upgrade_processes {
         let busy = runtime.block_on(upgrade::run(&loaded, |line| eprintln!("{line}")))?;
         println!("{}", serde_json::to_string(&busy)?);
         Ok(())
     } else {
-        runtime.block_on(run(loaded))
+        runtime.block_on(serve(loaded))
     }
 }
 
-async fn run(loaded: swarmy_config::Loaded) -> Result<()> {
+/// Run local volume commands.
+///
+/// # Errors
+/// Returns startup or volume operation failures.
+pub fn vol(args: Vec<OsString>) -> Result<()> {
+    swarmy_config::init_tracing();
+    let _settings = swarmy_config::Settings::load()?;
+    let _network = swarmy_store::boot();
+    tokio::runtime::Runtime::new()?.block_on(vol::run_cli(args))
+}
+
+async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     let settings = &loaded.settings;
     ensure!(
         !settings.node.roles.is_empty(),

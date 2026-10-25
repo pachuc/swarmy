@@ -16,9 +16,9 @@ pub(crate) struct VolCli {
     command: Command,
 }
 
-pub(crate) async fn run_cli() -> Result<()> {
+pub(crate) async fn run_cli(args: Vec<std::ffi::OsString>) -> Result<()> {
     let cli = match <VolCli as clap::Parser>::try_parse_from(
-        std::iter::once("vol".to_owned()).chain(std::env::args().skip(2)),
+        std::iter::once(std::ffi::OsString::from("vol")).chain(args),
     ) {
         Ok(cli) => cli,
         // Help and version exit from here with their own status codes.

@@ -6,6 +6,9 @@ publish.workspace = true
 license.workspace = true
 build = "../swarmy-store/build.rs"
 
+[package.metadata.swarmy]
+entry-point = true
+
 [lints]
 workspace = true
 

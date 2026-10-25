@@ -6,6 +6,9 @@ edition.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[package.metadata.swarmy]
+entry-point = true
+
 [lints]
 workspace = true
 

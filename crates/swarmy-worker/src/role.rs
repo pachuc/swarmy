@@ -1,6 +1,5 @@
-mod config;
-mod placement;
-mod worker;
+use crate::{config, worker};
+use std::ffi::OsString;
 
 use std::sync::Arc;
 
@@ -11,16 +10,20 @@ use swarmy_core::Nudge;
 use swarmy_store::{HeartbeatSpec, ServiceDetail, ServiceRole, Store};
 use tokio::{sync::mpsc, task::JoinSet};
 
-fn main() -> Result<()> {
-    swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-worker")?;
+/// Run the worker role.
+///
+/// # Errors
+/// Returns startup or service failures.
+pub fn run(args: Vec<OsString>) -> Result<()> {
+    swarmy_version::parse_from::<swarmy_version::ServiceArgs>("swarmy-core worker", args)?;
     swarmy_config::init_tracing();
     let settings = swarmy_config::Settings::load()?.settings;
     let config = config::Config::from_settings(&settings)?;
     let _network = swarmy_store::boot();
-    tokio::runtime::Runtime::new()?.block_on(run(config, settings))
+    tokio::runtime::Runtime::new()?.block_on(serve(config, settings))
 }
 
-async fn run(config: config::Config, settings: swarmy_config::Settings) -> Result<()> {
+async fn serve(config: config::Config, settings: swarmy_config::Settings) -> Result<()> {
     let services = connect_services(&settings, &config).await?;
     let (send, receive) = mpsc::channel(1);
     let partitions: Vec<u16> = config.partitions.iter().copied().collect();
@@ -135,6 +138,3 @@ async fn consume_nudges(
     }
     Err(anyhow!("runnable streams ended"))
 }
-
-#[cfg(test)]
-mod tests;

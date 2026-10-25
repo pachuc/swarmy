@@ -1,15 +1,19 @@
-mod config;
-mod ephemeral;
-mod gc;
-mod health;
-mod scheduler;
+use crate::{config, ephemeral, gc, health, scheduler};
+use std::ffi::OsString;
 
 use swarmy_bus::Bus;
 use swarmy_store::Store;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-scheduler")?;
+/// Run the scheduler role.
+///
+/// # Errors
+/// Returns startup or service failures.
+pub fn run(args: Vec<OsString>) -> anyhow::Result<()> {
+    tokio::runtime::Runtime::new()?.block_on(Box::pin(serve(args)))
+}
+
+async fn serve(args: Vec<OsString>) -> anyhow::Result<()> {
+    swarmy_version::parse_from::<swarmy_version::ServiceArgs>("swarmy-core scheduler", args)?;
     swarmy_config::init_tracing();
     let config = config::Config::from_env()?;
     let settings = swarmy_config::Settings::load()?.settings;

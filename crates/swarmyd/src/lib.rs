@@ -1,4 +1,14 @@
 //! Local node control protocol. The Unix socket is accessible only to its owner.
+mod hosting;
+mod memory;
+pub mod role;
+mod service;
+mod tools;
+mod upgrade;
+mod vol;
+mod vol_command;
+mod vol_server;
+
 use serde::{Deserialize, Serialize};
 use swarmy_core::{
     BlockDevice, ExecOutput, ExecRequest, ExecResult, PauseHandle, RuntimeCaps, Sandbox,

@@ -17,6 +17,7 @@ mod gc;
 mod idempotency;
 pub mod images;
 mod models;
+pub mod role;
 mod stream;
 mod views;
 use api_failure::ApiFailure;
