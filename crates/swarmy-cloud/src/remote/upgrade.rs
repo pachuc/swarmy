@@ -67,6 +67,8 @@ pub(super) async fn command(
 pub(super) struct Summary {
     pub node: String,
     pub changed: Vec<String>,
+    #[serde(default)]
+    pub units: Vec<String>,
     pub restarted: Vec<String>,
     pub elapsed_seconds: f64,
 }
@@ -175,9 +177,10 @@ pub(super) async fn run(
             cloud_out!("{}", json_line(&summary)?);
         } else {
             cloud_out!(
-                "{}: changed={} restarted={} elapsed={:.1}s",
+                "{}: changed={} units={} restarted={} elapsed={:.1}s",
                 summary.node,
                 summary.changed.join(","),
+                summary.units.join(","),
                 summary.restarted.join(","),
                 summary.elapsed_seconds
             );

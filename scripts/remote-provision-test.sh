@@ -196,4 +196,39 @@ done < <(retired_binary_names)
 unset -f sudo
 [[ $(node_source_dir /x) == /x/source ]]
 
+# Restore the table after testing its failure path.
+source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
+# Rendered units share exactly the provisioning inputs.
+set_unit_inputs stack deploy-user '' false /mnt/swarmy-local
+node_text=$(render_unit swarmyd.service)
+[[ $node_text == *'Requires=swarmy-stack.service'* ]]
+[[ $node_text == *'RequiresMountsFor=/mnt/swarmy-local'* ]]
+[[ $node_text == *'ExecStart=/usr/local/bin/swarmy-core node'* ]]
+[[ $node_text == *'WorkingDirectory=/home/deploy-user/swarmy'* ]]
+stack_text=$(render_unit swarmy-stack.service)
+[[ $stack_text == *'User=deploy-user'* ]]
+[[ $stack_text == *'ExecStart=/bin/bash /home/deploy-user/swarmy/scripts/dev-stack.sh start'* ]]
+scheduler_text=$(render_unit swarmy-scheduler.service)
+[[ $scheduler_text == *'ExecStart=/usr/local/bin/swarmy-core scheduler'* ]]
+[[ $scheduler_text == *'Requires=swarmy-stack.service'* ]]
+set_unit_inputs node deploy-user 10.0.0.1 true ''
+node_text=$(render_unit swarmyd.service)
+[[ $node_text == *'Wants=swarmy-tunnel.service'* && $node_text != *RequiresMountsFor* ]]
+tunnel_text=$(render_unit swarmy-tunnel.service)
+[[ $tunnel_text == *'-L 127.0.0.1:8333:127.0.0.1:8333 deploy-user@10.0.0.1'* ]]
+set_unit_inputs node deploy-user 10.0.0.1 false ''
+[[ $(render_unit swarmy-tunnel.service) != *8333* ]]
+for args in 'other deploy-user 10.0.0.1 false /mnt' 'node deploy-user _ false /mnt' 'node deploy-user 10.0.0.1 yes /mnt' 'node deploy-user 10.0.0.1 false relative'; do
+    read -r -a parts <<< "$args"
+    if set_unit_inputs "${parts[@]}" 2>/dev/null; then echo "accepted invalid unit inputs: $args" >&2; exit 1; fi
+done
+if set_unit_inputs node 'bad user' 10.0.0.1 false '' 2>/dev/null; then echo 'accepted invalid user' >&2; exit 1; fi
+set_unit_inputs node deploy-user 10.0.0.1 true /mnt/swarmy-local
+unit_inputs_text > "$bundle/units.env"
+load_unit_inputs "$bundle/units.env"
+[[ $unit_mode == node && $unit_user == deploy-user && $unit_primary == 10.0.0.1 && $unit_tunnel_s3 == true && $unit_mount == /mnt/swarmy-local ]]
+printf 'UNKNOWN=value\n' > "$bundle/units.env"
+if load_unit_inputs "$bundle/units.env" 2>/dev/null; then echo 'accepted unknown unit setting' >&2; exit 1; fi
+if render_unit nothing.service 2>/dev/null; then echo 'accepted unknown unit' >&2; exit 1; fi
+printf 'unit renderers and settings: ok\n'
 echo 'remote provision argument and environment tests passed'

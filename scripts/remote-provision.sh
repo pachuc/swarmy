@@ -47,12 +47,6 @@ storage=$(parse_local_storage "$local_storage")
 # previous installation on this host.
 stack_dependency=$(swarmy_mode_backing_unit "$mode")
 node_unit=$(swarmy_agent_unit)
-if [[ $mode == stack ]]; then
-    dependency_kind=Requires
-else
-    # Keep the node role running across tunnel reconnects; its clients reconnect too.
-    dependency_kind=Wants
-fi
 # A re-provisioned host (adopted or rebuilt) may carry the other mode's
 # units or old node-services units; stop and disable them before installing.
 # What this mode owns is enabled again below.
@@ -176,78 +170,21 @@ if [[ $bucket_static == true ]]; then
 else
     sudo rm -f /etc/swarmy/s3-keys.env
 fi
-if [[ $mode == stack ]]; then
-sudo tee "/etc/systemd/system/$stack_dependency" >/dev/null <<UNIT
-[Unit]
-Description=Swarmy backing services (FoundationDB, NATS, optional SeaweedFS)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-User=$service_user
-WorkingDirectory=$repo_dir
-Environment=HOME=$service_home
-EnvironmentFile=/etc/swarmy/node.env
-Environment=PATH=$service_home/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin
-# systemd owns these processes, so stale state from an interrupted boot is safe to clear.
-ExecStartPre=/usr/bin/rm -f $repo_dir/.dev/fdb.pid $repo_dir/.dev/nats.pid $repo_dir/.dev/seaweed.pid
-ExecStartPre=-/usr/bin/rmdir $repo_dir/.dev/lock
-ExecStart=/bin/bash $repo_dir/scripts/dev-stack.sh start
-ExecStop=/bin/bash $repo_dir/scripts/dev-stack.sh stop
-TimeoutStartSec=300
-TimeoutStopSec=120
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-else
-[[ -s .swarmy/tunnel-key && -s .swarmy/tunnel-known-hosts ]] || { echo 'Missing add-node tunnel identity' >&2; exit 1; }
-sudo install -o "$service_user" -g "$service_user" -m 0600 .swarmy/tunnel-key /etc/swarmy/tunnel-key
-sudo install -o "$service_user" -g "$service_user" -m 0600 .swarmy/tunnel-known-hosts /etc/swarmy/tunnel-known-hosts
-s3_forward=''
-if [[ -z $bucket ]]; then s3_forward=' -L 127.0.0.1:8333:127.0.0.1:8333'; fi
-sudo tee "/etc/systemd/system/$stack_dependency" >/dev/null <<UNIT
-[Unit]
-Description=Swarmy tunnel to first node backing services
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=exec
-User=$service_user
-ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i /etc/swarmy/tunnel-key -L 127.0.0.1:4500:127.0.0.1:4500 -L 127.0.0.1:4222:127.0.0.1:4222$s3_forward $service_user@$service_address
-ExecStartPost=/bin/bash -c 'for attempt in {1..30}; do if (echo > /dev/tcp/127.0.0.1/4500) 2>/dev/null; then exit 0; fi; sleep 1; done; exit 1'
-Restart=always
-RestartSec=5
-TimeoutStartSec=40
-
-[Install]
-WantedBy=multi-user.target
-UNIT
+tunnel_primary=''
+tunnel_s3=false
+if [[ $mode == node ]]; then
+    [[ -s .swarmy/tunnel-key && -s .swarmy/tunnel-known-hosts ]] || { echo 'Missing add-node tunnel identity' >&2; exit 1; }
+    sudo install -o "$service_user" -g "$service_user" -m 0600 .swarmy/tunnel-key /etc/swarmy/tunnel-key
+    sudo install -o "$service_user" -g "$service_user" -m 0600 .swarmy/tunnel-known-hosts /etc/swarmy/tunnel-known-hosts
+    tunnel_primary=$service_address
+    if [[ -z $bucket ]]; then tunnel_s3=true; fi
 fi
-mount_requirement=''
-if [[ $storage_is_mount == true ]]; then mount_requirement="RequiresMountsFor=$local_mount"; fi
-sudo tee "/etc/systemd/system/$node_unit" >/dev/null <<UNIT
-[Unit]
-Description=Swarmy node agent (swarmy-core node)
-$dependency_kind=$stack_dependency
-After=network-online.target $stack_dependency systemd-modules-load.service
-Wants=network-online.target
-${mount_requirement}
-
-[Service]
-WorkingDirectory=$repo_dir
-EnvironmentFile=/etc/swarmy/node.env
-ExecStart=/usr/local/bin/$(swarmy_core_binary) $(swarmy_unit_role "$node_unit")
-Restart=always
-RestartSec=5
-TimeoutStopSec=120
-
-[Install]
-WantedBy=multi-user.target
-UNIT
+unit_mount=''
+if [[ $storage_is_mount == true ]]; then unit_mount=$local_mount; fi
+set_unit_inputs "$mode" "$service_user" "$tunnel_primary" "$tunnel_s3" "$unit_mount"
+record_unit_inputs
+provisioned_units=()
+write_units provisioned_units "$stack_dependency" "$node_unit"
 sudo systemctl daemon-reload
 if [[ $mode == stack ]]; then
     sudo systemctl enable --now "$stack_dependency"

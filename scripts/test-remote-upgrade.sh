@@ -66,3 +66,72 @@ printf '[api]\ntoken = "already-set"\n' > "$token_dir/kept.toml"
 [[ $(ensure_api_token "$token_dir/kept.toml") == unchanged ]]
 [[ $(sed -n 's/^token = "\(.*\)"$/\1/p' "$token_dir/kept.toml") == already-set ]]
 printf 'api token provisioning: ok\n'
+
+source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
+root=$work/root
+mkdir -p "$root/etc/systemd/system" "$root/etc/swarmy" "$root/usr/local/bin"
+export SWARMY_SYSTEMD_DIR=$root/etc/systemd/system SWARMY_ETC_DIR=$root/etc/swarmy
+sudo() { [[ $1 == -n ]] && shift
+    case $1 in
+      rm) command rm -f "$root${@: -1}" ;;
+      systemctl) printf '%s\n' "$*" >> "$root/systemctl.log" ;;
+      install) printf '%s\n' "${@: -1}" >> "$root/install.log"; command "$@" ;;
+      *) command "$@" ;;
+    esac; }
+set_unit_inputs stack swarmy '' false ''
+render_unit swarmy-stack.service > "$SWARMY_SYSTEMD_DIR/swarmy-stack.service"
+cat > "$SWARMY_SYSTEMD_DIR/swarmyd.service" <<'UNIT'
+[Unit]
+Description=Swarmy node agent
+RequiresMountsFor=/mnt/swarmy-local
+[Service]
+ExecStart=/usr/local/bin/swarmyd
+UNIT
+printf '[Service]\nExecStart=/usr/local/bin/swarmy-scheduler\n' > "$SWARMY_SYSTEMD_DIR/swarmy-scheduler.service"
+printf 'SWARMY_S3_ENDPOINT=http://127.0.0.1:8333\n' > "$SWARMY_ETC_DIR/node.env"
+for binary in swarmyd swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api swarmy-core; do touch "$root/usr/local/bin/$binary"; done
+unset unit_mode unit_user unit_home unit_repo unit_primary unit_tunnel_s3 unit_mount
+remove_unreferenced_retired_binaries 2>/dev/null
+[[ -f $root/usr/local/bin/swarmyd && -f $root/usr/local/bin/swarmy-scheduler ]]
+for binary in swarmy-worker swarmy-gateway swarmy-api; do [[ ! -f $root/usr/local/bin/$binary ]]; done
+unit_inputs_for_upgrade stack swarmy
+[[ $unit_mount == /mnt/swarmy-local ]]
+grep -qx 'SWARMY_UNIT_MODE=stack' "$SWARMY_ETC_DIR/units.env"
+stack_hash=$(sha256sum "$SWARMY_SYSTEMD_DIR/swarmy-stack.service")
+stack_mtime=$(stat -c %Y "$SWARMY_SYSTEMD_DIR/swarmy-stack.service")
+changed=()
+reconcile_units changed swarmy-stack.service swarmyd.service swarmy-scheduler.service
+[[ ${changed[*]} == 'swarmyd.service swarmy-scheduler.service' ]]
+! grep -q swarmy-stack.service "$root/install.log"
+[[ $(sha256sum "$SWARMY_SYSTEMD_DIR/swarmy-stack.service") == "$stack_hash" ]]
+[[ $(stat -c %Y "$SWARMY_SYSTEMD_DIR/swarmy-stack.service") == "$stack_mtime" ]]
+[[ $(wc -l < "$root/systemctl.log") == 1 ]]
+grep -qx 'systemctl daemon-reload' "$root/systemctl.log"
+grep -qx 'ExecStart=/usr/local/bin/swarmy-core node' "$SWARMY_SYSTEMD_DIR/swarmyd.service"
+grep -qx 'RequiresMountsFor=/mnt/swarmy-local' "$SWARMY_SYSTEMD_DIR/swarmyd.service"
+changed=()
+reconcile_units changed swarmy-stack.service swarmyd.service swarmy-scheduler.service
+[[ ${#changed[@]} == 0 && $(wc -l < "$root/systemctl.log") == 1 ]]
+remove_unreferenced_retired_binaries
+for binary in swarmyd swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api; do [[ ! -f $root/usr/local/bin/$binary ]]; done
+[[ -f $root/usr/local/bin/swarmy-core ]]
+
+root=$work/node-root
+mkdir -p "$root/etc/systemd/system" "$root/etc/swarmy"
+export SWARMY_SYSTEMD_DIR=$root/etc/systemd/system SWARMY_ETC_DIR=$root/etc/swarmy
+printf '[Service]\nExecStart=/usr/local/bin/swarmyd\n' > "$SWARMY_SYSTEMD_DIR/swarmyd.service"
+printf '[Service]\nExecStart=/usr/bin/ssh -N ubuntu@10.0.0.9\n' > "$SWARMY_SYSTEMD_DIR/swarmy-tunnel.service"
+printf 'SWARMY_S3_ENDPOINT=http://127.0.0.1:8333\n' > "$SWARMY_ETC_DIR/node.env"
+derive_unit_inputs node ubuntu
+[[ $unit_primary == 10.0.0.9 && $unit_tunnel_s3 == true ]]
+printf 'SWARMY_S3_ENDPOINT=https://objects.example.invalid\n' > "$SWARMY_ETC_DIR/node.env"
+derive_unit_inputs node ubuntu
+[[ $unit_tunnel_s3 == false ]]
+rm "$SWARMY_SYSTEMD_DIR/swarmy-tunnel.service"
+if derive_unit_inputs node ubuntu 2>/dev/null; then echo 'accepted missing tunnel unit' >&2; exit 1; fi
+set_unit_inputs node ubuntu 10.0.0.9 false ''
+unit_inputs_text > "$SWARMY_ETC_DIR/units.env"
+if unit_inputs_for_upgrade stack swarmy 2>/dev/null; then echo 'accepted mismatched recorded mode' >&2; exit 1; fi
+systemctl() { return 99; }
+unit_restart_wanted fake.service /missing/binary fake.service
+printf 'remote upgrade unit reconciliation: ok\n'

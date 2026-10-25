@@ -132,26 +132,41 @@ local CLI version and every node's installed `swarmy-core` version before copyin
 anything. Joining nodes upgrade first; the first node, which owns the backing
 services, upgrades last. The upgrade uses the provisioning rsync exclusions and
 keeps instances, disks, node state, and `/etc/swarmy/node.env` unchanged. It
-uploads verified release binaries for release clients (or builds on the node
-for development clients), installs changed binaries, and restarts installed service units whose running executables differ from the
-installed binaries. A changed node daemon restarts last, after its managed
-sandbox commands finish; restarting it evicts every placement on that node,
-even though they are idle after the drain. `--drain-timeout SECONDS`
-defaults to 600. `--services-only` never restarts the node role (`swarmyd.service`) even if its binary
-changed. `--allow-dirty` applies only to development clients and explicitly opts into deploying uncommitted source.
-Use `--json` to emit one machine-readable summary per node. A timeout leaves
-the upgraded binaries on disk but does not restart the busy node daemon; retry
-the command after its commands finish. The retry compares each running unit's
-executable with the installed binary, including previously installed upgrades. This command does not stop the backing
-FoundationDB, NATS, or object store. On a node serving the API, the upgrade
-also fills a missing `[api]` token in the node's `.swarmy/config.toml` without
-rotating an existing one, and restarts the API when the fill changed it, so
-nodes provisioned before token provisioning start accepting requests.
+installs changed binaries and rewrites installed swarmy units whose text differs
+from provisioning. A changed service or node unit restarts just like a changed
+binary; the node still waits for its sandbox commands to drain. Systemd is
+reloaded once if any unit changed. The backing `swarmy-stack.service` and
+`swarmy-tunnel.service` units are rewritten but never restarted by upgrade:
+changes take effect on their next restart or reboot. FDB, NATS, and the data
+in `~<user>/swarmy/.dev` are untouched.
+
+Provisioning records unit settings in `/etc/swarmy/units.env`. For older nodes,
+upgrade derives those settings once from installed units and `node.env`, then
+records them. Units still waiting for restart are kept in
+`.swarmy/upgrade-pending-units` and retried on the next upgrade. `--services-only`
+rewrites only installed service units; it leaves the node and backing units and
+any old binary still referenced by an installed unit. A full upgrade completes
+that work. `--drain-timeout SECONDS` defaults to 600. `--allow-dirty` applies
+only to development clients. `--json` reports `changed` binaries, `units`
+rewritten, and `restarted` roles per node. A missing API token is filled once
+without rotating an existing token, and the API restarts to load it.
 The script accepts `build` or `prebuilt` as its optional fourth argument.
 Development-client upgrades on release-provisioned nodes fail without a Rust
 toolchain; use a release client or `SWARMY_RELEASE_BASE_URL` instead.
 `remote ls` reports each remote's token state as `set`, `missing`, or
 `not-applicable`.
+
+### Upgrading a node provisioned before swarmy-core
+
+Run a full `swarmy remote upgrade NAME` without `--services-only` from a client
+at this version. The `units` list should include `swarmyd.service` and the
+installed service units; old binaries in `/usr/local/bin` are removed once no
+installed unit references them. Check `systemctl cat swarmyd.service` for
+`ExecStart=/usr/local/bin/swarmy-core node`, and inspect `ls /usr/local/bin`.
+Do not use `down` or adopt again: `down` deletes the node directory and its FDB
+data. If the recorded mode or user does not match, provision the node again
+with the same flags to rewrite `units.env`. Upgrading from an older client
+after this is not supported.
 
 `--image-recipe` accepts the carried recipes `images/base-ubuntu`,
 `images/base-desktop`, and `images/swarmy-dev`. For a custom recipe, use
@@ -1122,6 +1137,7 @@ Commit and install the checkout you want to deploy, then run
 `swarmy remote upgrade dev`. The command prints the local and node versions,
 updates joining nodes before the first node, and copies the development source checkout into `source/` with the
 same credential exclusions as `remote up`. It rebuilds changed binaries and
+reconciles installed units with provisioning text and reports rewrites in `units`. It
 restarts only the affected services. A changed `swarmy-core` restarts all service units. The node role (`swarmyd.service`) waits for managed
 sandbox commands to finish before restarting; this evicts every placement on
 that node (all idle after the drain).
