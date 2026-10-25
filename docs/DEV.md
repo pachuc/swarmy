@@ -4,7 +4,7 @@
 
 The Python driver at `scripts/fleet/fleet` runs tasky work on a pool of
 long-lived worker agents in a connected Swarmy remote. It uses the `swarmy`
-CLI and needs `tasky` and `gh` on `PATH`. Copy
+CLI and needs `tasky` and `git` on `PATH`. Copy
 `scripts/fleet/fleet.example.toml` to `scripts/fleet/fleet.toml`, set the
 remote, repository, provider defaults, pool size, and GitHub token, then run
 `chmod 600 scripts/fleet/fleet.toml`. The driver refuses a config readable by
@@ -17,7 +17,7 @@ scripts/fleet/fleet launch EWR2HD --provider openrouter --model openai/gpt-6-sol
 scripts/fleet/fleet status
 scripts/fleet/fleet collect EWR2HD
 scripts/fleet/fleet resume EWR2HD "Address the review comments"
-scripts/fleet/fleet release EWR2HD
+scripts/fleet/fleet release EWR2HD --into one-binary
 scripts/fleet/fleet kill EWR2HD --timeout-seconds 60
 scripts/fleet/fleet reset worker-2
 ```
@@ -32,10 +32,11 @@ directory passes 40 GiB, and the dev stack stopped at the end. State and JSON
 run output are stored under `.dev/fleet` with owner-only permissions.
 `status` prints one line per worker with its task, provider, model, state
 (including a breaker's waiting reason), elapsed time, and cost. `collect`
-verifies that the URL in the worker's last message is an open PR against
-master from that branch before recording it in tasky and moving the task to
-testing. `release` frees the worker once that PR is merged (`--force` skips
-the check); the worker keeps its disk and warm cache. `reset` deletes an idle
+checks the pushed branch, links its head SHA in tasky, moves the task to
+testing, and prints the worker's report. `release` frees the worker once a
+commit on the integration branch (`--into` or `integration` in fleet.toml)
+names `tasky <id>`; `--force` skips the check. The worker keeps its disk and
+warm cache. `reset` deletes an idle
 worker and its disk; the next launch recreates it. Codex Daytona remains an
 available task launcher during the transition.
 `kill` interrupts the worker's main session, waits for Idle, then frees the

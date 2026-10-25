@@ -10,4 +10,5 @@ memory_mib = 6144
 # stall_minutes = 10  # status exits 2 after a wait or lease exceeds this age
 # kill_timeout_seconds = 60
 # image = "swarmy-dev:dev"  # for new workers; defaults to the remote's default image
+# integration = "one-binary"  # the current goal's integration branch; release frees a worker once a commit there names "tasky <TASK_ID>"
 github_token = "replace-with-github-token"

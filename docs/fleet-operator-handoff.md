@@ -74,14 +74,14 @@ export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | hea
 ```
 
 - `fleet launch TASK [--worker worker-N]`, `fleet status`, `fleet collect TASK`
-  (records the pull request in tasky), `fleet release [--force] TASK`,
+  (checks the pushed branch, links its head SHA in tasky, moves the task to testing,
+  and prints the report), `fleet release [--into BRANCH] [--force] TASK`,
   `fleet kill TASK`, `fleet resume TASK "text"`, `fleet reset worker-N`,
   `fleet report`, `fleet benchmark`.
-- `scripts/fleet/last-message TASK [COUNT]` prints a worker's final message,
-  which is its report under "The cycle for a goal". Set `FLEET_DRIVER` to
-  run it against another copy of the driver. `fleet collect` and a plain
-  `fleet release` expect a pull request, so in the goal cycle release with
-  `--force`.
+- `scripts/fleet/last-message TASK [COUNT]` prints earlier assistant messages
+  when COUNT is given. Set `FLEET_DRIVER` to run it against another copy of
+  the driver. `fleet release` frees the worker once a commit on the integration
+  branch (`--into` or `integration` in fleet.toml) contains `tasky <id>`.
 - A task's branch is `swarmy/` plus the last six characters of the task ULID,
   lowercased. State files: `.dev/fleet-dev2/<suffix>.json|.jsonl` and
   `worker-N.meta.json` (provider, model, image the worker was created with;
@@ -149,12 +149,10 @@ wrong.
    Add a sentence when the task must start from the integration branch. Keep
    every worker busy: when one frees up, launch the next ready recipe before
    you review its branch.
-5. **When a worker goes idle, read its report** with
-   `scripts/fleet/last-message TASK` before you release it, because release
-   deletes the launch record. The report gives the branch (`swarmy/` plus the
-   task suffix), the head SHA, the "Done when" output, and the deviations.
-   Run `fleet release --force TASK`, then launch the next task on that
-   worker.
+5. **When a worker goes idle, read its report** with `fleet collect TASK`.
+   The report gives the branch (`swarmy/` plus the task suffix), the head SHA,
+   the "Done when" output, and the deviations. Keep the worker assigned through
+   review so `fleet resume` still works for fixes.
 6. **Review every branch before integrating it.** Spawn a review subagent
    with the refined body, the worker's reported deviations, and the diff
    against the integration branch. Ask for numbered checks and a merge or
@@ -177,7 +175,10 @@ wrong.
    operator edit did not compile, and a worker had to fix it. Anything beyond
    a one-line resolution goes to an **integration fixer** task on an idle
    worker, branched from the integration branch, followed by `cargo fmt` and
-   `make check-lint`.
+   `make check-lint`. Push the squash commit with its `tasky <id>` line,
+   then run `fleet release TASK` and launch the next task on that worker. Set
+   `integration = "<goal>"` in fleet.toml for each goal. `--force` frees a worker
+   early at the cost of `fleet resume` for that task.
 8. **Validate in batches on the suite node.** After every few merges, run
    `suite-queue.sh --at <sha> --ci <goal>`. It runs
    `scripts/node-suites/ci-local.sh`, every CI job's `make check-*` target,
@@ -190,7 +191,8 @@ wrong.
    fixed, removed and changed, the suite-node validation with its commits,
    and every tasky id. GitHub CI is the merge gate. Merge with
    `gh pr merge N --merge` to keep each task's commit. Then run
-   `tasky task test`, `pass` and `done` for every task, then
+   `tasky task pass` and `tasky task done` for every task (`fleet collect`
+   already ran `tasky task test`), then
    `tasky goal complete`, and fast-forward the local checkout.
 
 The standard override, sent with `fleet resume` after every launch until the
