@@ -134,7 +134,11 @@ fn json_core_ensure(cli: &Cli) -> bool {
 fn main() -> anyhow::Result<()> {
     let cli = swarmy_version::parse::<Cli>("swarmy")?;
     if json_core_ensure(&cli) {
-        swarmy_cloud::set_output_sink(|_, _| {});
+        swarmy_cloud::set_output_sink(|message, stderr| {
+            if stderr {
+                eprintln!("{message}");
+            }
+        });
     } else {
         swarmy_cloud::set_output_sink(|message, stderr| {
             if stderr {
