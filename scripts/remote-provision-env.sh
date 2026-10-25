@@ -134,7 +134,7 @@ link_volumes_to() {
 }
 
 # The control-plane services provisioning can install on a node. The one
-# seed list: unit and binary names derive from these, so adding a service
+# seed list: unit and role names derive from these, so adding a service
 # touches one place.
 swarmy_service_names() {
     printf '%s\n' scheduler worker gateway api
@@ -153,12 +153,10 @@ swarmy_cli_package() {
 swarmy_core_binary() { printf 'swarmy-core\n'; }
 swarmy_core_package() { printf 'swarmy-core-bin\n'; }
 
-# Every systemd unit provisioning installs: unit, binary, owning modes, and
-# role (backing services, node agent, or node service). Units that run
-# something else leave the binary empty (the stack unit runs dev-stack.sh,
-# the tunnel unit runs ssh). Service rows derive from the seed list above.
-# This table is the single source installs, upgrades, and teardown read;
-# each unit and binary name is written exactly once, here.
+# Every systemd unit provisioning installs: unit, core role, owning modes, and
+# kind (backing service, node agent, or node service). Units that run
+# something else leave the role empty. Service rows derive from the seed list.
+# This table is the single source installs, upgrades, and teardown read.
 swarmy_unit_table() {
     printf '%s\n' \
         'swarmy-stack.service::stack:backing' \
@@ -183,14 +181,13 @@ swarmy_unit_names() {
     swarmy_unit_table | cut -d: -f1
 }
 
-# One list of the release binaries provisioning installs, in table order
-# with the CLI first.
+# One list of installed binaries, with the CLI first.
 swarmy_binary_names() {
     swarmy_cli_binary
     swarmy_core_binary
 }
 
-# The binary a unit runs, or empty for units running something else.
+# The core role a unit runs, or empty for non-core units.
 swarmy_unit_role() {
     swarmy_unit_table | awk -F: -v unit="${1-}" '$1 == unit { print $2 }'
 }
@@ -222,8 +219,7 @@ swarmy_mode_units() {
     swarmy_unit_table | awk -F: -v mode="${1-}" 'index(","$3",", ","mode",") { print $1 }'
 }
 
-# Binaries a mode installs, in install order: the CLI ships on stack hosts
-# and every other binary comes from the mode's table rows.
+# Binaries a mode installs: the CLI ships on stack hosts and the core on all.
 swarmy_mode_binaries() {
     local mode=${1-}
     if [[ $mode == stack ]]; then
@@ -232,9 +228,8 @@ swarmy_mode_binaries() {
     swarmy_core_binary
 }
 
-# Cargo build arguments for a mode's binaries: package names match binary
-# names (the CLI builds separately with its own feature flags). Emits one
-# -p pair per line for mapfile. Each stage is captured before filtering so
+# Cargo build arguments for the core binary (the CLI builds separately).
+# Emit one -p pair for mapfile. The table is checked before filtering so
 # a failing table propagates instead of building an empty package list.
 swarmy_mode_build_args() {
     local mode=${1-}
