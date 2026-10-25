@@ -378,6 +378,46 @@ async fn keep_alive_with_returns_the_break_value() {
 }
 
 #[tokio::test]
+async fn keep_alive_with_keeps_polling_work_while_on_tick_waits() {
+    run(|f| async move {
+        let mut work = f.bus.consume(&WorkQueue::Runnable(3)).await.unwrap();
+        f.bus
+            .publish_work(&WorkQueue::Runnable(3), &1_u64)
+            .await
+            .unwrap();
+        let first = next(&mut work).await;
+        let lock = tokio::sync::Mutex::new(());
+        let ticked = tokio::sync::Notify::new();
+        let (lock, ticked) = (&lock, &ticked);
+        // Work holds the lock across a heartbeat tick, as the worker holds its
+        // step lease across a fenced store write; on_tick waits on that lock.
+        let result = timeout(
+            WAIT,
+            first.keep_alive_with(
+                ACK_WAIT / 3,
+                async move {
+                    let _held = lock.lock().await;
+                    ticked.notified().await;
+                    Ok::<_, Error>(5_u64)
+                },
+                move || async move {
+                    ticked.notify_one();
+                    drop(lock.lock().await);
+                    Ok(std::ops::ControlFlow::Continue(()))
+                },
+            ),
+        )
+        .await;
+        assert_eq!(
+            result.expect("work starved while on_tick waited").unwrap(),
+            5
+        );
+        first.acknowledge().await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn malformed_work_surfaces_errors_and_stops_at_delivery_limit() {
     run(|f| async move {
         let context = jetstream::new(f.admin.clone());
