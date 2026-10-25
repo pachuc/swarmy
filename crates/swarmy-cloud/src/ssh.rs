@@ -454,7 +454,7 @@ impl Ssh {
         upload_node_files(node, address, &node_dir).await?;
         match binaries {
             Binaries::Release { release, cache } => {
-                Self::upload_release(node, address, &node_dir, stack, release, cache).await?;
+                Self::upload_release(node, address, &node_dir, release, cache, stack).await?;
                 Ok(true)
             }
             Binaries::Build { checkout } => {
@@ -1127,6 +1127,71 @@ mod tests {
                 "demo"
             ]
         );
+    }
+
+    #[test]
+    fn find_checkout_walks_up_and_explains_the_release_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("scripts")).unwrap();
+        std::fs::create_dir_all(repo.join("a/b")).unwrap();
+        std::fs::write(repo.join(crate::node_files::PROVISION), "").unwrap();
+        assert_eq!(super::find_checkout(&repo.join("a/b")).unwrap(), repo);
+        assert!(
+            super::find_checkout(tmp.path())
+                .unwrap_err()
+                .to_string()
+                .contains("SWARMY_RELEASE_BASE_URL")
+        );
+    }
+
+    #[test]
+    fn node_files_upload_replaces_scripts_and_images_only() {
+        if std::process::Command::new("rsync")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping node files rsync test: rsync is not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        crate::node_files::write_to(&src).unwrap();
+        for path in [
+            "scripts/stale.sh",
+            "images/old/recipe.toml",
+            ".dev/fdb.cluster",
+            ".swarmy/config.toml",
+            "source/Cargo.toml",
+            "crates/legacy.rs",
+        ] {
+            let file = dest.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "fixture").unwrap();
+        }
+        assert!(
+            std::process::Command::new("rsync")
+                .args(super::node_files_rsync_args(&src, dest.to_str().unwrap()))
+                .status()
+                .unwrap()
+                .success()
+        );
+        for path in ["scripts/stale.sh", "images/old/recipe.toml"] {
+            assert!(!dest.join(path).exists());
+        }
+        for path in [
+            ".dev/fdb.cluster",
+            ".swarmy/config.toml",
+            "source/Cargo.toml",
+            "crates/legacy.rs",
+        ] {
+            assert!(dest.join(path).exists());
+        }
+        for &(path, text) in crate::node_files::FILES {
+            assert_eq!(std::fs::read_to_string(dest.join(path)).unwrap(), text);
+        }
     }
 
     #[test]
