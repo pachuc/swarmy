@@ -208,7 +208,7 @@ fn mismatch_keeps_existing_supervisor_running() {
     fixture.assert_started(false);
     let pid_file = fixture.0.path().join(".swarmy/dev/supervisor.pid");
     let before = fs::read(&pid_file).unwrap();
-    fixture.service("worker", "worker ready", "0.0.1 (old)");
+    fixture.core("0.0.1 (old)");
     let output = fixture.run(&["dev", "up"]);
     assert!(!output.status.success());
     assert_eq!(fs::read(pid_file).unwrap(), before);

@@ -150,7 +150,7 @@ This follows the baseline file set; new top-ten files are listed in the current 
 | `crates/swarmy-worker/src/worker.rs` | 2882 | 186 | -93.5% |
 | `crates/swarmy-store/src/metrics.rs` | 2721 | 2895 | +6.4% |
 | `crates/swarmy-client/src/lib.rs` | 1699 | 1733 | +2.0% |
-| `crates/swarmy-gateway/src/main.rs` | 1624 | 1667 | +2.6% |
+| `crates/swarmy-gateway/src/role.rs` | 1624 | 1667 | +2.6% |
 | `crates/swarmy-llm/src/api/bedrock.rs` | 1581 | 1594 | +0.8% |
 | `crates/swarmy-config/src/lib.rs` | 1438 | 1428 | -0.7% |
 | `crates/swarmy-store/src/agents.rs` | 1321 | 1128 | -14.6% |
@@ -280,7 +280,7 @@ Cargo.lock has 513 packages, 27 of them `aws-*`.
 | --- | ---: |
 | `crates/swarmy-store/src/metrics.rs` | 2895 |
 | `crates/swarmy-client/src/lib.rs` | 1733 |
-| `crates/swarmy-gateway/src/main.rs` | 1667 |
+| `crates/swarmy-gateway/src/role.rs` | 1667 |
 | `crates/swarmy-llm/src/api/bedrock.rs` | 1594 |
 | `crates/swarmy-cloud/src/remote/tests.rs` | 1551 |
 | `crates/swarmy-cli/src/api_commands.rs` | 1455 |

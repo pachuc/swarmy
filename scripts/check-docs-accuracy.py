@@ -15,7 +15,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Binaries whose documented commands are walked; each needs a clap-tree test
 # that calls swarmy_testkit::check_docs_commands.
 BINARIES = ("swarmy-chaos", "swarmy-core", "swarmy")
-BINARY_PACKAGE = {"swarmy": "swarmy-cli", "swarmy-core": "swarmy-core-bin"}
+BINARY_PACKAGE = {"swarmy": "swarmy-cli", "swarmy-core": "swarmy-core-bin", "swarmyd": "swarmyd"}
 CARGO_BINARY = {"swarmy-cli": "swarmy", "swarmy-core-bin": "swarmy-core", "swarmy-chaos": "swarmy-chaos"}
 def fail(message):
     sys.stderr.write("check-docs-accuracy: %s\n" % message)
