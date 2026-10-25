@@ -95,9 +95,8 @@ async fn dev_up_run_recover_reconfigure_and_down() {
         .join("../..")
         .canonicalize()
         .unwrap();
-    // The scheduler, worker, gateway, and API binaries come from a
-    // `cargo build --workspace` step that runs before the suite; tests
-    // never build them.
+    // The swarmy-core executable comes from a `cargo build --workspace`
+    // step before the suite; tests never build it.
     let fixture = Fixture {
         files: tempfile::tempdir().unwrap(),
         repo,
