@@ -59,6 +59,17 @@ sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev
 ./target/debug/swarmy dev down
 ```
 
+**Where dev keeps its files.** Inside a checkout, `swarmy dev up` creates
+`<checkout>/.swarmy/config.toml`, keeps supervised service state under
+`<checkout>/.swarmy/dev/`, and uses `<checkout>/.dev/` for the backing stack.
+Outside a checkout it creates `$XDG_CONFIG_HOME/swarmy/config.toml` (with an
+absolute XDG path) or `$HOME/.config/swarmy/config.toml`, keeps service state
+under `$HOME/.swarmy/dev/`, and uses `$HOME/.swarmy/stack/` for the stack.
+An existing configuration file wins; `SWARMY_STATE_DIR` changes the service
+state root, and `SWARMY_DEV_DIR` overrides the stack directory. The CLI runs a
+compiled-in copy of the backing script, so it needs no checkout. The fixed
+NATS and SeaweedFS ports allow only one stack per host.
+
 On one fleet worker, a clean `cargo test --workspace --no-run --locked` build
 used 28,860,925,523 bytes of target space and took 404 seconds before the
 debug-profile change; with line-table debug info and incremental compilation
@@ -176,11 +187,12 @@ Relative filesystem paths in a project file are relative to the directory
 containing `.swarmy`; paths in the user file are relative to its directory.
 Relative environment paths remain relative to the invoking directory.
 
-`dev up` creates the project file if absent, imports connection settings from
-`.dev/env` as data, and saves the file with private permissions. It updates the
-stack connection fields on each start and preserves other settings. Environment
-overrides are passed to children but are not saved. Service logs, pid records,
-and the default fake script and call log live in `.swarmy/dev/`.
+`dev up` creates a project file in a checkout or a user file outside one,
+imports connection settings from the stack's `env` file as data, and saves the
+file with private permissions. It updates stack connection fields on each start
+and preserves other settings. Environment overrides are passed to children but
+are not saved. Service logs and pid records live under `<state_dir>/dev/`; the
+default fake script and call log use paths beneath the resolved state directory.
 
 The generated file contains every setting. This partial example shows the
 common choices (store directories are FoundationDB directory names):
@@ -457,6 +469,10 @@ scripts/dev-stack.sh start
 source .dev/env
 scripts/dev-stack.sh status
 ```
+
+The script uses `SWARMY_DEV_DIR` when set (an absolute path); otherwise, when
+run as a file, it uses `<checkout>/.dev`. Direct script callers retain the
+checkout default.
 
 `start` waits for FoundationDB to become available, for the NATS JetStream
 monitoring endpoint, and for an authenticated S3 bucket listing. It configures

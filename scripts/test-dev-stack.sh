@@ -31,6 +31,18 @@ for name in occupied default override; do
     cp -- "$repo_dir/scripts/dev-stack.sh" "$test_dir/$name/scripts/dev-stack.sh"
 done
 
+# The embedded copy needs an explicit absolute stack directory and never creates
+# one for status or stop.
+out=$(SWARMY_DEV_DIR="$test_dir/embedded" bash -c "$(cat "$repo_dir/scripts/dev-stack.sh")" 'swarmy dev stack' status)
+[[ $out == *'fdb: down'* && $out == *'nats: down'* && $out == *'seaweed: down'* ]]
+[[ ! -e $test_dir/embedded ]]
+SWARMY_DEV_DIR="$test_dir/embedded" bash -c "$(cat "$repo_dir/scripts/dev-stack.sh")" x stop
+[[ ! -e $test_dir/embedded/lock ]]
+if bash -c "$(cat "$repo_dir/scripts/dev-stack.sh")" x status 2>"$test_dir/error"; then exit 1; fi
+grep -q SWARMY_DEV_DIR "$test_dir/error"
+if SWARMY_DEV_DIR=relative bash -c "$(cat "$repo_dir/scripts/dev-stack.sh")" x status 2>"$test_dir/error"; then exit 1; fi
+grep -q 'absolute path' "$test_dir/error"
+
 port_was_free=false
 if ! (exec 3<>/dev/tcp/127.0.0.1/4500) 2>/dev/null; then
     port_was_free=true
