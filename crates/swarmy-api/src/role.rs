@@ -107,7 +107,7 @@ async fn finish_health(
     started: jiff::Timestamp,
 ) {
     heartbeat.abort();
-    let _ = heartbeat.await;
+    swarmy_core::ignore_best_effort(heartbeat.await, "stop API heartbeat task");
     if let Err(error) = store
         .remove_service_heartbeat(&ServiceRole::Api, id, started)
         .await
