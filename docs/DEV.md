@@ -292,10 +292,6 @@ and IAM SDKs behind the `swarmy remote` provisioning commands. A plain
 binary; add `--features remote` to a plain cargo invocation when the
 provisioning commands are needed.
 
-### Service binary
-
-`swarmy-core` runs `scheduler`, `worker`, `gateway`, `api`, `node`, and `vol` roles. Run `swarmy-core --version` to check its identity. The `node` role needs root and NBD.
-
 The Makefile looks for the client library in `~/.local/lib`, `/usr/local/lib`,
 `/usr/lib`, and `/usr/lib/x86_64-linux-gnu`, in that order, and passes the first
 match as `SWARMY_FDB_LIB_DIR`. `make install-node` also installs `swarmy-core`,
@@ -338,6 +334,10 @@ together after pulling: `swarmy dev up` refuses to start a scheduler, worker, or
 gateway whose version differs from the CLI. Use `swarmy` after
 rustup's normal shell setup, or `~/.cargo/bin/swarmy` directly. Keep the checkout
 because `swarmy dev` uses `scripts/dev-stack.sh` from it.
+
+### Service binary
+
+`swarmy-core` runs `scheduler`, `worker`, `gateway`, `api`, `node`, and `vol` roles. Run `swarmy-core --version` to check its identity. The `node` role needs root and NBD.
 
 ### Diagnose an installation
 
