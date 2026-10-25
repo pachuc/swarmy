@@ -2,6 +2,10 @@ use jiff::Timestamp;
 
 use crate::PlacementChangeReason;
 
+/// The failure recorded for a dispatched call whose placement expired before
+/// any node claimed it. Nothing ran, so no computer loss is reported.
+pub const UNCLAIMED_DISPATCH_EXPIRED: &str = "The tool call's placement expired before execution could be confirmed. The call failed; check external side effects before retrying.";
+
 /// Explain the durable restore point without implying that prior tool writes survived.
 #[must_use]
 pub fn computer_rebuilt_message(

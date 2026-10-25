@@ -54,7 +54,7 @@ mod placement;
 pub use placement::{AgentCallStatus, PlacementChangeReason, PlacementRecord};
 
 mod rebuild;
-pub use rebuild::computer_rebuilt_message;
+pub use rebuild::{UNCLAIMED_DISPATCH_EXPIRED, computer_rebuilt_message};
 
 mod turn;
 pub use turn::{TurnEvent, TurnStage};

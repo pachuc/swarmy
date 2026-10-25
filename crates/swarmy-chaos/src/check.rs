@@ -121,8 +121,10 @@ fn tool_results(id: SessionId, events: &[Event], expected: usize) -> Result<()> 
                 let ToolResult::Error { error } = result else {
                     unreachable!()
                 };
+                // A node kill between dispatch and the placement claim fails the
+                // call without a notice: no node hosted the epoch, so nothing ran.
                 ensure!(
-                    recovery == Some(error),
+                    recovery == Some(error) || error == swarmy_core::UNCLAIMED_DISPATCH_EXPIRED,
                     "session {id}: failure lacks its matching recovery system message: {result:?}"
                 );
                 tools += 1;
@@ -173,7 +175,7 @@ pub(crate) fn calls(actual: usize, steps: usize, gateway_kills: usize) -> Result
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
-    use swarmy_core::{Message, MessageId};
+    use swarmy_core::{Message, MessageId, ToolCallId};
     use ulid::Ulid;
 
     #[test]
@@ -295,6 +297,21 @@ mod tests {
             }];
         }
         assert!(finished(&session, &events, 1).is_err());
+    }
+
+    #[test]
+    fn unclaimed_dispatch_needs_no_recovery_notice_but_other_failures_do() {
+        let id = SessionId::from_ulid(Ulid::generate());
+        let failed = |error: &str| Event::ToolCallCompleted {
+            seq: 1,
+            request_id: RequestId::for_step(id, 1),
+            call_id: ToolCallId("call".into()),
+            result: ToolResult::Error {
+                error: error.into(),
+            },
+        };
+        assert!(tool_results(id, &[failed(swarmy_core::UNCLAIMED_DISPATCH_EXPIRED)], 1).is_ok());
+        assert!(tool_results(id, &[failed("unmatched failure")], 1).is_err());
     }
 
     #[test]

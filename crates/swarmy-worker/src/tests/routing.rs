@@ -879,7 +879,7 @@ async fn unclaimed_dispatch_expires_without_a_rebuild_notice_or_stuck_job() {
             .iter()
             .filter(|event| matches!(event,
         Event::ToolCallCompleted { result: ToolResult::Error { error }, .. }
-        if error.contains("placement expired")))
+        if error == swarmy_core::UNCLAIMED_DISPATCH_EXPIRED))
             .count(),
         1
     );
