@@ -132,8 +132,16 @@ fn image_pull_refuses_a_corrupt_asset() {
 }
 #[test]
 fn image_pull_skips_a_registered_image() {
-    let (home, url, requests) = setup(true);
-    let output = run(home.path(), &["image", "pull"], Some(&url));
+    let (home, _, requests) = setup(true);
+    let address = serve_files(vec![(
+        format!("/{}/SHA256SUMS", swarmy_version::RELEASE_TAG),
+        Vec::new(),
+    )]);
+    let output = run(
+        home.path(),
+        &["image", "pull"],
+        Some(&format!("http://{address}")),
+    );
     assert!(
         output.status.success(),
         "{}",
