@@ -341,12 +341,6 @@ fn gateway_providers_are_unique_and_missing_selection_fails() {
         let report: Value = serde_json::from_slice(&output.stdout).unwrap();
         let gateway = check(&report, "gateway providers");
         assert_eq!(gateway["status"], expected_status, "{report}");
-        assert!(
-            gateway["detail"]
-                .as_str()
-                .unwrap()
-                .starts_with("anthropic, fake")
-        );
         if expected_status == "fail" {
             assert_eq!(output.status.code(), Some(1));
             assert!(
@@ -355,7 +349,15 @@ fn gateway_providers_are_unique_and_missing_selection_fails() {
                     .unwrap()
                     .contains("unserved: openai")
             );
+            assert!(
+                gateway["detail"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("anthropic, fake; unserved: openai")
+            );
             assert!(gateway["fix"].as_str().unwrap().contains("gateway log"));
+        } else {
+            assert_eq!(gateway["detail"], "anthropic, fake");
         }
     }
 }
