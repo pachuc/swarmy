@@ -470,7 +470,9 @@ impl Client {
                 async move {
                     let mut file = tokio::fs::File::open(&path).await?;
                     file.seek(std::io::SeekFrom::Start(offset)).await?;
-                    let mut header = Vec::with_capacity(EXTENT_HEADER_BYTES as usize);
+                    let mut header = Vec::with_capacity(
+                        usize::try_from(EXTENT_HEADER_BYTES).expect("extent header fits in usize"),
+                    );
                     header.extend_from_slice(&offset.to_le_bytes());
                     header.extend_from_slice(&length.to_le_bytes());
                     let head =
