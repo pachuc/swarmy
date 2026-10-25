@@ -15,7 +15,7 @@ read_shared_list service_units swarmy_service_units
 stack_unit=$(swarmy_mode_backing_unit stack)
 node_unit=$(swarmy_agent_unit)
 for unit in "${service_units[@]}"; do
-    binary=$(swarmy_unit_binary "$unit")
+    role=$(swarmy_unit_role "$unit")
     short=${unit#swarmy-}
     short=${short%.service}
     sudo tee "/etc/systemd/system/$unit" >/dev/null <<UNIT
@@ -31,7 +31,7 @@ WorkingDirectory=$repo_dir
 EnvironmentFile=/etc/swarmy/node.env
 Environment=HOME=$service_home
 Environment=TOKIO_WORKER_THREADS=2
-ExecStart=/usr/local/bin/$binary
+ExecStart=/usr/local/bin/$(swarmy_core_binary) $role
 Restart=always
 RestartSec=2
 TimeoutStopSec=40

@@ -39,7 +39,7 @@ export PATH=/opt/swarmy:/usr/sbin:/usr/bin:/sbin:/bin
 mkdir -p /mnt/swarmy/node/.swarmy
 cd /mnt/swarmy/node
 : > .swarmy/config.toml
-nohup swarmyd >/opt/swarmy/node.log 2>&1 </dev/null &
+nohup swarmy-core node >/opt/swarmy/node.log 2>&1 </dev/null &
 echo $! > /opt/swarmy/node.pid
 for attempt in $(seq 1 30); do
     if grep -q "node registered and ready" /opt/swarmy/node.log; then exit 0; fi

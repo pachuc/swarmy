@@ -513,7 +513,7 @@ impl Ssh {
         let output = run_output(
             base(node)?
                 .arg(address)
-                .arg("/usr/local/bin/swarmyd --version"),
+                .arg("/usr/local/bin/swarmy-core --version"),
             "read node version",
         )
         .await?;

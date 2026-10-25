@@ -9,7 +9,7 @@ request-reply. It has no durable local state.
 Start the dev stack, source `.dev/env`, then run:
 
 ```sh
-SWARMY_SCHEDULER_PARTITIONS=0-255 cargo run --locked -p swarmy-scheduler
+SWARMY_SCHEDULER_PARTITIONS=0-255 cargo run --locked -p swarmy-core-bin -- scheduler
 ```
 
 | Environment variable | Default | Meaning |

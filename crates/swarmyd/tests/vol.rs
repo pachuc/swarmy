@@ -13,7 +13,7 @@ use swarmy_store::{Store, StoreError, blob::MemoryBlobStore};
 
 #[test]
 fn vol_help_lists_subcommands_and_attach_requires_root() {
-    let binary = env!("CARGO_BIN_EXE_swarmyd");
+    let binary = swarmy_testkit::bin("swarmy-core");
     let output = Command::new(binary)
         .args(["vol", "--help"])
         .output()
@@ -104,7 +104,7 @@ impl Fixture {
     }
 
     fn command(&self, node: &str, arguments: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_swarmyd"));
+        let mut command = Command::new(swarmy_testkit::bin("swarmy-core"));
         command
             .current_dir(self.root.path())
             .env("SWARMY_STORE_DIRECTORY", &self.namespace)
@@ -465,7 +465,7 @@ fn check_history(fixture: &Fixture, volume: &str, clone: &str, created: &Value) 
             "volume list contains {id}"
         );
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_swarmyd"))
+    let output = Command::new(swarmy_testkit::bin("swarmy-core"))
         .current_dir(fixture.root.path())
         .env("SWARMY_STORE_DIRECTORY", &fixture.namespace)
         .args(["vol", "show", volume])

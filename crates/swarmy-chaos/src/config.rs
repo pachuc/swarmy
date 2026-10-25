@@ -48,7 +48,7 @@ pub(crate) struct Config {
     /// Use connection settings from the environment without starting the stack.
     #[arg(long)]
     pub no_start_stack: bool,
-    /// Use prebuilt service binaries from this directory instead of building them.
+    /// Use prebuilt swarmy-core binary from this directory instead of building them.
     #[arg(long)]
     pub bin_dir: Option<PathBuf>,
 }
@@ -126,20 +126,9 @@ impl Config {
             .parent()
             .context("executable directory missing")?;
         let mut build = Command::new("cargo");
-        build.current_dir(repo()).args([
-            "build",
-            "--locked",
-            "-p",
-            "swarmy-scheduler",
-            "-p",
-            "swarmy-worker",
-            "-p",
-            "swarmy-gateway",
-            "-p",
-            "swarmy-api",
-            "-p",
-            "swarmyd",
-        ]);
+        build
+            .current_dir(repo())
+            .args(["build", "--locked", "-p", "swarmy-core-bin"]);
         if directory.file_name().is_some_and(|name| name == "release") {
             build.arg("--release");
         }

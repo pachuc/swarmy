@@ -59,13 +59,19 @@ anyhow.workspace = true
 EOF
 check "binary without lib passes" 0
 
-# A lib.rs declaring no modules next to a binary counts as a binary (the
-# swarmyd shape).
-fixture 'pub struct Token(String);' bin <<'EOF'
+# Explicit entry-point metadata permits anyhow with a library module.
+fixture 'mod worker;' bin <<'EOF'
+[package.metadata.swarmy]
+entry-point = true
 [dependencies]
 anyhow.workspace = true
 EOF
-check "module-less lib with a binary passes" 0
+check "entry-point with anyhow passes" 0
+fixture 'mod worker;' bin <<'EOF'
+[dependencies]
+anyhow.workspace = true
+EOF
+check "library without entry-point fails" 1
 
 # A single-file library with no binary is still a library.
 fixture 'pub struct Token(String);' <<'EOF'

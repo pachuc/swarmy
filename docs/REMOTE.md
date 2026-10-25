@@ -1123,3 +1123,5 @@ timer was removed; do not expect a scheduled root run. Use the scripts in
 [`scripts/node-suites/`](../scripts/node-suites/) on a suitable node and record
 results in the pull request. CI's reduced chaos checks are defined in
 [ci.yml](../.github/workflows/ci.yml).
+
+All service units share one `swarmy-core` executable. `swarmyd.service` runs `/usr/local/bin/swarmy-core node` as root; it needs NBD and runc. Service units run `swarmy-core scheduler`, `swarmy-core worker`, `swarmy-core gateway`, and `swarmy-core api`. A changed core restarts each service unit; the node unit restarts only after the drain.

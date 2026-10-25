@@ -111,7 +111,7 @@ export SWARMY_DEFAULT_IMAGE=remote-fixture:test
 timeout 45 "$cli" run --remote local 'what time is it' > run.log
 cat run.log
 grep -q 'Hello from swarmy!' run.log
-SWARMY_REMOTE=local "$repo/target/debug/swarmyd" > swarmyd.log 2>&1 &
+SWARMY_REMOTE=local "$repo/target/debug/swarmy-core" node > swarmyd.log 2>&1 &
 daemon=$!
 for attempt in {1..100}; do
     if grep -q 'node registered and ready' swarmyd.log; then break; fi

@@ -175,9 +175,10 @@ fn spawn_services(
     files: &tempfile::TempDir,
 ) -> Vec<swarmy_testkit::ChildGuard> {
     let mut children = Vec::new();
-    for name in ["swarmy-scheduler", "swarmy-worker", "swarmy-gateway"] {
+    for name in ["scheduler", "worker", "gateway"] {
         children.push(swarmy_testkit::ChildGuard::new(
-            tokio::process::Command::new(swarmy_testkit::bin(name))
+            tokio::process::Command::new(swarmy_testkit::bin("swarmy-core"))
+                .arg(name)
                 .env("SWARMY_PROVIDER", "fake")
                 .env("SWARMY_MODEL", settings.selection.model.clone())
                 .env("SWARMY_STORE_DIRECTORY", &settings.store.directory)

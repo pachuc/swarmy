@@ -166,21 +166,21 @@ dead. They are never replayed by a new CLI attachment. Direct callers of
 `VolumeDevice::open` can still explicitly resume local data as before.
 
 The node daemon serves these developer commands directly from the store as
-`swarmyd vol` (the `swarmy` client no longer links the store):
+`swarmy-core vol` (the `swarmy` client no longer links the store):
 
 ```sh
-swarmyd vol create base-ubuntu:stable
-sudo -E swarmyd vol attach VOLUME --background
+swarmy-core vol create base-ubuntu:stable
+sudo -E swarmy-core vol attach VOLUME --background
 # The command prints /dev/nbdX and remains in the foreground.
 # In another terminal:
 sudo mount /dev/nbdX /mnt/agent
-sudo -E swarmyd vol flush VOLUME --mount /mnt/agent
-sudo -E swarmyd vol checkpoint VOLUME
-sudo -E swarmyd vol snapshot VOLUME
-swarmyd vol clone VOLUME
-sudo -E swarmyd vol detach VOLUME
-swarmyd vol ls
-swarmyd vol show VOLUME
+sudo -E swarmy-core vol flush VOLUME --mount /mnt/agent
+sudo -E swarmy-core vol checkpoint VOLUME
+sudo -E swarmy-core vol snapshot VOLUME
+swarmy-core vol clone VOLUME
+sudo -E swarmy-core vol detach VOLUME
+swarmy-core vol ls
+swarmy-core vol show VOLUME
 ```
 
 Every command accepts `--json`. Attach emits one ready record; list emits one
@@ -254,7 +254,7 @@ Each attempt discovers the current mount before freezing it. Periodic publicatio
 control requests, and detach serialize so publication cannot race unmounting.
 Failed publications retain dirty data and retry on the next period.
 
-`swarmyd vol checkpoint VOLUME [--mount PATH]` immediately publishes through the
+`swarmy-core vol checkpoint VOLUME [--mount PATH]` immediately publishes through the
 local control socket and prints the new manifest id. It creates a new snapshot
 even on an idle disk. `VolumeWriter::checkpoint` and `server::checkpoint` expose
 the same operation to library callers. The existing flush API remains available.
@@ -305,7 +305,7 @@ waiting time and can exceed elapsed time when callers overlap.
 that timer. It includes client work and network/service latency, so subtracting
 it from wall time does not produce a CPU profile.
 
-`VolumeWriter::flush()` returns `FlushResult`. `swarmyd vol --json flush` prints
+`VolumeWriter::flush()` returns `FlushResult`. `swarmy-core vol --json flush` prints
 its manifest id, `elapsed`, `freeze_wait`, `frozen`, `uploads`, and `device_total`.
 Durations use serde's `{ "secs": ..., "nanos": ... }` representation.
 `uploads` is the counter difference from just before freeze acquisition through

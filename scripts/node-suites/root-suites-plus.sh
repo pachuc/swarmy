@@ -25,7 +25,7 @@ rc=0; [ "$base" -eq 0 ] || rc=1
 # always recoverable from the section file. This mirrors root-suites.sh.
 mkdir -p ~/suite-logs
 suffix=${branch##*/}
-CARGO_BUILD_JOBS=8 cargo build --locked --tests -p swarmy-cli -p swarmyd -p swarmy-volume --no-default-features > ~/suite-build-plus.log 2>&1 \
+CARGO_BUILD_JOBS=8 cargo build --locked --tests -p swarmy-cli -p swarmyd -p swarmy-volume --no-default-features > ~/suite-build-plus.log 2>&1 && CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-core-bin >> ~/suite-build-plus.log 2>&1 \
   || { tail -20 ~/suite-build-plus.log; echo "image suite build failed"; echo "PLUS_EXIT=1"; exit 2; }
 tail -1 ~/suite-build-plus.log
 for suite in "swarmy-cli --test image" "swarmyd --test vol" "swarmy-volume --test image" "swarmy-volume --test nbd"; do
@@ -48,15 +48,15 @@ done
 dev_upload_max_bytes=$(python3 -c 'import tomllib; print(tomllib.load(open("images/swarmy-dev/recipe.toml", "rb"))["disk_size"])') \
   || { echo "could not read images/swarmy-dev/recipe.toml disk_size"; echo "PLUS_EXIT=1"; exit 1; }
 api_pid=""
-if [ -x ./target/debug/swarmy-api ]; then
+if [ -x ./target/debug/swarmy-core ]; then
   api_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
   export SWARMY_API_TOKEN="suite-$(date +%s)-$RANDOM"
   export SWARMY_API_URL="http://127.0.0.1:$api_port"
-  SWARMY_API_LISTEN="127.0.0.1:$api_port" SWARMY_IMAGE_UPLOAD_MAX_BYTES="$dev_upload_max_bytes" ./target/debug/swarmy-api > ~/root-suites-plus-api.log 2>&1 &
+  SWARMY_API_LISTEN="127.0.0.1:$api_port" SWARMY_IMAGE_UPLOAD_MAX_BYTES="$dev_upload_max_bytes" ./target/debug/swarmy-core api > ~/root-suites-plus-api.log 2>&1 &
   api_pid=$!
   for _ in $(seq 1 120); do
     (echo > "/dev/tcp/127.0.0.1/$api_port") 2>/dev/null && break
-    kill -0 "$api_pid" 2>/dev/null || { echo "swarmy-api exited; see ~/root-suites-plus-api.log"; break; }
+    kill -0 "$api_pid" 2>/dev/null || { echo "swarmy-core api exited; see ~/root-suites-plus-api.log"; break; }
     sleep 0.5
   done
   echo "== api on $SWARMY_API_URL (pid $api_pid)"
@@ -69,7 +69,7 @@ sudo -E ./target/debug/swarmy image build images/swarmy-dev --tag dev 2>&1 | tee
 [ -n "$api_pid" ] && { kill "$api_pid" 2>/dev/null; wait "$api_pid" 2>/dev/null; api_pid=""; }
 # The node acceptance and the chat tests refuse headless client binaries, so
 # rebuild default features once, before the sections that need them.
-CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-cli -p swarmyd -p swarmy-scheduler -p swarmy-worker -p swarmy-gateway -p swarmy-api >> ~/suite-build-plus.log 2>&1 \
+CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-cli -p swarmy-core-bin >> ~/suite-build-plus.log 2>&1 \
   || { tail -20 ~/suite-build-plus.log; echo "chat suite build failed"; echo "PLUS_EXIT=1"; exit 2; }
 # Tests that run nowhere without their image variable set. Each skips cleanly
 # when its variable is absent, so wire each up here with the images built

@@ -91,7 +91,7 @@ cat > "$tmp/chaos/scripts/chaos-ci.sh" <<'EOF'
 exit 0
 EOF
 
-# Stub swarmy binary for the image-build lines. No swarmy-api executable on
+# Stub swarmy binary for the image-build lines. No swarmy-core executable on
 # purpose, so the API blocks are skipped; they are not under test.
 cat > "$tmp/chaos/target/debug/swarmy" <<'EOF'
 #!/usr/bin/env bash

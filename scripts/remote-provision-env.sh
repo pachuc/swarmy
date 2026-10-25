@@ -150,6 +150,9 @@ swarmy_cli_package() {
     printf 'swarmy-cli\n'
 }
 
+swarmy_core_binary() { printf 'swarmy-core\n'; }
+swarmy_core_package() { printf 'swarmy-core-bin\n'; }
+
 # Every systemd unit provisioning installs: unit, binary, owning modes, and
 # role (backing services, node agent, or node service). Units that run
 # something else leave the binary empty (the stack unit runs dev-stack.sh,
@@ -160,7 +163,7 @@ swarmy_unit_table() {
     printf '%s\n' \
         'swarmy-stack.service::stack:backing' \
         'swarmy-tunnel.service::node:backing' \
-        'swarmyd.service:swarmyd:stack,node:agent'
+        'swarmyd.service:node:stack,node:agent'
     local services_text
     services_text=$(swarmy_service_names) || return 1
     [[ -n $services_text ]] || {
@@ -171,7 +174,7 @@ swarmy_unit_table() {
     mapfile -t services <<< "$services_text"
     local service
     for service in "${services[@]}"; do
-        printf 'swarmy-%s.service:swarmy-%s:stack:service\n' "$service" "$service"
+        printf 'swarmy-%s.service:%s:stack:service\n' "$service" "$service"
     done
 }
 
@@ -184,11 +187,11 @@ swarmy_unit_names() {
 # with the CLI first.
 swarmy_binary_names() {
     swarmy_cli_binary
-    swarmy_unit_table | awk -F: '$2 != "" { print $2 }'
+    swarmy_core_binary
 }
 
 # The binary a unit runs, or empty for units running something else.
-swarmy_unit_binary() {
+swarmy_unit_role() {
     swarmy_unit_table | awk -F: -v unit="${1-}" '$1 == unit { print $2 }'
 }
 
@@ -226,7 +229,7 @@ swarmy_mode_binaries() {
     if [[ $mode == stack ]]; then
         swarmy_cli_binary
     fi
-    swarmy_unit_table | awk -F: -v mode="$mode" 'index(","$3",", ","mode",") && $2 != "" { print $2 }'
+    swarmy_core_binary
 }
 
 # Cargo build arguments for a mode's binaries: package names match binary
@@ -246,11 +249,7 @@ swarmy_mode_build_args() {
         echo "no build packages for mode $mode" >&2
         return 1
     }
-    local packages package
-    mapfile -t packages <<< "$filtered"
-    for package in "${packages[@]}"; do
-        printf -- '-p\n%s\n' "$package"
-    done
+    printf -- '-p\n%s\n' "$(swarmy_core_package)"
 }
 
 # Read a list function into an array, failing loudly when the producer

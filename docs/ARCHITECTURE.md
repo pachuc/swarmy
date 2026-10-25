@@ -53,15 +53,15 @@ crate in a tier depends on every lower tier.
 ### Services
 
 - **swarmy-scheduler** scans runnable sessions and dispatches work
-  ([source](../crates/swarmy-scheduler/src/main.rs)).
+  ([source](../crates/swarmy-scheduler/src/role.rs)).
 - **swarmy-worker** drives a leased session step and submits tool or inference
-  work ([source](../crates/swarmy-worker/src/main.rs)).
+  work ([source](../crates/swarmy-worker/src/role.rs)).
 - **swarmy-gateway** handles inference requests and durable replies
-  ([source](../crates/swarmy-gateway/src/main.rs)).
+  ([source](../crates/swarmy-gateway/src/role.rs)).
 - **swarmy-api** exposes HTTP JSON mutations and cursor-based event streams
-  ([source](../crates/swarmy-api/src/main.rs)).
+  ([source](../crates/swarmy-api/src/role.rs)).
 - **swarmyd** hosts placements, volumes and sandbox commands on a node
-  ([source](../crates/swarmyd/src/main.rs)).
+  ([source](../crates/swarmyd/src/role.rs)).
 
 ### Client and cloud
 
@@ -215,7 +215,7 @@ A local checkout starts FoundationDB, NATS and SeaweedFS with
 services and scheduler, worker, gateway and API processes; the sandbox node
 runs `swarmyd`, runc containers and the volume/NBD path
 ([remote-provision.sh](../scripts/remote-provision.sh),
-[swarmyd main](../crates/swarmyd/src/main.rs)). One machine can perform both
+[swarmyd main](../crates/swarmyd/src/role.rs)). One machine can perform both
 roles. A remote client uses the HTTP API and SSH tunnels; EC2 launch and
 upgrade are CLI operations, not a Kubernetes controller
 ([REMOTE.md](REMOTE.md), [cloud source](../crates/swarmy-cloud/src/lib.rs)).
@@ -224,8 +224,8 @@ The worker advances events and yields tool execution to placed sandboxes;
 the gateway resolves inference separately. The scheduler uses durable runnable
 indexes rather than trusting a NATS acknowledgment
 ([worker source](../crates/swarmy-worker/src/worker.rs),
-[scheduler source](../crates/swarmy-scheduler/src/main.rs),
-[gateway source](../crates/swarmy-gateway/src/main.rs)). Volumes use
+[scheduler source](../crates/swarmy-scheduler/src/role.rs),
+[gateway source](../crates/swarmy-gateway/src/role.rs)). Volumes use
 content-addressed chunks and manifests, with dirty periodic snapshots
 ([volume source](../crates/swarmy-volume/src/lib.rs)).
 
@@ -246,5 +246,5 @@ content-addressed chunks and manifests, with dirty periodic snapshots
   runnable scans and the event log recover from missed delivery. Acknowledge
   transport only after durable state is committed
   ([bus source](../crates/swarmy-bus/src/lib.rs),
-  [scheduler source](../crates/swarmy-scheduler/src/main.rs),
+  [scheduler source](../crates/swarmy-scheduler/src/role.rs),
   [chaos tests](../crates/swarmy-chaos/tests)).

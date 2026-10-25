@@ -2,11 +2,11 @@
 
 `swarmyd` registers a node in FoundationDB, refreshes its heartbeat, and hosts
 runc sandboxes and their NBD volume servers. It uses the same shared attachment
-service as `swarmyd vol attach`, including writer fencing, lease renewal,
+service as `swarmy-core vol attach`, including writer fencing, lease renewal,
 background uploads, periodic snapshots, and final checkpoint on detach. Calls
 arrive on the node tool queue and share one computer per agent.
 
-Developer volume tools live here as `swarmyd vol` (`create`, `attach`,
+Developer volume tools live here as `swarmy-core vol` (`create`, `attach`,
 `detach`, `flush`, `checkpoint`, `snapshot`, `clone`, `ls`, `show`); the
 `swarmy` client no longer ships them because they need direct store access.
 
@@ -15,8 +15,8 @@ Run the binary as root after starting the dev stack:
 ```sh
 scripts/dev-stack.sh start
 source .dev/env
-cargo build -p swarmyd -p swarmy-cli
-sudo -E target/debug/swarmyd
+cargo build -p swarmy-core-bin -p swarmy-cli
+sudo -E target/debug/swarmy-core node
 ```
 
 Configuration comes from `swarmy-config`. The existing `[node] id` setting or

@@ -37,12 +37,13 @@ ignores:
   - 'crates/swarmy-devtools/src/**'
   - 'crates/swarmy-scheduler/src/**'
   - 'crates/swarmy-worker/src/**'
-  # swarmyd counts as a binary: its lib.rs declares no modules and its code
-  # lives in the binary (see scripts/check-anyhow-in-libraries.sh).
+  # swarmy-scheduler, swarmy-worker, and swarmyd are entry-point crates
+  # (see scripts/check-anyhow-in-libraries.sh).
   - 'crates/swarmyd/src/**'
   # Service entry points assemble connections, own their tasks, and report
   # startup failures.
   - '**/main.rs'
+  - '**/role.rs'
   # Test files, and the test-only support module compiled only for tests
   # (`cfg(any(test, feature = "test-support"))`).
   - '**/tests/**'

@@ -4,11 +4,10 @@ set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 source "$repo/.dev/env"
 binary="$repo/target/debug/swarmy"
-api_binary="$repo/target/debug/swarmy-api"
-node_binary="$repo/target/debug/swarmyd"
+core_binary="$repo/target/debug/swarmy-core"
 [[ -x $binary ]] || { echo 'Build swarmy-cli --bins first.' >&2; exit 1; }
-[[ -x $api_binary ]] || { echo 'Build swarmy-api first.' >&2; exit 1; }
-[[ -x $node_binary ]] || { echo 'Build swarmyd first.' >&2; exit 1; }
+[[ -x $core_binary ]] || { echo 'Build swarmy-core-bin first.' >&2; exit 1; }
+[[ -x $core_binary ]] || { echo 'Build swarmy-core-bin first.' >&2; exit 1; }
 # Image builds and collection run through the API; volume tools moved to the
 # node daemon. The API needs a token, generated here for this isolated run.
 export SWARMY_API_URL="${SWARMY_API_URL:-http://127.0.0.1:18743}"
@@ -29,7 +28,7 @@ server=''
 api=''
 cleanup() {
     if [[ -n $volume ]]; then
-        sudo -E "$node_binary" vol detach "$volume" || {
+        sudo -E "$core_binary" vol detach "$volume" || {
             if [[ -n $server ]]; then sudo kill -TERM "$server" || true; fi
         }
     fi
@@ -41,7 +40,7 @@ trap cleanup EXIT
 curl --fail --silent --show-error --aws-sigv4 "aws:amz:${SWARMY_S3_REGION}:s3" \
     --user "$SWARMY_S3_ACCESS_KEY:$SWARMY_S3_SECRET_KEY" \
     -X PUT "$SWARMY_S3_ENDPOINT/$SWARMY_S3_BUCKET" >/dev/null
-"$api_binary" > "$work/api.log" 2>&1 &
+"$core_binary" api > "$work/api.log" 2>&1 &
 api=$!
 for _ in $(seq 1 100); do
     if curl --fail --silent "$SWARMY_API_URL/v1/health" > /dev/null; then break; fi
@@ -59,9 +58,9 @@ path = "rootfs"
 RECIPE
 cd "$work"
 sudo -E "$binary" --json image build "$work/gc-seed" --tag test > "$work/image.json"
-volume=$(sudo -E "$node_binary" --json vol create gc-seed:test | python3 -c 'import json,sys; print(json.load(sys.stdin)["volume_id"])')
+volume=$(sudo -E "$core_binary" vol --json create gc-seed:test | python3 -c 'import json,sys; print(json.load(sys.stdin)["volume_id"])')
 # Attach selects an unused device. Read its path from the ready event.
-sudo -E "$node_binary" --json vol attach "$volume" > "$work/attach.jsonl" 2> "$work/attach.log" &
+sudo -E "$core_binary" vol --json attach "$volume" > "$work/attach.jsonl" 2> "$work/attach.log" &
 server=$!
 for _ in $(seq 1 300); do
     if [[ -s $work/attach.jsonl ]]; then break; fi
@@ -71,7 +70,7 @@ done
 device=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["device"])' "$work/attach.jsonl")
 for pass in $(seq 1 22); do
     sudo dd if=/dev/urandom of="$device" bs=1M count=256 oflag=direct conv=notrunc status=none
-    sudo -E "$node_binary" --json vol checkpoint "$volume" >> "$work/checkpoints.jsonl"
+    sudo -E "$core_binary" vol --json checkpoint "$volume" >> "$work/checkpoints.jsonl"
     echo "Checkpoint $pass/22"
 done
 # This short grace is safe only for this isolated workload with no pending writes.

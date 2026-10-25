@@ -194,7 +194,7 @@ impl Fixture {
     }
 
     fn start(&mut self, service: &str, kill_point: Option<&str>) -> usize {
-        let executable = swarmy_testkit::bin(service);
+        let executable = swarmy_testkit::bin("swarmy-core");
         assert!(
             executable.exists(),
             "build the workspace binaries before running worker tests"
@@ -203,6 +203,7 @@ impl Fixture {
         let log =
             std::fs::File::create(self.files.path().join(format!("service-{index}.log"))).unwrap();
         let mut command = Command::new(executable);
+        command.arg(service);
         let pair = self.provider == "fake-a";
         command
             .env("SWARMY_PROVIDER", &self.provider)
@@ -555,9 +556,9 @@ async fn tool_turn_live_events_and_snapshot_survive_worker_restart() {
     run(|f| {
         Box::pin(async move {
             f.script(true, "get_time");
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            let worker = f.start("swarmy-worker", None);
+            f.start("scheduler", None);
+            f.start("gateway", None);
+            let worker = f.start("worker", None);
             let id = f.create().await;
             let mut live = f
                 .bus
@@ -615,7 +616,7 @@ async fn tool_turn_live_events_and_snapshot_survive_worker_restart() {
             assert_eq!(f.calls(), 2);
             f.children[worker].kill().await;
             f.user_message(id).await;
-            f.start("swarmy-worker", None);
+            f.start("worker", None);
             f.wake(id).await;
             let events = f.idle(id).await;
             assert_requests(id, &events, 3);
@@ -643,9 +644,9 @@ async fn tool_turn_live_events_and_snapshot_survive_worker_restart() {
 async fn rate_limit_waits_without_a_worker_lease_then_recovers() {
     run(|f| Box::pin(async move {
         f.rate_limit_script(1, 2);
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-gateway", None);
-        f.start("swarmy-worker", None);
+        f.start("scheduler", None);
+        f.start("gateway", None);
+        f.start("worker", None);
         let id = f.create().await;
         f.wake(id).await;
         let started = std::time::Instant::now();
@@ -670,9 +671,9 @@ async fn parked_inference_can_be_interrupted_and_followed_by_a_new_turn() {
     run(|f| {
         Box::pin(async move {
             f.rate_limit_script(1, 3600);
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
+            f.start("scheduler", None);
+            f.start("gateway", None);
+            f.start("worker", None);
             let id = f.create().await;
             f.wake(id).await;
             f.wait_state(id, SessionState::Sleeping).await;
@@ -729,9 +730,9 @@ async fn inflight_inference_interrupt_ends_at_next_boundary() {
                 serde_json::from_slice(&std::fs::read(&script).unwrap()).unwrap();
             data["latency_ms"] = 1500.into();
             std::fs::write(&script, serde_json::to_vec(&data).unwrap()).unwrap();
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
+            f.start("scheduler", None);
+            f.start("gateway", None);
+            f.start("worker", None);
             let id = f.create().await;
             f.wake(id).await;
             f.wait_state(id, SessionState::WaitingInference).await;
@@ -772,8 +773,8 @@ async fn missing_gateway_parks_until_it_returns() {
     run(|f| Box::pin(async move {
         f.provider = "openai".into();
         f.script(false, "get_time");
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
+        f.start("scheduler", None);
+        f.start("worker", None);
         let id = f.create().await;
         f.wake(id).await;
         f.wait_state(id, SessionState::Sleeping).await;
@@ -782,7 +783,7 @@ async fn missing_gateway_parks_until_it_returns() {
             Event::InferenceFailed { retryable: true, retry_at: Some(_), error, .. }
             if error.contains("no gateway serves provider openai"))));
         assert!(f.store.inference_wait(id).await.unwrap().is_some());
-        f.start("swarmy-gateway", None);
+        f.start("gateway", None);
             let events = f.idle(id).await;
             assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { .. })));
             assert!(!events.iter().any(|event| matches!(event,
@@ -798,8 +799,8 @@ async fn unknown_provider_fails_without_waiting() {
     run(|f| {
         Box::pin(async move {
             f.script(false, "get_time");
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-worker", None);
+            f.start("scheduler", None);
+            f.start("worker", None);
             for provider in ["unknown-provider", "openai"] {
                 let id = f.create_with_provider(Some(provider)).await;
                 f.wake(id).await;
@@ -820,8 +821,8 @@ async fn missing_gateway_exhausts_wait_budget() {
         f.provider = "openai".into();
         f.max_wait_seconds = 2;
         f.script(false, "get_time");
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
+        f.start("scheduler", None);
+        f.start("worker", None);
         let id = f.create().await;
         f.wake(id).await;
         let events = f.idle(id).await;
@@ -837,9 +838,9 @@ async fn inference_wait_budget_ends_a_turn_with_accumulated_reasons() {
         Box::pin(async move {
             f.max_wait_seconds = 3;
             f.rate_limit_script(100, 1);
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
+            f.start("scheduler", None);
+            f.start("gateway", None);
+            f.start("worker", None);
             let id = f.create().await;
             let started = std::time::Instant::now();
             f.wake(id).await;
@@ -863,9 +864,9 @@ async fn first_entry_breaker_fails_over_to_second_entry_implicitly() {
             f.put_entry("primary").await;
             f.put_entry("backup").await;
             f.rate_limit_script(1, 3600);
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
+            f.start("scheduler", None);
+            f.start("gateway", None);
+            f.start("worker", None);
             f.gateway_serves("openai").await;
             let first = f.create().await;
             f.wake(first).await;
@@ -926,9 +927,9 @@ async fn route_fails_over_across_providers_and_records_entry_and_step() {
             f.put_route("ab", &[("fake-a", "first"), ("fake-b", "second")])
                 .await;
             f.rate_limit_script(1, 1);
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
+            f.start("scheduler", None);
+            f.start("gateway", None);
+            f.start("worker", None);
             f.gateway_serves("fake-a").await;
             f.gateway_serves("fake-b").await;
             let id = f.create_with_route("ab").await;
@@ -1009,9 +1010,9 @@ async fn route_failover_drops_previous_provider_reasoning() {
                 )
                 .failure(1, 429, "quota reached", Some(1))
                 .write_to(&f.files.path().join("script.json"));
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
+            f.start("scheduler", None);
+            f.start("gateway", None);
+            f.start("worker", None);
             f.gateway_serves("fake-a").await;
             f.gateway_serves("fake-b").await;
             let id = f.create_with_route("ab").await;
@@ -1166,9 +1167,9 @@ async fn all_entries_open_parks_until_earliest_retry() {
                     .await
                     .unwrap();
             }
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
+            f.start("scheduler", None);
+            f.start("gateway", None);
+            f.start("worker", None);
             let id = f.create().await;
             f.wake(id).await;
             // Both entries are open, so the session parks instead of calling.
@@ -1213,7 +1214,7 @@ async fn recover_at_each_kill_point() {
     run(|f| {
         Box::pin(async move {
             f.script(true, "get_time");
-            f.start("swarmy-scheduler", None);
+            f.start("scheduler", None);
             // One fixture for every kill point: the scheduler stays up while
             // each iteration restarts the gateway (its scripted responses
             // are indexed by its own call count, so a fresh gateway serves
@@ -1227,8 +1228,8 @@ async fn recover_at_each_kill_point() {
                 "after_release",
             ] {
                 let calls_before = f.calls();
-                let gateway = f.start("swarmy-gateway", None);
-                let worker = f.start("swarmy-worker", Some(point));
+                let gateway = f.start("gateway", None);
+                let worker = f.start("worker", Some(point));
                 let id = f.create().await;
                 f.wake(id).await;
                 let status = timeout(WAIT, f.children[worker].wait()).await.unwrap();
@@ -1236,7 +1237,7 @@ async fn recover_at_each_kill_point() {
                     status.code() == Some(137) || status.signal() == Some(9),
                     "kill point {point}: {status}"
                 );
-                let replacement = f.start("swarmy-worker", None);
+                let replacement = f.start("worker", None);
                 let events = f.idle(id).await;
                 assert_requests(id, &events, 2);
                 assert_eq!(f.calls() - calls_before, 2, "kill point {point}");
@@ -1284,9 +1285,9 @@ async fn large_request_dispatches_on_default_nats_limit() {
     run_at(Some(url), |f| {
         Box::pin(async move {
             f.script(false, "");
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
+            f.start("scheduler", None);
+            f.start("gateway", None);
+            f.start("worker", None);
             let id = f.create().await;
             let head = f.store.fetch_session(id).await.unwrap().unwrap().head_seq;
             f.store
@@ -1387,8 +1388,8 @@ async fn permanent_publish_error_ends_turn() {
     .await;
     f.model = "long-model-".to_owned() + &"x".repeat(600);
     f.script(false, "");
-    f.start("swarmy-scheduler", None);
-    f.start("swarmy-worker", None);
+    f.start("scheduler", None);
+    f.start("worker", None);
     let id = f.create().await;
     let started = std::time::Instant::now();
     f.wake(id).await;
@@ -1422,9 +1423,9 @@ async fn permanent_publish_error_ends_turn() {
 async fn unknown_worker_tool_becomes_an_error_result() {
     run(|f| Box::pin(async move {
         f.script(true, "missing_tool");
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-gateway", None);
-        f.start("swarmy-worker", None);
+        f.start("scheduler", None);
+        f.start("gateway", None);
+        f.start("worker", None);
         let id = f.create().await;
         f.wake(id).await;
         let events = f.idle(id).await;
@@ -1437,10 +1438,10 @@ async fn competing_workers_claim_each_step_once() {
     run(|f| {
         Box::pin(async move {
             f.script(false, "");
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
-            let first = f.start("swarmy-worker", None);
-            let second = f.start("swarmy-worker", None);
+            f.start("scheduler", None);
+            f.start("gateway", None);
+            let first = f.start("worker", None);
+            let second = f.start("worker", None);
             let mut sessions = Vec::new();
             for _ in 0..24 {
                 let id = f.create().await;
@@ -1483,8 +1484,8 @@ async fn fresh_appends_and_gateway_completions_finish_without_a_scheduler() {
     run(|f| {
         Box::pin(async move {
             f.script(false, "");
-            f.start("swarmy-gateway", None);
-            f.start("swarmy-worker", None);
+            f.start("gateway", None);
+            f.start("worker", None);
             let id = f.create().await;
             for index in 0..3 {
                 if index > 0 {
@@ -1571,9 +1572,9 @@ Finish the task
                 .to_owned();
             write_main_summary_script(f, &summary);
             let (agent_id, id) = main_summary_session(f).await;
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-worker", None);
-            f.start("swarmy-gateway", None);
+            f.start("scheduler", None);
+            f.start("worker", None);
+            f.start("gateway", None);
             f.wake(id).await;
             let new = wait_successor(f, id).await;
             assert_ne!(id, new);
@@ -1679,9 +1680,9 @@ async fn check_overflow_recovery(second_overflow: bool) {
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
         f.compactable_user_message(id).await;
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
+        f.start("scheduler", None);
+        f.start("worker", None);
+        f.start("gateway", None);
         f.wake(id).await;
         let successor = wait_successor(f, id).await;
         let events = f.idle(successor).await;
@@ -1737,9 +1738,9 @@ async fn clean_tool_completion_reenables_overflow_recovery() {
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
         f.compactable_user_message(id).await;
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
+        f.start("scheduler", None);
+        f.start("worker", None);
+        f.start("gateway", None);
         f.wake(id).await;
         let first = wait_successor(f, id).await;
         let second = wait_successor(f, first).await;
@@ -1781,9 +1782,9 @@ async fn new_user_turn_reenables_overflow_recovery() {
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
         f.compactable_user_message(id).await;
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
+        f.start("scheduler", None);
+        f.start("worker", None);
+        f.start("gateway", None);
         f.wake(id).await;
         let first = wait_successor(f, id).await;
         f.idle(first).await;
@@ -1831,9 +1832,9 @@ async fn early_length_stop_compacts_without_replaying_truncated_reply() {
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
         f.compactable_user_message(id).await;
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
+        f.start("scheduler", None);
+        f.start("worker", None);
+        f.start("gateway", None);
         f.wake(id).await;
         let successor = wait_successor(f, id).await;
         let events = f.idle(successor).await;
@@ -1881,9 +1882,9 @@ async fn second_length_stop_fails_with_notice() {
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
         f.compactable_user_message(id).await;
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
+        f.start("scheduler", None);
+        f.start("worker", None);
+        f.start("gateway", None);
         f.wake(id).await;
         let successor = wait_successor(f, id).await;
         let events = f.idle(successor).await;
@@ -1946,9 +1947,9 @@ async fn refused_recovery_summary_ends_turn_and_omits_truncated_reply() {
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
         f.compactable_user_message(id).await;
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
+        f.start("scheduler", None);
+        f.start("worker", None);
+        f.start("gateway", None);
         f.wake(id).await;
         f.idle(id).await;
         assert_eq!(f.calls(), 2);
@@ -2051,9 +2052,9 @@ async fn no_head_to_compact_omits_truncated_tool_attempt() {
                 .await
                 .unwrap();
             seed_no_head_history(f, id).await;
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-worker", None);
-            f.start("swarmy-gateway", None);
+            f.start("scheduler", None);
+            f.start("worker", None);
+            f.start("gateway", None);
             f.wake(id).await;
             let events = f.idle(id).await;
             assert_eq!(f.calls(), 1);
@@ -2118,16 +2119,16 @@ async fn no_head_recovery_survives_crash_before_release() {
                 .await
                 .unwrap();
             seed_no_head_history(f, id).await;
-            f.start("swarmy-scheduler", None);
-            let worker = f.start("swarmy-worker", Some("before_release"));
-            f.start("swarmy-gateway", None);
+            f.start("scheduler", None);
+            let worker = f.start("worker", Some("before_release"));
+            f.start("gateway", None);
             f.wake(id).await;
             let status = timeout(WAIT, f.children[worker].wait()).await.unwrap();
             assert!(
                 status.code() == Some(137) || status.signal() == Some(9),
                 "{status}"
             );
-            f.start("swarmy-worker", None);
+            f.start("worker", None);
             let events = f.idle(id).await;
             assert_eq!(f.calls(), 1, "replacement must not issue inference");
             assert!(f.store.next_session(id).await.unwrap().is_none());
@@ -2181,9 +2182,9 @@ async fn empty_successful_summary_rolls_over() {
                 .await
                 .unwrap();
             f.compactable_user_message(id).await;
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-worker", None);
-            f.start("swarmy-gateway", None);
+            f.start("scheduler", None);
+            f.start("worker", None);
+            f.start("gateway", None);
             f.wake(id).await;
             let next = wait_successor(f, id).await;
             assert_ne!(next, id);
@@ -2217,9 +2218,9 @@ async fn rejected_summary_preserves_session(summary: &'static str, stop_reason: 
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
         f.compactable_user_message(id).await;
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
+        f.start("scheduler", None);
+        f.start("worker", None);
+        f.start("gateway", None);
         f.wake(id).await;
         let events = f.idle(id).await;
         assert_eq!(f.calls(), 2);
@@ -2302,9 +2303,9 @@ Finish the task
                 .await
                 .unwrap();
             f.compactable_user_message(id).await;
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-worker", None);
-            f.start("swarmy-gateway", None);
+            f.start("scheduler", None);
+            f.start("worker", None);
+            f.start("gateway", None);
             f.wake(id).await;
             let new = wait_successor(f, id).await;
             assert_ne!(id, new);
@@ -2502,9 +2503,9 @@ Finish the task
                 .await
                 .unwrap();
             f.compactable_user_message(id).await;
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-worker", None);
-            f.start("swarmy-gateway", None);
+            f.start("scheduler", None);
+            f.start("worker", None);
+            f.start("gateway", None);
             f.wake(id).await;
             // Usage crosses the threshold mid-turn, so the successor is
             // archived out of the tool loop rather than at turn end. The turn
@@ -2550,9 +2551,9 @@ async fn refused_split_prefix_reply_is_not_in_next_prompt() {
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
         f.compactable_user_message(id).await;
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
+        f.start("scheduler", None);
+        f.start("worker", None);
+        f.start("gateway", None);
         f.wake(id).await;
         f.idle(id).await;
         assert_eq!(f.calls(), 42);
@@ -2576,9 +2577,9 @@ async fn split_turn_prefix_summary_keeps_later_tool_rounds() {
         let id = side_id();
         f.store.create_agent_session(id, Some(agent.agent_id), Timestamp::now(), None).await.unwrap();
         f.compactable_user_message(id).await;
-        f.start("swarmy-scheduler", None);
-        f.start("swarmy-worker", None);
-        f.start("swarmy-gateway", None);
+        f.start("scheduler", None);
+        f.start("worker", None);
+        f.start("gateway", None);
         f.wake(id).await;
         let successor = wait_successor(f, id).await;
         f.idle(successor).await;
@@ -2620,9 +2621,9 @@ async fn side_summary_markdown_continues() {
                 .await
                 .unwrap();
             f.compactable_user_message(id).await;
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-worker", None);
-            f.start("swarmy-gateway", None);
+            f.start("scheduler", None);
+            f.start("worker", None);
+            f.start("gateway", None);
             f.wake(id).await;
             let new = wait_successor(f, id).await;
             f.idle(new).await;
@@ -2754,12 +2755,12 @@ async fn failover_survives_worker_restart_without_second_advance() {
             // advance would wrap to the open first entry and park the
             // session instead of completing.
             f.rate_limit_script(1, 3600);
-            f.start("swarmy-scheduler", None);
-            f.start("swarmy-gateway", None);
+            f.start("scheduler", None);
+            f.start("gateway", None);
             // The first worker dies right after handing attempt one to the
             // gateway path; its lease lapses and the replacement recovers
             // the turn from the durable outbox.
-            let first = f.start("swarmy-worker", Some("after_release"));
+            let first = f.start("worker", Some("after_release"));
             f.gateway_serves("openai").await;
             let id = f.create_with_route("ab").await;
             f.wake(id).await;
@@ -2772,14 +2773,14 @@ async fn failover_survives_worker_restart_without_second_advance() {
             // The second worker recovers attempt one, records the 429 as a
             // failover to the second step, and dies with the step lease
             // still held, before it can submit attempt two.
-            let second = f.start("swarmy-worker", Some("after_advance"));
+            let second = f.start("worker", Some("after_advance"));
             wait_for_route_step(f, id, 1).await;
             // The replacement resumes after the failover: the handled
             // failure advances nothing again and parks nothing behind the
             // in-flight successor, so the turn completes on the second
             // entry instead of sleeping behind the first entry's retry.
             f.wait_exit(second).await;
-            f.start("swarmy-worker", None);
+            f.start("worker", None);
             let events = f.idle(id).await;
             let completed = events.iter().find_map(|event| match event {
                 Event::InferenceCompleted { completion, .. } => Some((
