@@ -1058,6 +1058,7 @@ mod tests {
         std::fs::write(dir.path().join("untracked.rs"), "code").unwrap();
         let changes = Ssh {
             repo: dir.path().to_owned(),
+            release: None,
         }
         .checkout_changes()
         .unwrap();
@@ -1104,7 +1105,10 @@ mod tests {
             std::fs::create_dir_all(repo.join(recipe)).unwrap();
             std::fs::write(repo.join(recipe).join("recipe.toml"), "").unwrap();
         }
-        let host = Ssh { repo: repo.clone() };
+        let host = Ssh {
+            repo: repo.clone(),
+            release: None,
+        };
         assert_eq!(
             host.image_recipe(std::path::Path::new("images/custom"))
                 .unwrap(),
