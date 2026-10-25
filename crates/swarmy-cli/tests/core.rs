@@ -389,7 +389,6 @@ fn run_reports_missing_gateway_before_creating_a_session() {
     assert!(line.ends_with('\n'));
     // The waiting notice is stderr-only; JSON stdout is untouched.
     let mut stdout = String::new();
-    use std::io::Read;
     child
         .stdout
         .take()
