@@ -1109,3 +1109,45 @@ async fn update_plan_runs_in_store_without_placing_a_computer() {
         if title == "update_plan" && serde_json::from_str::<Value>(output).unwrap() == plan
     )));
 }
+
+#[tokio::test]
+async fn parked_route_clears_held_lease_before_heartbeat() {
+    let Some(fixture) = Fixture::new().await else {
+        return;
+    };
+    let id = fixture.session().await;
+    let (token, mut session, _) = fixture
+        .store
+        .claim_step(
+            id,
+            fixture.worker.owner,
+            fixture.now().checked_add(Duration::from_secs(30)).unwrap(),
+        )
+        .await
+        .unwrap();
+    let held = crate::worker::HeldLease::new(token);
+    let written = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    *fixture.worker.route_write_pause.lock().await = Some((written.clone(), resume.clone()));
+    let now = fixture.now();
+    let seq = session.head_seq;
+    let park = fixture.worker.failover_or_park(
+        &mut session,
+        &held,
+        seq,
+        ("unserved", swarmy_core::FailureKind::GatewayUnserved),
+        now.checked_add(Duration::from_secs(1)).unwrap(),
+        now,
+    );
+    let check = async {
+        written.notified().await;
+        let renewal = fixture.worker.renew_held_lease(id, &held).await;
+        resume.notify_one();
+        assert_eq!(renewal.unwrap(), std::ops::ControlFlow::Continue(()));
+    };
+    let (result, ()) = timeout(Duration::from_secs(10), async { tokio::join!(park, check) })
+        .await
+        .unwrap();
+    assert!(result.unwrap());
+    assert!(!held.is_held().await);
+}

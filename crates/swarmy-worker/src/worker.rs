@@ -24,10 +24,10 @@ use crate::config::{Config, KillPoint};
 
 /// A step lease shared with its heartbeat. Release is explicit only after a
 /// successful fenced store transition.
-struct HeldLease(Mutex<Option<Lease>>);
+pub(crate) struct HeldLease(Mutex<Option<Lease>>);
 
 impl HeldLease {
-    fn new(lease: Lease) -> Self {
+    pub(crate) fn new(lease: Lease) -> Self {
         Self(Mutex::new(Some(lease)))
     }
 
@@ -35,12 +35,8 @@ impl HeldLease {
         HeldLeaseGuard(self.0.lock().await)
     }
 
-    async fn is_held(&self) -> bool {
+    pub(crate) async fn is_held(&self) -> bool {
         self.0.lock().await.is_some()
-    }
-
-    async fn release(&self) {
-        self.0.lock().await.take();
     }
 
     async fn renew(
@@ -157,6 +153,9 @@ pub(crate) struct Worker {
     display: Mutex<DisplayCache>,
     pub owner: LeaseOwnerId,
     clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
+    #[cfg(test)]
+    pub(crate) route_write_pause:
+        Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
 }
 
 impl Worker {
@@ -171,6 +170,8 @@ impl Worker {
             display: Mutex::default(),
             owner: LeaseOwnerId::from_ulid(Ulid::generate()),
             clock: Arc::new(Timestamp::now),
+            #[cfg(test)]
+            route_write_pause: Mutex::default(),
         }
     }
 
@@ -259,7 +260,11 @@ impl Worker {
         Ok(())
     }
 
-    async fn renew_held_lease(&self, id: SessionId, lease: &HeldLease) -> Result<ControlFlow<()>> {
+    pub(crate) async fn renew_held_lease(
+        &self,
+        id: SessionId,
+        lease: &HeldLease,
+    ) -> Result<ControlFlow<()>> {
         if lease.is_held().await {
             lease
                 .renew(&self.store, id, self.now(), self.config.lease_duration)
