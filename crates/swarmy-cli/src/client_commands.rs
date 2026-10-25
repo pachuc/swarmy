@@ -161,6 +161,11 @@ fn print_turn_output(output: TurnOutput, json: bool) {
                 serde_json::to_string(&record).expect("record serializes")
             );
         }
+        TurnOutput::NoSandboxNode => {
+            eprintln!(
+                "No sandbox node is running, so tool calls cannot execute; see docs/DEV.md (local stacks have no node) or add one with swarmy remote add-node"
+            );
+        }
         TurnOutput::QueueDelivered => {
             println!("[queued message delivered]");
         }

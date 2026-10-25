@@ -247,6 +247,7 @@ async fn run_prompt(
     allow_version_mismatch: bool,
 ) -> anyhow::Result<()> {
     let (client, endpoint) = connect_client(allow_version_mismatch).await?;
+    wait_for_services(&client, &endpoint, args.selection.provider.as_deref()).await?;
     client_commands::run(client, endpoint, args, json).await
 }
 
@@ -256,13 +257,7 @@ async fn run_chat(
     allow_version_mismatch: bool,
 ) -> anyhow::Result<()> {
     let (client, endpoint) = connect_client(allow_version_mismatch).await?;
-    client_conversation::wait_healthy(
-        &client,
-        &endpoint,
-        args.selection.provider.as_deref(),
-        &mut |message| eprintln!("{message}"),
-    )
-    .await?;
+    wait_for_services(&client, &endpoint, args.selection.provider.as_deref()).await?;
     if json {
         client_commands::chat(client, endpoint, args, json).await
     } else {
@@ -290,6 +285,18 @@ async fn run_chat(
             );
         }
     }
+}
+
+async fn wait_for_services(
+    client: &swarmy_client::Client,
+    endpoint: &str,
+    provider: Option<&str>,
+) -> anyhow::Result<()> {
+    client_conversation::wait_healthy(client, endpoint, provider, &mut |message| {
+        eprintln!("{message}");
+    })
+    .await?;
+    Ok(())
 }
 
 async fn run_doctor(json: bool) -> anyhow::Result<()> {
