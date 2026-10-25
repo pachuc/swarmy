@@ -75,6 +75,7 @@ package() {
             readelf -d "$stage/swarmy-core" | grep -q 'NEEDED.*\[libfdb_c\.so\]' || fail 'core does not need libfdb_c.so'
             ;;
         image)
+            # Build natively with sudo and debootstrap; see images/README.md.
             [ "$target" = x86_64-unknown-linux-gnu ] || fail 'the base image is published for x86_64-unknown-linux-gnu only'
             [ "$target" = "$(rustc -vV | sed -n 's/^host: //p')" ] || fail 'build the base image on a native runner'
             name=swarmy-image-base-ubuntu
