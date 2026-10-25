@@ -1,5 +1,6 @@
-//! Image publication. Clients build ext4 files locally and stream the data extents of the sparse file; the control plane chunks them, uploads with the same GC protection
-//! as a local build, and registers the image. A client machine never needs
+//! Image publication. Clients build ext4 files locally and stream the data extents
+//! of the sparse file. The control plane chunks them, uploads with the same GC
+//! protection as a local build, and registers the image. A client machine never needs
 //! object store credentials.
 use super::idempotency::{IdempotencyKey, record_replay, replayed};
 use super::{ApiFailure, ApiResult, AppState, storage, volume};

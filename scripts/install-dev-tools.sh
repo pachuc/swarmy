@@ -46,4 +46,3 @@ if [ "$prefix" = "$HOME/.local" ]; then
 else
     printf '    make install SWARMY_FDB_LIB_DIR=%q\n' "$prefix/lib"
 fi
-

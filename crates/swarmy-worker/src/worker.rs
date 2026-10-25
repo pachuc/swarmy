@@ -252,7 +252,9 @@ impl Worker {
         // Box the combined keep-alive future: the step holds the full turn
         // state and would otherwise push the handler past the pedantic
         // future-size limit.
-        // The heartbeat runs beside the step, so renewal may wait on the lease mutex the step holds across fenced writes.
+        //
+        // The heartbeat runs beside the step, so renewal may wait on the lease
+        // mutex the step holds across fenced writes.
         Box::pin(message.keep_alive_with(period, step, move || self.renew_held_lease(id, lease)))
             .await?;
         message.acknowledge().await?;
