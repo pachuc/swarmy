@@ -91,7 +91,7 @@ impl FakeStack {
 impl Drop for FakeStack {
     fn drop(&mut self) {
         for (_, child) in &mut self.children {
-            if matches!(child.try_wait(), Ok(None)) {
+            if !matches!(child.try_wait(), Ok(Some(_))) {
                 swarmy_core::ignore_best_effort(child.kill(), "kill fake stack child");
             }
             swarmy_core::ignore_best_effort(child.wait(), "reap fake stack child");
