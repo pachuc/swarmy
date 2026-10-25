@@ -47,7 +47,7 @@ node_unit=$(swarmy_agent_unit)
 if [[ $mode == stack ]]; then
     dependency_kind=Requires
 else
-    # Keep swarmyd running across tunnel reconnects; its clients reconnect too.
+    # Keep the node role running across tunnel reconnects; its clients reconnect too.
     dependency_kind=Wants
 fi
 # A re-provisioned host (adopted or rebuilt) may carry the other mode's
@@ -209,7 +209,7 @@ mount_requirement=''
 if [[ $storage_is_mount == true ]]; then mount_requirement="RequiresMountsFor=$local_mount"; fi
 sudo tee "/etc/systemd/system/$node_unit" >/dev/null <<UNIT
 [Unit]
-Description=Swarmy node agent
+Description=Swarmy node agent (swarmy-core node)
 $dependency_kind=$stack_dependency
 After=network-online.target $stack_dependency systemd-modules-load.service
 Wants=network-online.target
@@ -218,7 +218,7 @@ ${mount_requirement}
 [Service]
 WorkingDirectory=$repo_dir
 EnvironmentFile=/etc/swarmy/node.env
-ExecStart=/usr/local/bin/$(swarmy_unit_binary "$node_unit")
+ExecStart=/usr/local/bin/$(swarmy_core_binary) $(swarmy_unit_role "$node_unit")
 Restart=always
 RestartSec=5
 TimeoutStopSec=120
@@ -241,7 +241,7 @@ for _ in $(seq 1 60); do
     if sudo test -S "$repo_dir/.swarmy/node/control.sock" && sudo journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager | grep -q 'node registered and ready'; then
         sudo systemctl is-active "$node_unit"
         if [[ $mode == stack ]]; then sudo systemctl is-active "$stack_dependency"; fi
-        echo "swarmyd registered and ready; $mode mode enabled at boot"
+        echo "node role (swarmy-core node) registered and ready; $mode mode enabled at boot"
         exit 0
     fi
     sleep 2

@@ -18,11 +18,10 @@ set -a; . .dev/env; set +a
 # files in target/, which makes this build fail with permission errors.
 sudo chown -R "$(id -un):$(id -gn)" "$(readlink -f target)"
 # `--tests` builds a package's executable only when it has integration tests,
-# and the scheduler, worker, and gateway have none, while the chaos suites run
-# the service executables from target/debug. Build those explicitly, or the
-# chaos suites run whatever an earlier branch left there.
+# and some role crates have none, while the chaos suites run swarmy-core
+# from target/debug. Build that explicitly to avoid a stale executable.
 CARGO_BUILD_JOBS=8 cargo build --locked --tests -p swarmy-chaos -p swarmyd -p swarmy-cli -p swarmy-gateway -p swarmy-worker -p swarmy-scheduler -p swarmy-api > ~/suite-build.log 2>&1 \
-  && CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-scheduler -p swarmy-worker -p swarmy-gateway -p swarmy-api -p swarmyd >> ~/suite-build.log 2>&1 \
+  && CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-core-bin >> ~/suite-build.log 2>&1 \
   || { tail -20 ~/suite-build.log; echo "build failed"; echo "SUITES_EXIT=1"; exit 2; }
 tail -1 ~/suite-build.log
 sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev 2>&1 | tail -1

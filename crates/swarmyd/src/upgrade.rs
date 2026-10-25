@@ -22,7 +22,7 @@ async fn process_list_with_timeout(
     let mut stream = UnixStream::connect(socket)
         .await
         .context("connect running swarmyd control socket")?;
-    let request = swarmyd::Request::Exec {
+    let request = crate::Request::Exec {
         sandbox: Sandbox { agent_id: agent },
         request: ExecRequest {
             args: vec![
@@ -55,16 +55,16 @@ async fn process_list_with_timeout(
             read > 0,
             "swarmyd closed the process listing before returning a result"
         );
-        match serde_json::from_slice::<swarmyd::Response>(&line)? {
-            swarmyd::Response::Output(ExecOutput::Stdout(bytes)) => {
+        match serde_json::from_slice::<crate::Response>(&line)? {
+            crate::Response::Output(ExecOutput::Stdout(bytes)) => {
                 output.extend(bytes);
                 ensure!(
                     output.len() <= 5 * 1024 * 1024,
                     "process listing exceeded 5 MiB"
                 );
             }
-            swarmyd::Response::Output(ExecOutput::Stderr(_)) => {}
-            swarmyd::Response::Exited(exit) => {
+            crate::Response::Output(ExecOutput::Stderr(_)) => {}
+            crate::Response::Exited(exit) => {
                 ensure!(
                     exit.exit_code == 0 && !exit.timed_out,
                     "process listing failed for {agent}"
@@ -72,13 +72,13 @@ async fn process_list_with_timeout(
                 let records: Vec<serde_json::Value> = serde_json::from_slice(&output)?;
                 return Ok(records.iter().any(|record| record["status"] == "running"));
             }
-            swarmyd::Response::Error(message)
+            crate::Response::Error(message)
                 if message == "sandbox is missing or already exists" =>
             {
                 // A stored placement can outlive an idle-evicted sandbox. It has no process to drain.
                 return Ok(false);
             }
-            swarmyd::Response::Error(message) => {
+            crate::Response::Error(message) => {
                 bail!("process listing failed for {agent}: {message}")
             }
             other => bail!("unexpected node process listing response: {other:?}"),
@@ -155,17 +155,14 @@ mod tests {
             let mut reader = BufReader::new(read);
             let mut line = String::new();
             reader.read_line(&mut line).await.unwrap();
-            let swarmyd::Request::Exec { request, .. } = serde_json::from_str(&line).unwrap()
-            else {
+            let crate::Request::Exec { request, .. } = serde_json::from_str(&line).unwrap() else {
                 panic!("expected the old node exec request")
             };
             assert_eq!(request.args[3], "process_list");
             assert_eq!(request.args[4], "7");
             for response in [
-                swarmyd::Response::Output(ExecOutput::Stdout(
-                    br#"[{"status":"running"}]"#.to_vec(),
-                )),
-                swarmyd::Response::Exited(ExecResult {
+                crate::Response::Output(ExecOutput::Stdout(br#"[{"status":"running"}]"#.to_vec())),
+                crate::Response::Exited(ExecResult {
                     exit_code: 0,
                     timed_out: false,
                 }),
@@ -187,7 +184,7 @@ mod response_tests {
     use swarmy_core::ExecResult;
     use tokio::net::UnixListener;
 
-    async fn response(value: swarmyd::Response) -> Result<bool> {
+    async fn response(value: crate::Response) -> Result<bool> {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("node.sock");
         let listener = UnixListener::bind(&path).unwrap();
@@ -208,14 +205,14 @@ mod response_tests {
     #[tokio::test]
     async fn missing_sandbox_is_idle_but_failed_listing_is_not() {
         assert!(
-            !response(swarmyd::Response::Error(
+            !response(crate::Response::Error(
                 "sandbox is missing or already exists".into()
             ))
             .await
             .unwrap()
         );
         assert!(
-            response(swarmyd::Response::Exited(ExecResult {
+            response(crate::Response::Exited(ExecResult {
                 exit_code: 1,
                 timed_out: false
             }))

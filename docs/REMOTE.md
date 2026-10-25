@@ -106,7 +106,7 @@ the volume role and no disk capacity, so placement cannot select that node.
 ### Upgrade a running remote
 
 From a clean local checkout, run `swarmy remote upgrade NAME`. It reports the
-local CLI version and every node's installed `swarmyd` version before copying
+local CLI version and every node's installed `swarmy-core` version before copying
 anything. Joining nodes upgrade first; the first node, which owns the backing
 services, upgrades last. The upgrade uses the provisioning rsync exclusions and
 keeps instances, disks, node state, and `/etc/swarmy/node.env` unchanged. It
@@ -114,7 +114,7 @@ rebuilds the release binaries, installs changed binaries, and restarts installed
 installed binaries. A changed node daemon restarts last, after its managed
 sandbox commands finish; restarting it evicts every placement on that node,
 even though they are idle after the drain. `--drain-timeout SECONDS`
-defaults to 600. `--services-only` never restarts `swarmyd` even if its binary
+defaults to 600. `--services-only` never restarts the node role (`swarmyd.service`) even if its binary
 changed. `--allow-dirty` explicitly opts into deploying uncommitted source.
 Use `--json` to emit one machine-readable summary per node. A timeout leaves
 the upgraded binaries on disk but does not restart the busy node daemon; retry
@@ -1088,7 +1088,7 @@ Commit and install the checkout you want to deploy, then run
 `swarmy remote upgrade dev`. The command prints the local and node versions,
 updates joining nodes before the first node, and copies the checkout with the
 same credential exclusions as `remote up`. It rebuilds changed binaries and
-restarts only the affected services. A changed `swarmyd` waits for managed
+restarts only the affected services. A changed `swarmy-core` restarts all service units. The node role (`swarmyd.service`) waits for managed
 sandbox commands to finish before restarting; this evicts every placement on
 that node (all idle after the drain).
 Use `--drain-timeout 1200` for long builds, or `--services-only` when node
@@ -1123,3 +1123,5 @@ timer was removed; do not expect a scheduled root run. Use the scripts in
 [`scripts/node-suites/`](../scripts/node-suites/) on a suitable node and record
 results in the pull request. CI's reduced chaos checks are defined in
 [ci.yml](../.github/workflows/ci.yml).
+
+All service units share one `swarmy-core` executable. `swarmyd.service` runs `/usr/local/bin/swarmy-core node` as root; it needs NBD and runc. Service units run `swarmy-core scheduler`, `swarmy-core worker`, `swarmy-core gateway`, and `swarmy-core api`. A changed core restarts each service unit; the node unit restarts only after the drain.

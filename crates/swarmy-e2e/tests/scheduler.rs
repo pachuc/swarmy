@@ -50,7 +50,8 @@ impl Fixture {
     }
 
     async fn start_with_retention(&self, partitions: &str, prefix: &str, retention: u64) -> usize {
-        let child = Command::new(swarmy_testkit::bin("swarmy-scheduler"))
+        let child = Command::new(swarmy_testkit::bin("swarmy-core"))
+            .arg("scheduler")
             .env("SWARMY_FDB_CLUSTER_FILE", &self.stack.cluster)
             .env("SWARMY_NATS_URL", &self.stack.nats_url)
             .env("SWARMY_STORE_DIRECTORY", &self.stack.prefix)

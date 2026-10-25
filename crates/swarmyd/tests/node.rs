@@ -59,7 +59,8 @@ impl Node {
             .open(self.root.path().join("node.log"))
             .unwrap();
         self.child = Some(
-            Command::new(env!("CARGO_BIN_EXE_swarmyd"))
+            Command::new(swarmy_testkit::bin("swarmy-core"))
+                .arg("node")
                 .current_dir(self.root.path())
                 .envs(self.settings.environment())
                 .stdin(Stdio::null())

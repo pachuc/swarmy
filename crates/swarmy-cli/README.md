@@ -206,7 +206,7 @@ These tests skip when `SWARMY_FDB_CLUSTER_FILE` or `SWARMY_NATS_URL` is absent.
 
 ## Volumes
 
-`swarmyd vol` supports `create NAME:TAG`, `attach VOLUME`, `flush VOLUME`,
+`swarmy-core vol` supports `create NAME:TAG`, `attach VOLUME`, `flush VOLUME`,
 `snapshot VOLUME`, `clone VOLUME`, `detach VOLUME`, `ls`, and `show VOLUME`.
 Volume tools moved out of the `swarmy` client, which no longer links the
 store; run them from the node daemon on a machine with store access (root for

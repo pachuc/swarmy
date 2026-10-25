@@ -20,7 +20,7 @@ Start the development stack and source `.dev/env`, then build workspace binaries
 scripts/dev-stack.sh start
 source .dev/env
 cargo build --workspace --bins --locked
-SWARMY_PROVIDER=fake target/debug/swarmy-worker
+SWARMY_PROVIDER=fake target/debug/swarmy-core worker
 ```
 
 Run the scheduler and gateway against the same store directory and bus prefix.

@@ -504,7 +504,7 @@ impl Ssh {
         Ok(!String::from_utf8(output.stdout)?.trim().is_empty())
     }
 
-    /// Read the installed `swarmyd` version from a node.
+    /// Read the installed `swarmy-core` version from a node.
     ///
     /// # Errors
     ///
@@ -513,7 +513,7 @@ impl Ssh {
         let output = run_output(
             base(node)?
                 .arg(address)
-                .arg("/usr/local/bin/swarmyd --version"),
+                .arg("/usr/local/bin/swarmy-core --version"),
             "read node version",
         )
         .await?;

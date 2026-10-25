@@ -4144,6 +4144,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "swarmy-core-bin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "swarmy-api",
+ "swarmy-gateway",
+ "swarmy-scheduler",
+ "swarmy-version",
+ "swarmy-worker",
+ "swarmyd",
+]
+
+[[package]]
 name = "swarmy-devtools"
 version = "0.1.0"
 dependencies = [

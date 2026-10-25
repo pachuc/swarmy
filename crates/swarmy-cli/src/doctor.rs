@@ -83,12 +83,7 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
             "Run scripts/install-dev-tools.sh. swarmy searches PATH, the install prefix's bin directory, and ~/.local/bin automatically; add another location to PATH if needed."));
         }
     }
-    for name in [
-        "swarmy-api",
-        "swarmy-scheduler",
-        "swarmy-worker",
-        "swarmy-gateway",
-    ] {
+    for name in ["swarmy-core"] {
         // Companions are exec'd beside the CLI; services honor the caller's PATH.
         let executable = crate::dev::service_binary(name);
         let result = match executable {
@@ -465,7 +460,7 @@ fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
         Check::warn(
             "nodes",
             "no live nodes; capacity is zero",
-            "Start swarmyd on a sandbox node.",
+            "Start `swarmy-core node` on a sandbox node.",
         )
     } else {
         Check::new(

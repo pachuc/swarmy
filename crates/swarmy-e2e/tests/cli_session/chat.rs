@@ -356,7 +356,8 @@ impl Services {
             .append(true)
             .open(self.files.path().join(format!("{name}.log")))
             .unwrap();
-        let mut command = Command::new(self.bin.join(format!("swarmy-{name}")));
+        let mut command = Command::new(self.bin.join("swarmy-core"));
+        command.arg(name);
         command
             .env("SWARMY_FDB_CLUSTER_FILE", &fixture.cluster)
             .env("SWARMY_NATS_URL", &fixture.url)
@@ -1127,7 +1128,8 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
     let log = std::fs::File::create(services.files.path().join("node.log")).unwrap();
     let node = Node {
         root: services.files.path().join(".swarmy/node"),
-        child: std::process::Command::new(services.bin.join("swarmyd"))
+        child: std::process::Command::new(services.bin.join("swarmy-core"))
+            .arg("node")
             .current_dir(services.files.path())
             .env("SWARMY_STATE_DIR", services.files.path().join(".swarmy"))
             .env("SWARMY_FDB_CLUSTER_FILE", &fixture.cluster)

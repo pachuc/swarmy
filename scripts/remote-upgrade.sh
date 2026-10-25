@@ -49,12 +49,12 @@ if systemctl cat "$api_unit" >/dev/null 2>&1; then
 fi
 read_shared_list service_units swarmy_service_units
 for unit in "${service_units[@]}"; do
-    binary=$(swarmy_unit_binary "$unit")
-    binary_path="/usr/local/bin/$binary"
+    role=$(swarmy_unit_role "$unit")
+    binary_path="/usr/local/bin/$(swarmy_core_binary)"
     if systemctl cat "$unit" >/dev/null 2>&1; then
         if unit_needs_restart "$unit" "$binary_path"; then
             sudo -n systemctl restart "$unit"
-            restarted+=("$binary")
+            restarted+=("$role")
         else
             result=$?
             (( result == 1 )) || exit "$result"
@@ -67,35 +67,35 @@ done
 # to reload its configuration even when its binary is unchanged.
 if [[ $token_status == generated ]]; then
     already_restarted=false
-    api_binary=$(swarmy_unit_binary "$api_unit")
+    api_role=$(swarmy_unit_role "$api_unit")
     for entry in "${restarted[@]}"; do
-        if [[ $entry == "$api_binary" ]]; then already_restarted=true; fi
+        if [[ $entry == "$api_role" ]]; then already_restarted=true; fi
     done
     if [[ $already_restarted == false ]]; then
         sudo -n systemctl restart "$api_unit"
-        restarted+=("$api_binary")
+        restarted+=("$api_role")
     fi
 fi
 node_unit=$(swarmy_agent_unit)
-node_binary=$(swarmy_unit_binary "$node_unit")
-node_binary_path="/usr/local/bin/$node_binary"
+node_role=$(swarmy_unit_role "$node_unit")
+node_binary_path="/usr/local/bin/$(swarmy_core_binary)"
 if unit_needs_restart "$node_unit" "$node_binary_path"; then
     if [[ $services == services-only ]]; then
-        echo "$node_binary is out of date but --services-only skips its restart" >&2
+        echo "the $node_role role is out of date but --services-only skips its restart" >&2
     else
         deadline=$((SECONDS + drain_timeout))
         while true; do
-            busy=$(sudo -n sh -c "cd $repo_dir && set -a && . /etc/swarmy/node.env && set +a && exec $repo_dir/target/release/$node_binary --upgrade-processes")
+            busy=$(sudo -n sh -c "cd $repo_dir && set -a && . /etc/swarmy/node.env && set +a && exec $repo_dir/target/release/$(swarmy_core_binary) $node_role --upgrade-processes")
             [[ $busy == '[]' ]] && break
             echo "Waiting for running sandbox commands: $busy" >&2
             if (( SECONDS >= deadline )); then
-                echo "Drain timed out after $drain_timeout seconds; restarting $node_binary anyway, interrupting: $busy" >&2
+                echo "Drain timed out after $drain_timeout seconds; restarting $node_role anyway, interrupting: $busy" >&2
                 break
             fi
             sleep 5
         done
         sudo -n systemctl restart "$node_unit"
-        restarted+=("$node_binary")
+        restarted+=("$node_role")
     fi
 else
     result=$?

@@ -2,7 +2,7 @@
 # Docs accuracy: paths, Markdown links and anchors, and test targets (default),
 # or documented commands (--commands). --commands prints location, binary, and
 # args split into words (tab-separated, args joined by \x1f, quoted values
-# masked) for the Rust clap walks in swarmy-cli, swarmyd, and swarmy-chaos. Both
+# masked) for the Rust clap walks in swarmy-cli, swarmy-core, and swarmy-chaos. Both
 # modes share tracked listing, fence joining, backtick spans, and the backlog/
 # skip.
 import os
@@ -14,9 +14,9 @@ import urllib.parse
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Binaries whose documented commands are walked; each needs a clap-tree test
 # that calls swarmy_testkit::check_docs_commands.
-BINARIES = ("swarmy-chaos", "swarmyd", "swarmy")
-BINARY_PACKAGE = {"swarmy": "swarmy-cli", "swarmyd": "swarmyd"}
-CARGO_BINARY = {"swarmy-cli": "swarmy", "swarmyd": "swarmyd", "swarmy-chaos": "swarmy-chaos"}
+BINARIES = ("swarmy-chaos", "swarmy-core", "swarmy")
+BINARY_PACKAGE = {"swarmy": "swarmy-cli", "swarmy-core": "swarmy-core-bin", "swarmyd": "swarmyd"}
+CARGO_BINARY = {"swarmy-cli": "swarmy", "swarmy-core-bin": "swarmy-core", "swarmy-chaos": "swarmy-chaos"}
 def fail(message):
     sys.stderr.write("check-docs-accuracy: %s\n" % message)
     sys.exit(2)

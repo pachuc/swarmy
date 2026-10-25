@@ -47,11 +47,7 @@ pub(crate) enum Command {
         service: Option<DevService>,
     },
     #[command(hide = true)]
-    Supervise {
-        state: PathBuf,
-        #[arg(num_args = 4, required = true)]
-        binaries: Vec<PathBuf>,
-    },
+    Supervise { state: PathBuf, core: PathBuf },
 }
 
 /// One supervised backing service, parsed once by clap instead of matched as a string.
@@ -126,7 +122,7 @@ pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
     // by `dev up`, so it never takes the human-output path; every other arm
     // rejects `--json` and discovers the layout through one helper.
     match command {
-        Command::Supervise { state, binaries } => supervise(&state, &binaries).await,
+        Command::Supervise { state, core } => supervise(&state, &core).await,
         Command::Up {
             allow_version_mismatch,
         } => {
@@ -202,20 +198,16 @@ async fn stack(layout: &Layout, action: &str) -> Result<String> {
     Ok(String::from_utf8(output.stdout)?)
 }
 
-async fn check_versions(allow_version_mismatch: bool) -> Result<Vec<PathBuf>> {
-    let mut binaries = Vec::new();
-    for (name, _) in SERVICES {
-        let executable = binary(name)?;
-        if let Err(error) = version_check(&executable, &format!("swarmy-{name}")).await {
-            let message = format!("{error}. Reinstall from the CLI checkout: {REINSTALL}");
-            if !allow_version_mismatch {
-                bail!("{message}\nUse --allow-version-mismatch to override.");
-            }
-            eprintln!("warning: {message} (--allow-version-mismatch)");
+async fn check_versions(allow_version_mismatch: bool) -> Result<PathBuf> {
+    let core = service_binary("swarmy-core")?;
+    if let Err(error) = version_check(&core, "swarmy-core").await {
+        let message = format!("{error}. Reinstall from the CLI checkout: {REINSTALL}");
+        if !allow_version_mismatch {
+            bail!("{message}\nUse --allow-version-mismatch to override.");
         }
-        binaries.push(executable);
+        eprintln!("warning: {message} (--allow-version-mismatch)");
     }
-    Ok(binaries)
+    Ok(core)
 }
 
 async fn node_services(layout: &Layout) -> Result<bool> {
@@ -266,7 +258,7 @@ async fn up(layout: &Layout, allow_version_mismatch: bool) -> Result<()> {
         return Ok(());
     }
     ensure_keyring()?;
-    let binaries = check_versions(allow_version_mismatch).await?;
+    let core = check_versions(allow_version_mismatch).await?;
     fs::create_dir_all(layout.state.join("logs"))?;
     let survivors: Vec<_> = ["supervisor", "scheduler", "worker", "gateway", "api"]
         .into_iter()
@@ -288,7 +280,7 @@ async fn up(layout: &Layout, allow_version_mismatch: bool) -> Result<()> {
         .arg("dev")
         .arg("supervise")
         .arg(&layout.state)
-        .args(&binaries)
+        .arg(&core)
         .current_dir(&layout.root)
         .envs(settings.environment())
         .env("RUST_LOG", "info")
@@ -430,7 +422,7 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
 }
 
 // Keep this command aligned with docs/DEV.md's no-root installation workflow.
-pub(crate) const REINSTALL: &str = "for crate in cli scheduler worker gateway api; do SWARMY_FDB_LIB_DIR=\"$HOME/.local/lib\" cargo install --locked --path \"crates/swarmy-$crate\"; done";
+pub(crate) const REINSTALL: &str = "for crate in swarmy-cli swarmy-core-bin; do SWARMY_FDB_LIB_DIR=\"$HOME/.local/lib\" cargo install --locked --path \"crates/$crate\"; done";
 
 pub(crate) fn service_binary(name: &str) -> Result<PathBuf> {
     let executable =
@@ -441,10 +433,6 @@ pub(crate) fn service_binary(name: &str) -> Result<PathBuf> {
             executable.display()
         )
     })
-}
-
-fn binary(name: &str) -> Result<PathBuf> {
-    service_binary(&format!("swarmy-{name}"))
 }
 
 pub(crate) async fn version_check(executable: &Path, name: &str) -> Result<String> {
@@ -491,12 +479,12 @@ async fn stop_services(state: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn supervise(state: &Path, binaries: &[PathBuf]) -> Result<()> {
+async fn supervise(state: &Path, core: &Path) -> Result<()> {
     // Register signal handlers before spawning so down during startup also cleans up.
     let stop = swarmy_config::shutdown_signal();
     let mut children = Vec::new();
     let result = tokio::select! {
-        result = serve(state, binaries, &mut children) => result,
+        result = serve(state, core, &mut children) => result,
         () = stop => Ok(()),
     };
     for (name, child) in children.iter_mut().rev() {
@@ -515,15 +503,12 @@ async fn supervise(state: &Path, binaries: &[PathBuf]) -> Result<()> {
     result
 }
 
-async fn serve(
-    state: &Path,
-    binaries: &[PathBuf],
-    children: &mut Vec<(&'static str, Child)>,
-) -> Result<()> {
+async fn serve(state: &Path, core: &Path, children: &mut Vec<(&'static str, Child)>) -> Result<()> {
     // Use the checked absolute paths even when the supervisor changes directory.
-    for ((name, _), executable) in SERVICES.into_iter().zip(binaries) {
+    for (name, _) in SERVICES {
         let log = File::create(state.join(format!("logs/{name}.log")))?;
-        let child = Process::new(executable)
+        let child = Process::new(core)
+            .arg(name)
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log)

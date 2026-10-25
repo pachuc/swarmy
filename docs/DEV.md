@@ -273,10 +273,9 @@ make install
 ```
 
 `make install` is `make install-client` plus `make install-core`. The client
-links no database library and needs no `libfdb_c`; the service binaries
-(scheduler, worker, gateway, API) still link it. Install only the client with
+links no database library and needs no `libfdb_c`; `swarmy-core` (scheduler, worker, gateway, API, node, and vol) still links it. Install only the client with
 `make install-client` when the services live elsewhere. `make install-client`
-builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs the services and `swarmyd`. The `remote` feature compiles the EC2, SSM, S3,
+builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs `swarmy-core`. The `remote` feature compiles the EC2, SSM, S3,
 and IAM SDKs behind the `swarmy remote` provisioning commands. A plain
 `cargo build -p swarmy-cli` leaves that feature off for the slimmer node
 binary; add `--features remote` to a plain cargo invocation when the
@@ -284,7 +283,7 @@ provisioning commands are needed.
 
 The Makefile looks for the client library in `~/.local/lib`, `/usr/local/lib`,
 `/usr/lib`, and `/usr/lib/x86_64-linux-gnu`, in that order, and passes the first
-match as `SWARMY_FDB_LIB_DIR`. `make install-node` also installs `swarmyd`,
+match as `SWARMY_FDB_LIB_DIR`. `make install-node` also installs `swarmy-core`,
 `make check` runs every pull-request CI job, and `make uninstall` removes the
 binaries. Use `scripts/install-dev-tools.sh --prefix /absolute/path` for another
 location, then `make install SWARMY_FDB_LIB_DIR=/absolute/path/lib`. The build embeds that library directory in the
@@ -296,7 +295,7 @@ the installer and process supervisor currently target Linux.
 Local Linux nodes also need `runc`, `passt` (which supplies `pasta`),
 `iproute2`, and `util-linux` (which supplies `nsenter`). Install them with
 `sudo apt-get install runc passt iproute2 util-linux` before
-starting `swarmyd`.
+starting `swarmy-core node`.
 
 swarmy searches the caller's PATH first, then the build-time install prefix's
 `bin`, `~/.local/bin`, and `/usr/sbin`. It passes this path to the stack script.
@@ -355,7 +354,7 @@ The public CLI never opens the database. Conversation commands (`run`,
 `session close` and `session interrupt` all talk to the control-plane API; the
 client machine needs no database, bus, or object store credentials. The
 developer volume tools live in the node daemon instead: run them as
-`swarmyd vol ...` on a machine with the store and devices (see
+`swarmy-core vol ...` on a machine with the store and devices (see
 [volume tools](#volume-tools)). `models probe` uses the API host's credential resolver, so a laptop without
 provider keys can probe credentials stored in the swarm. Scripted `fake` probes read fixture files on the API host. The separately
 installed `swarmy-auth` helper handles interactive `auth login` and `auth import`;
@@ -522,21 +521,21 @@ Its cleanup step runs even if an earlier step fails.
 ### Volume tools
 
 Volume attach and snapshot need local block devices and the store, so they
-live in the node daemon rather than the client. Run them with `swarmyd vol`
+live in the node daemon rather than the client. Run them with `swarmy-core vol`
 on a machine with root and the NBD module (a node, or a local machine with
 the dev stack sourced):
 
 ```bash
 source .dev/env
-sudo -E swarmyd vol create base-ubuntu:dev
-sudo -E swarmyd vol ls
-sudo -E swarmyd vol attach VOLUME_ID --background
-sudo -E swarmyd vol flush VOLUME_ID
-sudo -E swarmyd vol snapshot VOLUME_ID
-sudo -E swarmyd vol detach VOLUME_ID
+sudo -E swarmy-core vol create base-ubuntu:dev
+sudo -E swarmy-core vol ls
+sudo -E swarmy-core vol attach VOLUME_ID --background
+sudo -E swarmy-core vol flush VOLUME_ID
+sudo -E swarmy-core vol snapshot VOLUME_ID
+sudo -E swarmy-core vol detach VOLUME_ID
 ```
 
-`swarmyd vol --help` lists every subcommand. Creation, cloning, listing, and
+`swarmy-core vol --help` lists every subcommand. Creation, cloning, listing, and
 history need only the store; attach, flush, checkpoint, snapshot of an
 attached writer, and detach additionally drive the local volume server.
 
@@ -646,3 +645,7 @@ has the same durability as other home-disk files: use `checkpoint` when facts
 must survive node failure. The default prompt explains how to save memory and
 that conversations may be summarized; `{memory_dir}` in a configured system
 prompt expands to the selected directory.
+
+### Service binary
+
+`swarmy-core` runs `scheduler`, `worker`, `gateway`, `api`, `node`, and `vol` roles. Run `swarmy-core --version` to check its identity. The `node` role needs root and NBD.

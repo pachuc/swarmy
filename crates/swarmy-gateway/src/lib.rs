@@ -1,12 +1,13 @@
 //! The inference gateway engine: claims inference work from the bus,
 //! resolves provider credentials, streams provider responses, and commits
-//! terminal events to the store. `main.rs` only assembles and serves it.
+//! terminal events to the store. `role.rs` only assembles and serves it.
 mod attempt;
 mod commit;
 pub mod config;
 pub mod credentials;
 pub mod dispatch;
 pub mod providers;
+pub mod role;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
