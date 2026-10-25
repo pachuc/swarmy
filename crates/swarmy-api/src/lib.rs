@@ -192,6 +192,10 @@ async fn authorize(
 }
 
 /// Construct the router without binding a socket so integration tests can serve it in-process.
+///
+/// # Panics
+///
+/// Panics if the generated OpenAPI document cannot be serialized to JSON.
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/v1/doctor", get(doctor))
