@@ -178,6 +178,7 @@ fn cli_reports_identity_in_text_and_json() {
             let version: Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(version["binary"], name);
             assert_eq!(version["version"], swarmy_version::VERSION);
+            assert_eq!(version["release_build"], false);
             assert_eq!(version["git_commit"], swarmy_version::GIT_COMMIT);
             assert_eq!(version["identity"], swarmy_version::IDENTITY);
         }
@@ -237,4 +238,5 @@ fn version_release_prints_the_matching_tag() {
     let version: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(version["tag"], swarmy_version::RELEASE_TAG);
     assert_eq!(version["version"], swarmy_version::VERSION);
+    assert_eq!(version["release_build"], false);
 }

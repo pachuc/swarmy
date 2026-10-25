@@ -274,3 +274,160 @@ pub(crate) fn expected_digest(sums: &str, asset: &str) -> Result<String> {
         "no valid SHA256SUMS entry for {asset}"
     )))
 }
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use swarmy_testkit::release::{fake_release, serve_files};
+
+    #[test]
+    fn checksums_and_targets() {
+        let hex = "a".repeat(64);
+        assert_eq!(
+            expected_digest(&format!("{hex}  core"), "core").unwrap(),
+            hex
+        );
+        assert_eq!(
+            expected_digest(&format!("{hex} *core"), "core").unwrap(),
+            hex
+        );
+        assert!(expected_digest("ab  core", "core").is_err());
+        assert!(expected_digest(&format!("{hex}  other"), "core").is_err());
+        for (machine, target) in [
+            ("x86_64", Target::X86_64Linux),
+            ("aarch64", Target::Aarch64Linux),
+            ("arm64", Target::Aarch64Linux),
+        ] {
+            assert_eq!(Target::from_uname(machine).unwrap(), target);
+            assert_eq!(Target::parse(target.triple()).unwrap(), target);
+        }
+        assert!(Target::from_uname("mips").is_err());
+        assert!(Target::parse("unknown").is_err());
+    }
+    #[test]
+    fn base_url_rules() {
+        for url in [
+            "https://example.com/release",
+            "http://127.0.0.1:1234/",
+            "http://localhost:1234/",
+        ] {
+            assert!(Release::new(url, "v1").is_ok());
+        }
+        for url in ["http://example.com", "file:///x"] {
+            assert!(Release::new(url, "v1").is_err());
+        }
+        assert_eq!(
+            Release::new("http://localhost:1234/", "v1")
+                .unwrap()
+                .url("SHA256SUMS")
+                .unwrap()
+                .as_str(),
+            "http://localhost:1234/v1/SHA256SUMS"
+        );
+        assert!(Release::select(None, false).unwrap().is_none());
+        assert!(Release::select(None, true).unwrap().is_some());
+        assert!(
+            Release::select(Some("http://localhost"), false)
+                .unwrap()
+                .is_some()
+        );
+        assert!(Release::select(Some(""), false).unwrap().is_none());
+    }
+    #[tokio::test]
+    async fn download_and_reuse() {
+        let target = Target::host().unwrap();
+        let files = fake_release("v1", target.triple(), "#!/bin/sh\n");
+        let address = serve_files(files);
+        let release = Release::new(&format!("http://{address}"), "v1").unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let dir = release
+            .ensure(cache.path(), Component::Core, target)
+            .await
+            .unwrap();
+        assert!(dir.join("swarmy-core").is_file());
+        assert!(dir.join("libfdb_c.so").is_file());
+        assert!(dir.join(".sha256").is_file());
+        assert_eq!(
+            dir,
+            release
+                .ensure(cache.path(), Component::Core, target)
+                .await
+                .unwrap()
+        );
+        let changed = fake_release("v1", target.triple(), "#!/bin/sh\necho changed\n");
+        let address = serve_files(changed);
+        let release = Release::new(&format!("http://{address}"), "v1").unwrap();
+        release
+            .ensure(cache.path(), Component::Core, target)
+            .await
+            .unwrap();
+        assert!(
+            std::fs::read_to_string(dir.join("swarmy-core"))
+                .unwrap()
+                .contains("changed")
+        );
+    }
+    #[tokio::test]
+    async fn corrupt_and_missing() {
+        let target = Target::host().unwrap();
+        let mut files = fake_release("v1", target.triple(), "#!/bin/sh\n");
+        files[0].1 = b"corrupt".to_vec();
+        let address = serve_files(files);
+        let release = Release::new(&format!("http://{address}"), "v1").unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let error = release
+            .ensure(cache.path(), Component::Core, target)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("checksum mismatch")
+                && error.contains(&Release::asset(Component::Core, target)),
+            "{error}"
+        );
+        assert!(
+            !release
+                .unpacked(cache.path(), Component::Core, target)
+                .exists()
+        );
+        assert!(
+            std::fs::read_dir(cache.path().join("v1"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        let address = serve_files(vec![]);
+        let release = Release::new(&format!("http://{address}"), "v1").unwrap();
+        assert!(
+            release
+                .ensure(cache.path(), Component::Core, target)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("no swarmy release")
+        );
+    }
+    #[tokio::test]
+    async fn offline_uses_complete_cache() {
+        let target = Target::host().unwrap();
+        let address = serve_files(fake_release("v1", target.triple(), "#!/bin/sh\n"));
+        let cache = tempfile::tempdir().unwrap();
+        let release = Release::new(&format!("http://{address}"), "v1").unwrap();
+        let dir = release
+            .ensure(cache.path(), Component::Core, target)
+            .await
+            .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed = listener.local_addr().unwrap();
+        drop(listener);
+        let offline = Release::new(&format!("http://{closed}"), "v1").unwrap();
+        assert_eq!(
+            offline
+                .ensure(cache.path(), Component::Core, target)
+                .await
+                .unwrap(),
+            dir
+        );
+    }
+}

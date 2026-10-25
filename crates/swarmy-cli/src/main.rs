@@ -129,13 +129,17 @@ enum Command {
 
 fn main() -> anyhow::Result<()> {
     let cli = swarmy_version::parse::<Cli>("swarmy")?;
-    swarmy_cloud::set_output_sink(|message, stderr| {
-        if stderr {
-            eprintln!("{message}");
-        } else {
-            println!("{message}");
-        }
-    });
+    if json_core_ensure(&cli) {
+        swarmy_cloud::set_output_sink(|_, _| {});
+    } else {
+        swarmy_cloud::set_output_sink(|message, stderr| {
+            if stderr {
+                eprintln!("{message}");
+            } else {
+                println!("{message}");
+            }
+        });
+    }
     swarmy_cloud::select(cli.remote.as_deref())?;
     // Background service logs must not overwrite the full-screen transcript.
     let writer = if matches!(cli.command, Command::Chat { .. }) {
@@ -439,4 +443,8 @@ mod docs_command_tests {
             "{error}"
         );
     }
+}
+
+fn json_core_ensure(cli: &Cli) -> bool {
+    cli.json && matches!(cli.command, Command::Core { .. })
 }

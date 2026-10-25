@@ -274,6 +274,7 @@ fn api_snapshot_reports_live_services_and_scheduler_failure() {
         server.join().unwrap();
         let report: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(check(&report, "API")["status"], "pass", "{report}");
+        assert_eq!(check(&report, "core version")["status"], "pass", "{report}");
         assert_eq!(
             check(&report, "scheduler")["status"],
             if alive { "pass" } else { "fail" }
@@ -326,6 +327,19 @@ fn api_check_accepts_same_major_api_despite_binary_drift() {
         server.join().unwrap();
         let report: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(check(&report, "API")["status"], status, "{report}");
+        assert_eq!(check(&report, "core version")["status"], "fail");
+        assert!(
+            check(&report, "core version")["detail"]
+                .as_str()
+                .unwrap()
+                .contains("9.9.9 (other)")
+        );
+        assert!(
+            check(&report, "core version")["detail"]
+                .as_str()
+                .unwrap()
+                .contains(swarmy_version::IDENTITY)
+        );
     }
 }
 
