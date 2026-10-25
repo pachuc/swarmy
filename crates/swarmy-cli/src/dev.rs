@@ -27,6 +27,9 @@ const SERVICES: [(&str, &str); 4] = [
     ("gateway", "gateway ready"),
     ("api", "api ready"),
 ];
+/// The backing tool installer is compiled in so it needs no checkout.
+/// The script remains the source for make, remote provisioning, and image setup.
+const INSTALL_DEV_TOOLS: &str = include_str!("../../../scripts/install-dev-tools.sh");
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Subcommand)]
@@ -45,6 +48,12 @@ pub(crate) enum Command {
     Logs {
         #[arg(value_enum)]
         service: Option<DevService>,
+    },
+    /// Install FoundationDB, NATS, and SeaweedFS for the local stack (Linux x86-64)
+    InstallTools {
+        /// Install root: tools go to PREFIX/bin and PREFIX/lib (default ~/.local)
+        #[arg(long)]
+        prefix: Option<PathBuf>,
     },
     #[command(hide = true)]
     Supervise {
@@ -149,6 +158,10 @@ pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
             Ok(())
         }
         Command::Status => status(&local(json)?).await,
+        Command::InstallTools { prefix } => {
+            reject_json(json)?;
+            install_tools(prefix.as_deref()).await
+        }
         Command::Logs { service } => {
             logs(
                 &local(json)?.state,
@@ -165,10 +178,15 @@ pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
 /// commands. `dev` manages local processes with progress lines, so it has no
 /// JSON rendering; the explicit rejection keeps `--json dev` from silently
 /// printing text.
-fn local(json: bool) -> Result<Layout> {
+fn reject_json(json: bool) -> Result<()> {
     if json {
         bail!("--json is not supported for dev commands; run without it for human-readable output");
     }
+    Ok(())
+}
+
+fn local(json: bool) -> Result<Layout> {
+    reject_json(json)?;
     Layout::discover()
 }
 
@@ -622,5 +640,26 @@ async fn logs(state: &Path, service: Option<&str>) -> Result<()> {
         result = child.wait() => { ensure!(result?.success(), "tail failed"); },
         result = tokio::signal::ctrl_c() => { result?; child.kill().await?; },
     }
+    Ok(())
+}
+
+/// Run the embedded installer with bash, inheriting stdio so download progress shows.
+async fn install_tools(prefix: Option<&Path>) -> Result<()> {
+    let mut command = Process::new("bash");
+    command
+        .arg("-c")
+        .arg(INSTALL_DEV_TOOLS)
+        .arg("swarmy dev install-tools");
+    if let Some(prefix) = prefix {
+        command.arg("--prefix").arg(prefix);
+    }
+    let status = command
+        .status()
+        .await
+        .context("cannot run bash for the backing tool installer")?;
+    ensure!(
+        status.success(),
+        "backing tool installation failed ({status})"
+    );
     Ok(())
 }

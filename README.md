@@ -8,75 +8,36 @@ The current architecture as a [sysy](https://github.com/pachuc/sysy) design live
 [docs/architecture.sysy.json](docs/architecture.sysy.json). Open it with
 `sysy ui docs/architecture.sysy.json`, or read it with `sysy show`.
 
-## Install
+## Getting started
 
-Use a Linux x86-64 machine with Git, Bash, curl 7.75+, tar, a C/C++ toolchain,
-pkg-config, clang/libclang (for Rust bindgen), and Rust via rustup. On Ubuntu,
-those build prerequisites are `build-essential pkg-config clang libclang-dev
-ca-certificates curl tar git`. Provision them first if they are absent; the
-backing tools installer itself needs no root access.
-
-Clone the repository and install the pinned Rust toolchain:
+Install the client from a release:
 
 ```sh
-git clone https://github.com/pachuc/swarmy.git
-cd swarmy
-rustup show
+curl -fsSL https://raw.githubusercontent.com/pachuc/swarmy/master/scripts/install.sh | sh
 ```
 
-### Install backing tools without root
+For a pinned release or another install root, pass `sh -s -- --version vX.Y.Z
+--prefix /your/install/root` to the same pipeline. Linux and macOS on x86_64
+and aarch64 are supported. The archive is checked against the release's
+SHA256SUMS, but releases are not signed. The default destination is
+`~/.local/bin`; the installer prints a PATH line if needed.
 
 ```sh
-scripts/install-dev-tools.sh
-```
-
-This installs FoundationDB 7.3.79, NATS 2.14.6, and SeaweedFS 4.47 under
-`~/.local` (`make dev-tools` does the same). Then install every swarmy binary
-with one command:
-
-```sh
-make install
-```
-
-It finds the FoundationDB client library in `~/.local/lib` or a system
-directory, builds the client and the services, and installs them into
-`~/.cargo/bin`. The client links no database library and needs no `libfdb_c`;
-only the service binaries link it. `make install-client` installs just the
-client without the library, `make install-core` the services, and
-`make install-node` adds `swarmyd` for a machine with root. `make check` runs
-every pull-request CI job (see `make help`) and `make uninstall` removes the binaries. For a library in
-another location, run `make install SWARMY_FDB_LIB_DIR=/absolute/path/lib`. The library directory is
-embedded in every binary's runtime search path. swarmy adds that prefix's `bin` directory and `~/.local/bin`
-to the search path of its backing-stack subprocesses, so no library or executable
-path exports are needed. Keep the library at that location, or reinstall swarmy
-with the new `SWARMY_FDB_LIB_DIR`.
-
-### Install from a checkout with system backing tools
-
-If the pinned backing tools and FoundationDB client library are already installed
-system-wide (as in CI), the same `make install` finds the library in
-`/usr/local/lib` or `/usr/lib` and needs no variable.
-
-Cargo installs `swarmy` and the services
-into `~/.cargo/bin` by default. Keep them together: `swarmy dev up` refuses to
-start a service whose version differs from the CLI, and `make install` is the
-way to bring them back in step. With rustup's normal shell
-setup, start the development system from this checkout:
-
-```sh
-swarmy version
+swarmy dev install-tools
 swarmy dev up
-swarmy doctor
-swarmy run "hello"
-swarmy dev down
+ANTHROPIC_API_KEY=... swarmy auth set anthropic --from-env
+swarmy chat --provider anthropic
 ```
 
-If your shell does not have Cargo's bin directory on PATH, use
-`~/.cargo/bin/swarmy` directly. Retain the checkout: `dev` uses its
-`scripts/dev-stack.sh`. `dev up` creates `.swarmy/config.toml` and defaults to a
-fake provider that requires no credentials. `doctor` reports each dependency,
-the resolved configuration path, credentials when using ChatGPT, and backing
-stack connectivity. It exits 1 if any check fails; `swarmy doctor --json` returns
-one JSON object with `ok` and `checks` fields.
+`swarmy dev install-tools` is Linux x86-64 only. `swarmy dev up` defaults to
+the fake provider without credentials. Run `swarmy auth set` after `dev up`:
+it stores the key in the cluster. ChatGPT sign-in (`swarmy auth login`) currently
+needs the `swarmy-auth` helper from a source install. See
+[docs/providers.md](docs/providers.md) for provider setup. Run `swarmy doctor`
+to check dependencies and connectivity.
 
-See [docs/DEV.md](docs/DEV.md) for configuration, credentials, and development.
+## Building from source
+
+See the [backing service installation](docs/DEV.md#backing-service-installation)
+and [quick start](docs/DEV.md#quick-start) for build prerequisites, checkout
+installation, and development.

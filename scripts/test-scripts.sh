@@ -18,6 +18,7 @@ bash scripts/test-check-ast-grep-rules.sh
 bash scripts/test-remote-upgrade.sh
 bash scripts/test-remote-s3-env.sh
 bash scripts/test-migrate-config.sh
+bash scripts/test-install.sh
 bash scripts/test-dev-stack.sh
 bash scripts/test-s3-compat-probe.sh
 bash scripts/remote-provision-test.sh
