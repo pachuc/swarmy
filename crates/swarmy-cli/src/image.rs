@@ -20,39 +20,7 @@ pub(crate) async fn run(command: crate::image_command::Command, json: bool) -> R
             tag,
             target,
             set_default,
-        } => {
-            let tag = tag.as_deref().unwrap_or(swarmy_version::RELEASE_TAG);
-            let target = target.as_deref().map_or_else(Target::host, Target::parse)?;
-            let image = release_image(tag);
-            if pull_release_image(&crate::dev::image_cache()?, tag, target, json)
-                .await?
-                .is_none()
-            {
-                bail!(
-                    "this is a development build of swarmy with no release to pull from; build the image from a checkout with swarmy image build images/base-ubuntu, or set SWARMY_RELEASE_BASE_URL"
-                );
-            }
-            if set_default {
-                let loaded = swarmy_config::Settings::load_base()?;
-                let path = loaded.path.context("no configuration file to update; run swarmy dev up first or set SWARMY_DEFAULT_IMAGE")?;
-                crate::dev::set_default_image(&path, &image)?;
-                if json {
-                    println!(
-                        "{}",
-                        serde_json::json!({"default_image": image, "config": path})
-                    );
-                } else {
-                    println!(
-                        "default_image = {image} in {}; run swarmy dev up to restart the API with it",
-                        path.display()
-                    );
-                    if std::env::var_os("SWARMY_DEFAULT_IMAGE").is_some() {
-                        println!("note: SWARMY_DEFAULT_IMAGE overrides it");
-                    }
-                }
-            }
-            Ok(())
-        }
+        } => pull(tag, target, set_default, json).await,
         Command::Ls => {
             let (client, endpoint) = swarmy_client::api_client::connect()?;
             let mut after = None;
@@ -108,6 +76,48 @@ pub(crate) async fn run(command: crate::image_command::Command, json: bool) -> R
             Ok(())
         }
     }
+}
+
+/// Pull a release image and optionally persist it as the default.
+async fn pull(
+    tag: Option<String>,
+    target: Option<String>,
+    set_default: bool,
+    json: bool,
+) -> Result<()> {
+    let tag = tag.as_deref().unwrap_or(swarmy_version::RELEASE_TAG);
+    let target = target.as_deref().map_or_else(Target::host, Target::parse)?;
+    let image = release_image(tag);
+    if pull_release_image(&crate::dev::image_cache()?, tag, target, json)
+        .await?
+        .is_none()
+    {
+        bail!(
+            "this is a development build of swarmy with no release to pull from; build the image from a checkout with swarmy image build images/base-ubuntu, or set SWARMY_RELEASE_BASE_URL"
+        );
+    }
+    if set_default {
+        let loaded = swarmy_config::Settings::load_base()?;
+        let path = loaded.path.context(
+            "no configuration file to update; run swarmy dev up first or set SWARMY_DEFAULT_IMAGE",
+        )?;
+        crate::dev::set_default_image(&path, &image)?;
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({"default_image": image, "config": path})
+            );
+        } else {
+            println!(
+                "default_image = {image} in {}; run swarmy dev up to restart the API with it",
+                path.display()
+            );
+            if std::env::var_os("SWARMY_DEFAULT_IMAGE").is_some() {
+                println!("note: SWARMY_DEFAULT_IMAGE overrides it");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Build a recipe locally and register it through the control plane.
