@@ -273,10 +273,9 @@ make install
 ```
 
 `make install` is `make install-client` plus `make install-core`. The client
-links no database library and needs no `libfdb_c`; the service binaries
-(scheduler, worker, gateway, API) still link it. Install only the client with
+links no database library and needs no `libfdb_c`; `swarmy-core` (scheduler, worker, gateway, API, node, and vol) still links it. Install only the client with
 `make install-client` when the services live elsewhere. `make install-client`
-builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs the services and `swarmyd`. The `remote` feature compiles the EC2, SSM, S3,
+builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs `swarmy-core`. The `remote` feature compiles the EC2, SSM, S3,
 and IAM SDKs behind the `swarmy remote` provisioning commands. A plain
 `cargo build -p swarmy-cli` leaves that feature off for the slimmer node
 binary; add `--features remote` to a plain cargo invocation when the
@@ -284,7 +283,7 @@ provisioning commands are needed.
 
 The Makefile looks for the client library in `~/.local/lib`, `/usr/local/lib`,
 `/usr/lib`, and `/usr/lib/x86_64-linux-gnu`, in that order, and passes the first
-match as `SWARMY_FDB_LIB_DIR`. `make install-node` also installs `swarmyd`,
+match as `SWARMY_FDB_LIB_DIR`. `make install-node` also installs `swarmy-core`,
 `make check` runs every pull-request CI job, and `make uninstall` removes the
 binaries. Use `scripts/install-dev-tools.sh --prefix /absolute/path` for another
 location, then `make install SWARMY_FDB_LIB_DIR=/absolute/path/lib`. The build embeds that library directory in the
@@ -296,7 +295,7 @@ the installer and process supervisor currently target Linux.
 Local Linux nodes also need `runc`, `passt` (which supplies `pasta`),
 `iproute2`, and `util-linux` (which supplies `nsenter`). Install them with
 `sudo apt-get install runc passt iproute2 util-linux` before
-starting `swarmyd`.
+starting `swarmy-core node`.
 
 swarmy searches the caller's PATH first, then the build-time install prefix's
 `bin`, `~/.local/bin`, and `/usr/sbin`. It passes this path to the stack script.

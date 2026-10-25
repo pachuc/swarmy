@@ -38,11 +38,13 @@ async fn serve(args: Vec<OsString>) -> anyhow::Result<()> {
         () = ephemeral::run(&store, settings.scheduler.ephemeral_retention_secs) => Ok(()),
         () = swarmy_config::shutdown_signal() => Ok(()),
     };
-    // Drain queued turn metrics before exit so shutdown keeps every write.
-    // The flush runs on every path, including a scheduler error, so a
-    // failing run still keeps the metrics it queued.
+    flush_metrics(&store).await;
+    outcome
+}
+
+// Flush even when the scheduler loop failed so turn metrics survive shutdown.
+async fn flush_metrics(store: &swarmy_store::Store) {
     if let Err(error) = store.flush_turn_metrics().await {
         tracing::warn!(error = %swarmy_core::error_chain(&error), "scheduler metric flush failed");
     }
-    outcome
 }

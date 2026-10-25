@@ -39,11 +39,11 @@ make install
 ```
 
 It finds the FoundationDB client library in `~/.local/lib` or a system
-directory, builds the client and the services, and installs them into
+directory, builds the client and `swarmy-core`, and installs them into
 `~/.cargo/bin`. The client links no database library and needs no `libfdb_c`;
-only the service binaries link it. `make install-client` installs just the
-client without the library, `make install-core` the services, and
-`make install-node` adds `swarmyd` for a machine with root. `make check` runs
+only `swarmy-core` links it. `make install-client` installs just the
+client without the library, `make install-core` the `swarmy-core` service executable, and
+`make install-node` adds only the headless client. `make check` runs
 every pull-request CI job (see `make help`) and `make uninstall` removes the binaries. For a library in
 another location, run `make install SWARMY_FDB_LIB_DIR=/absolute/path/lib`. The library directory is
 embedded in every binary's runtime search path. swarmy adds that prefix's `bin` directory and `~/.local/bin`

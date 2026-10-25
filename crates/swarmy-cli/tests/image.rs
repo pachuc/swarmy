@@ -181,12 +181,12 @@ fn image_json(api: &ApiService, arguments: &[&str]) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-/// Run the sibling `swarmyd` binary beside the test `swarmy` binary. Volume
+/// Run the sibling `swarmy-core` binary beside the test `swarmy` binary. Volume
 /// management moved to the node daemon, so the retag property is observed
 /// through `swarmy-core vol` rather than the store.
 fn core_vol_json(arguments: &[&str]) -> serde_json::Value {
-    let swarmyd = ensure_sibling("swarmy-core-bin", "swarmy-core");
-    let output = Command::new(&swarmyd)
+    let core = ensure_sibling("swarmy-core-bin", "swarmy-core");
+    let output = Command::new(&core)
         .arg("vol")
         .arg("--json")
         .args(arguments)
