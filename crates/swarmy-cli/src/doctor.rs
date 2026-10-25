@@ -119,7 +119,10 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
 async fn core_binary_check(remote: bool) -> Check {
     let source =
         crate::dev::CoreSource::select(std::env::var_os("SWARMY_CORE_BIN").map(PathBuf::from));
-    let fix = format!("Reinstall from the CLI checkout: {}", crate::dev::REINSTALL);
+    let fix = source.as_ref().map_or_else(
+        |_| format!("Reinstall from the CLI checkout: {}", crate::dev::REINSTALL),
+        |source| source.fix().unwrap_or_else(|error| format!("{error:#}")),
+    );
     let (path, not_downloaded): (anyhow::Result<PathBuf>, bool) = match source {
         Ok(crate::dev::CoreSource::Explicit(path)) => (Ok(path), false),
         Ok(crate::dev::CoreSource::Development) => {
@@ -422,7 +425,17 @@ async fn api_checks(
         },
         "Reinstall the CLI and API from checkouts with the same major API version.",
     ));
-    checks.push(Check::new("core version", crate::version_guard::core_mismatch(&health).map_or_else(|| Ok(format!("{} matches this client", swarmy_version::IDENTITY)), Err), "Run swarmy dev up, or swarmy remote upgrade NAME for a node; run and chat refuse a mismatched core unless --allow-version-mismatch."));
+    checks.push(Check::new(
+        "core version",
+        crate::version_guard::core_mismatch(&health).map_or_else(
+            || Ok(format!("{} matches this client", swarmy_version::IDENTITY)),
+            Err,
+        ),
+        concat!(
+            "Run swarmy dev up, or swarmy remote upgrade NAME for a node; ",
+            "run and chat refuse a mismatched core unless --allow-version-mismatch."
+        ),
+    ));
     let snapshot = swarmy_client::api_client::call(&endpoint, client.doctor())
         .await
         .map_err(|error| format!("{error:#}"));
