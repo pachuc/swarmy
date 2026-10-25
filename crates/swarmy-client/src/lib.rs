@@ -91,7 +91,7 @@ pub fn upload_timeout(size_bytes: u64) -> Duration {
 }
 
 /// Bytes of offset and length framing before each data extent in an image upload.
-const EXTENT_HEADER_BYTES: u64 = 16;
+const EXTENT_HEADER_BYTES: u16 = 16;
 
 /// Byte ranges of `file` that hold data, from `SEEK_DATA`/`SEEK_HOLE`, as (offset, length).
 fn data_extents(file: &std::fs::File) -> std::io::Result<Vec<(u64, u64)>> {
@@ -461,7 +461,7 @@ impl Client {
         // reject it from the header without reading the extents.
         let len = extents
             .iter()
-            .map(|&(_, length)| EXTENT_HEADER_BYTES + length)
+            .map(|&(_, length)| u64::from(EXTENT_HEADER_BYTES) + length)
             .sum::<u64>();
         let path = upload.file.to_path_buf();
         let stream = futures_util::stream::iter(extents)
@@ -470,9 +470,7 @@ impl Client {
                 async move {
                     let mut file = tokio::fs::File::open(&path).await?;
                     file.seek(std::io::SeekFrom::Start(offset)).await?;
-                    let mut header = Vec::with_capacity(
-                        usize::try_from(EXTENT_HEADER_BYTES).expect("extent header fits in usize"),
-                    );
+                    let mut header = Vec::with_capacity(usize::from(EXTENT_HEADER_BYTES));
                     header.extend_from_slice(&offset.to_le_bytes());
                     header.extend_from_slice(&length.to_le_bytes());
                     let head =
