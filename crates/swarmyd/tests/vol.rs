@@ -54,8 +54,10 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Option<Self> {
-        if !rustix::process::geteuid().is_root() {
-            eprintln!("skipping volume acceptance: run the built test binary with sudo");
+        if !swarmy_testkit::require_root_host(
+            "volume acceptance",
+            &["mkfs.ext4", "mount", "umount"],
+        ) {
             return None;
         }
         for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
