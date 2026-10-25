@@ -595,6 +595,8 @@ live in the node daemon rather than the client. Run them with `swarmy-core vol`
 on a machine with root and the NBD module (a node, or a local machine with
 the dev stack sourced):
 
+Root-only tests check root, `/dev/nbd0`, and required tools; suite-node scripts set `SWARMY_REQUIRE_ROOT_SUITES=1` so missing prerequisites fail rather than skip.
+
 ```bash
 source .dev/env
 sudo -E swarmy-core vol create base-ubuntu:dev

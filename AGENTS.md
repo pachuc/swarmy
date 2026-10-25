@@ -174,7 +174,7 @@ Cancelled: channels (slice 5, see `backlog/chaty.md`), sandbox-pause-resume
 - **Root-only tests run on real machines, not CI.** A nightly job on a real
   node was built and then dropped in September 2026: automation plus AWS
   secrets was not worth it at this size. The rule is that whoever changes the
-  covered code runs the suites by hand and says so in their report.
+  covered code runs the suites by hand and says so in their report. The root-suite gate checks root, `/dev/nbd0`, and required tools; suite-node scripts set `SWARMY_REQUIRE_ROOT_SUITES=1` so missing prerequisites fail instead of skipping.
 
 ## Building and testing
 

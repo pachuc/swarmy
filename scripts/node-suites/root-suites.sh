@@ -9,6 +9,7 @@
 set -uo pipefail
 branch=$1
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+export SWARMY_REQUIRE_ROOT_SUITES=1
 export SWARMY_FDB_LIB_DIR="$HOME/.local/lib"
 cd ~/chaos
 git fetch -q origin "$branch" && git checkout -q -B suite "${REV:-origin/$branch}" || { echo "checkout failed"; echo "SUITES_EXIT=1"; exit 2; }

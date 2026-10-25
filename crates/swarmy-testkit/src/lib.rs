@@ -33,7 +33,7 @@ mod subscribers;
 pub use dev_stack::FakeStack;
 pub use docs::check_docs_commands;
 pub use eventually::eventually;
-pub use gate::{opt_in_env, optional_env, require_stack};
+pub use gate::{opt_in_env, optional_env, require_root_host, require_stack};
 #[cfg(feature = "stack")]
 pub use image::image;
 #[cfg(feature = "script")]

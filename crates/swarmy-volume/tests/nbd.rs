@@ -212,10 +212,10 @@ async fn ext4_files_fio_detach_and_readahead() {
             .try_init(),
         "install test log subscriber",
     );
-    if command("id", &["-u"]).await.trim() != "0" {
-        tracing::warn!(
-            "skipping NBD integration test: root is required; execute the built test binary with sudo"
-        );
+    if !swarmy_testkit::require_root_host(
+        "NBD integration test",
+        &["mkfs.ext4", "mount", "umount", "fio"],
+    ) {
         return;
     }
     let root = tempfile::tempdir().unwrap();

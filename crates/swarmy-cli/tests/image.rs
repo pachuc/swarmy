@@ -201,8 +201,17 @@ fn core_vol_json(arguments: &[&str]) -> serde_json::Value {
 }
 
 fn needs_backing_services() -> bool {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping image acceptance test: not running as root");
+    if !swarmy_testkit::require_root_host(
+        "image acceptance",
+        &[
+            "debootstrap",
+            "mke2fs",
+            "debugfs",
+            "mount",
+            "umount",
+            "chroot",
+        ],
+    ) {
         return false;
     }
     for variable in [

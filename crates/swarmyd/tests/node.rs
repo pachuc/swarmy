@@ -382,11 +382,12 @@ async fn base_image(settings: &swarmy_config::Settings, store: &Store) -> Manife
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_node_scratch_is_local_persistent_and_removed_on_delete() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n"
-        || swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").is_none()
+    if !swarmy_testkit::require_root_host(
+        "root_node_scratch",
+        &["runc", "pasta", "mount", "umount"],
+    ) || swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").is_none()
         || swarmy_testkit::require_stack("SWARMY_S3_ENDPOINT").is_none()
     {
-        eprintln!("skipping scratch acceptance: root and dev stack are required");
         return;
     }
     swarmy_testkit::boot_fdb();
@@ -764,8 +765,10 @@ async fn scratch_idle(node: &mut Node, store: &Store) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_node_registration_runc_persistence_and_crash_recovery() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping node acceptance: run the built executable with sudo");
+    if !swarmy_testkit::require_root_host(
+        "root_node_registration_runc_persistence_and_crash_recovery",
+        &["runc", "pasta", "mount", "umount"],
+    ) {
         return;
     }
     for variable in ["SWARMY_FDB_CLUSTER_FILE", "SWARMY_S3_ENDPOINT"] {
@@ -915,8 +918,10 @@ async fn root_dev_stack_uses_sandbox_loopback() {
         eprintln!("skipping dev stack acceptance: SWARMY_TEST_BRANCH is not set");
         return;
     };
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping dev stack acceptance: root is required");
+    if !swarmy_testkit::require_root_host(
+        "root_dev_stack_uses_sandbox_loopback",
+        &["runc", "pasta", "mount", "umount"],
+    ) {
         return;
     }
     swarmy_testkit::boot_fdb();
@@ -1206,8 +1211,10 @@ async fn snapshot_tool_latency(node: &Node, store: &Store, sandbox: &Sandbox, vo
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_deleted_computer_stops_call_destroys_sandbox_and_detaches_device() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping computer deletion acceptance: run the built executable with sudo");
+    if !swarmy_testkit::require_root_host(
+        "root_deleted_computer_stops_call_destroys_sandbox_and_detaches_device",
+        &["runc", "pasta", "mount", "umount"],
+    ) {
         return;
     }
     for variable in [
@@ -1236,8 +1243,10 @@ async fn root_deleted_computer_stops_call_destroys_sandbox_and_detaches_device()
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_named_agent_calls_serialize_and_report_occupancy() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping shared calls acceptance: run the built executable with sudo");
+    if !swarmy_testkit::require_root_host(
+        "root_named_agent_calls_serialize_and_report_occupancy",
+        &["runc", "pasta", "mount", "umount"],
+    ) {
         return;
     }
     for variable in [
@@ -1270,8 +1279,10 @@ mod yield_tools;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_bash_yield_spill_stdin_and_web_fetch() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping bash yield acceptance: run the built executable with sudo");
+    if !swarmy_testkit::require_root_host(
+        "root_bash_yield_spill_stdin_and_web_fetch",
+        &["runc", "pasta", "mount", "umount"],
+    ) {
         return;
     }
     for variable in [
@@ -1301,8 +1312,10 @@ async fn root_bash_yield_spill_stdin_and_web_fetch() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_file_tools_run_on_agent_disk() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping file tools acceptance: run the built executable with sudo");
+    if !swarmy_testkit::require_root_host(
+        "root_file_tools_run_on_agent_disk",
+        &["runc", "pasta", "mount", "umount"],
+    ) {
         return;
     }
     for variable in [
