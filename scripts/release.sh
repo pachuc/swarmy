@@ -49,6 +49,7 @@ package() {
     dir=$(cd "$dir" && pwd)
     work=$(mktemp -d)
     export CARGO_PROFILE_RELEASE_STRIP=symbols
+    export SWARMY_RELEASE_BUILD=1
     case "$component" in
         client)
             name=swarmy
@@ -80,6 +81,7 @@ package() {
         if [ "$component" = client ]; then
             "$stage/swarmy" --version
             [ "$("$stage/swarmy" version --release)" = "v$(version)" ] || fail 'release tag mismatch'
+            "$stage/swarmy" --json version --release | grep -q '"release_build":true' || fail 'client is not marked as a release build'
             "$stage/swarmy" version --release
         else
             ldd "$stage/swarmy-core" | grep -F "libfdb_c.so => $stage/libfdb_c.so" || fail 'bundled libfdb_c.so not loaded'

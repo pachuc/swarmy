@@ -1,4 +1,8 @@
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 use swarmy_cloud::ssh as remote_ssh;
 
 use serde::Serialize;
@@ -83,24 +87,43 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
             "Run swarmy dev install-tools (scripts/install-dev-tools.sh from a checkout). swarmy searches PATH, the install prefix's bin directory, and ~/.local/bin automatically; add another location to PATH if needed."));
         }
     }
-    for name in ["swarmy-core"] {
-        // Companions are exec'd beside the CLI; services honor the caller's PATH.
-        let executable = crate::dev::service_binary(name);
-        let result = match executable {
-            Ok(path) => crate::dev::version_check(&path, name).await,
-            Err(error) => Err(error),
-        };
-        let result = result.map_err(|error| format!("{error:#}"));
-        let fix = format!("Reinstall from the CLI checkout: {}", crate::dev::REINSTALL);
-        checks.push(match (remote, result) {
-            (true, Err(detail)) => Check::warn(
-                name,
-                format!("{detail}; service binary runs on the remote node"),
-                &fix,
-            ),
-            (_, result) => Check::new(name, result, &fix),
-        });
-    }
+    let core_source =
+        crate::dev::CoreSource::select(std::env::var_os("SWARMY_CORE_BIN").map(PathBuf::from));
+    let executable = match core_source {
+        Ok(crate::dev::CoreSource::Explicit(path)) => Ok(path),
+        Ok(crate::dev::CoreSource::Development) => crate::dev::service_binary("swarmy-core"),
+        Ok(crate::dev::CoreSource::Release(release)) => {
+            let cache = crate::dev::core_cache();
+            let host = swarmy_cloud::release::Target::host();
+            match (cache, host) {
+                (Ok(cache), Ok(host)) => {
+                    match release.cached(&cache, swarmy_cloud::release::Component::Core, host) {
+                        Some(path) => Ok(path.join("swarmy-core")),
+                        None => Err(anyhow::anyhow!(
+                            "not downloaded yet; run swarmy dev up or swarmy core ensure"
+                        )),
+                    }
+                }
+                (Err(error), _) => Err(error),
+                (_, Err(error)) => Err(error.into()),
+            }
+        }
+        Err(error) => Err(error.into()),
+    };
+    let result = match executable {
+        Ok(path) => crate::dev::version_check(&path, "swarmy-core").await,
+        Err(error) => Err(error),
+    };
+    let result = result.map_err(|error| format!("{error:#}"));
+    let fix = format!("Reinstall from the CLI checkout: {}", crate::dev::REINSTALL);
+    checks.push(match (remote, result) {
+        (true, Err(detail)) => Check::warn(
+            "swarmy-core",
+            format!("{detail}; service binary runs on the remote node"),
+            &fix,
+        ),
+        (_, result) => Check::new("swarmy-core", result, &fix),
+    });
 
     let providers = if let Ok(loaded) = &loaded {
         checks.extend(remote_checks(loaded).await);
@@ -386,6 +409,7 @@ async fn api_checks(
         },
         "Reinstall the CLI and API from checkouts with the same major API version.",
     ));
+    checks.push(Check::new("core version", crate::version_guard::core_mismatch(&health).map_or_else(|| Ok(format!("{} matches this client", swarmy_version::IDENTITY)), Err), "Run swarmy dev up, or swarmy remote upgrade NAME for a node; run and chat refuse a mismatched core unless --allow-version-mismatch."));
     let snapshot = swarmy_client::api_client::call(&endpoint, client.doctor())
         .await
         .map_err(|error| format!("{error:#}"));
