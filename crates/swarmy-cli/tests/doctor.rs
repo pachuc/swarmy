@@ -259,6 +259,7 @@ fn api_fixture(scheduler_alive: bool) -> (Fixture, std::thread::JoinHandle<()>) 
                 "{{\"services\":[{{\"role\":\"scheduler\",\"instance_id\":\"s1\",\"version\":\"0.1.0\",\"alive\":{scheduler_alive},\"providers\":[],\"capacity\":null}},{{\"role\":\"worker\",\"instance_id\":\"w1\",\"version\":\"0.1.0\",\"alive\":true,\"providers\":[],\"capacity\":null}},{{\"role\":\"gateway\",\"instance_id\":\"g1\",\"version\":\"0.1.0\",\"alive\":true,\"providers\":[\"fake\"],\"capacity\":null}}],\"images\":[\"fixture:test\"],\"default_image\":\"fixture:test\",\"credentials\":[]}}"
             ),
             "[]".to_owned(),
+            "[]".to_owned(),
         ] {
             serve_one(&listener, &body);
         }
@@ -295,6 +296,71 @@ fn api_snapshot_reports_live_services_and_scheduler_failure() {
 }
 
 #[test]
+fn gateway_providers_are_unique_and_missing_selection_fails() {
+    for (selected, route_missing, expected_status) in [
+        ("fake", false, "pass"),
+        ("openai", false, "fail"),
+        ("fake", true, "fail"),
+    ] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let fixture = Fixture::new();
+        fixture.config(&format!(
+            "[selection]\nprovider = '{selected}'\n[api]\nurl = 'http://{}'\ntoken = 'fixture'\n",
+            listener.local_addr().unwrap()
+        ));
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let health = serde_json::json!({
+                "version": swarmy_version::VERSION,
+                "git_commit": swarmy_version::GIT_COMMIT,
+                "api_version": swarmy_api_types::API_VERSION,
+                "default_provider": "fake",
+                "services": [],
+                "node_count": 0,
+            })
+            .to_string();
+            let snapshot = serde_json::json!({
+                "services": [
+                    {"role":"scheduler","instance_id":"s1","version":"test","alive":true,"providers":[],"capacity":null},
+                    {"role":"worker","instance_id":"w1","version":"test","alive":true,"providers":[],"capacity":null},
+                    {"role":"gateway","instance_id":"g1","version":"test","alive":true,"providers":["fake","anthropic"],"capacity":null},
+                    {"role":"gateway","instance_id":"g2","version":"test","alive":true,"providers":["fake"],"capacity":null}
+                ], "images":[], "default_image":null, "credentials":[]
+            }).to_string();
+            let routes = if route_missing {
+                serde_json::json!([{"name":"primary","steps":[{"provider":"openai","entry":"*"}],"updated_at":"2026-01-01T00:00:00Z"}]).to_string()
+            } else {
+                "[]".into()
+            };
+            for body in [health, snapshot, "[]".into(), routes] {
+                serve_one(&listener, &body);
+            }
+        });
+        let output = fixture.doctor(true);
+        server.join().unwrap();
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let gateway = check(&report, "gateway providers");
+        assert_eq!(gateway["status"], expected_status, "{report}");
+        assert!(
+            gateway["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("anthropic, fake")
+        );
+        if expected_status == "fail" {
+            assert_eq!(output.status.code(), Some(1));
+            assert!(
+                gateway["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("unserved: openai")
+            );
+            assert!(gateway["fix"].as_str().unwrap().contains("gateway log"));
+        }
+    }
+}
+
+#[test]
 fn api_check_accepts_same_major_api_despite_binary_drift() {
     for (api_version, status) in [("1.9.0", "pass"), ("2.0.0", "fail")] {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -319,7 +385,12 @@ fn api_check_accepts_same_major_api_despite_binary_drift() {
             let snapshot = "{\"services\":[{\"role\":\"scheduler\",\"instance_id\":\"s1\",\
                 \"version\":\"0.1.0\",\"alive\":true,\"providers\":[],\"capacity\":null}],\
                 \"images\":[],\"default_image\":null,\"credentials\":[]}";
-            for body in [health, snapshot.to_owned(), "[]".to_owned()] {
+            for body in [
+                health,
+                snapshot.to_owned(),
+                "[]".to_owned(),
+                "[]".to_owned(),
+            ] {
                 serve_one(&listener, &body);
             }
         });

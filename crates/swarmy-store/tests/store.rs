@@ -71,6 +71,48 @@ async fn service_health_becomes_stale_then_expires() {
 }
 
 #[tokio::test]
+async fn clean_shutdown_removes_only_own_service_heartbeat() {
+    use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole};
+    let Some(f) = TestStore::memory() else { return };
+    let mut record = ServiceHeartbeat {
+        role: ServiceRole::Gateway,
+        instance_id: "gateway-test".into(),
+        version: "test".into(),
+        host: "localhost".into(),
+        started_at: timestamp(1000),
+        last_seen: timestamp(1000),
+        detail: ServiceDetail::Providers(vec!["fake".into()]),
+    };
+    f.store.put_service_heartbeat(&record).await.unwrap();
+    record.started_at = timestamp(1001);
+    record.last_seen = timestamp(1001);
+    f.store.put_service_heartbeat(&record).await.unwrap();
+    f.store
+        .remove_service_heartbeat(&record.role, &record.instance_id, timestamp(1000))
+        .await
+        .unwrap();
+    assert_eq!(
+        f.store
+            .list_services_at(timestamp(1001))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    f.store
+        .remove_service_heartbeat(&record.role, &record.instance_id, record.started_at)
+        .await
+        .unwrap();
+    assert!(
+        f.store
+            .list_services_at(timestamp(1001))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn service_listing_pages_past_max_scan_limit() {
     use swarmy_store::{
         MAX_SCAN_LIMIT, SERVICE_EXPIRE_SECONDS, ServiceDetail, ServiceHeartbeat, ServiceRole,

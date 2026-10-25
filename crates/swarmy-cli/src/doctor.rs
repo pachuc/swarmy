@@ -444,7 +444,16 @@ async fn api_checks(
             let providers = swarmy_client::api_client::call(&endpoint, client.providers())
                 .await
                 .ok();
-            snapshot_checks(checks, snapshot, &loaded.settings, providers.as_deref())
+            let routes = swarmy_client::api_client::call(&endpoint, client.routes())
+                .await
+                .ok();
+            snapshot_checks(
+                checks,
+                snapshot,
+                &loaded.settings,
+                providers.as_deref(),
+                routes.as_deref(),
+            )
         }
         Err(error) => {
             checks.push(Check::new(
@@ -458,12 +467,15 @@ async fn api_checks(
 }
 
 fn gateway_providers(snapshot: &Snapshot) -> Vec<String> {
-    snapshot
+    let mut providers: Vec<_> = snapshot
         .services
         .iter()
         .filter(|s| s.role == swarmy_api_types::ServiceRole::Gateway && s.alive)
         .flat_map(|s| s.providers.iter().cloned())
-        .collect()
+        .collect();
+    providers.sort();
+    providers.dedup();
+    providers
 }
 
 fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
@@ -542,16 +554,6 @@ fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
             )
         },
     );
-    let gateway_providers = gateway_providers(snapshot);
-    checks.push(if gateway_providers.is_empty() {
-        Check::warn(
-            "gateway providers",
-            "no providers advertised",
-            "Configure a provider credential and restart the gateway.",
-        )
-    } else {
-        Check::new("gateway providers", Ok(gateway_providers.join(", ")), "")
-    });
 }
 
 fn snapshot_checks(
@@ -559,8 +561,33 @@ fn snapshot_checks(
     snapshot: Snapshot,
     settings: &Settings,
     api_providers: Option<&[swarmy_api_types::Provider]>,
+    routes: Option<&[swarmy_api_types::Route]>,
 ) -> Vec<crate::provider_report::ProviderRow> {
     service_checks(checks, &snapshot);
+    let served = gateway_providers(&snapshot);
+    let mut required = vec![settings.selection.provider.clone()];
+    if let Some(routes) = routes {
+        required.extend(
+            routes
+                .iter()
+                .filter_map(|route| route.steps.first().map(|step| step.provider.clone())),
+        );
+    }
+    required.sort();
+    required.dedup();
+    let missing: Vec<_> = required
+        .iter()
+        .filter(|provider| !served.contains(provider))
+        .collect();
+    checks.push(Check::new(
+        "gateway providers",
+        if missing.is_empty() {
+            Ok(served.join(", "))
+        } else {
+            Err(format!("{}; unserved: {}", if served.is_empty() { "none".into() } else { served.join(", ") }, missing.into_iter().cloned().collect::<Vec<_>>().join(", ")))
+        },
+        "Inspect the gateway log for provider discovery errors; configure credentials and restart the gateway.",
+    ));
     let mut rows = api_providers.map_or_else(
         || {
             settings
@@ -652,7 +679,7 @@ mod tests {
         }))
         .unwrap();
         let settings = Settings::default();
-        snapshot_checks(&mut checks, snapshot, &settings, None);
+        snapshot_checks(&mut checks, snapshot, &settings, None, None);
         assert!(
             checks
                 .iter()
