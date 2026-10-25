@@ -1195,7 +1195,7 @@ mod tests {
         for offset in [3 * chunk, 6 * chunk + 100] {
             file.write_all_at(&data, offset).unwrap();
         }
-        let extents = super::data_extents(&file).unwrap();
+        let extents = data_extents(&file).unwrap();
         assert!(extents.iter().map(|&(_, len)| len).sum::<u64>() < size);
         let mut previous = 0;
         for &(offset, length) in &extents {
