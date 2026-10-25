@@ -226,6 +226,22 @@ impl CoreSource {
         }
         Ok(swarmy_cloud::release::Release::for_client()?.map_or(Self::Development, Self::Release))
     }
+    pub(crate) fn fix(&self) -> Result<String> {
+        Ok(match self {
+            Self::Explicit(path) => format!(
+                "Rebuild {} at commit {} (cargo build -p swarmy-core-bin) or unset --core-bin/SWARMY_CORE_BIN",
+                path.display(),
+                swarmy_version::GIT_COMMIT
+            ),
+            Self::Release(release) => format!(
+                "Remove {}/{} and run swarmy dev up again to download {}",
+                core_cache()?.display(),
+                release.tag(),
+                release.tag()
+            ),
+            Self::Development => format!("Reinstall from the CLI checkout: {REINSTALL}"),
+        })
+    }
     pub(crate) const fn label(&self) -> &'static str {
         match self {
             Self::Explicit(_) => "explicit",
@@ -256,45 +272,26 @@ pub(crate) async fn resolve_core(
     use swarmy_cloud::release::{Component, Target};
     let source = CoreSource::select(core_bin)?;
     let label = source.label();
-    let (path, fix) = match source {
-        CoreSource::Explicit(path) => {
-            let canonical = path.canonicalize().with_context(|| {
-                format!(
-                    "--core-bin/SWARMY_CORE_BIN {} does not exist",
-                    path.display()
-                )
-            })?;
-            let fix = format!(
-                "Rebuild {} at commit {} (cargo build -p swarmy-core-bin) or unset --core-bin/SWARMY_CORE_BIN",
-                path.display(),
-                swarmy_version::GIT_COMMIT
-            );
-            (canonical, fix)
-        }
+    let fix = source.fix()?;
+    let path = match source {
+        CoreSource::Explicit(path) => path.canonicalize().with_context(|| {
+            format!(
+                "--core-bin/SWARMY_CORE_BIN {} does not exist",
+                path.display()
+            )
+        })?,
         CoreSource::Release(release) => {
             let cache = core_cache()?;
-            let fix = format!(
-                "Remove {}/{} and run swarmy dev up again to download {}",
-                cache.display(),
-                release.tag(),
-                release.tag()
-            );
-            (
-                release
-                    .ensure(
-                        &cache,
-                        Component::Core,
-                        target.map_or_else(Target::host, Ok)?,
-                    )
-                    .await?
-                    .join("swarmy-core"),
-                fix,
-            )
+            release
+                .ensure(
+                    &cache,
+                    Component::Core,
+                    target.map_or_else(Target::host, Ok)?,
+                )
+                .await?
+                .join("swarmy-core")
         }
-        CoreSource::Development => (
-            service_binary("swarmy-core")?,
-            format!("Reinstall from the CLI checkout: {REINSTALL}"),
-        ),
+        CoreSource::Development => service_binary("swarmy-core")?,
     };
     Ok(ResolvedCore {
         path,

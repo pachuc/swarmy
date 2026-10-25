@@ -87,16 +87,19 @@ impl Release {
     /// # Errors
     /// Rejects unsafe or invalid base URLs.
     pub fn new(base: &str, tag: &str) -> Result<Self> {
-        let base = url::Url::parse(base.trim_end_matches('/'))?;
-        let loopback = base.host_str().is_some_and(|host| {
-            host == "localhost"
-                || host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        });
+        let value = base;
+        let base = url::Url::parse(value.trim_end_matches('/')).map_err(|error| {
+            Error::context(error, format!("{BASE_URL_ENV}={value}: invalid URL"))
+        })?;
+        let loopback = match base.host() {
+            Some(url::Host::Domain("localhost")) => true,
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            _ => false,
+        };
         if base.scheme() != "https" && !(base.scheme() == "http" && loopback) {
             return Err(Error::other(format!(
-                "{BASE_URL_ENV} requires https or http on loopback"
+                "{BASE_URL_ENV}={value}: requires https or http on loopback"
             )));
         }
         Ok(Self {
@@ -313,13 +316,22 @@ mod tests {
         for url in [
             "https://example.com/release",
             "http://127.0.0.1:1234/",
+            "http://[::1]:1234",
             "http://localhost:1234/",
         ] {
             assert!(Release::new(url, "v1").is_ok());
         }
         for url in ["http://example.com", "file:///x"] {
-            assert!(Release::new(url, "v1").is_err());
+            let error = Release::new(url, "v1").unwrap_err();
+            assert!(error.to_string().contains(&format!("{BASE_URL_ENV}={url}")));
         }
+        let error = Release::new("not a url", "v1").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{BASE_URL_ENV}=not a url"))
+        );
+        assert!(std::error::Error::source(&error).is_some());
         assert_eq!(
             Release::new("http://localhost:1234/base/", "v1")
                 .unwrap()

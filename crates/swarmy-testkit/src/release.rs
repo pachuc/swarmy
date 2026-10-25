@@ -47,10 +47,10 @@ pub fn serve_files(files: Vec<(String, Vec<u8>)>) -> SocketAddr {
                 "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
-            connection
-                .write_all(header.as_bytes())
-                .expect("fixture response header");
-            connection.write_all(body).expect("fixture response body");
+            if connection.write_all(header.as_bytes()).is_err() {
+                continue;
+            }
+            drop(connection.write_all(body));
         }
     });
     addr

@@ -24,6 +24,16 @@ pub(crate) async fn run(
         .map(Target::parse)
         .transpose()?
         .map_or_else(Target::host, Ok)?;
+    if Some(target) != Target::host().ok()
+        && !matches!(
+            crate::dev::CoreSource::select(core_bin.clone())?,
+            crate::dev::CoreSource::Release(_)
+        )
+    {
+        anyhow::bail!(
+            "--target only selects a release download; --core-bin and development builds use this machine's binary"
+        );
+    }
     let core = crate::dev::resolve_core(core_bin, Some(target)).await?;
     if Some(target) == Target::host().ok() {
         crate::dev::check_versions(&core, allow_version_mismatch).await?;

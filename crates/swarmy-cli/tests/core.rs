@@ -95,6 +95,41 @@ fn core_ensure_fetches_verifies_and_reuses_the_release() {
     assert!(fixture.run(&args, Some(&url), None).status.success());
 }
 #[test]
+fn core_ensure_refuses_cross_target_local_core() {
+    let fixture = Fixture::new();
+    let other = if host_target() == "x86_64-unknown-linux-gnu" {
+        "aarch64-unknown-linux-gnu"
+    } else {
+        "x86_64-unknown-linux-gnu"
+    };
+    let path = fixture.0.path().join("core");
+    fs::write(&path, core_script(swarmy_version::IDENTITY)).unwrap();
+    executable(&path);
+    for core in [Some(path.as_path()), None] {
+        let output = fixture.run(&["core", "ensure", "--target", other], None, core);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(
+            "--target only selects a release download; --core-bin and development builds use this machine's binary"
+        ));
+    }
+    let output = fixture.run(
+        &[
+            "core",
+            "ensure",
+            "--target",
+            other,
+            "--core-bin",
+            path.to_str().unwrap(),
+        ],
+        None,
+        None,
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains(
+        "--target only selects a release download; --core-bin and development builds use this machine's binary"
+    ));
+}
+#[test]
 fn core_ensure_refuses_a_corrupt_archive() {
     let fixture = Fixture::new();
     let mut files = fake_release(
@@ -123,7 +158,16 @@ fn dev_up_launches_the_downloaded_core() {
     let pid = fs::read_to_string(state.join("supervisor.pid")).unwrap();
     let pid = pid.split_whitespace().next().unwrap();
     let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-    assert!(String::from_utf8_lossy(&command).contains("swarmy-core-"));
+    let path = fixture.0.path().join(format!(
+        ".swarmy/core/{}/swarmy-core-{}/swarmy-core",
+        swarmy_version::RELEASE_TAG,
+        host_target()
+    ));
+    assert!(
+        String::from_utf8_lossy(&command).contains(path.to_str().unwrap()),
+        "{}",
+        String::from_utf8_lossy(&command)
+    );
 }
 #[test]
 fn dev_up_uses_core_bin_flag_and_env() {
@@ -141,12 +185,20 @@ fn dev_up_uses_core_bin_flag_and_env() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let pid = fs::read_to_string(fixture.0.path().join(".swarmy/dev/supervisor.pid")).unwrap();
+    let pid = pid.split_whitespace().next().unwrap();
+    let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap();
+    assert!(String::from_utf8_lossy(&command).contains(path.to_str().unwrap()));
     let output = fixture.run(&["dev", "up"], None, Some(&path));
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let pid = fs::read_to_string(fixture.0.path().join(".swarmy/dev/supervisor.pid")).unwrap();
+    let pid = pid.split_whitespace().next().unwrap();
+    let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap();
+    assert!(String::from_utf8_lossy(&command).contains(path.to_str().unwrap()));
 }
 #[test]
 fn downloaded_core_with_other_identity_is_refused() {
