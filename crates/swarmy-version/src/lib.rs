@@ -7,7 +7,7 @@ use std::{
 
 use clap::Parser;
 
-/// True only for binaries built by scripts/release.sh (SWARMY_RELEASE_BUILD=1).
+/// True only for binaries built by scripts/release.sh (`SWARMY_RELEASE_BUILD=1`).
 pub const RELEASE_BUILD: bool = cfg!(swarmy_release_build);
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

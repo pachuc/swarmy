@@ -9,6 +9,7 @@ use std::{
 /// Serve GET paths from a detached loopback listener until process exit.
 /// # Panics
 /// Panics if the fixture cannot bind its listener.
+#[must_use]
 pub fn serve_files(files: Vec<(String, Vec<u8>)>) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener binds");
     let addr = listener.local_addr().expect("fixture listener address");
@@ -58,6 +59,7 @@ pub fn serve_files(files: Vec<(String, Vec<u8>)>) -> SocketAddr {
 /// Package top/name entries using the system tar.
 /// # Panics
 /// Panics if temporary files or tar fail.
+#[must_use]
 pub fn archive(top: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
     let temp = tempfile::tempdir().expect("fixture directory");
     let dir = temp.path().join(top);
@@ -85,10 +87,13 @@ pub fn archive(top: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
 }
 #[must_use]
 pub fn sha256sums(assets: &[(&str, &[u8])]) -> String {
-    assets
-        .iter()
-        .map(|(name, bytes)| format!("{:x}  {name}\n", Sha256::digest(bytes)))
-        .collect()
+    use std::fmt::Write as _;
+    let mut sums = String::new();
+    for (name, bytes) in assets {
+        writeln!(sums, "{:x}  {name}", Sha256::digest(bytes))
+            .expect("writing to String cannot fail");
+    }
+    sums
 }
 #[must_use]
 pub fn fake_release(tag: &str, target: &str, core_script: &str) -> Vec<(String, Vec<u8>)> {

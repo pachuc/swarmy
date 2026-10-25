@@ -127,6 +127,10 @@ enum Command {
     },
 }
 
+fn json_core_ensure(cli: &Cli) -> bool {
+    cli.json && matches!(cli.command, Command::Core { .. })
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = swarmy_version::parse::<Cli>("swarmy")?;
     if json_core_ensure(&cli) {
@@ -443,8 +447,4 @@ mod docs_command_tests {
             "{error}"
         );
     }
-}
-
-fn json_core_ensure(cli: &Cli) -> bool {
-    cli.json && matches!(cli.command, Command::Core { .. })
 }

@@ -162,7 +162,7 @@ impl Release {
         let client = reqwest::Client::builder()
             .user_agent(concat!("swarmy/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_secs(900))
+            .timeout(Duration::from_mins(15))
             .build()?;
         let asset = Self::asset(component, target);
         let sums_url = self.url(SUMS)?;
@@ -193,10 +193,10 @@ impl Release {
                 self.tag
             ))
         })?;
-        if let Some(dir) = self.cached(cache, component, target) {
-            if fs::read_to_string(dir.join(".sha256")).await?.trim() == expected {
-                return Ok(dir);
-            }
+        if let Some(dir) = self.cached(cache, component, target)
+            && fs::read_to_string(dir.join(".sha256")).await?.trim() == expected
+        {
+            return Ok(dir);
         }
         let parent = cache.join(&self.tag);
         fs::create_dir_all(&parent).await?;
@@ -261,13 +261,12 @@ impl Release {
 
 pub(crate) fn expected_digest(sums: &str, asset: &str) -> Result<String> {
     for line in sums.lines() {
-        if let Some((hex, name)) = line.split_once(' ') {
-            if (name.strip_prefix(' ') == Some(asset) || name.strip_prefix('*') == Some(asset))
-                && hex.len() == 64
-                && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
-            {
-                return Ok(hex.to_ascii_lowercase());
-            }
+        if let Some((hex, name)) = line.split_once(' ')
+            && (name.strip_prefix(' ') == Some(asset) || name.strip_prefix('*') == Some(asset))
+            && hex.len() == 64
+            && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Ok(hex.to_ascii_lowercase());
         }
     }
     Err(Error::other(format!(

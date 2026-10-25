@@ -87,52 +87,7 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
             "Run swarmy dev install-tools (scripts/install-dev-tools.sh from a checkout). swarmy searches PATH, the install prefix's bin directory, and ~/.local/bin automatically; add another location to PATH if needed."));
         }
     }
-    let source =
-        crate::dev::CoreSource::select(std::env::var_os("SWARMY_CORE_BIN").map(PathBuf::from));
-    let fix = format!("Reinstall from the CLI checkout: {}", crate::dev::REINSTALL);
-    let (path, not_downloaded): (anyhow::Result<PathBuf>, bool) = match source {
-        Ok(crate::dev::CoreSource::Explicit(path)) => (Ok(path), false),
-        Ok(crate::dev::CoreSource::Development) => {
-            (crate::dev::service_binary("swarmy-core"), false)
-        }
-        Ok(crate::dev::CoreSource::Release(release)) => {
-            match (
-                crate::dev::core_cache(),
-                swarmy_cloud::release::Target::host(),
-            ) {
-                (Ok(cache), Ok(target)) => {
-                    match release.cached(&cache, swarmy_cloud::release::Component::Core, target) {
-                        Some(dir) => (Ok(dir.join("swarmy-core")), false),
-                        None => (Err(anyhow::anyhow!("not downloaded yet")), true),
-                    }
-                }
-                (Err(error), _) => (Err(error), false),
-                (_, Err(error)) => (Err(error.into()), false),
-            }
-        }
-        Err(error) => (Err(error.into()), false),
-    };
-    let result = match path {
-        Ok(path) => crate::dev::version_check(&path, "swarmy-core").await,
-        Err(error) => Err(error),
-    }
-    .map_err(|error| format!("{error:#}"));
-    checks.push(if not_downloaded {
-        Check::warn(
-            "swarmy-core",
-            "not downloaded yet",
-            "Run swarmy dev up or swarmy core ensure.",
-        )
-    } else {
-        match (remote, result) {
-            (true, Err(detail)) => Check::warn(
-                "swarmy-core",
-                format!("{detail}; service binary runs on the remote node"),
-                &fix,
-            ),
-            (_, result) => Check::new("swarmy-core", result, &fix),
-        }
-    });
+    checks.push(core_binary_check(remote).await);
 
     let providers = if let Ok(loaded) = &loaded {
         checks.extend(remote_checks(loaded).await);
@@ -159,6 +114,55 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
         Vec::new()
     };
     Ok(report(checks, providers, json))
+}
+
+async fn core_binary_check(remote: bool) -> Check {
+    let source =
+        crate::dev::CoreSource::select(std::env::var_os("SWARMY_CORE_BIN").map(PathBuf::from));
+    let fix = format!("Reinstall from the CLI checkout: {}", crate::dev::REINSTALL);
+    let (path, not_downloaded): (anyhow::Result<PathBuf>, bool) = match source {
+        Ok(crate::dev::CoreSource::Explicit(path)) => (Ok(path), false),
+        Ok(crate::dev::CoreSource::Development) => {
+            (crate::dev::service_binary("swarmy-core"), false)
+        }
+        Ok(crate::dev::CoreSource::Release(release)) => {
+            match (
+                crate::dev::core_cache(),
+                swarmy_cloud::release::Target::host(),
+            ) {
+                (Ok(cache), Ok(target)) => {
+                    match release.cached(&cache, swarmy_cloud::release::Component::Core, target) {
+                        Some(dir) => (Ok(dir.join("swarmy-core")), false),
+                        None => (Err(anyhow::anyhow!("not downloaded yet")), true),
+                    }
+                }
+                (Err(error), _) => (Err(error), false),
+                (_, Err(error)) => (Err(error.into()), false),
+            }
+        }
+        Err(error) => (Err(error), false),
+    };
+    let result = match path {
+        Ok(path) => crate::dev::version_check(&path, "swarmy-core").await,
+        Err(error) => Err(error),
+    }
+    .map_err(|error| format!("{error:#}"));
+    if not_downloaded {
+        Check::warn(
+            "swarmy-core",
+            "not downloaded yet",
+            "Run swarmy dev up or swarmy core ensure.",
+        )
+    } else {
+        match (remote, result) {
+            (true, Err(detail)) => Check::warn(
+                "swarmy-core",
+                format!("{detail}; service binary runs on the remote node"),
+                &fix,
+            ),
+            (_, result) => Check::new("swarmy-core", result, &fix),
+        }
+    }
 }
 
 fn report(
