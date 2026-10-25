@@ -192,7 +192,7 @@ imports connection settings from the stack's `env` file as data, and saves the
 file with private permissions. It updates stack connection fields on each start
 and preserves other settings. Environment overrides are passed to children but
 are not saved. Service logs and pid records live under `<state_dir>/dev/`; the
-default fake script and call log use paths beneath the resolved state directory.
+default fake script and call log live under `<root>/.swarmy/dev/`.
 
 The generated file contains every setting. This partial example shows the
 common choices (store directories are FoundationDB directory names):

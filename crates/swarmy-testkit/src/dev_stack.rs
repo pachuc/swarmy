@@ -91,10 +91,10 @@ impl FakeStack {
 impl Drop for FakeStack {
     fn drop(&mut self) {
         for (_, child) in &mut self.children {
-            if child.try_wait().expect("wait on stack child").is_none() {
-                child.kill().expect("kill remaining stack child");
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
             }
-            child.wait().expect("reap stack child");
+            let _ = child.wait();
         }
     }
 }
