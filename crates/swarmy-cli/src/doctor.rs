@@ -578,21 +578,16 @@ fn snapshot_checks(
     let missing: Vec<_> = required
         .iter()
         .filter(|provider| !served.contains(provider))
+        .cloned()
         .collect();
     checks.push(Check::new(
         "gateway providers",
         if missing.is_empty() {
             Ok(served.join(", "))
         } else {
-            let available = if served.is_empty() {
-                "none".into()
-            } else {
-                served.join(", ")
-            };
-            Err(format!(
-                "{available}; unserved: {}",
-                missing.into_iter().cloned().collect::<Vec<_>>().join(", ")
-            ))
+            let available = served.join(", ");
+            let available = if available.is_empty() { "none" } else { &available };
+            Err(format!("{available}; unserved: {}", missing.join(", ")))
         },
         "Inspect the gateway log for provider discovery errors (.dev/logs or ~/.swarmy/dev/logs locally; journalctl -u swarmy-gateway remotely); configure credentials and restart the gateway.",
     ));
