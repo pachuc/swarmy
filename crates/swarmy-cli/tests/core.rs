@@ -112,6 +112,22 @@ fn core_ensure_refuses_cross_target_local_core() {
             "--target only selects a release download; --core-bin and development builds use this machine's binary"
         ));
     }
+    let output = fixture.run(
+        &[
+            "core",
+            "ensure",
+            "--target",
+            other,
+            "--core-bin",
+            path.to_str().unwrap(),
+        ],
+        None,
+        None,
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains(
+        "--target only selects a release download; --core-bin and development builds use this machine's binary"
+    ));
 }
 #[test]
 fn core_ensure_refuses_a_corrupt_archive() {
