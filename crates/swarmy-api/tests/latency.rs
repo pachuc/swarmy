@@ -300,16 +300,29 @@ async fn drive_agent_turn(
 /// provider; those must start the first-token clock or every derived
 /// latency stays null.
 async fn assert_first_token_metrics(fixture: &BenchFixture, session: SessionId, turn_id: &str) {
-    let metrics: Vec<swarmy_api_types::TurnMetrics> = fixture
-        .client
-        .get(format!("{}/v1/sessions/{session}/metrics", fixture.base))
-        .bearer_auth("bench-token")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    // The session turns Idle before the worker's metrics writer records the
+    // turn's idle stage, so wait for the record to be complete.
+    let metrics = swarmy_testkit::eventually(
+        "turn record includes the idle stage",
+        Duration::from_secs(30),
+        async || {
+            let metrics: Vec<swarmy_api_types::TurnMetrics> = fixture
+                .client
+                .get(format!("{}/v1/sessions/{session}/metrics", fixture.base))
+                .bearer_auth("bench-token")
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            metrics
+                .first()
+                .is_some_and(|turn| turn.append_to_idle_ms.is_some())
+                .then_some(metrics)
+        },
+    )
+    .await;
     assert_eq!(metrics.len(), 1, "{metrics:?}");
     let turn = &metrics[0];
     assert_eq!(turn.turn_id, turn_id);
