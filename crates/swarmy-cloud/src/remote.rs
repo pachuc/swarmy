@@ -368,7 +368,7 @@ fn resolve_recipe(host: &ssh::Ssh, no_image: bool, image_recipe: &Path) -> Resul
     }
 }
 
-/// Launch and provision the first node of a remote.
+/// The SSH host for provisioning, carrying the matching release when this client has one.
 fn provisioning_host(cache: &Path) -> Result<ssh::Ssh> {
     let release = crate::release::Release::for_client()?;
     if let Some(release) = &release {
@@ -385,6 +385,7 @@ fn provisioning_host(cache: &Path) -> Result<ssh::Ssh> {
     Ok(ssh::Ssh::discover()?.with_release(release, cache.to_owned()))
 }
 
+/// Launch and provision the first node of a remote.
 async fn run_up(
     state: &State,
     mut settings: Settings,

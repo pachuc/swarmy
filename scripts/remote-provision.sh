@@ -2,10 +2,12 @@
 # Provision the checkout copied to the service user's home. Safe to rerun.
 # Arguments: MODE SERVICE_ADDRESS [BUCKET] [BUCKET_REGION] [BUCKET_ENDPOINT]
 #   [BUCKET_PREFIX] [CONDITIONAL_CREATE] [STATIC] [SANDBOXES] [SERVICE_USER]
-#   [LOCAL_STORAGE]. SERVICE_USER owns the checkout and the
+#   [LOCAL_STORAGE] [PREBUILT]. SERVICE_USER owns the checkout and the
 #   units (default swarmy); LOCAL_STORAGE is a block device to format and
 #   mount at /mnt/swarmy-local or dir:/path for an existing directory.
-#   Sandbox nodes require it; control-only nodes use the root disk.
+#   Sandbox nodes require it; control-only nodes use the root disk. PREBUILT
+#   true installs the uploaded bundle from <checkout>/.swarmy/release; false
+#   builds on the node.
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
 parse_provision_args "$@"
@@ -151,6 +153,7 @@ fi
 # teardown misses. Only built binaries are present, selected per mode above.
 read_shared_list install_binaries swarmy_mode_binaries "$mode"
 sudo install -m 0755 "${install_binaries[@]/#/$bin_dir/}" /usr/local/bin/
+remove_retired_binaries
 if [[ $prebuilt == true ]]; then
     printf 'Installed release binaries from %s\n' "$bin_dir"
 else
