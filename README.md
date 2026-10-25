@@ -34,7 +34,7 @@ keeps stack, logs, and data under `~/.swarmy/`. `swarmy dev status`,
 `swarmy dev logs`, `swarmy dev down`, and `swarmy chat` then work from any
 directory. On Linux x86-64, `swarmy dev up` downloads the release's prebuilt
 base-ubuntu image (a few hundred MB), verifies it against SHA256SUMS, registers
-`base-ubuntu:<release tag>`, and sets `default_image`. Chat needs no `--image`.
+`base-ubuntu:<release tag>`, and sets `default_image`. Chat needs no `--image`. Plain chat works without a sandbox node, but local `swarmy dev up` has none, so turns that call tools need a node (see [docs/DEV.md](docs/DEV.md) and [docs/REMOTE.md](docs/REMOTE.md)).
 Use `--no-image` to skip the download, or retry with
 `swarmy image pull base-ubuntu --set-default` and `swarmy dev up`.
 

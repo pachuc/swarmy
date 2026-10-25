@@ -74,6 +74,8 @@ pub enum TurnOutput {
     TokenText(String),
     /// The raw store record, printed only in JSON mode.
     Record(api::RecordBody),
+    /// A tool turn cannot proceed without a live sandbox node.
+    NoSandboxNode,
     /// A delivered queued message, printed only in text mode.
     QueueDelivered,
     /// A requested tool call, printed only in text mode.
@@ -302,6 +304,10 @@ pub async fn wait_healthy(
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+async fn no_sandbox_node(client: &Client, endpoint: &str) -> Result<bool> {
+    Ok(call(endpoint, client.health()).await?.node_count == 0)
 }
 
 /// Describe one tool event as renderable outputs. The caller prints them;
@@ -732,6 +738,16 @@ impl Conversation {
         wait_healthy(&self.client, &self.endpoint, provider, on_problem).await
     }
 
+    /// Only warn when a tool is pending: plain chat does not need a node.
+    /// A health count of zero is authoritative for live nodes, unlike the
+    /// doctor's registered-node list, which includes stale registrations.
+    ///
+    /// # Errors
+    /// Returns an error if the API health request fails.
+    pub async fn no_sandbox_node(&self) -> Result<bool> {
+        no_sandbox_node(&self.client, &self.endpoint).await
+    }
+
     /// Drive the stream until the session is idle, handing each renderable
     /// output to `emit` as it arrives. The caller prints; this method never
     /// writes to the terminal.
@@ -746,6 +762,8 @@ impl Conversation {
     ) -> Result<()> {
         let mut progress = TurnProgress::default();
         let deadline = Instant::now() + PICKUP_DEADLINE;
+        let mut tool_pending = false;
+        let mut warned = false;
         loop {
             let next = async {
                 if requires_reply && !progress.started {
@@ -759,6 +777,13 @@ impl Conversation {
             };
             let item = tokio::select! {
                 item = next => Some(item?),
+                () = tokio::time::sleep(Duration::from_secs(5)), if tool_pending && !warned => {
+                    if self.no_sandbox_node().await? {
+                        emit(TurnOutput::NoSandboxNode);
+                        warned = true;
+                    }
+                    continue;
+                }
                 _ = tokio::signal::ctrl_c() => None,
             };
             let Some(item) = item else {
@@ -775,6 +800,25 @@ impl Conversation {
                 }
                 ConversationItem::Stream(StreamItem::Event(event)) => {
                     let sequence = event.sequence;
+                    if let api::EventPayload::StoreRecord { record } = &event.payload {
+                        match record {
+                            api::RecordBody::Event(swarmy_core::Event::ToolCallRequested {
+                                ..
+                            }) => {
+                                tool_pending = true;
+                            }
+                            api::RecordBody::Event(swarmy_core::Event::ToolCallCompleted {
+                                ..
+                            }) => {
+                                tool_pending = false;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if tool_pending && !warned && self.no_sandbox_node().await? {
+                        emit(TurnOutput::NoSandboxNode);
+                        warned = true;
+                    }
                     if let api::EventPayload::StoreRecord { record } = event.payload
                         && self.record_event(
                             &record,
@@ -1235,5 +1279,28 @@ mod tests {
         // synthetic idle; with one present it must not add a second.
         assert!(is_idle_event(&store_event(5, true)));
         assert!(!is_idle_event(&store_event(4, false)));
+    }
+}
+
+#[cfg(test)]
+mod node_health_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+
+    #[tokio::test]
+    async fn health_zero_nodes_warns_but_live_node_does_not() {
+        for (count, expected) in [(0, true), (1, false)] {
+            let body = serde_json::json!({
+                "version": "test", "git_commit": "test", "api_version": api::API_VERSION,
+                "default_provider": "fake", "services": [], "node_count": count
+            });
+            let address = swarmy_testkit::release::serve_files(vec![(
+                "/v1/health".to_owned(),
+                body.to_string().into_bytes(),
+            )]);
+            let endpoint = format!("http://{address}");
+            let client = Client::new(&endpoint, "test").unwrap();
+            assert_eq!(no_sandbox_node(&client, &endpoint).await.unwrap(), expected);
+        }
     }
 }

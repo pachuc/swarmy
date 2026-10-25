@@ -311,7 +311,7 @@ fn downloaded_core_with_other_identity_is_refused() {
 #[test]
 fn run_refuses_a_mismatched_api_core() {
     let fixture = Fixture::new();
-    let body = serde_json::json!({"version":"9.9.9","git_commit":"other","api_version":swarmy_api_types::API_VERSION,"default_provider":"fake","services":[],"node_count":0}).to_string();
+    let body = serde_json::json!({"version":"9.9.9","git_commit":"other","api_version":swarmy_api_types::API_VERSION,"default_provider":"fake","services":[{"role":"worker","instance_id":"w","version":"test","alive":true,"last_seen":"now"},{"role":"scheduler","instance_id":"s","version":"test","alive":true,"last_seen":"now"},{"role":"gateway","instance_id":"g","version":"test","alive":true,"last_seen":"now","providers":["fake"]}],"node_count":0}).to_string();
     let address = serve_files(vec![("/v1/health".to_owned(), body.into_bytes())]);
     fs::create_dir_all(fixture.root.path().join(".swarmy")).unwrap();
     fs::write(
@@ -335,4 +335,65 @@ fn run_refuses_a_mismatched_api_core() {
         stderr.contains("warning:") && stderr.contains("(--allow-version-mismatch)"),
         "{stderr}"
     );
+}
+
+#[test]
+fn run_reports_missing_gateway_before_creating_a_session() {
+    use std::io::{BufRead, BufReader, Read};
+    use std::process::Stdio;
+
+    let root = tempfile::tempdir().unwrap();
+    let health = serde_json::json!({
+        "version": swarmy_version::VERSION,
+        "git_commit": swarmy_version::GIT_COMMIT,
+        "api_version": swarmy_api_types::API_VERSION,
+        "default_provider": "fake",
+        "services": [
+            {"role":"worker","instance_id":"w","version":"test","alive":true,"last_seen":"now"},
+            {"role":"scheduler","instance_id":"s","version":"test","alive":true,"last_seen":"now"}
+        ],
+        "node_count": 0
+    });
+    let address = serve_files(vec![(
+        "/v1/health".to_owned(),
+        health.to_string().into_bytes(),
+    )]);
+    fs::create_dir_all(root.path().join(".swarmy")).unwrap();
+    fs::write(
+        root.path().join(".swarmy/config.toml"),
+        format!("[api]\nurl = 'http://{address}'\ntoken = 'x'\n"),
+    )
+    .unwrap();
+    let mut child = Command::new(CLI)
+        .args(["--json", "run", "hello"])
+        .env("HOME", root.path())
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("SWARMY_API_URL", format!("http://{address}"))
+        .env("SWARMY_API_TOKEN", "test-token")
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stderr.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(
+        line.contains(
+            "No gateway serves this session's provider (fake); waiting for service health"
+        ),
+        "{line}"
+    );
+    assert!(line.ends_with('\n'));
+    // The waiting notice is stderr-only; JSON stdout is untouched.
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    assert!(stdout.is_empty(), "{stdout}");
 }

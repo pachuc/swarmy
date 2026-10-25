@@ -193,6 +193,8 @@ pub async fn run(
     }
     view.ready = conversation.session.state == api::SessionState::Idle;
     let mut input = Input::default();
+    let mut node_check = tokio::time::interval(std::time::Duration::from_secs(5));
+    let mut warned_no_node = false;
     loop {
         terminal
             .draw(|frame| {
@@ -221,6 +223,12 @@ pub async fn run(
             })
             .map_err(terminal_error)?;
         tokio::select! {
+            _ = node_check.tick(), if !warned_no_node && view.tool_pending() => {
+                if conversation.no_sandbox_node().await? {
+                    view.entries.push("System: No sandbox node is running, so tool calls cannot execute; see docs/DEV.md or add one with swarmy remote add-node".into());
+                    warned_no_node = true;
+                }
+            }
             event = conversation.next() => {
                 view.event(event?);
                 flush_queued(&mut view, &mut conversation).await?;
@@ -420,6 +428,11 @@ impl View {
     /// exactly once.
     fn take_queued_if_ready(&mut self) -> Option<String> {
         if self.ready { self.queued.take() } else { None }
+    }
+    fn tool_pending(&self) -> bool {
+        self.tools
+            .values()
+            .any(|&index| self.entries[index].ends_with("(running)"))
     }
     fn body(&self) -> String {
         let mut lines = self.entries.join("\n");
