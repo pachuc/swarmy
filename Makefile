@@ -17,6 +17,7 @@
 #   make check-scripts   script and fixture tests
 #   make check-advisories  cargo deny advisories (CI runs it on every pull request and on the weekly schedule)
 #   make uninstall       remove the installed swarmy binaries
+#   make release-dry-run  build and package one release target locally (client, linux x86_64 by default)
 #
 # The services link against libfdb_c. SWARMY_FDB_LIB_DIR points the build at the
 # directory holding it; when unset, the first directory below that contains the
@@ -33,12 +34,19 @@ ifeq ($(strip $(FDB_LIB_DIR)),)
 FDB_LIB_DIR := $(firstword $(foreach dir,$(FDB_CANDIDATES),$(if $(wildcard $(dir)/libfdb_c.so $(dir)/libfdb_c.dylib),$(dir),)))
 endif
 
+# Release archives (docs/DEV.md, "Release builds"). CORE_BIN_PACKAGE is the cargo
+# package whose [[bin]] is swarmy-core; the workflow builds it only through here.
+CORE_BIN_PACKAGE ?= swarmy-core
+RELEASE_COMPONENT ?= client
+RELEASE_TARGET ?= x86_64-unknown-linux-gnu
+RELEASE_DIR ?= target/release-dist
+
 .PHONY: help install install-client install-core install-node dev-tools uninstall fdb-check models \
 	check check-lint check-deps check-workspace-tests check-e2e check-cli-session \
-	check-remote check-openapi check-scripts check-advisories
+	check-remote check-openapi check-scripts check-advisories release-package release-dry-run
 
 help:
-	@sed -n '2,20p' Makefile | sed 's/^# \{0,1\}//'
+	@sed -n '2,21p' Makefile | sed 's/^# \{0,1\}//'
 
 fdb-check:
 	@if [ -z "$(FDB_LIB_DIR)" ]; then \
@@ -147,3 +155,13 @@ uninstall:
 	@for bin in swarmy swarmy-auth swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api swarmyd; do \
 		if [ -e "$(HOME)/.cargo/bin/$$bin" ]; then rm -v "$(HOME)/.cargo/bin/$$bin"; fi; \
 	done
+
+# .github/workflows/release.yml runs release-package once per target; the dry
+# run is the same packaging plus the checksum file.
+release-package:
+	CARGO="$(CARGO)" CORE_BIN_PACKAGE="$(CORE_BIN_PACKAGE)" scripts/release.sh package $(RELEASE_COMPONENT) $(RELEASE_TARGET) $(RELEASE_DIR)
+
+release-dry-run:
+	rm -rf $(RELEASE_DIR)
+	$(MAKE) release-package
+	scripts/release.sh checksums $(RELEASE_DIR)

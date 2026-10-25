@@ -82,7 +82,11 @@ enum Command {
     /// Check installation, configuration, credentials, and local connectivity
     Doctor,
     /// Print the version of this CLI
-    Version,
+    Version {
+        /// Print the release tag (v<version>) whose archives match this client
+        #[arg(long)]
+        release: bool,
+    },
     /// Start a conversation and stream its output until idle
     Run {
         #[command(flatten)]
@@ -166,7 +170,20 @@ fn main() -> anyhow::Result<()> {
             grace_seconds,
         } => runtime.block_on(gc::run(dry_run, grace_seconds, json)),
         Command::Doctor => runtime.block_on(run_doctor(json)),
-        Command::Version => swarmy_version::print("swarmy", json).map_err(anyhow::Error::from),
+        Command::Version { release: true } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"tag": swarmy_version::RELEASE_TAG, "version": swarmy_version::VERSION})
+                );
+            } else {
+                println!("{}", swarmy_version::RELEASE_TAG);
+            }
+            Ok(())
+        }
+        Command::Version { release: false } => {
+            swarmy_version::print("swarmy", json).map_err(anyhow::Error::from)
+        }
     }
 }
 
