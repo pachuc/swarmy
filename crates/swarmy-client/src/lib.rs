@@ -78,7 +78,7 @@ pub struct Client {
 /// of even a tiny image before it answers.
 const EXTENT_HEADER_BYTES: u64 = 16;
 
-/// Byte ranges of `file` that hold data, from SEEK_DATA/SEEK_HOLE, as (offset, length).
+/// Byte ranges of `file` that hold data, from `SEEK_DATA`/`SEEK_HOLE`, as (offset, length).
 fn data_extents(file: &std::fs::File) -> std::io::Result<Vec<(u64, u64)>> {
     use rustix::fs::SeekFrom;
     let size = file.metadata()?.len();
