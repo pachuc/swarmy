@@ -6,7 +6,6 @@ use std::{
 
 use crate::Result;
 use swarmy_config::{RemoteNode, RemoteServices, Settings};
-use tokio::io::AsyncWriteExt;
 
 pub struct Options<'a> {
     pub recipe: Option<&'a Path>,
@@ -259,23 +258,13 @@ pub(crate) async fn upload_bucket_keys(node: &RemoteNode, address: &str) -> Resu
 
 async fn upload_with(node: &RemoteNode, address: &str, script: &str, bytes: &[u8]) -> Result<()> {
     let command = "copy node service file".to_owned();
-    let mut child = super::ssh::command(node)?
+    let child = super::ssh::command(node)?
         .arg(address)
         .arg(format!("sudo -n sh -c {}", shell_words::quote(script)))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()
         .map_err(crate::Error::ssh(&command))?;
-    let Some(mut stdin) = child.stdin.take() else {
-        return Err(crate::Error::other("SSH stdin missing"));
-    };
-    stdin
-        .write_all(bytes)
-        .await
-        .map_err(crate::Error::ssh(&command))?;
-    let status = child.wait().await.map_err(crate::Error::ssh(&command))?;
-    if !status.success() {
-        return Err(crate::Error::SshStatus { command, status });
-    }
+    super::ssh::feed_and_wait(child, bytes, &command).await?;
     Ok(())
 }

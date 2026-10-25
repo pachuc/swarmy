@@ -187,7 +187,7 @@ async fn pipe_script(
     action: &str,
     script: &str,
 ) -> Result<std::process::Output> {
-    let mut child = base(node)?
+    let child = base(node)?
         .arg(address)
         .arg("bash -s")
         .stdin(Stdio::piped())
@@ -195,11 +195,27 @@ async fn pipe_script(
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(crate::Error::ssh(action))?;
+    feed_and_wait(child, script.as_bytes(), action).await
+}
+
+/// Write `bytes` to a spawned command's stdin, close stdin, and wait for the
+/// command. Closing stdin is what lets a remote reader such as `cat` or
+/// `bash -s` see end of input; a handle left open keeps both sides waiting
+/// forever. The `action` names the attempted operation in [`crate::Error::Ssh`].
+///
+/// # Errors
+///
+/// Reports a missing stdin, a failed write or wait, and a non-zero exit.
+pub(crate) async fn feed_and_wait(
+    mut child: tokio::process::Child,
+    bytes: &[u8],
+    action: &str,
+) -> Result<std::process::Output> {
     let Some(mut stdin) = child.stdin.take() else {
         return Err(crate::Error::other("SSH stdin missing"));
     };
     stdin
-        .write_all(script.as_bytes())
+        .write_all(bytes)
         .await
         .map_err(crate::Error::ssh(action))?;
     drop(stdin);
@@ -898,7 +914,30 @@ async fn wait_ssh_for(node: &RemoteNode, attempts: u32) -> Result<String> {
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
-    use super::{Ssh, image_build_command, tunnel_authorization};
+    use super::{Ssh, feed_and_wait, image_build_command, tunnel_authorization};
+
+    /// The fed input must reach end of file: a reader such as the remote
+    /// `cat` that stores bucket keys returns only once stdin is closed.
+    #[tokio::test]
+    async fn fed_input_reaches_end_of_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.env");
+        let child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("cat > {}", path.display()))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            feed_and_wait(child, b"KEY=value\n", "write keys"),
+        )
+        .await
+        .expect("the reader saw end of input and exited")
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"KEY=value\n");
+    }
 
     #[test]
     fn checkout_excludes_credential_targets_with_parent_components_and_symlinks() {
