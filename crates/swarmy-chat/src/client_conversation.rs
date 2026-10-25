@@ -306,6 +306,10 @@ pub async fn wait_healthy(
     }
 }
 
+async fn no_sandbox_node(client: &Client, endpoint: &str) -> Result<bool> {
+    Ok(call(endpoint, client.health()).await?.node_count == 0)
+}
+
 /// Describe one tool event as renderable outputs. The caller prints them;
 /// this helper only translates.
 fn tool_outputs(record: &swarmy_core::Event) -> Vec<TurnOutput> {
@@ -738,7 +742,7 @@ impl Conversation {
     /// A health count of zero is authoritative for live nodes, unlike the
     /// doctor's registered-node list, which includes stale registrations.
     pub async fn no_sandbox_node(&self) -> Result<bool> {
-        Ok(call(&self.endpoint, self.client.health()).await?.node_count == 0)
+        no_sandbox_node(&self.client, &self.endpoint).await
     }
 
     /// Drive the stream until the session is idle, handing each renderable
@@ -1272,5 +1276,28 @@ mod tests {
         // synthetic idle; with one present it must not add a second.
         assert!(is_idle_event(&store_event(5, true)));
         assert!(!is_idle_event(&store_event(4, false)));
+    }
+}
+
+#[cfg(test)]
+mod node_health_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+
+    #[tokio::test]
+    async fn health_zero_nodes_warns_but_live_node_does_not() {
+        for (count, expected) in [(0, true), (1, false)] {
+            let body = serde_json::json!({
+                "version": "test", "git_commit": "test", "api_version": api::API_VERSION,
+                "default_provider": "fake", "services": [], "node_count": count
+            });
+            let address = swarmy_testkit::release::serve_files(vec![(
+                "/v1/health".to_owned(),
+                body.to_string().into_bytes(),
+            )]);
+            let endpoint = format!("http://{address}");
+            let client = Client::new(&endpoint, "test").unwrap();
+            assert_eq!(no_sandbox_node(&client, &endpoint).await.unwrap(), expected);
+        }
     }
 }
