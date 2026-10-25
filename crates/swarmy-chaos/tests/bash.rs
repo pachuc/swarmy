@@ -4,8 +4,10 @@ use std::process::Command;
 
 #[test]
 fn root_bash_disk_and_failure_acceptance() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping bash acceptance: run the built test with sudo");
+    if !swarmy_testkit::require_root_host(
+        "root_bash_disk_and_failure_acceptance",
+        &["runc", "pasta"],
+    ) {
         return;
     }
     let Some(image) = swarmy_testkit::optional_env("SWARMY_TEST_IMAGE") else {

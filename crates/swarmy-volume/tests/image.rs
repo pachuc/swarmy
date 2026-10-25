@@ -154,8 +154,10 @@ impl Drop for Mount<'_> {
 
 #[tokio::test]
 async fn root_ext4_mount_round_trip_and_independent_rebuild() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping root ext4 integration test: not running as root");
+    if !swarmy_testkit::require_root_host(
+        "root_ext4_mount_round_trip_and_independent_rebuild",
+        &["e2fsck", "mount", "umount"],
+    ) {
         return;
     }
     let directory = tempfile::tempdir().unwrap();
@@ -219,8 +221,10 @@ async fn root_ext4_mount_round_trip_and_independent_rebuild() {
 
 #[test]
 fn root_shell_recipe_runs_inside_copied_seed() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping shell recipe integration test: not running as root");
+    if !swarmy_testkit::require_root_host(
+        "root_shell_recipe_runs_inside_copied_seed",
+        &["ldd", "debugfs"],
+    ) {
         return;
     }
     let directory = tempfile::tempdir().unwrap();
@@ -266,15 +270,11 @@ fn root_shell_recipe_runs_inside_copied_seed() {
 
 #[test]
 fn root_oci_recipe_applies_layer_deletions() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping OCI recipe integration test: not running as root");
+    if !swarmy_testkit::require_root_host(
+        "root_oci_recipe_applies_layer_deletions",
+        &["skopeo", "umoci", "mount", "umount"],
+    ) {
         return;
-    }
-    for tool in ["skopeo", "umoci"] {
-        if Command::new(tool).arg("--version").output().is_err() {
-            eprintln!("skipping OCI recipe integration test: {tool} is not installed");
-            return;
-        }
     }
     let directory = tempfile::tempdir().unwrap();
     let layout = directory.path().join("layout");

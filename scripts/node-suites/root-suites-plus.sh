@@ -9,6 +9,7 @@ base=$?
 # image suites against whatever was there before.
 if [ "$base" -eq 2 ]; then echo "PLUS_EXIT=1"; exit 2; fi
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+export SWARMY_REQUIRE_ROOT_SUITES=1
 export SWARMY_FDB_LIB_DIR="$HOME/.local/lib"
 cd ~/chaos
 sudo systemctl stop swarmyd swarmy-tunnel

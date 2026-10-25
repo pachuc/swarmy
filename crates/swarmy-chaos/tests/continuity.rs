@@ -4,8 +4,7 @@ use std::process::Command;
 
 #[test]
 fn root_persistent_agent_continuity() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping continuity acceptance: run the built test with sudo");
+    if !swarmy_testkit::require_root_host("root_persistent_agent_continuity", &["runc", "pasta"]) {
         return;
     }
     if swarmy_testkit::optional_env("SWARMY_TEST_IMAGE").is_none() {
