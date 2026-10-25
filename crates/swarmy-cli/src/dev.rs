@@ -49,7 +49,7 @@ pub(crate) enum Command {
         #[arg(value_enum)]
         service: Option<DevService>,
     },
-    /// Install FoundationDB, NATS, and SeaweedFS for the local stack (Linux x86-64)
+    /// Install `FoundationDB`, NATS, and `SeaweedFS` for the local stack (Linux x86-64)
     InstallTools {
         /// Install root: tools go to PREFIX/bin and PREFIX/lib (default ~/.local)
         #[arg(long)]
