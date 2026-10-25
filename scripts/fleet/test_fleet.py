@@ -8,6 +8,10 @@ import tempfile
 import unittest
 
 FLEET = Path(__file__).with_name("fleet")
+ROOT = FLEET.resolve().parents[2]
+HEAD = "1" * 40
+SQUASH = "2" * 40
+FULL = "01M38DCQ5BFPXNPNF0NWEWR2HD"
 STUB = '''#!/usr/bin/env python3
 import json, os, subprocess, sys
 from datetime import datetime, timedelta, timezone
@@ -28,12 +32,19 @@ _show_base = _fixture['session_show_item']
 with (root / 'calls').open('a') as out:
     out.write(json.dumps(args) + '\\n')
 if args[:3] == ['--json', 'task', 'show']:
-    print(json.dumps({'task': {'title':'Repair widget', 'body':'Fix the widget', 'test_plan':'Run widget test'}, 'status': os.environ.get('TASK_STATUS', 'todo')}))
-elif args[:2] == ['pr', 'list']:
-    print(os.environ.get('PR_LIST', '[]'))
-elif args[:2] == ['pr', 'view']:
-    print(json.dumps({'url':args[2], 'state':os.environ.get('PR_STATE','OPEN'),
-                      'baseRefName':'master', 'headRefName':os.environ.get('PR_BRANCH','swarmy/ewr2hd')}))
+    print(json.dumps({'task': {'title':'Repair widget', 'body':'Fix the widget', 'test_plan':'Run widget test'}, 'status': os.environ.get('TASK_STATUS', 'todo'),
+                      'id': os.environ.get('TASK_FULL_ID', '01M38DCQ5BFPXNPNF0NWEWR2HD')}))
+elif args[:1] == ['-C']:
+    rest = args[3:]
+    if args[2] == 'ls-remote':
+        sha = os.environ.get('BRANCH_SHA')
+        if not sha:
+            sys.exit(2)
+        print(sha + '\t' + rest[-1])
+    elif args[2] == 'fetch':
+        pass
+    elif args[2] == 'log':
+        print(os.environ.get('INTEGRATED', ''))
 elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['session']):
     # An empty remote in fleet.toml drops the --remote flag (local API mode).
     rest = args[2:] if args[:2] == ['--remote', 'dev'] else args
@@ -95,7 +106,7 @@ elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['sessi
             if os.environ.get('SUCCESSOR') and sid == '01AAAA':
                 text = os.environ.get('OLD_MESSAGE', 'Working, no link yet')
             else:
-                text = os.environ.get('LAST_MESSAGE', 'Done https://github.com/pachuc/swarmy/pull/42')
+                text = os.environ.get('LAST_MESSAGE', 'Branch swarmy/ewr2hd at 1111111; Done when output follows')
             print(json.dumps({'inference_completed': {'seq':1, 'message': {'role':'assistant',
                 'parts':[{'text':{'text':text}}]}}}))
     elif rest[:2] == ['session', 'metrics']:
@@ -137,7 +148,7 @@ class FleetTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        for name in ("swarmy", "tasky", "gh"):
+        for name in ("swarmy", "tasky", "git"):
             path = self.bin / name
             path.write_text(STUB)
             path.chmod(0o700)
@@ -190,12 +201,14 @@ class FleetTests(unittest.TestCase):
         self.assertIn("waiting for inference: 429 rate limited", status.stdout)
         self.assertIn("$1.25", status.stdout)
         self.assertIn("cost today=$0.0100 this_month=$0.2500", status.stdout)
-        collect = self.call("collect", "EWR2HD")
+        collect = self.call("collect", "EWR2HD", env=dict(self.env, TASK_STATUS="in_progress", BRANCH_SHA=HEAD))
         self.assertEqual(collect.returncode, 0, collect.stderr)
-        self.assertIn(["task", "pr", "EWR2HD", "https://github.com/pachuc/swarmy/pull/42"], self.calls())
+        self.assertIn(["-C", str(ROOT), "ls-remote", "--exit-code", "origin", "refs/heads/swarmy/ewr2hd"], self.calls())
+        self.assertIn(["task", "link", "EWR2HD", "--commit", HEAD], self.calls())
         self.assertIn(["task", "test", "EWR2HD"], self.calls())
-        self.assertEqual(json.loads((self.root / "state" / "ewr2hd.json").read_text())["pr_source"],
-                         "last_message")
+        self.assertIn("swarmy/ewr2hd " + HEAD, collect.stdout)
+        self.assertIn("Branch swarmy/ewr2hd at 1111111; Done when output follows", collect.stdout)
+        self.assertEqual(json.loads((self.root / "state" / "ewr2hd.json").read_text())["head_sha"], HEAD)
         resume = self.call("resume", "EWR2HD", "Please address review")
         self.assertEqual(resume.returncode, 0, resume.stderr)
         self.assertEqual((self.root / "followup").read_text(), "Please address review")
@@ -219,11 +232,21 @@ class FleetTests(unittest.TestCase):
                             if call[-3:] == ["session", "interrupt", "01AAAA"])
         self.assertFalse(any(call[2:5] == ["session", "ls", "--json"]
                              for call in pending_calls[interrupt_at + 1:]))
-        open_env = dict(self.env, PR_STATE="OPEN")
-        self.assertEqual(self.call("release", "EWR2HD", env=open_env).returncode, 1)
-        merged_env = dict(self.env, PR_STATE="MERGED")
-        release = self.call("release", "EWR2HD", env=merged_env)
+        missing = self.call("release", "EWR2HD")
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn("--into", missing.stderr)
+        not_integrated = self.call("release", "EWR2HD", "--into", "one-binary")
+        self.assertEqual(not_integrated.returncode, 1)
+        self.assertIn("no commit on origin/one-binary names tasky " + FULL, not_integrated.stderr)
+        self.assertEqual(json.loads((self.root / "state" / "workers.json").read_text())["worker-1"], "EWR2HD")
+        release = self.call("release", "EWR2HD", "--into", "one-binary",
+                            env=dict(self.env, INTEGRATED=SQUASH))
         self.assertEqual(release.returncode, 0, release.stderr)
+        self.assertIn(["-C", str(ROOT), "fetch", "--quiet", "origin",
+                       "+refs/heads/one-binary:refs/remotes/origin/one-binary"], self.calls())
+        self.assertTrue(any("--fixed-strings" in call and "--grep=tasky " + FULL in call
+                            and "refs/remotes/origin/one-binary" in call for call in self.calls()))
+        self.assertIn(["task", "link", "EWR2HD", "--commit", SQUASH], self.calls())
         self.assertFalse(any("delete" in call for call in self.calls()))
         workers = json.loads((self.root / "state" / "workers.json").read_text())
         self.assertEqual(workers, {"worker-1": None})
@@ -375,13 +398,46 @@ class FleetTests(unittest.TestCase):
         self.assertTrue((self.root / "state" / "rxrzh2.json").exists())
         self.assertIn("swarmy/rxrzh2", (self.root / "prompt-worker-1").read_text())
 
-    def test_collect_refuses_missing_open_pr(self):
+    def test_collect_refuses_an_unpushed_branch(self):
         self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
-        env = dict(self.env, PR_STATE="CLOSED")
-        result = self.call("collect", "EWR2HD", env=env)
+        result = self.call("collect", "EWR2HD", env=dict(self.env, TASK_STATUS="in_progress"))
         self.assertEqual(result.returncode, 1)
-        self.assertIn("not open", result.stderr)
-        self.assertFalse(any(call[:2] == ["task", "pr"] for call in self.calls()))
+        self.assertIn("is not on origin", result.stderr)
+        self.assertFalse(any(call[:2] == ["task", "link"] or call[:2] == ["task", "test"]
+                             for call in self.calls()))
+
+    def test_collect_on_a_testing_task_links_without_moving_it(self):
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        env = dict(self.env, TASK_STATUS="testing", BRANCH_SHA=HEAD)
+        self.assertEqual(self.call("collect", "EWR2HD", env=env).returncode, 0)
+        self.assertIn(["task", "link", "EWR2HD", "--commit", HEAD], self.calls())
+        self.assertFalse(any(call[:2] == ["task", "test"] for call in self.calls()))
+        self.assertEqual(self.call("collect", "EWR2HD", env=env).returncode, 0)
+        self.assertEqual(self.calls().count(["task", "link", "EWR2HD", "--commit", HEAD]), 1)
+
+    def test_collect_refuses_a_task_not_in_progress(self):
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        result = self.call("collect", "EWR2HD", env=dict(self.env, TASK_STATUS="done", BRANCH_SHA=HEAD))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("collect expects in_progress or testing", result.stderr)
+
+    def test_release_reads_the_integration_branch_from_config(self):
+        self.config.write_text(self.config.read_text() + 'integration = "goal-x"\n')
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        result = self.call("release", "EWR2HD", env=dict(self.env, INTEGRATED=SQUASH))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any("refs/remotes/origin/goal-x" in call for call in self.calls()))
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        invalid = self.call("release", "EWR2HD", "--into", "bad branch")
+        self.assertEqual(invalid.returncode, 1)
+        self.assertIn("invalid integration branch", invalid.stderr)
+
+    def test_last_message_prints_the_report(self):
+        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
+        result = subprocess.run([sys.executable, str(FLEET.with_name("last-message")), "EWR2HD"],
+                                env=self.env, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "-----\nBranch swarmy/ewr2hd at 1111111; Done when output follows\n")
 
     def test_status_exposes_state_age_and_stalls_without_wait_reasons(self):
         self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
@@ -403,42 +459,6 @@ class FleetTests(unittest.TestCase):
         custom = self.call("status", env=dict(old, STATE_AGE_MINUTES="4"))
         self.assertEqual(custom.returncode, 2, custom.stderr)
         self.assertIn("STALLED waiting_inference 4m", custom.stdout)
-
-    def test_collect_uses_exactly_one_open_or_merged_branch_pr_when_message_has_no_url(self):
-        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
-        url = "https://github.com/pachuc/swarmy/pull/42"
-        env = dict(self.env, LAST_MESSAGE="Finished without a link",
-                   PR_LIST=json.dumps([{"url": url, "state": "OPEN"}]))
-        result = self.call("collect", "EWR2HD", env=env)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(url, result.stdout)
-        lookup = next(call for call in self.calls() if call[:2] == ["pr", "list"])
-        self.assertIn("swarmy/ewr2hd", lookup)
-        saved = json.loads((self.root / "state" / "ewr2hd.json").read_text())
-        self.assertEqual((saved["pr_url"], saved["pr_source"]), (url, "branch_lookup"))
-        self.assertIn(["task", "pr", "EWR2HD", url], self.calls())
-
-    def test_collect_fallback_rejects_zero_or_multiple_prs(self):
-        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
-        url = "https://github.com/pachuc/swarmy/pull/42"
-        for prs, expected in [([], "found 0"),
-                              ([{"url": url, "state": "OPEN"},
-                                {"url": url + "3", "state": "MERGED"}], "found 2")]:
-            env = dict(self.env, LAST_MESSAGE="Finished without a link", PR_LIST=json.dumps(prs))
-            result = self.call("collect", "EWR2HD", env=env)
-            self.assertEqual(result.returncode, 1)
-            self.assertIn(expected, result.stderr)
-        self.assertFalse(any(call[:2] == ["task", "pr"] for call in self.calls()))
-
-    def test_collect_accepts_merged_pr_from_branch_lookup(self):
-        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0)
-        url = "https://github.com/pachuc/swarmy/pull/42"
-        env = dict(self.env, LAST_MESSAGE="Finished without a link", PR_STATE="MERGED",
-                   PR_LIST=json.dumps([{"url": url, "state": "MERGED"}]))
-        result = self.call("collect", "EWR2HD", env=env)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads((self.root / "state" / "ewr2hd.json").read_text())["pr_source"],
-                         "branch_lookup")
 
     def test_release_and_kill_match_short_and_full_task_ids(self):
         full = "01M38DCQ5BFPXNPNF0NWEWR2HD"
@@ -675,8 +695,8 @@ class FleetTests(unittest.TestCase):
         env = dict(self.env, SUCCESSOR="01AAAA:01BBBB",
                    SESSION_STATE="idle",
                    OLD_MESSAGE="Working, no link yet",
-                   LAST_MESSAGE="Done https://github.com/pachuc/swarmy/pull/42",
-                   PR_LIST="[]")
+                   LAST_MESSAGE="Final report from the successor",
+                   TASK_STATUS="in_progress", BRANCH_SHA=HEAD)
         status = self.call("status", env=env)
         self.assertEqual(status.returncode, 0, status.stderr)
         # The old session is completed; status reports the successor state.
@@ -684,7 +704,8 @@ class FleetTests(unittest.TestCase):
         self.assertIn("idle", status.stdout)
         collect = self.call("collect", "EWR2HD", env=env)
         self.assertEqual(collect.returncode, 0, collect.stderr)
-        self.assertIn("https://github.com/pachuc/swarmy/pull/42", collect.stdout)
+        self.assertIn("Final report from the successor", collect.stdout)
+        self.assertNotIn("Working, no link yet", collect.stdout)
 
     def test_resolve_helpers_follow_chain(self):
         import importlib.util
