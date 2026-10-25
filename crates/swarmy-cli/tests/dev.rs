@@ -29,7 +29,6 @@ impl Fixture {
         let mut command = AsyncCommand::new(CLI);
         command
             .current_dir(self.files.path())
-            .env("SWARMY_DEV_DIR", self.repo.join(".dev"))
             .env("HOME", self.files.path())
             .args(args)
             .kill_on_drop(true);
@@ -38,6 +37,7 @@ impl Fixture {
                 command.env_remove(key);
             }
         }
+        command.env("SWARMY_DEV_DIR", self.repo.join(".dev"));
         command
     }
 
@@ -69,6 +69,7 @@ impl Drop for Fixture {
                 command.env_remove(key);
             }
         }
+        command.env("SWARMY_DEV_DIR", self.repo.join(".dev"));
         ignore_best_effort(command.output(), "stop leftover dev services");
         if self.restore_stack {
             let result = Command::new(self.repo.join("scripts/dev-stack.sh"))

@@ -13,6 +13,9 @@ pub struct FakeStack {
 
 impl FakeStack {
     /// Start the fixture at `dir`, without binding any ports.
+    ///
+    /// # Panics
+    /// Panics if a child cannot start or its Linux process identity cannot be recorded.
     #[must_use]
     pub fn start(dir: &Path) -> Self {
         fs::create_dir_all(dir).expect("create fake stack directory");
@@ -28,12 +31,15 @@ impl FakeStack {
             let pid = child.id();
             let stat = fs::read_to_string(format!("/proc/{pid}/stat")).expect("read process stat");
             let (_, fields) = stat.rsplit_once(") ").expect("process stat has command");
-            let start = fields
+            let start_time = fields
                 .split_whitespace()
                 .nth(19)
                 .expect("process stat has start time");
-            fs::write(dir.join(format!("{name}.pid")), format!("{pid} {start}\n"))
-                .expect("write stack pid");
+            fs::write(
+                dir.join(format!("{name}.pid")),
+                format!("{pid} {start_time}\n"),
+            )
+            .expect("write stack pid");
             children.push((name, child));
         }
         fs::write(dir.join("fdb.cluster"), "dev:dev@127.0.0.1:4500\n").expect("write cluster file");
@@ -58,6 +64,9 @@ impl FakeStack {
     }
 
     /// The PID of a named backing child.
+    ///
+    /// # Panics
+    /// Panics if `name` is not one of the three backing services.
     #[must_use]
     pub fn pid(&self, name: &str) -> u32 {
         self.children
@@ -69,6 +78,9 @@ impl FakeStack {
     }
 
     /// True while every recorded process is alive; reaps stopped children.
+    ///
+    /// # Panics
+    /// Panics if checking a child process fails.
     pub fn running(&mut self) -> bool {
         self.children
             .iter_mut()
