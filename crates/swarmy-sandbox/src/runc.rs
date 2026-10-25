@@ -1230,21 +1230,28 @@ fn upstream_resolvers() -> Vec<String> {
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
-        let servers: Vec<String> = text
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix("nameserver "))
-            .map(|server| server.trim().to_owned())
-            .filter(|server| {
-                server
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|address| !address.is_loopback())
-            })
-            .collect();
+        let servers = ipv4_nameservers(&text);
         if !servers.is_empty() {
             return servers;
         }
     }
     Vec::new()
+}
+
+/// The non-loopback IPv4 nameservers in a resolv.conf. The sandbox network
+/// that pasta provides is IPv4 only, so an IPv6 resolver (some hosts list them
+/// beside its IPv4 ones) can be neither routed nor reached from inside.
+fn ipv4_nameservers(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| line.trim().strip_prefix("nameserver "))
+        .map(str::trim)
+        .filter(|server| {
+            server
+                .parse::<std::net::Ipv4Addr>()
+                .is_ok_and(|address| !address.is_loopback())
+        })
+        .map(str::to_owned)
+        .collect()
 }
 
 async fn checked(command: &mut Command) -> Result<()> {
@@ -1304,4 +1311,19 @@ async fn unmount(path: &Path) -> Result<()> {
         return Err(Error::Operation("cannot inspect sandbox mount".into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+
+    #[test]
+    fn only_routable_ipv4_resolvers_reach_the_sandbox() {
+        let text = "nameserver 192.0.2.53\nnameserver 2001:db8::53\n\
+                    nameserver 127.0.0.53\n  nameserver 198.51.100.53  \nsearch .\n";
+        assert_eq!(
+            super::ipv4_nameservers(text),
+            ["192.0.2.53", "198.51.100.53"]
+        );
+    }
 }
