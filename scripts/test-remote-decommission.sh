@@ -102,5 +102,5 @@ grep -q "checkout is missing" "$probe_dir/probe_err" || { echo "probe hides the 
 # ...while no units and no checkout succeeds as nothing to tear down.
 rm -f "$probe_dir/swarmyd.service"
 probe_out=$(bash -c 'source scripts/remote-provision-env.sh; decommission_probe decomm-swarmy')
-[[ $probe_out == 'swarmy checkout already removed; nothing to tear down' ]] || { echo "clean probe should no-op: $probe_out" >&2; exit 1; }
+[[ $probe_out == 'swarmy node directory already removed; nothing to tear down' ]] || { echo "clean probe should no-op: $probe_out" >&2; exit 1; }
 echo 'remote decommission behavioral tests passed'

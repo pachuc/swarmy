@@ -176,3 +176,5 @@ if read_shared_list probe_result swarmy_mode_build_args stack >/dev/null 2>&1; t
 fi
 unset -f empty_producer
 echo 'remote provision argument and environment tests passed'
+
+[[ $(node_source_dir /x) == /x/source ]]

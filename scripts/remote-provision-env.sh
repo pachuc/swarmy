@@ -20,8 +20,10 @@ parse_provision_args() {
     prebuilt=${12:-false}
 }
 
-# Where the client uploads release binaries inside the checkout.
-release_bundle_dir() { printf '%s/.swarmy/release\n' "${1:?checkout}"; }
+# Where the client uploads release binaries inside the node directory.
+release_bundle_dir() { printf '%s/.swarmy/release\n' "${1:?node directory}"; }
+# Where a development client copies its checkout for the on-node build.
+node_source_dir() { printf '%s/source\n' "${1:?node directory}"; }
 
 # Validate all binaries for a mode before installing any of them.
 check_release_bundle() {
@@ -363,10 +365,10 @@ decommission_probe() {
     if [[ -f $repo/scripts/remote-decommission.sh ]]; then
         decommission_remove "$service_user"
     elif ls "${SWARMY_SYSTEMD_DIR:-/etc/systemd/system}"/swarmy*.service >/dev/null 2>&1; then
-        echo "swarmy checkout is missing from $repo but swarmy units are still installed; restore the checkout or remove the units by hand (see docs/REMOTE.md)" >&2
+        echo "swarmy node directory is missing from $repo but swarmy units are still installed; restore it with swarmy remote upgrade or remove the units by hand (see docs/REMOTE.md)" >&2
         return 1
     else
-        echo 'swarmy checkout already removed; nothing to tear down'
+        echo 'swarmy node directory already removed; nothing to tear down'
     fi
 }
 

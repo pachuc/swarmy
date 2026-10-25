@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run over SSH after the checkout has been copied. Never modify node.env or units.
+# Run over SSH after the client uploaded the node directory. Never modify node.env or units.
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-upgrade-lib.sh"
@@ -14,7 +14,7 @@ repo_owner=$(stat -c %U "$repo_dir")
 if [[ $(id -un) != "$repo_owner" ]]; then
     exec sudo -H -u "$repo_owner" bash "$0" "$@"
 fi
-[[ $repo_dir == "$(service_repo_for "$repo_owner")" ]] || { echo "Expected checkout at $(service_repo_for "$repo_owner")" >&2; exit 1; }
+[[ $repo_dir == "$(service_repo_for "$repo_owner")" ]] || { echo "Expected the swarmy node directory at $(service_repo_for "$repo_owner")" >&2; exit 1; }
 cd "$repo_dir"
 started=$SECONDS
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
@@ -24,6 +24,9 @@ if [[ $source_mode == prebuilt ]]; then
     install_core_library "$bin_dir/libfdb_c.so"
 else
     command -v cargo >/dev/null || { echo 'This node has no Rust toolchain (it was provisioned from release binaries); upgrade it with a release client or SWARMY_RELEASE_BASE_URL' >&2; exit 1; }
+    source_dir=$(node_source_dir "$repo_dir")
+    [[ -f $source_dir/Cargo.toml ]] || { echo "Missing $source_dir; a development client copies its checkout there" >&2; exit 1; }
+    ( cd "$source_dir"
     # rsync preserves timestamps; a different commit can otherwise look older to cargo.
     find crates -type f \( -name '*.rs' -o -name 'build.rs' \) -exec touch {} +
     if [[ $mode == stack ]]; then
@@ -31,7 +34,8 @@ else
     fi
     read_shared_list build_args swarmy_mode_build_args "$mode"
     SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}" >&2
-    bin_dir=$repo_dir/target/release
+    ) >&2
+    bin_dir=$source_dir/target/release
 fi
 read_shared_list binaries swarmy_mode_binaries "$mode"
 changed=()

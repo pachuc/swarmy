@@ -191,7 +191,8 @@ pub(crate) async fn install(node: &RemoteNode, address: &str, options: &Options<
     let status = super::ssh::command(node)?
         .arg(address)
         .arg(format!(
-            "cd {repo} && bash scripts/remote-services.sh {}",
+            "cd {repo} && bash {} {}",
+            crate::node_files::SERVICES,
             shell_words::quote(&user),
         ))
         .status()
