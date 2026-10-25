@@ -6,23 +6,19 @@ use std::{
     path::Path,
     process::{Command, Output},
 };
+use swarmy_testkit::FakeStack;
 use swarmy_testkit::release::{fake_release, host_target, serve_files};
 
 const CLI: &str = env!("CARGO_BIN_EXE_swarmy");
-struct Fixture(tempfile::TempDir);
+struct Fixture {
+    root: tempfile::TempDir,
+    stack: FakeStack,
+}
 impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
-        fs::create_dir_all(root.path().join("scripts")).unwrap();
-        fs::create_dir_all(root.path().join(".dev")).unwrap();
-        fs::write(root.path().join(".dev/env"), "").unwrap();
-        fs::write(
-            root.path().join("scripts/dev-stack.sh"),
-            "#!/bin/sh\necho called >> stack-calls\n",
-        )
-        .unwrap();
-        executable(&root.path().join("scripts/dev-stack.sh"));
-        Self(root)
+        let stack = FakeStack::start(&root.path().join(".swarmy/stack"));
+        Self { root, stack }
     }
     fn run(&self, args: &[&str], release: Option<&str>, core: Option<&Path>) -> Output {
         let mut command = Command::new(CLI);
@@ -39,9 +35,9 @@ impl Fixture {
         }
         command
             .args(args)
-            .current_dir(self.0.path())
-            .env("HOME", self.0.path())
-            .env("XDG_CONFIG_HOME", self.0.path().join("config"))
+            .current_dir(self.root.path())
+            .env("HOME", self.root.path())
+            .env("XDG_CONFIG_HOME", self.root.path().join("config"))
             .env("PATH", "/usr/bin:/bin")
             .output()
             .unwrap()
@@ -81,7 +77,7 @@ fn core_ensure_fetches_verifies_and_reuses_the_release() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let path = fixture.0.path().join(format!(
+    let path = fixture.root.path().join(format!(
         ".swarmy/core/{}/swarmy-core-{}/swarmy-core",
         swarmy_version::RELEASE_TAG,
         host_target()
@@ -102,7 +98,7 @@ fn core_ensure_refuses_cross_target_local_core() {
     } else {
         "x86_64-unknown-linux-gnu"
     };
-    let path = fixture.0.path().join("core");
+    let path = fixture.root.path().join("core");
     fs::write(&path, core_script(swarmy_version::IDENTITY)).unwrap();
     executable(&path);
     for core in [Some(path.as_path()), None] {
@@ -153,12 +149,12 @@ fn dev_up_launches_the_downloaded_core() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let state = fixture.0.path().join(".swarmy/dev");
+    let state = fixture.root.path().join(".swarmy/dev");
     assert!(state.join("supervisor.pid").is_file());
     let pid = fs::read_to_string(state.join("supervisor.pid")).unwrap();
     let pid = pid.split_whitespace().next().unwrap();
     let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-    let path = fixture.0.path().join(format!(
+    let path = fixture.root.path().join(format!(
         ".swarmy/core/{}/swarmy-core-{}/swarmy-core",
         swarmy_version::RELEASE_TAG,
         host_target()
@@ -172,7 +168,7 @@ fn dev_up_launches_the_downloaded_core() {
 #[test]
 fn dev_up_uses_core_bin_flag_and_env() {
     let fixture = Fixture::new();
-    let path = fixture.0.path().join("core");
+    let path = fixture.root.path().join("core");
     fs::write(&path, core_script(swarmy_version::IDENTITY)).unwrap();
     executable(&path);
     let output = fixture.run(
@@ -185,7 +181,7 @@ fn dev_up_uses_core_bin_flag_and_env() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let pid = fs::read_to_string(fixture.0.path().join(".swarmy/dev/supervisor.pid")).unwrap();
+    let pid = fs::read_to_string(fixture.root.path().join(".swarmy/dev/supervisor.pid")).unwrap();
     let pid = pid.split_whitespace().next().unwrap();
     let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap();
     assert!(String::from_utf8_lossy(&command).contains(path.to_str().unwrap()));
@@ -195,14 +191,14 @@ fn dev_up_uses_core_bin_flag_and_env() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let pid = fs::read_to_string(fixture.0.path().join(".swarmy/dev/supervisor.pid")).unwrap();
+    let pid = fs::read_to_string(fixture.root.path().join(".swarmy/dev/supervisor.pid")).unwrap();
     let pid = pid.split_whitespace().next().unwrap();
     let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap();
     assert!(String::from_utf8_lossy(&command).contains(path.to_str().unwrap()));
 }
 #[test]
 fn downloaded_core_with_other_identity_is_refused() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
     let url = release("0.0.1 (other)");
     let output = fixture.run(&["dev", "up"], Some(&url), None);
     assert!(!output.status.success());
@@ -216,16 +212,23 @@ fn downloaded_core_with_other_identity_is_refused() {
     ] {
         assert!(stderr.contains(needle), "{stderr}");
     }
-    assert!(!fixture.0.path().join("stack-calls").exists());
+    assert!(fixture.stack.running());
+    assert!(
+        !fixture
+            .root
+            .path()
+            .join(".swarmy/dev/supervisor.pid")
+            .exists()
+    );
 }
 #[test]
 fn run_refuses_a_mismatched_api_core() {
     let fixture = Fixture::new();
     let body = serde_json::json!({"version":"9.9.9","git_commit":"other","api_version":swarmy_api_types::API_VERSION,"default_provider":"fake","services":[],"node_count":0}).to_string();
     let address = serve_files(vec![("/v1/health".to_owned(), body.into_bytes())]);
-    fs::create_dir_all(fixture.0.path().join(".swarmy")).unwrap();
+    fs::create_dir_all(fixture.root.path().join(".swarmy")).unwrap();
     fs::write(
-        fixture.0.path().join(".swarmy/config.toml"),
+        fixture.root.path().join(".swarmy/config.toml"),
         format!("[api]\nurl = 'http://{address}'\ntoken = 'x'\n"),
     )
     .unwrap();

@@ -29,6 +29,12 @@ ANTHROPIC_API_KEY=... swarmy auth set anthropic --from-env
 swarmy chat --provider anthropic
 ```
 
+Outside a checkout, `swarmy dev up` writes `~/.config/swarmy/config.toml` and
+keeps stack, logs, and data under `~/.swarmy/`. `swarmy dev status`,
+`swarmy dev logs`, `swarmy dev down`, and `swarmy chat` then work from any
+directory. A new chat session needs a registered image (`--image` or
+`default_image`).
+
 `swarmy dev install-tools` is Linux x86-64 only. `swarmy dev up` defaults to
 the fake provider without credentials. Run `swarmy auth set` after `dev up`:
 it stores the key in the cluster. ChatGPT sign-in (`swarmy auth login`) currently

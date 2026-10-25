@@ -70,7 +70,7 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
             // TOML diagnostics can include source values, including secrets.
             Err(_) => Err(invalid_config()),
         },
-        "Run swarmy dev up to create .swarmy/config.toml; repair an existing file or its SWARMY_* overrides. See docs/DEV.md.",
+        "Run swarmy dev up to create one (.swarmy/config.toml in a checkout, else ~/.config/swarmy/config.toml); repair an existing file or its SWARMY_* overrides. See docs/DEV.md.",
     )];
     checks.push(Check::new("keyring", keyring(), "Run swarmy dev up to create a keyring, or install the existing cluster key with chmod 600; set SWARMY_KEYRING for another path."));
     let remote = loaded

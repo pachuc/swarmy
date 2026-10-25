@@ -37,6 +37,7 @@ impl Fixture {
                 command.env_remove(key);
             }
         }
+        command.env("SWARMY_DEV_DIR", self.repo.join(".dev"));
         command
     }
 
@@ -68,6 +69,7 @@ impl Drop for Fixture {
                 command.env_remove(key);
             }
         }
+        command.env("SWARMY_DEV_DIR", self.repo.join(".dev"));
         ignore_best_effort(command.output(), "stop leftover dev services");
         if self.restore_stack {
             let result = Command::new(self.repo.join("scripts/dev-stack.sh"))

@@ -3,8 +3,21 @@ set -euo pipefail
 
 # Debian installs fdbserver outside the PATH used by some unprivileged shells.
 export PATH="$PATH:${HOME:?HOME must be set}/.local/bin:/usr/sbin"
-repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-dev_dir="$repo_dir/.dev"
+fail() {
+    printf '%s\n' "$*" >&2
+    exit 1
+}
+
+# swarmy dev runs a compiled-in copy and passes the stack directory in
+# SWARMY_DEV_DIR; run from a checkout, the default is <checkout>/.dev.
+if [[ -n ${SWARMY_DEV_DIR:-} ]]; then
+    dev_dir=$SWARMY_DEV_DIR
+elif [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]} ]]; then
+    dev_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/.dev"
+else
+    fail 'Set SWARMY_DEV_DIR to the stack directory when running this script without a file.'
+fi
+[[ $dev_dir == /* ]] || fail 'SWARMY_DEV_DIR must be an absolute path.'
 services=(fdb nats seaweed)
 if [[ ${SWARMY_DEV_SKIP_S3:-0} == 1 ]]; then services=(fdb nats); fi
 started=()
@@ -14,11 +27,6 @@ advertise_address=${2:-127.0.0.1}
 bind_address=$advertise_address
 # Wildcard listening keeps loopback clients working when a private address is advertised.
 if [[ $advertise_address != 127.0.0.1 ]]; then bind_address=0.0.0.0; fi
-
-fail() {
-    printf '%s\n' "$*" >&2
-    exit 1
-}
 
 # Linux start times prevent stale PID files from identifying a reused PID.
 process_info() {
@@ -62,10 +70,10 @@ stop_service() {
 
 read_fdb_port() {
     local cluster
-    [[ -f $dev_dir/fdb.cluster ]] || fail 'Missing .dev/fdb.cluster.'
+    [[ -f $dev_dir/fdb.cluster ]] || fail "Missing $dev_dir/fdb.cluster."
     cluster=$(tr -d '\n\r' < "$dev_dir/fdb.cluster")
     [[ $cluster =~ ^dev:dev@([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+):([0-9]+)$ ]] \
-        || fail 'Invalid .dev/fdb.cluster.'
+        || fail "Invalid $dev_dir/fdb.cluster."
     fdb_address=${BASH_REMATCH[1]}
     fdb_port=${BASH_REMATCH[2]}
 }
@@ -98,7 +106,7 @@ launch() {
     # Ignore hangups and detach standard input so the stack outlives this shell.
     (trap '' HUP; exec "$@") </dev/null >>"$dev_dir/logs/$service.log" 2>&1 &
     pid=$!
-    process_info || fail "$service exited during launch; see .dev/logs/$service.log"
+    process_info || fail "$service exited during launch; see $dev_dir/logs/$service.log"
     printf '%s %s\n' "$pid" "$process_start" > "$dev_dir/$service.pid"
     started+=("$service")
 }
@@ -107,11 +115,11 @@ wait_ready() {
     local service=$1 deadline=$((SECONDS + 90))
     shift
     until "$@" >"$dev_dir/logs/$service-ready.log" 2>&1; do
-        running "$service" || fail "$service exited; see .dev/logs/$service.log"
-        (( SECONDS < deadline )) || fail "$service is not ready; see .dev/logs/$service*.log"
+        running "$service" || fail "$service exited; see $dev_dir/logs/$service.log"
+        (( SECONDS < deadline )) || fail "$service is not ready; see $dev_dir/logs/$service*.log"
         sleep 1
     done
-    running "$service" || fail "$service exited; see .dev/logs/$service.log"
+    running "$service" || fail "$service exited; see $dev_dir/logs/$service.log"
     printf '%s: ready\n' "$service"
 }
 
@@ -133,9 +141,9 @@ start() {
     local binary service port requested_port
     local -a ports
     for binary in fdbserver fdbcli nats-server curl; do
-        command -v "$binary" >/dev/null || fail "Missing $binary; see docs/DEV.md for installation."
+        command -v "$binary" >/dev/null || fail "Missing $binary; run swarmy dev install-tools or see docs/DEV.md."
     done
-    if [[ ${SWARMY_DEV_SKIP_S3:-0} != 1 ]]; then command -v weed >/dev/null || fail 'Missing weed'; fi
+    if [[ ${SWARMY_DEV_SKIP_S3:-0} != 1 ]]; then command -v weed >/dev/null || fail 'Missing weed; run swarmy dev install-tools or see docs/DEV.md.'; fi
     [[ $(curl --help all) == *'--aws-sigv4'* ]] || fail 'curl 7.75 or newer is required for S3 authentication.'
     mkdir -p -- "$dev_dir/fdb/data" "$dev_dir/fdb/logs" "$dev_dir/nats" "$dev_dir/seaweed" "$dev_dir/logs"
 
@@ -225,7 +233,7 @@ NATS
         for bucket in swarmy swarmy-s3-namespace-test; do
             if ! s3_request --head "http://127.0.0.1:8333/$bucket" >/dev/null 2>&1; then
                 s3_request -X PUT "http://127.0.0.1:8333/$bucket" >"$dev_dir/logs/s3-bucket.log" 2>&1 \
-                    || fail "Could not create the $bucket bucket; see .dev/logs/s3-bucket.log"
+                    || fail "Could not create the $bucket bucket; see $dev_dir/logs/s3-bucket.log"
             fi
             s3_request --head "http://127.0.0.1:8333/$bucket" >/dev/null
         done
@@ -288,7 +296,7 @@ fi
 
 umask 077
 mkdir -p -- "$dev_dir"
-mkdir -- "$dev_dir/lock" 2>/dev/null || fail 'Another start/stop holds .dev/lock; see docs/DEV.md if it is stale.'
+mkdir -- "$dev_dir/lock" 2>/dev/null || fail "Another start/stop holds $dev_dir/lock; see docs/DEV.md if it is stale."
 locked=true
 trap cleanup EXIT
 trap 'exit 130' INT
