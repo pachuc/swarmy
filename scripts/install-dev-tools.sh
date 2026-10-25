@@ -4,9 +4,9 @@ set -euo pipefail
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 prefix=${HOME:?HOME must be set}/.local
 case ${1:-} in
-    '') [[ $# == 0 ]] || fail 'Usage: scripts/install-dev-tools.sh [--prefix DIRECTORY]' ;;
-    --prefix) [[ $# == 2 && -n $2 ]] || fail 'Usage: scripts/install-dev-tools.sh [--prefix DIRECTORY]'; prefix=$2 ;;
-    *) fail 'Usage: scripts/install-dev-tools.sh [--prefix DIRECTORY]' ;;
+    '') [[ $# == 0 ]] || fail "Usage: $0 [--prefix DIRECTORY]" ;;
+    --prefix) [[ $# == 2 && -n $2 ]] || fail "Usage: $0 [--prefix DIRECTORY]"; prefix=$2 ;;
+    *) fail "Usage: $0 [--prefix DIRECTORY]" ;;
 esac
 [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || fail 'This installer supports Linux x86-64. Install the backing tools for your platform manually.'
 for command in curl tar sha256sum install mktemp; do
@@ -15,7 +15,6 @@ done
 mkdir -p -- "$prefix"
 prefix=$(cd -- "$prefix" && pwd)
 [[ $prefix != *[,:]* && $prefix != *$'\n'* && $prefix != *$'\r'* ]] || fail 'The prefix cannot contain linker separators (comma, colon, or newline).'
-repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 install_dir=$(mktemp -d)
 trap 'rm -rf -- "$install_dir"' EXIT
 cd -- "$install_dir"
@@ -40,11 +39,11 @@ install -m 0755 libfdb_c.x86_64.so "$prefix/lib/libfdb_c.so"
 install -m 0755 "nats-server-v${NATS_VERSION}-linux-amd64/nats-server" "$prefix/bin/nats-server"
 install -m 0755 weed "$prefix/bin/weed"
 printf '\nInstalled backing tools to %s/bin and the client library to %s/lib.\n' "$prefix" "$prefix"
-printf 'Run this from the checkout to install swarmy and its services:\n\n'
+printf 'swarmy finds these tools automatically; no PATH or LD_LIBRARY_PATH exports are needed.\n'
+printf 'To build swarmy from a checkout, run:\n'
 if [ "$prefix" = "$HOME/.local" ]; then
     printf '    make install\n'
 else
     printf '    make install SWARMY_FDB_LIB_DIR=%q\n' "$prefix/lib"
 fi
-printf '\nswarmy finds these tools automatically; no PATH or LD_LIBRARY_PATH exports are needed.\n'
-printf 'Keep this checkout for swarmy dev up, which uses scripts/dev-stack.sh.\n'
+

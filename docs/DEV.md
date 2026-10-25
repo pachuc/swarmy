@@ -257,6 +257,16 @@ curl, tar, sha256sum, and install. Building Rust also needs a C/C++ toolchain,
 pkg-config, and clang/libclang for bindgen. The stack uses curl 7.75 or newer for
 AWS request signing. These prerequisites must already be available.
 
+On Ubuntu, the build prerequisites are `build-essential pkg-config clang
+libclang-dev ca-certificates curl tar git`. Clone the repository with
+`git clone https://github.com/pachuc/swarmy.git`, enter the checkout, and run
+`rustup show` to install the pinned toolchain. Cargo installs binaries into
+`~/.cargo/bin`; use `~/.cargo/bin/swarmy` if that directory is not on PATH.
+When pinned backing tools and the FoundationDB library are already installed
+system-wide, `make install` finds them in `/usr/local/lib` or `/usr/lib`.
+
+Without a checkout, `swarmy dev install-tools` runs the same compiled-in script.
+It accepts `--prefix DIRECTORY` to select another installation root.
 From the checkout:
 
 ```sh
@@ -361,6 +371,16 @@ installed `swarmy-auth` helper handles interactive `auth login` and `auth import
 both save credentials through the API. Node installs omit it.
 
 ## Release builds
+
+### Install a release
+
+`scripts/install.sh` installs the client from a GitHub release with optional
+`--version vX.Y.Z` and `--prefix DIRECTORY` flags. The raw URL on master serves
+the installer, so changes reach users when merged. `SWARMY_INSTALL_BASE_URL`,
+`SWARMY_INSTALL_OS`, and `SWARMY_INSTALL_ARCH` are test hooks for overriding
+the release URL and detected platform. `scripts/test-install.sh` exercises
+fake releases in `make check-scripts`.
+
 
 A `v*` tag runs `.github/workflows/release.yml` to build and publish release
 archives. Pull requests touching the workflow or `scripts/release.sh`, and
