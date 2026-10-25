@@ -590,6 +590,11 @@ impl<T> WorkMessage<T> {
     /// Like [`Self::keep_alive_while`], but after each successful extension runs
     /// `on_tick`, for example to renew a store lease. `Ok(ControlFlow::Break(value))`
     /// stops `work` and returns `Ok(value)`; an error stops `work` and is returned.
+    /// `on_tick` runs concurrently with `work`: `work` keeps being polled while
+    /// `on_tick` awaits, so `on_tick` may wait on a lock `work` holds. When
+    /// `work` finishes first, an in-flight `on_tick` is dropped at its await
+    /// point. `Ok(ControlFlow::Break(value))` or an error from the extension
+    /// or `on_tick` drops `work` at its current await point.
     ///
     /// # Errors
     /// As [`Self::keep_alive_while`], plus errors from `on_tick`.
@@ -600,7 +605,7 @@ impl<T> WorkMessage<T> {
         &self,
         period: Duration,
         work: F,
-        mut on_tick: H,
+        on_tick: H,
     ) -> Result<R, E>
     where
         F: Future<Output = Result<R, E>>,
@@ -608,18 +613,29 @@ impl<T> WorkMessage<T> {
         H: FnMut() -> HF,
         HF: Future<Output = Result<ControlFlow<R>, E>>,
     {
-        tokio::pin!(work);
+        // Poll work and the heartbeat as sibling futures: work keeps running while
+        // on_tick waits, for example on a lock that work holds across an await.
+        // Running on_tick inside a select arm starved work and deadlocked the worker.
+        tokio::select! {
+            biased;
+            result = work => result,
+            result = self.heartbeat(period, on_tick) => result,
+        }
+    }
+
+    async fn heartbeat<R, E, H, HF>(&self, period: Duration, mut on_tick: H) -> Result<R, E>
+    where
+        E: From<Error>,
+        H: FnMut() -> HF,
+        HF: Future<Output = Result<ControlFlow<R>, E>>,
+    {
         let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tokio::select! {
-                result = &mut work => return result,
-                _ = ticks.tick() => {
-                    self.extend_deadline().await?;
-                    if let ControlFlow::Break(value) = on_tick().await? {
-                        return Ok(value);
-                    }
-                }
+            ticks.tick().await;
+            self.extend_deadline().await?;
+            if let ControlFlow::Break(value) = on_tick().await? {
+                return Ok(value);
             }
         }
     }
