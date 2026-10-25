@@ -32,7 +32,7 @@ const SERVICES: [(&str, &str); 4] = [
 /// The script remains the source for make, remote provisioning, and image setup.
 const INSTALL_DEV_TOOLS: &str = include_str!("../../../scripts/install-dev-tools.sh");
 /// The backing stack script is compiled in so `dev` needs no checkout; it runs
-/// with SWARMY_DEV_DIR. The file remains the source for make, CI, and nodes.
+/// with `SWARMY_DEV_DIR`. The file remains the source for make, CI, and nodes.
 const DEV_STACK: &str = include_str!("../../../scripts/dev-stack.sh");
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -80,9 +80,9 @@ struct Layout {
     root: PathBuf,
     /// Resolved state directory containing dev/ and core/.
     state_dir: PathBuf,
-    /// Supervised service state under state_dir/dev.
+    /// Supervised service state under `state_dir/dev`.
     state: PathBuf,
-    /// Backing stack directory passed as SWARMY_DEV_DIR.
+    /// Backing stack directory passed as `SWARMY_DEV_DIR`.
     stack: PathBuf,
 }
 
