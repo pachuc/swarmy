@@ -321,6 +321,25 @@ fn oversized(max_bytes: u64) -> ApiFailure {
     )
 }
 
+/// Delete spool directories a crashed upload left behind. Each upload spools
+/// under `swarmy-upload-*` inside the configured directory with a guard that
+/// deletes it on every path, so anything present at startup is orphaned.
+pub fn sweep_stale_uploads(upload_dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(upload_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("swarmy-upload-") {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_dir_all(entry.path()) {
+            tracing::warn!(path = %entry.path().display(), error = %swarmy_core::error_chain(&error), "stale upload not swept");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
@@ -339,25 +358,6 @@ mod tests {
             (u64::MAX, 2, 0, u64::MAX),
         ] {
             assert!(parse_extent(&header(offset, length), next, size).is_err());
-        }
-    }
-}
-
-/// Delete spool directories a crashed upload left behind. Each upload spools
-/// under `swarmy-upload-*` inside the configured directory with a guard that
-/// deletes it on every path, so anything present at startup is orphaned.
-pub fn sweep_stale_uploads(upload_dir: &std::path::Path) {
-    let Ok(entries) = std::fs::read_dir(upload_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !name.starts_with("swarmy-upload-") {
-            continue;
-        }
-        if let Err(error) = std::fs::remove_dir_all(entry.path()) {
-            tracing::warn!(path = %entry.path().display(), error = %swarmy_core::error_chain(&error), "stale upload not swept");
         }
     }
 }

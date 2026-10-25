@@ -263,6 +263,7 @@ async fn upload_validates_requirements_before_chunking() {
 
 #[tokio::test]
 async fn upload_rejects_bodies_over_the_configured_limit() {
+    use std::os::unix::fs::FileExt;
     // A one-chunk body against a sub-chunk ceiling exercises the 413 path
     // without staging gigabytes.
     let Some(fixture) = Fixture::with_upload_max(u64::from(CHUNK_SIZE) - 1).await else {
@@ -274,7 +275,6 @@ async fn upload_rejects_bodies_over_the_configured_limit() {
         .unwrap()
         .set_len(u64::from(CHUNK_SIZE))
         .unwrap();
-    use std::os::unix::fs::FileExt;
     std::fs::OpenOptions::new()
         .write(true)
         .open(&raw)
@@ -433,7 +433,7 @@ async fn sparse_upload_with_data_over_the_limit_is_rejected() {
     }
 }
 
-/// Malformed framing and invalid logical sizes receive invalid_request.
+/// Malformed framing and invalid logical sizes receive `invalid_request`.
 #[tokio::test]
 async fn upload_rejects_malformed_extents() {
     let Some(fixture) = Fixture::new().await else {
