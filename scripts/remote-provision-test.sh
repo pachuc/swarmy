@@ -175,4 +175,23 @@ if read_shared_list probe_result swarmy_mode_build_args stack >/dev/null 2>&1; t
     exit 1
 fi
 unset -f empty_producer
+
+# A reprovisioned host drops the old service binaries after installing core.
+fake_root=$(mktemp -d)
+trap 'rm -rf "$bundle" "$fake_root"' EXIT
+mkdir -p "$fake_root/usr/local/bin"
+while IFS= read -r binary; do
+    touch "$fake_root/usr/local/bin/$binary"
+done < <(retired_binary_names)
+touch "$fake_root/usr/local/bin/swarmy-core"
+sudo() {
+    [[ $1 == -n && $2 == rm && $3 == -f ]] || return 1
+    rm -f "$fake_root$4"
+}
+remove_retired_binaries
+while IFS= read -r binary; do
+    [[ ! -e $fake_root/usr/local/bin/$binary ]] || { echo "retired binary remains: $binary" >&2; exit 1; }
+done < <(retired_binary_names)
+[[ -f $fake_root/usr/local/bin/swarmy-core ]]
+unset -f sudo
 echo 'remote provision argument and environment tests passed'

@@ -17,6 +17,7 @@ mkdir -p "$fake/bin" "$fake/etc/systemd/system" "$fake/usr/local/bin" \
 # root, so the test never touches the real filesystem.
 cat > "$fake/bin/sudo" <<'STUB'
 #!/usr/bin/env bash
+[[ ${1-} != -n ]] || shift
 args=()
 for a in "$@"; do
     if [[ $a == /* ]]; then args+=("$FAKE_ROOT$a"); else args+=("$a"); fi
@@ -45,9 +46,12 @@ done < <(swarmy_unit_names)
 while IFS= read -r binary; do
     touch "$fake/usr/local/bin/$binary"
 done < <(swarmy_binary_names)
+while IFS= read -r binary; do
+    touch "$fake/usr/local/bin/$binary"
+done < <(retired_binary_names)
 printf 'nbd\nublk_drv\n' > "$fake/etc/modules-load.d/swarmy.conf"
 touch "$fake/usr/local/lib/swarmy/libfdb_c.so" "$fake/etc/ld.so.conf.d/swarmy.conf"
-printf 'secret=fixture\n'  > "$fake/etc/swarmy/node.env"
+printf 'secret=fixture\n' > "$fake/etc/swarmy/node.env"
 touch "$fake/home/decomm-swarmy/swarmy/checkout-marker"
 printf 'LABEL=swarmy-local /mnt/swarmy-local ext4 defaults,nofail 0 2\n' > "$fake/etc/fstab"
 

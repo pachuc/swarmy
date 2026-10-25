@@ -37,10 +37,10 @@ swarmy_core_library_dir() { printf '/usr/local/lib/swarmy\n'; }
 install_core_library() {
     local dir
     dir=$(swarmy_core_library_dir)
-    sudo install -d -m 0755 "$dir" /etc/ld.so.conf.d
-    sudo install -m 0644 "$1" "$dir/libfdb_c.so"
-    printf '%s\n' "$dir" | sudo tee /etc/ld.so.conf.d/swarmy.conf >/dev/null
-    sudo ldconfig
+    sudo -n install -d -m 0755 "$dir" /etc/ld.so.conf.d
+    sudo -n install -m 0644 "$1" "$dir/libfdb_c.so"
+    printf '%s\n' "$dir" | sudo -n tee /etc/ld.so.conf.d/swarmy.conf >/dev/null
+    sudo -n ldconfig
 }
 
 parse_sandbox_count() {
@@ -211,6 +211,19 @@ swarmy_binary_names() {
     swarmy_core_binary
 }
 
+# These service binaries were replaced by `swarmy-core <role>`.
+retired_binary_names() {
+    printf '%s\n' swarmyd swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api
+}
+
+remove_retired_binaries() {
+    local binaries binary
+    read_shared_list binaries retired_binary_names
+    for binary in "${binaries[@]}"; do
+        sudo -n rm -f "/usr/local/bin/$binary"
+    done
+}
+
 # The core role a unit runs, or empty for non-core units.
 swarmy_unit_role() {
     swarmy_unit_table | awk -F: -v unit="${1-}" '$1 == unit { print $2 }'
@@ -341,6 +354,7 @@ decommission_remove() {
     for binary in "${binaries[@]}"; do
         sudo rm -f "/usr/local/bin/$binary"
     done
+    remove_retired_binaries
     sudo rm -rf "$(swarmy_core_library_dir)"
     sudo rm -f /etc/ld.so.conf.d/swarmy.conf
     sudo ldconfig
