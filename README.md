@@ -32,8 +32,11 @@ swarmy chat --provider anthropic
 Outside a checkout, `swarmy dev up` writes `~/.config/swarmy/config.toml` and
 keeps stack, logs, and data under `~/.swarmy/`. `swarmy dev status`,
 `swarmy dev logs`, `swarmy dev down`, and `swarmy chat` then work from any
-directory. A new chat session needs a registered image (`--image` or
-`default_image`).
+directory. On Linux x86-64, `swarmy dev up` downloads the release's prebuilt
+base-ubuntu image (a few hundred MB), verifies it against SHA256SUMS, registers
+`base-ubuntu:<release tag>`, and sets `default_image`. Chat needs no `--image`.
+Use `--no-image` to skip the download, or retry with
+`swarmy image pull base-ubuntu --set-default` and `swarmy dev up`.
 
 `swarmy dev install-tools` is Linux x86-64 only. `swarmy dev up` defaults to
 the fake provider without credentials. Run `swarmy auth set` after `dev up`:

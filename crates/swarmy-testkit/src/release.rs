@@ -120,3 +120,32 @@ pub fn fake_release(tag: &str, target: &str, core_script: &str) -> Vec<(String, 
 pub fn host_target() -> String {
     format!("{}-unknown-linux-gnu", std::env::consts::ARCH)
 }
+
+/// A minimal base-image recipe with a 16 MiB disk and directory source.
+pub const FAKE_IMAGE_RECIPE: &str = "disk_size = 16777216\nsource_date_epoch = 1714003200\n\n[sandbox]\nscratch = [\"/tmp\"]\nmemory_mib = 768\n\n[source]\nkind = \"directory\"\npath = \"rootfs\"\n";
+
+/// Package a sparse disk and its recipe using GNU tar's sparse format.
+/// # Panics
+/// Panics when fixture files cannot be created or tar fails.
+#[must_use]
+pub fn image_archive(top: &str, size: u64, data: &[(u64, &[u8])], recipe: &str) -> Vec<u8> {
+    use std::os::unix::fs::FileExt;
+    let temp = tempfile::tempdir().expect("fixture directory");
+    let dir = temp.path().join(top);
+    std::fs::create_dir(&dir).expect("image archive directory");
+    let disk = std::fs::File::create(dir.join("disk.ext4")).expect("sparse disk");
+    disk.set_len(size).expect("disk size");
+    for (offset, bytes) in data {
+        disk.write_all_at(bytes, *offset).expect("disk extent");
+    }
+    std::fs::write(dir.join("recipe.toml"), recipe).expect("image recipe");
+    let output = Command::new("tar")
+        .args(["--sparse", "-czf", "-"])
+        .arg("-C")
+        .arg(temp.path())
+        .arg(top)
+        .output()
+        .expect("tar runs");
+    assert!(output.status.success(), "tar succeeds");
+    output.stdout
+}

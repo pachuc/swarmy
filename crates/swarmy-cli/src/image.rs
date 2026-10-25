@@ -118,12 +118,15 @@ pub(crate) async fn build(
     validate_label(&name)?;
     // The ext4 file is built locally; chunk publication and registration run
     // on the control plane so the client never needs object store credentials.
-    let image = tokio::task::spawn_blocking(move || swarmy_image::build_ext4(&recipe, &directory))
-        .await??;
+    let (image, sandbox) = tokio::task::spawn_blocking(move || {
+        let image = swarmy_image::build_ext4(&recipe, &directory)?;
+        Ok::<_, swarmy_image::ImageError>((image, recipe.sandbox))
+    })
+    .await??;
     if !no_register {
-        register(&name, &tag, image.path(), &recipe.sandbox, json).await?;
+        register(&name, &tag, image.path(), &sandbox, json).await?;
     }
-    if let Some(output) = output {
+    if let Some(ref output) = output {
         // Refuse to overwrite an existing image, including through a symlink.
         let destination = std::fs::OpenOptions::new()
             .write(true)

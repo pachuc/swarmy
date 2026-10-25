@@ -61,3 +61,5 @@ their version commands inside runc, authenticated git and gh against a local
 TLS fake, verified rotation and refusal after clearing, and scanned the complete
 disk and all referenced snapshot chunks for both tokens. That test passed in
 232.00 seconds. Its gh configuration file existed only in the tmpfs mount.
+
+Releases build this recipe once and publish its sparse ext4 image for Linux x86-64.

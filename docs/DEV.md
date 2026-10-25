@@ -404,7 +404,12 @@ FoundationDB 7.3.79 client through an `$ORIGIN` rpath; keep the two files
 together. Packaging checks the upstream library against its published SHA-256
 checksum. Nodes need no FoundationDB installation for this binary.
 
-Each release includes one `SHA256SUMS` for all six archives. Download it with
+The image archive `swarmy-image-base-ubuntu-x86_64-unknown-linux-gnu.tar.gz`
+contains `disk.ext4` (a sparse 8 GiB ext4 member packed with GNU tar
+`--sparse`) and `recipe.toml`. It is built with
+`make release-package RELEASE_COMPONENT=image RELEASE_TARGET=x86_64-unknown-linux-gnu`.
+
+Each release includes one `SHA256SUMS` for all seven archives. Download it with
 the archives and verify using `sha256sum -c --ignore-missing SHA256SUMS`.
 Releases are not signed yet; signing may be added later.
 
@@ -416,7 +421,9 @@ before cutting a tag.
 `make release-dry-run` builds the Linux x86_64 client by default, packages it,
 and generates a checksum file. Override `RELEASE_COMPONENT=core`,
 `RELEASE_TARGET=...`, and `RELEASE_DIR=...` to package a different target.
-Core builds need patchelf, clang, and libclang-dev. `CORE_BIN_PACKAGE` names
+Core builds need patchelf, clang, and libclang-dev.
+`RELEASE_COMPONENT=image` builds the base-ubuntu ext4 on Ubuntu 24.04 with
+passwordless sudo, debootstrap, and e2fsprogs. `CORE_BIN_PACKAGE` names
 the cargo package that builds the `swarmy-core` binary.
 
 ### Install a release
@@ -427,6 +434,15 @@ the installer, so changes reach users when merged. `SWARMY_INSTALL_BASE_URL`,
 `SWARMY_INSTALL_OS`, and `SWARMY_INSTALL_ARCH` are test hooks for overriding
 the release URL and detected platform. `scripts/test-install.sh` exercises
 fake releases in `make check-scripts`.
+
+## The base image
+
+`swarmy image pull base-ubuntu --set-default` verifies and uploads the release
+image through the sparse upload path, then sets `selection.default_image`.
+Restart with `swarmy dev up` to apply it. `dev up` does this automatically when
+there is no default image; `--no-image` skips it. The download is temporarily
+cached in `<state_dir>/images` and removed after upload. For local fake releases,
+set `SWARMY_RELEASE_BASE_URL` and include the image archive in SHA256SUMS.
 
 ## The core binary
 
@@ -448,6 +464,7 @@ To test locally with a fake release (requires patchelf and clang):
 ```sh
 make release-package RELEASE_COMPONENT=core RELEASE_DIR=target/fake-release/v0.1.0
 make release-package RELEASE_COMPONENT=client RELEASE_DIR=target/fake-release/v0.1.0
+make release-package RELEASE_COMPONENT=image RELEASE_DIR=target/fake-release/v0.1.0
 scripts/release.sh checksums target/fake-release/v0.1.0
 python3 -m http.server --bind 127.0.0.1 --directory target/fake-release 8765
 SWARMY_RELEASE_BASE_URL=http://127.0.0.1:8765 swarmy dev up

@@ -120,6 +120,7 @@ change. Base images and their clones share a filesystem UUID: mount them by
 device path, not by UUID.
 
 To retain the raw sparse image for inspection, pass `--output /tmp/base.ext4`.
+Add `--no-register` to build only the file without connecting to the API.
 The destination must not exist. For a manual check:
 
 ```sh
@@ -187,3 +188,9 @@ desktop image. The operator must use a node with sudo, debootstrap, and NBD:
    confirm that `xdpyinfo` succeeds again within a few seconds.
 
 See [the desktop image](base-desktop/README.md) for example commands.
+
+## Prebuilt base image
+
+Each release publishes base-ubuntu for Linux x86-64. `swarmy dev up` pulls it
+when no default image is configured; `swarmy image pull base-ubuntu --set-default`
+retries the verified download and registration. The recipe here remains the source.

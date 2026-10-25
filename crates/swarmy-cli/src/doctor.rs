@@ -529,7 +529,7 @@ fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
                     if images.is_empty() { "none" } else { &images },
                     snapshot.default_image.as_deref().unwrap_or("unset")
                 ),
-                "Build and register an image, then configure default_image.",
+                "Run swarmy image pull base-ubuntu --set-default (release clients) or swarmy image build images/base-ubuntu from a checkout, then restart with swarmy dev up.",
             )
         } else {
             Check::new(
