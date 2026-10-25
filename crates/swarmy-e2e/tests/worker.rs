@@ -1442,6 +1442,18 @@ async fn competing_workers_claim_each_step_once() {
             f.start("gateway", None);
             let first = f.start("worker", None);
             let second = f.start("worker", None);
+            // start() only spawns the process. The worker logs readiness after
+            // subscribing to every runnable partition, including partition 7.
+            for index in [first, second] {
+                let log = f.files.path().join(format!("service-{index}.log"));
+                swarmy_testkit::eventually("worker runnable consumer ready", WAIT, async || {
+                    std::fs::read_to_string(&log)
+                        .ok()?
+                        .contains("worker ready")
+                        .then_some(())
+                })
+                .await;
+            }
             let mut sessions = Vec::new();
             for _ in 0..24 {
                 let id = f.create().await;
