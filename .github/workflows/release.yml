@@ -90,9 +90,26 @@ jobs:
           name: release-core-${{ matrix.target }}
           path: dist/*.tar.gz
           if-no-files-found: error
+  image:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Install image build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends debootstrap e2fsprogs
+      - run: make release-package RELEASE_COMPONENT=image RELEASE_TARGET=x86_64-unknown-linux-gnu RELEASE_DIR=dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-image-x86_64-unknown-linux-gnu
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
   publish:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [version, client, core]
+    needs: [version, client, core, image]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

@@ -43,6 +43,9 @@ pub(crate) enum Command {
         /// Run this swarmy-core instead of the matching release
         #[arg(long, env = "SWARMY_CORE_BIN", value_name = "PATH")]
         core_bin: Option<PathBuf>,
+        /// Do not download and register the release base image when no default image is configured
+        #[arg(long)]
+        no_image: bool,
     },
     /// Stop the services, supervisor, and backing stack, preserving data
     Down,
@@ -180,10 +183,10 @@ pub(crate) async fn run(command: Command, json: bool, allow_version_mismatch: bo
     // rejects `--json` and discovers the layout through one helper.
     match command {
         Command::Supervise { state, core } => supervise(&state, &core).await,
-        Command::Up { core_bin } => {
+        Command::Up { core_bin, no_image } => {
             let layout = local(json)?;
             let _lock = layout.lock()?;
-            up(&layout, allow_version_mismatch, core_bin).await
+            up(&layout, allow_version_mismatch, core_bin, no_image).await
         }
         Command::Down => {
             let layout = local(json)?;
@@ -317,6 +320,16 @@ pub(crate) struct ResolvedCore {
 pub(crate) fn core_cache() -> Result<PathBuf> {
     Ok(Layout::discover()?.state_dir.join("core"))
 }
+/// `<state_dir>/images`, the release image download cache.
+pub(crate) fn image_cache() -> Result<PathBuf> {
+    Ok(Layout::discover()?.state_dir.join("images"))
+}
+/// Set `selection.default_image` in CONFIG, keeping the rest of the file.
+pub(crate) fn set_default_image(config: &Path, image: &str) -> Result<()> {
+    let mut settings = Settings::read(config)?;
+    settings.selection.default_image = Some(image.to_owned());
+    write_private(config, &settings.to_toml()?)
+}
 pub(crate) async fn resolve_core(
     core_bin: Option<PathBuf>,
     target: Option<swarmy_cloud::release::Target>,
@@ -412,6 +425,7 @@ async fn up(
     layout: &Layout,
     allow_version_mismatch: bool,
     core_bin: Option<PathBuf>,
+    no_image: bool,
 ) -> Result<()> {
     if node_services(layout).await? {
         return Ok(());
@@ -431,6 +445,65 @@ async fn up(
     let remote = Settings::load_base()?.settings.remote.profile;
     prepare_stack(layout, remote.as_deref()).await?;
     let settings = prepare_settings(layout, remote.is_some())?;
+    let mut pid = launch(layout, &core.path, &settings).await?;
+    if remote.is_none() && !no_image {
+        match settings.selection.default_image.as_deref() {
+            None => match crate::image::pull_release_image(
+                &image_cache()?,
+                swarmy_version::RELEASE_TAG,
+                swarmy_cloud::release::Target::host()?,
+                false,
+            )
+            .await
+            {
+                Ok(Some(_)) => {
+                    let image = crate::image::release_image(swarmy_version::RELEASE_TAG);
+                    set_default_image(&layout.config, &image)?;
+                    println!("default image: {image}; restarting services");
+                    stop_services(&layout.state).await?;
+                    let settings = Settings::load()?.settings;
+                    pid = launch(layout, &core.path, &settings).await?;
+                }
+                Ok(None) => println!(
+                    "default image: none (development build); build one from a checkout with swarmy image build images/base-ubuntu and set selection.default_image in {}",
+                    layout.config.display()
+                ),
+                Err(error) => eprintln!(
+                    "warning: could not register the release base image: {error:#}\nRetry with swarmy image pull base-ubuntu --set-default, then swarmy dev up"
+                ),
+            },
+            Some(default) if crate::image::other_release_image(default) => println!(
+                "note: default image {default} is from another release; run swarmy image pull base-ubuntu --set-default and swarmy dev up to use {}",
+                crate::image::release_image(swarmy_version::RELEASE_TAG)
+            ),
+            Some(_) => {}
+        }
+    }
+    let stack_pids = ["fdb", "nats", "seaweed"]
+        .into_iter()
+        .filter_map(|name| {
+            Identity::read(&layout.stack.join(format!("{name}.pid")))
+                .map(|id| format!("{name}={}", id.pid))
+        })
+        .collect::<Vec<_>>();
+    if let Some(name) = remote {
+        println!("stack: remote {name}");
+    } else {
+        println!("stack: ready ({})", stack_pids.join(", "));
+    }
+    for (name, _) in SERVICES {
+        let identity = Identity::read(&layout.state.join(format!("{name}.pid")))
+            .context("service exited during startup")?;
+        println!("{name}: ready (pid {})", identity.pid);
+    }
+    println!(
+        "supervisor: running (pid {pid}); logs: {}",
+        layout.state.join("logs").display()
+    );
+    Ok(())
+}
+
+async fn launch(layout: &Layout, core: &Path, settings: &Settings) -> Result<u32> {
     let ready = layout.state.join("ready");
     if ready.exists() {
         fs::remove_file(&ready)?;
@@ -440,7 +513,7 @@ async fn up(
         .arg("dev")
         .arg("supervise")
         .arg(&layout.state)
-        .arg(&core.path)
+        .arg(core)
         .current_dir(&layout.root)
         .envs(settings.environment())
         .env("RUST_LOG", "info")
@@ -484,28 +557,7 @@ async fn up(
         cleanup?;
         return Err(error);
     }
-    let stack_pids = ["fdb", "nats", "seaweed"]
-        .into_iter()
-        .filter_map(|name| {
-            Identity::read(&layout.stack.join(format!("{name}.pid")))
-                .map(|id| format!("{name}={}", id.pid))
-        })
-        .collect::<Vec<_>>();
-    if let Some(name) = remote {
-        println!("stack: remote {name}");
-    } else {
-        println!("stack: ready ({})", stack_pids.join(", "));
-    }
-    for (name, _) in SERVICES {
-        let identity = Identity::read(&layout.state.join(format!("{name}.pid")))
-            .context("service exited during startup")?;
-        println!("{name}: ready (pid {})", identity.pid);
-    }
-    println!(
-        "supervisor: running (pid {pid}); logs: {}",
-        layout.state.join("logs").display()
-    );
-    Ok(())
+    Ok(pid)
 }
 
 async fn prepare_stack(layout: &Layout, remote: Option<&str>) -> Result<()> {

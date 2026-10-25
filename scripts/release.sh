@@ -3,7 +3,7 @@
 # use this same script through the Makefile.
 set -euo pipefail
 fail() { printf 'release: %s\n' "$*" >&2; exit 1; }
-usage() { fail 'usage: scripts/release.sh version | package client|core TARGET DIR | checksums DIR'; }
+usage() { fail 'usage: scripts/release.sh version | package client|core|image TARGET DIR | checksums DIR'; }
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd -- "$repo"
 CARGO=${CARGO:-cargo}
@@ -74,6 +74,19 @@ package() {
             [ "$(patchelf --print-rpath "$stage/swarmy-core")" = '$ORIGIN' ] || fail 'core rpath is not $ORIGIN'
             readelf -d "$stage/swarmy-core" | grep -q 'NEEDED.*\[libfdb_c\.so\]' || fail 'core does not need libfdb_c.so'
             ;;
+        image)
+            # Build natively with sudo and debootstrap; see images/README.md.
+            [ "$target" = x86_64-unknown-linux-gnu ] || fail 'the base image is published for x86_64-unknown-linux-gnu only'
+            [ "$target" = "$(rustc -vV | sed -n 's/^host: //p')" ] || fail 'build the base image on a native runner'
+            name=swarmy-image-base-ubuntu
+            stage="$work/$name-$target"
+            mkdir -p "$stage"
+            env -u SWARMY_FDB_LIB_DIR "$CARGO" build --locked -p swarmy-cli --bin swarmy
+            "$(cd "${CARGO_TARGET_DIR:-target}" && pwd)/debug/swarmy" image build images/base-ubuntu --output "$stage/disk.ext4" --no-register
+            install -m 0644 images/base-ubuntu/recipe.toml "$stage/recipe.toml"
+            debugfs -R 'stat /usr/local/libexec/swarmy-github' "$stage/disk.ext4" 2>/dev/null | grep -q 'Type: regular' || fail 'image lacks the agent setup'
+            [ "$(du -B1 "$stage/disk.ext4" | cut -f1)" -lt "$(stat -c %s "$stage/disk.ext4")" ] || fail 'image is not sparse'
+            ;;
         *) usage ;;
     esac
     host=$(rustc -vV | sed -n 's/^host: //p')
@@ -83,12 +96,17 @@ package() {
             [ "$("$stage/swarmy" version --release)" = "v$(version)" ] || fail 'release tag mismatch'
             "$stage/swarmy" --json version --release | grep -q '"release_build":true' || fail 'client is not marked as a release build'
             "$stage/swarmy" version --release
-        else
+        elif [ "$component" = core ]; then
             ldd "$stage/swarmy-core" | grep -F "libfdb_c.so => $stage/libfdb_c.so" || fail 'bundled libfdb_c.so not loaded'
             "$stage/swarmy-core" api --version
         fi
     fi
-    tar -C "$work" -czf "$dir/$name-$target.tar.gz" "$name-$target"
+    if [ "$component" = image ]; then
+        tar -C "$work" --sparse -czf "$dir/$name-$target.tar.gz" "$name-$target"
+        [ "$(stat -c %s "$dir/$name-$target.tar.gz")" -lt 1900000000 ] || fail 'image archive exceeds the GitHub asset limit'
+    else
+        tar -C "$work" -czf "$dir/$name-$target.tar.gz" "$name-$target"
+    fi
     printf '%s\n' "$dir/$name-$target.tar.gz"
 }
 

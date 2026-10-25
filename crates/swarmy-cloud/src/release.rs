@@ -61,6 +61,7 @@ impl Target {
 pub enum Component {
     Core,
     Client,
+    BaseImage,
 }
 impl Component {
     #[must_use]
@@ -68,6 +69,7 @@ impl Component {
         match self {
             Self::Core => "swarmy-core",
             Self::Client => "swarmy",
+            Self::BaseImage => "swarmy-image-base-ubuntu",
         }
     }
     #[must_use]
@@ -75,6 +77,19 @@ impl Component {
         match self {
             Self::Core => &["swarmy-core", "libfdb_c.so"],
             Self::Client => &["swarmy"],
+            Self::BaseImage => &["disk.ext4", "recipe.toml"],
+        }
+    }
+    /// What to do when the release has no such asset.
+    #[must_use]
+    pub const fn missing_hint(self) -> &'static str {
+        match self {
+            Self::Core | Self::Client => {
+                "a development client passes --core-bin PATH or sets SWARMY_CORE_BIN"
+            }
+            Self::BaseImage => {
+                "releases publish base-ubuntu for x86_64-unknown-linux-gnu only; build one from a checkout with swarmy image build images/base-ubuntu"
+            }
         }
     }
 }
@@ -157,6 +172,15 @@ impl Release {
             self.tag
         ))?)
     }
+    fn digest(&self, sums: &str, asset: &str, component: Component) -> Result<String> {
+        expected_digest(sums, asset).map_err(|_| {
+            Error::other(format!(
+                "SHA256SUMS for {} has no entry for {asset}; {}",
+                self.tag,
+                component.missing_hint()
+            ))
+        })
+    }
     /// Fetch SHA256SUMS on every invocation, reusing a verified cache if offline.
     /// # Errors
     /// Returns an error for missing releases, invalid checksums, or failed downloads.
@@ -189,17 +213,14 @@ impl Release {
         };
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(Error::other(format!(
-                "no swarmy release {} at {} (HTTP 404 for SHA256SUMS); a development client passes --core-bin PATH or sets SWARMY_CORE_BIN",
-                self.tag, self.base
+                "no swarmy release {} at {} (HTTP 404 for SHA256SUMS); {}",
+                self.tag,
+                self.base,
+                component.missing_hint()
             )));
         }
         let sums = response.error_for_status()?.text().await?;
-        let expected = expected_digest(&sums, &asset).map_err(|_| {
-            Error::other(format!(
-                "SHA256SUMS for {} has no entry for {asset}",
-                self.tag
-            ))
-        })?;
+        let expected = self.digest(&sums, &asset, component)?;
         if let Some(dir) = self.cached(cache, component, target)
             && fs::read_to_string(dir.join(".sha256")).await?.trim() == expected
         {
@@ -287,6 +308,57 @@ mod tests {
     use super::*;
     use swarmy_testkit::release::{fake_release, serve_files};
 
+    #[test]
+    fn base_image_component_names() {
+        assert_eq!(
+            Release::asset(Component::BaseImage, Target::X86_64Linux),
+            "swarmy-image-base-ubuntu-x86_64-unknown-linux-gnu.tar.gz"
+        );
+        assert_eq!(Component::BaseImage.files(), &["disk.ext4", "recipe.toml"]);
+    }
+    #[tokio::test]
+    async fn ensure_unpacks_a_sparse_base_image() {
+        use std::os::unix::fs::{FileExt, MetadataExt};
+        use swarmy_testkit::release::{FAKE_IMAGE_RECIPE, image_archive, sha256sums};
+        let target = Target::X86_64Linux;
+        let top = format!("{}-{}", Component::BaseImage.prefix(), target.triple());
+        let asset = Release::asset(Component::BaseImage, target);
+        let bytes = image_archive(
+            &top,
+            16 * 1024 * 1024,
+            &[(0, &[1; 4096]), (8 * 1024 * 1024, &[2; 4096])],
+            FAKE_IMAGE_RECIPE,
+        );
+        let sums = sha256sums(&[(&asset, &bytes)]);
+        let address = serve_files(vec![
+            (format!("/v1/{asset}"), bytes),
+            ("/v1/SHA256SUMS".into(), sums.as_bytes().to_vec()),
+        ]);
+        let release = Release::new(&format!("http://{address}"), "v1").unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let dir = release
+            .ensure(cache.path(), Component::BaseImage, target)
+            .await
+            .unwrap();
+        let disk = std::fs::File::open(dir.join("disk.ext4")).unwrap();
+        let metadata = disk.metadata().unwrap();
+        assert_eq!(metadata.len(), 16 * 1024 * 1024);
+        assert!(metadata.blocks() * 512 < metadata.len());
+        let mut first = [0; 4096];
+        disk.read_exact_at(&mut first, 0).unwrap();
+        assert_eq!(first, [1; 4096]);
+        disk.read_exact_at(&mut first, 8 * 1024 * 1024).unwrap();
+        assert_eq!(first, [2; 4096]);
+        assert!(dir.join("recipe.toml").is_file());
+        let address = serve_files(vec![("/v1/SHA256SUMS".into(), sums.as_bytes().to_vec())]);
+        let release = Release::new(&format!("http://{address}"), "v1").unwrap();
+        let error = release
+            .ensure(cache.path(), Component::BaseImage, Target::Aarch64Linux)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("x86_64-unknown-linux-gnu only"), "{error}");
+    }
     #[test]
     fn checksums_and_targets() {
         let hex = "a".repeat(64);

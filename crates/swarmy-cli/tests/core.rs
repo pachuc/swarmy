@@ -7,7 +7,11 @@ use std::{
     process::{Command, Output},
 };
 use swarmy_testkit::FakeStack;
-use swarmy_testkit::release::{fake_release, host_target, serve_files};
+use swarmy_testkit::release::{
+    FAKE_IMAGE_RECIPE, fake_release, host_target, image_archive, serve_files, sha256sums,
+};
+#[path = "support/fake_api.rs"]
+mod fake_api;
 
 const CLI: &str = env!("CARGO_BIN_EXE_swarmy");
 struct Fixture {
@@ -143,7 +147,7 @@ fn core_ensure_refuses_a_corrupt_archive() {
 fn dev_up_launches_the_downloaded_core() {
     let fixture = Fixture::new();
     let url = release(swarmy_version::IDENTITY);
-    let output = fixture.run(&["dev", "up"], Some(&url), None);
+    let output = fixture.run(&["dev", "up", "--no-image"], Some(&url), None);
     assert!(
         output.status.success(),
         "{}",
@@ -163,6 +167,80 @@ fn dev_up_launches_the_downloaded_core() {
         String::from_utf8_lossy(&command).contains(path.to_str().unwrap()),
         "{}",
         String::from_utf8_lossy(&command)
+    );
+}
+#[test]
+fn dev_up_registers_the_release_image() {
+    let fixture = Fixture::new();
+    let (api, requests) = fake_api::serve(false);
+    fs::create_dir_all(fixture.root.path().join(".swarmy")).unwrap();
+    fs::write(
+        fixture.root.path().join(".swarmy/config.toml"),
+        format!("[api]\nurl = \"http://{api}\"\ntoken = \"x\"\n"),
+    )
+    .unwrap();
+    let tag = swarmy_version::RELEASE_TAG;
+    let mut files = fake_release(tag, &host_target(), &core_script(swarmy_version::IDENTITY));
+    let name = format!("swarmy-image-base-ubuntu-{}", host_target());
+    let asset = format!("{name}.tar.gz");
+    let bytes = image_archive(
+        &name,
+        16 * 1024 * 1024,
+        &[(0, &[1; 4096]), (8 * 1024 * 1024, &[2; 4096])],
+        FAKE_IMAGE_RECIPE,
+    );
+    let sums = sha256sums(&[(&asset, &bytes)]);
+    let original = String::from_utf8(
+        files
+            .iter()
+            .find(|(path, _)| path.ends_with("SHA256SUMS"))
+            .unwrap()
+            .1
+            .clone(),
+    )
+    .unwrap();
+    files.retain(|(path, _)| !path.ends_with("SHA256SUMS"));
+    files.push((format!("/{tag}/{asset}"), bytes));
+    files.push((
+        format!("/{tag}/SHA256SUMS"),
+        format!("{original}{sums}").into_bytes(),
+    ));
+    let release = format!("http://{}", serve_files(files));
+    let output = fixture.run(&["dev", "up"], Some(&release), None);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!(
+            "default image: base-ubuntu:{tag}; restarting services"
+        )),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let settings =
+        swarmy_config::Settings::read(&fixture.root.path().join(".swarmy/config.toml")).unwrap();
+    assert_eq!(
+        settings.selection.default_image.as_deref(),
+        Some(format!("base-ubuntu:{tag}").as_str())
+    );
+    let requests = requests.lock().unwrap();
+    let posts: Vec<_> = requests
+        .iter()
+        .filter(|request| request.method == "POST")
+        .collect();
+    assert_eq!(posts.len(), 1);
+    assert!(posts[0].path_and_query.contains("name=base-ubuntu"));
+    assert!(posts[0].body_len < 16 * 1024 * 1024);
+    assert_eq!(posts[0].first_offset, Some(0));
+    assert!(
+        fixture
+            .root
+            .path()
+            .join(".swarmy/dev/supervisor.pid")
+            .exists()
     );
 }
 #[test]
@@ -200,7 +278,7 @@ fn dev_up_uses_core_bin_flag_and_env() {
 fn downloaded_core_with_other_identity_is_refused() {
     let mut fixture = Fixture::new();
     let url = release("0.0.1 (other)");
-    let output = fixture.run(&["dev", "up"], Some(&url), None);
+    let output = fixture.run(&["dev", "up", "--no-image"], Some(&url), None);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     for needle in [
