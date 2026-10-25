@@ -61,6 +61,7 @@ impl Target {
 pub enum Component {
     Core,
     Client,
+    BaseImage,
 }
 impl Component {
     #[must_use]
@@ -68,6 +69,7 @@ impl Component {
         match self {
             Self::Core => "swarmy-core",
             Self::Client => "swarmy",
+            Self::BaseImage => "swarmy-image-base-ubuntu",
         }
     }
     #[must_use]
@@ -75,6 +77,19 @@ impl Component {
         match self {
             Self::Core => &["swarmy-core", "libfdb_c.so"],
             Self::Client => &["swarmy"],
+            Self::BaseImage => &["disk.ext4", "recipe.toml"],
+        }
+    }
+    /// What to do when the release has no such asset.
+    #[must_use]
+    pub const fn missing_hint(self) -> &'static str {
+        match self {
+            Self::Core | Self::Client => {
+                "a development client passes --core-bin PATH or sets SWARMY_CORE_BIN"
+            }
+            Self::BaseImage => {
+                "releases publish base-ubuntu for x86_64-unknown-linux-gnu only; build one from a checkout with swarmy image build images/base-ubuntu"
+            }
         }
     }
 }
@@ -189,15 +204,18 @@ impl Release {
         };
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(Error::other(format!(
-                "no swarmy release {} at {} (HTTP 404 for SHA256SUMS); a development client passes --core-bin PATH or sets SWARMY_CORE_BIN",
-                self.tag, self.base
+                "no swarmy release {} at {} (HTTP 404 for SHA256SUMS); {}",
+                self.tag,
+                self.base,
+                component.missing_hint()
             )));
         }
         let sums = response.error_for_status()?.text().await?;
         let expected = expected_digest(&sums, &asset).map_err(|_| {
             Error::other(format!(
-                "SHA256SUMS for {} has no entry for {asset}",
-                self.tag
+                "SHA256SUMS for {} has no entry for {asset}; {}",
+                self.tag,
+                component.missing_hint()
             ))
         })?;
         if let Some(dir) = self.cached(cache, component, target)

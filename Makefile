@@ -32,7 +32,8 @@ ifeq ($(strip $(FDB_LIB_DIR)),)
 FDB_LIB_DIR := $(firstword $(foreach dir,$(FDB_CANDIDATES),$(if $(wildcard $(dir)/libfdb_c.so $(dir)/libfdb_c.dylib),$(dir),)))
 endif
 
-# Release archives (docs/DEV.md, "Release builds"). CORE_BIN_PACKAGE is the cargo
+# Release archives
+# RELEASE_COMPONENT=image builds the base-ubuntu ext4 (x86_64 Linux; passwordless sudo, debootstrap, e2fsprogs). (docs/DEV.md, "Release builds"). CORE_BIN_PACKAGE is the cargo
 # package whose [[bin]] is swarmy-core; the workflow builds it only through here.
 CORE_BIN_PACKAGE ?= swarmy-core-bin
 RELEASE_COMPONENT ?= client
