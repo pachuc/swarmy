@@ -41,28 +41,29 @@ expect_failure() {
     grep -qF -- "$message" "$work/err" || fail "missing '$message' in: $(cat "$work/err")"
 }
 for shell in "${shells[@]}"; do
-    rm -rf "$work/home"
+    rm -rf "${work:?}/home"
     run >"$work/out"
     test -f "$work/home/.local/bin/swarmy" || fail "no binary for $shell"
     test "$(stat -c %a "$work/home/.local/bin/swarmy")" = 755 || fail 'bad mode'
     test "$("$work/home/.local/bin/swarmy")" = 'swarmy 9.9.9 x86_64-unknown-linux-gnu' || fail 'bad binary'
+    # shellcheck disable=SC2016 # The PATH in the output is intentionally literal.
     grep -qF 'export PATH="'"$work"'/home/.local/bin:$PATH"' "$work/out" || fail 'missing PATH hint'
 done
 path_extra="$work/home/.local/bin" run >"$work/out"
 ! grep -qF 'export PATH' "$work/out" || fail 'unneeded PATH hint'
-rm -rf "$work/home"
+rm -rf "${work:?}/home"
 os=Darwin arch=arm64 run >"$work/out"
 test "$("$work/home/.local/bin/swarmy")" = 'swarmy 9.9.9 aarch64-apple-darwin' || fail 'macOS mapping'
-rm -rf "$work/home"
+rm -rf "${work:?}/home"
 arch=aarch64 run >"$work/out"
 test "$("$work/home/.local/bin/swarmy")" = 'swarmy 9.9.9 aarch64-unknown-linux-gnu' || fail 'Linux mapping'
-rm -rf "$work/home"
+rm -rf "${work:?}/home"
 run --version v9.9.8 --prefix "$work/custom" >"$work/out"
 test "$("$work/custom/bin/swarmy")" = 'swarmy 9.9.8 x86_64-unknown-linux-gnu' || fail 'pinned binary'
 test ! -e "$work/home/.local/bin/swarmy" || fail 'unexpected default install'
 run --version=9.9.8 --prefix="$work/custom2" >"$work/out"
 test "$("$work/custom2/bin/swarmy")" = 'swarmy 9.9.8 x86_64-unknown-linux-gnu' || fail 'equals options'
-rm -rf "$work/home"
+rm -rf "${work:?}/home"
 base=tampered expect_failure 'checksum mismatch' run
 test ! -e "$work/home/.local/bin/swarmy" || fail 'installed tampered binary'
 base=missing expect_failure 'no entry for swarmy-x86_64-unknown-linux-gnu.tar.gz' run
@@ -72,7 +73,7 @@ os=MINGW64_NT expect_failure 'unsupported operating system' run
 expect_failure 'unknown argument: --bogus' run --bogus
 expect_failure 'invalid version' run --version ../x
 expect_failure 'download failed' run --version v0.0.1
-rm -rf "$work/home"
+rm -rf "${work:?}/home"
 env -i HOME="$work/home" PATH=/usr/bin:/bin \
     SWARMY_INSTALL_BASE_URL="file://$work/good" SWARMY_INSTALL_OS=Linux SWARMY_INSTALL_ARCH=x86_64 \
     sh -s -- --prefix "$work/piped" <"$installer" >"$work/out"

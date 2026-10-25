@@ -4,9 +4,9 @@ set -euo pipefail
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 prefix=${HOME:?HOME must be set}/.local
 case ${1:-} in
-    '') [[ $# == 0 ]] || fail 'Usage: $0 [--prefix DIRECTORY]' ;;
-    --prefix) [[ $# == 2 && -n $2 ]] || fail 'Usage: $0 [--prefix DIRECTORY]'; prefix=$2 ;;
-    *) fail 'Usage: $0 [--prefix DIRECTORY]' ;;
+    '') [[ $# == 0 ]] || fail "Usage: $0 [--prefix DIRECTORY]" ;;
+    --prefix) [[ $# == 2 && -n $2 ]] || fail "Usage: $0 [--prefix DIRECTORY]"; prefix=$2 ;;
+    *) fail "Usage: $0 [--prefix DIRECTORY]" ;;
 esac
 [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || fail 'This installer supports Linux x86-64. Install the backing tools for your platform manually.'
 for command in curl tar sha256sum install mktemp; do
