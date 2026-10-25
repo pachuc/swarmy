@@ -96,6 +96,8 @@ async fn start() -> Result<()> {
     tracing::info!(address = %listener.local_addr()?, "api ready");
     let outcome = serve(listener, state, metrics_store.clone()).await;
     heartbeat.abort();
+    // Wait for any in-flight heartbeat write before removing the row.
+    let _ = heartbeat.await;
     if let Err(error) = metrics_store
         .remove_service_heartbeat(&ServiceRole::Api, &heartbeat_id, started)
         .await

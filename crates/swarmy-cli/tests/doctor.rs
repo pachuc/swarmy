@@ -297,7 +297,11 @@ fn api_snapshot_reports_live_services_and_scheduler_failure() {
 
 #[test]
 fn gateway_providers_are_unique_and_missing_selection_fails() {
-    for (selected, expected_status) in [("fake", "pass"), ("openai", "fail")] {
+    for (selected, route_missing, expected_status) in [
+        ("fake", false, "pass"),
+        ("openai", false, "fail"),
+        ("fake", true, "fail"),
+    ] {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let fixture = Fixture::new();
         fixture.config(&format!(
@@ -323,7 +327,12 @@ fn gateway_providers_are_unique_and_missing_selection_fails() {
                     {"role":"gateway","instance_id":"g2","version":"test","alive":true,"providers":["fake"],"capacity":null}
                 ], "images":[], "default_image":null, "credentials":[]
             }).to_string();
-            for body in [health, snapshot, "[]".into(), "[]".into()] {
+            let routes = if route_missing {
+                serde_json::json!([{"name":"primary","steps":[{"provider":"openai","entry":"*"}],"updated_at":"2026-01-01T00:00:00Z"}]).to_string()
+            } else {
+                "[]".into()
+            };
+            for body in [health, snapshot, "[]".into(), routes] {
                 serve_one(&listener, &body);
             }
         });
