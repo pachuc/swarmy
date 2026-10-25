@@ -196,11 +196,12 @@ On the node, `sudo systemctl status swarmy-stack swarmyd` shows the services,
 and `sudo journalctl -u swarmyd -f` follows node logs. The provisioning script
 writes `/etc/swarmy/node.env`, enables both units at boot, and configures
 `Restart=always` for swarmyd. To rerun provisioning, use
-`cd ~/swarmy && bash scripts/remote-provision.sh stack PRIVATE_IP BUCKET REGION SANDBOXES SERVICE_USER LOCAL_STORAGE` on the first
-node (the twelfth positional argument `PREBUILT` is `true` for an uploaded
-release bundle, otherwise `false`; `SERVICE_USER` defaults to `swarmy`; sandbox nodes require a block
-device or `dir:/path` as `LOCAL_STORAGE`). Joining nodes run swarmyd and `swarmy-tunnel.service`; rerun their
-provisioning with `node FIRST_NODE_PRIVATE_IP BUCKET REGION SANDBOXES SERVICE_USER LOCAL_STORAGE` instead. Their cluster file is
+`cd ~/swarmy && bash scripts/remote-provision.sh stack PRIVATE_IP BUCKET REGION ENDPOINT PREFIX CONDITIONAL_CREATE STATIC_KEYS SANDBOXES SERVICE_USER LOCAL_STORAGE PREBUILT`
+on the first node. `PREBUILT` is `true` for an uploaded release bundle and defaults
+to `false`; `SERVICE_USER` defaults to `swarmy`; sandbox nodes require a block
+device or `dir:/path` as `LOCAL_STORAGE`. Joining nodes run swarmyd and
+`swarmy-tunnel.service`; rerun with `node FIRST_NODE_PRIVATE_IP` followed by
+the same bucket and storage arguments. Their cluster file is
 copied from the first node, preserving its cluster identity and loopback
 coordinator address. `add-node` generates a dedicated tunnel key on the joining
 node and authorizes it for service forwards on the first node. It pins the first
