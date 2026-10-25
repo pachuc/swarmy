@@ -339,7 +339,7 @@ fn run_refuses_a_mismatched_api_core() {
 
 #[test]
 fn run_reports_missing_gateway_before_creating_a_session() {
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, Read};
     use std::process::Stdio;
 
     let root = tempfile::tempdir().unwrap();
@@ -386,7 +386,7 @@ fn run_reports_missing_gateway_before_creating_a_session() {
         ),
         "{line}"
     );
-    assert!(line.ends_with("\n"));
+    assert!(line.ends_with('\n'));
     // The waiting notice is stderr-only; JSON stdout is untouched.
     let mut stdout = String::new();
     use std::io::Read;
