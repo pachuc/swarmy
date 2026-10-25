@@ -80,6 +80,29 @@ impl Store {
         .await
     }
 
+    /// Remove this instance on clean shutdown. A reused identity cannot remove
+    /// a newer incarnation's heartbeat.
+    /// # Errors
+    /// Returns storage or decoding errors.
+    pub async fn remove_service_heartbeat(
+        &self,
+        role: &ServiceRole,
+        instance_id: &str,
+        started_at: Timestamp,
+    ) -> Result<()> {
+        self.transaction(|trx| async move {
+            let key = self.service_key(role, instance_id);
+            if read::<ServiceHeartbeat>(&trx, &key)
+                .await?
+                .is_some_and(|record| record.started_at == started_at)
+            {
+                trx.clear(&key);
+            }
+            Ok(())
+        })
+        .await
+    }
+
     /// List all service instances, including stale ones and existing node records.
     /// Liveness is evaluated at `now`; a heartbeat is alive through 90 seconds
     /// after its last observation. Node records predate service metadata, so their

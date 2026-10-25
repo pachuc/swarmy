@@ -108,7 +108,8 @@ impl Fixture {
         models: &[swarmy_config::CustomModel],
     ) {
         self.children.push(ChildGuard::new(
-            Command::new(swarmy_testkit::bin("swarmy-gateway"))
+            Command::new(swarmy_testkit::bin("swarmy-core"))
+                .arg("gateway")
                 .env("SWARMY_PROVIDER", "fake")
                 .env("SWARMY_PROVIDERS", providers)
                 .env(

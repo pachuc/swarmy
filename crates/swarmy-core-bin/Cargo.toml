@@ -1,0 +1,26 @@
+[package]
+name = "swarmy-core-bin"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+# Library link args do not reach this final executable.
+build = "../swarmy-store/build.rs"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "swarmy-core"
+path = "src/main.rs"
+# Avoid overwriting the swarmy_core library documentation.
+doc = false
+
+[dependencies]
+anyhow.workspace = true
+swarmy-version.workspace = true
+swarmy-scheduler.workspace = true
+swarmy-worker.workspace = true
+swarmy-gateway.workspace = true
+swarmy-api.workspace = true
+swarmyd.workspace = true

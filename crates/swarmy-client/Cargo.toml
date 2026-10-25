@@ -22,8 +22,10 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 futures-util.workspace = true
+rustix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
+tempfile.workspace = true
 ulid.workspace = true
 axum.workspace = true
 swarmy-testkit.workspace = true

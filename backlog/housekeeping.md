@@ -3,16 +3,14 @@
 Recorded 2026-09-21. Small chores that do not deserve a goal but should not
 be forgotten. Do them opportunistically alongside related work.
 
-- **The fleet driver still assumes one pull request per task.** Its launch
-  prompt (`prompt()` in `scripts/fleet/fleet`) asks the worker to open a pull
-  request and to push "WIP" commits, and `collect` and a plain `release`
-  look for that pull request. Goals are now built as a batch with no
-  per-task pull requests ("The cycle for a goal" in
-  `docs/fleet-operator-handoff.md`), so the operator sends an override with
-  `fleet resume` after every launch and releases with `--force`. Change the
-  prompt to the branch-delivery wording (report the branch, the head SHA and
-  the "Done when" output), give `collect` a branch mode, and let `release`
-  accept a branch that has been merged into an integration branch.
+- **Snapshot freeze blocks writers for 50-70 ms on the Hetzner suite node.**
+  `swarmy-volume --test nbd` `boundaries::continuous_writes_and_retained_crash_images`
+  asserts the largest writer gap during a snapshot stays under 30 ms. It
+  passed on the AWS suite node but fails on the Hetzner one (two NVMe drives
+  in software RAID1) on master and on every later branch, with gaps of 49 to
+  68 ms, so it is the host, not a regression. Find where the freeze time goes
+  (fsfreeze and journal commit through NBD, the flush to the chunk store, or
+  RAID1 write latency) and either cut it or set a justified bound per host.
 - **The unbuilt `swarmy-guest` proposal** was retired in the
   [roadmap](../docs/ROADMAP.md); runc exec and node tool helpers are the
   implemented path. No guest crate is planned.

@@ -98,12 +98,12 @@ struct Fixture {
     _guard: swarmy_testkit::StackGuard,
 }
 
-/// A shared manual clock for the store and the worker. Lease-expiry tests
-/// advance it past the expiry instead of sleeping out real time; both the
-/// store's transactional checks and the worker's resolution read the same
-/// instant, so expiry is deterministic.
+/// A shared clock for the store and worker. It advances with real time so
+/// heartbeats extend the lease, and tests can also jump past expiry without
+/// sleeping. Both transactional checks and worker resolution see the same time.
 struct TestClock {
     start: Timestamp,
+    started: tokio::time::Instant,
     offset_ms: AtomicI64,
 }
 
@@ -111,14 +111,16 @@ impl TestClock {
     fn new() -> Self {
         Self {
             start: Timestamp::now(),
+            started: tokio::time::Instant::now(),
             offset_ms: AtomicI64::new(0),
         }
     }
 
     fn now(&self) -> Timestamp {
         let offset_ms = self.offset_ms.load(Ordering::SeqCst).max(0);
+        let elapsed = self.started.elapsed();
         self.start
-            .checked_add(Duration::from_millis(u64::try_from(offset_ms).unwrap()))
+            .checked_add(elapsed + Duration::from_millis(u64::try_from(offset_ms).unwrap()))
             .unwrap()
     }
 
@@ -877,7 +879,7 @@ async fn unclaimed_dispatch_expires_without_a_rebuild_notice_or_stuck_job() {
             .iter()
             .filter(|event| matches!(event,
         Event::ToolCallCompleted { result: ToolResult::Error { error }, .. }
-        if error.contains("placement expired")))
+        if error == swarmy_core::UNCLAIMED_DISPATCH_EXPIRED))
             .count(),
         1
     );
@@ -1108,4 +1110,46 @@ async fn update_plan_runs_in_store_without_placing_a_computer() {
         Event::ToolCallCompleted { result: ToolResult::Completed { title, output, .. }, .. }
         if title == "update_plan" && serde_json::from_str::<Value>(output).unwrap() == plan
     )));
+}
+
+#[tokio::test]
+async fn parked_route_clears_held_lease_before_heartbeat() {
+    let Some(fixture) = Fixture::new().await else {
+        return;
+    };
+    let id = fixture.session().await;
+    let (token, mut session, _) = fixture
+        .store
+        .claim_step(
+            id,
+            fixture.worker.owner,
+            fixture.now().checked_add(Duration::from_secs(30)).unwrap(),
+        )
+        .await
+        .unwrap();
+    let held = crate::worker::HeldLease::new(token);
+    let written = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    *fixture.worker.route_write_pause.lock().await = Some((written.clone(), resume.clone()));
+    let now = fixture.now();
+    let seq = session.head_seq;
+    let park = fixture.worker.failover_or_park(
+        &mut session,
+        &held,
+        seq,
+        ("unserved", swarmy_core::FailureKind::GatewayUnserved),
+        now.checked_add(Duration::from_secs(1)).unwrap(),
+        now,
+    );
+    let check = async {
+        written.notified().await;
+        let renewal = fixture.worker.renew_held_lease(id, &held).await;
+        resume.notify_one();
+        assert_eq!(renewal.unwrap(), std::ops::ControlFlow::Continue(()));
+    };
+    let (result, ()) = timeout(Duration::from_secs(10), async { tokio::join!(park, check) })
+        .await
+        .unwrap();
+    assert!(result.unwrap());
+    assert!(!held.is_held().await);
 }

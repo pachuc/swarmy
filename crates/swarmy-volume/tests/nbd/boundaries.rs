@@ -4,12 +4,11 @@ use swarmy_volume::VolumeWriter;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn continuous_writes_and_retained_crash_images() {
-    ignore_best_effort(
-        tracing_subscriber::fmt().with_test_writer().try_init(),
-        "install test log subscriber",
-    );
-    if command("id", &["-u"]).await.trim() != "0" {
-        eprintln!("skipping snapshot NBD test: execute the built binary with sudo");
+    install_test_subscriber();
+    if !swarmy_testkit::require_root_host(
+        "snapshot NBD test",
+        &["mkfs.ext4", "mount", "umount", "python3"],
+    ) {
         return;
     }
     let Some(cluster) = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE") else {
@@ -105,6 +104,13 @@ async fn continuous_writes_and_retained_crash_images() {
     );
     eprintln!(
         "all four retained crash images mounted, ran Bash checks, matched boundary-data SHA-256, and passed e2fsck"
+    );
+}
+
+fn install_test_subscriber() {
+    ignore_best_effort(
+        tracing_subscriber::fmt().with_test_writer().try_init(),
+        "install test log subscriber",
     );
 }
 

@@ -88,8 +88,10 @@ impl Drop for Fake {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn root_github_credentials_never_enter_disk_or_snapshot() {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping GitHub acceptance: run the built executable with sudo");
+    if !swarmy_testkit::require_root_host(
+        "root_github_credentials_never_enter_disk_or_snapshot",
+        &["runc", "pasta", "mount", "umount"],
+    ) {
         return;
     }
     for variable in [

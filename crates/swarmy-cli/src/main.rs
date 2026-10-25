@@ -5,6 +5,7 @@ mod bench_command;
 mod client_bench;
 use swarmy_chat::client_conversation;
 mod client_commands;
+mod core_command;
 mod cost_command;
 mod dev;
 mod doctor;
@@ -18,6 +19,7 @@ mod provider_report;
 mod selection_command;
 mod session_command;
 mod tools;
+mod version_guard;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -35,6 +37,9 @@ struct Cli {
     /// Use a saved remote tunnel profile
     #[arg(long, global = true)]
     remote: Option<String>,
+    /// Talk to, or start, a swarmy-core whose version differs from this client
+    #[arg(long, global = true)]
+    allow_version_mismatch: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -74,6 +79,11 @@ enum Command {
         #[command(subcommand)]
         command: image_command::Command,
     },
+    /// Fetch, verify, and locate the swarmy-core build matching this client
+    Core {
+        #[command(subcommand)]
+        command: core_command::Command,
+    },
     /// Start and operate the local development system
     Dev {
         #[command(subcommand)]
@@ -82,7 +92,11 @@ enum Command {
     /// Check installation, configuration, credentials, and local connectivity
     Doctor,
     /// Print the version of this CLI
-    Version,
+    Version {
+        /// Print the release tag (`v<version>`) whose archives match this client
+        #[arg(long)]
+        release: bool,
+    },
     /// Start a conversation and stream its output until idle
     Run {
         #[command(flatten)]
@@ -113,15 +127,27 @@ enum Command {
     },
 }
 
+fn json_core_ensure(cli: &Cli) -> bool {
+    cli.json && matches!(cli.command, Command::Core { .. })
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = swarmy_version::parse::<Cli>("swarmy")?;
-    swarmy_cloud::set_output_sink(|message, stderr| {
-        if stderr {
-            eprintln!("{message}");
-        } else {
-            println!("{message}");
-        }
-    });
+    if json_core_ensure(&cli) {
+        swarmy_cloud::set_output_sink(|message, stderr| {
+            if stderr {
+                eprintln!("{message}");
+            }
+        });
+    } else {
+        swarmy_cloud::set_output_sink(|message, stderr| {
+            if stderr {
+                eprintln!("{message}");
+            } else {
+                println!("{message}");
+            }
+        });
+    }
     swarmy_cloud::select(cli.remote.as_deref())?;
     // Background service logs must not overwrite the full-screen transcript.
     let writer = if matches!(cli.command, Command::Chat { .. }) {
@@ -141,7 +167,12 @@ fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let json = cli.json;
     match cli.command {
-        Command::Dev { command } => runtime.block_on(dev::run(command, json)),
+        Command::Dev { command } => {
+            runtime.block_on(dev::run(command, json, cli.allow_version_mismatch))
+        }
+        Command::Core { command } => {
+            runtime.block_on(core_command::run(command, json, cli.allow_version_mismatch))
+        }
         Command::Auth { command, auth_file } => {
             runtime.block_on(auth_command::run(command, auth_file, json))
         }
@@ -152,9 +183,15 @@ fn main() -> anyhow::Result<()> {
         Command::Cost { args } => runtime.block_on(api_commands::cost_command(args, json)),
         Command::Image { command } => runtime.block_on(image::run(command, json)),
         Command::Models { command } => runtime.block_on(models::run(command, json)),
-        Command::Bench { command } => runtime.block_on(run_bench(command, json)),
-        Command::Run { args } => runtime.block_on(run_prompt(args, json)),
-        Command::Chat { args } => runtime.block_on(run_chat(args, json)),
+        Command::Bench { command } => {
+            runtime.block_on(run_bench(command, json, cli.allow_version_mismatch))
+        }
+        Command::Run { args } => {
+            runtime.block_on(run_prompt(args, json, cli.allow_version_mismatch))
+        }
+        Command::Chat { args } => {
+            runtime.block_on(run_chat(args, json, cli.allow_version_mismatch))
+        }
         #[cfg(feature = "remote")]
         Command::Remote { command } => runtime.block_on(remote(command, json)),
         #[cfg(not(feature = "remote"))]
@@ -166,38 +203,61 @@ fn main() -> anyhow::Result<()> {
             grace_seconds,
         } => runtime.block_on(gc::run(dry_run, grace_seconds, json)),
         Command::Doctor => runtime.block_on(run_doctor(json)),
-        Command::Version => swarmy_version::print("swarmy", json).map_err(anyhow::Error::from),
+        Command::Version { release: true } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"tag": swarmy_version::RELEASE_TAG, "version": swarmy_version::VERSION, "release_build": swarmy_version::RELEASE_BUILD})
+                );
+            } else {
+                println!("{}", swarmy_version::RELEASE_TAG);
+            }
+            Ok(())
+        }
+        Command::Version { release: false } => {
+            swarmy_version::print("swarmy", json).map_err(anyhow::Error::from)
+        }
     }
 }
 
 /// Connect to the API and wait for a healthy response. Every database-backed
 /// command runs through the control plane, so the client links no database,
 /// message bus, or object store library.
-async fn connect_client() -> anyhow::Result<(swarmy_client::Client, String)> {
+async fn connect_client(
+    allow_version_mismatch: bool,
+) -> anyhow::Result<(swarmy_client::Client, String)> {
     let (client, endpoint) = swarmy_client::api_client::connect()?;
-    swarmy_client::api_client::call(&endpoint, client.health()).await?;
+    let health = swarmy_client::api_client::call(&endpoint, client.health()).await?;
+    version_guard::enforce(&health, allow_version_mismatch)?;
     Ok((client, endpoint))
 }
 
-async fn run_bench(command: bench_command::Command, json: bool) -> anyhow::Result<()> {
-    let (client, endpoint) = connect_client().await?;
+async fn run_bench(
+    command: bench_command::Command,
+    json: bool,
+    allow_version_mismatch: bool,
+) -> anyhow::Result<()> {
+    let (client, endpoint) = connect_client(allow_version_mismatch).await?;
     client_bench::run(client, endpoint, command, json).await
 }
 
-async fn run_prompt(args: client_commands::RunArgs, json: bool) -> anyhow::Result<()> {
-    let (client, endpoint) = connect_client().await?;
+async fn run_prompt(
+    args: client_commands::RunArgs,
+    json: bool,
+    allow_version_mismatch: bool,
+) -> anyhow::Result<()> {
+    let (client, endpoint) = connect_client(allow_version_mismatch).await?;
+    wait_for_services(&client, &endpoint, args.selection.provider.as_deref()).await?;
     client_commands::run(client, endpoint, args, json).await
 }
 
-async fn run_chat(args: client_commands::ChatArgs, json: bool) -> anyhow::Result<()> {
-    let (client, endpoint) = connect_client().await?;
-    client_conversation::wait_healthy(
-        &client,
-        &endpoint,
-        args.selection.provider.as_deref(),
-        &mut |message| eprintln!("{message}"),
-    )
-    .await?;
+async fn run_chat(
+    args: client_commands::ChatArgs,
+    json: bool,
+    allow_version_mismatch: bool,
+) -> anyhow::Result<()> {
+    let (client, endpoint) = connect_client(allow_version_mismatch).await?;
+    wait_for_services(&client, &endpoint, args.selection.provider.as_deref()).await?;
     if json {
         client_commands::chat(client, endpoint, args, json).await
     } else {
@@ -225,6 +285,18 @@ async fn run_chat(args: client_commands::ChatArgs, json: bool) -> anyhow::Result
             );
         }
     }
+}
+
+async fn wait_for_services(
+    client: &swarmy_client::Client,
+    endpoint: &str,
+    provider: Option<&str>,
+) -> anyhow::Result<()> {
+    client_conversation::wait_healthy(client, endpoint, provider, &mut |message| {
+        eprintln!("{message}");
+    })
+    .await?;
+    Ok(())
 }
 
 async fn run_doctor(json: bool) -> anyhow::Result<()> {

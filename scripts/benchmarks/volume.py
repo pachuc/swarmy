@@ -34,7 +34,7 @@ def cli(*args):
 def vol(*args):
     # Volume tools moved out of the client binary; the node daemon serves
     # local devices directly from the store.
-    return json.loads(run("swarmyd", "--json", "vol", *args, capture=True))
+    return json.loads(run("swarmy-core", "vol", "--json", *args, capture=True))
 
 
 def report(metric, start, **extra):
@@ -62,7 +62,7 @@ class Attached:
 
     def __enter__(self):
         self.process = subprocess.Popen(
-            ["swarmyd", "--json", "vol", "attach", self.volume]
+            ["swarmy-core", "vol", "--json", "attach", self.volume]
             + (["--background"] if self.background else []),
             stdout=subprocess.PIPE, text=True,
         )
@@ -259,7 +259,7 @@ packages = ["bash", "coreutils", "curl", "ca-certificates"]
                 "bs=256K", "iflag=direct", "status=none")
             report(f"sequential_{kind}", start, bytes=128 * 1024 * 1024)
     vol("show", volume)
-    run("swarmyd", "vol", "ls")
+    run("swarmy-core", "vol", "ls")
 
 
 if __name__ == "__main__":

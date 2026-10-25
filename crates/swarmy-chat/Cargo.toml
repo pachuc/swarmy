@@ -28,3 +28,4 @@ futures-util = { workspace = true, optional = true }
 
 [dev-dependencies]
 reqwest.workspace = true
+swarmy-testkit.workspace = true

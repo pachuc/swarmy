@@ -1,23 +1,27 @@
 //! Gateway service wiring: parse args, connect to the store, bus, and
 //! providers, then serve until shutdown. The engine lives in the library
-//! modules (`dispatch`, `attempt`, `commit`); this binary only assembles it.
+//! modules (`dispatch`, `attempt`, `commit`); this role assembles it.
 
-use std::sync::Arc;
+use std::{ffi::OsString, sync::Arc};
 
+use crate::{Result, config, dispatch::Gateway, providers::Providers};
 use swarmy_bus::Bus;
-use swarmy_gateway::{Result, config, dispatch::Gateway, providers::Providers};
 use swarmy_store::Store;
 
 // Boot before the runtime so the network guard outlives all database tasks.
-fn main() -> Result<()> {
-    swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-gateway")?;
+/// Run the gateway role.
+///
+/// # Errors
+/// Returns startup or service failures.
+pub fn run(args: Vec<OsString>) -> Result<()> {
+    swarmy_version::parse_from::<swarmy_version::ServiceArgs>("swarmy-core gateway", args)?;
     swarmy_config::init_tracing();
     let config = config::Config::from_env()?;
     let _network = swarmy_store::boot();
-    tokio::runtime::Runtime::new()?.block_on(run(config))
+    tokio::runtime::Runtime::new()?.block_on(serve(config))
 }
 
-async fn run(config: config::Config) -> Result<()> {
+async fn serve(config: config::Config) -> Result<()> {
     let opened = Store::open_store(&config.settings).await?;
     let store = opened.store;
     let blobs = opened.blobs;

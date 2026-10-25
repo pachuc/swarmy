@@ -4,7 +4,7 @@
 
 The Python driver at `scripts/fleet/fleet` runs tasky work on a pool of
 long-lived worker agents in a connected Swarmy remote. It uses the `swarmy`
-CLI and needs `tasky` and `gh` on `PATH`. Copy
+CLI and needs `tasky` and `git` on `PATH`. Copy
 `scripts/fleet/fleet.example.toml` to `scripts/fleet/fleet.toml`, set the
 remote, repository, provider defaults, pool size, and GitHub token, then run
 `chmod 600 scripts/fleet/fleet.toml`. The driver refuses a config readable by
@@ -17,7 +17,7 @@ scripts/fleet/fleet launch EWR2HD --provider openrouter --model openai/gpt-6-sol
 scripts/fleet/fleet status
 scripts/fleet/fleet collect EWR2HD
 scripts/fleet/fleet resume EWR2HD "Address the review comments"
-scripts/fleet/fleet release EWR2HD
+scripts/fleet/fleet release EWR2HD --into one-binary
 scripts/fleet/fleet kill EWR2HD --timeout-seconds 60
 scripts/fleet/fleet reset worker-2
 ```
@@ -32,10 +32,11 @@ directory passes 40 GiB, and the dev stack stopped at the end. State and JSON
 run output are stored under `.dev/fleet` with owner-only permissions.
 `status` prints one line per worker with its task, provider, model, state
 (including a breaker's waiting reason), elapsed time, and cost. `collect`
-verifies that the URL in the worker's last message is an open PR against
-master from that branch before recording it in tasky and moving the task to
-testing. `release` frees the worker once that PR is merged (`--force` skips
-the check); the worker keeps its disk and warm cache. `reset` deletes an idle
+checks the pushed branch, links its head SHA in tasky, moves the task to
+testing, and prints the worker's report. `release` frees the worker once a
+commit on the integration branch (`--into` or `integration` in fleet.toml)
+names `tasky <id>`; `--force` skips the check. The worker keeps its disk and
+warm cache. `reset` deletes an idle
 worker and its disk; the next launch recreates it. Codex Daytona remains an
 available task launcher during the transition.
 `kill` interrupts the worker's main session, waits for Idle, then frees the
@@ -58,6 +59,17 @@ sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev
 ./target/debug/swarmy dev status
 ./target/debug/swarmy dev down
 ```
+
+**Where dev keeps its files.** Inside a checkout, `swarmy dev up` creates
+`<checkout>/.swarmy/config.toml`, keeps supervised service state under
+`<checkout>/.swarmy/dev/`, and uses `<checkout>/.dev/` for the backing stack.
+Outside a checkout it creates `$XDG_CONFIG_HOME/swarmy/config.toml` (with an
+absolute XDG path) or `$HOME/.config/swarmy/config.toml`, keeps service state
+under `$HOME/.swarmy/dev/`, and uses `$HOME/.swarmy/stack/` for the stack.
+An existing configuration file wins; `SWARMY_STATE_DIR` changes the service
+state root, and `SWARMY_DEV_DIR` overrides the stack directory. The CLI runs a
+compiled-in copy of the backing script, so it needs no checkout. The fixed
+NATS and SeaweedFS ports allow only one stack per host.
 
 On one fleet worker, a clean `cargo test --workspace --no-run --locked` build
 used 28,860,925,523 bytes of target space and took 404 seconds before the
@@ -176,11 +188,12 @@ Relative filesystem paths in a project file are relative to the directory
 containing `.swarmy`; paths in the user file are relative to its directory.
 Relative environment paths remain relative to the invoking directory.
 
-`dev up` creates the project file if absent, imports connection settings from
-`.dev/env` as data, and saves the file with private permissions. It updates the
-stack connection fields on each start and preserves other settings. Environment
-overrides are passed to children but are not saved. Service logs, pid records,
-and the default fake script and call log live in `.swarmy/dev/`.
+`dev up` creates a project file in a checkout or a user file outside one,
+imports connection settings from the stack's `env` file as data, and saves the
+file with private permissions. It updates stack connection fields on each start
+and preserves other settings. Environment overrides are passed to children but
+are not saved. Service logs and pid records live under `<state_dir>/dev/`; the
+default fake script and call log live under `<root>/.swarmy/dev/`.
 
 The generated file contains every setting. This partial example shows the
 common choices (store directories are FoundationDB directory names):
@@ -257,6 +270,17 @@ curl, tar, sha256sum, and install. Building Rust also needs a C/C++ toolchain,
 pkg-config, and clang/libclang for bindgen. The stack uses curl 7.75 or newer for
 AWS request signing. These prerequisites must already be available.
 
+On Ubuntu, the build prerequisites are `build-essential pkg-config clang
+libclang-dev ca-certificates curl tar git`. Clone the repository with
+`git clone https://github.com/pachuc/swarmy.git`, enter the checkout, and run
+`rustup show` to install the pinned toolchain. Cargo installs binaries into
+`~/.cargo/bin`; use `~/.cargo/bin/swarmy` if that directory is not on PATH.
+When pinned backing tools and the FoundationDB library are already installed
+system-wide, `make install` finds them in `/usr/local/lib` or `/usr/lib`.
+
+Without a checkout, `swarmy dev install-tools` runs the same compiled-in script.
+It accepts `--prefix DIRECTORY` to select another installation root.
+
 From the checkout:
 
 ```sh
@@ -273,10 +297,9 @@ make install
 ```
 
 `make install` is `make install-client` plus `make install-core`. The client
-links no database library and needs no `libfdb_c`; the service binaries
-(scheduler, worker, gateway, API) still link it. Install only the client with
+links no database library and needs no `libfdb_c`; `swarmy-core` (scheduler, worker, gateway, API, node, and vol) still links it. Install only the client with
 `make install-client` when the services live elsewhere. `make install-client`
-builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs the services and `swarmyd`. The `remote` feature compiles the EC2, SSM, S3,
+builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs `swarmy-core`. The `remote` feature compiles the EC2, SSM, S3,
 and IAM SDKs behind the `swarmy remote` provisioning commands. A plain
 `cargo build -p swarmy-cli` leaves that feature off for the slimmer node
 binary; add `--features remote` to a plain cargo invocation when the
@@ -284,7 +307,7 @@ provisioning commands are needed.
 
 The Makefile looks for the client library in `~/.local/lib`, `/usr/local/lib`,
 `/usr/lib`, and `/usr/lib/x86_64-linux-gnu`, in that order, and passes the first
-match as `SWARMY_FDB_LIB_DIR`. `make install-node` also installs `swarmyd`,
+match as `SWARMY_FDB_LIB_DIR`. `make install-node` also installs `swarmy-core`,
 `make check` runs every pull-request CI job, and `make uninstall` removes the
 binaries. Use `scripts/install-dev-tools.sh --prefix /absolute/path` for another
 location, then `make install SWARMY_FDB_LIB_DIR=/absolute/path/lib`. The build embeds that library directory in the
@@ -296,7 +319,7 @@ the installer and process supervisor currently target Linux.
 Local Linux nodes also need `runc`, `passt` (which supplies `pasta`),
 `iproute2`, and `util-linux` (which supplies `nsenter`). Install them with
 `sudo apt-get install runc passt iproute2 util-linux` before
-starting `swarmyd`.
+starting `swarmy-core node`.
 
 swarmy searches the caller's PATH first, then the build-time install prefix's
 `bin`, `~/.local/bin`, and `/usr/sbin`. It passes this path to the stack script.
@@ -324,6 +347,10 @@ together after pulling: `swarmy dev up` refuses to start a scheduler, worker, or
 gateway whose version differs from the CLI. Use `swarmy` after
 rustup's normal shell setup, or `~/.cargo/bin/swarmy` directly. Keep the checkout
 because `swarmy dev` uses `scripts/dev-stack.sh` from it.
+
+### Service binary
+
+`swarmy-core` runs `scheduler`, `worker`, `gateway`, `api`, `node`, and `vol` roles. Run `swarmy-core --version` to check its identity. The `node` role needs root and NBD.
 
 ### Diagnose an installation
 
@@ -355,11 +382,101 @@ The public CLI never opens the database. Conversation commands (`run`,
 `session close` and `session interrupt` all talk to the control-plane API; the
 client machine needs no database, bus, or object store credentials. The
 developer volume tools live in the node daemon instead: run them as
-`swarmyd vol ...` on a machine with the store and devices (see
+`swarmy-core vol ...` on a machine with the store and devices (see
 [volume tools](#volume-tools)). `models probe` uses the API host's credential resolver, so a laptop without
 provider keys can probe credentials stored in the swarm. Scripted `fake` probes read fixture files on the API host. The separately
 installed `swarmy-auth` helper handles interactive `auth login` and `auth import`;
 both save credentials through the API. Node installs omit it.
+
+## Release builds
+
+A `v*` tag runs `.github/workflows/release.yml` to build and publish release
+archives. Pull requests touching the workflow or `scripts/release.sh`, and
+manual workflow runs, build all targets without publishing. Native runners
+smoke-test their binaries: Linux x86_64 uses Ubuntu 22.04, Linux aarch64 uses
+Ubuntu 22.04 ARM, macOS x86_64 uses macOS 15 Intel, and macOS aarch64 uses
+macOS 15.
+
+Each client archive is named `swarmy-<target>.tar.gz` and contains
+`swarmy-<target>/swarmy`. The Linux core archives are named
+`swarmy-core-<target>.tar.gz` and contain `swarmy-core-<target>/swarmy-core`
+and `swarmy-core-<target>/libfdb_c.so`. The core loads its bundled
+FoundationDB 7.3.79 client through an `$ORIGIN` rpath; keep the two files
+together. Packaging checks the upstream library against its published SHA-256
+checksum. Nodes need no FoundationDB installation for this binary.
+
+The image archive `swarmy-image-base-ubuntu-x86_64-unknown-linux-gnu.tar.gz`
+contains `disk.ext4` (a sparse 8 GiB ext4 member packed with GNU tar
+`--sparse`) and `recipe.toml`. It is built with
+`make release-package RELEASE_COMPONENT=image RELEASE_TARGET=x86_64-unknown-linux-gnu`.
+
+Each release includes one `SHA256SUMS` for all seven archives. Download it with
+the archives and verify using `sha256sum -c --ignore-missing SHA256SUMS`.
+Releases are not signed yet; signing may be added later.
+
+`swarmy version --release` prints the matching tag. The tag must be `v` plus
+the workspace version or the workflow fails. A version containing a hyphen
+publishes as a prerelease. Bump `[workspace.package] version` and Cargo.lock
+before cutting a tag.
+
+`make release-dry-run` builds the Linux x86_64 client by default, packages it,
+and generates a checksum file. Override `RELEASE_COMPONENT=core`,
+`RELEASE_TARGET=...`, and `RELEASE_DIR=...` to package a different target.
+Core builds need patchelf, clang, and libclang-dev.
+`RELEASE_COMPONENT=image` builds the base-ubuntu ext4 on Ubuntu 24.04 with
+passwordless sudo, debootstrap, and e2fsprogs. `CORE_BIN_PACKAGE` names
+the cargo package that builds the `swarmy-core` binary.
+
+### Install a release
+
+`scripts/install.sh` installs the client from a GitHub release with optional
+`--version vX.Y.Z` and `--prefix DIRECTORY` flags. The raw URL on master serves
+the installer, so changes reach users when merged. `SWARMY_INSTALL_BASE_URL`,
+`SWARMY_INSTALL_OS`, and `SWARMY_INSTALL_ARCH` are test hooks for overriding
+the release URL and detected platform. `scripts/test-install.sh` exercises
+fake releases in `make check-scripts`.
+
+## The base image
+
+`swarmy image pull base-ubuntu --set-default` verifies and uploads the release
+image through the sparse upload path, then sets `selection.default_image`.
+Restart with `swarmy dev up` to apply it. `dev up` does this automatically when
+there is no default image; `--no-image` skips it. The download is temporarily
+cached in `<state_dir>/images` and removed after upload. For local fake releases,
+set `SWARMY_RELEASE_BASE_URL` and include the image archive in SHA256SUMS.
+
+## The core binary
+
+`swarmy core ensure [--core-bin PATH] [--target TRIPLE]` locates the matching
+Linux core and prints its path. `swarmy dev up --core-bin PATH` or
+`SWARMY_CORE_BIN` selects an explicit executable first. Release builds fetch
+and verify the matching release next; development builds instead find
+`swarmy-core` beside the CLI (or on PATH), so `cargo build && target/debug/swarmy
+dev up` still works. Set `SWARMY_RELEASE_BASE_URL` to force release selection
+in development; it accepts HTTPS, or HTTP on loopback only.
+
+Archives live under the configured state directory's `core/<tag>/` cache.
+Every ensure checks the release-wide SHA256SUMS and replaces a changed archive;
+when the server cannot be reached, a complete verified cache is reused with a
+warning. SHA-256 checksums protect integrity, but releases are not signed.
+
+To test locally with a fake release (requires patchelf and clang; the image
+line also requires passwordless sudo, debootstrap, e2fsprogs, and several
+minutes to build):
+
+```sh
+make release-package RELEASE_COMPONENT=core RELEASE_DIR=target/fake-release/v0.1.0
+make release-package RELEASE_COMPONENT=client RELEASE_DIR=target/fake-release/v0.1.0
+make release-package RELEASE_COMPONENT=image RELEASE_DIR=target/fake-release/v0.1.0
+scripts/release.sh checksums target/fake-release/v0.1.0
+python3 -m http.server --bind 127.0.0.1 --directory target/fake-release 8765
+SWARMY_RELEASE_BASE_URL=http://127.0.0.1:8765 swarmy dev up
+```
+
+`swarmy doctor` checks `core version`. `run`, `chat`, and `bench` refuse an API
+core built from a different version or commit. Upgrade the core (`swarmy dev up`
+locally or `swarmy remote upgrade NAME`) or pass the global
+`--allow-version-mismatch` flag to proceed with a warning.
 
 ## Manual reference
 
@@ -372,6 +489,10 @@ scripts/dev-stack.sh start
 source .dev/env
 scripts/dev-stack.sh status
 ```
+
+The script uses `SWARMY_DEV_DIR` when set (an absolute path); otherwise, when
+run as a file, it uses `<checkout>/.dev`. Direct script callers retain the
+checkout default.
 
 `start` waits for FoundationDB to become available, for the NATS JetStream
 monitoring endpoint, and for an authenticated S3 bucket listing. It configures
@@ -490,21 +611,23 @@ Its cleanup step runs even if an earlier step fails.
 ### Volume tools
 
 Volume attach and snapshot need local block devices and the store, so they
-live in the node daemon rather than the client. Run them with `swarmyd vol`
+live in the node daemon rather than the client. Run them with `swarmy-core vol`
 on a machine with root and the NBD module (a node, or a local machine with
 the dev stack sourced):
 
+Root-only tests check root, `/dev/nbd0`, and required tools; suite-node scripts set `SWARMY_REQUIRE_ROOT_SUITES=1` so missing prerequisites fail rather than skip.
+
 ```bash
 source .dev/env
-sudo -E swarmyd vol create base-ubuntu:dev
-sudo -E swarmyd vol ls
-sudo -E swarmyd vol attach VOLUME_ID --background
-sudo -E swarmyd vol flush VOLUME_ID
-sudo -E swarmyd vol snapshot VOLUME_ID
-sudo -E swarmyd vol detach VOLUME_ID
+sudo -E swarmy-core vol create base-ubuntu:dev
+sudo -E swarmy-core vol ls
+sudo -E swarmy-core vol attach VOLUME_ID --background
+sudo -E swarmy-core vol flush VOLUME_ID
+sudo -E swarmy-core vol snapshot VOLUME_ID
+sudo -E swarmy-core vol detach VOLUME_ID
 ```
 
-`swarmyd vol --help` lists every subcommand. Creation, cloning, listing, and
+`swarmy-core vol --help` lists every subcommand. Creation, cloning, listing, and
 history need only the store; attach, flush, checkpoint, snapshot of an
 attached writer, and detach additionally drive the local volume server.
 

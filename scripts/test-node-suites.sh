@@ -15,7 +15,7 @@ repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/.cargo/bin" "$tmp/chaos/scripts" "$tmp/chaos/target/debug" \
-  "$tmp/chaos/.dev" "$tmp/chaos/images/swarmy-dev" "$tmp/suite-logs"
+  "$tmp/chaos/.dev" "$tmp/suite-logs"
 
 # Stub git: fetch fails only when FAKE_FETCH_FAIL=1.
 cat > "$tmp/.cargo/bin/git" <<'EOF'
@@ -91,7 +91,7 @@ cat > "$tmp/chaos/scripts/chaos-ci.sh" <<'EOF'
 exit 0
 EOF
 
-# Stub swarmy binary for the image-build lines. No swarmy-api executable on
+# Stub swarmy binary for the image-build lines. No swarmy-core executable on
 # purpose, so the API blocks are skipped; they are not under test.
 cat > "$tmp/chaos/target/debug/swarmy" <<'EOF'
 #!/usr/bin/env bash
@@ -99,7 +99,6 @@ echo "stub image build ok"
 exit 0
 EOF
 
-printf 'disk_size = 1\n' > "$tmp/chaos/images/swarmy-dev/recipe.toml"
 : > "$tmp/chaos/.dev/env"
 
 chmod +x "$tmp/.cargo/bin/git" "$tmp/.cargo/bin/cargo" "$tmp/.cargo/bin/sudo" \

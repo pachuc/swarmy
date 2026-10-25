@@ -9,6 +9,7 @@
 set -uo pipefail
 branch=$1
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+export SWARMY_REQUIRE_ROOT_SUITES=1
 export SWARMY_FDB_LIB_DIR="$HOME/.local/lib"
 cd ~/chaos
 git fetch -q origin "$branch" && git checkout -q -B suite "${REV:-origin/$branch}" || { echo "checkout failed"; echo "SUITES_EXIT=1"; exit 2; }
@@ -24,24 +25,23 @@ set -a; . .dev/env; set +a
 # files in target/, which makes this build fail with permission errors.
 sudo chown -R "$(id -un):$(id -gn)" "$(readlink -f target)"
 # `--tests` builds a package's executable only when it has integration tests,
-# and the scheduler, worker, and gateway have none, while the chaos suites run
-# the service executables from target/debug. Build those explicitly, or the
-# chaos suites run whatever an earlier branch left there.
+# and some role crates have none, while the chaos suites run swarmy-core
+# from target/debug. Build that explicitly to avoid a stale executable.
 CARGO_BUILD_JOBS=8 cargo build --locked --tests -p swarmy-chaos -p swarmyd -p swarmy-cli -p swarmy-gateway -p swarmy-worker -p swarmy-scheduler -p swarmy-api > ~/suite-build.log 2>&1 \
-  && CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-scheduler -p swarmy-worker -p swarmy-gateway -p swarmy-api -p swarmyd >> ~/suite-build.log 2>&1 \
+  && CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-core-bin >> ~/suite-build.log 2>&1 \
   || { tail -20 ~/suite-build.log; echo "build failed"; echo "SUITES_EXIT=1"; exit 2; }
 tail -1 ~/suite-build.log
 # Since the client split (pull request 150) `swarmy image build` goes through
 # the API, so serve one on a loopback port against the dev stack.
-if [ -x ./target/debug/swarmy-api ]; then
+if [ -x ./target/debug/swarmy-core ]; then
   api_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
   export SWARMY_API_TOKEN="suite-$(date +%s)-$RANDOM"
   export SWARMY_API_URL="http://127.0.0.1:$api_port"
-  SWARMY_API_LISTEN="127.0.0.1:$api_port" ./target/debug/swarmy-api > ~/root-suites-api.log 2>&1 &
+  SWARMY_API_LISTEN="127.0.0.1:$api_port" ./target/debug/swarmy-core api > ~/root-suites-api.log 2>&1 &
   api_pid=$!
   for _ in $(seq 1 120); do
     (echo > "/dev/tcp/127.0.0.1/$api_port") 2>/dev/null && break
-    kill -0 "$api_pid" 2>/dev/null || { echo "swarmy-api exited; see ~/root-suites-api.log"; break; }
+    kill -0 "$api_pid" 2>/dev/null || { echo "swarmy-core api exited; see ~/root-suites-api.log"; break; }
     sleep 0.5
   done
   echo "== api on $SWARMY_API_URL (pid $api_pid)"

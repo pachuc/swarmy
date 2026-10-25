@@ -11,12 +11,10 @@ import subprocess
 import sys
 import time
 import tomllib
-from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = Path(os.environ.get("FLEET_CONFIG") or Path(__file__).with_name("fleet.toml"))
 AGENTS = ROOT / "AGENTS.md"
-URL = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+")
 TARGET_LIMIT_GIB = 40
 
 
@@ -117,9 +115,9 @@ def prompt(task_id, task, config, branch):
 Before starting this task:
 1. mkdir -p ~/work. For every other directory under ~/work: if it is a git clone whose branch has been pushed and `git status --porcelain` is empty, remove it; otherwise leave it in place and mention it in your final message. Never delete unpushed work.
 2. If `du -sb ~/.cargo-target` reports more than {TARGET_LIMIT_GIB} GiB, run `cargo clean` from any clone (the shared target directory lives outside the clones).
-3. Clone https://github.com/{config['repo']}.git into ~/work/{branch.split('/')[-1]}, and create branch {branch} from origin/master. Never reuse or force-push a branch.
+3. Clone https://github.com/{config['repo']}.git into ~/work/{branch.split('/')[-1]}, and create branch {branch} from origin/master, or from the integration branch the task body names. Never reuse or force-push a branch.
    Commit and push at least hourly. Before any command expected to run longer than ten minutes (builds, test suites), run `git add -A && git commit -m "WIP" && git push`. A pushed work-in-progress commit is fine; an unpushed hour of work is not, because a session can end without warning.
-   If a push is ever rejected because the token lacks the `workflow` scope (a change under .github/workflows), keep that change in a separate commit, move it out of the branch, save it as `ci/pending/{branch.split('/')[-1]}.patch` in the repository, commit and push that instead, and say in the pull request that the workflow change is pending an operator push.
+   If a push is ever rejected because the token lacks the `workflow` scope (a change under .github/workflows), keep that change in a separate commit, move it out of the branch, save it as `ci/pending/{branch.split('/')[-1]}.patch` in the repository, commit and push that instead, and say in your final report that the workflow change is pending an operator push.
 
 You are executing tasky {task_id}: {title}.
 
@@ -132,7 +130,7 @@ Task body:
 Test plan:
 {tests}
 
-Read the repository's AGENTS.md and docs/ARCHITECTURE.md before changing files. Implement only this task. While iterating run `cargo test --locked -p <each crate changed>`. Before the final check, run `git merge origin/master` so validation sees what CI will see. Once at the end, run the full per-pull-request command list from AGENTS.md with the dev stack running and .dev/env sourced. Save the final command output to a file and attach the full log to the pull request (a fenced block in the description is fine); do not replace it with a prose summary. Work through the test plan, including root-only suites AGENTS.md maps to the areas changed. Commit with an imperative subject and a body explaining why. Push {branch} to origin. Open one pull request against master with a title containing tasky {task_id}. Its description must say what was built, list exact validation commands and results, and list test plan items not verified and why. Do not include credentials in logs, commits, or the PR. When you are done, stop the dev stack with scripts/dev-stack.sh stop, and finish by reporting the pull request URL in your last message.
+Read the repository's AGENTS.md and docs/ARCHITECTURE.md before changing files. Implement only this task, following the task body's steps in order. Goals are built as a batch (AGENTS.md, "Delivering a task"): do NOT open a pull request and do not run the full per-pull-request command list; the operator integrates and validates the batch. While iterating run `cargo test --locked -p <each crate changed>`. At the end run exactly the task body's "Done when" commands (with the dev stack running and .dev/env sourced when they need it), commit with an imperative subject and a body explaining why, and push {branch} to origin. Do not commit logs or generated output. When a long build or test runs, check on it every few minutes with short commands rather than one long sleep. When you are done, stop the dev stack with scripts/dev-stack.sh stop. Finish with a last message that reports: the branch name, the head SHA, the full output of every "Done when" command, every place you departed from the task body and why, and anything you could not verify and why. Never include credentials.
 """
 
 
@@ -143,6 +141,14 @@ def swarmy(config, *args):
 
 def tasky(*args, json_output=False):
     return ["tasky", *(["--json"] if json_output else []), "task", *args]
+
+
+def git(*args):
+    return ["git", "-C", str(ROOT), *args]
+
+
+def tasky_task(task_id):
+    return one(command(tasky("show", task_id, json_output=True)))
 
 
 def workers_path(config):
@@ -225,7 +231,7 @@ def launch(args, config):
     path = state_path(config) / (suffix + ".json")
     if path.exists():
         raise RuntimeError(f"{args.task_id} already launched")
-    task = one(command(tasky("show", args.task_id, json_output=True)))
+    task = tasky_task(args.task_id)
     status = task.get("status")
     if status == "todo":
         # Refuse a task whose dependencies are unfinished before a worker is spent.
@@ -510,57 +516,60 @@ def fleet_cost(config):
     return day.get("total", {}).get("cost_dollars"), month.get("total", {}).get("cost_dollars")
 
 
-def last_message(events):
-    messages = []
+def assistant_texts(events):
+    """Text of each assistant message in a session's events, oldest first."""
     for event in events:
         payload = event.get("message_appended") or event.get("inference_completed") or {}
         message = payload.get("message", {})
-        if message.get("role") == "assistant":
-            content = "".join(part.get("text", {}).get("text", "") for part in message.get("parts", []))
-            if content:
-                messages.append(content)
-    return messages[-1] if messages else ""
+        if message.get("role") != "assistant":
+            continue
+        text = "".join(part.get("text", {}).get("text", "") for part in message.get("parts", []))
+        if text:
+            yield text
 
 
-def verify_pr(url, data, config, *, merged=False):
-    parsed = urlparse(url)
-    if parsed.hostname != "github.com" or parsed.path.split("/")[1:3] != config["repo"].split("/"):
-        raise RuntimeError("PR URL is outside the configured repository")
-    pr = one(command(["gh", "pr", "view", url, "--repo", config["repo"],
-                      "--json", "url,state,baseRefName,headRefName"]))
-    required_state = "MERGED" if merged else "OPEN"
-    if (pr.get("state") != required_state or pr.get("baseRefName") != "master" or
-            pr.get("headRefName") != data["branch"] or pr.get("url") != url):
-        raise RuntimeError(f"PR is not {required_state.lower()} against master from {data['branch']}")
+def worker_report(config, data, count=1):
+    """The task session's last COUNT assistant messages; the last one is the worker's report."""
+    session_id = current_session(config, data["session_id"])
+    return list(assistant_texts(session_events(config, session_id)))[-count:]
+
+
+def remote_branch_head(branch):
+    result = subprocess.run(git("ls-remote", "--exit-code", "origin", "refs/heads/" + branch),
+                            text=True, capture_output=True, check=False)
+    if result.returncode == 2:
+        raise RuntimeError(f"{branch} is not on origin; the worker has not pushed it")
+    if result.returncode:
+        raise RuntimeError(f"git ls-remote failed: {result.stderr.strip()}")
+    return result.stdout.split()[0]
+
+
+def integrating_commit(full_id, integration):
+    """Newest commit on origin/INTEGRATION whose message names `tasky FULL_ID`, or None."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", integration):
+        raise RuntimeError(f"invalid integration branch {integration!r}")
+    ref = "refs/remotes/origin/" + integration
+    command(git("fetch", "--quiet", "origin", f"+refs/heads/{integration}:{ref}"))
+    shas = command(git("log", "--format=%H", "--fixed-strings", f"--grep=tasky {full_id}", ref)).split()
+    return shas[0] if shas else None
 
 
 def collect(task_id, config):
     path, data = assignment(config, task_id)
-    agent = one(command(swarmy(config, "agent", "show", data["worker"], "--json")))
-    session_id = current_session(config, data["session_id"])
-    message = last_message(session_events(config, session_id))
-    match = URL.search(message)
-    if match:
-        url = match.group(0)
-        source = "last_message"
-        merged = False
-    else:
-        pull_requests = json.loads(command(["gh", "pr", "list", "--repo", config["repo"],
-                                            "--head", data["branch"], "--state", "all",
-                                            "--json", "url,state"]))
-        eligible = [pr for pr in pull_requests if pr.get("state") in ("OPEN", "MERGED")]
-        if len(eligible) != 1:
-            raise RuntimeError(f"expected exactly one open or merged pull request for {data['branch']}; found {len(eligible)}")
-        url = eligible[0]["url"]
-        source = "branch_lookup"
-        merged = eligible[0]["state"] == "MERGED"
-    verify_pr(url, data, config, merged=merged)
-    command(tasky("pr", task_id, url))
-    command(tasky("test", task_id))
-    data["pr_url"] = url
-    data["pr_source"] = source
+    sha = remote_branch_head(data["branch"])
+    status = tasky_task(task_id).get("status")
+    if status not in ("in_progress", "testing"):
+        raise RuntimeError(f"tasky task {task_id} is {status}; collect expects in_progress or testing")
+    if data.get("head_sha") != sha:
+        command(tasky("link", task_id, "--commit", sha))
+    if status == "in_progress":
+        command(tasky("test", task_id))
+    data["head_sha"] = sha
     save(path, data)
-    print(url)
+    print(f"{data['branch']} {sha}")
+    for text in worker_report(config, data) or ["(the worker has sent no message yet)"]:
+        print("-----")
+        print(text)
 
 
 def resume(task_id, message, config, *, interrupt=False):
@@ -589,19 +598,30 @@ def resume(task_id, message, config, *, interrupt=False):
     print(f"resumed {task_id}")
 
 
-def release(task_id, config, *, force=False):
+def release(task_id, config, *, into=None, force=False):
     path, data = assignment(config, task_id)
+    note = ""
     if not force:
-        if not data.get("pr_url"):
-            raise RuntimeError("collect the pull request before releasing the worker, or pass --force")
-        verify_pr(data["pr_url"], data, config, merged=True)
+        integration = into or config.get("integration")
+        if not integration:
+            raise RuntimeError("pass --into BRANCH or set integration in fleet.toml, or pass --force")
+        record = tasky_task(task_id)
+        full_id = record.get("id") or record.get("task", {}).get("id")
+        if not full_id:
+            raise RuntimeError(f"tasky did not report an id for {task_id}")
+        sha = integrating_commit(full_id, integration)
+        if not sha:
+            raise RuntimeError(f"no commit on origin/{integration} names tasky {full_id}; "
+                               "integrate the branch first, or pass --force")
+        command(tasky("link", task_id, "--commit", sha))
+        note = f" (integrated in {sha[:12]} on {integration})"
     workers = load_workers(config)
     held = workers.get(data["worker"])
     if held and task_suffix(held) == task_suffix(task_id):
         workers[data["worker"]] = None
         save_workers(config, workers)
     path.unlink()
-    print(f"released {data['worker']} from {task_id}")
+    print(f"released {data['worker']} from {task_id}{note}")
 
 
 def kill(task_id, config, timeout_seconds):
@@ -1144,14 +1164,15 @@ def main():
     launch_parser.add_argument("--image", help="registered image as NAME:TAG for a newly created worker; default is the remote's default image")
     launch_parser.add_argument("--worker", help="run on this idle worker instead of the first free one, for example to reuse files on its disk")
     sub.add_parser("status", help="one line per worker: task, provider, model, state age, elapsed, cost; exits 2 on a stall")
-    sub.add_parser("collect", help="record the worker's pull request in tasky").add_argument("task_id")
+    sub.add_parser("collect", help="check the worker's pushed branch, link its head in tasky, move the task to testing, and print the worker's report").add_argument("task_id")
     resume_parser = sub.add_parser("resume", help="send a follow-up message to the worker on this task")
     resume_parser.add_argument("task_id")
     resume_parser.add_argument("message")
     resume_parser.add_argument("--interrupt", action="store_true", help="stop the current turn before sending")
-    release_parser = sub.add_parser("release", aliases=["rm"], help="free the worker once the task's pull request is merged")
+    release_parser = sub.add_parser("release", aliases=["rm"], help="free the worker once a commit on the integration branch names the task (tasky <TASK_ID>)")
     release_parser.add_argument("task_id")
-    release_parser.add_argument("--force", action="store_true", help="free the worker even without a merged pull request")
+    release_parser.add_argument("--into", metavar="BRANCH", help="integration branch to check; default is integration in fleet.toml")
+    release_parser.add_argument("--force", action="store_true", help="free the worker without checking integration (fleet resume no longer works for the task)")
     kill_parser = sub.add_parser("kill", help="interrupt a task and free its worker after the session reaches Idle")
     kill_parser.add_argument("task_id")
     kill_parser.add_argument("--timeout-seconds", type=float, help="seconds to wait for Idle (default: config kill_timeout_seconds or 60)")
@@ -1198,7 +1219,7 @@ def main():
         elif args.action == "resume":
             resume(args.task_id, args.message, config, interrupt=args.interrupt)
         elif args.action in ("release", "rm"):
-            release(args.task_id, config, force=args.force)
+            release(args.task_id, config, into=args.into, force=args.force)
         elif args.action == "kill":
             seconds = args.timeout_seconds if args.timeout_seconds is not None else float(config.get("kill_timeout_seconds", 60))
             if not math.isfinite(seconds) or seconds <= 0:

@@ -2,6 +2,7 @@ use swarmy_cloud::ssh as remote_ssh;
 mod process;
 
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::Write,
     os::unix::fs::OpenOptionsExt,
@@ -33,9 +34,12 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) enum Command {
     /// Start the backing stack and supervised services in the background
     Up {
-        /// Start even when a service reports a different or unavailable version
+        /// Run this swarmy-core instead of the matching release
+        #[arg(long, env = "SWARMY_CORE_BIN", value_name = "PATH")]
+        core_bin: Option<PathBuf>,
+        /// Do not download and register the release base image when no default image is configured
         #[arg(long)]
-        allow_version_mismatch: bool,
+        no_image: bool,
     },
     /// Stop the services, supervisor, and backing stack, preserving data
     Down,
@@ -46,12 +50,14 @@ pub(crate) enum Command {
         #[arg(value_enum)]
         service: Option<DevService>,
     },
-    #[command(hide = true)]
-    Supervise {
-        state: PathBuf,
-        #[arg(num_args = 4, required = true)]
-        binaries: Vec<PathBuf>,
+    /// Install `FoundationDB`, NATS, and `SeaweedFS` for the local stack (Linux x86-64)
+    InstallTools {
+        /// Install root: tools go to PREFIX/bin and PREFIX/lib (default ~/.local)
+        #[arg(long)]
+        prefix: Option<PathBuf>,
     },
+    #[command(hide = true)]
+    Supervise { state: PathBuf, core: PathBuf },
 }
 
 /// One supervised backing service, parsed once by clap instead of matched as a string.
@@ -65,44 +71,88 @@ pub(crate) enum DevService {
 }
 
 struct Layout {
+    /// File dev up creates or updates.
     config: PathBuf,
+    /// Anchor for relative paths and services' cwd.
     root: PathBuf,
+    /// Resolved state directory containing dev/ and core/.
+    state_dir: PathBuf,
+    /// Supervised service state under `state_dir/dev`.
     state: PathBuf,
-    repo: PathBuf,
+    /// Backing stack directory passed as `SWARMY_DEV_DIR`.
+    stack: PathBuf,
 }
 
 impl Layout {
     fn discover() -> Result<Self> {
         let loaded = Settings::load_base()?;
         let cwd = std::env::current_dir()?;
+        let environment = [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "SWARMY_DEV_DIR",
+            "SWARMY_STATE_DIR",
+        ]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok().map(|value| (key.to_owned(), value)))
+        .collect();
+        Self::resolve(loaded, &cwd, &environment)
+    }
+
+    fn resolve(
+        loaded: swarmy_config::Loaded,
+        cwd: &Path,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<Self> {
         let repo = cwd
             .ancestors()
             .find(|dir| dir.join("scripts/dev-stack.sh").is_file())
-            .map_or_else(
-                || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
-                Path::to_owned,
-            )
-            .canonicalize()
-            .context("cannot locate the checkout containing scripts/dev-stack.sh")?;
-        let root = if loaded.path.is_some() {
-            loaded.root
-        } else if cwd.starts_with(&repo) {
-            repo.clone()
+            .map(Path::canonicalize)
+            .transpose()?;
+        let found = loaded.path.is_some();
+        let (config, root) = if let Some(path) = loaded.path {
+            (path, loaded.root)
+        } else if let Some(repo) = &repo {
+            (repo.join(".swarmy/config.toml"), repo.clone())
         } else {
-            cwd
+            let config = Settings::user_config_path(environment).context(
+                "set HOME (or XDG_CONFIG_HOME), or run swarmy dev inside a checkout or a directory with .swarmy/config.toml",
+            )?;
+            let home = environment
+                .get("HOME")
+                .context("set HOME for swarmy dev state")?;
+            (config, PathBuf::from(home))
         };
-        let config = loaded
-            .path
-            .unwrap_or_else(|| root.join(".swarmy/config.toml"));
-        let state = config
-            .parent()
-            .context("configuration has no parent")?
-            .join("dev");
+        let state_dir = if found || environment.contains_key("SWARMY_STATE_DIR") {
+            loaded.settings.state_dir
+        } else {
+            root.join(Settings::default().state_dir)
+        };
+        let state_dir = if state_dir.is_absolute() {
+            state_dir
+        } else {
+            root.join(state_dir)
+        };
+        let stack = environment
+            .get("SWARMY_DEV_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map_or_else(
+                || repo.map_or_else(|| state_dir.join("stack"), |repo| repo.join(".dev")),
+                |dir| {
+                    let path = PathBuf::from(dir);
+                    if path.is_absolute() {
+                        path
+                    } else {
+                        cwd.join(path)
+                    }
+                },
+            );
         Ok(Self {
             config,
             root,
-            state,
-            repo,
+            state: state_dir.join("dev"),
+            state_dir,
+            stack,
         })
     }
 
@@ -121,18 +171,16 @@ impl Layout {
     }
 }
 
-pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
+pub(crate) async fn run(command: Command, json: bool, allow_version_mismatch: bool) -> Result<()> {
     // One match owns every variant. The supervisor is spawned without flags
     // by `dev up`, so it never takes the human-output path; every other arm
     // rejects `--json` and discovers the layout through one helper.
     match command {
-        Command::Supervise { state, binaries } => supervise(&state, &binaries).await,
-        Command::Up {
-            allow_version_mismatch,
-        } => {
+        Command::Supervise { state, core } => supervise(&state, &core).await,
+        Command::Up { core_bin, no_image } => {
             let layout = local(json)?;
             let _lock = layout.lock()?;
-            up(&layout, allow_version_mismatch).await
+            up(&layout, allow_version_mismatch, core_bin, no_image).await
         }
         Command::Down => {
             let layout = local(json)?;
@@ -149,6 +197,10 @@ pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
             Ok(())
         }
         Command::Status => status(&local(json)?).await,
+        Command::InstallTools { prefix } => {
+            reject_json(json)?;
+            install_tools(prefix.as_deref()).await
+        }
         Command::Logs { service } => {
             logs(
                 &local(json)?.state,
@@ -161,14 +213,19 @@ pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
     }
 }
 
-/// Reject `--json` and discover the checkout layout for human-output `dev`
+/// Reject `--json` and discover the dev layout for human-output `dev`
 /// commands. `dev` manages local processes with progress lines, so it has no
 /// JSON rendering; the explicit rejection keeps `--json dev` from silently
 /// printing text.
-fn local(json: bool) -> Result<Layout> {
+fn reject_json(json: bool) -> Result<()> {
     if json {
         bail!("--json is not supported for dev commands; run without it for human-readable output");
     }
+    Ok(())
+}
+
+fn local(json: bool) -> Result<Layout> {
+    reject_json(json)?;
     Layout::discover()
 }
 
@@ -186,13 +243,24 @@ fn write_private(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
+/// `bash -c SCRIPT NAME`: run a compiled-in script; NAME becomes its $0.
+fn embedded(script: &str, name: &str) -> Process {
+    let mut command = Process::new("bash");
+    command.arg("-c").arg(script).arg(name);
+    command
+}
+
 async fn stack(layout: &Layout, action: &str) -> Result<String> {
-    let output = Process::new(layout.repo.join("scripts/dev-stack.sh"))
-        .process_group(0)
-        .env("PATH", crate::tools::search_path()?)
+    // The same compiled-in script is used by the node and local dev stack.
+    let output = embedded(swarmy_cloud::node_files::DEV_STACK, "swarmy dev stack")
         .arg(action)
+        .env("SWARMY_DEV_DIR", &layout.stack)
+        .env("PATH", crate::tools::search_path()?)
+        .stdin(Stdio::null())
+        .process_group(0)
         .output()
-        .await?;
+        .await
+        .context("cannot run bash for the dev stack")?;
     ensure!(
         output.status.success(),
         "dev stack {action} failed: {}\n{}",
@@ -202,20 +270,107 @@ async fn stack(layout: &Layout, action: &str) -> Result<String> {
     Ok(String::from_utf8(output.stdout)?)
 }
 
-async fn check_versions(allow_version_mismatch: bool) -> Result<Vec<PathBuf>> {
-    let mut binaries = Vec::new();
-    for (name, _) in SERVICES {
-        let executable = binary(name)?;
-        if let Err(error) = version_check(&executable, &format!("swarmy-{name}")).await {
-            let message = format!("{error}. Reinstall from the CLI checkout: {REINSTALL}");
-            if !allow_version_mismatch {
-                bail!("{message}\nUse --allow-version-mismatch to override.");
-            }
-            eprintln!("warning: {message} (--allow-version-mismatch)");
+pub(crate) enum CoreSource {
+    Explicit(PathBuf),
+    Release(swarmy_cloud::release::Release),
+    Development,
+}
+impl CoreSource {
+    pub(crate) fn select(core_bin: Option<PathBuf>) -> Result<Self> {
+        if let Some(path) = core_bin {
+            return Ok(Self::Explicit(path));
         }
-        binaries.push(executable);
+        Ok(swarmy_cloud::release::Release::for_client()?.map_or(Self::Development, Self::Release))
     }
-    Ok(binaries)
+    pub(crate) fn fix(&self) -> Result<String> {
+        Ok(match self {
+            Self::Explicit(path) => format!(
+                "Rebuild {} at commit {} (cargo build -p swarmy-core-bin) or unset --core-bin/SWARMY_CORE_BIN",
+                path.display(),
+                swarmy_version::GIT_COMMIT
+            ),
+            Self::Release(release) => format!(
+                "Remove {}/{} and run swarmy dev up again to download {}",
+                core_cache()?.display(),
+                release.tag(),
+                release.tag()
+            ),
+            Self::Development => format!("Reinstall from the CLI checkout: {REINSTALL}"),
+        })
+    }
+    pub(crate) const fn label(&self) -> &'static str {
+        match self {
+            Self::Explicit(_) => "explicit",
+            Self::Release(_) => "release",
+            Self::Development => "development",
+        }
+    }
+}
+pub(crate) struct ResolvedCore {
+    pub(crate) path: PathBuf,
+    pub(crate) source: &'static str,
+    pub(crate) fix: String,
+}
+/// `<state_dir>/core` for the layout `swarmy dev` uses.
+pub(crate) fn core_cache() -> Result<PathBuf> {
+    Ok(Layout::discover()?.state_dir.join("core"))
+}
+/// `<state_dir>/images`, the release image download cache.
+pub(crate) fn image_cache() -> Result<PathBuf> {
+    Ok(Layout::discover()?.state_dir.join("images"))
+}
+/// Set `selection.default_image` in CONFIG, keeping the rest of the file.
+pub(crate) fn set_default_image(config: &Path, image: &str) -> Result<()> {
+    let mut settings = Settings::read(config)?;
+    settings.selection.default_image = Some(image.to_owned());
+    write_private(config, &settings.to_toml()?)
+}
+pub(crate) async fn resolve_core(
+    core_bin: Option<PathBuf>,
+    target: Option<swarmy_cloud::release::Target>,
+) -> Result<ResolvedCore> {
+    use swarmy_cloud::release::{Component, Target};
+    let source = CoreSource::select(core_bin)?;
+    let label = source.label();
+    let fix = source.fix()?;
+    let path = match source {
+        CoreSource::Explicit(path) => path.canonicalize().with_context(|| {
+            format!(
+                "--core-bin/SWARMY_CORE_BIN {} does not exist",
+                path.display()
+            )
+        })?,
+        CoreSource::Release(release) => {
+            let cache = core_cache()?;
+            release
+                .ensure(
+                    &cache,
+                    Component::Core,
+                    target.map_or_else(Target::host, Ok)?,
+                )
+                .await?
+                .join("swarmy-core")
+        }
+        CoreSource::Development => service_binary("swarmy-core")?,
+    };
+    Ok(ResolvedCore {
+        path,
+        source: label,
+        fix,
+    })
+}
+pub(crate) async fn check_versions(
+    core: &ResolvedCore,
+    allow_version_mismatch: bool,
+) -> Result<()> {
+    if let Err(error) = version_check(&core.path, "swarmy-core").await {
+        let message = format!("{error}. {}", core.fix);
+        if !allow_version_mismatch {
+            bail!("{message}\nUse --allow-version-mismatch to override.");
+        }
+        eprintln!("warning: {message} (--allow-version-mismatch)");
+    }
+    Ok(())
 }
 
 async fn node_services(layout: &Layout) -> Result<bool> {
@@ -261,12 +416,18 @@ fn ensure_keyring() -> Result<()> {
     Ok(())
 }
 
-async fn up(layout: &Layout, allow_version_mismatch: bool) -> Result<()> {
+async fn up(
+    layout: &Layout,
+    allow_version_mismatch: bool,
+    core_bin: Option<PathBuf>,
+    no_image: bool,
+) -> Result<()> {
     if node_services(layout).await? {
         return Ok(());
     }
     ensure_keyring()?;
-    let binaries = check_versions(allow_version_mismatch).await?;
+    let core = resolve_core(core_bin, None).await?;
+    check_versions(&core, allow_version_mismatch).await?;
     fs::create_dir_all(layout.state.join("logs"))?;
     let survivors: Vec<_> = ["supervisor", "scheduler", "worker", "gateway", "api"]
         .into_iter()
@@ -279,6 +440,65 @@ async fn up(layout: &Layout, allow_version_mismatch: bool) -> Result<()> {
     let remote = Settings::load_base()?.settings.remote.profile;
     prepare_stack(layout, remote.as_deref()).await?;
     let settings = prepare_settings(layout, remote.is_some())?;
+    let mut pid = launch(layout, &core.path, &settings).await?;
+    if remote.is_none() && !no_image {
+        match settings.selection.default_image.as_deref() {
+            None => match crate::image::pull_release_image(
+                &layout.state_dir.join("images"),
+                swarmy_version::RELEASE_TAG,
+                swarmy_cloud::release::Target::host()?,
+                false,
+            )
+            .await
+            {
+                Ok(Some(_)) => {
+                    let image = crate::image::release_image(swarmy_version::RELEASE_TAG);
+                    set_default_image(&layout.config, &image)?;
+                    println!("default image: {image}; restarting services");
+                    stop_services(&layout.state).await?;
+                    let settings = Settings::load()?.settings;
+                    pid = launch(layout, &core.path, &settings).await?;
+                }
+                Ok(None) => println!(
+                    "default image: none (development build); build one from a checkout with swarmy image build images/base-ubuntu and set selection.default_image in {}",
+                    layout.config.display()
+                ),
+                Err(error) => eprintln!(
+                    "warning: could not register the release base image: {error:#}\nRetry with swarmy image pull base-ubuntu --set-default, then swarmy dev up"
+                ),
+            },
+            Some(default) if crate::image::other_release_image(default) => println!(
+                "note: default image {default} is from another release; run swarmy image pull base-ubuntu --set-default and swarmy dev up to use {}",
+                crate::image::release_image(swarmy_version::RELEASE_TAG)
+            ),
+            Some(_) => {}
+        }
+    }
+    let stack_pids = ["fdb", "nats", "seaweed"]
+        .into_iter()
+        .filter_map(|name| {
+            Identity::read(&layout.stack.join(format!("{name}.pid")))
+                .map(|id| format!("{name}={}", id.pid))
+        })
+        .collect::<Vec<_>>();
+    if let Some(name) = remote {
+        println!("stack: remote {name}");
+    } else {
+        println!("stack: ready ({})", stack_pids.join(", "));
+    }
+    for (name, _) in SERVICES {
+        let identity = Identity::read(&layout.state.join(format!("{name}.pid")))
+            .context("service exited during startup")?;
+        println!("{name}: ready (pid {})", identity.pid);
+    }
+    println!(
+        "supervisor: running (pid {pid}); logs: {}",
+        layout.state.join("logs").display()
+    );
+    Ok(())
+}
+
+async fn launch(layout: &Layout, core: &Path, settings: &Settings) -> Result<u32> {
     let ready = layout.state.join("ready");
     if ready.exists() {
         fs::remove_file(&ready)?;
@@ -288,7 +508,7 @@ async fn up(layout: &Layout, allow_version_mismatch: bool) -> Result<()> {
         .arg("dev")
         .arg("supervise")
         .arg(&layout.state)
-        .args(&binaries)
+        .arg(core)
         .current_dir(&layout.root)
         .envs(settings.environment())
         .env("RUST_LOG", "info")
@@ -332,28 +552,7 @@ async fn up(layout: &Layout, allow_version_mismatch: bool) -> Result<()> {
         cleanup?;
         return Err(error);
     }
-    let stack_pids = ["fdb", "nats", "seaweed"]
-        .into_iter()
-        .filter_map(|name| {
-            Identity::read(&layout.repo.join(format!(".dev/{name}.pid")))
-                .map(|id| format!("{name}={}", id.pid))
-        })
-        .collect::<Vec<_>>();
-    if let Some(name) = remote {
-        println!("stack: remote {name}");
-    } else {
-        println!("stack: ready ({})", stack_pids.join(", "));
-    }
-    for (name, _) in SERVICES {
-        let identity = Identity::read(&layout.state.join(format!("{name}.pid")))
-            .context("service exited during startup")?;
-        println!("{name}: ready (pid {})", identity.pid);
-    }
-    println!(
-        "supervisor: running (pid {pid}); logs: {}",
-        layout.state.join("logs").display()
-    );
-    Ok(())
+    Ok(pid)
 }
 
 async fn prepare_stack(layout: &Layout, remote: Option<&str>) -> Result<()> {
@@ -365,7 +564,7 @@ async fn prepare_stack(layout: &Layout, remote: Option<&str>) -> Result<()> {
             .filter(|line| line.contains(": up (pid "))
             .count()
             != 3
-            || !layout.repo.join(".dev/env").is_file()
+            || !layout.stack.join("env").is_file()
         {
             stack(layout, "start").await?;
         }
@@ -394,8 +593,7 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
         Settings::default()
     };
     if !remote {
-        let exports =
-            swarmy_config::parse_exports(&fs::read_to_string(layout.repo.join(".dev/env"))?)?;
+        let exports = swarmy_config::parse_exports(&fs::read_to_string(layout.stack.join("env"))?)?;
         settings.apply_environment(&exports)?;
     }
     if settings.selection.credential_file.as_os_str().is_empty() {
@@ -407,6 +605,9 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
     if settings.api.token.is_empty() {
         // A usable API must reject unauthenticated traffic, including on loopback.
         settings.api.token = ulid::Ulid::generate().to_string();
+    }
+    if let Some(parent) = layout.config.parent() {
+        fs::create_dir_all(parent)?;
     }
     write_private(&layout.config, &settings.to_toml()?)?;
     // Load again so environment overrides win, without persisting those overrides.
@@ -430,7 +631,7 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
 }
 
 // Keep this command aligned with docs/DEV.md's no-root installation workflow.
-pub(crate) const REINSTALL: &str = "for crate in cli scheduler worker gateway api; do SWARMY_FDB_LIB_DIR=\"$HOME/.local/lib\" cargo install --locked --path \"crates/swarmy-$crate\"; done";
+pub(crate) const REINSTALL: &str = "for crate in swarmy-cli swarmy-core-bin; do SWARMY_FDB_LIB_DIR=\"$HOME/.local/lib\" cargo install --locked --path \"crates/$crate\"; done";
 
 pub(crate) fn service_binary(name: &str) -> Result<PathBuf> {
     let executable =
@@ -441,10 +642,6 @@ pub(crate) fn service_binary(name: &str) -> Result<PathBuf> {
             executable.display()
         )
     })
-}
-
-fn binary(name: &str) -> Result<PathBuf> {
-    service_binary(&format!("swarmy-{name}"))
 }
 
 pub(crate) async fn version_check(executable: &Path, name: &str) -> Result<String> {
@@ -491,12 +688,12 @@ async fn stop_services(state: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn supervise(state: &Path, binaries: &[PathBuf]) -> Result<()> {
+async fn supervise(state: &Path, core: &Path) -> Result<()> {
     // Register signal handlers before spawning so down during startup also cleans up.
     let stop = swarmy_config::shutdown_signal();
     let mut children = Vec::new();
     let result = tokio::select! {
-        result = serve(state, binaries, &mut children) => result,
+        result = serve(state, core, &mut children) => result,
         () = stop => Ok(()),
     };
     for (name, child) in children.iter_mut().rev() {
@@ -515,15 +712,12 @@ async fn supervise(state: &Path, binaries: &[PathBuf]) -> Result<()> {
     result
 }
 
-async fn serve(
-    state: &Path,
-    binaries: &[PathBuf],
-    children: &mut Vec<(&'static str, Child)>,
-) -> Result<()> {
+async fn serve(state: &Path, core: &Path, children: &mut Vec<(&'static str, Child)>) -> Result<()> {
     // Use the checked absolute paths even when the supervisor changes directory.
-    for ((name, _), executable) in SERVICES.into_iter().zip(binaries) {
+    for (name, _) in SERVICES {
         let log = File::create(state.join(format!("logs/{name}.log")))?;
-        let child = Process::new(executable)
+        let child = Process::new(core)
+            .arg(name)
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log)
@@ -572,7 +766,7 @@ async fn status(layout: &Layout) -> Result<()> {
     let stack = ["fdb", "nats", "seaweed"]
         .into_iter()
         .filter_map(|name| {
-            Identity::read(&layout.repo.join(format!(".dev/{name}.pid")))
+            Identity::read(&layout.stack.join(format!("{name}.pid")))
                 .map(|identity| (name, identity))
         })
         .collect::<Vec<_>>();
@@ -623,4 +817,157 @@ async fn logs(state: &Path, service: Option<&str>) -> Result<()> {
         result = tokio::signal::ctrl_c() => { result?; child.kill().await?; },
     }
     Ok(())
+}
+
+/// Run the embedded installer with bash, inheriting stdio so download progress shows.
+async fn install_tools(prefix: Option<&Path>) -> Result<()> {
+    let mut command = embedded(
+        swarmy_cloud::node_files::INSTALL_DEV_TOOLS,
+        "swarmy dev install-tools",
+    );
+    if let Some(prefix) = prefix {
+        command.arg("--prefix").arg(prefix);
+    }
+    let status = command
+        .status()
+        .await
+        .context("cannot run bash for the backing tool installer")?;
+    ensure!(
+        status.success(),
+        "backing tool installation failed ({status})"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod layout_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    fn loaded(path: Option<PathBuf>, root: &Path, state_dir: PathBuf) -> swarmy_config::Loaded {
+        let settings = Settings {
+            state_dir,
+            ..Settings::default()
+        };
+        swarmy_config::Loaded {
+            path,
+            root: root.to_owned(),
+            settings,
+        }
+    }
+    #[test]
+    fn checkout_without_config_keeps_repo_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("scripts")).unwrap();
+        fs::write(repo.join("scripts/dev-stack.sh"), "").unwrap();
+        let cwd = repo.join("crates/x");
+        fs::create_dir_all(&cwd).unwrap();
+        let layout = Layout::resolve(
+            loaded(None, &cwd, cwd.join(".swarmy")),
+            &cwd,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(layout.config, repo.join(".swarmy/config.toml"));
+        assert_eq!(layout.root, repo);
+        assert_eq!(layout.state, repo.join(".swarmy/dev"));
+        assert_eq!(layout.stack, repo.join(".dev"));
+    }
+    #[test]
+    fn no_checkout_uses_user_config_and_home_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("cwd");
+        let home = temp.path().join("home");
+        let mut env = BTreeMap::from([("HOME".into(), home.display().to_string())]);
+        let make = |env: &BTreeMap<_, _>| {
+            Layout::resolve(loaded(None, &cwd, cwd.join(".swarmy")), &cwd, env).unwrap()
+        };
+        let layout = make(&env);
+        assert_eq!(layout.config, home.join(".config/swarmy/config.toml"));
+        assert_eq!(layout.root, home);
+        assert_eq!(layout.state_dir, home.join(".swarmy"));
+        assert_eq!(layout.stack, home.join(".swarmy/stack"));
+        env.insert(
+            "XDG_CONFIG_HOME".into(),
+            temp.path().join("xdg").display().to_string(),
+        );
+        assert_eq!(
+            make(&env).config,
+            temp.path().join("xdg/swarmy/config.toml")
+        );
+    }
+    #[test]
+    fn discovered_config_wins_and_supplies_state_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("cwd");
+        let root = temp.path().join("project");
+        let state = temp.path().join("custom");
+        let layout = Layout::resolve(
+            loaded(Some(root.join(".swarmy/config.toml")), &root, state.clone()),
+            &cwd,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(layout.root, root);
+        assert_eq!(layout.state_dir, state);
+    }
+    #[test]
+    fn state_dir_env_applies_without_a_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path();
+        let state = cwd.join("other");
+        let env = BTreeMap::from([
+            ("HOME".into(), cwd.display().to_string()),
+            ("SWARMY_STATE_DIR".into(), state.display().to_string()),
+        ]);
+        assert_eq!(
+            Layout::resolve(loaded(None, cwd, state.clone()), cwd, &env)
+                .unwrap()
+                .state_dir,
+            state
+        );
+    }
+    #[test]
+    fn dev_dir_override_is_absolute() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path();
+        let env = BTreeMap::from([
+            ("HOME".into(), cwd.display().to_string()),
+            ("SWARMY_DEV_DIR".into(), "elsewhere".into()),
+        ]);
+        assert_eq!(
+            Layout::resolve(loaded(None, cwd, cwd.join(".swarmy")), cwd, &env)
+                .unwrap()
+                .stack,
+            cwd.join("elsewhere")
+        );
+    }
+    #[test]
+    fn empty_dev_dir_uses_default_stack() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path();
+        let env = BTreeMap::from([
+            ("HOME".into(), cwd.display().to_string()),
+            ("SWARMY_DEV_DIR".into(), String::new()),
+        ]);
+        assert_eq!(
+            Layout::resolve(loaded(None, cwd, cwd.join(".swarmy")), cwd, &env)
+                .unwrap()
+                .stack,
+            cwd.join(".swarmy/stack")
+        );
+    }
+    #[test]
+    fn no_home_no_checkout_no_config_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path();
+        let error = Layout::resolve(
+            loaded(None, cwd, cwd.join(".swarmy")),
+            cwd,
+            &BTreeMap::new(),
+        )
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("HOME"));
+    }
 }

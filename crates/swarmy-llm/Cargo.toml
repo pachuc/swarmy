@@ -15,7 +15,7 @@ workspace = true
 [features]
 default = ["azure", "bedrock", "gemini"]
 azure = []
-bedrock = ["dep:aws-config", "dep:aws-sdk-bedrockruntime", "dep:aws-smithy-types"]
+bedrock = ["dep:aws-config", "dep:aws-sdk-bedrockruntime", "dep:aws-smithy-types", "dep:swarmy-aws"]
 gemini = []
 fake = []
 
@@ -24,6 +24,7 @@ async-trait.workspace = true
 aws-config = { workspace = true, optional = true }
 aws-sdk-bedrockruntime = { workspace = true, optional = true }
 aws-smithy-types = { workspace = true, optional = true }
+swarmy-aws = { workspace = true, optional = true }
 rand.workspace = true
 sha2.workspace = true
 url.workspace = true

@@ -178,7 +178,7 @@ Cargo.lock has 515 packages, 29 of them `aws-*`.
 | `crates/swarmy-worker/src/worker.rs` | 2882 |
 | `crates/swarmy-store/src/metrics.rs` | 2721 |
 | `crates/swarmy-client/src/lib.rs` | 1699 |
-| `crates/swarmy-gateway/src/main.rs` | 1624 |
+| `crates/swarmy-gateway/src/role.rs` | 1624 |
 | `crates/swarmy-llm/src/api/bedrock.rs` | 1581 |
 | `crates/swarmy-config/src/lib.rs` | 1438 |
 | `crates/swarmy-store/src/agents.rs` | 1321 |

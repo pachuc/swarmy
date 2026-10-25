@@ -54,21 +54,26 @@ swarmy-version = { path = "crates/swarmy-version" }
 # Every TLS client in the workspace uses ring as its only crypto provider, so
 # the C-based aws-lc backend is never compiled. reqwest's `rustls-tls`,
 # async-nats' `ring`, and object_store's `aws` (via reqwest) already select
-# ring. The AWS SDKs need explicit flavors: aws-config's `rustls` alias pulls
-# the default HTTPS client built on aws-lc, so it uses `legacy-client` (the
-# ring-based connector) instead; the generated SDKs' `rustls` feature is that
-# same ring connector, without the aws-lc default client.
-aws-config = { version = "1", default-features = false, features = ["legacy-client", "rt-tokio", "credentials-process", "sso"] }
-aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
+# ring. The AWS SDKs enable no HTTP client feature: their default client is
+# built on aws-lc, and their `rustls` / `legacy-client` flavors are the
+# deprecated hyper 0.14 and rustls 0.21 stack. Every SDK config instead gets
+# `swarmy_aws::https_client()`, the hyper 1 client from
+# aws-smithy-http-client's `rustls-ring` feature.
+aws-config = { version = "1", default-features = false, features = ["rt-tokio", "credentials-process", "sso"] }
+aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rt-tokio"] }
+aws-smithy-http-client = { version = "1", default-features = false, features = ["rustls-ring"] }
+aws-smithy-runtime-api = { version = "1", default-features = false, features = ["client"] }
 aws-smithy-types = { version = "1", default-features = false }
 # The provisioning SDKs stay out of the default build (swarmy-cli gates them
-# behind its opt-in `remote` feature) and skip the aws-lc default HTTPS
-# client. S3 keeps `sigv4a` and `http-1x` from its defaults; the other three
-# SDKs' defaults add nothing beyond `rustls` and `rt-tokio`.
-aws-sdk-ec2 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
-aws-sdk-ssm = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
-aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "rt-tokio", "sigv4a", "http-1x"] }
-aws-sdk-iam = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
+# behind its opt-in `remote` feature). S3 keeps `http-1x` from its defaults
+# and drops `sigv4a`: swarmy never signs SigV4a requests, and that feature
+# pulls crypto-bigint 0.5 (RUSTSEC-2026-0387). The other three SDKs'
+# defaults add nothing beyond `rt-tokio` once the HTTP client features are
+# dropped.
+aws-sdk-ec2 = { version = "1", default-features = false, features = ["rt-tokio"] }
+aws-sdk-ssm = { version = "1", default-features = false, features = ["rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "http-1x"] }
+aws-sdk-iam = { version = "1", default-features = false, features = ["rt-tokio"] }
 portable-pty = "0.9"
 vt100 = "0.16"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
@@ -110,7 +115,7 @@ utoipa = "5"
 # Vendored Swagger UI embeds the viewer at build time: the default features
 # would download it from GitHub with system curl on every cold build, which
 # --locked does not cover and offline node builds cannot reach.
-utoipa-swagger-ui = { version = "9", features = ["axum"], default-features = false }
+utoipa-swagger-ui = { version = "10", features = ["axum"], default-features = false }
 thiserror = "2"
 toml = "0.8"
 shell-words = "1"
@@ -121,6 +126,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = { version = "3", features = ["serde"] }
 swarmy-api = { path = "crates/swarmy-api" }
+swarmy-aws = { path = "crates/swarmy-aws" }
+swarmy-scheduler = { path = "crates/swarmy-scheduler" }
+swarmy-worker = { path = "crates/swarmy-worker" }
+swarmy-gateway = { path = "crates/swarmy-gateway" }
+swarmyd = { path = "crates/swarmyd" }
 swarmy-catalog = { path = "crates/swarmy-catalog" }
 swarmy-config = { path = "crates/swarmy-config" }
 swarmy-core = { path = "crates/swarmy-core" }

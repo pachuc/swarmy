@@ -1,6 +1,6 @@
-//! Image publication. Clients build ext4 files locally and stream the raw
-//! bytes; the control plane chunks them, uploads with the same GC protection
-//! as a local build, and registers the image. A client machine never needs
+//! Image publication. Clients build ext4 files locally and stream the data extents
+//! of the sparse file. The control plane chunks them, uploads with the same GC
+//! protection as a local build, and registers the image. A client machine never needs
 //! object store credentials.
 use super::idempotency::{IdempotencyKey, record_replay, replayed};
 use super::{ApiFailure, ApiResult, AppState, storage, volume};
@@ -14,12 +14,13 @@ use futures::StreamExt as _;
 use serde::Deserialize;
 use swarmy_api_types as api;
 use swarmy_core::{ImageTag, ManifestId};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 #[derive(Deserialize)]
 pub(crate) struct UploadQuery {
     name: String,
     tag: String,
+    size: u64,
     idempotency_key: String,
     scratch: Option<String>,
     memory_mib: Option<u64>,
@@ -30,8 +31,12 @@ pub(crate) struct UploadQuery {
 /// sandboxes in MiB; anything above a TiB is a malformed recipe, not a real
 /// machine.
 const MAX_MEMORY_MIB: u64 = 1024 * 1024;
+/// Bound the chunker walk now that upload limits count only data extents.
+const MAX_IMAGE_SIZE: u64 = 1 << 40;
+const EXTENT_HEADER_BYTES: usize = 16;
 
 struct ValidatedUpload {
+    size: u64,
     name: String,
     tag: String,
     idempotency_key: IdempotencyKey,
@@ -48,6 +53,16 @@ fn invalid(message: &str) -> ApiFailure {
 /// reading the body, mirroring the client-side `Recipe::load` checks so a
 /// malformed recipe fails fast instead of after a multi-gigabyte upload.
 fn validate(query: &UploadQuery) -> Result<ValidatedUpload, ApiFailure> {
+    if query.size == 0
+        || !query
+            .size
+            .is_multiple_of(u64::from(swarmy_core::CHUNK_SIZE))
+        || query.size > MAX_IMAGE_SIZE
+    {
+        return Err(invalid(
+            "image size must be a positive multiple of the chunk size, at most 1 TiB",
+        ));
+    }
     swarmy_image::validate_label(&query.name).map_err(|_| invalid("invalid image name"))?;
     swarmy_image::validate_label(&query.tag).map_err(|_| invalid("invalid image tag"))?;
     if let Some(memory) = query.memory_mib
@@ -83,6 +98,7 @@ fn validate(query: &UploadQuery) -> Result<ValidatedUpload, ApiFailure> {
         }
     }
     Ok(ValidatedUpload {
+        size: query.size,
         name: query.name.clone(),
         tag: query.tag.clone(),
         idempotency_key: IdempotencyKey::parse(&query.idempotency_key)?,
@@ -125,7 +141,7 @@ pub(crate) async fn upload(
         }
     };
     // A well-behaved client sends `Content-Length`; reject an oversized
-    // upload before spooling gigabytes the server would only delete. The body
+    // upload body (data plus framing, not holes) before spooling. The body
     // is dropped without draining so an oversized stream stops early instead
     // of uploading fully before the rejection.
     if let Some(length) = headers
@@ -149,7 +165,7 @@ pub(crate) async fn upload(
             return Ok(Json(done));
         }
     }
-    let (_spool, path, _size) = spool(&state, body).await?;
+    let (_spool, path) = spool(&state, validated.size, body).await?;
     let store = state.store.clone();
     let objects = state.objects.clone();
     let built = swarmy_volume::image::upload_image_protected(&path, objects, store.clone())
@@ -198,15 +214,36 @@ pub(crate) async fn upload(
     Ok(Json(response))
 }
 
-/// Stream the body into a spool file under the control node's data
-/// directory, enforcing the configured maximum size. The returned directory
-/// guard deletes the spool on every path; an oversized stream is rejected as
-/// soon as the limit is reached without draining the remainder, so a client
-/// that streams past the ceiling stops early.
+/// Decode an extent header, rejecting overlap, empty ranges and size overflow.
+fn parse_extent(header: &[u8], next_free: u64, size: u64) -> Result<(u64, u64), ApiFailure> {
+    let offset = u64::from_le_bytes(header[..8].try_into().expect("eight offset bytes"));
+    let length = u64::from_le_bytes(header[8..16].try_into().expect("eight length bytes"));
+    if length == 0 || offset < next_free || offset.checked_add(length).is_none_or(|end| end > size)
+    {
+        return Err(invalid(
+            "image extents must be non-empty, ascending, and inside the image size",
+        ));
+    }
+    Ok((offset, length))
+}
+
+fn spool_failed(cause: &std::io::Error) -> ApiFailure {
+    ApiFailure::caused(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "storage_error",
+        "upload spool write failed",
+        cause,
+    )
+}
+
+/// Stream extent records into a sparse spool file under the control node's
+/// data directory. The limit counts data plus framing, not holes. The directory
+/// guard deletes the spool on every path; an oversized stream stops early.
 async fn spool(
     state: &AppState,
+    size: u64,
     body: Body,
-) -> Result<(tempfile::TempDir, std::path::PathBuf, u64), ApiFailure> {
+) -> Result<(tempfile::TempDir, std::path::PathBuf), ApiFailure> {
     let max_bytes = state.upload_max_bytes;
     if let Err(create_error) = std::fs::create_dir_all(&state.upload_dir) {
         drain(body).await;
@@ -221,69 +258,62 @@ async fn spool(
     let directory = tempfile::Builder::new()
         .prefix("swarmy-upload-")
         .tempdir_in(&state.upload_dir)
-        .map_err(|cause| {
-            ApiFailure::caused(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "storage_error",
-                "upload spool write failed",
-                &cause,
-            )
-        })?;
+        .map_err(|cause| spool_failed(&cause))?;
     let path = directory.path().join("disk.ext4");
-    let mut file = tokio::fs::File::create(&path).await.map_err(|cause| {
-        ApiFailure::caused(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "storage_error",
-            "upload spool write failed",
-            &cause,
-        )
-    })?;
+    let mut file = tokio::fs::File::create(&path)
+        .await
+        .map_err(|cause| spool_failed(&cause))?;
+    file.set_len(size)
+        .await
+        .map_err(|cause| spool_failed(&cause))?;
     let mut stream = body.into_data_stream();
-    let mut size: u64 = 0;
+    let mut header = Vec::with_capacity(EXTENT_HEADER_BYTES);
+    let mut remaining: u64 = 0;
+    let mut next_free: u64 = 0;
+    let mut received: u64 = 0;
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| {
-            ApiFailure::new(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                "upload body could not be read",
-            )
-        })?;
-        size = size.saturating_add(chunk.len() as u64);
-        if size > max_bytes {
-            // Stop reading here; the directory guard deletes the partial
-            // spool and dropping the stream signals the client to stop.
+        let chunk = chunk.map_err(|_| invalid("upload body could not be read"))?;
+        received = received.saturating_add(chunk.len() as u64);
+        if received > max_bytes {
             return Err(oversized(max_bytes));
         }
-        if chunk.is_empty() {
-            continue;
+        let mut bytes: &[u8] = &chunk;
+        while !bytes.is_empty() {
+            if remaining == 0 {
+                let take = (EXTENT_HEADER_BYTES - header.len()).min(bytes.len());
+                header.extend_from_slice(&bytes[..take]);
+                bytes = &bytes[take..];
+                if header.len() == EXTENT_HEADER_BYTES {
+                    let (offset, length) = parse_extent(&header, next_free, size)?;
+                    file.seek(std::io::SeekFrom::Start(offset))
+                        .await
+                        .map_err(|cause| spool_failed(&cause))?;
+                    remaining = length;
+                    next_free = offset + length;
+                    header.clear();
+                }
+            } else {
+                let take = usize::try_from(remaining)
+                    .unwrap_or(usize::MAX)
+                    .min(bytes.len());
+                file.write_all(&bytes[..take])
+                    .await
+                    .map_err(|cause| spool_failed(&cause))?;
+                remaining -= take as u64;
+                bytes = &bytes[take..];
+            }
         }
-        file.write_all(&chunk).await.map_err(|cause| {
-            ApiFailure::caused(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "storage_error",
-                "upload spool write failed",
-                &cause,
-            )
-        })?;
     }
-    if size == 0 {
-        return Err(invalid("uploaded image is empty"));
+    if remaining != 0 || !header.is_empty() {
+        return Err(invalid("upload body ended inside an extent"));
     }
-    file.flush().await.map_err(|cause| {
-        ApiFailure::caused(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "storage_error",
-            "upload spool write failed",
-            &cause,
-        )
-    })?;
+    file.flush().await.map_err(|cause| spool_failed(&cause))?;
     drop(file);
-    Ok((directory, path, size))
+    Ok((directory, path))
 }
 
-/// Reject an upload over the configured limit with a 413. The header path
-/// and the spool path both stop without draining the remainder, so a client
-/// that streams past the ceiling stops early.
+/// Reject a body over the configured extent-byte limit with a 413. The header
+/// and spool paths both stop without draining the remainder.
 fn oversized(max_bytes: u64) -> ApiFailure {
     ApiFailure::new(
         StatusCode::PAYLOAD_TOO_LARGE,
@@ -307,6 +337,28 @@ pub fn sweep_stale_uploads(upload_dir: &std::path::Path) {
         }
         if let Err(error) = std::fs::remove_dir_all(entry.path()) {
             tracing::warn!(path = %entry.path().display(), error = %swarmy_core::error_chain(&error), "stale upload not swept");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::parse_extent;
+
+    #[test]
+    fn parse_extent_validates_bounds_and_order() {
+        let header =
+            |offset: u64, length: u64| [offset.to_le_bytes(), length.to_le_bytes()].concat();
+        assert_eq!(parse_extent(&header(5, 3), 0, 8).unwrap(), (5, 3));
+        assert_eq!(parse_extent(&header(8, 1), 8, 9).unwrap(), (8, 1));
+        for (offset, length, next, size) in [
+            (0, 0, 0, 8),
+            (2, 3, 3, 8),
+            (8, 1, 0, 8),
+            (u64::MAX, 2, 0, u64::MAX),
+        ] {
+            assert!(parse_extent(&header(offset, length), next, size).is_err());
         }
     }
 }

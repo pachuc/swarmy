@@ -134,9 +134,8 @@ impl Store {
             {
                 // A dispatch can expire without any node hosting its epoch.
                 // Fail the fenced call without inventing a computer loss.
-                let explanation = notice.unwrap_or_else(|| {
-                    "The tool call's placement expired before execution could be confirmed. The call failed; check external side effects before retrying.".into()
-                });
+                let explanation =
+                    notice.unwrap_or_else(|| swarmy_core::UNCLAIMED_DISPATCH_EXPIRED.into());
                 self.fail_lost_tool(&trx, job, explanation).await?;
                 return Ok(false);
             }

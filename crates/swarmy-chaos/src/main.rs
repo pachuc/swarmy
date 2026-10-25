@@ -405,7 +405,7 @@ impl Fixture {
             }
         }
         if config.kill_node_mid_command {
-            let log = std::fs::read_to_string(self.files.path().join("swarmyd-0.log"))?;
+            let log = std::fs::read_to_string(self.files.path().join("node-0.log"))?;
             ensure!(
                 log.matches("executing sandbox command").count() == 2,
                 "expected one interrupted command and one subsequent command"

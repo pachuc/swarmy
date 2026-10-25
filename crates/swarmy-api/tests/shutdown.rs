@@ -1,7 +1,7 @@
 #![deny(clippy::disallowed_methods)]
 //! SIGTERM drains the API instead of killing it: an open `/v1/events`
 //! stream does not hang shutdown, and queued turn metrics are durable by
-//! exit. Spawns the real `swarmy-api` binary against the dev stack.
+//! exit. Spawns the real `swarmy-core api` role against the dev stack.
 
 use std::{sync::Arc, time::Duration};
 
@@ -46,7 +46,8 @@ impl ApiFixture {
             .unwrap()
             .port();
         let token = Ulid::generate().to_string();
-        let child = tokio::process::Command::new(swarmy_testkit::bin("swarmy-api"))
+        let child = tokio::process::Command::new(swarmy_testkit::bin("swarmy-core"))
+            .arg("api")
             .env("SWARMY_FDB_CLUSTER_FILE", &stack.cluster)
             .env("SWARMY_NATS_URL", &stack.nats_url)
             .env("SWARMY_STORE_DIRECTORY", &stack.prefix)

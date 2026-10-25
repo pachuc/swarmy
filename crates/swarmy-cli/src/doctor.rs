@@ -1,4 +1,8 @@
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 use swarmy_cloud::ssh as remote_ssh;
 
 use serde::Serialize;
@@ -66,7 +70,7 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
             // TOML diagnostics can include source values, including secrets.
             Err(_) => Err(invalid_config()),
         },
-        "Run swarmy dev up to create .swarmy/config.toml; repair an existing file or its SWARMY_* overrides. See docs/DEV.md.",
+        "Run swarmy dev up to create one (.swarmy/config.toml in a checkout, else ~/.config/swarmy/config.toml); repair an existing file or its SWARMY_* overrides. See docs/DEV.md.",
     )];
     checks.push(Check::new("keyring", keyring(), "Run swarmy dev up to create a keyring, or install the existing cluster key with chmod 600; set SWARMY_KEYRING for another path."));
     let remote = loaded
@@ -80,32 +84,10 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
             ("weed", "version"),
         ] {
             checks.push(Check::new(name, binary_version(name, argument).await,
-            "Run scripts/install-dev-tools.sh. swarmy searches PATH, the install prefix's bin directory, and ~/.local/bin automatically; add another location to PATH if needed."));
+            "Run swarmy dev install-tools (scripts/install-dev-tools.sh from a checkout). swarmy searches PATH, the install prefix's bin directory, and ~/.local/bin automatically; add another location to PATH if needed."));
         }
     }
-    for name in [
-        "swarmy-api",
-        "swarmy-scheduler",
-        "swarmy-worker",
-        "swarmy-gateway",
-    ] {
-        // Companions are exec'd beside the CLI; services honor the caller's PATH.
-        let executable = crate::dev::service_binary(name);
-        let result = match executable {
-            Ok(path) => crate::dev::version_check(&path, name).await,
-            Err(error) => Err(error),
-        };
-        let result = result.map_err(|error| format!("{error:#}"));
-        let fix = format!("Reinstall from the CLI checkout: {}", crate::dev::REINSTALL);
-        checks.push(match (remote, result) {
-            (true, Err(detail)) => Check::warn(
-                name,
-                format!("{detail}; service binary runs on the remote node"),
-                &fix,
-            ),
-            (_, result) => Check::new(name, result, &fix),
-        });
-    }
+    checks.push(core_binary_check(remote).await);
 
     let providers = if let Ok(loaded) = &loaded {
         checks.extend(remote_checks(loaded).await);
@@ -132,6 +114,58 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
         Vec::new()
     };
     Ok(report(checks, providers, json))
+}
+
+async fn core_binary_check(remote: bool) -> Check {
+    let source =
+        crate::dev::CoreSource::select(std::env::var_os("SWARMY_CORE_BIN").map(PathBuf::from));
+    let fix = source.as_ref().map_or_else(
+        |_| format!("Reinstall from the CLI checkout: {}", crate::dev::REINSTALL),
+        |source| source.fix().unwrap_or_else(|error| format!("{error:#}")),
+    );
+    let (path, not_downloaded): (anyhow::Result<PathBuf>, bool) = match source {
+        Ok(crate::dev::CoreSource::Explicit(path)) => (Ok(path), false),
+        Ok(crate::dev::CoreSource::Development) => {
+            (crate::dev::service_binary("swarmy-core"), false)
+        }
+        Ok(crate::dev::CoreSource::Release(release)) => {
+            match (
+                crate::dev::core_cache(),
+                swarmy_cloud::release::Target::host(),
+            ) {
+                (Ok(cache), Ok(target)) => {
+                    match release.cached(&cache, swarmy_cloud::release::Component::Core, target) {
+                        Some(dir) => (Ok(dir.join("swarmy-core")), false),
+                        None => (Err(anyhow::anyhow!("not downloaded yet")), true),
+                    }
+                }
+                (Err(error), _) => (Err(error), false),
+                (_, Err(error)) => (Err(error.into()), false),
+            }
+        }
+        Err(error) => (Err(error), false),
+    };
+    let result = match path {
+        Ok(path) => crate::dev::version_check(&path, "swarmy-core").await,
+        Err(error) => Err(error),
+    }
+    .map_err(|error| format!("{error:#}"));
+    if not_downloaded {
+        Check::warn(
+            "swarmy-core",
+            "not downloaded yet",
+            "Run swarmy dev up or swarmy core ensure.",
+        )
+    } else {
+        match (remote, result) {
+            (true, Err(detail)) => Check::warn(
+                "swarmy-core",
+                format!("{detail}; service binary runs on the remote node"),
+                &fix,
+            ),
+            (_, result) => Check::new("swarmy-core", result, &fix),
+        }
+    }
 }
 
 fn report(
@@ -391,6 +425,17 @@ async fn api_checks(
         },
         "Reinstall the CLI and API from checkouts with the same major API version.",
     ));
+    checks.push(Check::new(
+        "core version",
+        crate::version_guard::core_mismatch(&health).map_or_else(
+            || Ok(format!("{} matches this client", swarmy_version::IDENTITY)),
+            Err,
+        ),
+        concat!(
+            "Run swarmy dev up, or swarmy remote upgrade NAME for a node; ",
+            "run and chat refuse a mismatched core unless --allow-version-mismatch."
+        ),
+    ));
     let snapshot = swarmy_client::api_client::call(&endpoint, client.doctor())
         .await
         .map_err(|error| format!("{error:#}"));
@@ -399,7 +444,16 @@ async fn api_checks(
             let providers = swarmy_client::api_client::call(&endpoint, client.providers())
                 .await
                 .ok();
-            snapshot_checks(checks, snapshot, &loaded.settings, providers.as_deref())
+            let routes = swarmy_client::api_client::call(&endpoint, client.routes())
+                .await
+                .ok();
+            snapshot_checks(
+                checks,
+                snapshot,
+                &loaded.settings,
+                providers.as_deref(),
+                routes.as_deref(),
+            )
         }
         Err(error) => {
             checks.push(Check::new(
@@ -413,12 +467,15 @@ async fn api_checks(
 }
 
 fn gateway_providers(snapshot: &Snapshot) -> Vec<String> {
-    snapshot
+    let mut providers: Vec<_> = snapshot
         .services
         .iter()
         .filter(|s| s.role == swarmy_api_types::ServiceRole::Gateway && s.alive)
         .flat_map(|s| s.providers.iter().cloned())
-        .collect()
+        .collect();
+    providers.sort();
+    providers.dedup();
+    providers
 }
 
 fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
@@ -465,7 +522,7 @@ fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
         Check::warn(
             "nodes",
             "no live nodes; capacity is zero",
-            "Start swarmyd on a sandbox node.",
+            "Start `swarmy-core node` on a sandbox node.",
         )
     } else {
         Check::new(
@@ -484,7 +541,7 @@ fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
                     if images.is_empty() { "none" } else { &images },
                     snapshot.default_image.as_deref().unwrap_or("unset")
                 ),
-                "Build and register an image, then configure default_image.",
+                "Run swarmy image pull base-ubuntu --set-default (release clients) or swarmy image build images/base-ubuntu from a checkout, then restart with swarmy dev up.",
             )
         } else {
             Check::new(
@@ -497,16 +554,6 @@ fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
             )
         },
     );
-    let gateway_providers = gateway_providers(snapshot);
-    checks.push(if gateway_providers.is_empty() {
-        Check::warn(
-            "gateway providers",
-            "no providers advertised",
-            "Configure a provider credential and restart the gateway.",
-        )
-    } else {
-        Check::new("gateway providers", Ok(gateway_providers.join(", ")), "")
-    });
 }
 
 fn snapshot_checks(
@@ -514,8 +561,36 @@ fn snapshot_checks(
     snapshot: Snapshot,
     settings: &Settings,
     api_providers: Option<&[swarmy_api_types::Provider]>,
+    routes: Option<&[swarmy_api_types::Route]>,
 ) -> Vec<crate::provider_report::ProviderRow> {
     service_checks(checks, &snapshot);
+    let served = gateway_providers(&snapshot);
+    let mut required = vec![settings.selection.provider.clone()];
+    if let Some(routes) = routes {
+        required.extend(
+            routes
+                .iter()
+                .filter_map(|route| route.steps.first().map(|step| step.provider.clone())),
+        );
+    }
+    required.sort();
+    required.dedup();
+    let missing: Vec<_> = required
+        .iter()
+        .filter(|provider| !served.contains(provider))
+        .cloned()
+        .collect();
+    checks.push(Check::new(
+        "gateway providers",
+        if missing.is_empty() {
+            Ok(served.join(", "))
+        } else {
+            let available = served.join(", ");
+            let available = if available.is_empty() { "none" } else { &available };
+            Err(format!("{available}; unserved: {}", missing.join(", ")))
+        },
+        "Inspect the gateway log for provider discovery errors (.dev/logs or ~/.swarmy/dev/logs locally; journalctl -u swarmy-gateway remotely); configure credentials and restart the gateway.",
+    ));
     let mut rows = api_providers.map_or_else(
         || {
             settings
@@ -540,7 +615,6 @@ fn snapshot_checks(
             )
         },
     );
-    let gateway_providers = gateway_providers(&snapshot);
     if let Some(credentials) = snapshot.credentials {
         for credential in credentials {
             let name = format!("credential {}", credential.provider);
@@ -580,7 +654,7 @@ fn snapshot_checks(
                 "Use swarmy auth set or swarmy auth login if this provider is needed.",
             ));
         }
-        row.gateway = if gateway_providers.contains(&row.provider) {
+        row.gateway = if served.contains(&row.provider) {
             "served"
         } else {
             "unavailable"
@@ -607,7 +681,7 @@ mod tests {
         }))
         .unwrap();
         let settings = Settings::default();
-        snapshot_checks(&mut checks, snapshot, &settings, None);
+        snapshot_checks(&mut checks, snapshot, &settings, None, None);
         assert!(
             checks
                 .iter()

@@ -2154,7 +2154,7 @@ impl super::upgrade::UpgradeHost for FakeUpgradeHost {
         self.events
             .borrow_mut()
             .push(format!("version:{}", node.name));
-        std::future::ready(Ok("swarmyd 0.1.0 (test)".into()))
+        std::future::ready(Ok("swarmy-core 0.1.0 (test)".into()))
     }
 
     fn upgrade(
@@ -2172,11 +2172,12 @@ impl super::upgrade::UpgradeHost for FakeUpgradeHost {
             .push(format!("upgrade:{}", node.name));
         std::future::ready(Ok(super::upgrade::Summary {
             node: node.name.clone(),
-            changed: vec!["swarmyd".into(), "swarmy-gateway".into()],
+            changed: vec!["swarmy-core".into()],
+            units: vec!["swarmyd.service".into()],
             restarted: if services_only {
-                vec!["swarmy-gateway".into()]
+                vec!["gateway".into()]
             } else {
-                vec!["swarmy-gateway".into(), "swarmyd".into()]
+                vec!["gateway".into(), "node".into()]
             },
             elapsed_seconds: 1.5,
         }))
@@ -2273,11 +2274,11 @@ async fn upgrade_orders_nodes_and_respects_drain_and_dirty_checkout() {
             .collect::<Vec<_>>(),
         [true, false, true]
     );
-    assert_eq!(summaries[0].changed, ["swarmyd", "swarmy-gateway"]);
+    assert_eq!(summaries[0].changed, ["swarmy-core"]);
     assert!(
         summaries
             .iter()
-            .all(|summary| !summary.restarted.contains(&"swarmyd".to_owned()))
+            .all(|summary| !summary.restarted.contains(&"node".to_owned()))
     );
 }
 
@@ -2298,6 +2299,7 @@ async fn upgrade_json_has_one_complete_object_per_node() {
         let value: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert!(value.is_object());
         assert!(value["changed"].is_array());
+        assert!(value["units"].is_array());
         assert!(value["restarted"].is_array());
         assert!(value["elapsed_seconds"].is_number());
     }
@@ -3714,4 +3716,12 @@ async fn down_existing_keeps_the_bucket_until_every_host_is_torn_down() {
             .any(|entry| entry == "bucket test-bucket")
     );
     assert!(state.read("static-test").unwrap().is_none());
+}
+
+#[test]
+fn upgrade_summary_accepts_old_json() {
+    let summary: super::upgrade::Summary =
+        serde_json::from_str(r#"{"node":"","changed":[],"restarted":[],"elapsed_seconds":0}"#)
+            .unwrap();
+    assert!(summary.units.is_empty());
 }

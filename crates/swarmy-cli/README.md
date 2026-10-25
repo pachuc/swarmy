@@ -206,7 +206,7 @@ These tests skip when `SWARMY_FDB_CLUSTER_FILE` or `SWARMY_NATS_URL` is absent.
 
 ## Volumes
 
-`swarmyd vol` supports `create NAME:TAG`, `attach VOLUME`, `flush VOLUME`,
+`swarmy-core vol` supports `create NAME:TAG`, `attach VOLUME`, `flush VOLUME`,
 `snapshot VOLUME`, `clone VOLUME`, `detach VOLUME`, `ls`, and `show VOLUME`.
 Volume tools moved out of the `swarmy` client, which no longer links the
 store; run them from the node daemon on a machine with store access (root for
@@ -237,3 +237,5 @@ sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(cargo test -p swarmy-e2e --test
 
 It skips without root or `SWARMY_TEST_IMAGE`. Drop guards stop the node, destroy
 containers, unmount filesystems, and detach NBD devices even if an assertion fails.
+
+Release clients can run `swarmy image pull base-ubuntu --set-default` to register the verified base image and select it for new sessions after `swarmy dev up`.

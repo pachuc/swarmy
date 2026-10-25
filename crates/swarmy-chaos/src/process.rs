@@ -14,13 +14,13 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    pub(crate) const fn binary(self) -> &'static str {
+    pub(crate) const fn role(self) -> &'static str {
         match self {
-            Self::Scheduler => "swarmy-scheduler",
-            Self::Worker => "swarmy-worker",
-            Self::Gateway => "swarmy-gateway",
-            Self::Api => "swarmy-api",
-            Self::Node => "swarmyd",
+            Self::Scheduler => "scheduler",
+            Self::Worker => "worker",
+            Self::Gateway => "gateway",
+            Self::Api => "api",
+            Self::Node => "node",
         }
     }
 }
@@ -42,13 +42,14 @@ impl Process {
         files: &Path,
         environment: &[(OsString, OsString)],
     ) -> Result<Self> {
-        let name = format!("{}-{index}", kind.binary());
+        let name = format!("{}-{index}", kind.role());
         let log = OpenOptions::new()
             .create(true)
             .append(true)
             .open(files.join(format!("{name}.log")))?;
-        let mut command = Command::new(binaries.join(kind.binary()));
+        let mut command = Command::new(binaries.join("swarmy-core"));
         command
+            .arg(kind.role())
             .current_dir(files)
             .envs(environment.iter().cloned())
             .env_remove("SWARMY_WORKER_KILL_POINT")

@@ -1,9 +1,9 @@
 # One-command install and check for swarmy.
 #
-#   make install         install the client plus every service binary into ~/.cargo/bin
+#   make install         install the client plus swarmy-core into ~/.cargo/bin
 #   make install-client  install the chat client, provisioning, and auth helper (needs no libfdb_c)
-#   make install-core    install the service binaries (need libfdb_c)
-#   make install-node    install headless client, services, and swarmyd (requires root)
+#   make install-core    install swarmy-core, every service role (needs libfdb_c)
+#   make install-node    install headless client plus swarmy-core; its node role requires root
 #   make dev-tools       install FoundationDB, NATS, and SeaweedFS under ~/.local
 #   make models          regenerate the provider and model catalog
 #   make check           every pull-request CI job below, in CI order (start the dev stack first)
@@ -17,14 +17,13 @@
 #   make check-scripts   script and fixture tests
 #   make check-advisories  cargo deny advisories (CI runs it on every pull request and on the weekly schedule)
 #   make uninstall       remove the installed swarmy binaries
+#   make release-dry-run  build and package one release target locally (client, linux x86_64 by default)
 #
 # The services link against libfdb_c. SWARMY_FDB_LIB_DIR points the build at the
 # directory holding it; when unset, the first directory below that contains the
 # library is used. Run `make dev-tools` first on a machine without it.
 # The client (swarmy-cli) links no database library and needs no libfdb_c.
 
-CORE_CRATES ?= scheduler worker gateway api
-NODE_CRATES ?= swarmyd
 CARGO ?= cargo
 AST_GREP ?= npx --yes --package @ast-grep/cli@0.45.3 ast-grep
 FDB_CANDIDATES := $(HOME)/.local/lib /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
@@ -33,12 +32,20 @@ ifeq ($(strip $(FDB_LIB_DIR)),)
 FDB_LIB_DIR := $(firstword $(foreach dir,$(FDB_CANDIDATES),$(if $(wildcard $(dir)/libfdb_c.so $(dir)/libfdb_c.dylib),$(dir),)))
 endif
 
+# Release archives (docs/DEV.md, "Release builds"). CORE_BIN_PACKAGE is the cargo
+# package whose [[bin]] is swarmy-core; the workflow builds it only through here.
+# RELEASE_COMPONENT=image builds the base-ubuntu ext4 (x86_64 Linux; passwordless sudo, debootstrap, e2fsprogs).
+CORE_BIN_PACKAGE ?= swarmy-core-bin
+RELEASE_COMPONENT ?= client
+RELEASE_TARGET ?= x86_64-unknown-linux-gnu
+RELEASE_DIR ?= target/release-dist
+
 .PHONY: help install install-client install-core install-node dev-tools uninstall fdb-check models \
 	check check-lint check-deps check-workspace-tests check-e2e check-cli-session \
-	check-remote check-openapi check-scripts check-advisories
+	check-remote check-openapi check-scripts check-advisories release-package release-dry-run
 
 help:
-	@sed -n '2,20p' Makefile | sed 's/^# \{0,1\}//'
+	@sed -n '2,21p' Makefile | sed 's/^# \{0,1\}//'
 
 fdb-check:
 	@if [ -z "$(FDB_LIB_DIR)" ]; then \
@@ -59,19 +66,13 @@ install-client:
 	@$(HOME)/.cargo/bin/swarmy --version
 
 install-core: fdb-check
-	@for crate in $(CORE_CRATES); do \
-		echo "==> swarmy-$$crate"; \
-		SWARMY_FDB_LIB_DIR="$(FDB_LIB_DIR)" $(CARGO) install --locked --path "crates/swarmy-$$crate" || exit 1; \
-	done
+	@echo "==> swarmy-core"
+	@SWARMY_FDB_LIB_DIR="$(FDB_LIB_DIR)" $(CARGO) install --locked --path "crates/swarmy-core-bin"
 
 install: install-client install-core
 
 install-node: install-core
 	@$(CARGO) install --locked --no-default-features --path "crates/swarmy-cli"
-	@for crate in $(NODE_CRATES); do \
-		echo "==> $$crate"; \
-		SWARMY_FDB_LIB_DIR="$(FDB_LIB_DIR)" $(CARGO) install --locked --path "crates/$$crate" || exit 1; \
-	done
 
 dev-tools:
 	scripts/install-dev-tools.sh
@@ -144,6 +145,16 @@ check:
 	$(MAKE) check-scripts
 
 uninstall:
-	@for bin in swarmy swarmy-auth swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api swarmyd; do \
+	@for bin in swarmy swarmy-auth swarmy-core; do \
 		if [ -e "$(HOME)/.cargo/bin/$$bin" ]; then rm -v "$(HOME)/.cargo/bin/$$bin"; fi; \
 	done
+
+# .github/workflows/release.yml runs release-package once per target; the dry
+# run is the same packaging plus the checksum file.
+release-package:
+	CARGO="$(CARGO)" CORE_BIN_PACKAGE="$(CORE_BIN_PACKAGE)" scripts/release.sh package $(RELEASE_COMPONENT) $(RELEASE_TARGET) $(RELEASE_DIR)
+
+release-dry-run:
+	rm -rf $(RELEASE_DIR)
+	$(MAKE) release-package
+	scripts/release.sh checksums $(RELEASE_DIR)

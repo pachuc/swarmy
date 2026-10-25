@@ -11,7 +11,7 @@ for invalid in -1 word 1.5 4294967296; do
 done
 # Every provisioning argument lands in the variable the SSH command sends it
 # as; defaults match a bare `remote up` with no bucket.
-parse_provision_args node 10.0.0.2 test-bucket eu-west-1 https://objects.example.invalid runs/team false true 4 deploy-user dir:/srv/data
+parse_provision_args node 10.0.0.2 test-bucket eu-west-1 https://objects.example.invalid runs/team false true 4 deploy-user dir:/srv/data true
 [[ $mode == node ]]
 [[ $service_address == 10.0.0.2 ]]
 [[ $bucket == test-bucket ]]
@@ -23,6 +23,7 @@ parse_provision_args node 10.0.0.2 test-bucket eu-west-1 https://objects.example
 [[ $sandboxes == 4 ]]
 [[ $service_user == deploy-user ]]
 [[ $local_storage == dir:/srv/data ]]
+[[ $prebuilt == true ]]
 parse_provision_args
 [[ $mode == stack ]]
 [[ $service_address == 127.0.0.1 ]]
@@ -35,6 +36,20 @@ parse_provision_args
 [[ $sandboxes == 64 ]]
 [[ $service_user == swarmy ]]
 [[ -z $local_storage ]]
+[[ $prebuilt == false ]]
+[[ $(release_bundle_dir /x) == /x/.swarmy/release ]]
+bundle=$(mktemp -d)
+trap 'rm -rf "$bundle"' EXIT
+printf '#!/bin/sh\n' > "$bundle/swarmy-core"
+chmod +x "$bundle/swarmy-core"
+touch "$bundle/libfdb_c.so"
+check_release_bundle "$bundle" node
+if check_release_bundle "$bundle" stack 2>/dev/null; then echo 'stack accepted missing client' >&2; exit 1; fi
+printf '#!/bin/sh\n' > "$bundle/swarmy"
+chmod +x "$bundle/swarmy"
+check_release_bundle "$bundle" stack
+rm "$bundle/libfdb_c.so"
+if check_release_bundle "$bundle" node 2>/dev/null; then echo 'accepted missing library' >&2; exit 1; fi
 zero=$(node_environment /tmp/checkout 0 /this-mount-does-not-exist)
 [[ $zero == *'SWARMY_NODE_ROLES=volume'* ]]
 [[ $zero == *'SWARMY_NODE_SANDBOXES=0'* ]]
@@ -160,4 +175,60 @@ if read_shared_list probe_result swarmy_mode_build_args stack >/dev/null 2>&1; t
     exit 1
 fi
 unset -f empty_producer
+
+# A reprovisioned host drops the old service binaries after installing core.
+fake_root=$(mktemp -d)
+trap 'rm -rf "$bundle" "$fake_root"' EXIT
+mkdir -p "$fake_root/usr/local/bin"
+while IFS= read -r binary; do
+    touch "$fake_root/usr/local/bin/$binary"
+done < <(retired_binary_names)
+touch "$fake_root/usr/local/bin/swarmy-core"
+sudo() {
+    [[ $1 == -n && $2 == rm && $3 == -f ]] || return 1
+    rm -f "$fake_root$4"
+}
+remove_retired_binaries
+while IFS= read -r binary; do
+    [[ ! -e $fake_root/usr/local/bin/$binary ]] || { echo "retired binary remains: $binary" >&2; exit 1; }
+done < <(retired_binary_names)
+[[ -f $fake_root/usr/local/bin/swarmy-core ]]
+unset -f sudo
+[[ $(node_source_dir /x) == /x/source ]]
+
+# Restore the table after testing its failure path.
+source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
+# Rendered units share exactly the provisioning inputs.
+set_unit_inputs stack deploy-user '' false /mnt/swarmy-local
+node_text=$(render_unit swarmyd.service)
+[[ $node_text == *'Requires=swarmy-stack.service'* ]]
+[[ $node_text == *'RequiresMountsFor=/mnt/swarmy-local'* ]]
+[[ $node_text == *'ExecStart=/usr/local/bin/swarmy-core node'* ]]
+[[ $node_text == *'WorkingDirectory=/home/deploy-user/swarmy'* ]]
+stack_text=$(render_unit swarmy-stack.service)
+[[ $stack_text == *'User=deploy-user'* ]]
+[[ $stack_text == *'ExecStart=/bin/bash /home/deploy-user/swarmy/scripts/dev-stack.sh start'* ]]
+scheduler_text=$(render_unit swarmy-scheduler.service)
+[[ $scheduler_text == *'ExecStart=/usr/local/bin/swarmy-core scheduler'* ]]
+[[ $scheduler_text == *'Requires=swarmy-stack.service'* ]]
+set_unit_inputs node deploy-user 10.0.0.1 true ''
+node_text=$(render_unit swarmyd.service)
+[[ $node_text == *'Wants=swarmy-tunnel.service'* && $node_text != *RequiresMountsFor* ]]
+tunnel_text=$(render_unit swarmy-tunnel.service)
+[[ $tunnel_text == *'-L 127.0.0.1:8333:127.0.0.1:8333 deploy-user@10.0.0.1'* ]]
+set_unit_inputs node deploy-user 10.0.0.1 false ''
+[[ $(render_unit swarmy-tunnel.service) != *8333* ]]
+for args in 'other deploy-user 10.0.0.1 false /mnt' 'node deploy-user _ false /mnt' 'node deploy-user 10.0.0.1 yes /mnt' 'node deploy-user 10.0.0.1 false relative'; do
+    read -r -a parts <<< "$args"
+    if set_unit_inputs "${parts[@]}" 2>/dev/null; then echo "accepted invalid unit inputs: $args" >&2; exit 1; fi
+done
+if set_unit_inputs node 'bad user' 10.0.0.1 false '' 2>/dev/null; then echo 'accepted invalid user' >&2; exit 1; fi
+set_unit_inputs node deploy-user 10.0.0.1 true /mnt/swarmy-local
+unit_inputs_text > "$bundle/units.env"
+load_unit_inputs "$bundle/units.env"
+[[ $unit_mode == node && $unit_user == deploy-user && $unit_primary == 10.0.0.1 && $unit_tunnel_s3 == true && $unit_mount == /mnt/swarmy-local ]]
+printf 'UNKNOWN=value\n' > "$bundle/units.env"
+if load_unit_inputs "$bundle/units.env" 2>/dev/null; then echo 'accepted unknown unit setting' >&2; exit 1; fi
+if render_unit nothing.service 2>/dev/null; then echo 'accepted unknown unit' >&2; exit 1; fi
+printf 'unit renderers and settings: ok\n'
 echo 'remote provision argument and environment tests passed'

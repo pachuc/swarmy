@@ -1,7 +1,8 @@
 # Fleet runbook
 
-How swarmy's own development runs on swarmy: a long-lived split swarm on one
-EC2 node, a pool of worker agents, and the driver in `scripts/fleet/`. This
+How swarmy's own development runs on swarmy: a long-lived swarm on one
+Hetzner dedicated server, a pool of worker agents, and the driver in
+`scripts/fleet/`. This
 is the manual version of what the swarm-model and cloud-topology goals will
 automate; every step here is a plain command.
 
@@ -70,10 +71,12 @@ ad hoc against the local API with `--remote local`.
   driver prefers an idle worker created with that provider and creates one
   while the pool is below `workers`. Workers keep their disks, so the second
   task on a worker builds in a minute or two instead of ten.
-- Collect and release: when a worker reports a pull request,
-  `fleet collect TASK` verifies and records it in tasky; after the merge,
-  `fleet release TASK` frees the worker. `fleet kill TASK` ends a turn that
-  should not continue, including a parked one.
+- Collect and release: `fleet collect TASK` checks the pushed branch, links
+  its head SHA in tasky, moves the task to testing, and prints the report.
+  After a commit on the integration branch names `tasky <id>`,
+  `fleet release TASK --into BRANCH` frees the worker (`integration` in
+  fleet.toml sets the default). `fleet kill TASK` ends a turn that should
+  not continue, including a parked one.
 - Review every pull request before merging. Medium-reasoning workers do what
   the task text says; the task text and the review are the quality control.
 - Cost: `swarmy agent show worker-N --remote dev` totals a worker's spend;

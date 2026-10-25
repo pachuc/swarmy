@@ -1,0 +1,136 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/release.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Build and packaging commands live in scripts/release.sh behind
+# `make release-package`, so `make release-dry-run` builds locally what these
+# jobs build. Only the publish job runs on tags and may write the release.
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          version=$(scripts/release.sh version)
+          if [[ $GITHUB_REF == refs/tags/* && $GITHUB_REF_NAME != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the workspace version; expected v$version"
+            exit 1
+          fi
+          if [[ $version == *-* ]]; then echo "prerelease=true"; else echo "prerelease=false"; fi >> "$GITHUB_OUTPUT"
+  client:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04-arm }
+          - { target: x86_64-apple-darwin, runner: macos-15-intel }
+          - { target: aarch64-apple-darwin, runner: macos-15 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rustup when the image lacks it
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - run: make release-package RELEASE_COMPONENT=client RELEASE_TARGET=${{ matrix.target }} RELEASE_DIR=dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-client-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+  core:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rustup when the image lacks it
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Install bindgen and rpath tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang libclang-dev patchelf
+      - run: make release-package RELEASE_COMPONENT=core RELEASE_TARGET=${{ matrix.target }} RELEASE_DIR=dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-core-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+  image:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Install image build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends debootstrap e2fsprogs
+      - run: make release-package RELEASE_COMPONENT=image RELEASE_TARGET=x86_64-unknown-linux-gnu RELEASE_DIR=dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-image-x86_64-unknown-linux-gnu
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [version, client, core, image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - run: scripts/release.sh checksums dist
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          flags=()
+          if [[ $PRERELEASE == true ]]; then flags+=(--prerelease); fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "swarmy $GITHUB_REF_NAME" --generate-notes "${flags[@]}"
+          fi

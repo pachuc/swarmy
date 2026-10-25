@@ -498,7 +498,8 @@ impl Default for MemorySettings {
     }
 }
 
-/// Image uploads: largest streamed upload the API accepts, in bytes.
+/// Image uploads: largest upload body the API accepts, in bytes: the image's
+/// data extents plus 16 bytes each; holes in the sparse image do not count.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ImageSettings {
@@ -816,7 +817,15 @@ impl Settings {
             .ancestors()
             .map(|dir| dir.join(".swarmy/config.toml"))
             .find(|path| path.is_file());
-        let user = environment
+        let user = Self::user_config_path(environment).filter(|path| path.is_file());
+        local.or(user)
+    }
+
+    /// The user configuration file, `$XDG_CONFIG_HOME/swarmy/config.toml` (absolute
+    /// XDG only) or `$HOME/.config/swarmy/config.toml`, whether or not it exists.
+    #[must_use]
+    pub fn user_config_path(environment: &BTreeMap<String, String>) -> Option<PathBuf> {
+        environment
             .get("XDG_CONFIG_HOME")
             .filter(|value| Path::new(value).is_absolute())
             .map(PathBuf::from)
@@ -826,8 +835,6 @@ impl Settings {
                     .map(|home| PathBuf::from(home).join(".config"))
             })
             .map(|dir| dir.join("swarmy/config.toml"))
-            .filter(|path| path.is_file());
-        local.or(user)
     }
 
     /// Read a file without environment overrides or path resolution.
@@ -1316,6 +1323,28 @@ mod tests {
             "XDG_CONFIG_HOME".into(),
             temp.path().join("xdg").to_str().unwrap().into(),
         )]);
+        assert_eq!(
+            Settings::user_config_path(&environment),
+            Some(temp.path().join("xdg/swarmy/config.toml"))
+        );
+        environment.insert(
+            "HOME".into(),
+            temp.path().join("home").display().to_string(),
+        );
+        environment.insert("XDG_CONFIG_HOME".into(), "relative".into());
+        assert_eq!(
+            Settings::user_config_path(&environment),
+            Some(temp.path().join("home/.config/swarmy/config.toml"))
+        );
+        environment.remove("XDG_CONFIG_HOME");
+        assert_eq!(
+            Settings::user_config_path(&environment),
+            Some(temp.path().join("home/.config/swarmy/config.toml"))
+        );
+        environment.insert(
+            "XDG_CONFIG_HOME".into(),
+            temp.path().join("xdg").display().to_string(),
+        );
         let loaded = load_with_remote(&nested, &environment).unwrap();
         assert_eq!(loaded.path, Some(config.clone()));
         assert_eq!(loaded.settings.store.directory, "project");

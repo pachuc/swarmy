@@ -1023,6 +1023,17 @@
             }
           },
           {
+            "name": "size",
+            "in": "query",
+            "description": "Logical image size in bytes, a positive multiple of the chunk size",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
             "name": "idempotency_key",
             "in": "query",
             "description": "Retry key for this upload",
@@ -1062,7 +1073,7 @@
           }
         ],
         "requestBody": {
-          "description": "Raw ext4 image bytes",
+          "description": "Data extents of the sparse ext4 image: repeated records of offset (u64 LE), length (u64 LE), then length bytes; ascending, non-overlapping; uncovered bytes are zero",
           "content": {
             "application/octet-stream": {
               "schema": {
@@ -1089,6 +1100,16 @@
             }
           },
           "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
             "description": "",
             "content": {
               "application/json": {

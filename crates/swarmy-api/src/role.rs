@@ -1,4 +1,5 @@
-use swarmy_api::{AppState, router};
+use crate::{AppState, router};
+use std::ffi::OsString;
 use swarmy_bus::Bus;
 use swarmy_config::Settings;
 use swarmy_store::{HeartbeatSpec, ServiceDetail, ServiceRole, Store};
@@ -6,7 +7,7 @@ use swarmy_store::{HeartbeatSpec, ServiceDetail, ServiceRole, Store};
 /// Startup failures: the binary only assembles the service, so every
 /// error names the connection or socket that failed.
 #[derive(Debug, thiserror::Error)]
-enum Error {
+pub enum Error {
     #[error(transparent)]
     Settings(#[from] swarmy_config::Error),
     #[error(transparent)]
@@ -29,14 +30,18 @@ type Result<T> = std::result::Result<T, Error>;
 /// streams never end on their own, so the graceful wait is capped.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
-fn main() -> Result<()> {
-    swarmy_version::parse::<swarmy_version::ServiceArgs>("swarmy-api")?;
+/// Run the API role.
+///
+/// # Errors
+/// Returns startup or service failures.
+pub fn run(args: Vec<OsString>) -> Result<()> {
+    swarmy_version::parse_from::<swarmy_version::ServiceArgs>("swarmy-core api", args)?;
     swarmy_config::init_tracing();
     let _network = swarmy_store::boot();
-    tokio::runtime::Runtime::new()?.block_on(run())
+    tokio::runtime::Runtime::new()?.block_on(start())
 }
 
-async fn run() -> Result<()> {
+async fn start() -> Result<()> {
     let settings = Settings::load()?.settings;
     let token = std::env::var("SWARMY_API_TOKEN").unwrap_or(settings.api.token.clone());
     let listen = std::env::var("SWARMY_API_LISTEN").unwrap_or(settings.api.listen.clone());
@@ -54,7 +59,8 @@ async fn run() -> Result<()> {
     let heartbeat_store = store.clone();
     let started = jiff::Timestamp::now();
     let instance_id = ulid::Ulid::generate().to_string();
-    tokio::spawn(async move {
+    let heartbeat_id = instance_id.clone();
+    let heartbeat = tokio::spawn(async move {
         heartbeat_store
             .heartbeat_loop(HeartbeatSpec {
                 role: ServiceRole::Api,
@@ -72,7 +78,7 @@ async fn run() -> Result<()> {
     state.gc = settings.gc;
     state.upload_dir = settings.state_dir.join("uploads");
     state.upload_max_bytes = settings.image.upload_max_bytes;
-    swarmy_api::images::sweep_stale_uploads(&state.upload_dir);
+    crate::images::sweep_stale_uploads(&state.upload_dir);
     state.resend_interval = settings.scheduler.resend_interval_ms;
     state.default_image = settings.selection.default_image.clone();
     state.fake_files = Some((settings.fake.script.clone(), settings.fake.call_log.clone()));
@@ -88,7 +94,26 @@ async fn run() -> Result<()> {
             source,
         })?;
     tracing::info!(address = %listener.local_addr()?, "api ready");
-    serve(listener, state, metrics_store).await
+    let outcome = serve(listener, state, metrics_store.clone()).await;
+    finish_health(&metrics_store, heartbeat, &heartbeat_id, started).await;
+    outcome
+}
+
+// Stop the heartbeat task before clearing this instance's record.
+async fn finish_health(
+    store: &Store,
+    heartbeat: tokio::task::JoinHandle<()>,
+    id: &str,
+    started: jiff::Timestamp,
+) {
+    heartbeat.abort();
+    swarmy_core::ignore_best_effort(heartbeat.await, "stop API heartbeat task");
+    if let Err(error) = store
+        .remove_service_heartbeat(&ServiceRole::Api, id, started)
+        .await
+    {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "api heartbeat cleanup failed");
+    }
 }
 
 /// Serve with a capped graceful wait, then drain queued turn metrics.

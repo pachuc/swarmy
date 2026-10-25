@@ -7,7 +7,7 @@
 //! [`eventually`] poll helper; the fake-provider `Script` builder (with the
 //! `script` feature); sibling-binary lookup (`bin`) with a kill-on-drop
 //! `ChildGuard`; the metadata-only `image` fixture; and the docs command
-//! walker.
+//! walker and a port-free fake backing stack (`FakeStack`).
 //!
 //! The `stack` feature (on by default) covers everything that touches
 //! `FoundationDB`, the store, or the bus. Suites that only need the light
@@ -15,11 +15,13 @@
 //! `FoundationDB` client. The `script` feature adds the fake-provider script
 //! builder, which needs swarmy-llm's response types.
 
+mod dev_stack;
 mod docs;
 mod eventually;
 mod gate;
 #[cfg(feature = "stack")]
 mod image;
+pub mod release;
 #[cfg(feature = "script")]
 mod script;
 mod service;
@@ -28,9 +30,10 @@ mod settings;
 mod stack;
 mod subscribers;
 
+pub use dev_stack::FakeStack;
 pub use docs::check_docs_commands;
 pub use eventually::eventually;
-pub use gate::{opt_in_env, optional_env, require_stack};
+pub use gate::{opt_in_env, optional_env, require_root_host, require_stack};
 #[cfg(feature = "stack")]
 pub use image::image;
 #[cfg(feature = "script")]

@@ -1,5 +1,8 @@
 //! In-place upgrades keep the remote state and all instance identities intact.
-use std::time::{Duration, Instant};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use crate::Result;
 use serde::{Deserialize, Serialize};
@@ -51,10 +54,11 @@ pub(super) async fn command(
     state: &super::state::State,
     name: &str,
     mut options: Options,
+    cache: &Path,
 ) -> Result<()> {
     let _lock = state.lock()?;
     let node = state.require(name)?;
-    let host = ssh::Ssh::discover()?;
+    let host = super::provisioning_host(cache)?;
     options.dirty_paths = host.checkout_changes()?;
     run(&host, &node, options).await.map(|_| ())
 }
@@ -63,6 +67,8 @@ pub(super) async fn command(
 pub(super) struct Summary {
     pub node: String,
     pub changed: Vec<String>,
+    #[serde(default)]
+    pub units: Vec<String>,
     pub restarted: Vec<String>,
     pub elapsed_seconds: f64,
 }
@@ -136,7 +142,7 @@ pub(super) async fn run(
     crate::Error::ensure(
         options.dirty_paths.is_empty() || options.allow_dirty,
         format!(
-            "checkout has uncommitted paths ({}); commit or ignore them, or pass --allow-dirty",
+            "development checkout has uncommitted paths ({}); commit or ignore them, or pass --allow-dirty",
             options.dirty_paths.join(", ")
         ),
     )?;
@@ -171,9 +177,10 @@ pub(super) async fn run(
             cloud_out!("{}", json_line(&summary)?);
         } else {
             cloud_out!(
-                "{}: changed={} restarted={} elapsed={:.1}s",
+                "{}: changed={} units={} restarted={} elapsed={:.1}s",
                 summary.node,
                 summary.changed.join(","),
+                summary.units.join(","),
                 summary.restarted.join(","),
                 summary.elapsed_seconds
             );

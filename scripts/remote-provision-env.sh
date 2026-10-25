@@ -2,7 +2,7 @@
 # Helpers sourced by remote-provision.sh, remote-upgrade.sh,
 # remote-services.sh, and their no-sudo argument tests.
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-s3-env.sh"
-# Read the eleven positional arguments of remote-provision.sh into named
+# Read the twelve positional arguments of remote-provision.sh into named
 # settings. One definition of the order, shared by the script and its
 # argument test; the SSH provisioning command sends them in this order.
 parse_provision_args() {
@@ -17,6 +17,32 @@ parse_provision_args() {
     sandboxes=$(parse_sandbox_count "${9-64}")
     service_user=${10:-swarmy}
     local_storage=${11:-}
+    prebuilt=${12:-false}
+}
+
+# Where the client uploads release binaries inside the node directory.
+release_bundle_dir() { printf '%s/.swarmy/release\n' "${1:?node directory}"; }
+# Where a development client copies its checkout for the on-node build.
+node_source_dir() { printf '%s/source\n' "${1:?node directory}"; }
+
+# Validate all binaries for a mode before installing any of them.
+check_release_bundle() {
+    local dir=$1 mode=$2 binaries binary
+    read_shared_list binaries swarmy_mode_binaries "$mode" || return 1
+    for binary in "${binaries[@]}"; do
+        [[ -f $dir/$binary && -x $dir/$binary ]] || { echo "Missing uploaded release binary: $dir/$binary" >&2; return 1; }
+    done
+    [[ -f $dir/libfdb_c.so ]] || { echo "Missing uploaded libfdb_c.so in $dir" >&2; return 1; }
+}
+
+swarmy_core_library_dir() { printf '/usr/local/lib/swarmy\n'; }
+install_core_library() {
+    local dir
+    dir=$(swarmy_core_library_dir)
+    sudo -n install -d -m 0755 "$dir" /etc/ld.so.conf.d
+    sudo -n install -m 0644 "$1" "$dir/libfdb_c.so"
+    printf '%s\n' "$dir" | sudo -n tee /etc/ld.so.conf.d/swarmy.conf >/dev/null
+    sudo -n ldconfig
 }
 
 parse_sandbox_count() {
@@ -26,7 +52,7 @@ parse_sandbox_count() {
     printf '%s\n' "$count"
 }
 
-# The login that owns the checkout and runs the node units. Plain servers
+# The login that owns the node directory and runs the node units. Plain servers
 # use `swarmy`; cloud-image hosts keep `ubuntu` by setting it.
 validate_service_user() {
     local user=${1-}
@@ -134,7 +160,7 @@ link_volumes_to() {
 }
 
 # The control-plane services provisioning can install on a node. The one
-# seed list: unit and binary names derive from these, so adding a service
+# seed list: unit and role names derive from these, so adding a service
 # touches one place.
 swarmy_service_names() {
     printf '%s\n' scheduler worker gateway api
@@ -150,17 +176,18 @@ swarmy_cli_package() {
     printf 'swarmy-cli\n'
 }
 
-# Every systemd unit provisioning installs: unit, binary, owning modes, and
-# role (backing services, node agent, or node service). Units that run
-# something else leave the binary empty (the stack unit runs dev-stack.sh,
-# the tunnel unit runs ssh). Service rows derive from the seed list above.
-# This table is the single source installs, upgrades, and teardown read;
-# each unit and binary name is written exactly once, here.
+swarmy_core_binary() { printf 'swarmy-core\n'; }
+swarmy_core_package() { printf 'swarmy-core-bin\n'; }
+
+# Every systemd unit provisioning installs: unit, core role, owning modes, and
+# kind (backing service, node agent, or node service). Units that run
+# something else leave the role empty. Service rows derive from the seed list.
+# This table is the single source installs, upgrades, and teardown read.
 swarmy_unit_table() {
     printf '%s\n' \
         'swarmy-stack.service::stack:backing' \
         'swarmy-tunnel.service::node:backing' \
-        'swarmyd.service:swarmyd:stack,node:agent'
+        'swarmyd.service:node:stack,node:agent'
     local services_text
     services_text=$(swarmy_service_names) || return 1
     [[ -n $services_text ]] || {
@@ -171,7 +198,7 @@ swarmy_unit_table() {
     mapfile -t services <<< "$services_text"
     local service
     for service in "${services[@]}"; do
-        printf 'swarmy-%s.service:swarmy-%s:stack:service\n' "$service" "$service"
+        printf 'swarmy-%s.service:%s:stack:service\n' "$service" "$service"
     done
 }
 
@@ -180,15 +207,27 @@ swarmy_unit_names() {
     swarmy_unit_table | cut -d: -f1
 }
 
-# One list of the release binaries provisioning installs, in table order
-# with the CLI first.
+# One list of installed binaries, with the CLI first.
 swarmy_binary_names() {
     swarmy_cli_binary
-    swarmy_unit_table | awk -F: '$2 != "" { print $2 }'
+    swarmy_core_binary
 }
 
-# The binary a unit runs, or empty for units running something else.
-swarmy_unit_binary() {
+# These service binaries were replaced by `swarmy-core <role>`.
+retired_binary_names() {
+    printf '%s\n' swarmyd swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api
+}
+
+remove_retired_binaries() {
+    local binaries binary
+    read_shared_list binaries retired_binary_names
+    for binary in "${binaries[@]}"; do
+        sudo -n rm -f "/usr/local/bin/$binary"
+    done
+}
+
+# The core role a unit runs, or empty for non-core units.
+swarmy_unit_role() {
     swarmy_unit_table | awk -F: -v unit="${1-}" '$1 == unit { print $2 }'
 }
 
@@ -208,6 +247,203 @@ swarmy_agent_unit() {
     swarmy_unit_table | awk -F: '$4 == "agent" { print $1 }'
 }
 
+# Unit inputs are recorded separately from the secret node environment.
+swarmy_systemd_dir() { printf '%s\n' "${SWARMY_SYSTEMD_DIR:-/etc/systemd/system}"; }
+swarmy_etc_dir() { printf '%s\n' "${SWARMY_ETC_DIR:-/etc/swarmy}"; }
+swarmy_unit_inputs_file() { printf '%s/units.env\n' "$(swarmy_etc_dir)"; }
+
+set_unit_user() {
+    validate_service_user "${1-}" || return 1
+    unit_user=$1
+    unit_home=$(service_home_for "$unit_user")
+    unit_repo=$(service_repo_for "$unit_user")
+}
+
+set_unit_inputs() {
+    local mode=${1-} user=${2-} primary=${3-} tunnel_s3=${4-} mount=${5-}
+    [[ $mode == stack || $mode == node ]] || { echo "invalid unit mode: $mode" >&2; return 1; }
+    set_unit_user "$user" || return 1
+    if [[ $mode == node || -n $primary ]]; then
+        [[ $primary =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid primary address: $primary" >&2; return 1; }
+    fi
+    [[ $tunnel_s3 == true || $tunnel_s3 == false ]] || { echo 'tunnel S3 forward must be true or false' >&2; return 1; }
+    [[ -z $mount || $mount =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "invalid mount path: $mount" >&2; return 1; }
+    unit_mode=$mode unit_primary=$primary unit_tunnel_s3=$tunnel_s3 unit_mount=$mount
+}
+
+unit_inputs_text() {
+    printf 'SWARMY_UNIT_MODE=%s\nSWARMY_UNIT_USER=%s\nSWARMY_UNIT_PRIMARY=%s\nSWARMY_UNIT_TUNNEL_S3=%s\nSWARMY_UNIT_MOUNT=%s\n' \
+        "$unit_mode" "$unit_user" "$unit_primary" "$unit_tunnel_s3" "$unit_mount"
+}
+
+record_unit_inputs() {
+    local file
+    file=$(swarmy_unit_inputs_file)
+    sudo -n install -d -m 0755 "$(dirname "$file")" || return 1
+    unit_inputs_text | sudo -n tee "$file" >/dev/null || return 1
+    sudo -n chmod 0644 "$file"
+}
+
+# Treat the recorded file as data, not shell code.
+load_unit_inputs() {
+    local file=${1-} key value mode='' user='' primary='' tunnel_s3='' mount=''
+    while IFS='=' read -r key value; do
+        case $key in
+            SWARMY_UNIT_MODE) mode=$value ;;
+            SWARMY_UNIT_USER) user=$value ;;
+            SWARMY_UNIT_PRIMARY) primary=$value ;;
+            SWARMY_UNIT_TUNNEL_S3) tunnel_s3=$value ;;
+            SWARMY_UNIT_MOUNT) mount=$value ;;
+            '') ;;
+            *) echo "unknown setting $key in $file" >&2; return 1 ;;
+        esac
+    done < "$file" || return 1
+    set_unit_inputs "$mode" "$user" "$primary" "$tunnel_s3" "$mount"
+}
+
+render_stack_unit() {
+    : "${unit_repo:?unit inputs not set}"
+    cat <<UNIT
+[Unit]
+Description=Swarmy backing services (FoundationDB, NATS, optional SeaweedFS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=$unit_user
+WorkingDirectory=$unit_repo
+Environment=HOME=$unit_home
+EnvironmentFile=/etc/swarmy/node.env
+Environment=PATH=$unit_home/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin
+# systemd owns these processes, so stale state from an interrupted boot is safe to clear.
+ExecStartPre=/usr/bin/rm -f $unit_repo/.dev/fdb.pid $unit_repo/.dev/nats.pid $unit_repo/.dev/seaweed.pid
+ExecStartPre=-/usr/bin/rmdir $unit_repo/.dev/lock
+ExecStart=/bin/bash $unit_repo/scripts/dev-stack.sh start
+ExecStop=/bin/bash $unit_repo/scripts/dev-stack.sh stop
+TimeoutStartSec=300
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+render_tunnel_unit() {
+    : "${unit_primary:?unit inputs not set}"
+    local s3_forward=''
+    if [[ $unit_tunnel_s3 == true ]]; then s3_forward=' -L 127.0.0.1:8333:127.0.0.1:8333'; fi
+    cat <<UNIT
+[Unit]
+Description=Swarmy tunnel to first node backing services
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=$unit_user
+ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i /etc/swarmy/tunnel-key -L 127.0.0.1:4500:127.0.0.1:4500 -L 127.0.0.1:4222:127.0.0.1:4222$s3_forward $unit_user@$unit_primary
+ExecStartPost=/bin/bash -c 'for attempt in {1..30}; do if (echo > /dev/tcp/127.0.0.1/4500) 2>/dev/null; then exit 0; fi; sleep 1; done; exit 1'
+Restart=always
+RestartSec=5
+TimeoutStartSec=40
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+render_node_unit() {
+    : "${unit_mode:?unit inputs not set}"
+    local stack_dependency dependency_kind=Wants mount_requirement='' node_unit
+    stack_dependency=$(swarmy_mode_backing_unit "$unit_mode") || return 1
+    node_unit=$(swarmy_agent_unit) || return 1
+    # Keep the node role running across tunnel reconnects; its clients reconnect too.
+    if [[ $unit_mode == stack ]]; then dependency_kind=Requires; fi
+    if [[ -n $unit_mount ]]; then mount_requirement="RequiresMountsFor=$unit_mount"; fi
+    cat <<UNIT
+[Unit]
+Description=Swarmy node agent (swarmy-core node)
+$dependency_kind=$stack_dependency
+After=network-online.target $stack_dependency systemd-modules-load.service
+Wants=network-online.target
+${mount_requirement}
+
+[Service]
+WorkingDirectory=$unit_repo
+EnvironmentFile=/etc/swarmy/node.env
+ExecStart=/usr/local/bin/$(swarmy_core_binary) $(swarmy_unit_role "$node_unit")
+Restart=always
+RestartSec=5
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+render_service_unit() {
+    local unit=${1:?unit} role short stack_unit
+    : "${unit_repo:?unit inputs not set}"
+    role=$(swarmy_unit_role "$unit")
+    [[ -n $role ]] || { echo "unknown service unit $unit" >&2; return 1; }
+    short=${unit#swarmy-}; short=${short%.service}
+    stack_unit=$(swarmy_mode_backing_unit stack) || return 1
+    cat <<UNIT
+[Unit]
+Description=Swarmy $short
+Requires=$stack_unit
+After=network-online.target $stack_unit
+
+[Service]
+Type=exec
+User=$unit_user
+WorkingDirectory=$unit_repo
+EnvironmentFile=/etc/swarmy/node.env
+Environment=HOME=$unit_home
+Environment=TOKIO_WORKER_THREADS=2
+ExecStart=/usr/local/bin/$(swarmy_core_binary) $role
+Restart=always
+RestartSec=2
+TimeoutStopSec=40
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+render_unit() {
+    local unit=${1-} kind
+    kind=$(swarmy_unit_table | awk -F: -v unit="$unit" '$1 == unit { print $4 }')
+    case $kind in
+        backing)
+            if [[ $unit == "$(swarmy_mode_backing_unit stack)" ]]; then render_stack_unit
+            else render_tunnel_unit; fi ;;
+        agent) render_node_unit ;;
+        service) render_service_unit "$unit" ;;
+        *) echo "no renderer for unit $unit" >&2; return 1 ;;
+    esac
+}
+
+# Render all before installing any; only install bytewise differences.
+write_units() {
+    local -n __written=${1:?result array}
+    shift
+    local dir stage unit
+    dir=$(swarmy_systemd_dir)
+    stage=$(mktemp -d) || return 1
+    for unit in "$@"; do
+        render_unit "$unit" > "$stage/$unit" || { rm -rf "$stage"; return 1; }
+    done
+    for unit in "$@"; do
+        if [[ -f $dir/$unit ]] && cmp -s "$stage/$unit" "$dir/$unit"; then continue; fi
+        sudo -n install -m 0644 "$stage/$unit" "$dir/$unit" || { rm -rf "$stage"; return 1; }
+        __written+=("$unit")
+    done
+    rm -rf "$stage"
+}
+
 # Backing-service unit of a mode (stack or tunnel): the role both install
 # paths and unit files read instead of spelling the name.
 swarmy_mode_backing_unit() {
@@ -219,19 +455,17 @@ swarmy_mode_units() {
     swarmy_unit_table | awk -F: -v mode="${1-}" 'index(","$3",", ","mode",") { print $1 }'
 }
 
-# Binaries a mode installs, in install order: the CLI ships on stack hosts
-# and every other binary comes from the mode's table rows.
+# Binaries a mode installs: the CLI ships on stack hosts and the core on all.
 swarmy_mode_binaries() {
     local mode=${1-}
     if [[ $mode == stack ]]; then
         swarmy_cli_binary
     fi
-    swarmy_unit_table | awk -F: -v mode="$mode" 'index(","$3",", ","mode",") && $2 != "" { print $2 }'
+    swarmy_core_binary
 }
 
-# Cargo build arguments for a mode's binaries: package names match binary
-# names (the CLI builds separately with its own feature flags). Emits one
-# -p pair per line for mapfile. Each stage is captured before filtering so
+# Cargo build arguments for the core binary (the CLI builds separately).
+# Emit one -p pair for mapfile. The table is checked before filtering so
 # a failing table propagates instead of building an empty package list.
 swarmy_mode_build_args() {
     local mode=${1-}
@@ -246,11 +480,7 @@ swarmy_mode_build_args() {
         echo "no build packages for mode $mode" >&2
         return 1
     }
-    local packages package
-    mapfile -t packages <<< "$filtered"
-    for package in "${packages[@]}"; do
-        printf -- '-p\n%s\n' "$package"
-    done
+    printf -- '-p\n%s\n' "$(swarmy_core_package)"
 }
 
 # Read a list function into an array, failing loudly when the producer
@@ -305,10 +535,10 @@ disable_previous_units() {
     done
 }
 
-# Remove every installed unit, binary, environment, and checkout named in
+# Remove every installed unit, binary, environment, and node directory named in
 # the shared table. Idempotent: every removal tolerates a missing file so
-# a failed `down` can retry. Needs no checkout beyond this file itself, so
-# both the checkout script and piped use call it.
+# a failed `down` can retry. Needs no node directory beyond this file itself, so
+# both the installed script and piped use call it.
 decommission_remove() {
     local service_user=${1-}
     validate_service_user "$service_user" || return 1
@@ -323,15 +553,19 @@ decommission_remove() {
     for binary in "${binaries[@]}"; do
         sudo rm -f "/usr/local/bin/$binary"
     done
+    remove_retired_binaries
+    sudo rm -rf "$(swarmy_core_library_dir)"
+    sudo rm -f /etc/ld.so.conf.d/swarmy.conf
+    sudo ldconfig
     sudo rm -f /etc/modules-load.d/swarmy.conf
     sudo rm -rf /etc/swarmy
     service_repo=$(service_repo_for "$service_user")
     sudo rm -rf "$service_repo"
 }
 
-# Decommission entrypoint for piped use (no checkout needed): run the
-# shared removal when the checkout script file is present (proving the
-# checkout is intact), fail loudly when units remain without a checkout,
+# Decommission entrypoint for piped use (no node directory needed): run the
+# shared removal when the node script file is present (proving the
+# node directory is intact), fail loudly when units remain without a node directory,
 # and no-op when nothing remains. SWARMY_SYSTEMD_DIR overrides the unit
 # directory (tests point it at a fake root).
 decommission_probe() {
@@ -342,10 +576,10 @@ decommission_probe() {
     if [[ -f $repo/scripts/remote-decommission.sh ]]; then
         decommission_remove "$service_user"
     elif ls "${SWARMY_SYSTEMD_DIR:-/etc/systemd/system}"/swarmy*.service >/dev/null 2>&1; then
-        echo "swarmy checkout is missing from $repo but swarmy units are still installed; restore the checkout or remove the units by hand (see docs/REMOTE.md)" >&2
+        echo "swarmy node directory is missing from $repo but swarmy units are still installed; restore it with swarmy remote upgrade or remove the units by hand (see docs/REMOTE.md)" >&2
         return 1
     else
-        echo 'swarmy checkout already removed; nothing to tear down'
+        echo 'swarmy node directory already removed; nothing to tear down'
     fi
 }
 

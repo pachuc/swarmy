@@ -306,7 +306,7 @@ async fn run<F: Future<Output = ()>>(test: impl FnOnce(Fixture) -> F) {
         ServiceRole::Gateway,
     ] {
         let detail = if role == ServiceRole::Gateway {
-            ServiceDetail::Providers(vec!["fake".into(), "openai".into()])
+            ServiceDetail::Providers(vec!["fake".into(), "openai".into(), "anthropic".into()])
         } else {
             ServiceDetail::None
         };

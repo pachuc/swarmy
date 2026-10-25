@@ -5,41 +5,16 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
 service_user=${1:?Usage: remote-services.sh SERVICE_USER}
 validate_service_user "$service_user"
-service_home=$(service_home_for "$service_user")
 repo_dir=$(service_repo_for "$service_user")
-[[ $(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd) == "$repo_dir" ]] || { echo "Expected checkout at $repo_dir" >&2; exit 1; }
+[[ $(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd) == "$repo_dir" ]] || { echo "Expected the swarmy node directory at $repo_dir" >&2; exit 1; }
 # Service units and their binaries come from the shared table so installs
 # and teardown agree. The short name below is only prose for unit
 # descriptions and readiness messages.
 read_shared_list service_units swarmy_service_units
-stack_unit=$(swarmy_mode_backing_unit stack)
 node_unit=$(swarmy_agent_unit)
-for unit in "${service_units[@]}"; do
-    binary=$(swarmy_unit_binary "$unit")
-    short=${unit#swarmy-}
-    short=${short%.service}
-    sudo tee "/etc/systemd/system/$unit" >/dev/null <<UNIT
-[Unit]
-Description=Swarmy $short
-Requires=$stack_unit
-After=network-online.target $stack_unit
-
-[Service]
-Type=exec
-User=$service_user
-WorkingDirectory=$repo_dir
-EnvironmentFile=/etc/swarmy/node.env
-Environment=HOME=$service_home
-Environment=TOKIO_WORKER_THREADS=2
-ExecStart=/usr/local/bin/$binary
-Restart=always
-RestartSec=2
-TimeoutStopSec=40
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-done
+set_unit_user "$service_user"
+service_units_written=()
+write_units service_units_written "${service_units[@]}"
 sudo systemctl daemon-reload
 # Reload the same namespace configuration in the execution node.
 sudo systemctl restart "$node_unit"

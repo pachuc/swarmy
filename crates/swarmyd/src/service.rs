@@ -1,7 +1,7 @@
+use crate::{Request, Response};
 use anyhow::Result;
 use std::{sync::Arc, time::Duration};
 use swarmy_sandbox::RuncRuntime;
-use swarmyd::{Request, Response};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     net::UnixStream,

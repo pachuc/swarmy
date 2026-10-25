@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Kept independent of sudo so upgrade decisions can be tested locally.
 upgrade_args() {
-    if [[ $# != 3 || ( $1 != stack && $1 != node ) || ( $2 != all && $2 != services-only ) || ! $3 =~ ^[0-9]+$ ]]; then
-        echo 'Usage: remote-upgrade.sh {stack|node} {all|services-only} DRAIN_TIMEOUT_SECONDS' >&2
+    if [[ ( $# != 3 && $# != 4 ) || ( $1 != stack && $1 != node ) || ( $2 != all && $2 != services-only ) || ! $3 =~ ^[0-9]+$ || ( $# == 4 && $4 != build && $4 != prebuilt ) ]]; then
+        echo 'Usage: remote-upgrade.sh {stack|node} {all|services-only} DRAIN_TIMEOUT_SECONDS [build|prebuilt]' >&2
         return 1
     fi
 }
@@ -81,4 +81,84 @@ unit_needs_restart() {
     installed_hash=$(sha256sum "$installed" | cut -d' ' -f1) || return 2
     running_hash=$(sudo -n sha256sum "/proc/$pid/exe" | cut -d' ' -f1) || return 2
     [[ $installed_hash != "$running_hash" ]]
+}
+
+unit_listed() { local needle=$1 item; shift; for item in "$@"; do [[ $item == "$needle" ]] && return 0; done; return 1; }
+
+unit_restart_wanted() {
+    local unit=$1 binary=$2
+    shift 2
+    if unit_listed "$unit" "$@"; then return 0; fi
+    unit_needs_restart "$unit" "$binary"
+}
+
+# Derive settings once from the installed units of a pre-units.env node.
+derive_unit_inputs() {
+    local mode=$1 user=$2 dir agent tunnel exec primary='' tunnel_s3=false mount status
+    dir=$(swarmy_systemd_dir)
+    agent=$dir/$(swarmy_agent_unit)
+    [[ -f $agent ]] || { echo "Missing $agent; provision this node again (see docs/REMOTE.md)" >&2; return 1; }
+    mount=$(sed -n 's/^RequiresMountsFor=//p' "$agent" | head -n 1)
+    if [[ $mode == node ]]; then
+        tunnel=$dir/$(swarmy_mode_backing_unit node)
+        [[ -f $tunnel ]] || { echo "Missing $tunnel on a joining node; provision it again" >&2; return 1; }
+        exec=$(sed -n 's/^ExecStart=//p' "$tunnel" | head -n 1)
+        primary=${exec##*@}
+        if sudo -n grep -qx 'SWARMY_S3_ENDPOINT=http://127.0.0.1:8333' "$(swarmy_etc_dir)/node.env"; then
+            tunnel_s3=true
+        else
+            status=$?
+            (( status == 1 )) || { echo "Cannot read $(swarmy_etc_dir)/node.env" >&2; return 1; }
+        fi
+    fi
+    set_unit_inputs "$mode" "$user" "$primary" "$tunnel_s3" "$mount"
+}
+
+unit_inputs_for_upgrade() {
+    local mode=$1 user=$2 file
+    file=$(swarmy_unit_inputs_file)
+    if [[ -f $file ]]; then
+        load_unit_inputs "$file" || return 1
+        [[ $unit_mode == "$mode" && $unit_user == "$user" ]] || {
+            echo "$file records $unit_mode units for $unit_user, but this node runs $mode units as $user; provision it again" >&2
+            return 1
+        }
+    else
+        derive_unit_inputs "$mode" "$user" || return 1
+        record_unit_inputs || return 1
+        echo "Recorded unit settings derived from the installed units in $file" >&2
+    fi
+}
+
+reconcile_units() {
+    local -n __reconciled=${1:?result array}
+    shift
+    (( $# )) || return 0
+    write_units __reconciled "$@" || return 1
+    if (( ${#__reconciled[@]} )); then sudo -n systemctl daemon-reload || return 1; fi
+}
+
+retired_binary_referenced() {
+    local binary=$1 dir units unit
+    dir=$(swarmy_systemd_dir)
+    read_shared_list units swarmy_unit_names || return 2
+    for unit in "${units[@]}"; do
+        [[ -f $dir/$unit ]] || continue
+        if grep -Eq -- "^ExecStart=/usr/local/bin/${binary}( |\$)" "$dir/$unit"; then return 0; fi
+    done
+    return 1
+}
+
+remove_unreferenced_retired_binaries() {
+    local binaries binary status
+    read_shared_list binaries retired_binary_names || return 1
+    for binary in "${binaries[@]}"; do
+        if retired_binary_referenced "$binary"; then
+            echo "Keeping /usr/local/bin/$binary: an installed unit still runs it; run a full upgrade without --services-only" >&2
+        else
+            status=$?
+            (( status == 1 )) || return 1
+            sudo -n rm -f "/usr/local/bin/$binary"
+        fi
+    done
 }

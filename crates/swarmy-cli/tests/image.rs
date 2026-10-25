@@ -53,7 +53,7 @@ impl Drop for Mount<'_> {
 /// their own service against the dev stack and point the `swarmy` binary at
 /// it, so they need nothing beyond the dev stack and sudo. The service
 /// shares the ambient store directory and object store settings with
-/// `swarmyd vol`, so volumes created from uploaded images resolve.
+/// `swarmy-core vol`, so volumes created from uploaded images resolve.
 struct ApiService {
     child: Child,
     url: String,
@@ -127,7 +127,7 @@ fn ensure_sibling(package: &str, binary: &str) -> std::path::PathBuf {
 }
 
 async fn start_api_service() -> ApiService {
-    let api = ensure_sibling("swarmy-api", "swarmy-api");
+    let api = ensure_sibling("swarmy-core-bin", "swarmy-core");
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -135,6 +135,7 @@ async fn start_api_service() -> ApiService {
         .port();
     let token = ulid::Ulid::generate().to_string();
     let mut child = Command::new(&api)
+        .arg("api")
         .env("SWARMY_API_LISTEN", format!("127.0.0.1:{port}"))
         .env("SWARMY_API_TOKEN", &token)
         .stdout(Stdio::null())
@@ -180,12 +181,12 @@ fn image_json(api: &ApiService, arguments: &[&str]) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-/// Run the sibling `swarmyd` binary beside the test `swarmy` binary. Volume
+/// Run the sibling `swarmy-core` binary beside the test `swarmy` binary. Volume
 /// management moved to the node daemon, so the retag property is observed
-/// through `swarmyd vol` rather than the store.
-fn swarmyd_json(arguments: &[&str]) -> serde_json::Value {
-    let swarmyd = ensure_sibling("swarmyd", "swarmyd");
-    let output = Command::new(&swarmyd)
+/// through `swarmy-core vol` rather than the store.
+fn core_vol_json(arguments: &[&str]) -> serde_json::Value {
+    let core = ensure_sibling("swarmy-core-bin", "swarmy-core");
+    let output = Command::new(&core)
         .arg("vol")
         .arg("--json")
         .args(arguments)
@@ -200,8 +201,17 @@ fn swarmyd_json(arguments: &[&str]) -> serde_json::Value {
 }
 
 fn needs_backing_services() -> bool {
-    if Command::new("id").arg("-u").output().unwrap().stdout != b"0\n" {
-        eprintln!("skipping image acceptance test: not running as root");
+    if !swarmy_testkit::require_root_host(
+        "image acceptance",
+        &[
+            "debootstrap",
+            "mke2fs",
+            "debugfs",
+            "mount",
+            "umount",
+            "chroot",
+        ],
+    ) {
         return false;
     }
     for variable in [
@@ -247,7 +257,7 @@ async fn root_base_ubuntu_acceptance() {
     // The server mints a fresh manifest id on every upload, so the retag
     // property is read from the volume record: a volume created on the first
     // manifest keeps that manifest after the rebuild.
-    let created = swarmyd_json(&["create", &reference]);
+    let created = core_vol_json(&["create", &reference]);
     let volume_id = created["volume_id"].as_str().unwrap().to_owned();
     assert_eq!(created["manifest_id"], first["manifest_id"]);
     check_chroot(directory.path(), &raw);
@@ -282,7 +292,7 @@ async fn root_base_ubuntu_acceptance() {
     );
     // Retagging must leave the already-created volume on its original
     // manifest, read from the volume record rather than the upload response.
-    let shown_volume = swarmyd_json(&["show", &volume_id]);
+    let shown_volume = core_vol_json(&["show", &volume_id]);
     assert_eq!(
         shown_volume["record"]["head_manifest"],
         first["manifest_id"]
