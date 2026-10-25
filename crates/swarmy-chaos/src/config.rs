@@ -48,7 +48,7 @@ pub(crate) struct Config {
     /// Use connection settings from the environment without starting the stack.
     #[arg(long)]
     pub no_start_stack: bool,
-    /// Use prebuilt swarmy-core binary from this directory instead of building them.
+    /// Use a prebuilt swarmy-core binary from this directory instead of building it.
     #[arg(long)]
     pub bin_dir: Option<PathBuf>,
 }
