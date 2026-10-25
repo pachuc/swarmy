@@ -593,8 +593,8 @@ impl<T> WorkMessage<T> {
     /// `on_tick` runs concurrently with `work`: `work` keeps being polled while
     /// `on_tick` awaits, so `on_tick` may wait on a lock `work` holds. When
     /// `work` finishes first, an in-flight `on_tick` is dropped at its await
-    /// point. A break or an error from the extension or `on_tick` drops `work`
-    /// at its current await point.
+    /// point. `Ok(ControlFlow::Break(value))` or an error from the extension
+    /// or `on_tick` drops `work` at its current await point.
     ///
     /// # Errors
     /// As [`Self::keep_alive_while`], plus errors from `on_tick`.
