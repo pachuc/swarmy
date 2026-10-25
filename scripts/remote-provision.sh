@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Provision the checkout copied to the service user's home. Safe to rerun.
+# Provision the node directory the client uploaded (scripts/ and images/, plus .swarmy/release/ from a release client or source/ from a development client). Safe to rerun.
 # Arguments: MODE SERVICE_ADDRESS [BUCKET] [BUCKET_REGION] [BUCKET_ENDPOINT]
 #   [BUCKET_PREFIX] [CONDITIONAL_CREATE] [STATIC] [SANDBOXES] [SERVICE_USER]
-#   [LOCAL_STORAGE] [PREBUILT]. SERVICE_USER owns the checkout and the
+#   [LOCAL_STORAGE] [PREBUILT]. SERVICE_USER owns the node directory and the
 #   units (default swarmy); LOCAL_STORAGE is a block device to format and
 #   mount at /mnt/swarmy-local or dir:/path for an existing directory.
 #   Sandbox nodes require it; control-only nodes use the root disk. PREBUILT
-#   true installs the uploaded bundle from <checkout>/.swarmy/release; false
-#   builds on the node.
+#   true installs the uploaded bundle from <node dir>/.swarmy/release; false
+#   builds on the node from <node dir>/source.
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
 parse_provision_args "$@"
@@ -21,7 +21,7 @@ fi
 service_home=$(service_home_for "$service_user")
 service_repo=$(service_repo_for "$service_user")
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-[[ $repo_dir == "$service_repo" ]] || { echo "Expected checkout at $service_repo" >&2; exit 1; }
+[[ $repo_dir == "$service_repo" ]] || { echo "Expected the swarmy node directory at $service_repo" >&2; exit 1; }
 cd "$repo_dir"
 # A root bootstrap copy leaves the tree owned by root; builds run as the
 # service user, so fix ownership once instead of failing halfway.
@@ -116,7 +116,9 @@ if [[ $prebuilt == false ]]; then
         sh /tmp/swarmy-rustup.sh -y --profile minimal --default-toolchain none
     fi
     export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
-    rustup show
+    source_dir=$(node_source_dir "$repo_dir")
+    [[ -f $source_dir/Cargo.toml ]] || { echo "Missing $source_dir; a development client copies its checkout there" >&2; exit 1; }
+    ( cd "$source_dir" && rustup show )
 fi
 # A version marker avoids downloading the backing tools again on a rerun.
 tools_hash=$(sha256sum scripts/install-dev-tools.sh | cut -d' ' -f1)
@@ -138,12 +140,14 @@ if [[ $prebuilt == false ]]; then
     # Packages from the shared table (the CLI package differs, so it builds
     # separately with its own feature flags). read_shared_list fails loudly:
     # an empty package list would become a whole-workspace build.
+    ( cd "$source_dir"
     if [[ $mode == stack ]]; then
         SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p "$(swarmy_cli_package)" --no-default-features
     fi
     read_shared_list build_args swarmy_mode_build_args "$mode"
     SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}"
-    bin_dir=$repo_dir/target/release
+    )
+    bin_dir=$source_dir/target/release
 else
     bin_dir=$(release_bundle_dir "$repo_dir")
     check_release_bundle "$bin_dir" "$mode"

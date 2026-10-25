@@ -286,7 +286,7 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
             // checkout, so discovery stays lazy. Cloud calls never branch:
             // the substrate refuses machine operations for existing hosts.
             if node.cloud_settings().provider == swarmy_config::Provider::Existing {
-                let host = ssh::Ssh::discover()?;
+                let host = ssh::Ssh::teardown();
                 down::run_existing(&cloud, &host, &state, &node, keep_bucket).await?;
             } else {
                 down::run(&cloud, &state, &node, Duration::from_secs(5), keep_bucket).await?;
@@ -360,29 +360,35 @@ fn resolve_bucket(settings: &mut RemoteSettings, args: &crate::BucketArgs) -> Re
 
 /// Resolve the image recipe unless `--no-image` skips the registered build.
 /// Shared by `up` and `adopt`: a missing recipe fails before any host changes.
-fn resolve_recipe(host: &ssh::Ssh, no_image: bool, image_recipe: &Path) -> Result<Option<PathBuf>> {
+fn resolve_recipe(no_image: bool, image_recipe: &Path) -> Result<Option<PathBuf>> {
     if no_image {
         Ok(None)
     } else {
-        Ok(Some(host.image_recipe(image_recipe)?))
+        Ok(Some(crate::node_files::recipe(image_recipe)?))
     }
 }
 
 /// The SSH host for provisioning, carrying the matching release when this client has one.
 fn provisioning_host(cache: &Path) -> Result<ssh::Ssh> {
-    let release = crate::release::Release::for_client()?;
-    if let Some(release) = &release {
+    let binaries = if let Some(release) = crate::release::Release::for_client()? {
         cloud_out!(
             "Using swarmy {} release binaries; nothing is built on the node",
             release.tag()
         );
+        ssh::Binaries::Release {
+            release,
+            cache: cache.to_owned(),
+        }
     } else {
+        let checkout = ssh::find_checkout(&std::env::current_dir()?)?;
         cloud_out!(
-            "Development client {}: the node builds swarmy-core from the copied checkout",
-            swarmy_version::IDENTITY
+            "Development client {}: the node builds swarmy-core from {} (copied to <node dir>/source)",
+            swarmy_version::IDENTITY,
+            checkout.display()
         );
-    }
-    Ok(ssh::Ssh::discover()?.with_release(release, cache.to_owned()))
+        ssh::Binaries::Build { checkout }
+    };
+    Ok(ssh::Ssh::new(binaries))
 }
 
 /// Launch and provision the first node of a remote.
@@ -408,8 +414,8 @@ async fn run_up(
     };
     let _lock = state.lock()?;
     swarmy_config::validate_remote_name(&name)?;
+    let recipe = resolve_recipe(no_image, &image_recipe)?;
     let host = provisioning_host(cache)?;
-    let recipe = resolve_recipe(&host, no_image, &image_recipe)?;
     if let Some(services) = services {
         settings.remote.services = services;
     }
@@ -469,8 +475,8 @@ async fn run_adopt(
     };
     let _lock = state.lock()?;
     swarmy_config::validate_remote_name(&name)?;
+    let recipe = resolve_recipe(no_image, &image_recipe)?;
     let host = provisioning_host(cache)?;
-    let recipe = resolve_recipe(&host, no_image, &image_recipe)?;
     if let Some(services) = services {
         settings.remote.services = services;
     }

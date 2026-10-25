@@ -7,7 +7,7 @@ service_user=${1:?Usage: remote-services.sh SERVICE_USER}
 validate_service_user "$service_user"
 service_home=$(service_home_for "$service_user")
 repo_dir=$(service_repo_for "$service_user")
-[[ $(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd) == "$repo_dir" ]] || { echo "Expected checkout at $repo_dir" >&2; exit 1; }
+[[ $(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd) == "$repo_dir" ]] || { echo "Expected the swarmy node directory at $repo_dir" >&2; exit 1; }
 # Service units and their binaries come from the shared table so installs
 # and teardown agree. The short name below is only prose for unit
 # descriptions and readiness messages.

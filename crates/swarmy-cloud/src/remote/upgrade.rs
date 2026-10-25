@@ -140,7 +140,7 @@ pub(super) async fn run(
     crate::Error::ensure(
         options.dirty_paths.is_empty() || options.allow_dirty,
         format!(
-            "checkout has uncommitted paths ({}); commit or ignore them, or pass --allow-dirty",
+            "development checkout has uncommitted paths ({}); commit or ignore them, or pass --allow-dirty",
             options.dirty_paths.join(", ")
         ),
     )?;

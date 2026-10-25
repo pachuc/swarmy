@@ -3,21 +3,36 @@
 This is the operations guide for provisioning, upgrades, recovery and teardown.
 For fleet-driver commands see [fleet-runbook.md](fleet-runbook.md).
 
-Run `swarmy remote up NAME` from a swarmy checkout to launch one Ubuntu 24.04
-EC2 node, copy the checkout, install the binaries, and start FoundationDB,
-NATS, SeaweedFS, and swarmyd under systemd. As its last step, `up` builds
-`images/base-ubuntu` as root with `/etc/swarmy/node.env` and registers
-`base-ubuntu:NAME` in the stack's store. Progress is streamed through SSH and
-the image build duration is printed separately from the total provisioning time.
-Release clients fetch and verify binaries matching the client, then upload them over
-SSH; nothing is built on the node. Development clients still build on the node.
-The client chooses the node architecture with `uname -m` and stores the uploaded
-bundle in the checkout at `.swarmy/release/`. For a pre-release test, set
-`SWARMY_RELEASE_BASE_URL` to an HTTPS release asset endpoint (HTTP is allowed
-only on loopback).
+Run `swarmy remote up NAME` from any directory with an installed release client to
+launch and provision an Ubuntu 24.04 EC2 node. The client uploads its compiled-in
+scripts and image recipes to `~<service user>/swarmy`, then verified release
+binaries. Development clients must run inside a checkout, which is copied to
+`~<service user>/swarmy/source` and built there. Without a checkout or
+`SWARMY_RELEASE_BASE_URL`, a development client refuses to provision. The
+client chooses the node architecture with `uname -m`. For a pre-release test,
+set `SWARMY_RELEASE_BASE_URL` to an HTTPS release asset endpoint (HTTP is
+allowed only on loopback). `up` builds `images/base-ubuntu` on the node and
+registers `base-ubuntu:NAME` in the stack's store.
+
+### Node directory
+
+```
+~<service user>/swarmy/
+  scripts/   provisioning, upgrade, services, decommission, dev-stack, install-dev-tools (replaced on every up/adopt/add-node/upgrade)
+  images/    carried recipes (base-ubuntu, base-desktop, swarmy-dev, common)
+  .swarmy/release/   release binaries (release clients)
+  source/    development clients' checkout copy and its target/
+  .swarmy/config.toml, .swarmy/node/, .swarmy/volumes, .swarmy/tunnel-key*, .dev/   node state; uploads never touch it
+```
+
+Scripts always match the client binary. Rebuild a development client after
+editing a script. Nodes provisioned before this change retain unused top-level
+checkout files: remove `crates/`, `target/`, and other old checkout files by
+hand, never `.swarmy/` or `.dev/`. Alternatively, re-provision.
+
 The default laptop-services mode runs scheduler, worker, and gateway on the
 client, while `--services node` runs them under systemd on the control node.
-The local machine needs `ssh`, `ssh-keygen`, and `rsync`. A client built with the `remote` cargo feature
+A release client needs `ssh`, `ssh-keygen`, and `rsync` 3.2.3 or newer (for `--mkpath`). A client built with the `remote` cargo feature
 provides the `remote` subcommands below; `make install-client` enables it,
 while a plain `cargo build` leaves it out for the slimmer node binary and
 such a binary rejects `remote` invocations with an error. AWS credentials use the SDK's standard credential chain.
@@ -111,7 +126,8 @@ the volume role and no disk capacity, so placement cannot select that node.
 
 ### Upgrade a running remote
 
-From a clean local checkout, run `swarmy remote upgrade NAME`. It reports the
+Run `swarmy remote upgrade NAME` from any directory with a release client, or
+from a clean local checkout with a development client. It reports the
 local CLI version and every node's installed `swarmy-core` version before copying
 anything. Joining nodes upgrade first; the first node, which owns the backing
 services, upgrades last. The upgrade uses the provisioning rsync exclusions and
@@ -122,7 +138,7 @@ installed binaries. A changed node daemon restarts last, after its managed
 sandbox commands finish; restarting it evicts every placement on that node,
 even though they are idle after the drain. `--drain-timeout SECONDS`
 defaults to 600. `--services-only` never restarts the node role (`swarmyd.service`) even if its binary
-changed. `--allow-dirty` explicitly opts into deploying uncommitted source.
+changed. `--allow-dirty` applies only to development clients and explicitly opts into deploying uncommitted source.
 Use `--json` to emit one machine-readable summary per node. A timeout leaves
 the upgraded binaries on disk but does not restart the busy node daemon; retry
 the command after its commands finish. The retry compares each running unit's
@@ -137,12 +153,11 @@ toolchain; use a release client or `SWARMY_RELEASE_BASE_URL` instead.
 `remote ls` reports each remote's token state as `set`, `missing`, or
 `not-applicable`.
 
-Use `--image-recipe images/custom` on `remote up` to select a recipe directory
-within the copied checkout. Relative paths are resolved from the checkout root;
-absolute paths must also be inside the checkout. The recipe must contain
-`recipe.toml` and cannot be in an excluded directory such as `.swarmy` or
-`target`. It still registers as `base-ubuntu:NAME`. Use `--no-image` to skip the
-build; this does not set a remote default. These options cannot be combined.
+`--image-recipe` accepts the carried recipes `images/base-ubuntu`,
+`images/base-desktop`, and `images/swarmy-dev`. For a custom recipe, use
+`swarmy image build --remote NAME DIR`. The selected recipe still registers
+as `base-ubuntu:NAME`. Use `--no-image` to skip the build; the two options
+cannot be combined.
 `add-node` reuses the stack's registry and does not rebuild the image.
 Both commands accept `--instance-type` and `--disk-gb` overrides; absent flags
 use `[remote]` defaults for the first node and its saved settings for joining
@@ -539,10 +554,9 @@ swarmy run --remote demo 'Run pwd in the sandbox, then wait for my next instruct
 swarmy chat --remote demo SESSION_ID
 ```
 
-Use `swarmy remote up demo --image-recipe images/custom` to build another recipe
-directory within the checkout. Relative paths are resolved from the checkout
-root; absolute paths must also be inside that checkout. The registered name
-remains `base-ubuntu:demo`. `--no-image` skips the build and leaves the remote
+Use `--image-recipe images/base-desktop` to select another carried recipe.
+For a custom directory use `swarmy image build --remote NAME DIR`. The registered
+name remains `base-ubuntu:demo`. `--no-image` skips the build and leaves the remote
 without a saved default; provide an already registered image through `--image`
 or `default_image` before starting a new session. The two options cannot be
 combined. An explicit session `--image NAME:TAG` overrides the profile default.
@@ -556,7 +570,7 @@ processes. Escape or Ctrl-C closes chat while the session remains stored.
 
 In the older file-backed laptop-services mode, a local gateway read the
 configured credential file; current credentials are encrypted in the store. Remote provisioning
-copies the checkout while excluding `.swarmy/`, `.dev/`, `.git/`, `target/`,
+copies the development checkout into `source/` while excluding `.swarmy/`, `.dev/`, `.git/`, `target/`,
 `.env`, and `.env.*`; it does not copy the laptop's home or credential cache.
 The configured credential path is also excluded from the checkout copy.
 Do not share its refresh writer with a running Codex login. Node services have
@@ -799,7 +813,7 @@ without any cloud machine call: no EC2 or instance API is ever touched
 lists provisioning installs, then removes the units, the binaries in
 `/usr/local/bin`, `/etc/modules-load.d/swarmy.conf`, the node environment
 (`/etc/swarmy`, which holds static bucket keys and copied credentials),
-and the checkout on every host. It deletes the owned bucket scope unless
+and the node directory on every host. It deletes the owned bucket scope unless
 `--keep-bucket` is passed, once every host is torn down (a failed host
 keeps its record and the bucket until a re-run completes), and drops local
 state. It never deletes the
@@ -962,7 +976,7 @@ For a ChatGPT gateway, use `swarmy remote up demo --services node
 --copy-credential`. This explicit flag acknowledges that the configured
 `credential_file` leaves the laptop. A warning precedes transfer. SSH sends the
 contents on stdin, and `/etc/swarmy/auth.json` is owned by ubuntu with mode 0600.
-The ordinary checkout copy excludes the configured credential path as well as
+The development source copy at `source/` excludes the configured credential path as well as
 `.swarmy`, `.dev`, and environment files. Without the flag a ChatGPT node launch
 fails before creating resources. Do not run a laptop gateway that refreshes the
 same account concurrently. Stopping the services does not erase the copied file;
@@ -1106,7 +1120,7 @@ not replicate the backing services: the first node holds the store.
 
 Commit and install the checkout you want to deploy, then run
 `swarmy remote upgrade dev`. The command prints the local and node versions,
-updates joining nodes before the first node, and copies the checkout with the
+updates joining nodes before the first node, and copies the development source checkout into `source/` with the
 same credential exclusions as `remote up`. It rebuilds changed binaries and
 restarts only the affected services. A changed `swarmy-core` restarts all service units. The node role (`swarmyd.service`) waits for managed
 sandbox commands to finish before restarting; this evicts every placement on

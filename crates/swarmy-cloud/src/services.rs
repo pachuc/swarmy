@@ -105,10 +105,10 @@ impl<'a> Options<'a> {
             fake: swarmy_config::Fake {
                 script: "/etc/swarmy/fake.json".into(),
                 // Relative to the gateway unit's working directory, which the
-                // host resolves to the service checkout. The laptop cannot
+                // host resolves to the service node directory. The laptop cannot
                 // render an absolute node path: the service home comes from
                 // the host's passwd entry, so a laptop-side `/home/<user>`
-                // guess would point at the wrong checkout whenever the laptop
+                // guess would point at the wrong node directory whenever the laptop
                 // login differs from the node's service user.
                 call_log: ".swarmy/calls.log".into(),
             },
@@ -191,7 +191,8 @@ pub(crate) async fn install(node: &RemoteNode, address: &str, options: &Options<
     let status = super::ssh::command(node)?
         .arg(address)
         .arg(format!(
-            "cd {repo} && bash scripts/remote-services.sh {}",
+            "cd {repo} && bash {} {}",
+            crate::node_files::SERVICES,
             shell_words::quote(&user),
         ))
         .status()

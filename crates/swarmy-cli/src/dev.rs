@@ -28,12 +28,6 @@ const SERVICES: [(&str, &str); 4] = [
     ("gateway", "gateway ready"),
     ("api", "api ready"),
 ];
-/// The backing tool installer is compiled in so it needs no checkout.
-/// The script remains the source for make, remote provisioning, and image setup.
-const INSTALL_DEV_TOOLS: &str = include_str!("../../../scripts/install-dev-tools.sh");
-/// The backing stack script is compiled in so `dev` needs no checkout; it runs
-/// with `SWARMY_DEV_DIR`. The file remains the source for make, CI, and nodes.
-const DEV_STACK: &str = include_str!("../../../scripts/dev-stack.sh");
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Subcommand)]
@@ -257,7 +251,8 @@ fn embedded(script: &str, name: &str) -> Process {
 }
 
 async fn stack(layout: &Layout, action: &str) -> Result<String> {
-    let output = embedded(DEV_STACK, "swarmy dev stack")
+    // The same compiled-in script is used by the node and local dev stack.
+    let output = embedded(swarmy_cloud::node_files::DEV_STACK, "swarmy dev stack")
         .arg(action)
         .env("SWARMY_DEV_DIR", &layout.stack)
         .env("PATH", crate::tools::search_path()?)
@@ -826,7 +821,10 @@ async fn logs(state: &Path, service: Option<&str>) -> Result<()> {
 
 /// Run the embedded installer with bash, inheriting stdio so download progress shows.
 async fn install_tools(prefix: Option<&Path>) -> Result<()> {
-    let mut command = embedded(INSTALL_DEV_TOOLS, "swarmy dev install-tools");
+    let mut command = embedded(
+        swarmy_cloud::node_files::INSTALL_DEV_TOOLS,
+        "swarmy dev install-tools",
+    );
     if let Some(prefix) = prefix {
         command.arg("--prefix").arg(prefix);
     }

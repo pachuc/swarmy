@@ -31,7 +31,7 @@ pub struct BucketArgs {
 
 #[derive(Subcommand, Clone)]
 pub enum Command {
-    /// Launch, copy this checkout, and provision a remote node
+    /// Launch and provision a remote node
     Up {
         name: String,
         /// Override the first node's EC2 instance type
@@ -54,7 +54,7 @@ pub enum Command {
         /// Skip building and registering the stack's default image
         #[arg(long, conflicts_with = "image_recipe")]
         no_image: bool,
-        /// Recipe directory within the checkout, relative to its root
+        /// Image recipe this client carries: images/base-ubuntu, images/base-desktop, or images/swarmy-dev
         #[arg(long, default_value = "images/base-ubuntu")]
         image_recipe: std::path::PathBuf,
     },
@@ -70,7 +70,7 @@ pub enum Command {
         /// Private key file for the bootstrap login; copied into remote state
         #[arg(long)]
         ssh_key: std::path::PathBuf,
-        /// Login that owns the checkout and runs the node units
+        /// Login that owns the node directory and runs the node units
         #[arg(long)]
         service_user: Option<String>,
         /// Local disk for sandbox data (a /dev device path or `<dir:/path>`)
@@ -90,7 +90,7 @@ pub enum Command {
         /// Skip building and registering the stack's default image
         #[arg(long, conflicts_with = "image_recipe")]
         no_image: bool,
-        /// Recipe directory within the checkout, relative to its root
+        /// Image recipe this client carries: images/base-ubuntu, images/base-desktop, or images/swarmy-dev
         #[arg(long, default_value = "images/base-ubuntu")]
         image_recipe: std::path::PathBuf,
     },
@@ -132,7 +132,7 @@ pub enum Command {
         /// Leave node daemons running even when their binaries changed
         #[arg(long)]
         services_only: bool,
-        /// Accept uncommitted local checkout changes
+        /// Accept uncommitted changes in the checkout a development client builds from
         #[arg(long)]
         allow_dirty: bool,
         /// Maximum seconds to wait for running sandbox commands

@@ -277,42 +277,43 @@ pub async fn adopt_key(node: &RemoteNode, source: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Provisions a fresh node from this repository checkout.
+/// Where a node's swarmy binaries come from.
+pub enum Binaries {
+    /// Verified release binaries cached locally.
+    Release {
+        release: crate::release::Release,
+        cache: PathBuf,
+    },
+    /// Development checkout copied into the node's source directory.
+    Build { checkout: PathBuf },
+}
+
+/// Provisions nodes from bundled files and optional binaries.
 pub struct Ssh {
-    repo: PathBuf,
-    release: Option<(crate::release::Release, PathBuf)>,
+    binaries: Option<Binaries>,
+}
+
+/// Find the nearest checkout containing the provisioning script.
+///
+/// # Errors
+/// Explains how to supply release binaries when outside a checkout.
+pub fn find_checkout(cwd: &Path) -> Result<PathBuf> {
+    cwd.ancestors().find(|p| p.join(crate::node_files::PROVISION).is_file())
+        .map(Path::to_owned).ok_or_else(|| crate::Error::other("this development build of swarmy has no release binaries for the node: run it inside a swarmy checkout so the node can build from it, or set SWARMY_RELEASE_BASE_URL (see docs/REMOTE.md)"))
 }
 
 impl Ssh {
-    /// Find the repository checkout holding the provisioning scripts.
-    ///
-    /// # Errors
-    ///
-    /// Reports when the current directory is not inside a swarmy checkout.
-    pub fn discover() -> Result<Self> {
-        let cwd = std::env::current_dir()?;
-        let repo = cwd
-            .ancestors()
-            .find(|p| p.join("scripts/remote-provision.sh").is_file())
-            .ok_or_else(|| {
-                crate::Error::other("run remote provisioning from a swarmy repository checkout")
-            })?
-            .to_owned();
-        Ok(Self {
-            repo,
-            release: None,
-        })
-    }
-
-    /// Configure optional verified release artifacts for provisioning.
+    /// Open a provisioning handle.
     #[must_use]
-    pub fn with_release(
-        mut self,
-        release: Option<crate::release::Release>,
-        cache: PathBuf,
-    ) -> Self {
-        self.release = release.map(|release| (release, cache));
-        self
+    pub const fn new(binaries: Binaries) -> Self {
+        Self {
+            binaries: Some(binaries),
+        }
+    }
+    /// Open a handle that cannot provision.
+    #[must_use]
+    pub const fn teardown() -> Self {
+        Self { binaries: None }
     }
 
     async fn node_target(node: &RemoteNode, address: &str) -> Result<crate::release::Target> {
@@ -324,17 +325,14 @@ impl Ssh {
         crate::release::Target::from_uname(String::from_utf8(output.stdout)?.trim())
     }
 
-    /// Upload verified binaries for the node architecture; development clients build on the node.
     async fn upload_release(
-        &self,
         node: &RemoteNode,
         address: &str,
-        repo: &str,
+        node_dir: &str,
+        release: &crate::release::Release,
+        cache: &Path,
         stack: bool,
-    ) -> Result<bool> {
-        let Some((release, cache)) = &self.release else {
-            return Ok(false);
-        };
+    ) -> Result<()> {
         let target = Self::node_target(node, address).await?;
         cloud_out!(
             "Uploading swarmy {} release binaries for {}",
@@ -358,7 +356,7 @@ impl Ssh {
                 .args(["-a", "--mkpath", "-e"])
                 .arg(shell_words::join(transport))
                 .args(&sources)
-                .arg(format!("{address}:{repo}/.swarmy/release/")),
+                .arg(format!("{address}:{node_dir}/.swarmy/release/")),
             "upload release binaries",
         )
         .await?;
@@ -366,44 +364,13 @@ impl Ssh {
         checked(
             base(node)?.arg(address).arg(format!(
                 "sudo chown {user}:{user} {} && sudo chown -R {user}:{user} {}",
-                shell_words::quote(&format!("{repo}/.swarmy")),
-                shell_words::quote(&format!("{repo}/.swarmy/release")),
+                shell_words::quote(&format!("{node_dir}/.swarmy")),
+                shell_words::quote(&format!("{node_dir}/.swarmy/release")),
             )),
             "hand release binaries to service user",
         )
         .await?;
-        Ok(true)
-    }
-
-    /// Resolve before launching so missing recipes cannot leave cloud resources behind.
-    ///
-    /// # Errors
-    ///
-    /// Reports recipes outside the checkout and directories without `recipe.toml`.
-    pub fn image_recipe(&self, path: &Path) -> Result<PathBuf> {
-        let path =
-            self.repo.join(path).canonicalize().map_err(|source| {
-                crate::Error::context(source, "resolve image recipe directory")
-            })?;
-        crate::Error::ensure(
-            path.is_dir() && path.join("recipe.toml").is_file(),
-            "image recipe must be a directory containing recipe.toml",
-        )?;
-        path.to_str()
-            .ok_or_else(|| crate::Error::other("image recipe path must be UTF-8"))?;
-        let relative = path.strip_prefix(&self.repo).map_err(|source| {
-            crate::Error::context(source, "image recipe must be inside the copied checkout")
-        })?;
-        crate::Error::ensure(
-            !relative.components().any(|part| {
-                matches!(
-                    part.as_os_str().to_str(),
-                    Some("target" | ".dev" | ".swarmy" | ".git")
-                )
-            }),
-            "image recipe is excluded from the copied checkout",
-        )?;
-        Ok(relative.to_owned())
+        Ok(())
     }
 
     /// List block devices with their models (`lsblk -dno PATH,MODEL`).
@@ -423,27 +390,9 @@ impl Ssh {
         Ok(String::from_utf8(output.stdout)?)
     }
 
-    /// Read the provisioning env helpers for piping over stdin when the
-    /// checkout is not on the host (yet or anymore). The piped script has
-    /// no directory for `BASH_SOURCE`, so its S3 helper cannot be sourced;
-    /// only functions without that need run here.
-    fn piped_env(&self) -> Result<String> {
-        let env = String::from_utf8(std::fs::read(
-            self.repo.join("scripts/remote-provision-env.sh"),
-        )?)?;
-        let mut script = String::new();
-        for line in env.split_inclusive('\n') {
-            if line.trim_start().starts_with("source") && line.contains("remote-s3-env.sh") {
-                continue;
-            }
-            script.push_str(line);
-        }
-        Ok(script)
-    }
-
-    /// Run the checkout's `ensure_service_user` on the host before the first
+    /// Run the embedded `ensure_service_user` on the host before the first
     /// copy, so a root login gains a destination owned by its owner. The helper
-    /// script is piped over stdin because the checkout is not on the host yet;
+    /// script is piped over stdin because the node directory is not on the host yet;
     /// user creation, sudoers, and path resolution stay in the one bash
     /// implementation instead of being repeated in Rust. Returns the
     /// host-resolved home for the rsync destination; every later command
@@ -458,7 +407,7 @@ impl Ssh {
         if user == "root" {
             return Ok("/root".to_owned());
         }
-        let mut script = self.piped_env()?;
+        let mut script = piped_env();
         // `user` is validated (letters, digits, `_`, `-`), so embedding it in
         // single quotes is data, never shell. `visudo -cf` reports to stdout, so
         // the home is the last line.
@@ -486,59 +435,33 @@ impl Ssh {
         Ok(home)
     }
 
-    /// Copy the same filtered checkout used by initial provisioning.
-    ///
-    /// # Errors
-    ///
-    /// Reports SSH, rsync, and remote package installation failures.
-    pub async fn copy_checkout(&self, node: &RemoteNode, address: &str) -> Result<String> {
-        // Dedicated servers boot without cloud-init; only wait where it exists.
+    async fn prepare_host(&self, node: &RemoteNode, address: &str) -> Result<String> {
         checked(base(node)?.arg(address)
             .arg("command -v rsync >/dev/null || (if command -v cloud-init >/dev/null 2>&1; then sudo cloud-init status --wait; fi; sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y rsync)"), "prepare remote rsync").await?;
-        let user = service_user(node)?;
-        // A root login has no service home yet; run the checkout's user
-        // setup before the copy so rsync has a destination owned by its owner.
-        let home = self.ensure_service_user(node, address, &user).await?;
-        let repo = format!("{home}/swarmy");
-        let mut transport = vec!["ssh".to_owned()];
-        transport.extend(arguments(node)?);
-        let settings = swarmy_config::Settings::load_base()?.settings;
-        let credential = &settings.selection.credential_file;
-        let mut copy = Command::new("rsync");
-        for relative in credential_excludes(&self.repo, credential)
-            .into_iter()
-            .chain(credential_excludes(
-                &self.repo,
-                &swarmy_config::Keyring::path()?,
-            ))
-        {
-            copy.arg(format!("--exclude=/{}", relative.display()));
+        let home = self
+            .ensure_service_user(node, address, &service_user(node)?)
+            .await?;
+        Ok(format!("{home}/swarmy"))
+    }
+
+    async fn stage(&self, node: &RemoteNode, address: &str, stack: bool) -> Result<bool> {
+        let Some(binaries) = &self.binaries else {
+            return Err(crate::Error::other(
+                "this SSH host was opened for teardown and cannot provision",
+            ));
+        };
+        let node_dir = self.prepare_host(node, address).await?;
+        upload_node_files(node, address, &node_dir).await?;
+        match binaries {
+            Binaries::Release { release, cache } => {
+                Self::upload_release(node, address, &node_dir, release, cache, stack).await?;
+                Ok(true)
+            }
+            Binaries::Build { checkout } => {
+                copy_source(node, address, &node_dir, checkout).await?;
+                Ok(false)
+            }
         }
-        copy.arg("-az");
-        copy.arg("--mkpath");
-        for filter in checkout_filters() {
-            copy.arg(filter);
-        }
-        checked(
-            copy.args(["-e"])
-                .arg(shell_words::join(transport))
-                .arg(format!("{}/", self.repo.display()))
-                .arg(format!("{address}:{repo}/")),
-            "copy checkout with rsync",
-        )
-        .await?;
-        // A root bootstrap login owns the copied tree; hand it to the service user.
-        // The user already exists from the bootstrap, so the chown cannot fail
-        // on a missing login.
-        checked(
-            base(node)?.arg(address).arg(format!(
-                "sudo chown -R {user}:{user} {}",
-                shell_words::quote(&repo)
-            )),
-            "hand copied checkout to service user",
-        )
-        .await?;
-        Ok(repo)
     }
 
     /// Report uncommitted paths while ignoring Python bytecode caches.
@@ -547,9 +470,12 @@ impl Ssh {
     ///
     /// Reports git failures and non-UTF-8 free output is lossy-decoded, never an error.
     pub fn checkout_changes(&self) -> Result<Vec<String>> {
+        let Some(Binaries::Build { checkout }) = &self.binaries else {
+            return Ok(Vec::new());
+        };
         let output = std::process::Command::new("git")
             .arg("-C")
-            .arg(&self.repo)
+            .arg(checkout)
             .args(["status", "--porcelain", "--untracked-files=all"])
             .output()?;
         crate::Error::ensure(
@@ -571,7 +497,7 @@ impl Ssh {
     ///
     /// Reports SSH failures and non-zero remote exits.
     pub async fn has_service_units(&self, node: &RemoteNode, address: &str) -> Result<bool> {
-        let mut script = self.piped_env()?;
+        let mut script = piped_env();
         // Fail loudly inside the piped script, like decommission does: the
         // query must error when systemctl fails, never look like no units.
         script.push_str("set -euo pipefail\nlist_installed_control_units\n");
@@ -595,7 +521,7 @@ impl Ssh {
         Ok(String::from_utf8(output.stdout)?.trim().to_owned())
     }
 
-    /// Rebuild the checkout on a node, install changed binaries, and restart
+    /// Update binaries on a node, install changed binaries, and restart
     /// service units whose running executables differ.
     ///
     /// # Errors
@@ -610,8 +536,7 @@ impl Ssh {
         drain_timeout: Duration,
         stack: bool,
     ) -> Result<serde_json::Value> {
-        let repo = self.copy_checkout(node, address).await?;
-        let prebuilt = self.upload_release(node, address, &repo, stack).await?;
+        let prebuilt = self.stage(node, address, stack).await?;
         let mode = if stack { "stack" } else { "node" };
         let services = if services_only {
             "services-only"
@@ -619,10 +544,11 @@ impl Ssh {
             "all"
         };
         let user = service_user(node)?;
-        // Bash resolves the checkout through `~user`; Rust passes only the login.
+        // Bash resolves the node directory through `~user`; Rust passes only the login.
         let script = format!(
-            "cd {} && bash scripts/remote-upgrade.sh {mode} {services} {} {}",
+            "cd {} && bash {} {mode} {services} {} {}",
             tilde_repo(&user),
+            crate::node_files::UPGRADE,
             drain_timeout.as_secs(),
             if prebuilt { "prebuilt" } else { "build" }
         );
@@ -633,7 +559,7 @@ impl Ssh {
             .map_err(|source| crate::Error::context(source, "parse remote upgrade summary"))
     }
 
-    /// Copy the checkout and run the provisioning script; returns the reachable address.
+    /// Upload node files and run the provisioning script; returns the reachable address.
     ///
     /// # Errors
     ///
@@ -644,11 +570,7 @@ impl Ssh {
         primary: Option<&RemoteNode>,
     ) -> Result<String> {
         let address = wait_ssh(node).await?;
-        cloud_out!("Copying repository checkout");
-        let repo = self.copy_checkout(node, &address).await?;
-        let prebuilt = self
-            .upload_release(node, &address, &repo, primary.is_none())
-            .await?;
+        let prebuilt = self.stage(node, &address, primary.is_none()).await?;
         let service_ip: std::net::Ipv4Addr =
             primary
                 .unwrap_or(node)
@@ -714,9 +636,9 @@ impl Ssh {
     }
 
     /// Stop swarmy services on an adopted host and remove its units,
-    /// binaries, node environment, and checkout. Pipes the checkout's
+    /// binaries, node environment, and node directory. Pipes the embedded
     /// `decommission_probe` over stdin (so no checkout is needed on the
-    /// host), which runs the shared teardown when the checkout is present,
+    /// host), which runs the shared teardown when the node directory is present,
     /// fails loudly when units remain without one, and no-ops when nothing
     /// remains. `/etc/swarmy` goes because it holds static bucket keys and
     /// copied credentials. Local sandbox disk data, the service user, the
@@ -729,10 +651,9 @@ impl Ssh {
     /// (about half a minute): `down` must continue past a cancelled
     /// server instead of blocking for a full provisioning wait per host.
     pub async fn decommission(&self, node: &RemoteNode) -> Result<()> {
-        let _ = self;
         let address = wait_ssh_for(node, 6).await?;
         let user = service_user(node)?;
-        let mut script = self.piped_env()?;
+        let mut script = piped_env();
         // Fail loudly inside the piped script: without this, a failed
         // removal would still exit zero and look like a clean teardown.
         // `user` is validated, so single quotes are data, never shell.
@@ -742,6 +663,118 @@ impl Ssh {
         pipe_script(node, &address, "remove swarmy services", &script).await?;
         Ok(())
     }
+}
+
+fn piped_env() -> String {
+    crate::node_files::REMOTE_PROVISION_ENV
+        .lines()
+        .filter(|line| {
+            !(line.trim_start().starts_with("source") && line.contains("remote-s3-env.sh"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+fn node_files_rsync_args(source: &Path, destination: &str) -> Vec<String> {
+    [
+        "-rlpt",
+        "--delete",
+        "--mkpath",
+        "--include=/scripts/***",
+        "--include=/images/***",
+        "--exclude=*",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .chain([format!("{}/", source.display()), format!("{destination}/")])
+    .collect()
+}
+
+async fn upload_node_files(node: &RemoteNode, address: &str, node_dir: &str) -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    crate::node_files::write_to(temp.path())?;
+    cloud_out!(
+        "Uploading {} node files (scripts and image recipes)",
+        crate::node_files::FILES.len()
+    );
+    let mut transport = vec!["ssh".to_owned()];
+    transport.extend(arguments(node)?);
+    let args = node_files_rsync_args(temp.path(), &format!("{address}:{node_dir}"));
+    let split = args.len() - 2;
+    checked(
+        Command::new("rsync")
+            .args(&args[..split])
+            .arg("-e")
+            .arg(shell_words::join(transport))
+            .args(&args[split..]),
+        "upload node files",
+    )
+    .await?;
+    let user = service_user(node)?;
+    checked(
+        base(node)?.arg(address).arg(format!(
+            "sudo chown {user}:{user} {} && sudo chown -R {user}:{user} {} {}",
+            shell_words::quote(node_dir),
+            shell_words::quote(&format!("{node_dir}/scripts")),
+            shell_words::quote(&format!("{node_dir}/images"))
+        )),
+        "hand node files to service user",
+    )
+    .await
+}
+
+async fn copy_source(
+    node: &RemoteNode,
+    address: &str,
+    node_dir: &str,
+    checkout: &Path,
+) -> Result<()> {
+    cloud_out!(
+        "Copying {} to {node_dir}/source for the on-node build",
+        checkout.display()
+    );
+    let user = service_user(node)?;
+    let mut transport = vec!["ssh".to_owned()];
+    transport.extend(arguments(node)?);
+    let settings = swarmy_config::Settings::load_base()?.settings;
+    let credential = &settings.selection.credential_file;
+    let mut copy = Command::new("rsync");
+    for relative in
+        credential_excludes(checkout, credential)
+            .into_iter()
+            .chain(credential_excludes(
+                checkout,
+                &swarmy_config::Keyring::path()?,
+            ))
+    {
+        copy.arg(format!("--exclude=/{}", relative.display()));
+    }
+    copy.arg("-az");
+    copy.arg("--mkpath");
+    for filter in checkout_filters() {
+        copy.arg(filter);
+    }
+    checked(
+        copy.args(["-e"])
+            .arg(shell_words::join(transport))
+            .arg(format!("{}/", checkout.display()))
+            .arg(format!("{address}:{node_dir}/source/")),
+        "copy checkout with rsync",
+    )
+    .await?;
+    // A root bootstrap login owns the copied tree; hand it to the service user.
+    // The user already exists from the bootstrap, so the chown cannot fail
+    // on a missing login.
+    checked(
+        base(node)?.arg(address).arg(format!(
+            "sudo chown -R {user}:{user} {}",
+            shell_words::quote(&format!("{node_dir}/source"))
+        )),
+        "hand copied checkout to service user",
+    )
+    .await?;
+    Ok(())
 }
 
 fn is_python_cache(status_line: &str) -> bool {
@@ -779,8 +812,9 @@ fn provisioning_command(
     let user = service_user(node)?;
     // Bash resolves `~user` through the passwd entry; Rust passes only the login.
     Ok(format!(
-        "cd {} && bash scripts/remote-provision.sh {mode} {service_ip} {} {} {} {} {conditional_create} {static_keys} {sandboxes} {} {} {prebuilt}",
+        "cd {} && bash {} {mode} {service_ip} {} {} {} {} {conditional_create} {static_keys} {sandboxes} {} {} {prebuilt}",
         tilde_repo(&user),
+        crate::node_files::PROVISION,
         shell_words::quote(bucket),
         shell_words::quote(region),
         shell_words::quote(endpoint),
@@ -1056,10 +1090,9 @@ mod tests {
         std::fs::write(dir.path().join(".gitignore"), "ignored\n").unwrap();
         std::fs::write(dir.path().join("ignored"), "ignored").unwrap();
         std::fs::write(dir.path().join("untracked.rs"), "code").unwrap();
-        let changes = Ssh {
-            repo: dir.path().to_owned(),
-            release: None,
-        }
+        let changes = Ssh::new(super::Binaries::Build {
+            checkout: dir.path().to_owned(),
+        })
         .checkout_changes()
         .unwrap();
         assert!(changes.iter().any(|path| path.contains("untracked.rs")));
@@ -1098,28 +1131,67 @@ mod tests {
     }
 
     #[test]
-    fn recipes_must_be_copied_with_the_checkout() {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        for recipe in ["images/custom", ".swarmy/excluded"] {
-            std::fs::create_dir_all(repo.join(recipe)).unwrap();
-            std::fs::write(repo.join(recipe).join("recipe.toml"), "").unwrap();
-        }
-        let host = Ssh {
-            repo: repo.clone(),
-            release: None,
-        };
-        assert_eq!(
-            host.image_recipe(std::path::Path::new("images/custom"))
-                .unwrap(),
-            std::path::Path::new("images/custom")
+    fn find_checkout_walks_up_and_explains_the_release_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("scripts")).unwrap();
+        std::fs::create_dir_all(repo.join("a/b")).unwrap();
+        std::fs::write(repo.join(crate::node_files::PROVISION), "").unwrap();
+        assert_eq!(super::find_checkout(&repo.join("a/b")).unwrap(), repo);
+        assert!(
+            super::find_checkout(tmp.path())
+                .unwrap_err()
+                .to_string()
+                .contains("SWARMY_RELEASE_BASE_URL")
         );
-        for recipe in [
-            repo.join("missing"),
-            repo.join(".swarmy/excluded"),
-            dir.path().to_owned(),
+    }
+
+    #[test]
+    fn node_files_upload_replaces_scripts_and_images_only() {
+        if std::process::Command::new("rsync")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping node files rsync test: rsync is not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        crate::node_files::write_to(&src).unwrap();
+        for path in [
+            "scripts/stale.sh",
+            "images/old/recipe.toml",
+            ".dev/fdb.cluster",
+            ".swarmy/config.toml",
+            "source/Cargo.toml",
+            "crates/legacy.rs",
         ] {
-            assert!(host.image_recipe(&recipe).is_err());
+            let file = dest.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "fixture").unwrap();
+        }
+        assert!(
+            std::process::Command::new("rsync")
+                .args(super::node_files_rsync_args(&src, dest.to_str().unwrap()))
+                .status()
+                .unwrap()
+                .success()
+        );
+        for path in ["scripts/stale.sh", "images/old/recipe.toml"] {
+            assert!(!dest.join(path).exists());
+        }
+        for path in [
+            ".dev/fdb.cluster",
+            ".swarmy/config.toml",
+            "source/Cargo.toml",
+            "crates/legacy.rs",
+        ] {
+            assert!(dest.join(path).exists());
+        }
+        for &(path, text) in crate::node_files::FILES {
+            assert_eq!(std::fs::read_to_string(dest.join(path)).unwrap(), text);
         }
     }
 
@@ -1303,13 +1375,9 @@ mod provisioning_command_tests {
     // The piped host query behind `has_service_units`, run through a local
     // `bash -s` with a stubbed systemctl: the piped env text plus the query
     // must compose and report installed control units (empty means none).
-    async fn piped_query(repo: &std::path::Path, bin: &std::path::Path) -> String {
+    async fn piped_query(bin: &std::path::Path) -> String {
         use tokio::io::AsyncWriteExt;
-        let host = super::Ssh {
-            repo: repo.to_owned(),
-            release: None,
-        };
-        let mut script = host.piped_env().unwrap();
+        let mut script = super::piped_env();
         assert!(!script.contains("remote-s3-env.sh"));
         // Mirror `has_service_units`: fail loudly inside the pipe.
         script.push_str("set -euo pipefail\nlist_installed_control_units\n");
@@ -1358,17 +1426,13 @@ mod provisioning_command_tests {
         )
         .unwrap();
         std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../");
-        assert_eq!(
-            piped_query(&repo, &bin).await.trim(),
-            "swarmy-gateway.service"
-        );
+        assert_eq!(piped_query(&bin).await.trim(), "swarmy-gateway.service");
         std::fs::write(
             &systemctl,
             "#!/usr/bin/env bash\nprintf 'swarmy-tunnel.service enabled\\nswarmyd.service enabled\\n'",
         )
         .unwrap();
-        assert!(piped_query(&repo, &bin).await.trim().is_empty());
+        assert!(piped_query(&bin).await.trim().is_empty());
     }
 
     #[tokio::test]

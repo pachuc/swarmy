@@ -20,8 +20,10 @@ parse_provision_args() {
     prebuilt=${12:-false}
 }
 
-# Where the client uploads release binaries inside the checkout.
-release_bundle_dir() { printf '%s/.swarmy/release\n' "${1:?checkout}"; }
+# Where the client uploads release binaries inside the node directory.
+release_bundle_dir() { printf '%s/.swarmy/release\n' "${1:?node directory}"; }
+# Where a development client copies its checkout for the on-node build.
+node_source_dir() { printf '%s/source\n' "${1:?node directory}"; }
 
 # Validate all binaries for a mode before installing any of them.
 check_release_bundle() {
@@ -50,7 +52,7 @@ parse_sandbox_count() {
     printf '%s\n' "$count"
 }
 
-# The login that owns the checkout and runs the node units. Plain servers
+# The login that owns the node directory and runs the node units. Plain servers
 # use `swarmy`; cloud-image hosts keep `ubuntu` by setting it.
 validate_service_user() {
     local user=${1-}
@@ -336,10 +338,10 @@ disable_previous_units() {
     done
 }
 
-# Remove every installed unit, binary, environment, and checkout named in
+# Remove every installed unit, binary, environment, and node directory named in
 # the shared table. Idempotent: every removal tolerates a missing file so
-# a failed `down` can retry. Needs no checkout beyond this file itself, so
-# both the checkout script and piped use call it.
+# a failed `down` can retry. Needs no node directory beyond this file itself, so
+# both the installed script and piped use call it.
 decommission_remove() {
     local service_user=${1-}
     validate_service_user "$service_user" || return 1
@@ -364,9 +366,9 @@ decommission_remove() {
     sudo rm -rf "$service_repo"
 }
 
-# Decommission entrypoint for piped use (no checkout needed): run the
-# shared removal when the checkout script file is present (proving the
-# checkout is intact), fail loudly when units remain without a checkout,
+# Decommission entrypoint for piped use (no node directory needed): run the
+# shared removal when the node script file is present (proving the
+# node directory is intact), fail loudly when units remain without a node directory,
 # and no-op when nothing remains. SWARMY_SYSTEMD_DIR overrides the unit
 # directory (tests point it at a fake root).
 decommission_probe() {
@@ -377,10 +379,10 @@ decommission_probe() {
     if [[ -f $repo/scripts/remote-decommission.sh ]]; then
         decommission_remove "$service_user"
     elif ls "${SWARMY_SYSTEMD_DIR:-/etc/systemd/system}"/swarmy*.service >/dev/null 2>&1; then
-        echo "swarmy checkout is missing from $repo but swarmy units are still installed; restore the checkout or remove the units by hand (see docs/REMOTE.md)" >&2
+        echo "swarmy node directory is missing from $repo but swarmy units are still installed; restore it with swarmy remote upgrade or remove the units by hand (see docs/REMOTE.md)" >&2
         return 1
     else
-        echo 'swarmy checkout already removed; nothing to tear down'
+        echo 'swarmy node directory already removed; nothing to tear down'
     fi
 }
 

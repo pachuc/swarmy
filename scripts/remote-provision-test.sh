@@ -195,3 +195,5 @@ done < <(retired_binary_names)
 [[ -f $fake_root/usr/local/bin/swarmy-core ]]
 unset -f sudo
 echo 'remote provision argument and environment tests passed'
+
+[[ $(node_source_dir /x) == /x/source ]]
