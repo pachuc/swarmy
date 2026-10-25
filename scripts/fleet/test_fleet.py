@@ -179,8 +179,8 @@ class FleetTests(unittest.TestCase):
         prompt = (self.root / "prompt-worker-1").read_text()
         for expected in ("AGENTS.md", "Repair widget", "Fix the widget", "Run widget test",
                          "swarmy/ewr2hd", "~/work/ewr2hd", "cargo clean", "from origin/master",
-                         "git merge origin/master", "git add -A && git commit -m \"WIP\" && git push",
-                         "cargo test --locked -p <each crate changed>", "attach the full log"):
+                         "do NOT open a pull request", "git add -A && git commit -m \"WIP\" && git push",
+                         "cargo test --locked -p <each crate changed>", "\"Done when\" commands", "head SHA"):
             self.assertIn(expected, prompt)
         self.assertIn(["task", "start", "EWR2HD"], self.calls())
         self.assertNotIn("private-token", (self.root / "state" / "ewr2hd.jsonl").read_text())
