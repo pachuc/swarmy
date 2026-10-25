@@ -225,3 +225,24 @@ fn mismatch_keeps_existing_supervisor_running() {
     let stdout = String::from_utf8(status.stdout).unwrap();
     assert!(stdout.contains("supervisor: up"), "{stdout}");
 }
+
+#[test]
+fn version_release_prints_the_matching_tag() {
+    let output = Command::new(CLI)
+        .args(["version", "--release"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        format!("v{}", swarmy_version::VERSION)
+    );
+    let output = Command::new(CLI)
+        .args(["--json", "version", "--release"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let version: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(version["tag"], swarmy_version::RELEASE_TAG);
+    assert_eq!(version["version"], swarmy_version::VERSION);
+}

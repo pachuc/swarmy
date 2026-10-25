@@ -97,11 +97,20 @@ pub(super) async fn clock_ticks() -> Result<u64> {
 }
 
 pub(super) fn uptime(identity: Identity, ticks: u64) -> Result<u64> {
-    // Some container runtimes virtualize /proc/uptime separately from process
-    // start times. Read the kernel clock that also timestamps /proc/PID/stat.
-    let uptime =
-        u64::try_from(rustix::time::clock_gettime(rustix::time::ClockId::Boottime).tv_sec)?;
-    Ok(uptime.saturating_sub(identity.start / ticks))
+    #[cfg(target_os = "linux")]
+    {
+        // Some container runtimes virtualize /proc/uptime separately from process
+        // start times. Read the kernel clock that also timestamps /proc/PID/stat.
+        let uptime =
+            u64::try_from(rustix::time::clock_gettime(rustix::time::ClockId::Boottime).tv_sec)?;
+        Ok(uptime.saturating_sub(identity.start / ticks))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // macOS clients compile this path, but dev process supervision is Linux-only.
+        let _ = (identity, ticks);
+        anyhow::bail!("process uptime needs Linux CLOCK_BOOTTIME")
+    }
 }
 
 #[cfg(test)]

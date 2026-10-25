@@ -361,6 +361,38 @@ provider keys can probe credentials stored in the swarm. Scripted `fake` probes 
 installed `swarmy-auth` helper handles interactive `auth login` and `auth import`;
 both save credentials through the API. Node installs omit it.
 
+## Release builds
+
+A `v*` tag runs `.github/workflows/release.yml` to build and publish release
+archives. Pull requests touching the workflow or `scripts/release.sh`, and
+manual workflow runs, build all targets without publishing. Native runners
+smoke-test their binaries: Linux x86_64 uses Ubuntu 22.04, Linux aarch64 uses
+Ubuntu 22.04 ARM, macOS x86_64 uses macOS 15 Intel, and macOS aarch64 uses
+macOS 15.
+
+Each client archive is named `swarmy-<target>.tar.gz` and contains
+`swarmy-<target>/swarmy`. The Linux core archives are named
+`swarmy-core-<target>.tar.gz` and contain `swarmy-core-<target>/swarmy-core`
+and `swarmy-core-<target>/libfdb_c.so`. The core loads its bundled
+FoundationDB 7.3.79 client through an `$ORIGIN` rpath; keep the two files
+together. Packaging checks the upstream library against its published SHA-256
+checksum. Nodes need no FoundationDB installation for this binary.
+
+Each release includes one `SHA256SUMS` for all six archives. Download it with
+the archives and verify using `sha256sum -c --ignore-missing SHA256SUMS`.
+Releases are not signed yet; signing may be added later.
+
+`swarmy version --release` prints the matching tag. The tag must be `v` plus
+the workspace version or the workflow fails. A version containing a hyphen
+publishes as a prerelease. Bump `[workspace.package] version` and Cargo.lock
+before cutting a tag.
+
+`make release-dry-run` builds the Linux x86_64 client by default, packages it,
+and generates a checksum file. Override `RELEASE_COMPONENT=core`,
+`RELEASE_TARGET=...`, and `RELEASE_DIR=...` to package a different target.
+Core builds need patchelf, clang, and libclang-dev. `CORE_BIN_PACKAGE` names
+the cargo package that builds the `swarmy-core` binary.
+
 ## Manual reference
 
 ### Run only the backing stack

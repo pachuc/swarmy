@@ -6,6 +6,8 @@ use clap::Parser;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const GIT_COMMIT: &str = env!("SWARMY_GIT_COMMIT");
+/// The git tag whose release assets match this build: `v` plus the package version.
+pub const RELEASE_TAG: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 pub const IDENTITY: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     " (",
