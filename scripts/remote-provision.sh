@@ -47,7 +47,7 @@ node_unit=$(swarmy_agent_unit)
 if [[ $mode == stack ]]; then
     dependency_kind=Requires
 else
-    # Keep swarmyd running across tunnel reconnects; its clients reconnect too.
+    # Keep the node role running across tunnel reconnects; its clients reconnect too.
     dependency_kind=Wants
 fi
 # A re-provisioned host (adopted or rebuilt) may carry the other mode's
