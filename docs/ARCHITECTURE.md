@@ -6,7 +6,7 @@ and [REMOTE.md](REMOTE.md). Each section names its implementation entry points.
 
 ## Crate map and dependency direction
 
-The workspace holds twenty-six crates (`members = ["crates/*"]` in
+The workspace holds twenty-eight crates (`members = ["crates/*"]` in
 [Cargo.toml](../Cargo.toml)). These are descriptive tiers, not strict acyclic
 boundaries: sandbox uses store and volume; chat and devtools use the HTTP
 client. The individual manifests in `crates/*/Cargo.toml` are the
@@ -24,6 +24,7 @@ crate in a tier depends on every lower tier.
   configuration ([source](../crates/swarmy-config/src/lib.rs)).
 - **swarmy-version** stamps binary compatibility at build time
   ([source](../crates/swarmy-version/src/lib.rs)).
+- **swarmy-aws** builds the one HTTPS client (hyper 1, rustls on ring) that every AWS SDK configuration uses ([source](../crates/swarmy-aws/src/lib.rs)).
 - **swarmy-catalog** contains generated model metadata and model lookup
   ([source](../crates/swarmy-catalog/src/lib.rs)).
 - **swarmy-llm** implements the wire protocols and provider selection used

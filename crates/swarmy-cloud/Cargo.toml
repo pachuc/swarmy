@@ -11,7 +11,7 @@ license.workspace = true
 # the provider interface, and the SSH boundary need no provider SDKs.
 # The fake is compiled only by the provisioning tests with `remote` enabled.
 default = []
-remote = ["dep:aws-config", "dep:aws-sdk-ec2", "dep:aws-sdk-ssm", "dep:aws-sdk-s3", "dep:aws-sdk-iam"]
+remote = ["dep:aws-config", "dep:aws-sdk-ec2", "dep:aws-sdk-ssm", "dep:aws-sdk-s3", "dep:aws-sdk-iam", "dep:swarmy-aws"]
 
 [lints]
 workspace = true
@@ -22,6 +22,7 @@ aws-sdk-ec2 = { workspace = true, optional = true }
 aws-sdk-ssm = { workspace = true, optional = true }
 aws-sdk-s3 = { workspace = true, optional = true }
 aws-sdk-iam = { workspace = true, optional = true }
+swarmy-aws = { workspace = true, optional = true }
 clap.workspace = true
 fs2.workspace = true
 jiff.workspace = true
