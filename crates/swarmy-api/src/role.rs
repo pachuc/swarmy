@@ -99,7 +99,7 @@ async fn start() -> Result<()> {
     outcome
 }
 
-// Finish an in-flight tick before clearing this instance's heartbeat.
+// Stop the heartbeat task before clearing this instance's record.
 async fn finish_health(
     store: &Store,
     heartbeat: tokio::task::JoinHandle<()>,
@@ -107,9 +107,7 @@ async fn finish_health(
     started: jiff::Timestamp,
 ) {
     heartbeat.abort();
-    match heartbeat.await {
-        Ok(()) | Err(_) => {}
-    }
+    swarmy_core::ignore_best_effort(heartbeat.await, "stop API heartbeat task");
     if let Err(error) = store
         .remove_service_heartbeat(&ServiceRole::Api, id, started)
         .await

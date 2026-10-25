@@ -578,15 +578,18 @@ fn snapshot_checks(
     let missing: Vec<_> = required
         .iter()
         .filter(|provider| !served.contains(provider))
+        .cloned()
         .collect();
     checks.push(Check::new(
         "gateway providers",
         if missing.is_empty() {
             Ok(served.join(", "))
         } else {
-            Err(format!("{}; unserved: {}", if served.is_empty() { "none".into() } else { served.join(", ") }, missing.into_iter().cloned().collect::<Vec<_>>().join(", ")))
+            let available = served.join(", ");
+            let available = if available.is_empty() { "none" } else { &available };
+            Err(format!("{available}; unserved: {}", missing.join(", ")))
         },
-        "Inspect the gateway log for provider discovery errors; configure credentials and restart the gateway.",
+        "Inspect the gateway log for provider discovery errors (.dev/logs or ~/.swarmy/dev/logs locally; journalctl -u swarmy-gateway remotely); configure credentials and restart the gateway.",
     ));
     let mut rows = api_providers.map_or_else(
         || {
@@ -612,7 +615,6 @@ fn snapshot_checks(
             )
         },
     );
-    let gateway_providers = gateway_providers(&snapshot);
     if let Some(credentials) = snapshot.credentials {
         for credential in credentials {
             let name = format!("credential {}", credential.provider);
@@ -652,7 +654,7 @@ fn snapshot_checks(
                 "Use swarmy auth set or swarmy auth login if this provider is needed.",
             ));
         }
-        row.gateway = if gateway_providers.contains(&row.provider) {
+        row.gateway = if served.contains(&row.provider) {
             "served"
         } else {
             "unavailable"
