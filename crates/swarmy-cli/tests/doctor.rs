@@ -122,6 +122,14 @@ fn doctor_reports_no_client_library_check() {
 }
 
 fn remote_fixture(cluster: &str, nats_url: &str) -> Fixture {
+    remote_fixture_with(cluster, nats_url, |_| {})
+}
+
+fn remote_fixture_with(
+    cluster: &str,
+    nats_url: &str,
+    edit: impl FnOnce(&mut swarmy_config::RemoteProfile),
+) -> Fixture {
     let fixture = Fixture::new();
     fixture.config("[selection]\nprovider = 'fake'");
     let remote = fixture.0.path().join(".swarmy/remote");
@@ -142,6 +150,8 @@ fn remote_fixture(cluster: &str, nats_url: &str) -> Fixture {
         bucket: None,
         default_image: None,
     };
+    let mut profile = profile;
+    edit(&mut profile);
     fs::write(
         remote.join("test.profile.json"),
         serde_json::to_vec(&profile).unwrap(),
@@ -152,6 +162,34 @@ fn remote_fixture(cluster: &str, nats_url: &str) -> Fixture {
     fs::write(bin.join("ssh"), "#!/bin/sh\nexit 0\n").unwrap();
     fs::set_permissions(bin.join("ssh"), fs::Permissions::from_mode(0o700)).unwrap();
     fixture
+}
+
+#[test]
+fn api_only_profile_skips_backing_stack_checks() {
+    let fixture = remote_fixture_with("", "", |profile| {
+        profile.ports = swarmy_config::RemotePorts {
+            fdb: 0,
+            nats: 0,
+            s3: 0,
+        };
+        profile.remote_ports = profile.ports;
+        profile.s3_endpoint.clear();
+        profile.api_url = Some("http://127.0.0.1:1".into());
+    });
+    let output = fixture
+        .command(true)
+        .args(["--remote", "test"])
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let checks = report["checks"].as_array().unwrap();
+    assert!(
+        !checks
+            .iter()
+            .any(|check| check["name"] == "remote FoundationDB port")
+    );
+    assert_eq!(check(&report, "remote S3")["status"], "warn");
+    assert_eq!(check(&report, "remote tunnel")["ok"], true);
 }
 
 #[test]

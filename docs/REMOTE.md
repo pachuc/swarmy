@@ -185,7 +185,7 @@ hosting sandboxes must have local NVMe.
 
 After a successful build, the node record stores `default_image`.
 `connect` copies it into `<state directory>/remote/<name>.profile.json` alongside
-the service endpoints. Selecting that profile with `--remote NAME`,
+the service endpoints; `NAME.tunnel/` holds its SSH record and log. Selecting that profile with `--remote NAME`,
 `SWARMY_REMOTE`, or `[remote] profile` applies the stack's default to local
 commands, overriding a local configuration or environment default.
 An explicit session `--image NAME:TAG` still takes precedence. Older profiles
@@ -776,7 +776,7 @@ remote before connecting another; the remote workers continue running while
 the laptop is disconnected.
 
 `swarmy remote connect NAME` reads `<state_dir>/remote/NAME.json`, starts an
-SSH control master, and writes `NAME.profile.json` beside it. `state_dir`
+SSH control master, and writes `NAME.profile.json` beside it. Its record lives in `NAME.tunnel/`. `state_dir`
 defaults to the discovered project's `.swarmy` directory; `SWARMY_STATE_DIR`
 can select another directory. Provisioning and tunnel commands share the
 `swarmy_config::RemoteNode` JSON contract.
@@ -886,12 +886,14 @@ flag. Disconnect stops only the SSH control master and removes its profile and
 cluster file; instance state and logs remain. Reconnecting a healthy tunnel is
 idempotent. SSH uses the configured identity, batch authentication, normal host
 key verification with first-use acceptance, and keepalives. SSH diagnostics are
-saved in `NAME.ssh.log`. `remote logs` follows the `swarmyd` systemd journal until
+saved in `NAME.tunnel/ssh.log`. `remote logs` follows the `swarmyd` systemd journal until
 interrupted; the SSH user needs permission to read that journal.
 
-Local ports prefer 4500, 4222, and 8333, with free ephemeral ports chosen on
-collision. All forwards bind only to `127.0.0.1`. The profile records the actual
-ports, PID, and control socket. Port selection and SSH binding cannot be atomic;
+The API, NATS and S3 forwards use free local ports. FoundationDB first tries its
+advertised port and falls back to a free port only on collision. Node-services
+remotes forward only the API. All forwards bind to `127.0.0.1`. The profile
+records the actual ports, PID, and socket; `NAME.tunnel/tunnel.json` holds the
+tunnel record. Port selection and SSH binding cannot be atomic;
 if another process claims a selected port, SSH fails startup and no profile is
 published. Retry connect after resolving the collision.
 

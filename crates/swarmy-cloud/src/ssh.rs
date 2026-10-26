@@ -26,8 +26,7 @@ pub(crate) fn options(user: &str, key: &Path, known_hosts: &Path) -> Result<Vec<
     // SSH passes remote commands to a shell; the user and destination must be data only.
     crate::Error::ensure(
         !user.is_empty()
-            && node
-                .ssh_user
+            && user
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
         "invalid ssh_user",

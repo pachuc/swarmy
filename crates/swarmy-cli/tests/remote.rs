@@ -150,6 +150,12 @@ fn failed_ssh_startup_never_publishes_a_profile() {
             .exists()
     );
     assert!(!root.path().join(".swarmy/remote/test.cluster").exists());
+    assert!(
+        !root
+            .path()
+            .join(".swarmy/remote/test.tunnel/tunnel.json")
+            .exists()
+    );
 }
 
 #[test]
@@ -230,6 +236,22 @@ fn connect_reports_timing_in_json_and_human_output_when_reusing_a_tunnel() {
         serde_json::to_vec(&profile).unwrap(),
     )
     .unwrap();
+    let tunnel = root.path().join(".swarmy/remote/test.tunnel");
+    std::fs::create_dir(&tunnel).unwrap();
+    std::fs::write(
+        tunnel.join("tunnel.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "socket": profile.socket_path, "pid": 123, "address": "127.0.0.1",
+            "addresses": ["127.0.0.1", "127.0.0.1"],
+            "forwards": [
+                {"service":"foundation_db","local":4500,"remote":4500},
+                {"service":"nats","local":4222,"remote":4222},
+                {"service":"object_store","local":8333,"remote":8333}
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let ssh = root.path().join("ssh");
     std::fs::write(&ssh, "#!/bin/sh\nsleep 0.03\nexit 0\n").unwrap();
     std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -248,6 +270,89 @@ fn connect_reports_timing_in_json_and_human_output_when_reusing_a_tunnel() {
     assert!(text.contains("# Default image: base-ubuntu:test"));
     assert!(text.contains("# Connected in "));
     assert!(text.contains("address probing: 0.000s; tunnel startup: 0.000s; reused: true"));
+}
+
+#[test]
+fn connect_opens_an_api_only_tunnel_for_node_services_and_disconnect_removes_it() {
+    let root = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    let path = root.path().join(".swarmy/remote/test.json");
+    let mut node: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    node["launch_settings"] = serde_json::json!({"services":"node"});
+    std::fs::write(path, serde_json::to_vec(&node).unwrap()).unwrap();
+    let ssh = root.path().join("ssh");
+    std::fs::write(
+        &ssh,
+        include_str!("../../swarmy-cloud/tests/fixtures/fake-ssh"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = cli(root.path(), &["remote", "connect", "test", "--json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let profile: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let record_path = root.path().join(".swarmy/remote/test.tunnel/tunnel.json");
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    let pid = record["pid"].as_u64().unwrap().to_string();
+    struct Kill(String);
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            let _ = Command::new("kill").arg(&self.0).status();
+        }
+    }
+    let _guard = Kill(pid);
+    let port = record["forwards"][0]["local"].as_u64().unwrap();
+    assert_eq!(record["forwards"][0]["service"], "api");
+    assert_eq!(record["forwards"][0]["remote"], 8742);
+    assert_eq!(record["forwards"].as_array().unwrap().len(), 1);
+    assert_eq!(profile["api_url"], format!("http://127.0.0.1:{port}"));
+    assert_eq!(
+        profile["ports"],
+        serde_json::json!({"fdb":0,"nats":0,"s3":0})
+    );
+    let saved: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.path().join(".swarmy/remote/test.profile.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved["api_token"], "fake-token");
+    let masters = std::fs::read_to_string(root.path().join("ssh-masters")).unwrap();
+    assert!(masters.contains(&format!("-L 127.0.0.1:{port}:127.0.0.1:8742")));
+    assert!(masters.contains("BatchMode=yes"));
+    assert!(masters.contains("ExitOnForwardFailure=yes"));
+    let again = cli(root.path(), &["remote", "connect", "test", "--json"]);
+    assert!(
+        again.status.success(),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+    let again: serde_json::Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(again["timing"]["reused"], true);
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("ssh-masters"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    let output = cli(root.path(), &["remote", "disconnect", "test"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!record_path.exists());
+    assert!(
+        !root
+            .path()
+            .join(".swarmy/remote/test.profile.json")
+            .exists()
+    );
+    assert!(!std::path::Path::new(record["socket"].as_str().unwrap()).exists());
 }
 
 #[test]

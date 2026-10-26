@@ -6,7 +6,7 @@ use crate::{Error, Result, ssh};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fs::{self, File, OpenOptions},
     net::{Ipv4Addr, TcpListener},
     os::unix::fs::OpenOptionsExt,
@@ -175,10 +175,13 @@ impl Tunnels {
             ssh::first_reachable(&self.program, &options, &request.target.addresses).await?;
         let probe = probing.elapsed();
         let (record, startup) = self.start(request, &options, address).await?;
-        swarmy_config::write_private(
+        if let Err(error) = swarmy_config::write_private(
             &request.dir.join(RECORD_FILE),
             &serde_json::to_vec_pretty(&record)?,
-        )?;
+        ) {
+            self.clear(request.dir, Some(&record)).await;
+            return Err(error.into());
+        }
         Ok(Opened {
             record,
             reused: false,
@@ -432,4 +435,372 @@ fn master_args(
     }
     args.push(address.into());
     args
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct Fixture {
+        root: tempfile::TempDir,
+        program: PathBuf,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let root = tempfile::tempdir().unwrap();
+            let bin = root.path().join("bin");
+            fs::create_dir(&bin).unwrap();
+            let program = bin.join("ssh");
+            fs::write(&program, include_str!("../tests/fixtures/fake-ssh")).unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+            Self { root, program }
+        }
+        fn request(&self, name: &str, placement: Placement) -> Request<'_> {
+            let dir = self.root.path().join(name);
+            Request {
+                dir: Box::leak(Box::new(dir)),
+                target: SshTarget {
+                    addresses: vec!["127.0.0.1".into()],
+                    user: "test".into(),
+                    key: "key".into(),
+                    known_hosts: "hosts".into(),
+                },
+                placement,
+                remote_ports: RemotePorts::default(),
+            }
+        }
+        fn masters(&self) -> usize {
+            fs::read_to_string(self.program.parent().unwrap().join("ssh-masters"))
+                .unwrap()
+                .lines()
+                .count()
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            for entry in fs::read_dir(self.root.path()).unwrap().flatten() {
+                if let Ok(Some(record)) = Record::read(&entry.path()) {
+                    let _ = std::process::Command::new("kill")
+                        .arg(record.pid.to_string())
+                        .status();
+                }
+            }
+        }
+    }
+    #[test]
+    fn placement_selects_forwards() {
+        assert_eq!(Placement::Remote.services(), vec![Service::Api]);
+        assert_eq!(
+            Placement::LocalServices { object_store: true }.services(),
+            vec![Service::FoundationDb, Service::Nats, Service::ObjectStore]
+        );
+        assert_eq!(
+            Placement::LocalServices {
+                object_store: false
+            }
+            .services(),
+            vec![Service::FoundationDb, Service::Nats]
+        );
+    }
+    #[test]
+    fn master_args_forward_loopback_with_batch_mode_and_exit_on_failure() {
+        let options = ssh::options("test", Path::new("key"), Path::new("hosts")).unwrap();
+        let args = master_args(
+            &options,
+            Path::new("socket"),
+            &[Forward {
+                service: Service::Api,
+                local: 40123,
+                remote: REMOTE_API_PORT,
+            }],
+            "127.0.0.1",
+        );
+        for flag in [
+            "-N",
+            "-M",
+            "-S",
+            "BatchMode=yes",
+            "ControlPersist=no",
+            "ExitOnForwardFailure=yes",
+            "127.0.0.1:40123:127.0.0.1:8742",
+        ] {
+            assert!(args.contains(&flag.to_owned()));
+        }
+        assert_eq!(args.last().unwrap(), "127.0.0.1");
+    }
+    #[tokio::test]
+    async fn open_forwards_only_the_api_on_a_free_port_and_records_it() {
+        let fixture = Fixture::new();
+        let tunnels = Tunnels::with_program(fixture.program.clone());
+        let request = fixture.request("one", Placement::Remote);
+        let opened = tunnels.open(&request).await.unwrap();
+        assert!(!opened.reused);
+        let port = opened.record.local_port(Service::Api).unwrap();
+        assert_ne!(port, 0);
+        assert_eq!(
+            opened.record.forwards,
+            vec![Forward {
+                service: Service::Api,
+                local: port,
+                remote: REMOTE_API_PORT
+            }]
+        );
+        assert!(
+            TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            Record::read(request.dir).unwrap(),
+            Some(opened.record.clone())
+        );
+        assert_eq!(
+            fs::metadata(request.dir.join(RECORD_FILE))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(request.dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            opened.record.api_url(),
+            Some(format!("http://127.0.0.1:{port}"))
+        );
+        assert_eq!(fixture.masters(), 1);
+        tunnels.disconnect(request.dir).await.unwrap();
+    }
+    #[tokio::test]
+    async fn healthy_tunnel_is_reused_and_disconnect_is_idempotent() {
+        let fixture = Fixture::new();
+        let tunnels = Tunnels::with_program(fixture.program.clone());
+        let request = fixture.request("one", Placement::Remote);
+        let first = tunnels.open(&request).await.unwrap();
+        let second = tunnels.open(&request).await.unwrap();
+        assert!(second.reused);
+        assert_eq!(first.record, second.record);
+        assert_eq!(second.probe, Duration::ZERO);
+        assert_eq!(second.startup, Duration::ZERO);
+        assert_eq!(fixture.masters(), 1);
+        assert_eq!(
+            tunnels.status(request.dir).await.unwrap(),
+            Some(first.record.clone())
+        );
+        assert!(tunnels.disconnect(request.dir).await.unwrap());
+        assert!(!request.dir.join(RECORD_FILE).exists());
+        assert!(!first.record.socket.exists());
+        assert!(!first.record.socket.parent().unwrap().exists());
+        assert!(!tunnels.disconnect(request.dir).await.unwrap());
+        assert!(tunnels.status(request.dir).await.unwrap().is_none());
+    }
+    #[tokio::test]
+    async fn concurrent_opens_start_one_tunnel() {
+        let fixture = Fixture::new();
+        let tunnels = Tunnels::with_program(fixture.program.clone());
+        let request = fixture.request("one", Placement::Remote);
+        let (first, second) = tokio::join!(tunnels.open(&request), tunnels.open(&request));
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_ne!(first.reused, second.reused);
+        assert_eq!(first.record, second.record);
+        assert_eq!(fixture.masters(), 1);
+        tunnels.disconnect(request.dir).await.unwrap();
+    }
+    #[test]
+    fn foundationdb_falls_back_when_its_port_is_taken() {
+        let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = occupied.local_addr().unwrap().port();
+        assert_ne!(
+            bind_local(Service::FoundationDb, port)
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port(),
+            port
+        );
+    }
+    #[tokio::test]
+    async fn failed_start_publishes_nothing() {
+        let fixture = Fixture::new();
+        fs::write(
+            &fixture.program,
+            "#!/bin/sh\ncase \" $* \" in *\" -M \"*) echo boom >&2; exit 255;; esac\nexit 0\n",
+        )
+        .unwrap();
+        let tunnels = Tunnels::with_program(fixture.program.clone());
+        let request = fixture.request("one", Placement::Remote);
+        let error = tunnels.open(&request).await.err().unwrap();
+        assert!(error.to_string().contains("ssh.log"));
+        assert!(!request.dir.join(RECORD_FILE).exists());
+        assert!(
+            fs::read_to_string(request.dir.join(LOG_FILE))
+                .unwrap()
+                .contains("boom")
+        );
+    }
+}
+
+#[cfg(test)]
+mod extra_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct Setup {
+        root: tempfile::TempDir,
+        program: PathBuf,
+        records: Vec<PathBuf>,
+    }
+    impl Setup {
+        fn new() -> Self {
+            let root = tempfile::tempdir().unwrap();
+            let program = root.path().join("ssh");
+            fs::write(&program, include_str!("../tests/fixtures/fake-ssh")).unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+            Self {
+                root,
+                program,
+                records: Vec::new(),
+            }
+        }
+        fn dir(&mut self, name: &str) -> PathBuf {
+            let dir = self.root.path().join(name);
+            self.records.push(dir.clone());
+            dir
+        }
+        fn request<'a>(dir: &'a Path, placement: Placement) -> Request<'a> {
+            Request {
+                dir,
+                placement,
+                target: SshTarget {
+                    addresses: vec!["127.0.0.1".into()],
+                    user: "test".into(),
+                    key: "key".into(),
+                    known_hosts: "hosts".into(),
+                },
+                remote_ports: RemotePorts::default(),
+            }
+        }
+        fn masters(&self) -> usize {
+            fs::read_to_string(self.root.path().join("ssh-masters"))
+                .unwrap()
+                .lines()
+                .count()
+        }
+    }
+    impl Drop for Setup {
+        fn drop(&mut self) {
+            for dir in &self.records {
+                if let Ok(Some(record)) = Record::read(dir) {
+                    let _ = std::process::Command::new("kill")
+                        .arg(record.pid.to_string())
+                        .status();
+                }
+            }
+        }
+    }
+    #[tokio::test]
+    async fn local_services_forward_the_backing_stack() {
+        let mut setup = Setup::new();
+        let tunnels = Tunnels::with_program(setup.program.clone());
+        let dir = setup.dir("with_bucket_forward");
+        let reserved = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let fdb = reserved.local_addr().unwrap().port();
+        drop(reserved);
+        let mut request = Setup::request(&dir, Placement::LocalServices { object_store: true });
+        request.remote_ports = RemotePorts {
+            fdb,
+            nats: 14222,
+            s3: 18333,
+        };
+        let record = tunnels.open(&request).await.unwrap().record;
+        assert_eq!(
+            record
+                .forwards
+                .iter()
+                .map(|f| f.service)
+                .collect::<Vec<_>>(),
+            vec![Service::FoundationDb, Service::Nats, Service::ObjectStore]
+        );
+        assert_eq!(record.local_port(Service::FoundationDb), Some(fdb));
+        assert!(record.forwards.iter().all(|forward| forward.local != 0));
+        assert!(record.local_port(Service::Api).is_none());
+        tunnels.disconnect(&dir).await.unwrap();
+        let dir = setup.dir("without_bucket_forward");
+        let request = Setup::request(
+            &dir,
+            Placement::LocalServices {
+                object_store: false,
+            },
+        );
+        let record = tunnels.open(&request).await.unwrap().record;
+        assert!(record.local_port(Service::ObjectStore).is_none());
+        tunnels.disconnect(&dir).await.unwrap();
+    }
+    #[tokio::test]
+    async fn stale_socket_is_replaced() {
+        let mut setup = Setup::new();
+        let tunnels = Tunnels::with_program(setup.program.clone());
+        let dir = setup.dir("one");
+        swarmy_config::create_private_dir(&dir).unwrap();
+        let missing = setup.root.path().join("missing");
+        let stale = Record {
+            socket: missing.clone(),
+            pid: 0,
+            address: "127.0.0.1".into(),
+            addresses: vec!["127.0.0.1".into()],
+            forwards: vec![Forward {
+                service: Service::Api,
+                local: 1,
+                remote: REMOTE_API_PORT,
+            }],
+        };
+        swarmy_config::write_private(&dir.join(RECORD_FILE), &serde_json::to_vec(&stale).unwrap())
+            .unwrap();
+        let request = Setup::request(&dir, Placement::Remote);
+        let first = tunnels.open(&request).await.unwrap();
+        assert!(!first.reused);
+        assert_ne!(first.record.socket, missing);
+        let local = Setup::request(
+            &dir,
+            Placement::LocalServices {
+                object_store: false,
+            },
+        );
+        let second = tunnels.open(&local).await.unwrap();
+        assert!(!second.reused);
+        assert_eq!(setup.masters(), 2);
+        assert!(!first.record.socket.exists());
+        tunnels.disconnect(&dir).await.unwrap();
+    }
+    #[tokio::test]
+    async fn two_swarms_connect_at_once_on_different_ports() {
+        let mut setup = Setup::new();
+        let tunnels = Tunnels::with_program(setup.program.clone());
+        let a = setup.dir("a");
+        let b = setup.dir("b");
+        let first = Setup::request(&a, Placement::Remote);
+        let second = Setup::request(&b, Placement::Remote);
+        let (one, two) = tokio::join!(tunnels.open(&first), tunnels.open(&second));
+        let one = one.unwrap().record;
+        let two = two.unwrap().record;
+        assert_ne!(one.local_port(Service::Api), two.local_port(Service::Api));
+        for (dir, record) in [(&a, &one), (&b, &two)] {
+            assert!(
+                TcpStream::connect((
+                    Ipv4Addr::LOCALHOST,
+                    record.local_port(Service::Api).unwrap()
+                ))
+                .await
+                .is_ok()
+            );
+            assert!(tunnels.status(dir).await.unwrap().is_some());
+            tunnels.disconnect(dir).await.unwrap();
+        }
+    }
 }

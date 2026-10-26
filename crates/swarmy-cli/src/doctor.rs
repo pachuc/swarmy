@@ -219,14 +219,16 @@ async fn remote_checks(loaded: &Loaded) -> Vec<Check> {
                     )];
                 }
             };
-        checks.push(Check::new(
-            "remote FoundationDB port",
-            profile
-                .validate_fdb_port()
-                .map(|()| "advertised port preserved".into())
-                .map_err(|error| error.to_string()),
-            "Disconnect, free the advertised FoundationDB port, and reconnect.",
-        ));
+        if profile.ports.fdb != 0 {
+            checks.push(Check::new(
+                "remote FoundationDB port",
+                profile
+                    .validate_fdb_port()
+                    .map(|()| "advertised port preserved".into())
+                    .map_err(|error| error.to_string()),
+                "Disconnect, free the advertised FoundationDB port, and reconnect.",
+            ));
+        }
         let result = if remote_ssh::healthy(&profile).await {
             Ok(format!(
                 "{name}: SSH control master healthy (pid {})",
@@ -335,6 +337,15 @@ async fn s3_line(settings: &Settings) -> Check {
                 spec.describe()
             ),
             "Check the API host's object storage credentials and region if image or volume operations fail.",
+        );
+    }
+    if profile.as_ref().is_some_and(|profile| {
+        profile.ports.s3 == 0 && profile.bucket.is_none() && profile.s3_endpoint.is_empty()
+    }) {
+        return Check::warn(
+            "remote S3",
+            "object store runs on the API host; verified there, not from the client",
+            "Check the API host's object storage if image or volume operations fail.",
         );
     }
     let (result, fix) = s3_check(settings).await;
