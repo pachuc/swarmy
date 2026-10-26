@@ -648,6 +648,14 @@ pub fn remote_path(state: &Path, name: &str, extension: &str) -> Result<PathBuf,
     Ok(state.join("remote").join(format!("{name}.{extension}")))
 }
 
+pub(crate) fn is_valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
@@ -1001,12 +1009,4 @@ mod tests {
         assert!(!debug.contains("test-access"), "{debug}");
         assert!(!debug.contains("test-secret"), "{debug}");
     }
-}
-
-pub(crate) fn is_valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 64
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }

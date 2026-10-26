@@ -55,3 +55,101 @@ pub fn resolve(
     }
     Err(Error::NoSwarm)
 }
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use crate::{
+        paths::Dirs,
+        swarm::{GroupSpec, HostSpec, Lifecycle, Module, Placement, SwarmSpec},
+    };
+    fn assert_redacted(registry: &Registry, env: &BTreeMap<String, String>) {
+        assert!(!format!("{:?}", resolve(registry, None, env).unwrap()).contains("secret"));
+    }
+    #[test]
+    fn precedence_and_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let registry = Registry::new(Dirs {
+            config: root.join("config"),
+            data: root.join("data"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        });
+        for name in ["flag", "env", "cur"] {
+            registry
+                .write_spec(&SwarmSpec {
+                    name: name.into(),
+                    lifecycle: Lifecycle::Ephemeral,
+                    groups: [(
+                        "box".into(),
+                        GroupSpec {
+                            module: Module::Existing,
+                            size: None,
+                            location: None,
+                            count: None,
+                            hosts: vec![HostSpec {
+                                address: "203.0.113.10".into(),
+                                ssh_user: "root".into(),
+                                ssh_key: "/keys/box".into(),
+                            }],
+                        },
+                    )]
+                    .into(),
+                    placement: Placement {
+                        stack: "box".into(),
+                        services: "box".into(),
+                        nodes: vec!["box".into()],
+                    },
+                })
+                .unwrap();
+        }
+        registry.set_current("cur").unwrap();
+        let mut env = BTreeMap::from([
+            ("SWARMY_SWARM".into(), "env".into()),
+            ("SWARMY_API_URL".into(), "http://localhost".into()),
+            ("SWARMY_API_TOKEN".into(), "secret".into()),
+        ]);
+        assert!(
+            matches!(resolve(&registry,Some("flag"),&env).unwrap(),Target::Swarm(s) if s.spec.name=="flag")
+        );
+        assert!(
+            matches!(resolve(&registry,None,&env).unwrap(),Target::Swarm(s) if s.spec.name=="env")
+        );
+        env.insert("SWARMY_SWARM".into(), String::new());
+        assert!(
+            matches!(resolve(&registry,None,&env).unwrap(),Target::Endpoint{url,token} if url=="http://localhost" && token=="secret")
+        );
+        assert_redacted(&registry, &env);
+        env.insert("SWARMY_API_TOKEN".into(), String::new());
+        assert!(matches!(
+            resolve(&registry, None, &env),
+            Err(Error::IncompleteEndpoint)
+        ));
+        env.remove("SWARMY_API_TOKEN");
+        assert!(matches!(
+            resolve(&registry, None, &env),
+            Err(Error::IncompleteEndpoint)
+        ));
+        env.insert("SWARMY_API_URL".into(), String::new());
+        env.insert("SWARMY_API_TOKEN".into(), "secret".into());
+        assert!(
+            matches!(resolve(&registry,None,&env).unwrap(),Target::Swarm(s) if s.spec.name=="cur")
+        );
+        assert!(matches!(
+            resolve(&registry, Some("missing"), &env),
+            Err(Error::UnknownSwarm(_))
+        ));
+        registry.clear_current().unwrap();
+        assert!(matches!(
+            resolve(&registry, None, &env),
+            Err(Error::NoSwarm)
+        ));
+        assert!(Error::NoSwarm.to_string().contains("swarmy swarm create"));
+        crate::write_private(&registry.dirs().current(), b"missing\n").unwrap();
+        assert!(matches!(
+            resolve(&registry, None, &env),
+            Err(Error::StaleCurrent(_))
+        ));
+    }
+}

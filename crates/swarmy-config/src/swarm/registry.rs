@@ -34,6 +34,20 @@ fn read_text(path: &Path) -> Result<Option<String>, Error> {
         Err(e) => Err(file_error(path, e.into())),
     }
 }
+fn registry_entry_name(path: &Path, specs: bool) -> Option<String> {
+    let name = if specs {
+        if !path.is_file() || path.extension().is_none_or(|e| e != "toml") {
+            return None;
+        }
+        path.file_stem()?.to_str()?
+    } else {
+        if !path.is_dir() {
+            return None;
+        }
+        path.file_name()?.to_str()?
+    };
+    validate_swarm_name(name).is_ok().then(|| name.to_owned())
+}
 impl Registry {
     #[must_use]
     pub const fn new(dirs: Dirs) -> Self {
@@ -67,23 +81,9 @@ impl Registry {
         for (directory, specs) in [(self.dirs.specs(), true), (self.dirs.records(), false)] {
             if let Some(entries) = missing(fs::read_dir(directory))? {
                 for entry in entries {
-                    let entry = entry?;
-                    let path = entry.path();
-                    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-                        continue;
-                    };
-                    if specs {
-                        if path.is_file() && path.extension().is_some_and(|e| e == "toml") {
-                            if let Some(stem) = path
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .filter(|s| validate_swarm_name(s).is_ok())
-                            {
-                                names.insert(stem.to_owned());
-                            }
-                        }
-                    } else if path.is_dir() && validate_swarm_name(name).is_ok() {
-                        names.insert(name.to_owned());
+                    let path = entry?.path();
+                    if let Some(name) = registry_entry_name(&path, specs) {
+                        names.insert(name);
                     }
                 }
             }
@@ -167,15 +167,15 @@ impl Registry {
         if !spec.exists() && !dir.exists() {
             return Err(Error::UnknownSwarm(name.to_owned()));
         }
-        if let Err(e) = fs::remove_file(spec) {
-            if e.kind() != ErrorKind::NotFound {
-                return Err(e.into());
-            }
+        if let Err(e) = fs::remove_file(spec)
+            && e.kind() != ErrorKind::NotFound
+        {
+            return Err(e.into());
         }
-        if let Err(e) = fs::remove_dir_all(dir) {
-            if e.kind() != ErrorKind::NotFound {
-                return Err(e.into());
-            }
+        if let Err(e) = fs::remove_dir_all(dir)
+            && e.kind() != ErrorKind::NotFound
+        {
+            return Err(e.into());
         }
         if self.current()?.as_deref() == Some(name) {
             self.clear_current()?;
@@ -192,7 +192,7 @@ impl Registry {
         let name = text.trim_end_matches('\n');
         if name.is_empty() {
             return Ok(None);
-        };
+        }
         if validate_swarm_name(name).is_err() {
             return Err(file_error(
                 &path,
@@ -211,11 +211,135 @@ impl Registry {
     /// # Errors
     /// Returns filesystem errors.
     pub fn clear_current(&self) -> Result<(), Error> {
-        if let Err(e) = fs::remove_file(self.dirs.current()) {
-            if e.kind() != ErrorKind::NotFound {
-                return Err(e.into());
-            }
+        if let Err(e) = fs::remove_file(self.dirs.current())
+            && e.kind() != ErrorKind::NotFound
+        {
+            return Err(e.into());
         }
         Ok(())
+    }
+}
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use crate::swarm::{GroupSpec, Lifecycle, Module, Placement, SwarmApi};
+    use std::os::unix::fs::PermissionsExt;
+    fn setup() -> (tempfile::TempDir, Registry) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let dirs = Dirs {
+            config: root.join("config"),
+            data: root.join("data"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        (temp, Registry::new(dirs))
+    }
+    fn spec(name: &str) -> SwarmSpec {
+        SwarmSpec {
+            name: name.into(),
+            lifecycle: Lifecycle::Persistent,
+            groups: [(
+                "box".into(),
+                GroupSpec {
+                    module: Module::Existing,
+                    size: None,
+                    location: None,
+                    count: None,
+                    hosts: vec![crate::swarm::HostSpec {
+                        address: "203.0.113.10".into(),
+                        ssh_user: "root".into(),
+                        ssh_key: "/keys/box".into(),
+                    }],
+                },
+            )]
+            .into(),
+            placement: Placement {
+                stack: "box".into(),
+                services: "box".into(),
+                nodes: vec!["box".into()],
+            },
+        }
+    }
+    #[test]
+    fn disk_round_trip_and_modes() {
+        let (_tmp, r) = setup();
+        assert!(r.list().unwrap().is_empty());
+        assert!(!r.dirs().config.exists());
+        let spec = spec("a");
+        r.write_spec(&spec).unwrap();
+        r.write_spec(&spec).unwrap();
+        assert_eq!(r.read_spec("a").unwrap(), Some(spec));
+        let record = SwarmRecord {
+            name: "a".into(),
+            created_at: "2026-10-26T00:00:00Z".parse().unwrap(),
+            api: SwarmApi::default(),
+            hosts: std::collections::BTreeMap::default(),
+            tofu_state: None,
+        };
+        r.write_record(&record).unwrap();
+        r.write_record(&record).unwrap();
+        assert_eq!(r.read_record("a").unwrap(), Some(record));
+        for path in [r.spec_path("a").unwrap(), r.record_path("a").unwrap()] {
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        for path in [
+            r.dirs().specs(),
+            r.dirs().records(),
+            r.swarm_dir("a").unwrap(),
+        ] {
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        assert_eq!(fs::read_dir(r.dirs().specs()).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(r.swarm_dir("a").unwrap()).unwrap().count(), 1);
+    }
+    #[test]
+    fn list_remove_and_current() {
+        let (_tmp, r) = setup();
+        assert!(r.current().unwrap().is_none());
+        assert!(matches!(r.set_current("nope"), Err(Error::UnknownSwarm(_))));
+        for name in ["z", "a"] {
+            r.write_spec(&spec(name)).unwrap();
+        }
+        create_private_dir(&r.swarm_dir("m").unwrap()).unwrap();
+        fs::write(r.dirs().specs().join("notes.txt"), "").unwrap();
+        fs::write(r.dirs().specs().join("bad name.toml"), "").unwrap();
+        fs::write(r.dirs().records().join("stray"), "").unwrap();
+        assert_eq!(r.list().unwrap(), ["a", "m", "z"]);
+        assert!(matches!(r.read("missing"), Err(Error::UnknownSwarm(_))));
+        r.set_current("a").unwrap();
+        assert_eq!(r.current().unwrap(), Some("a".into()));
+        assert_eq!(
+            fs::metadata(r.dirs().current())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        r.remove("z").unwrap();
+        assert_eq!(r.current().unwrap(), Some("a".into()));
+        r.remove("a").unwrap();
+        assert_eq!(r.current().unwrap(), None);
+        r.clear_current().unwrap();
+        assert!(matches!(r.remove("unknown"), Err(Error::UnknownSwarm(_))));
+        fs::write(r.dirs().current(), "../x").unwrap();
+        assert!(r.current().is_err());
+    }
+    #[test]
+    fn file_errors_name_mismatch() {
+        let (_tmp, r) = setup();
+        r.write_spec(&spec("a")).unwrap();
+        fs::write(r.spec_path("a").unwrap(), spec("b").to_toml().unwrap()).unwrap();
+        assert!(
+            matches!(r.read_spec("a"),Err(Error::File{source,..}) if matches!(*source,Error::Registry(_)))
+        );
     }
 }

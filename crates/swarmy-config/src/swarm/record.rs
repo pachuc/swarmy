@@ -60,3 +60,35 @@ impl SwarmRecord {
             .map_err(|_| Error::Registry(format!("invalid swarm name \"{}\"", self.name)))
     }
 }
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    #[test]
+    fn record_round_trip_and_redaction() {
+        let record = SwarmRecord {
+            name: "demo".into(),
+            created_at: "2026-10-26T00:00:00Z".parse().unwrap(),
+            api: SwarmApi {
+                token: Some("very-secret-token".into()),
+                url: Some("http://localhost".into()),
+            },
+            hosts: BTreeMap::from([(
+                "workers".into(),
+                vec![RecordedHost {
+                    name: "box".into(),
+                    public_address: "203.0.113.10".into(),
+                    private_address: None,
+                    ssh_user: "root".into(),
+                    ssh_key: "/keys/box".into(),
+                }],
+            )]),
+            tofu_state: Some("/state/tofu".into()),
+        };
+        assert_eq!(
+            SwarmRecord::parse(&record.to_toml().unwrap()).unwrap(),
+            record
+        );
+        assert!(!format!("{record:?}").contains("very-secret-token"));
+    }
+}

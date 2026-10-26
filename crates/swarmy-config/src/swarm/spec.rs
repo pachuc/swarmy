@@ -107,6 +107,52 @@ impl GroupSpec {
         }
     }
 }
+fn group_failure(g: &str, group: &GroupSpec) -> Option<String> {
+    match &group.module {
+        Module::HetznerCloud | Module::Aws | Module::Path(_) => {
+            let m = group.module.label();
+            if group.count.is_none() {
+                Some(format!("group \"{g}\": module {m} needs count"))
+            } else if group.count == Some(0) {
+                Some(format!("group \"{g}\": count must be at least 1"))
+            } else if !group.hosts.is_empty() {
+                Some(format!(
+                    "group \"{g}\": only module = \"existing\" groups list hosts"
+                ))
+            } else if !matches!(group.module, Module::Path(_)) && group.size.is_none() {
+                Some(format!("group \"{g}\": module {m} needs size"))
+            } else if !matches!(group.module, Module::Path(_)) && group.location.is_none() {
+                Some(format!("group \"{g}\": module {m} needs location"))
+            } else {
+                None
+            }
+        }
+        Module::Existing => {
+            if group.hosts.is_empty() {
+                Some(format!(
+                    "group \"{g}\": module = \"existing\" needs at least one entry in hosts"
+                ))
+            } else if group.count.is_some() {
+                Some(format!(
+                    "group \"{g}\": an existing group's count is its number of hosts; remove count"
+                ))
+            } else if group.size.is_some() || group.location.is_some() {
+                Some(format!(
+                    "group \"{g}\": size and location apply only to groups that create machines"
+                ))
+            } else if group.hosts.iter().any(|h| h.address.is_empty()) {
+                Some(format!("group \"{g}\": host address must not be empty"))
+            } else {
+                None
+            }
+        }
+        Module::Local => (group.count.is_some()
+            || group.size.is_some()
+            || group.location.is_some()
+            || !group.hosts.is_empty())
+        .then(|| format!("group \"{g}\": a local group takes no count, size, location, or hosts")),
+    }
+}
 impl SwarmSpec {
     /// # Errors
     /// Returns `Decode` or `Spec`.
@@ -137,53 +183,7 @@ impl SwarmSpec {
                     "group name \"{g}\" must be 1-64 letters, digits, hyphens, or underscores"
                 )));
             }
-            let failure = match &group.module {
-                Module::HetznerCloud | Module::Aws | Module::Path(_) => {
-                    let m = group.module.label();
-                    if group.count.is_none() {
-                        Some(format!("group \"{g}\": module {m} needs count"))
-                    } else if group.count == Some(0) {
-                        Some(format!("group \"{g}\": count must be at least 1"))
-                    } else if !group.hosts.is_empty() {
-                        Some(format!(
-                            "group \"{g}\": only module = \"existing\" groups list hosts"
-                        ))
-                    } else if !matches!(group.module, Module::Path(_)) && group.size.is_none() {
-                        Some(format!("group \"{g}\": module {m} needs size"))
-                    } else if !matches!(group.module, Module::Path(_)) && group.location.is_none() {
-                        Some(format!("group \"{g}\": module {m} needs location"))
-                    } else {
-                        None
-                    }
-                }
-                Module::Existing => {
-                    if group.hosts.is_empty() {
-                        Some(format!(
-                            "group \"{g}\": module = \"existing\" needs at least one entry in hosts"
-                        ))
-                    } else if group.count.is_some() {
-                        Some(format!(
-                            "group \"{g}\": an existing group's count is its number of hosts; remove count"
-                        ))
-                    } else if group.size.is_some() || group.location.is_some() {
-                        Some(format!(
-                            "group \"{g}\": size and location apply only to groups that create machines"
-                        ))
-                    } else if group.hosts.iter().any(|h| h.address.is_empty()) {
-                        Some(format!("group \"{g}\": host address must not be empty"))
-                    } else {
-                        None
-                    }
-                }
-                Module::Local => (group.count.is_some()
-                    || group.size.is_some()
-                    || group.location.is_some()
-                    || !group.hosts.is_empty())
-                .then(|| {
-                    format!("group \"{g}\": a local group takes no count, size, location, or hosts")
-                }),
-            };
-            if let Some(message) = failure {
+            if let Some(message) = group_failure(g, group) {
                 return Err(Error::Spec(message));
             }
         }
@@ -228,5 +228,211 @@ impl SwarmSpec {
             }
         }
         Ok(())
+    }
+}
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    const CLOUD: &str = r#"
+name = "fleet"
+lifecycle = "persistent" # or "ephemeral"
+[groups.control]
+module = "hetzner-cloud" # "hetzner-cloud", "aws", "existing", "local", or a path to your own module
+size = "cpx41"
+location = "fsn1"
+count = 1
+[groups.workers]
+module = "hetzner-cloud"
+size = "ccx33"
+location = "fsn1"
+count = 2
+[placement]
+stack = "control"
+services = "control" # or "local" (the laptop runs the services)
+nodes = ["workers"] # or ["control"] for one box like hz
+"#;
+    const EXISTING: &str = r#"
+name = "box"
+lifecycle = "ephemeral"
+[groups.box]
+module = "existing"
+hosts = [{ address = "203.0.113.10", ssh_user = "root", ssh_key = "/keys/box" }]
+[placement]
+stack = "box"
+services = "box"
+nodes = ["box"]
+"#;
+    const LOCAL: &str = r#"
+name = "local-services"
+lifecycle = "persistent"
+[groups.box]
+module = "existing"
+hosts = [{ address = "203.0.113.10", ssh_user = "root", ssh_key = "/keys/box" }]
+[groups.local]
+module = "local"
+[placement]
+stack = "box"
+services = "local"
+nodes = ["box"]
+"#;
+    #[test]
+    fn examples_round_trip() {
+        for text in [CLOUD, EXISTING, LOCAL] {
+            let spec = SwarmSpec::parse(text).unwrap();
+            assert_eq!(SwarmSpec::parse(&spec.to_toml().unwrap()).unwrap(), spec);
+        }
+        let cloud = SwarmSpec::parse(CLOUD).unwrap();
+        assert_eq!(cloud.groups.len(), 2);
+        assert_eq!(cloud.groups["control"].machines(), 1);
+        assert_eq!(cloud.groups["workers"].machines(), 2);
+        assert_eq!(cloud.lifecycle, Lifecycle::Persistent);
+        assert_eq!(cloud.placement.nodes, ["workers"]);
+        let path = CLOUD.replace("hetzner-cloud", "./modules/mine");
+        assert!(matches!(
+            SwarmSpec::parse(&path).unwrap().groups["control"].module,
+            Module::Path(_)
+        ));
+        let invalid = CLOUD.replace("hetzner-cloud", "hetzner");
+        assert!(
+            SwarmSpec::parse(&invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("hetzner")
+        );
+    }
+    #[test]
+    fn rejects_unknown_fields() {
+        assert!(SwarmSpec::parse(&CLOUD.replace("size =", "sizes =")).is_err());
+        assert!(SwarmSpec::parse(&format!("nodes = 3\n{EXISTING}")).is_err());
+        assert!(
+            SwarmSpec::parse(&EXISTING.replace("ssh_user =", "port = 22, ssh_user =")).is_err()
+        );
+    }
+    #[test]
+    fn validation_order_and_messages() {
+        type Case = (Box<dyn Fn(&mut SwarmSpec)>, &'static str);
+        let base = SwarmSpec::parse(CLOUD).unwrap();
+        let cases: Vec<Case> = vec![
+            (
+                Box::new(|s| s.name = "bad name".into()),
+                "swarm name \"bad name\" must be 1-64 letters, digits, hyphens, or underscores",
+            ),
+            (
+                Box::new(|s| s.groups.clear()),
+                "swarm \"fleet\" has no groups",
+            ),
+            (
+                Box::new(|s| {
+                    let g = s.groups.remove("control").unwrap();
+                    s.groups.insert("bad name".into(), g);
+                }),
+                "group name \"bad name\" must be 1-64 letters, digits, hyphens, or underscores",
+            ),
+            (
+                Box::new(|s| s.groups.get_mut("control").unwrap().count = None),
+                "group \"control\": module hetzner-cloud needs count",
+            ),
+            (
+                Box::new(|s| s.groups.get_mut("control").unwrap().count = Some(0)),
+                "group \"control\": count must be at least 1",
+            ),
+            (
+                Box::new(|s| {
+                    s.groups.get_mut("control").unwrap().hosts.push(HostSpec {
+                        address: "x".into(),
+                        ssh_user: "root".into(),
+                        ssh_key: "x".into(),
+                    });
+                }),
+                "group \"control\": only module = \"existing\" groups list hosts",
+            ),
+            (
+                Box::new(|s| s.groups.get_mut("control").unwrap().size = None),
+                "group \"control\": module hetzner-cloud needs size",
+            ),
+            (
+                Box::new(|s| s.groups.get_mut("control").unwrap().location = None),
+                "group \"control\": module hetzner-cloud needs location",
+            ),
+            (
+                Box::new(|s| s.placement.stack = "missing".into()),
+                "placement.stack: no group named \"missing\"",
+            ),
+            (
+                Box::new(|s| s.placement.nodes.clear()),
+                "placement.nodes must name at least one group",
+            ),
+            (
+                Box::new(|s| s.placement.nodes = vec!["gpu".into()]),
+                "placement.nodes: no group named \"gpu\"",
+            ),
+            (
+                Box::new(|s| s.placement.nodes = vec!["workers".into(), "workers".into()]),
+                "placement.nodes lists group \"workers\" twice",
+            ),
+            (
+                Box::new(|s| s.placement.nodes = vec!["control".into()]),
+                "group \"workers\" is not used by placement",
+            ),
+        ];
+        for (change, expected) in cases {
+            let mut spec = base.clone();
+            change(&mut spec);
+            assert_eq!(
+                spec.validate().unwrap_err().to_string(),
+                format!("invalid swarm spec: {expected}")
+            );
+        }
+    }
+    #[test]
+    fn existing_and_local_validation() {
+        for (text, change, expected) in [
+            (
+                EXISTING,
+                "hosts",
+                "group \"box\": module = \"existing\" needs at least one entry in hosts",
+            ),
+            (
+                EXISTING,
+                "count",
+                "group \"box\": an existing group's count is its number of hosts; remove count",
+            ),
+            (
+                EXISTING,
+                "size",
+                "group \"box\": size and location apply only to groups that create machines",
+            ),
+            (
+                EXISTING,
+                "address",
+                "group \"box\": host address must not be empty",
+            ),
+            (
+                LOCAL,
+                "local fields",
+                "group \"local\": a local group takes no count, size, location, or hosts",
+            ),
+            (
+                LOCAL,
+                "local nodes",
+                "placement.nodes: group \"local\" is local; this machine can run the stack or the services, not nodes",
+            ),
+        ] {
+            let mut spec = SwarmSpec::parse(text).unwrap();
+            match change {
+                "hosts" => spec.groups.get_mut("box").unwrap().hosts.clear(),
+                "count" => spec.groups.get_mut("box").unwrap().count = Some(1),
+                "size" => spec.groups.get_mut("box").unwrap().size = Some("x".into()),
+                "address" => spec.groups.get_mut("box").unwrap().hosts[0].address.clear(),
+                "local fields" => spec.groups.get_mut("local").unwrap().count = Some(1),
+                "local nodes" => spec.placement.nodes = vec!["local".into()],
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                spec.validate().unwrap_err().to_string(),
+                format!("invalid swarm spec: {expected}")
+            );
+        }
     }
 }
