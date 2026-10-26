@@ -1,7 +1,7 @@
 //! Cluster data key, kept separately from the encrypted database.
 use std::{
     fs::{self, File},
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -92,18 +92,7 @@ impl Keyring {
         rand::rngs::OsRng
             .try_fill_bytes(&mut key)
             .map_err(|error| Error::KeyringRandomness(error.into()))?;
-        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            temporary
-                .as_file()
-                .set_permissions(fs::Permissions::from_mode(0o600))?;
-        }
-        writeln!(temporary, "{}", STANDARD.encode(key))?;
-        temporary.as_file().sync_all()?;
-        temporary.persist_noclobber(path).map_err(|e| e.error)?;
-        File::open(parent)?.sync_all()?;
+        crate::create_private(path, format!("{}\n", STANDARD.encode(key)).as_bytes())?;
         Ok(Self(key))
     }
 }

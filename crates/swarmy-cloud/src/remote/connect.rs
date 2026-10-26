@@ -1,7 +1,4 @@
-use super::{
-    ssh,
-    state::{self, State},
-};
+use super::{ssh, state::State};
 use crate::Result;
 use std::{
     net::TcpListener,
@@ -205,9 +202,9 @@ async fn forward_session(
         // Old single-node remotes used this fixed cluster identity and loopback listener.
         format!("dev:dev@127.0.0.1:{}\n", ports.fdb)
     };
-    state::write(&profile.fdb_cluster_file, cluster.as_bytes())?;
+    swarmy_config::write_private(&profile.fdb_cluster_file, cluster.as_bytes())?;
     profile.api_token = read_remote_api_token(node, profile, address).await?;
-    state::write(path, &serde_json::to_vec_pretty(profile)?)?;
+    swarmy_config::write_private(path, &serde_json::to_vec_pretty(profile)?)?;
     Ok(())
 }
 
@@ -296,7 +293,7 @@ fn tunnel_command(
             .arg(format!("127.0.0.1:{local}:127.0.0.1:{remote}"));
     }
     let log_path = remote_path(state_dir, &profile.name, "ssh.log")?;
-    state::write(&log_path, b"")?;
+    swarmy_config::write_private(&log_path, b"")?;
     command
         .arg(address)
         .stdout(Stdio::null())

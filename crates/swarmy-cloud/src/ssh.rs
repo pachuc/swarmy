@@ -1,8 +1,6 @@
 //! SSH helpers shared by provisioning, tunnel, log, and status commands.
 use std::{
     fmt::Write as _,
-    io::Write as _,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -258,14 +256,7 @@ pub async fn generate_key(node: &RemoteNode) -> Result<Vec<u8>> {
 /// Reports unreadable sources and keys `ssh-keygen` cannot parse.
 pub async fn adopt_key(node: &RemoteNode, source: &Path) -> Result<()> {
     let bytes = std::fs::read(source)?;
-    let mut key = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&node.key_path)?;
-    key.write_all(&bytes)?;
-    drop(key);
+    swarmy_config::write_private(&node.key_path, &bytes)?;
     let output = run_output(
         Command::new("ssh-keygen")
             .args(["-y", "-f"])

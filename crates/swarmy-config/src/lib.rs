@@ -1,6 +1,10 @@
 #![deny(unreachable_pub)]
 //! Shared configuration for services and command-line programs.
+mod files;
+pub use files::{create_private, create_private_dir, write_private};
 pub mod keyring;
+pub mod paths;
+pub mod swarm;
 pub use keyring::Keyring;
 mod exports;
 mod models;
@@ -25,6 +29,34 @@ use std::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("invalid swarm spec: {0}")]
+    Spec(String),
+    #[error("swarm registry: {0}")]
+    Registry(String),
+    #[error(
+        "no swarm named \"{0}\"; run `swarmy swarm ls` to list swarms or `swarmy swarm create {0}` to make one"
+    )]
+    UnknownSwarm(String),
+    #[error(
+        "the current swarm \"{0}\" no longer exists; run `swarmy swarm use NAME` to choose another (`swarmy swarm ls` lists them)"
+    )]
+    StaleCurrent(String),
+    #[error(
+        "no swarm selected: run `swarmy swarm ls` to list swarms, `swarmy swarm use NAME` to choose one, or `swarmy swarm create NAME` to make one; --swarm NAME or SWARMY_SWARM selects one for a single command"
+    )]
+    NoSwarm,
+    #[error(
+        "SWARMY_API_URL is set but SWARMY_API_TOKEN is empty; set both to use an unregistered API, or unset SWARMY_API_URL"
+    )]
+    IncompleteEndpoint,
+    #[error("cannot find swarmy's directories: {0}")]
+    Directories(&'static str),
+    #[error("in {}", path.display())]
+    File {
+        path: PathBuf,
+        #[source]
+        source: Box<Error>,
+    },
     #[error("invalid model catalog configuration: {0}")]
     Catalog(String),
     #[error("keyring: {0}")]
@@ -747,19 +779,9 @@ impl Settings {
     /// Returns invalid configuration or filesystem errors.
     pub fn load_base() -> Result<Loaded, Error> {
         let cwd = std::env::current_dir()?;
-        let environment = std::env::vars_os()
-            .map(|(key, value)| {
-                let key = key.to_string_lossy().into_owned();
-                let value = value
-                    .into_string()
-                    .map_err(|_| Error::Environment(key.clone()));
-                (key, value)
-            })
-            .filter(|(key, _)| {
-                key.starts_with("SWARMY_") || key == "HOME" || key == "XDG_CONFIG_HOME"
-            })
-            .map(|(key, value)| value.map(|value| (key, value)))
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let environment = process_environment(|key| {
+            key.starts_with("SWARMY_") || key == "HOME" || key == "XDG_CONFIG_HOME"
+        })?;
         Self::load_base_from(&cwd, &environment)
     }
 
@@ -823,18 +845,10 @@ impl Settings {
 
     /// The user configuration file, `$XDG_CONFIG_HOME/swarmy/config.toml` (absolute
     /// XDG only) or `$HOME/.config/swarmy/config.toml`, whether or not it exists.
+    /// Empty or relative HOME is treated as unset.
     #[must_use]
     pub fn user_config_path(environment: &BTreeMap<String, String>) -> Option<PathBuf> {
-        environment
-            .get("XDG_CONFIG_HOME")
-            .filter(|value| Path::new(value).is_absolute())
-            .map(PathBuf::from)
-            .or_else(|| {
-                environment
-                    .get("HOME")
-                    .map(|home| PathBuf::from(home).join(".config"))
-            })
-            .map(|dir| dir.join("swarmy/config.toml"))
+        paths::config(environment).map(|dir| dir.join("config.toml"))
     }
 
     /// Read a file without environment overrides or path resolution.
@@ -1650,4 +1664,21 @@ mod provider_settings_tests {
                 .is_err()
         );
     }
+}
+
+/// Collect selected UTF-8 process variables without mutating the environment.
+pub(crate) fn process_environment(
+    keep: impl Fn(&str) -> bool,
+) -> Result<BTreeMap<String, String>, Error> {
+    std::env::vars_os()
+        .filter_map(|(key, value)| {
+            let key = key.to_string_lossy().into_owned();
+            keep(&key).then(|| {
+                value
+                    .into_string()
+                    .map(|value| (key.clone(), value))
+                    .map_err(|_| Error::Environment(key))
+            })
+        })
+        .collect()
 }
