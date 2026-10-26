@@ -214,7 +214,7 @@ mod tests {
                 )]
                 .into()
             } else {
-                Default::default()
+                std::collections::BTreeMap::default()
             },
             tofu_state: None,
         }

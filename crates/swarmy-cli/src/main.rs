@@ -37,7 +37,7 @@ struct Cli {
     /// Emit compact machine-readable JSON
     #[arg(long, global = true)]
     json: bool,
-    /// Talk to this swarm (overrides SWARMY_SWARM, SWARMY_API_URL, and the current swarm)
+    /// Talk to this swarm (overrides `SWARMY_SWARM`, `SWARMY_API_URL`, and the current swarm)
     #[arg(long, global = true, value_name = "NAME", value_parser = swarm_command::parse_name)]
     swarm: Option<String>,
     /// Talk to, or start, a swarmy-core whose version differs from this client

@@ -5,6 +5,10 @@ use std::{
 };
 
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "each integration test uses different fields of this shared fake request"
+)]
 pub(crate) struct Request {
     pub method: String,
     pub authorization: Option<String>,

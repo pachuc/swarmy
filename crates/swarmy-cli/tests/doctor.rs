@@ -29,12 +29,11 @@ impl Fixture {
         }
         if let Ok(settings) =
             swarmy_config::Settings::read(&self.0.path().join(".swarmy/config.toml"))
+            && let Some(url) = settings.api.url
         {
-            if let Some(url) = settings.api.url {
-                command
-                    .env("SWARMY_API_URL", url)
-                    .env("SWARMY_API_TOKEN", settings.api.token);
-            }
+            command
+                .env("SWARMY_API_URL", url)
+                .env("SWARMY_API_TOKEN", settings.api.token);
         }
         command
             .current_dir(self.0.path())
