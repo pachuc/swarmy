@@ -366,7 +366,7 @@ impl Tunnels {
         swarmy_config::write_private(&log_path, b"")?;
         let mut command = Command::new(&self.program);
         command
-            .args(master_args(options, &socket, &forwards, &address))
+            .args(master_args(options, &socket, &forwards, address))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(OpenOptions::new().append(true).open(&log_path)?)
