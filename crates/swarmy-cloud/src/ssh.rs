@@ -929,6 +929,68 @@ pub async fn start_units(node: &Machine) -> Result<()> {
     run_piped(node, "start swarmy units", "start_installed_units").await
 }
 
+/// Result of waiting for a node and stopping its agent.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct Drain {
+    pub stopped: bool,
+    pub busy: Vec<String>,
+    pub unreleased: Vec<String>,
+}
+
+/// Drain a node, then cleanly stop its agent.
+/// # Errors
+/// SSH failures, a non-zero helper exit, or a missing or invalid drain line.
+pub async fn drain_node(node: &Machine, timeout: Duration, force: bool) -> Result<Drain> {
+    let address = wait_ssh_for(node, 6).await?;
+    let script = piped_env()
+        + &format!(
+            "set -euo pipefail\ndrain_node_agent {} {} {}\n",
+            shell_words::quote(&service_user(node)?),
+            timeout.as_secs(),
+            if force { "force" } else { "wait" }
+        );
+    let output = pipe_script(node, &address, "drain node", &script).await?;
+    let text = String::from_utf8(output.stdout)?;
+    let line = text
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("drain "))
+        .ok_or_else(|| crate::Error::other("drain node returned no drain line"))?;
+    Ok(serde_json::from_str(line)?)
+}
+
+/// Remove a node's tunnel key from the primary's service-user authorized_keys.
+/// # Errors
+/// SSH failures, or a node without a tunnel key.
+pub async fn revoke_tunnel(node: &Machine, primary: &Machine) -> Result<()> {
+    let user = service_user(node)?;
+    let key = run_output(
+        base(node)?
+            .arg(wait_ssh_for(node, 6).await?)
+            .arg(format!("cat {}/.swarmy/tunnel-key.pub", tilde_repo(&user))),
+        "read joining node tunnel key",
+    )
+    .await?;
+    let authorization = tunnel_authorization(&String::from_utf8(key.stdout)?)?;
+    let primary_user = service_user(primary)?;
+    let home = format!("~{primary_user}");
+    let file = format!("{home}/.ssh/authorized_keys");
+    let line = shell_words::quote(&authorization);
+    let command = format!(
+        "umask 077; sudo -u {primary_user} sh -c {}",
+        shell_words::quote(&format!(
+            "grep -vxF -- {line} {file} > {file}.tmp || true; mv {file}.tmp {file}"
+        ))
+    );
+    checked(
+        base(primary)?
+            .arg(wait_ssh_for(primary, 6).await?)
+            .arg(command),
+        "revoke joining node tunnel key",
+    )
+    .await
+}
+
 fn image_build_command(user: &str, recipe: &Path, tag: &str) -> Result<String> {
     let recipe = recipe
         .to_str()

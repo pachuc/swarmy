@@ -9,6 +9,8 @@ pub(super) struct FakeHost {
     configs: Mutex<Vec<String>>,
     fail_provision: Mutex<Option<String>>,
     fail_decommission: Mutex<Option<String>>,
+    pub(super) drain_results:
+        Mutex<std::collections::HashMap<String, std::result::Result<ssh::Drain, String>>>,
 }
 impl FakeHost {
     pub(super) fn new() -> Self {
@@ -17,6 +19,7 @@ impl FakeHost {
             configs: Mutex::new(Vec::new()),
             fail_provision: Mutex::new(None),
             fail_decommission: Mutex::new(None),
+            drain_results: Mutex::new(std::collections::HashMap::new()),
         }
     }
     fn configs(&self) -> Vec<String> {
@@ -102,6 +105,36 @@ impl SwarmHost for FakeHost {
             }
             Ok(())
         })())
+    }
+    fn drain(
+        &self,
+        node: &Machine,
+        timeout: Duration,
+        force: bool,
+    ) -> impl Future<Output = Result<ssh::Drain>> {
+        std::future::ready({
+            self.push(format!(
+                "drain {} timeout={} force={force}",
+                node.name,
+                timeout.as_secs()
+            ));
+            self.drain_results
+                .lock()
+                .unwrap()
+                .get(&node.name)
+                .cloned()
+                .unwrap_or(Ok(ssh::Drain {
+                    stopped: true,
+                    ..ssh::Drain::default()
+                }))
+                .map_err(Error::other)
+        })
+    }
+    fn revoke_tunnel(&self, node: &Machine, primary: &Machine) -> impl Future<Output = Result<()>> {
+        std::future::ready({
+            self.push(format!("revoke {} primary={}", node.name, primary.name));
+            Ok(())
+        })
     }
     fn stop(&self, node: &Machine) -> impl Future<Output = Result<()>> {
         std::future::ready({

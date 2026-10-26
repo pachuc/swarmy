@@ -4,6 +4,7 @@
 pub mod groups;
 mod machine;
 mod plan;
+pub mod scale;
 mod upgrade;
 pub use machine::Machine;
 pub use upgrade::Summary;
@@ -122,6 +123,8 @@ pub(crate) trait SwarmHost {
         tag: &str,
     ) -> Result<()>;
     async fn decommission(&self, node: &Machine) -> Result<()>;
+    async fn drain(&self, node: &Machine, timeout: Duration, force: bool) -> Result<ssh::Drain>;
+    async fn revoke_tunnel(&self, node: &Machine, primary: &Machine) -> Result<()>;
     async fn stop(&self, node: &Machine) -> Result<()>;
     async fn start(&self, node: &Machine) -> Result<()>;
     async fn reachable(&self, node: &Machine) -> bool;
@@ -158,6 +161,12 @@ impl SwarmHost for ssh::Ssh {
     }
     async fn decommission(&self, node: &Machine) -> Result<()> {
         self.decommission(node).await
+    }
+    async fn drain(&self, node: &Machine, timeout: Duration, force: bool) -> Result<ssh::Drain> {
+        ssh::drain_node(node, timeout, force).await
+    }
+    async fn revoke_tunnel(&self, node: &Machine, primary: &Machine) -> Result<()> {
+        ssh::revoke_tunnel(node, primary).await
     }
     async fn stop(&self, node: &Machine) -> Result<()> {
         ssh::stop_units(node).await
@@ -287,6 +296,14 @@ async fn provision_swarm_with(
     host: &impl SwarmHost,
     request: UpRequest<'_>,
 ) -> Result<Vec<HostReport>> {
+    let _lock = Locked(lock(request.registry, &request.spec.name)?);
+    provision_locked(host, request).await
+}
+
+pub(crate) async fn provision_locked(
+    host: &impl SwarmHost,
+    request: UpRequest<'_>,
+) -> Result<Vec<HostReport>> {
     #[cfg(feature = "remote")]
     {
         provision_swarm_with_backend(host, &crate::buckets::S3Buckets, request).await
@@ -321,7 +338,6 @@ async fn provision_swarm_with_backend(
 ) -> Result<Vec<HostReport>> {
     let spec = request.spec;
     check_bucket_support(spec)?;
-    let _lock = Locked(lock(request.registry, &spec.name)?);
     let swarm_dir = request.registry.swarm_dir(&spec.name)?;
     plan::check_layout(spec)?;
     plan::check_group_storage(spec)?;
