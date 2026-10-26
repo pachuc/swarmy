@@ -497,7 +497,7 @@ mod tests {
         ] {
             match mapped("s3:HeadBucket", code, "not authorized") {
                 crate::Error::MissingPermission { operation, .. } => {
-                    assert_eq!(operation, "s3:HeadBucket")
+                    assert_eq!(operation, "s3:HeadBucket");
                 }
                 error => panic!("expected MissingPermission for {code}, got {error:?}"),
             }
