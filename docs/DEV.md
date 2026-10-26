@@ -701,6 +701,8 @@ count and environment at startup. Restart and health checks remain shared.
 
 ## Remote node workflow
 
+Cloud API keys for creating machines are stored with `swarmy cloud login`; see [cloud.md](cloud.md).
+
 Use [REMOTE.md](REMOTE.md) for remote bring-up, upgrade, recovery, teardown,
 costs and node troubleshooting. For fleet-driver commands see
 [fleet-runbook.md](fleet-runbook.md).

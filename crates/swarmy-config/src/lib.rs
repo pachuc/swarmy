@@ -1,5 +1,6 @@
 #![deny(unreachable_pub)]
 //! Shared configuration for services and command-line programs.
+pub mod cloud;
 mod files;
 pub use files::{create_private, create_private_dir, write_private};
 pub mod keyring;
@@ -29,6 +30,12 @@ use std::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("unknown cloud provider \"{0}\"; expected one of hetzner-cloud, hetzner-s3, aws")]
+    UnknownCloudProvider(String),
+    #[error("cloud credentials: {0}")]
+    CloudCredential(String),
+    #[error("no {0} credentials stored; run `swarmy cloud login {0}`")]
+    CloudNotLoggedIn(&'static str),
     #[error("invalid swarm spec: {0}")]
     Spec(String),
     #[error("swarm registry: {0}")]
