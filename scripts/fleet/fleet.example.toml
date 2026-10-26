@@ -1,5 +1,6 @@
 # Copy to fleet.toml and run chmod 600 scripts/fleet/fleet.toml.
-remote = "dev"  # saved tunnel profile; leave empty to use the local API configuration (on a control node)
+swarm = "hz"  # a swarm from swarmy swarm ls; "local" on the swarm's control node reads that node's .swarmy/config.toml [api]
+# node_config = ".swarmy/config.toml"  # control node only; relative to the checkout
 repo = "pachuc/swarmy"
 provider = "openrouter"
 model = "openai/gpt-6-sol"
@@ -9,6 +10,6 @@ workers = 4
 memory_mib = 6144
 # stall_minutes = 10  # status exits 2 after a wait or lease exceeds this age
 # kill_timeout_seconds = 60
-# image = "swarmy-dev:dev"  # for new workers; defaults to the remote's default image
+# image = "swarmy-dev:dev"  # for new workers; defaults to the swarm's default image
 # integration = "one-binary"  # the current goal's integration branch; release frees a worker once a commit there names "tasky <TASK_ID>"
 github_token = "replace-with-github-token"

@@ -47,7 +47,7 @@ impl Check {
 pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
     let loaded = Settings::load_base();
     let target = crate::target::resolve();
-    let remote = matches!(target, Ok(swarmy_client::api_client::Api::Tunnel { .. }));
+    let local = stack_is_local();
     let mut checks = vec![Check::new(
         "config",
         match &loaded {
@@ -71,7 +71,7 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
         Err(error) => Err(error.to_string()),
     }, "Run swarmy swarm ls to list swarms and swarmy swarm use NAME to choose one, or set SWARMY_API_URL and SWARMY_API_TOKEN."));
     checks.push(Check::new("keyring", keyring(), "Run swarmy swarm up NAME to create a keyring, or install the existing cluster key with chmod 600; set SWARMY_KEYRING for another path."));
-    if !remote {
+    if local {
         for (name, argument) in [
             ("fdbserver", "--version"),
             ("fdbcli", "--version"),
@@ -82,10 +82,10 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
             "Run swarmy install-tools (scripts/install-dev-tools.sh from a checkout). swarmy searches PATH, the install prefix's bin directory, and ~/.local/bin automatically; add another location to PATH if needed."));
         }
     }
-    checks.push(core_binary_check(remote).await);
+    checks.push(core_binary_check(!local).await);
 
     let providers = if let Ok(loaded) = &loaded {
-        checks.push(s3_line(&loaded.settings, remote).await);
+        checks.push(s3_line(&loaded.settings, !local).await);
         if let Some(path) = loaded.settings.selection.credential_file.to_str() {
             let result = if Path::new(path).is_file() {
                 Check::new("credential file", Ok(format!("{path} present")), "")
@@ -108,6 +108,16 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
         Vec::new()
     };
     Ok(report(checks, providers, json))
+}
+
+/// Whether the target swarm runs its backing stack on this machine. Only then
+/// can doctor check the stack binaries and the stack's S3 port from here.
+fn stack_is_local() -> bool {
+    matches!(
+        swarmy_config::swarm::resolve_process(crate::target::flag()),
+        Ok((_, swarmy_config::swarm::Target::Swarm(swarm)))
+            if swarm.spec.as_ref().is_some_and(|spec| spec.local_group().is_some())
+    )
 }
 
 async fn core_binary_check(remote: bool) -> Check {
@@ -273,7 +283,7 @@ async fn s3_line(settings: &Settings, remote: bool) -> Check {
     if remote {
         return Check::warn(
             "remote S3",
-            "object store runs on the swarm; verified there, not from the client",
+            "object store runs with the swarm, not on this machine; not checked from the client",
             "Check the swarm's object storage if image or volume operations fail.",
         );
     }

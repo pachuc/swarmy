@@ -43,13 +43,13 @@ def record(label, environment, task, repeat, wall, session_id, cold):
             "cold": cold}
 
 
-def commands(remote, provider, model, effort, directory, image=None):
+def commands(swarm, provider, model, effort, directory, image=None):
     for name in TASKS:
         task = load(name)
         for repeat in (1, 2):
             file = directory / f"{name}-{repeat}.txt"
             file.write_text(prompt(task))
-            yield name, repeat, [str(DRIVER), "benchmark", "--remote", remote,
+            yield name, repeat, [str(DRIVER), "benchmark", "--swarm", swarm,
                                  "--provider", provider, "--model", model,
                                  "--effort", effort, "--prompt-file", str(file),
                                  *(["--image", image] if image else [])]
@@ -57,7 +57,7 @@ def commands(remote, provider, model, effort, directory, image=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("remote")
+    parser.add_argument("swarm")
     parser.add_argument("label")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
@@ -65,12 +65,12 @@ def main(argv=None):
     model = os.environ.get("BENCH_MODEL", "gpt-6-sol")
     effort = os.environ.get("BENCH_EFFORT", "medium")
     # The benchmark tasks build swarmy, so they need an image with the Rust
-    # toolchain (the swarmy-dev recipe); the remotes default to base-ubuntu.
+    # toolchain (the swarmy-dev recipe); the swarms default to base-ubuntu.
     image = os.environ.get("BENCH_IMAGE") or None
     if not args.label.replace("-", "").replace("_", "").isalnum():
         parser.error("label must contain only letters, digits, hyphens, and underscores")
     with tempfile.TemporaryDirectory(prefix="swarmy-benchmark-") as temp:
-        runs = list(commands(args.remote, provider, model, effort, Path(temp), image))
+        runs = list(commands(args.swarm, provider, model, effort, Path(temp), image))
         sessions = []
         records = []
         output_dir = ROOT / ".dev" / "benchmarks"
@@ -94,13 +94,13 @@ def main(argv=None):
                 raise RuntimeError(f"{name}-{repeat}: no session id in fleet output")
             cold = cold_from_events(events)
             sessions.append(ids[0])
-            records.append(record(args.label, args.remote, name, repeat, wall, ids[0], cold))
+            records.append(record(args.label, args.swarm, name, repeat, wall, ids[0], cold))
             (output_dir / f"{args.label}-swarm-runs.json").write_text(
                 json.dumps({"label": args.label, "runs": records}, indent=2) + "\n")
             (output_dir / f"{args.label}-swarm-sessions.json").write_text(json.dumps(sessions, indent=2) + "\n")
             print(f"{name}-{repeat}: {ids[0]}", flush=True)
         walls = {run["session_id"]: run["wall_seconds"] for run in records}
-        report = [str(DRIVER), "report", "--remote", args.remote, "--label", args.label]
+        report = [str(DRIVER), "report", "--swarm", args.swarm, "--label", args.label]
         for session in sessions if not args.dry_run else [f"<{name}-{repeat}-session>" for name, repeat, _ in runs]:
             report += ["--session", session]
             if session in walls:

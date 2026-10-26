@@ -31,6 +31,10 @@ _ls_base = _fixture['session_ls_item']
 _show_base = _fixture['session_show_item']
 with (root / 'calls').open('a') as out:
     out.write(json.dumps(args) + '\\n')
+with (root / 'envs').open('a') as out:
+    out.write(json.dumps({'url': os.environ.get('SWARMY_API_URL'),
+                          'token_ok': os.environ.get('SWARMY_API_TOKEN') == 'node-token-55aa',
+                          'swarm_env': os.environ.get('SWARMY_SWARM')}) + '\\n')
 if args[:3] == ['--json', 'task', 'show']:
     print(json.dumps({'task': {'title':'Repair widget', 'body':'Fix the widget', 'test_plan':'Run widget test'}, 'status': os.environ.get('TASK_STATUS', 'todo'),
                       'id': os.environ.get('TASK_FULL_ID', '01M38DCQ5BFPXNPNF0NWEWR2HD')}))
@@ -45,9 +49,9 @@ elif args[:1] == ['-C']:
         pass
     elif args[2] == 'log':
         print(os.environ.get('INTEGRATED', ''))
-elif args[:2] == ['--remote', 'dev'] or args[:1] in (['agent'], ['run'], ['session']):
-    # An empty remote in fleet.toml drops the --remote flag (local API mode).
-    rest = args[2:] if args[:2] == ['--remote', 'dev'] else args
+elif args[:2] == ['--swarm', 'dev'] or args[:1] in (['agent'], ['run'], ['session']):
+    # A local swarm in fleet.toml drops the --swarm flag (node API mode).
+    rest = args[2:] if args[:2] == ['--swarm', 'dev'] else args
     if rest[:2] == ['agent', 'create']:
         token = sys.stdin.read()
         (root / 'token_ok').write_text(str(token == 'private-token\\n'))
@@ -154,12 +158,16 @@ class FleetTests(unittest.TestCase):
             path.chmod(0o700)
         # Never touch the real fleet.toml next to the driver; tests use their own.
         self.config = self.root / "fleet.toml"
-        self.config.write_text(f'''remote = "dev"\nrepo = "pachuc/swarmy"\nprovider = "fake"\nmodel = "fake"\nworkers = 2\ngithub_token = "private-token"\nstate_dir = "{self.root / 'state'}"\n''')
+        self.config.write_text(f'''swarm = "dev"\nrepo = "pachuc/swarmy"\nprovider = "fake"\nmodel = "fake"\nworkers = 2\ngithub_token = "private-token"\nstate_dir = "{self.root / 'state'}"\n''')
         self.config.chmod(0o600)
+        node_config = self.root / "node-config.toml"
+        node_config.write_text('[api]\nlisten = "0.0.0.0:9911"\ntoken = "node-token-55aa"\n')
         fixture = Path(__file__).with_name("fixtures") / "typed_sample.json"
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                         STUB_STATE=str(self.root), FLEET_CONFIG=str(self.config),
-                        FLEET_FIXTURE=str(fixture))
+                        FLEET_FIXTURE=str(fixture), FLEET_NODE_CONFIG=str(node_config),
+                        **{key: str(self.root / key.lower()) for key in
+                           ("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME")})
 
     def call(self, *args, env=None):
         return subprocess.run([sys.executable, str(FLEET), *args], env=env or self.env,
@@ -268,25 +276,33 @@ class FleetTests(unittest.TestCase):
         status = self.call("status", env=broken)
         self.assertNotEqual(status.returncode, 0)
 
-    def test_empty_remote_uses_the_local_api_configuration(self):
-        # On a control node the driver runs without a tunnel profile.
-        self.config.write_text(self.config.read_text().replace('remote = "dev"', 'remote = ""'))
-        self.assertEqual(self.call("launch", "EWR2HD").returncode, 0, "launch failed")
-        swarmy_calls = [call for call in self.calls() if call[:1] in (["agent"], ["run"], ["session"])]
-        self.assertTrue(swarmy_calls, "no swarmy calls recorded")
-        self.assertFalse(any("--remote" in call for call in self.calls()))
+    def test_local_swarm_exports_the_node_api(self):
+        original = self.config.read_text()
+        for replacement in ('swarm = "local"', ''):
+            self.config.write_text(original.replace('swarm = "dev"', replacement))
+            result = self.call("launch", "EWR2HD", env=dict(self.env, SWARMY_SWARM="other"))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(any("--swarm" in call for call in self.calls()))
+            for line in (self.root / "envs").read_text().splitlines():
+                values = json.loads(line)
+                self.assertEqual(values, {"url": "http://127.0.0.1:9911",
+                                          "token_ok": True, "swarm_env": None})
+            self.assertNotIn("node-token-55aa", result.stdout + result.stderr)
+            (self.root / "state" / "ewr2hd.json").unlink()
+            (self.root / "calls").unlink()
+            (self.root / "envs").unlink()
 
-    def test_benchmark_local_remote_drops_the_flag(self):
+    def test_benchmark_local_swarm_drops_the_flag(self):
         prompt = self.root / "prompt.txt"
         prompt.write_text("Print BENCH_COLD=true")
-        for remote, expect_flag in (("dev", True), ("local", False), ("", False)):
-            result = self.call("benchmark", "--remote", remote, "--provider", "fake", "--model", "fake",
+        for swarm, expect_flag in (("dev", True), ("local", False)):
+            result = self.call("benchmark", "--swarm", swarm, "--provider", "fake", "--model", "fake",
                                "--effort", "low", "--prompt-file", str(prompt))
             self.assertEqual(result.returncode, 0, result.stderr)
             run_calls = [call for call in self.calls() if "run" in call[:3]]
             self.assertTrue(run_calls)
-            self.assertEqual("--remote" in run_calls[-1], expect_flag)
-        result = self.call("benchmark", "--remote", "local", "--provider", "fake", "--model", "fake",
+            self.assertEqual("--swarm" in run_calls[-1], expect_flag)
+        result = self.call("benchmark", "--swarm", "local", "--provider", "fake", "--model", "fake",
                            "--effort", "low", "--prompt-file", str(prompt), "--image", "swarmy-dev:dev")
         self.assertEqual(result.returncode, 0, result.stderr)
         last = [call for call in self.calls() if "run" in call[:3]][-1]
@@ -338,7 +354,7 @@ class FleetTests(unittest.TestCase):
         result = self.call("kill", "EWR2HD", "--timeout-seconds", "2")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("still in progress", result.stdout)
-        self.assertIn(["--remote", "dev", "session", "interrupt", "01AAAA"], self.calls())
+        self.assertIn(["--swarm", "dev", "session", "interrupt", "01AAAA"], self.calls())
         shows = [call for call in self.calls() if call[2:5] == ["session", "ls", "--json"]]
         self.assertGreaterEqual(len(shows), 2)
         self.assertEqual(json.loads((self.root / "state" / "workers.json").read_text()), {"worker-1": None})
@@ -586,23 +602,40 @@ class FleetTests(unittest.TestCase):
         # GitHub token or repo that worker actions require.
         env = dict(self.env, FLEET_CONFIG=str(self.root / "absent-fleet.toml"),
                    REPORT_METRICS=json.dumps({"SESA": []}))
-        table = self.call("report", "--remote", "local", "--session", "SESA", env=env)
+        table = self.call("report", "--swarm", "local", "--session", "SESA", env=env)
         self.assertEqual(table.returncode, 0, table.stderr)
         self.assertIn("wall_s", table.stdout)
         self.assertIn("| SESA | 0 | 0.0 | - |", table.stdout)
-        walled = self.call("report", "--remote", "local", "--session", "SESA",
+        walled = self.call("report", "--swarm", "local", "--session", "SESA",
                            "--wall", "SESA=12.5", env=env)
         self.assertEqual(walled.returncode, 0, walled.stderr)
         self.assertIn("| SESA | 0 | 0.0 | 12.5 |", walled.stdout)
         prompt = self.root / "prompt.txt"
         prompt.write_text("Print BENCH_COLD=true")
-        bench = self.call("benchmark", "--remote", "local", "--provider", "fake",
+        bench = self.call("benchmark", "--swarm", "local", "--provider", "fake",
                           "--model", "fake", "--effort", "low",
                           "--prompt-file", str(prompt), env=env)
         self.assertEqual(bench.returncode, 0, bench.stderr)
 
+    def test_old_remote_key_is_refused(self):
+        self.config.write_text(self.config.read_text().replace('swarm = "dev"', 'remote = "dev"'))
+        result = self.call("status")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("swarm =", result.stderr)
+        self.assertFalse((self.root / "calls").exists())
+
+    def test_local_swarm_without_node_token_fails(self):
+        self.config.write_text(self.config.read_text().replace('swarm = "dev"', 'swarm = "local"'))
+        path = self.root / "no-token.toml"
+        path.write_text('[api]\nlisten = "127.0.0.1:1"\n')
+        result = self.call("status", env=dict(self.env, FLEET_NODE_CONFIG=str(path)))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(str(path), result.stderr)
+        self.assertIn("[api] token", result.stderr)
+        self.assertFalse((self.root / "calls").exists())
+
     def test_auth_actions_still_require_a_token(self):
-        self.config.write_text(f'''remote = "dev"\nrepo = "pachuc/swarmy"\nprovider = "fake"\nmodel = "fake"\nworkers = 2\nstate_dir = "{self.root / 'state'}"\n''')
+        self.config.write_text(f'''swarm = "dev"\nrepo = "pachuc/swarmy"\nprovider = "fake"\nmodel = "fake"\nworkers = 2\nstate_dir = "{self.root / 'state'}"\n''')
         self.config.chmod(0o600)
         result = self.call("status")
         self.assertEqual(result.returncode, 1)
