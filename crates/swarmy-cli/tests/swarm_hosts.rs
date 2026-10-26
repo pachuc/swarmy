@@ -429,3 +429,18 @@ fn development_client_outside_a_checkout_refuses_before_ssh() {
         assert!(!f.path().join("ssh-commands").exists());
     }
 }
+
+#[cfg(not(feature = "remote"))]
+#[test]
+fn bucket_up_requires_s3_client_before_ssh() {
+    let f = Fixture::new();
+    f.create();
+    let path = f.path().join("config/swarmy/swarms/box.toml");
+    let mut spec = fs::read_to_string(&path).unwrap();
+    spec.push_str("\n[bucket]\nname = 'test-bucket'\nendpoint = 'https://objects.example.invalid'\nregion = 'eu-west-1'\n");
+    fs::write(path, spec).unwrap();
+    let result = f.run(&["swarm", "up", "box", "--no-image"]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("built without the S3 client"));
+    assert!(!f.path().join("ssh-commands").exists());
+}

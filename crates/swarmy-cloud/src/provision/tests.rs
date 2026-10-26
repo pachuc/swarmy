@@ -657,7 +657,7 @@ mod bucket_lifecycle {
     }
     #[tokio::test]
     async fn bucket_reaches_provisioning_with_static_keys() {
-        let (_dir, _registry, spec, record) = fixture_bucket();
+        let (_dir, registry, spec, record) = fixture_bucket();
         let cloud = FakeCloud {
             ensure: AtomicUsize::new(0),
             delete: AtomicUsize::new(0),
@@ -669,6 +669,9 @@ mod bucket_lifecycle {
         assert_eq!(cloud.ensure.load(Ordering::Relaxed), 1);
         let bucket = bucket_spec(&spec, &record).unwrap();
         assert!(bucket.needs_static_keys());
+        let planned = plan(&spec, source_list(&registry, &spec)).unwrap();
+        let primary = node(&planned[0], user(&spec), &spec, &record);
+        assert!(primary.bucket.unwrap().needs_static_keys());
     }
     #[tokio::test]
     async fn down_deletes_only_an_owned_bucket_scope() {
