@@ -67,7 +67,14 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let mut command = Command::new(CLI);
-        command.current_dir(self.files.path()).args(["dev", "down"]);
+        command
+            .current_dir(self.files.path())
+            .env("HOME", self.files.path())
+            .env("XDG_CONFIG_HOME", self.files.path().join("config"))
+            .env("XDG_DATA_HOME", self.files.path().join("data"))
+            .env("XDG_STATE_HOME", self.files.path().join("state"))
+            .env("XDG_CACHE_HOME", self.files.path().join("cache"))
+            .args(["dev", "down"]);
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("SWARMY_") {
                 command.env_remove(key);
