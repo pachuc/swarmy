@@ -472,6 +472,10 @@ fn attached_swarm_skips_backing_stack_checks() {
 #[test]
 fn local_swarm_runs_backing_stack_checks() {
     let fixture = Fixture::new();
+    fs::create_dir(fixture.0.path().join("bin")).unwrap();
+    let binary = fixture.0.path().join("bin/fdbserver");
+    fs::write(&binary, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
     let created = Command::new(env!("CARGO_BIN_EXE_swarmy"))
         .args(["swarm", "create", "dev", "--local"])
         .current_dir(fixture.0.path())
