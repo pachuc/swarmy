@@ -1,0 +1,13 @@
+bucket_force_destroy
+bucket_location
+bucket_name
+group
+image
+labels
+location
+machine_count
+network_id
+size
+ssh_allowed_cidrs
+ssh_public_key
+swarm
