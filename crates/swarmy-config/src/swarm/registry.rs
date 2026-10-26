@@ -176,6 +176,9 @@ impl Registry {
             },
             hosts: std::collections::BTreeMap::default(),
             tofu_state: None,
+            tofu_bucket: None,
+            tofu_bucket_endpoint: None,
+            tofu_bucket_region: None,
         })
     }
     /// Set the API endpoint of a managed swarm while preserving its identity and machines.
@@ -192,6 +195,9 @@ impl Registry {
             api: SwarmApi::default(),
             hosts: std::collections::BTreeMap::default(),
             tofu_state: None,
+            tofu_bucket: None,
+            tofu_bucket_endpoint: None,
+            tofu_bucket_region: None,
         });
         record.api.url = Some(url.into());
         record.api.token = Some(token.into());
@@ -379,6 +385,9 @@ pub(super) mod tests {
             api: SwarmApi::default(),
             hosts: std::collections::BTreeMap::default(),
             tofu_state: None,
+            tofu_bucket: None,
+            tofu_bucket_endpoint: None,
+            tofu_bucket_region: None,
         };
         r.write_record(&record).unwrap();
         r.write_record(&record).unwrap();

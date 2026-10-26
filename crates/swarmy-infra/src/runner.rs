@@ -22,6 +22,11 @@ const PASSTHROUGH: &[&str] = &[
     "no_proxy",
 ];
 const LOCK_TIMEOUT: &str = "-lock-timeout=120s";
+const CLOSED_AWS: [(&str, &str); 3] = [
+    ("AWS_SHARED_CREDENTIALS_FILE", "/dev/null"),
+    ("AWS_CONFIG_FILE", "/dev/null"),
+    ("AWS_EC2_METADATA_DISABLED", "true"),
+];
 #[derive(Clone, Default)]
 pub struct CredentialEnv {
     vars: Vec<(String, String)>,
@@ -30,6 +35,13 @@ impl CredentialEnv {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+    /// Keep the AWS provider off shared files and instance metadata.
+    #[must_use]
+    pub fn closed() -> Self {
+        CLOSED_AWS
+            .iter()
+            .fold(Self::new(), |env, (name, value)| env.with(*name, *value))
     }
     #[must_use]
     pub fn with(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
@@ -42,8 +54,9 @@ impl CredentialEnv {
     fn found_in(&self, bytes: &[u8]) -> Option<&str> {
         self.vars
             .iter()
-            .find(|(_, value)| {
-                !value.is_empty()
+            .find(|(name, value)| {
+                secret_name(name)
+                    && !value.is_empty()
                     && bytes
                         .windows(value.len())
                         .any(|window| window == value.as_bytes())
@@ -53,11 +66,14 @@ impl CredentialEnv {
     fn redact(&self, text: &str) -> String {
         self.vars
             .iter()
-            .filter(|(_, value)| !value.is_empty())
+            .filter(|(name, value)| secret_name(name) && !value.is_empty())
             .fold(text.to_owned(), |text, (_, value)| {
                 text.replace(value, "<redacted>")
             })
     }
+}
+fn secret_name(name: &str) -> bool {
+    !CLOSED_AWS.iter().any(|(closed, _)| *closed == name)
 }
 impl fmt::Debug for CredentialEnv {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -139,7 +155,6 @@ impl Workspace<'_> {
         module: &[ModuleFile<'_>],
         variables: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<()> {
-        let bytes = serde_json::to_vec_pretty(variables).map_err(Error::Variables)?;
         for file in module {
             let path = Path::new(file.path);
             if path.components().next().is_none()
@@ -151,13 +166,13 @@ impl Workspace<'_> {
                 return Err(Error::ModulePath(file.path.into()));
             }
         }
-        if let Some(name) = self.credentials.found_in(&bytes).or_else(|| {
-            module
-                .iter()
-                .find_map(|file| self.credentials.found_in(file.contents))
-        }) {
+        if let Some(name) = module
+            .iter()
+            .find_map(|file| self.credentials.found_in(file.contents))
+        {
             return Err(Error::SecretInFiles { name: name.into() });
         }
+        self.variable_bytes(variables)?;
         fs::create_dir_all(&self.dir)
             .await
             .map_err(|e| io("creating", &self.dir, e))?;
@@ -203,11 +218,31 @@ impl Workspace<'_> {
                 .await
                 .map_err(|e| io("writing", &path, e))?;
         }
+        self.set_variables(variables).await
+    }
+    /// Rewrite only the variables file, checking that it contains no credentials.
+    /// # Errors
+    /// Returns embedded credentials, serialization or filesystem failures.
+    pub async fn set_variables(
+        &self,
+        variables: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<()> {
+        let bytes = self.variable_bytes(variables)?;
         let path = self.dir.join(VARIABLES_FILE);
         fs::write(&path, bytes)
             .await
             .map_err(|e| io("writing", &path, e))?;
         Ok(())
+    }
+    fn variable_bytes(
+        &self,
+        variables: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Vec<u8>> {
+        let bytes = serde_json::to_vec_pretty(variables).map_err(Error::Variables)?;
+        if let Some(name) = self.credentials.found_in(&bytes) {
+            return Err(Error::SecretInFiles { name: name.into() });
+        }
+        Ok(bytes)
     }
     /// # Errors
     /// Returns process failures.
@@ -217,12 +252,22 @@ impl Workspace<'_> {
     /// # Errors
     /// Returns process failures.
     pub async fn plan(&self) -> Result<PlanOutcome> {
-        let (_, code) = self.run(Subcommand::Plan).await?;
-        Ok(if code == Some(2) {
+        self.plan_text().await.map(|(outcome, _)| outcome)
+    }
+    /// Plan and return `OpenTofu`'s human-readable plan with credential values redacted.
+    /// # Errors
+    /// Returns process failures.
+    pub async fn plan_text(&self) -> Result<(PlanOutcome, String)> {
+        let (text, code) = self.run(Subcommand::Plan).await?;
+        let outcome = if code == Some(2) {
             PlanOutcome::Changes
         } else {
             PlanOutcome::NoChanges
-        })
+        };
+        Ok((
+            outcome,
+            self.credentials.redact(&String::from_utf8_lossy(&text)),
+        ))
     }
     /// # Errors
     /// Returns process failures.

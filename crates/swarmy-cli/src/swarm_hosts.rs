@@ -87,6 +87,7 @@ pub(crate) async fn up(
         copy_credential: args.copy_credential,
         recipe: recipe.as_deref(),
         cache: &registry.dirs().cache.join("core"),
+        machines: None,
         bucket_keys: args.bucket_keys.clone(),
     })
     .await?;
@@ -123,7 +124,7 @@ pub(crate) async fn down(
             spec.name
         );
     }
-    let removed = provision::decommission_swarm(registry, spec).await?;
+    let removed = provision::decommission_swarm(registry, spec, None).await?;
     if json_output {
         println!(
             "{}",

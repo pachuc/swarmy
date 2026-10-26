@@ -374,13 +374,24 @@ async fn missing_binary_and_bad_output() {
     assert!(
         matches!(tofu.workspace(work.path(), CredentialEnv::new()).init().await, Err(Error::Spawn { binary: found, .. }) if found == binary)
     );
-    let tofu = Tofu::from_binary(fake_tofu(fixture.path(), DEFAULT, "{}"), cache.path());
-    assert!(matches!(
-        tofu.workspace(work.path(), CredentialEnv::new())
-            .outputs()
-            .await,
-        Err(Error::Output(OutputError::Missing("machines")))
-    ));
+    let tofu = Tofu::from_binary(
+        fake_tofu(
+            fixture.path(),
+            // Emit malformed output directly so this checks the output parser,
+            // not a file read from the fake runner's auxiliary JSON fixture.
+            r#"case "$1" in output) printf '{}' ;; esac"#,
+            "{}",
+        ),
+        cache.path(),
+    );
+    let result = tofu
+        .workspace(work.path(), CredentialEnv::new())
+        .outputs()
+        .await;
+    assert!(
+        matches!(result, Err(Error::Output(OutputError::Missing("machines")))),
+        "{result:?}"
+    );
 }
 #[tokio::test]
 async fn stale_module_files_removed() {
@@ -415,4 +426,52 @@ async fn stale_module_files_removed() {
     assert!(work.path().join("main.tf").is_file());
     assert!(work.path().join("terraform.tfstate").is_file());
     assert!(work.path().join(".terraform").is_dir());
+}
+
+#[tokio::test]
+async fn plan_text_redacts_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let script = fake_tofu(
+        temp.path(),
+        "if [ \"$1\" = plan ]; then echo 'hcloud-test-token-5f2b9c'; exit 2; fi",
+        OUTPUTS,
+    );
+    let tofu = Tofu::from_binary(script, &temp.path().join("cache"));
+    let workspace = tofu.workspace(
+        temp.path().join("work"),
+        CredentialEnv::new().with("HCLOUD_TOKEN", SECRET),
+    );
+    workspace.prepare(&module(), &variables()).await.unwrap();
+    let (outcome, text) = workspace.plan_text().await.unwrap();
+    assert_eq!(outcome, PlanOutcome::Changes);
+    assert!(text.contains("<redacted>"));
+    assert!(!text.contains(SECRET));
+}
+
+#[tokio::test]
+async fn set_variables_refuses_credentials_and_keeps_module_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let tofu = Tofu::from_binary(temp.path().join("missing"), temp.path());
+    let work = temp.path().join("work");
+    let workspace = tofu.workspace(&work, CredentialEnv::new().with("HCLOUD_TOKEN", SECRET));
+    workspace.prepare(&module(), &variables()).await.unwrap();
+    let changed = serde_json::json!({"count":3}).as_object().unwrap().clone();
+    workspace.set_variables(&changed).await.unwrap();
+    assert!(work.join("main.tf").is_file());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read(work.join(VARIABLES_FILE)).unwrap()
+        )
+        .unwrap(),
+        serde_json::json!({"count":3})
+    );
+    let secret = serde_json::json!({"secret":SECRET})
+        .as_object()
+        .unwrap()
+        .clone();
+    assert!(matches!(
+        workspace.set_variables(&secret).await,
+        Err(Error::SecretInFiles { .. })
+    ));
+    assert!(work.join("main.tf").is_file());
 }

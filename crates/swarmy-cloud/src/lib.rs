@@ -166,6 +166,8 @@ other_from!(
     std::io::Error,
     reqwest::Error,
     swarmy_infra::download::Error,
+    swarmy_infra::Error,
+    swarmy_infra::OutputError,
     url::ParseError,
     serde_json::Error,
     toml::de::Error,

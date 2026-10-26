@@ -217,6 +217,9 @@ mod tests {
                 std::collections::BTreeMap::default()
             },
             tofu_state: None,
+            tofu_bucket: None,
+            tofu_bucket_endpoint: None,
+            tofu_bucket_region: None,
         }
     }
     #[test]

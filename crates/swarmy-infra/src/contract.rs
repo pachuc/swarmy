@@ -30,6 +30,7 @@
 //! - At least one of `public_ipv4` and `public_ipv6` must be non-null, because swarmy connects over SSH to the public address.
 //! - `ssh_user` must be non-empty.
 //! - `bucket` is optional. A group that creates no bucket either omits it or sets its value to `null`. When present it has exactly `endpoint` (an `http` or `https` URL), `name` (non-empty) and `region` (non-empty).
+//! - `network_id` is optional, opaque to swarmy, and passed to later groups of the same module.
 //! - Other outputs are ignored.
 use std::{
     collections::{BTreeMap, HashSet},
@@ -66,6 +67,7 @@ pub struct Bucket {
 pub struct ModuleOutputs {
     pub machines: Vec<Machine>,
     pub bucket: Option<Bucket>,
+    pub network_id: Option<String>,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum OutputError {
@@ -113,6 +115,17 @@ pub fn parse_outputs(json: &str) -> Result<ModuleOutputs, OutputError> {
         })
         .transpose()?
         .flatten();
+    let network_id: Option<String> = raw
+        .remove("network_id")
+        .map(|n| {
+            serde_json::from_value(n.value).map_err(|source| OutputError::Shape {
+                output: "network_id",
+                source,
+            })
+        })
+        .transpose()?
+        .flatten()
+        .filter(|id: &String| !id.is_empty());
     let mut names = HashSet::new();
     for machine in &machines {
         let reason = if machine.name.is_empty() {
@@ -152,7 +165,11 @@ pub fn parse_outputs(json: &str) -> Result<ModuleOutputs, OutputError> {
             });
         }
     }
-    Ok(ModuleOutputs { machines, bucket })
+    Ok(ModuleOutputs {
+        machines,
+        bucket,
+        network_id,
+    })
 }
 #[cfg(test)]
 mod tests {
@@ -177,6 +194,25 @@ mod tests {
         );
         assert_eq!(outputs.machines[0].ssh_user, "root");
         assert_eq!(outputs.bucket.unwrap().name, "fleet-data");
+    }
+    #[test]
+    fn optional_network_id() {
+        let base = r#"{"machines":{"value":[]}}"#;
+        assert_eq!(parse_outputs(base).unwrap().network_id, None);
+        for (value, expected) in [(r#""4711""#, Some("4711")), ("null", None), (r#""""#, None)] {
+            let json = format!(r#"{{"machines":{{"value":[]}},"network_id":{{"value":{value}}}}}"#);
+            assert_eq!(
+                parse_outputs(&json).unwrap().network_id.as_deref(),
+                expected
+            );
+        }
+        assert!(matches!(
+            parse_outputs(r#"{"machines":{"value":[]},"network_id":{"value":12}}"#),
+            Err(OutputError::Shape {
+                output: "network_id",
+                ..
+            })
+        ));
     }
     #[test]
     fn optional_and_invalid() {

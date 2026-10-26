@@ -1,6 +1,7 @@
 //! Provision SSH-reachable hosts as one swarm: stack first, services, then sandbox nodes.
-//! Groups provide hosts (existing sources now, `OpenTofu` groups later), and everything after is shared.
+//! Existing sources and `OpenTofu` groups provide hosts; everything after is shared.
 //! Records precede host changes so a failed up resumes and down can clean up.
+pub mod groups;
 mod machine;
 mod plan;
 mod upgrade;
@@ -30,6 +31,7 @@ pub struct HostSource {
     pub host: RecordedHost,
     /// Operator key to copy, or none when already copied.
     pub copy_key_from: Option<PathBuf>,
+    pub created: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -52,6 +54,7 @@ pub struct Planned {
     pub index: usize,
     pub host: RecordedHost,
     pub copy_key_from: Option<PathBuf>,
+    pub created: bool,
     pub role: Role,
     pub sandboxes: u32,
     pub local_storage: String,
@@ -65,7 +68,7 @@ pub fn is_host_swarm(spec: &SwarmSpec) -> bool {
 /// # Errors
 /// Rejects groups that do not provide existing hosts.
 pub fn existing_sources(spec: &SwarmSpec, swarm_dir: &Path) -> Result<Vec<HostSource>> {
-    plan::existing_sources(spec, swarm_dir)
+    Ok(plan::existing_sources(spec, swarm_dir))
 }
 /// Assign roles and validate all sources before any SSH work.
 /// # Errors
@@ -83,6 +86,7 @@ pub struct UpRequest<'a> {
     pub recipe: Option<&'a Path>,
     pub cache: &'a Path,
     pub bucket_keys: Option<StaticKeys>,
+    pub machines: Option<groups::MachineGroups<'a>>,
 }
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct HostReport {
@@ -106,6 +110,7 @@ fn report(p: &Planned, changed: bool) -> HostReport {
 
 pub(crate) trait SwarmHost {
     async fn adopt_key(&self, node: &Machine, source: &Path) -> Result<()>;
+    async fn wait_ready(&self, node: &Machine) -> Result<()>;
     async fn provision(&self, node: &Machine, primary: Option<&Machine>) -> Result<String>;
     async fn services(
         &self,
@@ -127,6 +132,9 @@ pub(crate) trait SwarmHost {
     async fn reachable(&self, node: &Machine) -> bool;
 }
 impl SwarmHost for ssh::Ssh {
+    async fn wait_ready(&self, node: &Machine) -> Result<()> {
+        ssh::wait_boot(node).await
+    }
     async fn adopt_key(&self, node: &Machine, source: &Path) -> Result<()> {
         ssh::adopt_key(node, source).await
     }
@@ -189,9 +197,9 @@ fn machine(
         services: matches!(role, Role::Stack { services: true }),
     }
 }
-fn node(p: &Planned, user: &str, spec: &SwarmSpec, record: &SwarmRecord) -> Machine {
+fn node(p: &Planned, user: &str, bucket: Option<&swarmy_config::BucketSpec>) -> Machine {
     let mut machine = machine(&p.host, user, p.role, p.sandboxes, &p.local_storage);
-    machine.bucket = bucket_spec(spec, record);
+    machine.bucket = bucket.cloned();
     machine
 }
 fn bucket_spec(spec: &SwarmSpec, record: &SwarmRecord) -> Option<swarmy_config::BucketSpec> {
@@ -293,6 +301,24 @@ async fn provision_swarm_with(
         provision_swarm_with_backend(host, request).await
     }
 }
+// Check machine groups before preparing a spec bucket can create remote state.
+fn preflight_machine_groups(
+    request: &UpRequest<'_>,
+    record: &SwarmRecord,
+    dir: &Path,
+) -> Result<()> {
+    let spec = request.spec;
+    if groups::has_module_groups(spec) {
+        let machines = request.machines.as_ref().ok_or_else(|| {
+            Error::other(format!(
+                "swarm {} has OpenTofu groups; this caller passed no OpenTofu runner",
+                spec.name
+            ))
+        })?;
+        groups::preflight(spec, record, machines, dir)?;
+    }
+    Ok(())
+}
 async fn provision_swarm_with_backend(
     host: &impl SwarmHost,
     #[cfg(feature = "remote")] cloud: &impl crate::Cloud,
@@ -302,7 +328,12 @@ async fn provision_swarm_with_backend(
     check_bucket_support(spec)?;
     let _lock = Locked(lock(request.registry, &spec.name)?);
     let swarm_dir = request.registry.swarm_dir(&spec.name)?;
-    let planned = plan(spec, std::mem::take(&mut request.sources))?;
+    plan::check_layout(spec)?;
+    plan::check_group_storage(spec)?;
+    for source in &request.sources {
+        plan::check_source(source)?;
+    }
+    let mut sources = std::mem::take(&mut request.sources);
     let mut record = request
         .registry
         .read_record(&spec.name)?
@@ -313,8 +344,11 @@ async fn provision_swarm_with_backend(
             api: SwarmApi::default(),
             hosts: BTreeMap::new(),
             tofu_state: None,
+            tofu_bucket: None,
+            tofu_bucket_endpoint: None,
+            tofu_bucket_region: None,
         });
-    reconcile(&planned, &record)?;
+    preflight_machine_groups(&request, &record, &swarm_dir)?;
     prepare_bucket(
         #[cfg(feature = "remote")]
         cloud,
@@ -322,6 +356,36 @@ async fn provision_swarm_with_backend(
         &mut record,
     )
     .await?;
+    // Validate service credentials before any OpenTofu apply spends money.
+    let primary_done = record
+        .hosts
+        .get(&spec.placement.stack)
+        .and_then(|hosts| hosts.first())
+        .is_some_and(|h| h.provisioned);
+    let _ = service_options(
+        &request,
+        &record,
+        primary_done,
+        bucket_spec(spec, &record).as_ref(),
+    )?;
+    let applied = if groups::has_module_groups(spec) {
+        let machines = request.machines.as_ref().ok_or_else(|| {
+            Error::other(format!(
+                "swarm {} has OpenTofu groups; this caller passed no OpenTofu runner",
+                spec.name
+            ))
+        })?;
+        let applied = groups::apply(machines, request.registry, spec, &mut record).await?;
+        sources.extend(applied.sources.clone());
+        Some(applied)
+    } else {
+        None
+    };
+    let bucket = applied
+        .and_then(|a| a.bucket)
+        .or_else(|| bucket_spec(spec, &record));
+    let planned = plan(spec, sources)?;
+    reconcile(&planned, &record)?;
     let primary = planned
         .first()
         .ok_or_else(|| Error::other("no primary host"))?;
@@ -337,12 +401,37 @@ async fn provision_swarm_with_backend(
             primary.host.name, spec.name
         )));
     }
-    let options = service_options(&request, &record, primary_done)?;
+    let options = service_options(&request, &record, primary_done, bucket.as_ref())?;
     create_private_dir(&swarm_dir.join("keys"))?;
-    let primary_node = node(primary, user(spec), spec, &record);
+    let primary_node = node(primary, user(spec), bucket.as_ref());
+    let reports = provision_planned(
+        host,
+        &request,
+        &mut record,
+        &planned,
+        &primary_node,
+        options.as_ref(),
+        bucket.as_ref(),
+    )
+    .await?;
+    if request.registry.current()?.is_none() {
+        request.registry.set_current(&spec.name)?;
+    }
+    Ok(reports)
+}
+async fn provision_planned(
+    host: &impl SwarmHost,
+    request: &UpRequest<'_>,
+    record: &mut SwarmRecord,
+    planned: &[Planned],
+    primary_node: &Machine,
+    options: Option<&services::Options>,
+    bucket: Option<&swarmy_config::BucketSpec>,
+) -> Result<Vec<HostReport>> {
+    let spec = request.spec;
     let mut reports = Vec::new();
-    for p in &planned {
-        if recorded(&record, p).is_some_and(|h| h.provisioned) {
+    for p in planned {
+        if recorded(record, p).is_some_and(|h| h.provisioned) {
             cloud_out!("{}: already provisioned", p.host.name);
             reports.push(HostReport {
                 provisioned: true,
@@ -350,15 +439,7 @@ async fn provision_swarm_with_backend(
             });
             continue;
         }
-        let result = provision_one(
-            host,
-            &request,
-            &mut record,
-            p,
-            &primary_node,
-            options.as_ref(),
-        )
-        .await;
+        let result = provision_one(host, request, record, p, primary_node, options, bucket).await;
         if let Err(error) = result {
             cloud_err!(
                 "swarm up {} stopped at host {}; fix the cause and run swarmy swarm up {} again (provisioned hosts are skipped), or swarmy swarm down {} --destroy to remove swarmy from the hosts",
@@ -370,9 +451,6 @@ async fn provision_swarm_with_backend(
             return Err(error);
         }
         reports.push(report(p, true));
-    }
-    if request.registry.current()?.is_none() {
-        request.registry.set_current(&spec.name)?;
     }
     Ok(reports)
 }
@@ -436,6 +514,7 @@ fn service_options(
     request: &UpRequest<'_>,
     record: &SwarmRecord,
     primary_done: bool,
+    bucket: Option<&swarmy_config::BucketSpec>,
 ) -> Result<Option<services::Options>> {
     let spec = request.spec;
     Ok(if primary_done {
@@ -449,7 +528,7 @@ fn service_options(
             }
         });
         let mut settings = request.settings.clone();
-        if let Some(bucket) = bucket_spec(spec, record) {
+        if let Some(bucket) = bucket {
             bucket.apply_to_settings(&mut settings);
         }
         settings.api = swarmy_config::ApiSettings {
@@ -478,6 +557,7 @@ async fn provision_one(
     p: &Planned,
     primary: &Machine,
     options: Option<&services::Options>,
+    bucket: Option<&swarmy_config::BucketSpec>,
 ) -> Result<()> {
     let registry = request.registry;
     let spec = request.spec;
@@ -488,7 +568,10 @@ async fn provision_one(
         hosts.push(p.host.clone());
     }
     registry.write_record(record)?;
-    let machine = node(p, user(spec), spec, record);
+    let machine = node(p, user(spec), bucket);
+    if p.created {
+        host.wait_ready(&machine).await?;
+    }
     if let Some(source) = &p.copy_key_from {
         host.adopt_key(&machine, source).await?;
     }
@@ -536,6 +619,7 @@ fn record_plan(record: &SwarmRecord, stack: &str) -> Vec<Planned> {
                 index,
                 host: host.clone(),
                 copy_key_from: None,
+                created: false,
                 role: if group == stack && index == 0 {
                     Role::Stack { services: true }
                 } else {
@@ -555,6 +639,27 @@ fn record_plan(record: &SwarmRecord, stack: &str) -> Vec<Planned> {
         }
     }
     planned
+}
+fn effective_bucket(
+    registry: &Registry,
+    spec: &SwarmSpec,
+    record: &SwarmRecord,
+    credentials: Option<&swarmy_config::cloud::CloudCredentials>,
+) -> Result<Option<swarmy_config::BucketSpec>> {
+    if spec.bucket.is_none() && record.tofu_bucket.is_some() {
+        let loaded;
+        let credentials = if let Some(credentials) = credentials {
+            credentials
+        } else {
+            loaded = swarmy_config::cloud::CloudCredentials::load(
+                &swarmy_config::cloud::CloudCredentials::path(registry.dirs()),
+            )?;
+            &loaded
+        };
+        Ok(groups::bucket_from(record, credentials))
+    } else {
+        Ok(bucket_spec(spec, record))
+    }
 }
 fn recorded_plan(registry: &Registry, spec: &SwarmSpec) -> Result<(SwarmRecord, Vec<Planned>)> {
     let record = registry.read_record(&spec.name)?.ok_or_else(|| {
@@ -579,10 +684,11 @@ async fn stop_swarm_with(
 ) -> Result<Vec<HostReport>> {
     let _lock = Locked(lock(registry, &spec.name)?);
     let (record, planned) = recorded_plan(registry, spec)?;
+    let bucket = effective_bucket(registry, spec, &record, None)?;
     let mut reports = Vec::new();
     for p in planned.iter().rev() {
         if recorded(&record, p).is_some_and(|h| h.provisioned) {
-            host.stop(&node(p, user(spec), spec, &record))
+            host.stop(&node(p, user(spec), bucket.as_ref()))
                 .await
                 .map_err(|e| Error::context(e, format!("host {}", p.host.name)))?;
             reports.push(report(p, true));
@@ -603,10 +709,11 @@ async fn start_swarm_with(
 ) -> Result<Vec<HostReport>> {
     let _lock = Locked(lock(registry, &spec.name)?);
     let (record, planned) = recorded_plan(registry, spec)?;
+    let bucket = effective_bucket(registry, spec, &record, None)?;
     let mut reports = Vec::new();
     for p in &planned {
         if recorded(&record, p).is_some_and(|h| h.provisioned) {
-            host.start(&node(p, user(spec), spec, &record))
+            host.start(&node(p, user(spec), bucket.as_ref()))
                 .await
                 .map_err(|e| Error::context(e, format!("host {}", p.host.name)))?;
             reports.push(report(p, true));
@@ -617,13 +724,18 @@ async fn start_swarm_with(
 /// Remove swarmy from hosts, leaving machines and spec in place.
 /// # Errors
 /// Reports host failures and retains them in the record.
-pub async fn decommission_swarm(registry: &Registry, spec: &SwarmSpec) -> Result<Vec<HostReport>> {
-    decommission_swarm_with(&ssh::Ssh::teardown(), registry, spec).await
+pub async fn decommission_swarm(
+    registry: &Registry,
+    spec: &SwarmSpec,
+    machines: Option<groups::MachineGroups<'_>>,
+) -> Result<Vec<HostReport>> {
+    decommission_swarm_with(&ssh::Ssh::teardown(), registry, spec, machines).await
 }
 async fn decommission_swarm_with(
     host: &impl SwarmHost,
     registry: &Registry,
     spec: &SwarmSpec,
+    machines: Option<groups::MachineGroups<'_>>,
 ) -> Result<Vec<HostReport>> {
     check_bucket_support(spec)?;
     let _lock = Locked(lock(registry, &spec.name)?);
@@ -634,12 +746,30 @@ async fn decommission_swarm_with(
         );
         return Ok(Vec::new());
     };
-    let planned = record_plan(&record, &spec.placement.stack);
+    let dir = registry.swarm_dir(&spec.name)?;
+    let planned: Vec<_> = record_plan(&record, &spec.placement.stack)
+        .into_iter()
+        .filter(|p| {
+            !dir.join("tofu")
+                .join(&p.group)
+                .join("terraform.tfstate")
+                .is_file()
+        })
+        .collect();
+    let bucket = effective_bucket(
+        registry,
+        spec,
+        &record,
+        machines.as_ref().map(|m| m.credentials),
+    )?;
     let mut reports = Vec::new();
     let mut failures = Vec::new();
     let mut failed = BTreeMap::<String, Vec<RecordedHost>>::new();
     for p in planned.iter().rev() {
-        match host.decommission(&node(p, user(spec), spec, &record)).await {
+        match host
+            .decommission(&node(p, user(spec), bucket.as_ref()))
+            .await
+        {
             Ok(()) => reports.push(report(p, true)),
             Err(error) => {
                 failures.push(format!(
@@ -656,7 +786,10 @@ async fn decommission_swarm_with(
     }
     if !failures.is_empty() {
         failures.sort();
-        record.hosts = failed;
+        record
+            .hosts
+            .retain(|group, _| dir.join("tofu").join(group).is_dir());
+        record.hosts.extend(failed);
         registry.write_record(&record)?;
         return Err(Error::other(format!(
             "swarm down {} incomplete for {} host(s) ({}); fix them, then run swarmy swarm down {} --destroy again",
@@ -667,7 +800,7 @@ async fn decommission_swarm_with(
         )));
     }
     delete_bucket(spec, &record).await?;
-    let dir = registry.swarm_dir(&spec.name)?;
+    let destroyed = groups::destroy(machines.as_ref(), registry, spec, &mut record).await?;
     swarmy_core::ignore_best_effort(
         Tunnels::ssh().disconnect(&dir.join("tunnel")).await,
         "close the swarm's SSH tunnel",
@@ -677,6 +810,9 @@ async fn decommission_swarm_with(
         && error.kind() != ErrorKind::NotFound
     {
         return Err(error.into());
+    }
+    if destroyed > 0 {
+        cloud_out!("destroyed the machines of {destroyed} OpenTofu group(s)");
     }
     cloud_out!(
         "removed swarmy from {} host(s) of swarm {}; the machines keep running. The spec stays at {}; swarmy swarm rm {} forgets it",
@@ -715,6 +851,7 @@ async fn status_with(
     spec: &SwarmSpec,
 ) -> Result<Status> {
     let (record, planned) = recorded_plan(registry, spec)?;
+    let bucket = effective_bucket(registry, spec, &record, None)?;
     let mut hosts = Vec::new();
     for p in &planned {
         hosts.push(HostStatus {
@@ -723,7 +860,7 @@ async fn status_with(
             role: p.role.label(),
             address: p.host.public_address.clone(),
             provisioned: p.host.provisioned,
-            ssh: host.reachable(&node(p, user(spec), spec, &record)).await,
+            ssh: host.reachable(&node(p, user(spec), bucket.as_ref())).await,
         });
     }
     Ok(Status {
@@ -774,16 +911,21 @@ pub async fn upgrade_swarm_with(
         options.json,
     );
     policy.dirty_paths = host.checkout_changes()?;
-    let machines = upgrade_machines(&record, spec);
+    let bucket = effective_bucket(registry, spec, &record, None)?;
+    let machines = upgrade_machines(&record, spec, bucket.as_ref());
     upgrade::run_with(&host, &machines, policy, on_summary).await
 }
 
-fn upgrade_machines(record: &SwarmRecord, spec: &SwarmSpec) -> Vec<Machine> {
+fn upgrade_machines(
+    record: &SwarmRecord,
+    spec: &SwarmSpec,
+    bucket: Option<&swarmy_config::BucketSpec>,
+) -> Vec<Machine> {
     record_plan(record, &spec.placement.stack)
         .iter()
         .rev()
         .filter(|p| recorded(record, p).is_some_and(|h| h.provisioned))
-        .map(|p| node(p, user(spec), spec, record))
+        .map(|p| node(p, user(spec), bucket))
         .collect()
 }
 
@@ -826,7 +968,8 @@ pub async fn logs(
         recorded(&record, selected).is_some_and(|h| h.provisioned),
         "host is not provisioned",
     )?;
-    let machine = node(selected, user(spec), spec, &record);
+    let bucket = effective_bucket(registry, spec, &record, None)?;
+    let machine = node(selected, user(spec), bucket.as_ref());
     let address = ssh::reachable_address(&machine).await?;
     let command = "host journalctl".to_owned();
     let mut child = ssh::command(&machine)?

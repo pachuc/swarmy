@@ -91,7 +91,7 @@ Supply `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally
 `AWS_SESSION_TOKEN` in the runner environment only. The region always comes
 from `location`, never the environment. Here `network_id` is an existing
 subnet id, whereas for hetzner-cloud it is a decimal network id. Swarmy
-treats it as opaque and passes it from the first group to later groups.
+treats it as opaque and passes it from the first group to later groups of the same module.
 An empty value creates a VPC and public subnet.
 
 Machines have `ssh_user` ubuntu, no public IPv6, and a fixed encrypted
@@ -103,3 +103,29 @@ gateway and security groups, including `ec2:DescribeInstanceTypes`;
 creation, tagging, `s3:PutBucketPublicAccessBlock`, and deletion.
 This module has only been checked by `tofu validate` and offline mock tests.
 It has not been run against real AWS.
+
+## How swarmy runs these modules
+
+Swarmy keeps one OpenTofu working directory per machine group beneath the
+swarm's record directory. It writes the swarm and group names, machine count,
+optional size and location, one group SSH public key, SSH CIDRs, bucket name,
+force-destroy flag, and network ID to the variables file. Each group has its
+own private SSH key pair. The stack group is applied first, followed by the
+services group when distinct and the node groups in placement order. A
+`network_id` output is passed only to later groups using the same module;
+custom path modules may omit it. Custom module paths must be absolute.
+
+Only a hetzner-cloud stack group without a spec bucket creates an object
+bucket. Its name is chosen once; swarmy retrieves the S3 keys from the cloud
+credential store instead of copying them into the record. AWS groups create
+no bucket until instance-role access is supported, and custom modules create
+none because swarmy does not know their provider's bucket credentials.
+Hetzner groups get their cloud credentials and, when stored, S3 credentials;
+AWS groups get AWS credentials. Custom modules get all stored provider
+credentials. OpenTofu receives these only through its environment, never
+through variables or module files. Every group also sets
+`AWS_SHARED_CREDENTIALS_FILE=/dev/null`, `AWS_CONFIG_FILE=/dev/null`, and
+`AWS_EC2_METADATA_DISABLED=true` to prevent fallback to local AWS credentials.
+On teardown, orphan group directories no longer named in the spec are destroyed
+first, then the remaining groups in reverse placement order. A bucket-owning
+group gets the force-destroy flag before destruction.
