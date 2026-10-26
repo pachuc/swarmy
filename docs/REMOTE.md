@@ -199,11 +199,11 @@ Upgrade reconciles binaries and units in place. It drains sandboxes before
 restarting nodes and upgrades the primary last. Development checkouts with
 uncommitted changes are refused unless `--allow-dirty` is set. Machines
 provisioned before the `swarmy-core` binary should be upgraded with the same
-command; the installed units are reconciled. To put inference control
-services on the host and copy the configured credential explicitly, run
-`swarmy swarm up demo --copy-credential`. The credential stays on the host;
-normal provisioning never copies it. Named agent memory files remain on
-agent disks and follow their snapshots, not the client tunnel.
+command; the installed units are reconciled. To copy the configured provider
+credential, pass `--copy-credential` on the first `swarmy swarm up demo`;
+subsequent ups skip an already-provisioned primary. The credential stays on
+the host; normal provisioning never copies it. Named agent memory files
+remain on agent disks and follow their snapshots, not the client tunnel.
 
 ### Upgrading a host provisioned before swarmy-core
 
@@ -274,7 +274,7 @@ for it. Do not run the new client against hz before that conversion.
 ## Root suites and maintainer acceptance
 
 Use [`scripts/node-suites/`](../scripts/node-suites/) for the manual root
-suites; record results in the pull request. The host and sandbox root suites require a real node with `/dev/nbd0`, sudo,
-and the dev stack. Run them on the suite node, not inside an agent sandbox.
+suites; record results in the pull request. The host and sandbox root suites
+require a real node with `/dev/nbd0`, sudo, and the dev stack. Run them on the suite node, not inside an agent sandbox.
 `scripts/test-remote.sh` checks the on-demand SSH tunnel against localhost
 sshd with an authorized test key. It skips without `SWARMY_REMOTE_TEST_KEY`.
