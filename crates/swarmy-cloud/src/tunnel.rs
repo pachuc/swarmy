@@ -453,8 +453,11 @@ mod tests {
             let bin = root.path().join("bin");
             fs::create_dir(&bin).unwrap();
             let program = bin.join("ssh");
-            fs::write(&program, include_str!("../tests/fixtures/fake-ssh")).unwrap();
-            fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+            std::os::unix::fs::symlink(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-ssh"),
+                &program,
+            )
+            .unwrap();
             Self { root, program }
         }
         fn request(dir: &Path, placement: Placement) -> Request<'_> {
@@ -640,11 +643,7 @@ mod tests {
     #[tokio::test]
     async fn failed_start_publishes_nothing() {
         let fixture = Fixture::new();
-        fs::write(
-            &fixture.program,
-            "#!/bin/sh\ncase \" $* \" in *\" -M \"*) echo boom >&2; exit 255;; esac\nexit 0\n",
-        )
-        .unwrap();
+        fs::write(fixture.program.parent().unwrap().join("fail-start"), b"").unwrap();
         let tunnels = Tunnels::with_program(fixture.program.clone());
         let dir = fixture.root.path().join("one");
         let request = Fixture::request(&dir, Placement::Remote);
@@ -674,8 +673,11 @@ mod extra_tests {
         fn new() -> Self {
             let root = tempfile::tempdir().unwrap();
             let program = root.path().join("ssh");
-            fs::write(&program, include_str!("../tests/fixtures/fake-ssh")).unwrap();
-            fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+            std::os::unix::fs::symlink(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-ssh"),
+                &program,
+            )
+            .unwrap();
             Self {
                 root,
                 program,

@@ -28,6 +28,10 @@ if [[ "$action" == exit ]]; then
     rm -f "$socket" "$socket.pid"
     exit 0
 fi
+if ((master)) && [[ -f "$(dirname "$0")/fail-start" ]]; then
+    echo boom >&2
+    exit 255
+fi
 if ((master)); then
     printf '%s\n' "$*" >> "$(dirname "$0")/ssh-masters"
     exec python3 -c '
