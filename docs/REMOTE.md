@@ -637,12 +637,11 @@ Connect prints total elapsed time, address probing time, and tunnel startup
 time. JSON adds these seconds under `timing`, alongside `reused`; an existing
 healthy tunnel reports zero for the skipped probe and startup phases.
 
-Status reports saved instance IDs and SSH reachability. An unreachable host has
-unknown instance state; this command does not query a cloud API. For each
+Status reports saved host records and SSH reachability. An unreachable host has
+unknown live state; this command does not query a cloud API. For each
 connected stack it scans all registered swarmyd nodes, including stale records,
 and shows heartbeat age (live means at most 30 seconds old). Registrations belong
-to the stack; they are not attributed to an instance because node records contain
-no instance address. Store failures and disconnected tunnels report unknown
+to the stack; they are not attributed to a specific host registration. Store failures and disconnected tunnels report unknown
 registration rather than claiming the node is absent. `--json` emits the same
 information for scripts.
 

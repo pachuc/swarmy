@@ -73,14 +73,19 @@ same input and output names; the script guards that contract. Both aws and hetzn
 
 ## aws
 
-The `aws` module maps `size` to an EC2 instance type (such as m6i.large),
-`location` to an AWS region, `image` to either the current Canonical Ubuntu
-24.04 AMI from a public SSM parameter or an explicit AMI id, and
-`ssh_public_key` to a group key pair. `labels` are tags, but the three swarmy
-tags win on conflict. `ssh_allowed_cidrs` controls SSH only. `bucket_name`,
-`bucket_location`, and `bucket_force_destroy` control an optional S3 bucket;
-the bucket gets a public-access block. The `machine_count`, `swarm`, and
-`group` inputs control the number and names of machines.
+The `aws` module implements the same thirteen inputs with these meanings:
+
+| Input | AWS meaning |
+|---|---|
+| `swarm`, `group`, `machine_count` | Names and number of EC2 machines |
+| `size` | EC2 instance type, such as m6i.large |
+| `location` | AWS region for the machines and network |
+| `image` | Current Canonical Ubuntu 24.04 SSM image or explicit AMI id |
+| `ssh_public_key` | The group's EC2 key pair (RSA or ed25519) |
+| `labels` | Resource tags; swarmy's three ownership tags win |
+| `ssh_allowed_cidrs` | SSH ingress from these IPv4 and IPv6 CIDRs |
+| `bucket_name`, `bucket_location`, `bucket_force_destroy` | Optional S3 bucket name, region and deletion policy |
+| `network_id` | Existing subnet id to join, or empty to create a VPC and public subnet |
 
 Supply `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally
 `AWS_SESSION_TOKEN` in the runner environment only. The region always comes

@@ -79,8 +79,7 @@ pub(super) async fn run(
 }
 
 /// Install node services and build the registered image once an address is
-/// known. Used by `adopt` after its
-/// host is recorded): one implementation, no second copy of these steps.
+/// known. Adoption calls this after recording the host.
 pub(super) async fn provision_stack(
     host: &impl Host,
     state: &State,

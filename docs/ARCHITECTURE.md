@@ -74,7 +74,7 @@ crate in a tier depends on every lower tier.
 - **swarmy-devtools** is a binary for standalone provider login and credential
   import over the HTTP client
   ([source](../crates/swarmy-devtools/src/main.rs)).
-- **swarmy-cloud** provisions existing hosts over SSH, upgrades them, opens tunnels, and sets up their static-key bucket, for
+- **swarmy-cloud** provisions existing hosts over SSH, upgrades them, opens tunnels, and sets up their static-key bucket for
   the opt-in remote feature; it is not a server dependency
   ([source](../crates/swarmy-cloud/src/lib.rs)).
 - **swarmy-infra** fetches a pinned, checksum-verified OpenTofu release, runs it in a per-swarm working directory with cloud credentials only in the environment, and owns the module output contract and the verified-download helper the swarmy release cache shares ([source](../crates/swarmy-infra/src/lib.rs)), and carries the OpenTofu machine-group modules from infra/modules ([modules](../crates/swarmy-infra/src/modules.rs)).
@@ -219,7 +219,7 @@ services and scheduler, worker, gateway and API processes; the sandbox node
 runs `swarmyd`, runc containers and the volume/NBD path
 ([remote-provision.sh](../scripts/remote-provision.sh),
 [swarmyd main](../crates/swarmyd/src/role.rs)). One machine can perform both
-roles. A remote client uses the HTTP API and SSH tunnels; Provisioning and
+roles. A remote client uses the HTTP API and SSH tunnels; provisioning and
 upgrade are CLI operations, not a Kubernetes controller
 ([REMOTE.md](REMOTE.md), [cloud source](../crates/swarmy-cloud/src/lib.rs)).
 

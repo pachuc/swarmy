@@ -5,8 +5,7 @@ use swarmy_config::{RemoteNode, RemoteSettings};
 
 use super::{Host, state::State};
 
-/// Join an existing SSH-reachable machine. The
-/// bootstrap login and key reach the new machine; the service user stays the
+/// Join an existing SSH-reachable machine. The bootstrap login and key reach the new machine; the service user stays the
 /// primary's so the tunnel login matches. `primary_address` overrides the
 /// address the joining node uses for the primary's backing services (a
 /// vSwitch address, for example); empty keeps the recorded private address.
@@ -86,7 +85,7 @@ pub(super) async fn run(
 }
 
 /// Install joining-node services and print the join summary once an address
-/// is known. Shared by launched and adopted joins.
+/// is known.
 async fn finish(
     host: &impl Host,
     primary: &str,

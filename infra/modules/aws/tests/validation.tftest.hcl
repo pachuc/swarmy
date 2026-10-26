@@ -1,11 +1,21 @@
 # Mock provider: no AWS calls. Data sources get fixed values so the image
 # lookup and joined-subnet paths are deterministic.
 mock_provider "aws" {
-  mock_resource "aws_vpc" { defaults = { id = "vpc-mock" } }
-  mock_resource "aws_subnet" { defaults = { id = "subnet-mock" } }
-  mock_resource "aws_internet_gateway" { defaults = { id = "igw-mock" } }
-  mock_resource "aws_route_table" { defaults = { id = "rtb-mock" } }
-  mock_resource "aws_security_group" { defaults = { id = "sg-mock" } }
+  mock_resource "aws_vpc" {
+    defaults = { id = "vpc-mock" }
+  }
+  mock_resource "aws_subnet" {
+    defaults = { id = "subnet-mock" }
+  }
+  mock_resource "aws_internet_gateway" {
+    defaults = { id = "igw-mock" }
+  }
+  mock_resource "aws_route_table" {
+    defaults = { id = "rtb-mock" }
+  }
+  mock_resource "aws_security_group" {
+    defaults = { id = "sg-mock" }
+  }
   mock_resource "aws_instance" {
     defaults = {
       id         = "i-mock"
@@ -13,8 +23,12 @@ mock_provider "aws" {
       private_ip = "10.0.0.10"
     }
   }
-  mock_data "aws_ec2_instance_type" { defaults = { supported_architectures = ["x86_64"] } }
-  mock_data "aws_ssm_parameter" { defaults = { insecure_value = "ami-0123456789abcdef0" } }
+  mock_data "aws_ec2_instance_type" {
+    defaults = { supported_architectures = ["x86_64"] }
+  }
+  mock_data "aws_ssm_parameter" {
+    defaults = { insecure_value = "ami-0123456789abcdef0" }
+  }
   mock_data "aws_subnet" {
     defaults = {
       cidr_block = "10.1.0.0/20"
@@ -22,6 +36,7 @@ mock_provider "aws" {
     }
   }
 }
+
 variables {
   swarm          = "fleet"
   group          = "workers"
@@ -30,6 +45,7 @@ variables {
   location       = "eu-central-1"
   ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBswarmyTestKeyNotARealKey0000000000000 swarmy-test"
 }
+
 run "rejects_bad_swarm_name" {
   command = plan
   variables { swarm = "Fleet_1" }

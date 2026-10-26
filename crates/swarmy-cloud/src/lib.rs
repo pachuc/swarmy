@@ -255,7 +255,7 @@ pub trait Cloud {
     fn delete_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<BucketRemoval>>;
 }
 
-/// Key generation and provisioning over SSH, replaceable by a fake in tests.
+/// Provisioning and decommissioning over SSH, replaceable by a fake in tests.
 pub trait Host {
     fn services(
         &self,

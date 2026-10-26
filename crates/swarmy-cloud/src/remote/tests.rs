@@ -40,6 +40,7 @@ impl Cloud for FakeCloud {
 
 #[derive(Default)]
 struct FakeHost {
+    fail_decommission: Cell<bool>,
     provisioned: RefCell<Vec<String>>,
     decommissioned: RefCell<Vec<String>>,
     primary_addresses: RefCell<Vec<Option<String>>>,
@@ -67,7 +68,11 @@ impl Host for FakeHost {
     }
     fn decommission(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
         self.decommissioned.borrow_mut().push(node.name.clone());
-        std::future::ready(Ok(()))
+        std::future::ready(if self.fail_decommission.get() {
+            Err(crate::Error::other("simulated decommission failure"))
+        } else {
+            Ok(())
+        })
     }
     fn provision(
         &self,
@@ -258,4 +263,55 @@ async fn down_refuses_a_record_launched_on_ec2() {
     assert!(state.read("demo").unwrap().is_some());
     let error = super::existing_launch(&node).err().unwrap();
     assert!(swarmy_core::error_chain(&error).contains("launched on EC2"));
+}
+
+#[tokio::test]
+async fn denied_ownership_keeps_state_for_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    adopt(&state, &cloud, &host, &with_bucket(), &bootstrap_key(&dir)).await;
+    cloud.denied.set(true);
+    let node = state.require("demo").unwrap();
+    let error = down::run_existing(&cloud, &host, &state, &node, false)
+        .await
+        .err()
+        .unwrap();
+    assert!(swarmy_core::error_chain(&error).contains("permission denied"));
+    assert!(state.read("demo").unwrap().is_some());
+    assert!(cloud.removed.borrow().is_empty());
+}
+
+#[tokio::test]
+async fn failed_host_decommission_keeps_bucket_and_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    adopt(&state, &cloud, &host, &with_bucket(), &bootstrap_key(&dir)).await;
+    host.fail_decommission.set(true);
+    let node = state.require("demo").unwrap();
+    let error = down::run_existing(&cloud, &host, &state, &node, false)
+        .await
+        .err()
+        .unwrap();
+    assert!(swarmy_core::error_chain(&error).contains("simulated decommission failure"));
+    assert!(state.read("demo").unwrap().is_some());
+    assert!(cloud.removed.borrow().is_empty());
+}
+
+#[tokio::test]
+async fn keep_bucket_decommissions_host_without_deleting_bucket() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("remote")).unwrap();
+    let cloud = FakeCloud::default();
+    let host = FakeHost::default();
+    adopt(&state, &cloud, &host, &with_bucket(), &bootstrap_key(&dir)).await;
+    let node = state.require("demo").unwrap();
+    down::run_existing(&cloud, &host, &state, &node, true)
+        .await
+        .unwrap();
+    assert!(cloud.removed.borrow().is_empty());
+    assert!(state.read("demo").unwrap().is_none());
 }

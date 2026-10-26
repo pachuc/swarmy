@@ -50,9 +50,7 @@ pub(super) fn parse_ipv4(field: &str, value: &str) -> Result<std::net::Ipv4Addr>
         .map_err(|source| crate::Error::context(source, format!("{field} must be an IPv4 address")))
 }
 
-/// Check the bucket binding before any state or host changes. Shared by
-/// `up` and `adopt`: the IAM role name bounds the remote name and the
-/// bucket name must be valid.
+/// Validate an adopted bucket name before any state or host changes.
 pub(super) fn validate_bucket_binding(settings: &RemoteSettings, _name: &str) -> Result<()> {
     if let Some(spec) = &settings.bucket {
         spec.validate_name()?;
@@ -334,7 +332,7 @@ async fn run_adopt(
     .await
 }
 
-/// Join another node to an existing remote over its private network.
+/// Join another existing host to a remote.
 async fn run_add_node(
     state: &State,
     mut settings: Settings,
@@ -365,8 +363,8 @@ async fn run_add_node(
     };
     let _lock = state.lock()?;
     let node = state.require(&name)?;
-    let host = provisioning_host(cache)?;
     existing_launch(&node)?;
+    let host = provisioning_host(cache)?;
     let existing = add_node::resolve_join(
         &name,
         join_host.as_deref(),
