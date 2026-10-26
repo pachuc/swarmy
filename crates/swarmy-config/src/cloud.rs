@@ -274,6 +274,7 @@ impl CloudCredentials {
     /// A missing file is empty; a file readable by others is rejected.
     /// # Errors
     /// Returns `File` for read/parse/validation failures and `CloudCredential` for loose mode.
+    /// Parse errors report a line number but never show the source line, which may contain a secret.
     pub fn load(path: &Path) -> Result<Self, Error> {
         let metadata = match fs::metadata(path) {
             Ok(m) => m,
@@ -289,7 +290,21 @@ impl CloudCredentials {
             )));
         }
         let content = fs::read_to_string(path).map_err(|e| file_error(path, e.into()))?;
-        let store: Self = toml::from_str(&content).map_err(|e| file_error(path, e.into()))?;
+        let store: Self = toml::from_str(&content).map_err(|e: toml::de::Error| {
+            // TOML diagnostics can include the source line, including secret values.
+            let start = e.span().map_or(0, |span| span.start.min(content.len()));
+            let line = content.as_bytes()[..start]
+                .iter()
+                .filter(|&&byte| byte == b'\n')
+                .count()
+                + 1;
+            file_error(
+                path,
+                Error::CloudCredential(format!(
+                    "not valid cloud credentials TOML near line {line} (contents not shown; they may be secrets)"
+                )),
+            )
+        })?;
         for provider in CloudProvider::ALL {
             if let Some(c) = store.get(provider) {
                 c.validate().map_err(|e| file_error(path, e))?;
@@ -424,16 +439,13 @@ mod tests {
             CloudCredentials::default()
         );
         assert!(!path.parent().unwrap().exists());
-        for (contents, decode) in [
-            (
-                "[digitalocean]\nkey = 'x'\n[hetzner-cloud]\ntoken = 'hcloud-test-token-5f2b9c'",
-                true,
-            ),
-            (
-                "[aws]\nregion2 = 'x'\n[hetzner-cloud]\ntoken = 'hcloud-test-token-5f2b9c'",
-                true,
-            ),
-            ("[hetzner-cloud]\ntoken = ''", false),
+        for contents in [
+            "[digitalocean]\nkey = 'x'\n[hetzner-cloud]\ntoken = 'hcloud-test-token-5f2b9c'",
+            "[aws]\nregion2 = 'x'\n[hetzner-cloud]\ntoken = 'hcloud-test-token-5f2b9c'",
+            "[hetzner-cloud]\ntoken = ''",
+            "[hetzner-cloud]\ntokn = 'hcloud-test-token-5f2b9c'",
+            "[hetzner-cloud]\ntoken = hcloud-test-token-5f2b9c",
+            "hetzner-cloud = 'hcloud-test-token-5f2b9c'",
         ] {
             let path = tmp.path().join("bad");
             fs::write(&path, contents).unwrap();
@@ -446,7 +458,7 @@ mod tests {
             }
             match error {
                 Error::File { source, .. } => {
-                    assert_eq!(matches!(*source, Error::Decode(_)), decode);
+                    assert!(matches!(*source, Error::CloudCredential(_)));
                 }
                 e => panic!("unexpected error: {e}"),
             }
@@ -501,16 +513,21 @@ mod tests {
             .to_string(),
             "cloud credentials: aws region must be lowercase letters, digits, and hyphens, like eu-central-1"
         );
-        assert!(
+        assert_eq!(
             CloudCredential::new(
                 CloudProvider::HetznerCloud,
                 vec![TOKEN.into()],
                 Some("x".into())
             )
-            .is_err()
+            .unwrap_err()
+            .to_string(),
+            "cloud credentials: hetzner-cloud does not accept an optional field"
         );
-        assert!(
-            CloudCredential::new(CloudProvider::HetznerS3, vec![S3_ACCESS.into()], None).is_err()
+        assert_eq!(
+            CloudCredential::new(CloudProvider::HetznerS3, vec![S3_ACCESS.into()], None)
+                .unwrap_err()
+                .to_string(),
+            "cloud credentials: hetzner-s3 expected 2 secret fields, got 1"
         );
         let aws_without_region = entry(CloudProvider::Aws, &[AWS_ACCESS, AWS_SECRET], None);
         assert_eq!(
@@ -536,6 +553,7 @@ mod tests {
                 assert!(!debug.contains(secret));
             }
         }
+        assert!(format!("{aws:?}").contains("eu-central-1"));
         for c in [hc, s3, aws] {
             let debug = format!("{c:?}");
             for secret in [TOKEN, S3_ACCESS, S3_SECRET, AWS_ACCESS, AWS_SECRET] {

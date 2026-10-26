@@ -1,4 +1,4 @@
-use anyhow::{Context, bail};
+use anyhow::bail;
 use clap::Subcommand;
 use std::io::{self, IsTerminal, Read, Write};
 use swarmy_config::cloud::{CloudCredential, CloudCredentials, CloudProvider};
@@ -21,6 +21,7 @@ pub(crate) enum Command {
     /// List stored cloud providers and which fields are set, never their values
     Ls,
 }
+
 fn parse_provider(value: &str) -> Result<CloudProvider, swarmy_config::Error> {
     value.parse()
 }
@@ -32,8 +33,8 @@ pub(crate) fn run(command: Command, json: bool) -> anyhow::Result<()> {
             if region.is_some() && provider.option_field() != Some("region") {
                 bail!("--region applies only to aws");
             }
-            let credential = CloudCredential::new(provider, read_secrets(provider)?, region)?;
             let mut store = CloudCredentials::load(&path)?;
+            let credential = CloudCredential::new(provider, read_secrets(provider)?, region)?;
             store.set(credential);
             store.save(&path)?;
             if json {
@@ -65,10 +66,15 @@ pub(crate) fn run(command: Command, json: bool) -> anyhow::Result<()> {
         Command::Ls => {
             let store = CloudCredentials::load(&path)?;
             if json {
-                let entries: Vec<_> = CloudProvider::ALL.iter().map(|&provider| {
-                let entry = store.get(provider);
-                serde_json::json!({"provider":provider.name(),"set":entry.is_some(),"fields":entry.map_or_else(Vec::new, |c| c.set_fields())})
-            }).collect();
+                let entries: Vec<_> = CloudProvider::ALL
+                    .iter()
+                    .map(|&provider| {
+                        let entry = store.get(provider);
+                        let set = entry.is_some();
+                        let fields = entry.map_or_else(Vec::new, |c| c.set_fields());
+                        serde_json::json!({"provider":provider.name(),"set":set,"fields":fields})
+                    })
+                    .collect();
                 println!("{}", serde_json::json!(entries));
             } else {
                 for provider in CloudProvider::ALL {
@@ -82,15 +88,13 @@ pub(crate) fn run(command: Command, json: bool) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
 fn read_secrets(provider: CloudProvider) -> anyhow::Result<Vec<String>> {
     if io::stdin().is_terminal() {
         provider
             .secret_fields()
             .iter()
-            .map(|field| {
-                read_hidden(&format!("{provider} {field}: "))
-                    .with_context(|| format!("no input for {provider} {field}"))
-            })
+            .map(|field| read_hidden(provider, field))
             .collect()
     } else {
         let mut text = String::new();
@@ -98,6 +102,7 @@ fn read_secrets(provider: CloudProvider) -> anyhow::Result<Vec<String>> {
         split_stdin(&text, provider)
     }
 }
+
 fn split_stdin(text: &str, provider: CloudProvider) -> anyhow::Result<Vec<String>> {
     let mut lines: Vec<String> = text.lines().map(|line| line.trim().to_owned()).collect();
     while lines.last().is_some_and(String::is_empty) {
@@ -114,9 +119,11 @@ fn split_stdin(text: &str, provider: CloudProvider) -> anyhow::Result<Vec<String
     }
     Ok(lines)
 }
+
 struct EchoGuard {
     saved: rustix::termios::Termios,
 }
+
 impl Drop for EchoGuard {
     fn drop(&mut self) {
         swarmy_core::ignore_best_effort(
@@ -129,7 +136,8 @@ impl Drop for EchoGuard {
         );
     }
 }
-fn read_hidden(prompt: &str) -> anyhow::Result<String> {
+
+fn read_hidden(provider: CloudProvider, field: &str) -> anyhow::Result<String> {
     use rustix::termios::{LocalModes, OptionalActions, tcgetattr, tcsetattr};
     let fd = io::stdin();
     let saved = tcgetattr(&fd)?;
@@ -137,17 +145,18 @@ fn read_hidden(prompt: &str) -> anyhow::Result<String> {
     quiet.local_modes.remove(LocalModes::ECHO);
     tcsetattr(&fd, OptionalActions::Now, &quiet)?;
     let guard = EchoGuard { saved };
-    eprint!("{prompt}");
+    eprint!("{provider} {field}: ");
     io::stderr().flush()?;
     let mut line = String::new();
     let result = fd.read_line(&mut line);
     eprintln!();
     drop(guard);
     if result? == 0 {
-        bail!("no input");
+        bail!("no input for {provider} {field}");
     }
     Ok(line.trim_end_matches(['\r', '\n']).to_owned())
 }
+
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]

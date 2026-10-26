@@ -77,9 +77,11 @@ fn login_from_stdin_then_ls() {
             & 0o777,
         0o700
     );
-    assert!(
-        matches!(swarmy_config::cloud::CloudCredentials::load(&file).unwrap().get(swarmy_config::cloud::CloudProvider::HetznerCloud), Some(swarmy_config::cloud::CloudCredential::HetznerCloud(c)) if c.token == TOKEN)
-    );
+    let saved = swarmy_config::cloud::CloudCredentials::load(&file).unwrap();
+    assert!(matches!(
+        saved.get(swarmy_config::cloud::CloudProvider::HetznerCloud),
+        Some(swarmy_config::cloud::CloudCredential::HetznerCloud(c)) if c.token == TOKEN
+    ));
     let out = run(tmp.path(), &["cloud", "ls"], "");
     assert!(out.status.success());
     assert!(text(&out.stdout).contains("hetzner-cloud token"));
@@ -208,4 +210,16 @@ fn loose_file_is_refused() {
     let out = run(tmp.path(), &["cloud", "ls"], "");
     assert!(!out.status.success());
     assert!(text(&out.stderr).contains("chmod 600"));
+}
+
+#[test]
+fn malformed_secret_line_is_not_echoed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = path(tmp.path());
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, format!("[hetzner-cloud]\ntokn = \"{TOKEN}\"\n")).unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    let output = run(tmp.path(), &["cloud", "ls"], "");
+    assert!(!output.status.success());
+    assert!(text(&output.stderr).contains("not valid cloud credentials TOML near line 2"));
 }
