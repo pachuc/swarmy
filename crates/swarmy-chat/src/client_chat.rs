@@ -225,7 +225,7 @@ pub async fn run(
         tokio::select! {
             _ = node_check.tick(), if !warned_no_node && view.tool_pending() => {
                 if conversation.no_sandbox_node().await? {
-                    view.entries.push("System: No sandbox node is running, so tool calls cannot execute; see docs/DEV.md or add one with swarmy remote add-node".into());
+                    view.entries.push("System: No sandbox node is running, so tool calls cannot execute; see docs/DEV.md or add one with swarmy swarm node add".into());
                     warned_no_node = true;
                 }
             }

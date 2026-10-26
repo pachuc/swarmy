@@ -1,8 +1,5 @@
 //! In-place upgrades keep the remote state and all instance identities intact.
-use std::{
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use super::Machine;
 use crate::Result;
@@ -151,9 +148,7 @@ pub(super) async fn run(
                 stack,
             )
             .await?;
-        if options.format == Format::Json {
-            cloud_out!("{}", json_line(&summary)?);
-        } else {
+        if options.format != Format::Json {
             cloud_out!(
                 "{}: changed={} units={} restarted={} elapsed={:.1}s",
                 summary.node,

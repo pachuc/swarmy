@@ -646,6 +646,69 @@ async fn run_host_lifecycle(
     }
     Ok(())
 }
+async fn run_host_observation(
+    registry: &Registry,
+    command: Command,
+    json_output: bool,
+) -> Result<()> {
+    match command {
+        Command::Logs {
+            name,
+            service,
+            host,
+            unit,
+        } => {
+            if let Some(spec) = lifecycle_host_spec(registry, &name)? {
+                if service.is_some() {
+                    bail!("a positional service applies only to local swarms");
+                }
+                swarmy_cloud::provision::logs(
+                    registry,
+                    &spec,
+                    host.as_deref(),
+                    unit.as_deref().unwrap_or("swarmyd"),
+                )
+                .await?;
+            } else {
+                if host.is_some() || unit.is_some() {
+                    bail!("--host and --unit apply only to swarms on hosts");
+                }
+                crate::local::follow_logs(registry, &name, service).await?;
+            }
+        }
+        Command::Upgrade {
+            name,
+            services_only,
+            allow_dirty,
+            drain_timeout,
+        } => {
+            let Some(spec) = lifecycle_host_spec(registry, &name)? else {
+                bail!(
+                    "upgrade applies to swarms on hosts; a local swarm runs this client's binaries"
+                );
+            };
+            let summaries = swarmy_cloud::provision::upgrade_swarm(
+                registry,
+                &spec,
+                swarmy_cloud::provision::UpgradeOptions {
+                    allow_dirty,
+                    services_only,
+                    drain_timeout: std::time::Duration::from_secs(drain_timeout),
+                    json: json_output,
+                    cache: registry.dirs().cache.join("core"),
+                },
+            )
+            .await?;
+            if json_output {
+                for summary in summaries {
+                    println!("{}", serde_json::to_string(&summary)?);
+                }
+            }
+        }
+        _ => unreachable!("host observation dispatch"),
+    }
+    Ok(())
+}
 pub(crate) async fn run(
     command: Command,
     json_output: bool,
@@ -671,7 +734,13 @@ pub(crate) async fn run(
         Command::Supervise { .. } => unreachable!("supervisor dispatched above"),
         command @ Command::Create { .. } => run_create(&registry, command, json_output)?,
         command @ (Command::Up { .. } | Command::Start { .. }) => {
-            run_up_start(&registry, command, json_output, allow_version_mismatch).await?;
+            Box::pin(run_up_start(
+                &registry,
+                command,
+                json_output,
+                allow_version_mismatch,
+            ))
+            .await?;
         }
         command @ (Command::Stop { .. }
         | Command::Down { .. }
@@ -679,53 +748,8 @@ pub(crate) async fn run(
         | Command::Node { .. }) => {
             run_host_lifecycle(&registry, command, json_output).await?;
         }
-        Command::Logs {
-            name,
-            service,
-            host,
-            unit,
-        } => {
-            if let Some(spec) = lifecycle_host_spec(&registry, &name)? {
-                if service.is_some() {
-                    bail!("a positional service applies only to local swarms");
-                }
-                swarmy_cloud::provision::logs(
-                    &registry,
-                    &spec,
-                    host.as_deref(),
-                    unit.as_deref().unwrap_or("swarmyd"),
-                )
-                .await?;
-            } else {
-                if host.is_some() || unit.is_some() {
-                    bail!("--host and --unit apply only to swarms on hosts");
-                }
-                crate::local::follow_logs(&registry, &name, service).await?;
-            }
-        }
-        Command::Upgrade {
-            name,
-            services_only,
-            allow_dirty,
-            drain_timeout,
-        } => {
-            let Some(spec) = lifecycle_host_spec(&registry, &name)? else {
-                bail!(
-                    "upgrade applies to swarms on hosts; a local swarm runs this client's binaries"
-                );
-            };
-            swarmy_cloud::provision::upgrade_swarm(
-                &registry,
-                &spec,
-                swarmy_cloud::provision::UpgradeOptions {
-                    allow_dirty,
-                    services_only,
-                    drain_timeout: std::time::Duration::from_secs(drain_timeout),
-                    json: json_output,
-                    cache: registry.dirs().cache.join("core"),
-                },
-            )
-            .await?;
+        command @ (Command::Logs { .. } | Command::Upgrade { .. }) => {
+            run_host_observation(&registry, command, json_output).await?;
         }
         Command::Ls => list(&registry, json_output)?,
         Command::Show { name } => {

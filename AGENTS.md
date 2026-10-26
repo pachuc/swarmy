@@ -58,9 +58,10 @@ measured numbers with raw samples.
   live on 2026-09-21: anthropic, openai, chatgpt, xai, meta, openrouter,
   azure, amazon-bedrock, google, google-vertex (Gemini).
 - **Operating it.** `make dev-tools` and `swarmy swarm up dev` run the stack under
-  the checkout with no root (`docs/DEV.md`). `swarmy remote adopt NAME` builds
-  on machines already owned (Hetzner dedicated servers) with any S3-compatible
-  bucket and static keys, and `remote connect` tunnels to it (`docs/REMOTE.md`).
+  the checkout with no root (`docs/DEV.md`). `swarmy swarm create NAME --host …` and `swarmy swarm up NAME` provision
+  machines already owned (Hetzner dedicated servers), optionally with an
+  S3-compatible bucket and static keys; client commands reach them with
+  `--swarm NAME` through an on-demand SSH tunnel (`docs/REMOTE.md`).
   EC2 launching was removed; cloud machines come from the OpenTofu modules in
   `infra/modules`. CI runs fmt, workspace tests
   against a live dev stack, pedantic clippy, and reduced chaos; root-only

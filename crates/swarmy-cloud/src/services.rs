@@ -8,8 +8,7 @@ use crate::Result;
 use crate::provision::Machine;
 use swarmy_config::Settings;
 
-pub(crate) struct Options<'a> {
-    pub recipe: Option<&'a Path>,
+pub(crate) struct Options {
     pub credential: Option<PathBuf>,
     pub keyring: Option<PathBuf>,
     config: String,
@@ -17,10 +16,9 @@ pub(crate) struct Options<'a> {
 }
 
 #[cfg(test)]
-impl<'a> From<Option<&'a Path>> for Options<'a> {
-    fn from(recipe: Option<&'a Path>) -> Self {
+impl From<Option<&Path>> for Options {
+    fn from(_recipe: Option<&Path>) -> Self {
         Self {
-            recipe,
             credential: None,
             keyring: None,
             config: String::new(),
@@ -29,7 +27,7 @@ impl<'a> From<Option<&'a Path>> for Options<'a> {
     }
 }
 
-impl<'a> Options<'a> {
+impl Options {
     /// Point the node API at the swarm's default image.
     /// # Errors
     /// Reports invalid configuration.
@@ -38,12 +36,6 @@ impl<'a> Options<'a> {
         settings.selection.default_image = Some(image.to_owned());
         self.config = settings.to_toml()?;
         Ok(self)
-    }
-
-    /// The TOML uploaded to the node's `.swarmy/config.toml`.
-    #[cfg(all(test, feature = "remote"))]
-    pub(crate) fn config_toml(&self) -> &str {
-        &self.config
     }
 
     /// Resolve service installation options, loading secrets only when the
@@ -58,7 +50,7 @@ impl<'a> Options<'a> {
         services: bool,
         service_user: &str,
         copy: bool,
-        recipe: Option<&'a Path>,
+        recipe: Option<&Path>,
     ) -> Result<Self> {
         let keyring = if copy {
             Some(swarmy_config::Keyring::path()?)
@@ -73,7 +65,7 @@ impl<'a> Options<'a> {
         services: bool,
         service_user: &str,
         copy: bool,
-        recipe: Option<&'a Path>,
+        _recipe: Option<&Path>,
         keyring: Option<PathBuf>,
     ) -> Result<Self> {
         crate::Error::ensure(
@@ -99,7 +91,7 @@ impl<'a> Options<'a> {
         )?;
         // Copy only service options. Local paths, cloud secrets, endpoints, and
         // the selected tunnel profile must never become node configuration.
-        swarmy_config::validate_service_user(&service_user)?;
+        swarmy_config::validate_service_user(service_user)?;
         let mut remote = Settings {
             api: settings.api.clone(),
             selection: swarmy_config::SelectionSettings {
@@ -155,7 +147,6 @@ impl<'a> Options<'a> {
             None
         };
         Ok(Self {
-            recipe,
             credential,
             keyring,
             config: remote.to_toml()?,
@@ -164,7 +155,7 @@ impl<'a> Options<'a> {
     }
 }
 
-pub(crate) async fn install(node: &Machine, address: &str, options: &Options<'_>) -> Result<()> {
+pub(crate) async fn install(node: &Machine, address: &str, options: &Options) -> Result<()> {
     let user = node.service_user().to_owned();
     swarmy_config::validate_service_user(&user)?;
     // Bash resolves `~user` through the passwd entry; Rust passes only the login.

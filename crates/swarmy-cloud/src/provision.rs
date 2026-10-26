@@ -111,7 +111,7 @@ pub(crate) trait SwarmHost {
         &self,
         node: &Machine,
         address: &str,
-        options: &services::Options<'_>,
+        options: &services::Options,
     ) -> Result<()>;
     async fn api_token(&self, node: &Machine, address: &str) -> Result<String>;
     async fn build_image(
@@ -137,7 +137,7 @@ impl SwarmHost for ssh::Ssh {
         &self,
         node: &Machine,
         address: &str,
-        options: &services::Options<'_>,
+        options: &services::Options,
     ) -> Result<()> {
         services::install(node, address, options).await
     }
@@ -301,20 +301,7 @@ async fn provision_swarm_with(
             tofu_state: None,
         });
     reconcile(&planned, &record)?;
-    if let Some(keys) = request.bucket_keys.take() {
-        record.bucket_keys = Some(keys);
-    }
-    if let Some(bucket) = &spec.bucket {
-        if record.bucket_keys.is_none() {
-            return Err(Error::other(format!(
-                "swarm {} uses bucket {}: pass --s3-access-key KEY with --s3-secret-stdin or --s3-secret-file FILE on its first swarmy swarm up",
-                spec.name, bucket.name
-            )));
-        }
-        verify_bucket(spec, &record).await?;
-        request.registry.write_record(&record)?;
-        ensure_bucket(spec, &record).await?;
-    }
+    prepare_bucket(&mut request, &mut record).await?;
     let primary = planned
         .first()
         .ok_or_else(|| Error::other("no primary host"))?;
@@ -330,35 +317,7 @@ async fn provision_swarm_with(
             primary.host.name, spec.name
         )));
     }
-    let options = if primary_done {
-        None
-    } else {
-        let token = record
-            .api
-            .token
-            .clone()
-            .unwrap_or_else(|| ulid::Ulid::generate().to_string());
-        let mut settings = request.settings.clone();
-        if let Some(bucket) = bucket_spec(spec, &record) {
-            bucket.apply_to_settings(&mut settings);
-        }
-        settings.api = swarmy_config::ApiSettings {
-            token,
-            ..Default::default()
-        };
-        let options = services::Options::new(
-            &settings,
-            true,
-            user(spec),
-            request.copy_credential,
-            request.recipe,
-        )?;
-        Some(if request.recipe.is_some() {
-            options.with_default_image(&format!("base-ubuntu:{}", spec.name))?
-        } else {
-            options
-        })
-    };
+    let options = service_options(&request, &record, primary_done)?;
     create_private_dir(&swarm_dir.join("keys"))?;
     let primary_node = node(primary, user(spec), spec, &record);
     let mut reports = Vec::new();
@@ -397,6 +356,60 @@ async fn provision_swarm_with(
     }
     Ok(reports)
 }
+async fn prepare_bucket(request: &mut UpRequest<'_>, record: &mut SwarmRecord) -> Result<()> {
+    let spec = request.spec;
+    if let Some(keys) = request.bucket_keys.take() {
+        record.bucket_keys = Some(keys);
+    }
+    if let Some(bucket) = &spec.bucket {
+        if record.bucket_keys.is_none() {
+            return Err(Error::other(format!(
+                "swarm {} uses bucket {}: pass --s3-access-key KEY with --s3-secret-stdin or --s3-secret-file FILE on its first swarmy swarm up",
+                spec.name, bucket.name
+            )));
+        }
+        verify_bucket(spec, record).await?;
+        request.registry.write_record(record)?;
+        ensure_bucket(spec, record).await?;
+    }
+    Ok(())
+}
+fn service_options(
+    request: &UpRequest<'_>,
+    record: &SwarmRecord,
+    primary_done: bool,
+) -> Result<Option<services::Options>> {
+    let spec = request.spec;
+    Ok(if primary_done {
+        None
+    } else {
+        let token = record
+            .api
+            .token
+            .clone()
+            .unwrap_or_else(|| ulid::Ulid::generate().to_string());
+        let mut settings = request.settings.clone();
+        if let Some(bucket) = bucket_spec(spec, record) {
+            bucket.apply_to_settings(&mut settings);
+        }
+        settings.api = swarmy_config::ApiSettings {
+            token,
+            ..Default::default()
+        };
+        let options = services::Options::new(
+            &settings,
+            true,
+            user(spec),
+            request.copy_credential,
+            request.recipe,
+        )?;
+        Some(if request.recipe.is_some() {
+            options.with_default_image(&format!("base-ubuntu:{}", spec.name))?
+        } else {
+            options
+        })
+    })
+}
 fn recorded<'a>(record: &'a SwarmRecord, p: &Planned) -> Option<&'a RecordedHost> {
     record
         .hosts
@@ -410,7 +423,7 @@ async fn provision_one(
     record: &mut SwarmRecord,
     p: &Planned,
     primary: &Machine,
-    options: Option<&services::Options<'_>>,
+    options: Option<&services::Options>,
 ) -> Result<()> {
     let registry = request.registry;
     let spec = request.spec;
@@ -421,7 +434,7 @@ async fn provision_one(
         hosts.push(p.host.clone());
     }
     registry.write_record(record)?;
-    let machine = node(p, user(spec), spec, &record);
+    let machine = node(p, user(spec), spec, record);
     if let Some(source) = &p.copy_key_from {
         host.adopt_key(&machine, source).await?;
     }
@@ -767,20 +780,31 @@ pub async fn logs(
     Ok(())
 }
 
+#[cfg(not(feature = "remote"))]
 const NO_S3: &str = "this swarmy was built without the S3 client; install it with make install-client (cargo --features remote) to use swarms with a bucket";
 #[cfg(not(feature = "remote"))]
 fn check_bucket_support(spec: &SwarmSpec) -> Result<()> {
     Error::ensure(spec.bucket.is_none(), NO_S3)
 }
 #[cfg(feature = "remote")]
-fn check_bucket_support(_spec: &SwarmSpec) -> Result<()> {
+fn check_bucket_support(spec: &SwarmSpec) -> Result<()> {
+    if let Some(bucket) = &spec.bucket {
+        bucket.validate()?;
+    }
     Ok(())
 }
 #[cfg(feature = "remote")]
 async fn verify_bucket(spec: &SwarmSpec, record: &SwarmRecord) -> Result<()> {
-    use crate::Cloud;
+    verify_bucket_with(&crate::buckets::S3Buckets, spec, record).await
+}
+#[cfg(feature = "remote")]
+async fn verify_bucket_with(
+    cloud: &impl crate::Cloud,
+    spec: &SwarmSpec,
+    record: &SwarmRecord,
+) -> Result<()> {
     let bucket = bucket_spec(spec, record).expect("bucket and keys checked");
-    crate::buckets::S3Buckets
+    cloud
         .verify_bucket_access(&crate::ObjectBucket::from_spec(
             &spec.name,
             &bucket,
@@ -803,9 +827,16 @@ async fn verify_bucket(_spec: &SwarmSpec, _record: &SwarmRecord) -> Result<()> {
 }
 #[cfg(feature = "remote")]
 async fn ensure_bucket(spec: &SwarmSpec, record: &SwarmRecord) -> Result<()> {
-    use crate::Cloud;
+    ensure_bucket_with(&crate::buckets::S3Buckets, spec, record).await
+}
+#[cfg(feature = "remote")]
+async fn ensure_bucket_with(
+    cloud: &impl crate::Cloud,
+    spec: &SwarmSpec,
+    record: &SwarmRecord,
+) -> Result<()> {
     let bucket = bucket_spec(spec, record).expect("bucket and keys checked");
-    crate::buckets::S3Buckets
+    cloud
         .ensure_bucket(&crate::ObjectBucket::from_spec(
             &spec.name,
             &bucket,
@@ -819,10 +850,19 @@ async fn ensure_bucket(_spec: &SwarmSpec, _record: &SwarmRecord) -> Result<()> {
 }
 #[cfg(feature = "remote")]
 async fn delete_bucket(spec: &SwarmSpec, record: &SwarmRecord) -> Result<()> {
-    use crate::{Cloud, Ownership};
-    if let Some(bucket) = bucket_spec(spec, record) {
+    delete_bucket_with(&crate::buckets::S3Buckets, spec, record).await
+}
+#[cfg(feature = "remote")]
+async fn delete_bucket_with(
+    cloud: &impl crate::Cloud,
+    spec: &SwarmSpec,
+    record: &SwarmRecord,
+) -> Result<()> {
+    use crate::Ownership;
+    if spec.bucket.is_some() {
+        let bucket = bucket_spec(spec, record)
+            .ok_or_else(|| Error::other("bucket keys missing from swarm record"))?;
         let bucket = crate::ObjectBucket::from_spec(&spec.name, &bucket, &bucket.region);
-        let cloud = crate::buckets::S3Buckets;
         if cloud.bucket_ownership(&bucket).await? == Ownership::Owned {
             let outcome = cloud.delete_bucket(&bucket).await?;
             cloud_out!("bucket {}: {outcome:?}", bucket.spec.bucket);

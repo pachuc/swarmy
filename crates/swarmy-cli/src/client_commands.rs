@@ -163,7 +163,7 @@ fn print_turn_output(output: TurnOutput, json: bool) {
         }
         TurnOutput::NoSandboxNode => {
             eprintln!(
-                "No sandbox node is running, so tool calls cannot execute; see docs/DEV.md (local stacks have no node) or add one with swarmy remote add-node"
+                "No sandbox node is running, so tool calls cannot execute; see docs/DEV.md (local stacks have no node) or add one with swarmy swarm node add"
             );
         }
         TurnOutput::QueueDelivered => {

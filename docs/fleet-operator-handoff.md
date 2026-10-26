@@ -7,6 +7,8 @@ state changes hourly and is not here: read it from tasky (`tasky goal list` and
 owner's standing decisions are in the auto-memory notes for this repository;
 the durable ones are repeated below.
 
+hz still runs on the old client until task 13 converts its record.
+
 ## Ground rules from the owner
 
 - The laptop is a personal gaming machine and a control plane only. Run only
@@ -38,30 +40,30 @@ the durable ones are repeated below.
 
 - `hz` (since 2026-10-02): one dedicated server rented from Hetzner's server
   auction (16-core i9-12900K, 128 GB, two NVMe drives mirrored, Ubuntu 24.04),
-  adopted with `swarmy remote adopt` (REMOTE.md, "Existing hosts"). The same
+  adopted with `swarmy swarm create` (REMOTE.md, "Existing hosts"). The same
   machine runs the control plane (`--services node`) and the node, with four
   sandboxes on local storage `dir:/srv/swarmy-local`. The bucket is Hetzner
   Object Storage with static keys. Images `base-ubuntu:hz` and
   `swarmy-dev:hz`. Addresses, server numbers, the bucket name and every
   credential live outside the repository: `~/swarmy-infra.md` and
-  `~/api_keys.md` on the laptop, and `.swarmy/remote/`.
+  `~/api_keys.md` on the laptop, and `~/.local/share/swarmy/swarms/hz/keys/`.
 - The suite node is a second, smaller auction server that is not part of the
   swarm; it runs the root suites and the local CI ("The suite node").
 - AWS is gone: the `dev2` swarm, the earlier `dev` swarm, their buckets and
   images were decommissioned on 2026-10-01.
-- Tunnel: `swarmy remote connect hz`. Local ports are fixed, so only one
+- Tunnel: `swarmy --swarm hz doctor`. Local ports are fixed, so only one
   swarm can be connected at a time. Plain `swarmy` commands that need the API
-  take `--swarm hz` (`remote connect hz` registers it). `swarmy remote ls` shows nodes, services, images.
+  take `--swarm hz` (`remote connect hz` registers it). `swarmy swarm status hz` shows nodes, services, images.
 - SSH: the laptop's `~/.ssh/config` has an alias for each server, using the
-  key registered in Robot as `swarmy-fleet`; `swarmy remote` keeps its own
-  keys under `.swarmy/remote/`. Long commands on a server run detached:
+  key registered in Robot as `swarmy-fleet`; `swarmy swarm` keeps its own
+  keys under `~/.local/share/swarmy/swarms/hz/keys/`. Long commands on a server run detached:
   `setsid nohup bash script.sh > log 2>&1 < /dev/null &`.
 - Images: `swarmy image build` builds on the machine it runs on and needs
   root, so build on the server the way `adopt` builds the base image: as root
   in the service user's checkout, with `/etc/swarmy/node.env` sourced, run
   `/usr/local/bin/swarmy image build images/swarmy-dev --name swarmy-dev --tag hz`.
 - Upgrade: `git merge --ff-only origin/master` locally first (upgrade ships
-  the local checkout), then `swarmy remote upgrade hz` detached with a log.
+  the local checkout), then `swarmy swarm upgrade hz` detached with a log.
   Do it when workers are idle.
 - Hetzner itself: dedicated servers are managed through the Robot webservice
   (order, SSH keys, rescue system, reset), with its login in `~/api_keys.md`;

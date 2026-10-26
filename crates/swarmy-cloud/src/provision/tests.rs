@@ -52,7 +52,7 @@ impl SwarmHost for FakeHost {
         &self,
         node: &Machine,
         _: &str,
-        _: &services::Options<'_>,
+        _: &services::Options,
     ) -> impl Future<Output = Result<()>> {
         std::future::ready({
             self.push(format!("services {}", node.name));
@@ -508,7 +508,7 @@ fn machine_maps_the_recorded_host() {
     let node = machine(&p.host, "swarmy", p.role, p.sandboxes, &p.local_storage);
     assert_eq!(node.private_ip, p.host.public_address);
     assert_eq!(node.key_path, p.host.ssh_key);
-    assert_eq!(node.services, true);
+    assert!(node.services);
 }
 #[test]
 fn lock_is_exclusive() {
@@ -558,4 +558,140 @@ async fn copy_credential_is_checked_before_any_host_change() {
     );
     assert!(fake.calls().is_empty());
     assert!(registry.read_record("fleet").unwrap().is_none());
+}
+
+#[cfg(not(feature = "remote"))]
+#[tokio::test]
+async fn bucket_swarm_needs_the_s3_client() {
+    let (_tmp, registry, mut spec) = fixture();
+    spec.bucket = Some(swarmy_config::swarm::SwarmBucket {
+        name: "test-bucket".into(),
+        endpoint: "https://objects.example.invalid".into(),
+        region: "eu-west-1".into(),
+        prefix: swarmy_config::ObjectPrefix::default(),
+        conditional_create: true,
+    });
+    let host = FakeHost::new();
+    let error = provision_swarm_with(&host, request(&registry, &spec, &settings(), None))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("built without the S3 client"));
+    assert!(host.calls().is_empty());
+    assert!(registry.read_record(&spec.name).unwrap().is_none());
+    let error = decommission_swarm_with(&host, &registry, &spec)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("built without the S3 client"));
+}
+
+#[cfg(feature = "remote")]
+mod bucket_lifecycle {
+    use super::*;
+    use crate::{BucketRemoval, Cloud, ObjectBucket, Ownership};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FakeCloud {
+        ensure: AtomicUsize,
+        delete: AtomicUsize,
+        ownership: Ownership,
+        reject: bool,
+    }
+    impl Cloud for FakeCloud {
+        fn verify_bucket_access(&self, _: &ObjectBucket) -> impl Future<Output = Result<()>> {
+            std::future::ready(if self.reject {
+                Err(Error::other("rejected"))
+            } else {
+                Ok(())
+            })
+        }
+        fn ensure_bucket(&self, _: &ObjectBucket) -> impl Future<Output = Result<()>> {
+            self.ensure.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Ok(()))
+        }
+        fn bucket_ownership(&self, _: &ObjectBucket) -> impl Future<Output = Result<Ownership>> {
+            std::future::ready(Ok(self.ownership))
+        }
+        fn delete_bucket(&self, _: &ObjectBucket) -> impl Future<Output = Result<BucketRemoval>> {
+            self.delete.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Ok(BucketRemoval::Removed))
+        }
+    }
+    fn fixture_bucket() -> (tempfile::TempDir, Registry, SwarmSpec, SwarmRecord) {
+        let (dir, registry, mut spec) = fixture();
+        spec.bucket = Some(swarmy_config::swarm::SwarmBucket {
+            name: "test-bucket".into(),
+            endpoint: "https://objects.example.invalid".into(),
+            region: "eu-west-1".into(),
+            prefix: swarmy_config::ObjectPrefix::default(),
+            conditional_create: true,
+        });
+        let record = SwarmRecord {
+            name: spec.name.clone(),
+            created_at: jiff::Timestamp::now(),
+            api: SwarmApi::default(),
+            hosts: BTreeMap::new(),
+            tofu_state: None,
+            bucket_keys: Some(StaticKeys {
+                access_key: "access-secret".into(),
+                secret_key: "value-secret".into(),
+            }),
+        };
+        (dir, registry, spec, record)
+    }
+    #[tokio::test]
+    async fn bucket_keys_are_verified_before_anything_is_recorded() {
+        let (_dir, registry, spec, record) = fixture_bucket();
+        let cloud = FakeCloud {
+            ensure: AtomicUsize::new(0),
+            delete: AtomicUsize::new(0),
+            ownership: Ownership::Owned,
+            reject: true,
+        };
+        let err = verify_bucket_with(&cloud, &spec, &record)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("static bucket keys"));
+        assert!(!format!("{err:?}").contains("value-secret"));
+        assert_eq!(cloud.ensure.load(Ordering::Relaxed), 0);
+        assert!(registry.read_record(&spec.name).unwrap().is_none());
+    }
+    #[tokio::test]
+    async fn bucket_reaches_provisioning_with_static_keys() {
+        let (_dir, _registry, spec, record) = fixture_bucket();
+        let cloud = FakeCloud {
+            ensure: AtomicUsize::new(0),
+            delete: AtomicUsize::new(0),
+            ownership: Ownership::Owned,
+            reject: false,
+        };
+        verify_bucket_with(&cloud, &spec, &record).await.unwrap();
+        ensure_bucket_with(&cloud, &spec, &record).await.unwrap();
+        assert_eq!(cloud.ensure.load(Ordering::Relaxed), 1);
+        let bucket = bucket_spec(&spec, &record).unwrap();
+        assert!(bucket.needs_static_keys());
+    }
+    #[tokio::test]
+    async fn down_deletes_only_an_owned_bucket_scope() {
+        let (_dir, _registry, spec, record) = fixture_bucket();
+        for (ownership, expected) in [(Ownership::Owned, 1), (Ownership::Unmanaged, 0)] {
+            let cloud = FakeCloud {
+                ensure: AtomicUsize::new(0),
+                delete: AtomicUsize::new(0),
+                ownership,
+                reject: false,
+            };
+            delete_bucket_with(&cloud, &spec, &record).await.unwrap();
+            assert_eq!(cloud.delete.load(Ordering::Relaxed), expected);
+        }
+    }
+    #[tokio::test]
+    async fn bucket_without_keys_fails_first_up() {
+        let (_dir, registry, spec, _record) = fixture_bucket();
+        let host = FakeHost::new();
+        let err = provision_swarm_with(&host, request(&registry, &spec, &settings(), None))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("on its first swarmy swarm up"));
+        assert!(host.calls().is_empty());
+    }
 }
