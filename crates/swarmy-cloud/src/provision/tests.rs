@@ -819,7 +819,10 @@ mod bucket_lifecycle {
             mode, 0o600,
             "record containing bucket keys must stay private"
         );
-        let primary = upgrade_machines(&record, &spec, None).pop().unwrap();
+        let bucket = bucket_spec(&spec, &record);
+        let primary = upgrade_machines(&record, &spec, bucket.as_ref())
+            .pop()
+            .unwrap();
         assert!(primary.bucket_spec().unwrap().needs_static_keys());
         delete_bucket_with(&cloud, &spec, &record).await.unwrap();
         let lines = OUTPUT_LINES.lock().unwrap().join("\n");

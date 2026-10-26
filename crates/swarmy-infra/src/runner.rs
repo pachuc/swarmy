@@ -43,10 +43,8 @@ impl CredentialEnv {
         self.vars
             .iter()
             .find(|(name, value)| {
-                !matches!(
-                    name.as_str(),
-                    "AWS_SHARED_CREDENTIALS_FILE" | "AWS_CONFIG_FILE" | "AWS_EC2_METADATA_DISABLED"
-                ) && !value.is_empty()
+                secret_name(name)
+                    && !value.is_empty()
                     && bytes
                         .windows(value.len())
                         .any(|window| window == value.as_bytes())
@@ -56,11 +54,17 @@ impl CredentialEnv {
     fn redact(&self, text: &str) -> String {
         self.vars
             .iter()
-            .filter(|(_, value)| !value.is_empty())
+            .filter(|(name, value)| secret_name(name) && !value.is_empty())
             .fold(text.to_owned(), |text, (_, value)| {
                 text.replace(value, "<redacted>")
             })
     }
+}
+fn secret_name(name: &str) -> bool {
+    !matches!(
+        name,
+        "AWS_SHARED_CREDENTIALS_FILE" | "AWS_CONFIG_FILE" | "AWS_EC2_METADATA_DISABLED"
+    )
 }
 impl fmt::Debug for CredentialEnv {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

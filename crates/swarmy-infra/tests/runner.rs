@@ -425,7 +425,7 @@ async fn plan_text_redacts_credentials() {
         "if [ \"$1\" = plan ]; then echo 'hcloud-test-token-5f2b9c'; exit 2; fi",
         OUTPUTS,
     );
-    let tofu = Tofu::from_binary(script, temp.path());
+    let tofu = Tofu::from_binary(script, &temp.path().join("cache"));
     let workspace = tofu.workspace(
         temp.path().join("work"),
         CredentialEnv::new().with("HCLOUD_TOKEN", SECRET),
