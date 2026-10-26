@@ -434,9 +434,11 @@ async fn down_cleans_existing_hosts_and_destroys_groups_in_reverse() {
     f.add_existing_group("existing");
     let host = FakeHost::new();
     f.up(&host).await.unwrap();
-    let reports = decommission_swarm_with(&host, &f.registry, &f.spec, Some(f.machines()))
-        .await
-        .unwrap();
+    let (reports, destroyed) =
+        decommission_swarm_with(&host, &f.registry, &f.spec, Some(f.machines()))
+            .await
+            .unwrap();
+    assert_eq!(destroyed, 2);
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].name, "fleet-existing-1");
     let calls = host.calls();

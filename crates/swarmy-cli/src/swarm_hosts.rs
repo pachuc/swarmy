@@ -60,6 +60,7 @@ async fn machines_for(
         return Ok(None);
     }
     let creds = CloudCredentials::load(&CloudCredentials::path(registry.dirs()))?;
+    groups::check_credentials(spec, &creds)?;
     let runner = tofu(registry).await?;
     Ok(Some((runner, creds)))
 }
@@ -77,6 +78,9 @@ pub(crate) fn cloud_spec(name: &str, args: &CreateCloud) -> Result<SwarmSpec> {
         bail!(
             "--on takes hetzner-cloud, aws, or an absolute path to your own module; use --host for machines you own and --local for this machine"
         );
+    }
+    if args.nodes == 0 && args.node_size.is_some() {
+        bail!("--node-size requires --nodes greater than 0");
     }
     let size = args
         .size
@@ -132,7 +136,8 @@ pub(crate) fn cloud_spec(name: &str, args: &CreateCloud) -> Result<SwarmSpec> {
     Ok(spec)
 }
 
-pub(crate) fn cloud_next(registry: &Registry, spec: &SwarmSpec) -> Result<()> {
+pub(crate) fn cloud_next(registry: &Registry, spec: &SwarmSpec) -> Result<Vec<String>> {
+    let mut next = Vec::new();
     let creds = CloudCredentials::load(&CloudCredentials::path(registry.dirs()))?;
     for provider in [
         CloudProvider::HetznerCloud,
@@ -147,11 +152,11 @@ pub(crate) fn cloud_next(registry: &Registry, spec: &SwarmSpec) -> Result<()> {
             CloudProvider::Aws => spec.groups.values().any(|g| g.module == Module::Aws),
         };
         if needed && creds.get(provider).is_none() {
-            println!("next: swarmy cloud login {provider}");
+            next.push(format!("next: swarmy cloud login {provider}"));
         }
     }
-    println!("next: swarmy swarm plan {}", spec.name);
-    Ok(())
+    next.push(format!("next: swarmy swarm plan {}", spec.name));
+    Ok(next)
 }
 
 pub(crate) async fn plan(registry: &Registry, spec: &SwarmSpec, json_output: bool) -> Result<()> {
@@ -161,15 +166,14 @@ pub(crate) async fn plan(registry: &Registry, spec: &SwarmSpec, json_output: boo
             spec.name
         );
     }
-    let pair = machines_for(registry, spec, false)
-        .await?
-        .expect("module group needs tofu");
+    let pair = machines_for(registry, spec, true).await?;
+    let (tofu, credentials) = pair.expect("plan requested a machine runner");
     let plans = groups::plan_groups(
         registry,
         spec,
         MachineGroups {
-            tofu: &pair.0,
-            credentials: &pair.1,
+            tofu: &tofu,
+            credentials: &credentials,
         },
     )
     .await?;
@@ -288,31 +292,20 @@ pub(crate) async fn down(
     destroy: bool,
     json_output: bool,
 ) -> Result<()> {
-    if spec.lifecycle == Lifecycle::Persistent && !destroy && groups::has_module_groups(spec) {
-        bail!(
-            "swarm \"{}\" is persistent: down destroys its machines, database and bucket. Stop it with swarmy swarm stop {}, or pass --destroy",
-            spec.name,
-            spec.name
-        );
-    }
     if spec.lifecycle == Lifecycle::Persistent && !destroy {
+        let what = if groups::has_module_groups(spec) {
+            "down destroys its machines, database and bucket"
+        } else {
+            "down deletes its database and swarmy's files on every host (the machines keep running)"
+        };
         bail!(
-            "swarm \"{}\" is persistent: down deletes its database and swarmy's files on every host (the machines keep running). Stop it with swarmy swarm stop {}, or pass --destroy",
-            spec.name,
+            "swarm \"{0}\" is persistent: {what}. Stop it with swarmy swarm stop {0}, or pass --destroy",
             spec.name
         );
     }
     let tofu_dir = registry.swarm_dir(&spec.name)?.join("tofu");
-    let destroyed_groups = if tofu_dir.is_dir() {
-        std::fs::read_dir(&tofu_dir)?
-            .filter_map(std::result::Result::ok)
-            .filter(|e| e.path().join("terraform.tfstate").is_file())
-            .count()
-    } else {
-        0
-    };
     let pair = machines_for(registry, spec, tofu_dir.exists()).await?;
-    let removed =
+    let (removed, destroyed_groups) =
         provision::decommission_swarm(registry, spec, machine_refs(pair.as_ref())).await?;
     if json_output {
         println!(

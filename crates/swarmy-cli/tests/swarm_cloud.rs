@@ -24,7 +24,7 @@ printf '%s %s\n' "$group" "$1" >> '{root}/tofu.log'
 env | grep -E '^(HCLOUD_TOKEN|MINIO_USER|MINIO_PASSWORD)=' >> '{root}/env.log' || true
 case "$1" in
 init) ;;
-plan) echo "plan for $group"; exit 2 ;;
+plan) echo "plan for $group token=$HCLOUD_TOKEN"; if test -f '{root}/no-changes'; then exit 0; fi; exit 2 ;;
 apply) echo state > terraform.tfstate ;;
 output)
  bucket=$(python3 -c 'import json; print(json.load(open("swarmy.tfvars.json"))["bucket_name"])')
@@ -104,7 +104,19 @@ fn create_plan_up_status_down_on_hetzner_cloud() {
     let plan = f.ok(&["--json", "swarm", "plan", "fleet"]);
     let value: serde_json::Value = serde_json::from_slice(&plan.stdout).unwrap();
     assert_eq!(value["groups"].as_array().unwrap().len(), 2);
-    assert_eq!(value["groups"][0]["changes"], true);
+    assert!(
+        value["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|g| g["changes"] == true)
+    );
+    assert!(
+        value["groups"][0]["plan"]
+            .as_str()
+            .unwrap()
+            .contains("<redacted>")
+    );
     assert!(
         !fs::read_to_string(f.path().join("tofu.log"))
             .unwrap()
@@ -113,6 +125,7 @@ fn create_plan_up_status_down_on_hetzner_cloud() {
     let up = f.ok(&["--json", "swarm", "up", "fleet", "--no-image"]);
     let value: serde_json::Value = serde_json::from_slice(&up.stdout).unwrap();
     assert_eq!(value["hosts"].as_array().unwrap().len(), 3);
+    assert_eq!(value["groups"], serde_json::json!(["control", "workers"]));
     assert!(
         value["hosts"]
             .as_array()
@@ -120,6 +133,29 @@ fn create_plan_up_status_down_on_hetzner_cloud() {
             .iter()
             .all(|h| h["provisioned"] == true)
     );
+    assert_cloud_up(&f);
+    let down = f.ok(&["--json", "swarm", "down", "fleet"]);
+    let down: serde_json::Value = serde_json::from_slice(&down.stdout).unwrap();
+    assert_eq!(down["swarm"], "fleet");
+    assert_eq!(down["removed"], serde_json::json!([]));
+    assert_eq!(down["destroyed_groups"], 2);
+    let log = fs::read_to_string(f.path().join("tofu.log")).unwrap();
+    assert!(log.find("workers destroy").unwrap() < log.find("control destroy").unwrap());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            &fs::read(f.path().join("destroyed-control.json")).unwrap()
+        )
+        .unwrap()["bucket_force_destroy"],
+        true
+    );
+    assert!(!f.path().join("data/swarmy/swarms/fleet").exists());
+    assert!(f.path().join("config/swarmy/swarms/fleet.toml").exists());
+    assert!(
+        !f.path().join("home").exists()
+            || fs::read_dir(f.path().join("home")).unwrap().count() == 0
+    );
+}
+fn assert_cloud_up(f: &Fixture) {
     let ssh = fs::read_to_string(f.path().join("ssh-commands")).unwrap();
     assert!(ssh.contains("remote-provision.sh stack"));
     assert!(ssh.contains("https://fsn1.your-objectstorage.com"));
@@ -132,6 +168,8 @@ fn create_plan_up_status_down_on_hetzner_cloud() {
     );
     let record_text = fs::read_to_string(&record).unwrap();
     assert!(record_text.contains("tofu_state"));
+    let parsed = swarmy_config::swarm::SwarmRecord::parse(&record_text).unwrap();
+    assert_eq!(parsed.hosts.values().map(Vec::len).sum::<usize>(), 3);
     let bucket = record_text
         .lines()
         .find_map(|line| line.strip_prefix("tofu_bucket = "))
@@ -154,23 +192,8 @@ fn create_plan_up_status_down_on_hetzner_cloud() {
             .len(),
         3
     );
-    f.ok(&["swarm", "down", "fleet"]);
-    let log = fs::read_to_string(f.path().join("tofu.log")).unwrap();
-    assert!(log.find("workers destroy").unwrap() < log.find("control destroy").unwrap());
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(
-            &fs::read(f.path().join("destroyed-control.json")).unwrap()
-        )
-        .unwrap()["bucket_force_destroy"],
-        true
-    );
-    assert!(!dir.exists());
-    assert!(f.path().join("config/swarmy/swarms/fleet.toml").exists());
-    assert!(
-        !f.path().join("home").exists()
-            || fs::read_dir(f.path().join("home")).unwrap().count() == 0
-    );
 }
+
 #[test]
 fn persistent_down_needs_destroy() {
     let f = setup();
@@ -186,21 +209,32 @@ fn persistent_down_needs_destroy() {
             .contains("destroy")
     );
     f.ok(&["swarm", "down", "fleet", "--destroy"]);
+    assert!(
+        fs::read_to_string(f.path().join("tofu.log"))
+            .unwrap()
+            .contains("control destroy")
+    );
+    assert!(!f.path().join("data/swarmy/swarms/fleet").exists());
 }
 #[test]
 fn missing_cloud_login_is_reported_before_tofu_runs() {
-    let f = setup();
+    let f = Fixture::new();
     create(&f, &[]);
+    assert!(!f.path().join("bin/tofu").exists());
     let output = f.run(&["swarm", "up", "fleet", "--no-image"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("swarmy cloud login hetzner-cloud"));
     assert!(!f.path().join("tofu.log").exists());
+    assert!(!f.path().join("cache/swarmy/tofu").exists());
 }
 #[test]
 fn existing_host_swarms_never_touch_opentofu() {
     let f = Fixture::new();
+    assert!(!f.path().join("bin/tofu").exists());
     f.create();
     f.ok(&["swarm", "up", "box", "--no-image"]);
+    f.ok(&["swarm", "down", "box", "--destroy"]);
+    assert!(!f.path().join("cache/swarmy/tofu").exists());
 }
 #[test]
 fn create_on_rejects_existing_and_local() {
@@ -213,7 +247,36 @@ fn create_on_rejects_existing_and_local() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("--on takes hetzner-cloud, aws"));
     }
     let output = f.run(&["swarm", "create", "fleet", "--on", "aws", "--size", "small"]);
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
+    let missing_size = f.run(&[
+        "swarm",
+        "create",
+        "fleet",
+        "--on",
+        "aws",
+        "--location",
+        "region-1",
+    ]);
+    assert_eq!(missing_size.status.code(), Some(2));
+    f.ok(&[
+        "swarm",
+        "create",
+        "fleet",
+        "--on",
+        "aws",
+        "--size",
+        "small",
+        "--location",
+        "region-1",
+    ]);
+    let spec = SwarmSpec::parse(
+        &fs::read_to_string(f.path().join("config/swarmy/swarms/fleet.toml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        spec.groups["control"].module,
+        swarmy_config::swarm::Module::Aws
+    );
 }
 
 fn check_files(dir: &std::path::Path, secrets: &[&str]) {
@@ -247,6 +310,8 @@ fn credentials_never_leave_the_store() {
         vec!["--json", "swarm", "plan", "fleet"],
         vec!["--json", "swarm", "up", "fleet", "--no-image"],
         vec!["--json", "swarm", "status", "fleet"],
+        vec!["swarm", "plan", "fleet"],
+        vec!["--json", "swarm", "down", "fleet"],
     ] {
         let out = f.ok(&args);
         outputs.extend(out.stdout);
@@ -254,6 +319,7 @@ fn credentials_never_leave_the_store() {
     }
     let secrets = ["hcloud-secret-5f2b9c", "s3-access-7a1e", "s3-secret-91d0"];
     let output = String::from_utf8(outputs).unwrap();
+    assert!(output.contains("<redacted>"));
     for secret in secrets {
         assert!(!output.contains(secret));
     }
@@ -310,19 +376,169 @@ fn mixed_cloud_stack_and_existing_nodes() {
     let ssh = fs::read_to_string(f.path().join("ssh-commands")).unwrap();
     assert!(ssh.contains("remote-provision.sh stack"));
     assert!(ssh.contains("remote-provision.sh node"));
-    f.ok(&["swarm", "down", "fleet"]);
+    f.ok(&["swarm", "down", "fleet", "--destroy"]);
     let log = fs::read_to_string(f.path().join("tofu.log")).unwrap();
     assert!(log.contains("control destroy"));
     assert!(!log.contains("box destroy"));
-    let probes = fs::read_dir(f.path())
+    let probes: Vec<_> = fs::read_dir(f.path())
         .unwrap()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_name().to_string_lossy().starts_with("piped-"))
-        .filter_map(|entry| fs::read_to_string(entry.path()).ok())
-        .filter(|text| {
-            text.lines()
-                .any(|line| line.starts_with("decommission_probe "))
+        .filter(|entry| {
+            fs::read_to_string(entry.path()).is_ok_and(|text| {
+                text.lines()
+                    .any(|line| line.starts_with("decommission_probe "))
+            })
         })
-        .count();
-    assert_eq!(probes, 1);
+        .collect();
+    assert_eq!(probes.len(), 1);
+    let target = fs::read_to_string(format!("{}.args", probes[0].path().display())).unwrap();
+    assert!(target.contains("203.0.113.20"));
+}
+
+#[test]
+fn human_plan_no_changes_and_redacted_text() {
+    let f = setup();
+    credentials(&f);
+    create(&f, &[]);
+    fs::write(f.path().join("no-changes"), "").unwrap();
+    let human = f.ok(&["swarm", "plan", "fleet"]);
+    let text = String::from_utf8(human.stdout).unwrap();
+    assert!(text.contains("== group control (hetzner-cloud): no changes =="));
+    assert!(text.contains("== group workers (hetzner-cloud): no changes =="));
+    assert!(text.contains("plan for control token=<redacted>"));
+    assert!(!text.contains("hcloud-secret-5f2b9c"));
+    let json = f.ok(&["--json", "swarm", "plan", "fleet"]);
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert!(
+        value["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|g| g["changes"] == false)
+    );
+    assert!(
+        !String::from_utf8(json.stdout)
+            .unwrap()
+            .contains("hcloud-secret-5f2b9c")
+    );
+}
+
+#[test]
+fn one_box_create_and_next_steps() {
+    let f = Fixture::new();
+    let output = f.ok(&[
+        "swarm",
+        "create",
+        "fleet",
+        "--on",
+        "hetzner-cloud",
+        "--size",
+        "cpx41",
+        "--sandboxes",
+        "3",
+        "--local-storage",
+        "dir:/srv/swarmy-local",
+    ]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("next: swarmy cloud login hetzner-cloud"));
+    assert!(text.contains("next: swarmy cloud login hetzner-s3"));
+    assert!(text.contains("next: swarmy swarm plan fleet"));
+    let spec = SwarmSpec::parse(
+        &fs::read_to_string(f.path().join("config/swarmy/swarms/fleet.toml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(spec.lifecycle, swarmy_config::swarm::Lifecycle::Persistent);
+    assert_eq!(spec.groups.len(), 1);
+    assert_eq!(spec.groups["control"].count, Some(1));
+    assert_eq!(spec.groups["control"].location.as_deref(), Some("fsn1"));
+    assert_eq!(spec.groups["control"].sandboxes, Some(3));
+    assert_eq!(
+        spec.groups["control"].local_storage.as_deref(),
+        Some("dir:/srv/swarmy-local")
+    );
+    assert_eq!(spec.placement.nodes, ["control"]);
+    assert!(
+        !f.run(&[
+            "swarm",
+            "create",
+            "another",
+            "--on",
+            "hetzner-cloud",
+            "--size",
+            "cpx41",
+            "--node-size",
+            "cpx51"
+        ])
+        .status
+        .success()
+    );
+}
+
+#[test]
+fn create_bad_credentials_does_not_leave_a_spec() {
+    let f = Fixture::new();
+    let path = f.path().join("data/swarmy/cloud-credentials.toml");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, "invalid").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    let result = f.run(&[
+        "swarm",
+        "create",
+        "fleet",
+        "--on",
+        "hetzner-cloud",
+        "--size",
+        "cpx41",
+    ]);
+    assert!(!result.status.success());
+    assert!(!f.path().join("config/swarmy/swarms/fleet.toml").exists());
+}
+
+#[test]
+fn path_module_create_requires_location_and_accepts_absolute_path() {
+    let f = Fixture::new();
+    let module = f.path().join("module");
+    fs::create_dir(&module).unwrap();
+    let module = module.to_str().unwrap();
+    let missing = f.run(&[
+        "swarm", "create", "fleet", "--on", module, "--size", "large",
+    ]);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("--location is required"));
+    f.ok(&[
+        "swarm",
+        "create",
+        "fleet",
+        "--on",
+        module,
+        "--size",
+        "large",
+        "--location",
+        "region-1",
+        "--nodes",
+        "1",
+        "--node-size",
+        "medium",
+    ]);
+    let spec = SwarmSpec::parse(
+        &fs::read_to_string(f.path().join("config/swarmy/swarms/fleet.toml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        spec.groups["control"].module,
+        swarmy_config::swarm::Module::Path(module.into())
+    );
+    assert_eq!(spec.groups["workers"].size.as_deref(), Some("medium"));
+}
+
+#[test]
+fn missing_s3_login_fails_before_tofu_resolution() {
+    let f = Fixture::new();
+    login(&f, "hetzner-cloud", "hcloud-secret-5f2b9c\n");
+    create(&f, &[]);
+    let result = f.run(&["swarm", "up", "fleet", "--no-image"]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("swarmy cloud login hetzner-s3"));
+    assert!(!f.path().join("cache/swarmy/tofu").exists());
 }

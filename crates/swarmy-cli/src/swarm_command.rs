@@ -27,7 +27,7 @@ pub(crate) enum Command {
         #[arg(long, requires = "ssh_key")]
         host: Option<String>,
         /// Create machines with an `OpenTofu` module
-        #[arg(long)]
+        #[arg(long, requires = "size")]
         on: Option<String>,
         /// Machine size (required with --on)
         #[arg(long, requires = "on")]
@@ -455,36 +455,32 @@ fn run_create(registry: &Registry, command: Command, json_output: bool) -> Resul
             persistent,
             stack_dir,
         } => {
-            if let Some(address) = host {
-                let path = registry.spec_path(&name)?;
-                if path.exists() {
-                    bail!("swarm \"{name}\" already has a spec at {}", path.display());
-                }
-                let spec = crate::swarm_hosts::host_spec(
-                    registry,
-                    &name,
-                    &crate::swarm_hosts::CreateHost {
-                        address,
-                        ssh_user,
-                        ssh_key: ssh_key.expect("--host requires --ssh-key"),
-                        private_address,
-                        sandboxes,
-                        local_storage,
-                        service_user,
-                        lifecycle: lifecycle.map(Into::into),
-                    },
-                )?;
-                registry.write_spec(&spec)?;
-                print_value(
-                    &json!({"created":name}),
-                    format!("created swarm {name}"),
-                    json_output,
-                );
+            if local {
+                return crate::local::create(registry, &name, persistent, stack_dir, json_output);
+            }
+            let path = registry.spec_path(&name)?;
+            if path.exists() {
+                bail!("swarm \"{name}\" already has a spec at {}", path.display());
+            }
+            let (spec, next) = if let Some(address) = host {
+                (
+                    crate::swarm_hosts::host_spec(
+                        registry,
+                        &name,
+                        &crate::swarm_hosts::CreateHost {
+                            address,
+                            ssh_user,
+                            ssh_key: ssh_key.expect("--host requires --ssh-key"),
+                            private_address,
+                            sandboxes,
+                            local_storage,
+                            service_user,
+                            lifecycle: lifecycle.map(Into::into),
+                        },
+                    )?,
+                    None,
+                )
             } else if let Some(module) = on {
-                let path = registry.spec_path(&name)?;
-                if path.exists() {
-                    bail!("swarm \"{name}\" already has a spec at {}", path.display());
-                }
                 let spec = crate::swarm_hosts::cloud_spec(
                     &name,
                     &crate::swarm_hosts::CreateCloud {
@@ -498,19 +494,23 @@ fn run_create(registry: &Registry, command: Command, json_output: bool) -> Resul
                         lifecycle: lifecycle.map(Into::into),
                     },
                 )?;
-                registry.write_spec(&spec)?;
-                print_value(
-                    &json!({"created":name}),
-                    format!("created swarm {name}"),
-                    json_output,
-                );
-                if !json_output {
-                    crate::swarm_hosts::cloud_next(registry, &spec)?;
-                }
-            } else if local {
-                crate::local::create(registry, &name, persistent, stack_dir, json_output)?;
+                let next = (!json_output)
+                    .then(|| crate::swarm_hosts::cloud_next(registry, &spec))
+                    .transpose()?;
+                (spec, next)
             } else {
                 bail!("choose --local, --host ADDRESS or --on MODULE");
+            };
+            registry.write_spec(&spec)?;
+            print_value(
+                &json!({"created":name}),
+                format!("created swarm {name}"),
+                json_output,
+            );
+            if let Some(lines) = next {
+                for line in lines {
+                    println!("{line}");
+                }
             }
         }
         _ => unreachable!("create dispatch"),

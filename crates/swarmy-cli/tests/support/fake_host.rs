@@ -36,7 +36,7 @@ last="${{@: -1}}"
 printf '%s\n' "$last" >> '{}/ssh-commands'
 case "$last" in
   true) exit 0 ;;
-  'bash -s') file='{}/piped-'$(ls '{}/piped-'* 2>/dev/null | wc -l); cat > "$file";
+  'bash -s') file='{}/piped-'$(ls '{}/piped-'* 2>/dev/null | wc -l); cat > "$file"; printf '%s\n' "$*" > "$file.args";
     if grep -q '^list_installed_control_units$' "$file"; then printf 'swarmy-api.service\n'; else printf '/home/fake\n'; fi ;;
   'uname -m') /usr/bin/uname -m ;;
   *'swarmy-core --version'*) printf 'swarmy-core test\n' ;;

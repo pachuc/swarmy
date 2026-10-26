@@ -716,14 +716,16 @@ async fn start_swarm_with(
     }
     Ok(reports)
 }
-/// Remove swarmy from hosts, leaving machines and spec in place.
+/// Remove swarmy from existing hosts and destroy created machine groups.
+/// Returns existing-host reports and the number of groups with destroyed state.
+/// The spec remains in place.
 /// # Errors
 /// Reports host failures and retains them in the record.
 pub async fn decommission_swarm(
     registry: &Registry,
     spec: &SwarmSpec,
     machines: Option<groups::MachineGroups<'_>>,
-) -> Result<Vec<HostReport>> {
+) -> Result<(Vec<HostReport>, usize)> {
     decommission_swarm_with(&ssh::Ssh::teardown(), registry, spec, machines).await
 }
 async fn decommission_swarm_with(
@@ -731,7 +733,7 @@ async fn decommission_swarm_with(
     registry: &Registry,
     spec: &SwarmSpec,
     machines: Option<groups::MachineGroups<'_>>,
-) -> Result<Vec<HostReport>> {
+) -> Result<(Vec<HostReport>, usize)> {
     check_bucket_support(spec)?;
     let _lock = Locked(lock(registry, &spec.name)?);
     let Some(mut record) = registry.read_record(&spec.name)? else {
@@ -739,7 +741,7 @@ async fn decommission_swarm_with(
             "swarm {} has no hosts recorded; nothing to remove",
             spec.name
         );
-        return Ok(Vec::new());
+        return Ok((Vec::new(), 0));
     };
     let dir = registry.swarm_dir(&spec.name)?;
     let planned: Vec<_> = record_plan(&record, &spec.placement.stack)
@@ -816,7 +818,7 @@ async fn decommission_swarm_with(
         registry.spec_path(&spec.name)?.display(),
         spec.name
     );
-    Ok(reports)
+    Ok((reports, destroyed))
 }
 #[derive(Debug, serde::Serialize)]
 pub struct Status {
