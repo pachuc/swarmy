@@ -759,6 +759,30 @@ fn same_count_scale_resumes_an_unprovisioned_worker() {
 }
 
 #[test]
+fn scale_existing_group_growth_refuses_before_host_operations() {
+    let f = Fixture::new();
+    f.create();
+    f.ok(&["swarm", "up", "box", "--no-image"]);
+    let spec_file = f.path().join("config/swarmy/swarms/box.toml");
+    let mut spec = SwarmSpec::parse(&fs::read_to_string(&spec_file).unwrap()).unwrap();
+    let mut workers = spec.groups[&spec.placement.stack].clone();
+    workers.hosts[0].address = "203.0.113.21".into();
+    spec.groups.insert("workers".into(), workers);
+    spec.placement.nodes.push("workers".into());
+    fs::write(&spec_file, spec.to_toml().unwrap()).unwrap();
+    let before = fs::read(&spec_file).unwrap();
+    let calls = fs::read_to_string(f.path().join("ssh-commands")).unwrap();
+    let output = f.run(&["swarm", "scale", "box", "workers", "2"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("swarmy swarm node add box workers"));
+    assert_eq!(fs::read(&spec_file).unwrap(), before);
+    assert_eq!(
+        fs::read_to_string(f.path().join("ssh-commands")).unwrap(),
+        calls
+    );
+}
+
+#[test]
 fn scale_requires_a_provisioned_stack_before_cloud_login() {
     let f = Fixture::new();
     f.ok(&[

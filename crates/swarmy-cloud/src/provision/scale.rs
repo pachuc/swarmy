@@ -8,7 +8,7 @@ use super::{
     provision_locked, user,
 };
 use crate::{Error, Result, ssh};
-use std::{path::Path, time::Duration};
+use std::{fmt::Write as _, path::Path, time::Duration};
 use swarmy_config::{
     Settings,
     swarm::{Module, Registry, SwarmRecord, SwarmSpec},
@@ -286,16 +286,20 @@ async fn restart(host: &impl SwarmHost, drained: &[Machine]) -> String {
     }
     let mut result = String::new();
     if !started.is_empty() {
-        result.push_str(&format!(
+        write!(
+            result,
             ", and the node agents already stopped on {} were started again",
             started.join(", ")
-        ));
+        )
+        .expect("writing to String cannot fail");
     }
     if !failed.is_empty() {
-        result.push_str(&format!(
+        write!(
+            result,
             ", but the node agents on {} could not be restarted; start them by hand",
             failed.join(", ")
-        ));
+        )
+        .expect("writing to String cannot fail");
     }
     result
 }
