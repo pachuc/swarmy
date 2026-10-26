@@ -662,7 +662,6 @@ mod tests {
 mod extra_tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     struct Setup {
         root: tempfile::TempDir,
