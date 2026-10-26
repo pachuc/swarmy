@@ -929,6 +929,25 @@ pub async fn start_units(node: &Machine) -> Result<()> {
     run_piped(node, "start swarmy units", "start_installed_units").await
 }
 
+/// Remove a destroyed machine's address from the group's shared known-hosts file.
+/// `ssh-keygen -R` also removes hashed entries, which a text filter cannot find.
+/// # Errors
+/// Reports a failed `ssh-keygen` invocation; callers may handle it as best effort.
+pub fn forget_host_key(address: &str, key: &Path) -> Result<()> {
+    let known_hosts = key.with_extension("known_hosts");
+    if !known_hosts.is_file() {
+        return Ok(());
+    }
+    let status = std::process::Command::new("ssh-keygen")
+        .args(["-R", address, "-f"])
+        .arg(&known_hosts)
+        .status()?;
+    crate::Error::ensure(
+        status.success(),
+        format!("ssh-keygen -R failed with {status}"),
+    )
+}
+
 /// Result of waiting for a node and stopping its agent.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct Drain {
@@ -972,16 +991,7 @@ pub async fn revoke_tunnel(node: &Machine, primary: &Machine) -> Result<()> {
     )
     .await?;
     let authorization = tunnel_authorization(&String::from_utf8(key.stdout)?)?;
-    let primary_user = service_user(primary)?;
-    let home = format!("~{primary_user}");
-    let file = format!("{home}/.ssh/authorized_keys");
-    let line = shell_words::quote(&authorization);
-    let command = format!(
-        "umask 077; sudo -u {primary_user} sh -c {}",
-        shell_words::quote(&format!(
-            "grep -vxF -- {line} {file} > {file}.tmp || true; mv {file}.tmp {file}"
-        ))
-    );
+    let command = authorized_keys_command(primary, &authorization, true)?;
     checked(
         base(primary)?
             .arg(wait_ssh_for(primary, 6).await?)
@@ -1049,6 +1059,29 @@ fn pin_primary_key_command(node: &Machine, known_host: &str) -> Result<String> {
     ))
 }
 
+// The service user's authorized_keys lives at its account home, not at the
+// bootstrap login's home. Both installation and revocation use this path.
+fn authorized_keys_command(primary: &Machine, authorization: &str, revoke: bool) -> Result<String> {
+    let user = service_user(primary)?;
+    let home = format!("~{user}");
+    let file = format!("{home}/.ssh/authorized_keys");
+    let line = shell_words::quote(authorization);
+    if revoke {
+        // Grep exit 1 means no matching line; exit 2 must never replace the file.
+        let inner = format!(
+            "umask 077; grep -vxF -- {line} {file} > {file}.tmp; status=$?; if [ \"$status\" -le 1 ]; then mv {file}.tmp {file}; else rm -f {file}.tmp; exit \"$status\"; fi"
+        );
+        Ok(format!(
+            "sudo -u {user} sh -c {}",
+            shell_words::quote(&inner)
+        ))
+    } else {
+        Ok(format!(
+            "service_user={user}; service_home={home}; umask 077; sudo -u $service_user mkdir -p $service_home/.ssh && sudo -u $service_user touch $service_home/.ssh/authorized_keys && (sudo -u $service_user grep -qxF -- {line} $service_home/.ssh/authorized_keys || printf '%s\\n' {line} | sudo -u $service_user tee -a $service_home/.ssh/authorized_keys >/dev/null)"
+        ))
+    }
+}
+
 // Generate the forwarding key on its owner; the primary login key never leaves the client.
 async fn install_tunnel(
     node: &Machine,
@@ -1065,11 +1098,13 @@ async fn install_tunnel(
     let authorization = tunnel_authorization(&key)?;
     // The tunnel unit connects as the service user, so its key belongs in the
     // service user's authorized_keys, not the bootstrap login's.
-    let primary_user = service_user(primary)?;
-    checked(base(primary)?.arg(source).arg(format!(
-        "service_user={primary_user}; service_home=~{primary_user}; umask 077; sudo -u $service_user mkdir -p $service_home/.ssh && sudo -u $service_user touch $service_home/.ssh/authorized_keys && (sudo -u $service_user grep -qxF -- {0} $service_home/.ssh/authorized_keys || printf '%s\\n' {0} | sudo -u $service_user tee -a $service_home/.ssh/authorized_keys >/dev/null)",
-        shell_words::quote(&authorization)
-    )), "authorize joining node tunnel").await?;
+    checked(
+        base(primary)?
+            .arg(source)
+            .arg(authorized_keys_command(primary, &authorization, false)?),
+        "authorize joining node tunnel",
+    )
+    .await?;
     // Obtain the host key over the already authenticated provisioning connection.
     let host_key = run_output(
         base(primary)?

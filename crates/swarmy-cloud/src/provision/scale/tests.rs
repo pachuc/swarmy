@@ -33,6 +33,9 @@ async fn grow_provisions_only_the_new_machines() {
         .await
         .unwrap();
     assert_eq!(report.added, ["fleet-workers-2", "fleet-workers-3"]);
+    assert_eq!((report.from, report.to), (1, 3));
+    assert!(report.removed.is_empty());
+    assert!(report.interrupted.is_empty());
     assert_eq!(
         host.calls()[previous..]
             .iter()
@@ -79,6 +82,9 @@ async fn shrink_drains_highest_first_then_applies_the_lower_count() {
     .await
     .unwrap();
     assert_eq!(report.removed, ["fleet-workers-3", "fleet-workers-2"]);
+    assert_eq!((report.from, report.to), (3, 1));
+    assert!(report.added.is_empty());
+    assert!(report.interrupted.is_empty());
     assert_eq!(
         &host.calls()[previous..],
         [
@@ -128,12 +134,51 @@ async fn busy_node_restarts_drained_nodes_and_removes_nothing() {
             .to_string()
             .contains("still has running sandbox commands after 600s")
     );
+    assert!(error.to_string().contains("were started again"));
+    assert!(error.to_string().contains("--force"));
     assert!(host.calls().contains(&"start fleet-workers-3".into()));
     assert_eq!(
         f.registry.read_record("fleet").unwrap().unwrap().hosts["workers"].len(),
         3
     );
 }
+#[tokio::test]
+async fn failed_restart_is_not_reported_as_restarted() {
+    let f = Fixture::new();
+    let host = FakeHost::new();
+    let settings = settings();
+    let spec = grown_three(&f, &host, &settings).await;
+    f.workers(1);
+    *host.fail_start.lock().unwrap() = Some("fleet-workers-3".into());
+    host.drain_results.lock().unwrap().insert(
+        "fleet-workers-2".into(),
+        Ok(ssh::Drain {
+            stopped: false,
+            busy: vec!["agent-a".into()],
+            unreleased: vec![],
+        }),
+    );
+    let error = scale_swarm_with(
+        &host,
+        ScaleRequest {
+            spec: &spec,
+            ..request(&f, &settings, 1)
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("fleet-workers-3 could not be restarted")
+    );
+    assert!(!error.to_string().contains("were started again"));
+    assert_eq!(
+        f.registry.read_record("fleet").unwrap().unwrap().hosts["workers"].len(),
+        3
+    );
+}
+
 #[test]
 fn refusals_are_ordered() {
     let f = Fixture::new();
@@ -322,6 +367,14 @@ async fn failed_grow_apply_keeps_the_record_and_resumes() {
     .await
     .unwrap();
     assert_eq!(report.added, ["fleet-workers-2"]);
+    assert_eq!(
+        f.registry.read_record("fleet").unwrap().unwrap().hosts["workers"].len(),
+        2
+    );
+    assert_eq!(
+        f.registry.read_spec("fleet").unwrap().unwrap().groups["workers"].count,
+        Some(2)
+    );
 }
 #[tokio::test]
 async fn failed_shrink_apply_is_finished_by_rerun() {
@@ -368,6 +421,14 @@ async fn failed_shrink_apply_is_finished_by_rerun() {
             .iter()
             .any(|c| c.starts_with("drain "))
     );
+    assert_eq!(
+        f.registry.read_record("fleet").unwrap().unwrap().hosts["workers"].len(),
+        1
+    );
+    assert_eq!(
+        f.registry.read_spec("fleet").unwrap().unwrap().groups["workers"].count,
+        Some(1)
+    );
 }
 #[tokio::test]
 async fn unprovisioned_victims_are_not_drained() {
@@ -399,26 +460,17 @@ async fn unprovisioned_victims_are_not_drained() {
             .iter()
             .any(|c| c.starts_with("drain "))
     );
+    assert!(
+        !host.calls()[previous..]
+            .iter()
+            .any(|c| c.starts_with("revoke "))
+    );
 }
 
 #[tokio::test]
 async fn existing_group_shrink_drains_decommissions_and_truncates() {
     let mut f = Fixture::new();
-    f.add_existing_group("workers");
-    let first = f.spec.groups["workers"].hosts[0].clone();
-    let group = f.spec.groups.get_mut("workers").unwrap();
-    for i in 2..=3 {
-        let mut host = first.clone();
-        host.address = format!("203.0.113.{}", 20 + i);
-        group.hosts.push(host);
-    }
-    let mut control = f.spec.groups["workers"].clone();
-    control.hosts.truncate(1);
-    control.hosts[0].address = "203.0.113.10".into();
-    control.hosts[0].private_address = Some("10.0.0.10".into());
-    control.local_storage = None;
-    f.spec.groups.insert("control".into(), control);
-    f.registry.write_spec(&f.spec).unwrap();
+    f.all_existing_workers(3);
     let host = FakeHost::new();
     f.up(&host).await.unwrap();
     let settings = settings();
@@ -453,21 +505,7 @@ async fn existing_group_shrink_drains_decommissions_and_truncates() {
 #[tokio::test]
 async fn existing_group_decommission_failure_keeps_failed_host() {
     let mut f = Fixture::new();
-    f.add_existing_group("workers");
-    let first = f.spec.groups["workers"].hosts[0].clone();
-    let group = f.spec.groups.get_mut("workers").unwrap();
-    for i in 2..=3 {
-        let mut other = first.clone();
-        other.address = format!("203.0.113.{}", 20 + i);
-        group.hosts.push(other);
-    }
-    let mut control = f.spec.groups["workers"].clone();
-    control.hosts.truncate(1);
-    control.hosts[0].address = "203.0.113.10".into();
-    control.hosts[0].private_address = Some("10.0.0.10".into());
-    control.local_storage = None;
-    f.spec.groups.insert("control".into(), control);
-    f.registry.write_spec(&f.spec).unwrap();
+    f.all_existing_workers(3);
     let host = FakeHost::new();
     f.up(&host).await.unwrap();
     *host.fail_decommission.lock().unwrap() = Some("fleet-workers-2".into());
@@ -487,10 +525,44 @@ async fn existing_group_decommission_failure_keeps_failed_host() {
         2
     );
     assert_eq!(
-        f.registry.read_record("fleet").unwrap().unwrap().hosts["workers"].len(),
-        2
+        f.registry.read_record("fleet").unwrap().unwrap().hosts["workers"]
+            .iter()
+            .map(|h| h.name.as_str())
+            .collect::<Vec<_>>(),
+        ["fleet-workers-1", "fleet-workers-2"]
+    );
+    assert_eq!(
+        f.registry.read_spec("fleet").unwrap().unwrap().groups["workers"].hosts[1].address,
+        "203.0.113.22"
     );
 }
+#[tokio::test]
+async fn existing_group_growth_refuses_without_changes() {
+    let mut f = Fixture::new();
+    f.all_existing_workers(2);
+    let host = FakeHost::new();
+    f.up(&host).await.unwrap();
+    let before_spec = std::fs::read(f.registry.spec_path("fleet").unwrap()).unwrap();
+    let before_record = f.registry.read_record("fleet").unwrap().unwrap();
+    let before_log = f.log();
+    let before_calls = host.calls();
+    let settings = settings();
+    let error = scale_swarm_with(&host, request(&f, &settings, 3))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("swarmy swarm node add"));
+    assert_eq!(
+        std::fs::read(f.registry.spec_path("fleet").unwrap()).unwrap(),
+        before_spec
+    );
+    assert_eq!(
+        f.registry.read_record("fleet").unwrap().unwrap().hosts["workers"],
+        before_record.hosts["workers"]
+    );
+    assert_eq!(f.log(), before_log);
+    assert_eq!(host.calls(), before_calls);
+}
+
 #[tokio::test]
 async fn refusals_change_nothing() {
     let f = Fixture::new();

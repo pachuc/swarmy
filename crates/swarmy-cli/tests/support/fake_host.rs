@@ -34,6 +34,7 @@ impl Fixture {
             r#"#!/bin/bash
 last="${{@: -1}}"
 printf '%s\n' "$last" >> '{}/ssh-commands'
+printf '%s\n' "$*" >> '{}/ssh-full-commands'
 case "$last" in
   true) exit 0 ;;
   'bash -s') file='{}/piped-'$(ls '{}/piped-'* 2>/dev/null | wc -l); cat > "$file"; printf '%s\n' "$*" > "$file.args";
@@ -56,11 +57,23 @@ esac
             path.display(),
             path.display(),
             path.display(),
+            path.display(),
             path.display()
         );
         fs::write(path.join("bin/ssh"), ssh).unwrap();
         fs::write(path.join("bin/rsync"), "#!/bin/bash\nexit 0\n").unwrap();
-        for program in ["ssh", "rsync"] {
+        fs::write(
+            path.join("bin/ssh-keygen"),
+            format!(
+                r#"#!/bin/bash
+if [[ $1 == -R ]]; then printf '%s\n' "$*" >> '{}/ssh-keygen-commands'; exit 0; fi
+exec /usr/bin/ssh-keygen "$@"
+"#,
+                path.display()
+            ),
+        )
+        .unwrap();
+        for program in ["ssh", "rsync", "ssh-keygen"] {
             fs::set_permissions(
                 path.join("bin").join(program),
                 fs::Permissions::from_mode(0o755),

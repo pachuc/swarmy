@@ -599,6 +599,12 @@ fn scale_workers_up_then_down() {
         2
     );
     worker_outputs(&f, 1);
+    fs::write(
+        f.path()
+            .join("data/swarmy/swarms/fleet/keys/groups/workers.known_hosts"),
+        "fixture\n",
+    )
+    .unwrap();
     f.ok(&["swarm", "scale", "fleet", "workers", "1"]);
     let piped = fs::read_dir(f.path())
         .unwrap()
@@ -613,6 +619,25 @@ fn scale_workers_up_then_down() {
     );
     let ssh = fs::read_to_string(f.path().join("ssh-commands")).unwrap();
     assert!(ssh.contains("grep -vxF"));
+    let full = fs::read_to_string(f.path().join("ssh-full-commands")).unwrap();
+    assert!(
+        full.lines()
+            .any(|line| line.contains("grep -vxF") && line.contains("203.0.113.10"))
+    );
+    assert!(
+        fs::read_to_string(f.path().join("ssh-keygen-commands"))
+            .unwrap()
+            .contains("-R 203.0.113.12 -f")
+    );
+    let applied: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            f.path()
+                .join("data/swarmy/swarms/fleet/tofu/workers/swarmy.tfvars.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(applied["machine_count"], 1);
     let status = f.ok(&["--json", "swarm", "status", "fleet"]);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&status.stdout).unwrap()["hosts"]
@@ -620,6 +645,13 @@ fn scale_workers_up_then_down() {
             .unwrap()
             .len(),
         2
+    );
+    assert!(
+        !f.path().join("home").exists()
+            || fs::read_dir(f.path().join("home"))
+                .unwrap()
+                .next()
+                .is_none()
     );
 }
 #[test]
@@ -671,7 +703,18 @@ fn busy_node_fails_clearly() {
         String::from_utf8_lossy(&output.stderr)
             .contains("still has running sandbox commands after 600s")
     );
-    assert!(!f.path().join("applied-workers-3.json").exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--force"));
+    for entry in fs::read_dir(f.path()).unwrap().filter_map(Result::ok) {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("applied-workers-")
+        {
+            let vars: serde_json::Value =
+                serde_json::from_slice(&fs::read(entry.path()).unwrap()).unwrap();
+            assert_ne!(vars["machine_count"], 1);
+        }
+    }
 }
 #[test]
 fn scale_refuses_stack_group_and_local_swarm() {

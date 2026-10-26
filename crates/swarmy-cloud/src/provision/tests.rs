@@ -9,6 +9,7 @@ pub(super) struct FakeHost {
     configs: Mutex<Vec<String>>,
     fail_provision: Mutex<Option<String>>,
     pub(super) fail_decommission: Mutex<Option<String>>,
+    pub(super) fail_start: Mutex<Option<String>>,
     pub(super) drain_results:
         Mutex<std::collections::HashMap<String, std::result::Result<ssh::Drain, String>>>,
 }
@@ -19,6 +20,7 @@ impl FakeHost {
             configs: Mutex::new(Vec::new()),
             fail_provision: Mutex::new(None),
             fail_decommission: Mutex::new(None),
+            fail_start: Mutex::new(None),
             drain_results: Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -145,7 +147,11 @@ impl SwarmHost for FakeHost {
     fn start(&self, node: &Machine) -> impl Future<Output = Result<()>> {
         std::future::ready({
             self.push(format!("start {}", node.name));
-            Ok(())
+            if self.fail_start.lock().unwrap().as_deref() == Some(&node.name) {
+                Err(Error::other("start failed"))
+            } else {
+                Ok(())
+            }
         })
     }
     fn reachable(&self, _: &Machine) -> impl Future<Output = bool> {

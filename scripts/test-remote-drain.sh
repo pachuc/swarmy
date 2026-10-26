@@ -44,10 +44,10 @@ grep -qx 'disable --now swarmyd.service' "$root/systemctl.log"
 run busy-then-idle active 1 wait $'["agent-a"]\n[]\n[]' 'drain {"stopped":true,"busy":[],"unreleased":[]}'
 grep -q 'Waiting for running sandbox commands' "$root/stderr"
 run busy-timeout active 0 wait '["agent-a"]' 'drain {"stopped":false,"busy":["agent-a"],"unreleased":[]}'
-! grep -q '^disable ' "$root/systemctl.log"
+if grep -q '^disable ' "$root/systemctl.log"; then echo 'unexpected disable' >&2; exit 1; fi
 run force active 0 force $'["agent-a"]\n[]' 'drain {"stopped":true,"busy":["agent-a"],"unreleased":[]}'
 grep -qx 'disable --now swarmyd.service' "$root/systemctl.log"
 run inactive inactive 0 wait '["orphan"]' 'drain {"stopped":true,"busy":[],"unreleased":["orphan"]}'
-! grep -q '^disable ' "$root/systemctl.log"
+if grep -q '^disable ' "$root/systemctl.log"; then echo 'unexpected disable' >&2; exit 1; fi
 run unreleased active 1 wait $'[]\n["agent-b"]' 'drain {"stopped":true,"busy":[],"unreleased":["agent-b"]}'
 echo 'remote drain behavioral tests passed'

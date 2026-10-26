@@ -102,18 +102,31 @@ fn read_up_record(registry: &Registry, spec: &SwarmSpec) -> Result<SwarmRecord> 
     Ok(record)
 }
 
+/// Check refusals that need no lock or cloud credentials.
+/// # Errors
+/// Rejects non-node groups, swarms not up, and growing existing-host groups.
+pub fn preflight(
+    registry: &Registry,
+    spec: &SwarmSpec,
+    group: &str,
+    count: u32,
+) -> Result<(GroupKind, SwarmRecord)> {
+    let kind = check_scalable(spec, group)?;
+    let record = read_up_record(registry, spec)?;
+    if kind == GroupKind::Existing && count as usize > record.hosts.get(group).map_or(0, Vec::len) {
+        return Err(Error::other(format!(
+            "group \"{group}\" lists existing hosts; add machines with swarmy swarm node add {} {group} --host ADDRESS --ssh-key PATH",
+            spec.name
+        )));
+    }
+    Ok((kind, record))
+}
+
 /// # Errors
 /// Reports invalid groups, unavailable hosts and infrastructure failures.
 pub async fn scale_swarm(request: ScaleRequest<'_>) -> Result<ScaleReport> {
-    let kind = check_scalable(request.spec, request.group)?;
-    let record = read_up_record(request.registry, request.spec)?;
+    let (kind, record) = preflight(request.registry, request.spec, request.group, request.count)?;
     let recorded = record.hosts.get(request.group).map_or(0, Vec::len);
-    if kind == GroupKind::Existing && request.count as usize > recorded {
-        return Err(Error::other(format!(
-            "group \"{}\" lists existing hosts; add machines with swarmy swarm node add {} {} --host ADDRESS --ssh-key PATH",
-            request.group, request.spec.name, request.group
-        )));
-    }
     // A same-count rerun can still have an unprovisioned host recorded by a
     // previous apply. Keep provisioning binaries available for that resume.
     let host = if kind == GroupKind::Module && request.count as usize >= recorded {
@@ -129,9 +142,8 @@ pub(crate) async fn scale_swarm_with(
     request: ScaleRequest<'_>,
 ) -> Result<ScaleReport> {
     let spec = request.spec;
-    let kind = check_scalable(spec, request.group)?;
     let _lock = Locked(lock(request.registry, &spec.name)?);
-    let mut record = read_up_record(request.registry, spec)?;
+    let (kind, mut record) = preflight(request.registry, spec, request.group, request.count)?;
     let before = record.hosts.get(request.group).cloned().unwrap_or_default();
     let from = before.len();
     let target = request.count as usize;
@@ -145,12 +157,6 @@ pub(crate) async fn scale_swarm_with(
         interrupted: Vec::new(),
         unreleased: Vec::new(),
     };
-    if kind == GroupKind::Existing && target > from {
-        return Err(Error::other(format!(
-            "group \"{}\" lists existing hosts; add machines with swarmy swarm node add {} {} --host ADDRESS --ssh-key PATH",
-            request.group, spec.name, request.group
-        )));
-    }
     if kind == GroupKind::Existing && target == from {
         cloud_out!(
             "group {} of swarm {} already has {} machines",
@@ -211,11 +217,13 @@ async fn grow(
     report: &mut ScaleReport,
 ) -> Result<()> {
     let _ = runner(request)?;
-    spec.groups
-        .get_mut(request.group)
-        .expect("checked group")
-        .count = Some(request.count);
-    write_spec(request, spec)?;
+    if spec.groups[request.group].count != Some(request.count) {
+        spec.groups
+            .get_mut(request.group)
+            .expect("checked group")
+            .count = Some(request.count);
+        write_spec(request, spec)?;
+    }
     let dir = request.registry.swarm_dir(&spec.name)?;
     let result = provision_locked(
         host,
@@ -257,26 +265,39 @@ async fn grow(
     }
     Ok(())
 }
-fn as_machine(spec: &SwarmSpec, group: &str, host: &swarmy_config::swarm::RecordedHost) -> Machine {
-    let selected = &spec.groups[group];
-    machine(
-        host,
-        user(spec),
-        Role::Node,
-        selected.sandboxes.unwrap_or(64),
-        selected.local_storage.as_deref().unwrap_or(""),
-    )
+fn as_machine(spec: &SwarmSpec, host: &swarmy_config::swarm::RecordedHost) -> Machine {
+    machine(host, user(spec), Role::Node, 0, "")
 }
-async fn restart(host: &impl SwarmHost, drained: &[Machine]) {
+async fn restart(host: &impl SwarmHost, drained: &[Machine]) -> String {
+    let mut started = Vec::new();
+    let mut failed = Vec::new();
     for node in drained {
-        if let Err(error) = host.start(node).await {
-            cloud_err!(
-                "host {}: could not restart node agent ({})",
-                node.name,
-                swarmy_core::error_chain(&error)
-            );
+        match host.start(node).await {
+            Ok(()) => started.push(node.name.as_str()),
+            Err(error) => {
+                cloud_err!(
+                    "host {}: could not restart node agent ({})",
+                    node.name,
+                    swarmy_core::error_chain(&error)
+                );
+                failed.push(node.name.as_str());
+            }
         }
     }
+    let mut result = String::new();
+    if !started.is_empty() {
+        result.push_str(&format!(
+            ", and the node agents already stopped on {} were started again",
+            started.join(", ")
+        ));
+    }
+    if !failed.is_empty() {
+        result.push_str(&format!(
+            ", but the node agents on {} could not be restarted; start them by hand",
+            failed.join(", ")
+        ));
+    }
+    result
 }
 fn warn_unreleased(node: &Machine, drain: &ssh::Drain) {
     if !drain.unreleased.is_empty() {
@@ -291,42 +312,24 @@ async fn drain_all(
     host: &impl SwarmHost,
     request: &ScaleRequest<'_>,
     spec: &SwarmSpec,
+    record: &SwarmRecord,
     before: &[swarmy_config::swarm::RecordedHost],
     report: &mut ScaleReport,
 ) -> Result<Vec<Machine>> {
     let mut drained = Vec::new();
-    let primary_host = request
-        .registry
-        .read_record(&spec.name)?
-        .and_then(|r| {
-            r.hosts
-                .get(&spec.placement.stack)
-                .and_then(|v| v.first())
-                .cloned()
-        })
+    let primary_host = record.hosts[&spec.placement.stack]
+        .first()
         .expect("checked primary");
-    let primary = as_machine(spec, &spec.placement.stack, &primary_host);
+    let primary = as_machine(spec, primary_host);
     for victim in before[request.count as usize..].iter().rev() {
-        let node = as_machine(spec, request.group, victim);
+        let node = as_machine(spec, victim);
         if victim.provisioned {
             match host
                 .drain(&node, request.drain_timeout, request.force)
                 .await
             {
                 Ok(drain) if !drain.stopped => {
-                    restart(host, &drained).await;
-                    let restarted = if drained.is_empty() {
-                        String::new()
-                    } else {
-                        format!(
-                            ", and the node agents already stopped on {} were started again",
-                            drained
-                                .iter()
-                                .map(|n: &Machine| n.name.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    };
+                    let restarted = restart(host, &drained).await;
                     return Err(Error::other(format!(
                         "host {} still has running sandbox commands after {}s (agents {}); no machine was removed{restarted}. Wait and run the command again, raise --drain-timeout, or pass --force to interrupt them",
                         node.name,
@@ -353,9 +356,9 @@ async fn drain_all(
                     drained.push(node.clone());
                 }
                 Err(error) if !request.force => {
-                    restart(host, &drained).await;
+                    let restarted = restart(host, &drained).await;
                     return Err(Error::other(format!(
-                        "could not reach host {} to drain it ({}); pass --force to remove it without draining (its computers move to other nodes when their leases expire)",
+                        "could not reach host {} to drain it ({}); pass --force to remove it without draining (its computers move to other nodes when their leases expire){restarted}",
                         node.name,
                         swarmy_core::error_chain(&error)
                     )));
@@ -376,7 +379,7 @@ async fn drain_all(
         .rev()
         .filter(|h| h.provisioned)
     {
-        let node = as_machine(spec, request.group, victim);
+        let node = as_machine(spec, victim);
         if let Err(error) = host.revoke_tunnel(&node, &primary).await {
             cloud_err!(
                 "host {}: could not revoke its tunnel key on {} ({}); remove its line from ~{}/.ssh/authorized_keys there",
@@ -398,7 +401,7 @@ async fn shrink(
     report: &mut ScaleReport,
     kind: GroupKind,
 ) -> Result<()> {
-    let _ = drain_all(host, request, spec, before, report).await?;
+    let _ = drain_all(host, request, spec, record, before, report).await?;
     match kind {
         GroupKind::Module => apply_lower(request, spec, record, before, report).await?,
         GroupKind::Existing => remove_existing(host, request, spec, record, before, report).await?,
@@ -459,6 +462,12 @@ async fn apply_lower(
             spec.name
         )));
     }
+    for victim in &before[request.count as usize..] {
+        swarmy_core::ignore_best_effort(
+            ssh::forget_host_key(&victim.public_address, &victim.ssh_key),
+            "remove destroyed node from SSH known hosts",
+        );
+    }
     for name in victims {
         cloud_out!("{name}: removed");
         report.removed.push(name);
@@ -474,7 +483,7 @@ async fn remove_existing(
     report: &mut ScaleReport,
 ) -> Result<()> {
     for victim in before[request.count as usize..].iter().rev() {
-        let node = as_machine(spec, request.group, victim);
+        let node = as_machine(spec, victim);
         let failed = host.decommission(&node).await.err();
         if failed.is_none() {
             report.removed.push(victim.name.clone());

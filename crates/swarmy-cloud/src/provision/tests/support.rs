@@ -130,6 +130,23 @@ esac
         }
         self.registry.write_spec(&self.spec).unwrap();
     }
+    pub(crate) fn all_existing_workers(&mut self, count: usize) {
+        self.add_existing_group("workers");
+        let first = self.spec.groups["workers"].hosts[0].clone();
+        let group = self.spec.groups.get_mut("workers").unwrap();
+        for i in 2..=count {
+            let mut host = first.clone();
+            host.address = format!("203.0.113.{}", 20 + i);
+            group.hosts.push(host);
+        }
+        let mut control = self.spec.groups["workers"].clone();
+        control.hosts.truncate(1);
+        control.hosts[0].address = "203.0.113.10".into();
+        control.hosts[0].private_address = Some("10.0.0.10".into());
+        control.local_storage = None;
+        self.spec.groups.insert("control".into(), control);
+        self.registry.write_spec(&self.spec).unwrap();
+    }
     pub(crate) fn machines(&self) -> MachineGroups<'_> {
         MachineGroups {
             tofu: &self.tofu,
