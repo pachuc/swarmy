@@ -56,7 +56,7 @@ configure the services started by `swarmy dev up`. That command registers its
 API as swarm `dev` and makes it current when none is selected.
 
 Specs live under `$XDG_CONFIG_HOME/swarmy/swarms`, records under
-`$XDG_STATE_HOME/swarmy/swarms`, and the `current` file under
+`$XDG_DATA_HOME/swarmy/swarms`, and the `current` file under
 `$XDG_STATE_HOME/swarmy` (with standard HOME-based XDG defaults).
 
 ```sh
@@ -67,7 +67,6 @@ printf '%s' "$TOKEN" | swarmy swarm attach staging --url https://swarmy.example.
 swarmy --swarm staging session ls
 swarmy swarm rm staging
 ```
-
 
 Install the pinned backing services using the instructions below. With Rust and
 those binaries installed, run these commands from a clean checkout. The commands
@@ -129,7 +128,7 @@ It reloads configuration, so edits take effect on the next `up`. An unexpected
 service exit stops the other services; inspect the logs and run `up` again.
 PID records contain Linux process start times to guard against PID reuse.
 
-To run the backing services and swarmyd on EC2, see [remote node workflow](#remote-node-workflow).
+To run the backing services and swarmyd on another machine, see [remote node workflow](#remote-node-workflow).
 
 ## Ephemeral sessions and named agents
 
@@ -328,8 +327,8 @@ make install
 `make install` is `make install-client` plus `make install-core`. The client
 links no database library and needs no `libfdb_c`; `swarmy-core` (scheduler, worker, gateway, API, node, and vol) still links it. Install only the client with
 `make install-client` when the services live elsewhere. `make install-client`
-builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs `swarmy-core`. The `remote` feature compiles the EC2, SSM, S3,
-and IAM SDKs behind the `swarmy remote` provisioning commands. A plain
+builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs `swarmy-core`. The `remote` feature compiles the S3 client behind the `swarmy remote`
+provisioning commands. A plain
 `cargo build -p swarmy-cli` leaves that feature off for the slimmer node
 binary; add `--features remote` to a plain cargo invocation when the
 provisioning commands are needed.

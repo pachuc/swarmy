@@ -281,16 +281,15 @@ async fn inventory(
     let profile = RemoteProfile::read(Path::new(&base.state_dir), name)?;
     let endpoint = profile
         .api_url
-        .clone()
-        .unwrap_or_else(|| format!("http://{}", base.api.listen));
-    crate::Error::ensure(
-        profile
-            .api_token
-            .as_ref()
-            .is_some_and(|token| !token.is_empty()),
-        format!("no [api] token configured for remote {name}"),
-    )?;
-    let client = swarmy_client::Client::new(&endpoint, profile.api_token.unwrap_or_default())
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| crate::Error::other(format!("no [api] URL configured for remote {name}")))?;
+    let token = profile
+        .api_token
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| {
+            crate::Error::other(format!("no [api] token configured for remote {name}"))
+        })?;
+    let client = swarmy_client::Client::new(&endpoint, token)
         .map_err(|source| client_error(&endpoint, source))?;
     let snapshot = timeout(Duration::from_secs(10), client.doctor())
         .await

@@ -236,7 +236,16 @@ fn ls_show_use_rm_round_trip() {
         .output()
         .unwrap();
     let entries: serde_json::Value = serde_json::from_slice(&ls.stdout).unwrap();
-    assert_eq!(entries.as_array().unwrap().len(), 2);
+    assert_eq!(
+        entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert!(!String::from_utf8_lossy(&ls.stdout).contains("secret-"));
     assert!(
         entries
             .as_array()
@@ -244,14 +253,17 @@ fn ls_show_use_rm_round_trip() {
             .iter()
             .all(|entry| entry["current"] == false)
     );
+    let use_output = f.command().args(["swarm", "use", "b"]).output().unwrap();
+    assert!(use_output.status.success());
+    assert!(!String::from_utf8_lossy(&use_output.stdout).contains("secret-"));
+    let ls_current = f.command().args(["swarm", "ls"]).output().unwrap();
+    assert!(ls_current.status.success());
     assert!(
-        f.command()
-            .args(["swarm", "use", "b"])
-            .output()
-            .unwrap()
-            .status
-            .success()
+        String::from_utf8_lossy(&ls_current.stdout)
+            .lines()
+            .any(|line| line.starts_with("* b "))
     );
+    assert!(!String::from_utf8_lossy(&ls_current.stdout).contains("secret-"));
     let show = f
         .command()
         .args(["swarm", "show", "--json"])
@@ -261,6 +273,7 @@ fn ls_show_use_rm_round_trip() {
         serde_json::from_slice::<serde_json::Value>(&show.stdout).unwrap()["name"],
         "b"
     );
+    assert!(!String::from_utf8_lossy(&show.stdout).contains("secret-"));
     let show = f
         .command()
         .args(["swarm", "show", "a", "--json"])
@@ -269,23 +282,14 @@ fn ls_show_use_rm_round_trip() {
     let show_text = String::from_utf8(show.stdout).unwrap();
     assert!(show_text.contains("attached"));
     assert!(!show_text.contains("secret"));
-    assert!(
-        f.command()
-            .args(["swarm", "rm", "b"])
-            .output()
-            .unwrap()
-            .status
-            .success()
-    );
+    let removed = f.command().args(["swarm", "rm", "b"]).output().unwrap();
+    assert!(removed.status.success());
+    assert!(!String::from_utf8_lossy(&removed.stdout).contains("secret-"));
     assert_eq!(f.registry().current().unwrap(), None);
-    assert!(
-        !f.command()
-            .args(["swarm", "rm", "b"])
-            .output()
-            .unwrap()
-            .status
-            .success()
-    );
+    let missing = f.command().args(["swarm", "rm", "b"]).output().unwrap();
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("no swarm named"));
+    assert!(!String::from_utf8_lossy(&missing.stderr).contains("secret-"));
 }
 #[test]
 fn attach_is_private_and_validated() {
@@ -312,20 +316,16 @@ fn attach_is_private_and_validated() {
             & 0o777,
         0o700
     );
-    assert!(
-        !f.attach("empty", "https://example.test", "")
-            .status
-            .success()
-    );
+    let empty = f.attach("empty", "https://example.test", "");
+    assert!(!empty.status.success());
+    assert!(String::from_utf8_lossy(&empty.stderr).contains("--token-stdin"));
     assert!(!f.attach("ftp", "ftp://x", "secret").status.success());
     let spec = "name = 'm'\nlifecycle = 'persistent'\n[groups.box]\nmodule = 'existing'\n[[groups.box.hosts]]\naddress = '203.0.113.10'\nssh_user = 'root'\nssh_key = '/keys/box'\n[placement]\nstack = 'box'\nservices = 'box'\nnodes = ['box']\n";
     fs::create_dir_all(r.dirs().specs()).unwrap();
     fs::write(r.spec_path("m").unwrap(), spec).unwrap();
-    assert!(
-        !f.attach("m", "https://example.test", "secret")
-            .status
-            .success()
-    );
+    let managed = f.attach("m", "https://example.test", "secret");
+    assert!(!managed.status.success());
+    assert!(String::from_utf8_lossy(&managed.stderr).contains("managed by swarmy"));
     assert_eq!(fs::read_dir(f.0.path().join("home")).unwrap().count(), 0);
 }
 #[test]

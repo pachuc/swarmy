@@ -1,7 +1,7 @@
 # Machine-group infrastructure modules
 
 Each directory under `infra/modules` is a complete OpenTofu root configuration for
-one machine group. The client will carry these files compiled in, and will write
+one machine group. The client carries these files compiled in, and will write
 them into a separate working directory per group. The module owns its state;
 credentials are supplied only through the environment, never through inputs.
 The Hetzner Cloud module uses `HCLOUD_TOKEN` for machines and `MINIO_USER` and
@@ -31,8 +31,8 @@ There are exactly three root outputs: `machines`, `bucket`, and `network_id`.
 Machines are ordered by number and each object has exactly name, public_ipv4,
 public_ipv6, private_ip, and ssh_user. Missing addresses are JSON null, never
 empty strings. With zero machines the list is empty. Bucket is null when no
-bucket was requested. Network ID is a decimal string for the created or joined
-network. For example the values could be:
+bucket was requested. For hetzner-cloud, network ID is a decimal string for the created or joined
+network; for aws it is a subnet id. For example the values could be:
 
 ```json
 {
@@ -69,5 +69,37 @@ Install the pinned OpenTofu with `scripts/install-opentofu.sh`, then run
 validation and offline mock-provider tests. A new module needs its own
 root configuration files (`versions.tf`, `variables.tf`, `main.tf`,
 `outputs.tf`, `.terraform.lock.hcl`) and mock tests. It must implement the
-same input and output names; the script guards that contract. A later task
-adds the AWS module.
+same input and output names; the script guards that contract. Both aws and hetzner-cloud implement the same contract.
+
+## aws
+
+The `aws` module implements the same thirteen inputs with these meanings:
+
+| Input | AWS meaning |
+|---|---|
+| `swarm`, `group`, `machine_count` | Names and number of EC2 machines |
+| `size` | EC2 instance type, such as m6i.large |
+| `location` | AWS region for the machines and network |
+| `image` | Current Canonical Ubuntu 24.04 SSM image or explicit AMI id |
+| `ssh_public_key` | The group's EC2 key pair (RSA or ed25519) |
+| `labels` | Resource tags; swarmy's three ownership tags win |
+| `ssh_allowed_cidrs` | SSH ingress from these IPv4 and IPv6 CIDRs |
+| `bucket_name`, `bucket_location`, `bucket_force_destroy` | Optional S3 bucket name, region and deletion policy |
+| `network_id` | Existing subnet id to join, or empty to create a VPC and public subnet |
+
+Supply `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally
+`AWS_SESSION_TOKEN` in the runner environment only. The region always comes
+from `location`, never the environment. Here `network_id` is an existing
+subnet id, whereas for hetzner-cloud it is a decimal network id. Swarmy
+treats it as opaque and passes it from the first group to later groups.
+An empty value creates a VPC and public subnet.
+
+Machines have `ssh_user` ubuntu, no public IPv6, and a fixed encrypted
+100 GiB root disk. Image changes are ignored after launch to avoid replacing
+running machines when Canonical updates its SSM parameter. An AWS key needs
+permissions for EC2 instances, key pairs, VPC, subnet, route table, internet
+gateway and security groups, including `ec2:DescribeInstanceTypes`;
+`ssm:GetParameter` for Canonical's public parameters; and S3 bucket
+creation, tagging, `s3:PutBucketPublicAccessBlock`, and deletion.
+This module has only been checked by `tofu validate` and offline mock tests.
+It has not been run against real AWS.

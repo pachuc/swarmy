@@ -16,7 +16,7 @@ pub(crate) fn parse_name(value: &str) -> Result<String, swarmy_config::Error> {
 pub(crate) enum Command {
     /// List registered swarms; `*` marks the current one
     Ls,
-    /// Show a swarm's API, record, and spec
+    /// Show a swarm's API, record, and spec (default: the swarm this command would use)
     Show {
         #[arg(value_parser = parse_name)]
         name: Option<String>,
@@ -30,6 +30,7 @@ pub(crate) enum Command {
     Rm {
         #[arg(value_parser = parse_name)]
         name: String,
+        /// Forget even if machines or infrastructure state are recorded
         #[arg(long)]
         force: bool,
     },
@@ -47,20 +48,29 @@ pub(crate) enum Command {
 fn kind(s: &Swarm) -> &'static str {
     if s.spec.is_some() {
         "managed"
-    } else if s.record.as_ref().and_then(|r| r.api.url.as_ref()).is_some() {
+    } else if s
+        .record
+        .as_ref()
+        .and_then(|r| r.api.url.as_ref().filter(|url| !url.is_empty()))
+        .is_some()
+    {
         "attached"
     } else {
         "incomplete"
     }
 }
 fn api(s: &Swarm) -> String {
-    if let Some(url) = s.record.as_ref().and_then(|r| r.api.url.as_ref()) {
+    if let Some(url) = s
+        .record
+        .as_ref()
+        .and_then(|r| r.api.url.as_ref().filter(|url| !url.is_empty()))
+    {
         return url.clone();
     }
     if s.spec.is_some()
         && s.record
             .as_ref()
-            .and_then(|r| r.api.token.as_ref())
+            .and_then(|r| r.api.token.as_ref().filter(|token| !token.is_empty()))
             .is_some()
     {
         return "ssh tunnel".into();
@@ -95,7 +105,7 @@ fn show(registry: &Registry, swarm: &Swarm, json_output: bool) -> Result<()> {
     let token_recorded = swarm
         .record
         .as_ref()
-        .and_then(|r| r.api.token.as_ref())
+        .and_then(|r| r.api.token.as_ref().filter(|token| !token.is_empty()))
         .is_some();
     print_value(
         &json!({"name": swarm.name, "current": current, "kind": kind(swarm), "api_url": url,
@@ -165,6 +175,11 @@ async fn remove(registry: &Registry, name: &str, force: bool, json_output: bool)
         .record
         .as_ref()
         .map_or(0, |r| r.hosts.values().map(Vec::len).sum());
+    let detail = if hosts == 0 {
+        "infrastructure state recorded".to_owned()
+    } else {
+        format!("{hosts} hosts")
+    };
     if !force
         && swarm
             .record
@@ -172,7 +187,7 @@ async fn remove(registry: &Registry, name: &str, force: bool, json_output: bool)
             .is_some_and(|r| !r.hosts.is_empty() || r.tofu_state.is_some())
     {
         bail!(
-            "swarm \"{name}\" has machines recorded ({hosts} hosts); swarmy swarm rm only forgets registrations. Tear it down first, or pass --force to forget it and leave the machines running"
+            "swarm \"{name}\" has machines or infrastructure state recorded ({detail}); swarmy swarm rm only forgets registrations. Tear it down first, or pass --force to forget it and leave the machines running"
         );
     }
     swarmy_core::ignore_best_effort(
@@ -212,7 +227,7 @@ fn attach(registry: &Registry, name: &str, url: &str, json_output: bool) -> Resu
     registry.attach(name, url, &token)?;
     print_value(
         &json!({"attached":name,"api_url":url}),
-        format!("attached swarm {name} at {url}; make it current with swarmy swarm use NAME"),
+        format!("attached swarm {name} at {url}; make it current with swarmy swarm use {name}"),
         json_output,
     );
     Ok(())

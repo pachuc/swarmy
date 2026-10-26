@@ -240,6 +240,9 @@ def invocations_in(text):
 def command_rows():
     rows, seen = [], set()
     for path in md_files():
+        # Dated history pins an older CLI; still check its links in the other modes.
+        if path == "docs/volume-benchmarks.md":
+            continue
         with open(os.path.join(ROOT, path), encoding="utf-8") as h:
             lines = h.read().splitlines()
         for lineno, text, in_fence in logical_lines(lines):

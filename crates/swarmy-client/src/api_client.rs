@@ -1,4 +1,4 @@
-//! Resolve one API endpoint for local or selected remote commands.
+//! Select a client API from the swarm registry and its recorded endpoint or tunnel.
 use crate::{Client, Error};
 
 /// The selected API, either directly reachable or requiring an SSH tunnel.

@@ -269,7 +269,7 @@ pub(crate) async fn pull_release_image(
         "disk.ext4 is {len} bytes but its recipe declares {}",
         recipe.disk_size
     );
-    register(None, "base-ubuntu", tag, &disk, &recipe.sandbox, json).await?;
+    register(api, "base-ubuntu", tag, &disk, &recipe.sandbox, json).await?;
     std::fs::remove_dir_all(&dir)?;
     Ok(Some(true))
 }
