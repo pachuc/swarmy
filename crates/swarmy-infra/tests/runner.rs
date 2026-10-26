@@ -374,13 +374,22 @@ async fn missing_binary_and_bad_output() {
     assert!(
         matches!(tofu.workspace(work.path(), CredentialEnv::new()).init().await, Err(Error::Spawn { binary: found, .. }) if found == binary)
     );
-    let tofu = Tofu::from_binary(fake_tofu(fixture.path(), DEFAULT, "{}"), cache.path());
-    assert!(matches!(
-        tofu.workspace(work.path(), CredentialEnv::new())
-            .outputs()
-            .await,
-        Err(Error::Output(OutputError::Missing("machines")))
-    ));
+    let tofu = Tofu::from_binary(
+        fake_tofu(
+            fixture.path(),
+            r#"case "$1" in output) printf '{}' ;; esac"#,
+            "{}",
+        ),
+        cache.path(),
+    );
+    let result = tofu
+        .workspace(work.path(), CredentialEnv::new())
+        .outputs()
+        .await;
+    assert!(
+        matches!(result, Err(Error::Output(OutputError::Missing("machines")))),
+        "{result:?}"
+    );
 }
 #[tokio::test]
 async fn stale_module_files_removed() {
