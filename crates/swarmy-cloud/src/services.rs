@@ -29,6 +29,12 @@ impl<'a> From<Option<&'a Path>> for Options<'a> {
 }
 
 impl<'a> Options<'a> {
+    /// The TOML uploaded to the node's `.swarmy/config.toml`.
+    #[cfg(all(test, feature = "remote"))]
+    pub(crate) fn config_toml(&self) -> &str {
+        &self.config
+    }
+
     /// Resolve service installation options, loading secrets only when the
     /// caller explicitly acknowledged copying them to the node.
     ///
@@ -140,12 +146,6 @@ impl<'a> Options<'a> {
             config: remote.to_toml()?,
             fake_script,
         })
-    }
-
-    /// The TOML uploaded to the node's `.swarmy/config.toml`.
-    #[cfg(all(test, feature = "remote"))]
-    pub(crate) fn config_toml(&self) -> &str {
-        &self.config
     }
 }
 

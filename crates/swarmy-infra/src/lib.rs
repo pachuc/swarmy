@@ -3,6 +3,7 @@
 pub mod contract;
 pub mod download;
 mod error;
+pub mod modules;
 pub mod opentofu;
 mod runner;
 

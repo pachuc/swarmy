@@ -3,7 +3,7 @@
 #[test]
 fn remote_command_reports_missing_feature() {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_swarmy"))
-        .args(["remote", "up", "x"])
+        .args(["remote", "ls"])
         .output()
         .unwrap();
     assert!(!output.status.success());

@@ -1,14 +1,12 @@
 use clap::{Args, Subcommand};
 
-/// Object bucket backing the remote, shared by `up` (create a machine, then
-/// provision it) and `adopt` (provision an existing machine). One declaration
-/// so the two commands never drift apart.
+/// Object bucket backing an adopted remote.
 #[derive(Args, Clone)]
 pub struct BucketArgs {
-    /// Object bucket backing the remote (AWS S3 by default)
+    /// Object bucket backing the remote (S3-compatible, with --s3-endpoint and static keys)
     #[arg(long)]
     pub bucket: Option<String>,
-    /// S3-compatible endpoint URL for the bucket; empty selects AWS S3
+    /// S3-compatible endpoint URL for the bucket
     #[arg(long)]
     pub s3_endpoint: Option<String>,
     /// Bucket region override (defaults to the remote region)
@@ -31,33 +29,6 @@ pub struct BucketArgs {
 
 #[derive(Subcommand, Clone)]
 pub enum Command {
-    /// Launch and provision a remote node
-    Up {
-        name: String,
-        /// Override the first node's EC2 instance type
-        #[arg(long)]
-        instance_type: Option<String>,
-        /// Override the first node's EBS root disk size in GiB
-        #[arg(long)]
-        disk_gb: Option<u32>,
-        #[command(flatten)]
-        bucket: BucketArgs,
-        /// Maximum sandboxes on this node (zero for a control-only node)
-        #[arg(long)]
-        sandboxes: Option<u32>,
-        /// Run control-plane services on the laptop (default) or the node
-        #[arg(long)]
-        services: Option<swarmy_config::RemoteServices>,
-        /// Acknowledge that the `ChatGPT` credential file and cluster keyring leave this laptop over SSH
-        #[arg(long)]
-        copy_credential: bool,
-        /// Skip building and registering the stack's default image
-        #[arg(long, conflicts_with = "image_recipe")]
-        no_image: bool,
-        /// Image recipe this client carries: images/base-ubuntu, images/base-desktop, or images/swarmy-dev
-        #[arg(long, default_value = "images/base-ubuntu")]
-        image_recipe: std::path::PathBuf,
-    },
     /// Provision an existing SSH-reachable machine as a remote's first node
     Adopt {
         name: String,
@@ -94,19 +65,13 @@ pub enum Command {
         #[arg(long, default_value = "images/base-ubuntu")]
         image_recipe: std::path::PathBuf,
     },
-    /// Join another node to a remote over its private network
+    /// Join another existing host to a remote
     AddNode {
         name: String,
         /// Maximum sandboxes on the joining node
         #[arg(long)]
         sandboxes: Option<u32>,
-        /// Override this node's EC2 instance type
-        #[arg(long)]
-        instance_type: Option<String>,
-        /// Override this node's EBS root disk size in GiB
-        #[arg(long)]
-        disk_gb: Option<u32>,
-        /// Address (IP) of an existing machine to join instead of launching one
+        /// Address (IP) of an existing machine to join
         #[arg(long)]
         host: Option<String>,
         /// Bootstrap SSH login on the joining machine (existing-host joins only)
@@ -139,18 +104,16 @@ pub enum Command {
         #[arg(long, default_value_t = 600)]
         drain_timeout: u64,
     },
-    /// Terminate nodes and remove their cloud resources and local state
+    /// Decommission a remote's hosts and remove its owned bucket scope and local state
     Down {
         name: String,
-        /// Retain the bucket and its guarding role and profile
+        /// Retain the bucket
         #[arg(long)]
         keep_bucket: bool,
         /// Confirm permanent deletion without an interactive prompt
         #[arg(long)]
         yes: bool,
     },
-    /// Explicitly adopt an older remote's bucket, role, and profile for teardown
-    Tag { name: String },
     /// Forward remote `FoundationDB`, NATS, and S3 to local ports
     Connect { name: String },
     /// Stop the recorded SSH tunnel
@@ -208,18 +171,38 @@ mod sandbox_limit_tests {
 
     #[test]
     fn accepts_zero_and_rejects_invalid_limits_before_launch() {
-        for action in ["up", "add-node"] {
+        for action in ["add-node"] {
             for invalid in ["-1", "wrong", "4294967296"] {
                 assert!(
-                    Cli::try_parse_from(["remote", action, "demo", "--sandboxes", invalid])
-                        .is_err()
+                    Cli::try_parse_from([
+                        "remote",
+                        action,
+                        "demo",
+                        "--host",
+                        "203.0.113.11",
+                        "--ssh-key",
+                        "key",
+                        "--sandboxes",
+                        invalid
+                    ])
+                    .is_err()
                 );
             }
-            let command = Cli::try_parse_from(["remote", action, "demo", "--sandboxes", "0"])
-                .unwrap()
-                .command;
+            let command = Cli::try_parse_from([
+                "remote",
+                action,
+                "demo",
+                "--host",
+                "203.0.113.11",
+                "--ssh-key",
+                "key",
+                "--sandboxes",
+                "0",
+            ])
+            .unwrap()
+            .command;
             match command {
-                Command::Up { sandboxes, .. } | Command::AddNode { sandboxes, .. } => {
+                Command::AddNode { sandboxes, .. } => {
                     assert_eq!(sandboxes, Some(0));
                 }
                 _ => panic!("expected launch command"),

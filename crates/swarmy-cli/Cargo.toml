@@ -7,9 +7,9 @@ publish.workspace = true
 license.workspace = true
 
 [features]
-# Provisioning (EC2, SSM, S3, IAM) is opt-in so the default build skips the
-# EC2 provisioning SDKs. Laptop installs enable `remote` and `chat`; node
-# installs disable default features to omit terminal dependencies.
+# Provisioning (static-key bucket setup through the S3 SDK) is opt-in,
+# so the default build skips the S3 SDK. Laptop installs enable `remote`
+# and `chat`; node installs disable default features to omit terminal dependencies.
 default = ["chat"]
 chat = ["swarmy-chat/terminal", "dep:crossterm", "dep:unicode-width"]
 remote = ["swarmy-cloud/remote"]
@@ -21,7 +21,7 @@ workspace = true
 name = "swarmy"
 path = "src/main.rs"
 
-# The remote suite drives provisioning commands, so it needs the EC2 SDKs and
+# The remote suite drives provisioning commands, so it needs the provisioning client and
 # only builds when the `remote` feature is on. tests/remote_feature.rs covers
 # the binary built without provisioning support and always builds.
 [[test]]
