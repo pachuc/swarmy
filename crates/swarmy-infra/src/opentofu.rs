@@ -1,4 +1,4 @@
-//! Pinned OpenTofu release installation.
+//! Pinned `OpenTofu` release installation.
 use crate::{
     Error, Result,
     download::{self, Fetcher, Install},
@@ -51,6 +51,8 @@ pub struct Source {
 }
 impl Source {
     #[must_use]
+    /// # Panics
+    /// The hard-coded release base URL is always valid.
     pub fn pinned() -> Self {
         Self::new(DEFAULT_BASE_URL, VERSION)
             .expect("constant release base URL is valid")

@@ -14,7 +14,7 @@ fn fake_tofu(fixture: &Path, behaviour: &str, outputs: &str) -> PathBuf {
     let json = fixture.join("outputs.json");
     std::fs::write(&json, outputs).unwrap();
     let body = format!(
-        r##"#!/bin/sh
+        r#"#!/bin/sh
 {{
   printf 'cwd=%s\n' "$(pwd -P)"
   for a in "$@"; do printf 'arg=%s\n' "$a"; done
@@ -22,7 +22,7 @@ fn fake_tofu(fixture: &Path, behaviour: &str, outputs: &str) -> PathBuf {
   printf 'end\n'
 }} >> '{}'
 {}
-"##,
+"#,
         record.display(),
         behaviour.replace("{outputs}", &json.display().to_string())
     );
@@ -89,6 +89,50 @@ fn module() -> [ModuleFile<'static>; 2] {
         },
     ]
 }
+fn assert_environment(call: &Invocation, cache: &Path) {
+    assert_eq!(call.env.get("HCLOUD_TOKEN").unwrap(), SECRET);
+    assert_eq!(call.env.get("TF_IN_AUTOMATION").unwrap(), "1");
+    assert_eq!(call.env.get("TF_INPUT").unwrap(), "0");
+    assert_eq!(
+        call.env.get("TF_PLUGIN_CACHE_DIR").unwrap(),
+        &cache.join("tofu/plugins").to_string_lossy()
+    );
+    assert!(!call.env.contains_key("CARGO_MANIFEST_DIR"));
+    for key in call.env.keys() {
+        assert!(
+            !key.starts_with("CARGO")
+                && !key.starts_with("RUST")
+                && !key.starts_with("TF_CLI_ARGS")
+        );
+        assert!(
+            [
+                "PATH",
+                "HOME",
+                "TMPDIR",
+                "LANG",
+                "LC_ALL",
+                "SSL_CERT_FILE",
+                "SSL_CERT_DIR",
+                "HTTPS_PROXY",
+                "https_proxy",
+                "HTTP_PROXY",
+                "http_proxy",
+                "NO_PROXY",
+                "no_proxy",
+                "TF_IN_AUTOMATION",
+                "TF_INPUT",
+                "TF_PLUGIN_CACHE_DIR",
+                "HCLOUD_TOKEN",
+                "PWD",
+                "OLDPWD",
+                "SHLVL",
+                "_"
+            ]
+            .contains(&key.as_str()),
+            "{key}"
+        );
+    }
+}
 #[tokio::test]
 async fn argument_sequence_and_environment_passing() {
     let fixture = tempfile::tempdir().unwrap();
@@ -144,48 +188,7 @@ async fn argument_sequence_and_environment_passing() {
             call.cwd,
             work.path().canonicalize().unwrap().to_string_lossy()
         );
-        assert_eq!(call.env.get("HCLOUD_TOKEN").unwrap(), SECRET);
-        assert_eq!(call.env.get("TF_IN_AUTOMATION").unwrap(), "1");
-        assert_eq!(call.env.get("TF_INPUT").unwrap(), "0");
-        assert_eq!(
-            call.env.get("TF_PLUGIN_CACHE_DIR").unwrap(),
-            &cache.path().join("tofu/plugins").to_string_lossy()
-        );
-        assert!(!call.env.contains_key("CARGO_MANIFEST_DIR"));
-        for key in call.env.keys() {
-            assert!(
-                !key.starts_with("CARGO")
-                    && !key.starts_with("RUST")
-                    && !key.starts_with("TF_CLI_ARGS")
-            );
-            assert!(
-                [
-                    "PATH",
-                    "HOME",
-                    "TMPDIR",
-                    "LANG",
-                    "LC_ALL",
-                    "SSL_CERT_FILE",
-                    "SSL_CERT_DIR",
-                    "HTTPS_PROXY",
-                    "https_proxy",
-                    "HTTP_PROXY",
-                    "http_proxy",
-                    "NO_PROXY",
-                    "no_proxy",
-                    "TF_IN_AUTOMATION",
-                    "TF_INPUT",
-                    "TF_PLUGIN_CACHE_DIR",
-                    "HCLOUD_TOKEN",
-                    "PWD",
-                    "OLDPWD",
-                    "SHLVL",
-                    "_"
-                ]
-                .contains(&key.as_str()),
-                "{key}"
-            );
-        }
+        assert_environment(call, cache.path());
     }
     assert!(cache.path().join("tofu/plugins").is_dir());
     let plan0 = Tofu::from_binary(
@@ -204,6 +207,21 @@ async fn argument_sequence_and_environment_passing() {
             .unwrap(),
         PlanOutcome::NoChanges
     );
+}
+fn walk(dir: &Path) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            walk(&path);
+        } else if path.is_file() {
+            assert!(
+                !std::fs::read(path)
+                    .unwrap()
+                    .windows(SECRET.len())
+                    .any(|w| w == SECRET.as_bytes())
+            );
+        }
+    }
 }
 #[tokio::test(flavor = "current_thread")]
 async fn no_credential_in_files_or_logs() {
@@ -248,21 +266,6 @@ async fn no_credential_in_files_or_logs() {
     workspace.apply().await.unwrap();
     workspace.outputs().await.unwrap();
     workspace.destroy().await.unwrap();
-    fn walk(dir: &Path) {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                walk(&path);
-            } else if path.is_file() {
-                assert!(
-                    !std::fs::read(path)
-                        .unwrap()
-                        .windows(SECRET.len())
-                        .any(|w| w == SECRET.as_bytes())
-                );
-            }
-        }
-    }
     walk(work.path());
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(

@@ -105,7 +105,7 @@ pub fn flat_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
     assert!(output.status.success(), "tar succeeds");
     output.stdout
 }
-/// Serve a flat OpenTofu release fixture.
+/// Serve a flat `OpenTofu` release fixture.
 /// # Panics
 /// Panics if temporary files or tar fail.
 #[must_use]

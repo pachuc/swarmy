@@ -1,5 +1,5 @@
-//! Verified OpenTofu downloads and per-swarm execution. Cloud credentials reach
-//! OpenTofu only through its process environment, never through module files.
+//! Verified `OpenTofu` downloads and per-swarm execution. Cloud credentials reach
+//! `OpenTofu` only through its process environment, never through module files.
 pub mod contract;
 pub mod download;
 mod error;

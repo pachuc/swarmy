@@ -265,7 +265,7 @@ impl Workspace<'_> {
             source,
         })?;
         let code = output.status.code();
-        if !output.status.success() && !(matches!(sub, Subcommand::Plan) && code == Some(2)) {
+        if !(output.status.success() || matches!(sub, Subcommand::Plan) && code == Some(2)) {
             return Err(Error::Failed {
                 command: sub.name(),
                 dir: self.dir.clone(),
