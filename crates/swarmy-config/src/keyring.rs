@@ -29,7 +29,7 @@ impl Keyring {
     /// `~/.local/share/swarmy`).
     /// # Errors
     /// Fails without `SWARMY_KEYRING` and without an absolute HOME or
-    /// XDG_DATA_HOME, or when one of those is not UTF-8.
+    /// `XDG_DATA_HOME`, or when one of those is not UTF-8.
     pub fn path() -> Result<PathBuf, Error> {
         Ok(Self::location()?.0)
     }
