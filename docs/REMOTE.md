@@ -383,7 +383,7 @@ instance role or static keys.
 ```sh
 swarmy remote up demo --bucket NAME --s3-endpoint https://objects.example.invalid \
   --s3-region eu-west-1 --s3-prefix runs/team \
-  --s3-access-key KEY --s3-secret-file ~/.swarmy/demo-s3-secret
+  --s3-access-key KEY --s3-secret-file ~/.local/share/swarmy/demo-s3-secret
 ```
 
 The secret key comes from `--s3-secret-file` (a file readable only by its
@@ -452,7 +452,7 @@ pull request.
 ```sh
 cargo run --locked -p swarmy-volume --example s3-compat-probe -- \
   --endpoint https://objects.example.invalid --region eu-west-1 \
-  --bucket NAME --access-key KEY --secret-file ~/.swarmy/demo-s3-secret
+  --bucket NAME --access-key KEY --secret-file ~/.local/share/swarmy/demo-s3-secret
 ```
 
 Coordinates fall back to `SWARMY_S3_ENDPOINT`, `SWARMY_S3_REGION`,
@@ -778,8 +778,10 @@ the laptop is disconnected.
 
 `swarmy remote connect NAME` reads `<state_dir>/remote/NAME.json`, starts an
 SSH control master, and writes `NAME.profile.json` beside it. Its record lives
-in `<state_dir>/remote/NAME.tunnel/`. `state_dir` defaults to the discovered project's `.swarmy` directory; `SWARMY_STATE_DIR`
-can select another directory. Provisioning and tunnel commands share the
+in `<state_dir>/remote/NAME.tunnel/`. `state_dir` defaults to the discovered
+project's `.swarmy` directory, or `~/.local/state/swarmy`
+(`$XDG_STATE_HOME/swarmy`) without a project file.
+`SWARMY_STATE_DIR` can select another directory. Provisioning and tunnel commands share the
 `swarmy_config::RemoteNode` JSON contract.
 
 ### Existing hosts
@@ -996,6 +998,8 @@ For a ChatGPT gateway, use `swarmy remote up demo --services node
 --copy-credential`. This explicit flag acknowledges that the configured
 `credential_file` leaves the laptop. A warning precedes transfer. SSH sends the
 contents on stdin, and `/etc/swarmy/auth.json` is owned by ubuntu with mode 0600.
+The cluster keyring goes to `~<service user>/.local/share/swarmy/keyring`
+(mode 0600), where the node's services look for it.
 The development source copy at `source/` excludes the configured credential path as well as
 `.swarmy`, `.dev`, and environment files. Without the flag a ChatGPT node launch
 fails before creating resources. Do not run a laptop gateway that refreshes the

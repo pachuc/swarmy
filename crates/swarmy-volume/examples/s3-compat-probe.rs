@@ -21,7 +21,7 @@
 //! cargo run --locked -p swarmy-volume --example s3-compat-probe
 //! cargo run --locked -p swarmy-volume --example s3-compat-probe -- \
 //!   --endpoint https://objects.example.invalid --region eu-west-1 \
-//!   --bucket NAME --access-key KEY --secret-file ~/.swarmy/demo-s3-secret
+//!   --bucket NAME --access-key KEY --secret-file ~/.local/share/swarmy/demo-s3-secret
 //! ```
 use std::collections::HashSet;
 use std::path::PathBuf;

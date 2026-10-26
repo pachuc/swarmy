@@ -5,3 +5,5 @@
 .swarmy/
 
 __pycache__/
+
+/infra/**/.terraform/

@@ -5,6 +5,7 @@ mod bench_command;
 mod client_bench;
 use swarmy_chat::client_conversation;
 mod client_commands;
+mod cloud_command;
 mod core_command;
 mod cost_command;
 mod dev;
@@ -117,6 +118,11 @@ enum Command {
         #[command(flatten)]
         args: cost_command::Args,
     },
+    /// Manage cloud API keys stored on this machine for creating swarm machines
+    Cloud {
+        #[command(subcommand)]
+        command: cloud_command::Command,
+    },
     /// Manage encrypted provider credentials
     Auth {
         /// Swarmy's credential file (never defaults to Codex's auth.json)
@@ -163,7 +169,7 @@ fn main() -> anyhow::Result<()> {
         .init();
     // One match owns every command and calls into its module. Each arm
     // connects on its own path, except the local `dev` supervisor and the
-    // `swarmy-auth` helpers which never touch the API.
+    // `swarmy-auth` helpers and cloud credentials which never touch the API.
     let runtime = tokio::runtime::Runtime::new()?;
     let json = cli.json;
     match cli.command {
@@ -176,6 +182,7 @@ fn main() -> anyhow::Result<()> {
         Command::Auth { command, auth_file } => {
             runtime.block_on(auth_command::run(command, auth_file, json))
         }
+        Command::Cloud { command } => cloud_command::run(command, json),
         Command::Session { command } => {
             runtime.block_on(api_commands::session_command(command, json))
         }

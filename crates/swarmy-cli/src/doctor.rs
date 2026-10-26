@@ -606,7 +606,7 @@ fn snapshot_checks(
             let available = if available.is_empty() { "none" } else { &available };
             Err(format!("{available}; unserved: {}", missing.join(", ")))
         },
-        "Inspect the gateway log for provider discovery errors (.dev/logs or ~/.swarmy/dev/logs locally; journalctl -u swarmy-gateway remotely); configure credentials and restart the gateway.",
+        "Inspect the gateway log for provider discovery errors (swarmy dev logs gateway: .swarmy/dev/logs in a project, ~/.local/state/swarmy/dev/logs otherwise; journalctl -u swarmy-gateway remotely); configure credentials and restart the gateway.",
     ));
     let mut rows = api_providers.map_or_else(
         || {

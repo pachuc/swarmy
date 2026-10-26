@@ -15,6 +15,7 @@
 #   make check-remote    remote-feature tests for swarmy-cloud and swarmy-cli
 #   make check-openapi   OpenAPI compatibility against origin/master
 #   make check-scripts   script and fixture tests
+#   make check-infra     OpenTofu fmt, validate, and mock-provider tests for every module in infra/modules (needs scripts/install-opentofu.sh)
 #   make check-advisories  cargo deny advisories (CI runs it on every pull request and on the weekly schedule)
 #   make uninstall       remove the installed swarmy binaries
 #   make release-dry-run  build and package one release target locally (client, linux x86_64 by default)
@@ -42,10 +43,10 @@ RELEASE_DIR ?= target/release-dist
 
 .PHONY: help install install-client install-core install-node dev-tools uninstall fdb-check models \
 	check check-lint check-deps check-workspace-tests check-e2e check-cli-session \
-	check-remote check-openapi check-scripts check-advisories release-package release-dry-run
+	check-remote check-openapi check-scripts check-infra check-advisories release-package release-dry-run
 
 help:
-	@sed -n '2,21p' Makefile | sed 's/^# \{0,1\}//'
+	@sed -n '2,22p' Makefile | sed 's/^# \{0,1\}//'
 
 fdb-check:
 	@if [ -z "$(FDB_LIB_DIR)" ]; then \
@@ -124,6 +125,9 @@ check-remote:
 check-openapi:
 	scripts/check-openapi-compat.sh origin/master
 
+check-infra:
+	scripts/check-infra.sh
+
 check-scripts:
 	scripts/test-scripts.sh
 
@@ -141,6 +145,7 @@ check:
 	$(MAKE) check-cli-session
 	$(MAKE) check-remote
 	$(MAKE) check-openapi
+	$(MAKE) check-infra
 	scripts/dev-stack.sh stop
 	$(MAKE) check-scripts
 

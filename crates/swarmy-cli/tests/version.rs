@@ -31,7 +31,7 @@ impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join("bin")).unwrap();
-        let stack = FakeStack::start(&root.path().join(".swarmy/stack"));
+        let stack = FakeStack::start(&root.path().join("data/swarmy/stack"));
         let fixture = Self { root, stack };
         fixture.core(swarmy_version::IDENTITY);
         fixture
@@ -63,8 +63,7 @@ exec /bin/sleep 600"
         command
             .args(args)
             .current_dir(self.root.path())
-            .env("HOME", self.root.path())
-            .env("XDG_CONFIG_HOME", self.root.path().join("config"))
+            .envs(swarmy_testkit::isolated_home(self.root.path()))
             .env(
                 "PATH",
                 format!("{}:/usr/bin:/bin", self.root.path().join("bin").display()),
@@ -126,7 +125,7 @@ fn stale_path_service_is_refused_before_starting_or_stopping_anything() {
         !fixture
             .root
             .path()
-            .join(".swarmy/dev/supervisor.pid")
+            .join("state/swarmy/dev/supervisor.pid")
             .exists()
     );
 }
@@ -142,6 +141,7 @@ fn override_starts_stale_path_service() {
 fn doctor_reports_each_identity_and_flags_stale_service() {
     let fixture = Fixture::new();
     // Avoid unrelated network probes: an invalid config still permits version checks.
+    fs::create_dir_all(fixture.root.path().join(".swarmy")).unwrap();
     fs::write(fixture.root.path().join(".swarmy/config.toml"), "invalid").unwrap();
     fixture.core("0.1.0 (stale)");
     let output = fixture.run(&["doctor", "--json"]);
@@ -163,10 +163,20 @@ fn doctor_reports_each_identity_and_flags_stale_service() {
     assert!(stdout.contains("fix swarmy-core:"), "{stdout}");
 }
 
+fn isolated_cli_command(path: &str, root: &Path) -> Command {
+    let mut command = Command::new(path);
+    command.envs(swarmy_testkit::isolated_home(root));
+    command
+}
+
 #[test]
 fn cli_reports_identity_in_text_and_json() {
+    let root = tempfile::tempdir().unwrap();
     for (name, path) in [("swarmy", CLI)] {
-        let output = Command::new(path).arg("--version").output().unwrap();
+        let output = isolated_cli_command(path, root.path())
+            .arg("--version")
+            .output()
+            .unwrap();
         assert!(output.status.success());
         assert_eq!(
             String::from_utf8(output.stdout).unwrap().trim(),
@@ -177,7 +187,10 @@ fn cli_reports_identity_in_text_and_json() {
             ["--json", "--version"],
             ["-V", "--json"],
         ] {
-            let output = Command::new(path).args(args).output().unwrap();
+            let output = isolated_cli_command(path, root.path())
+                .args(args)
+                .output()
+                .unwrap();
             assert!(output.status.success());
             let version: Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(version["binary"], name);
@@ -210,7 +223,7 @@ fn failed_version_probe_is_refused() {
 fn mismatch_keeps_existing_supervisor_running() {
     let fixture = Fixture::new();
     fixture.assert_started(false);
-    let pid_file = fixture.root.path().join(".swarmy/dev/supervisor.pid");
+    let pid_file = fixture.root.path().join("state/swarmy/dev/supervisor.pid");
     let before = fs::read(&pid_file).unwrap();
     fixture.core("0.0.1 (old)");
     let output = fixture.run(&["dev", "up"]);
@@ -224,7 +237,8 @@ fn mismatch_keeps_existing_supervisor_running() {
 
 #[test]
 fn version_release_prints_the_matching_tag() {
-    let output = Command::new(CLI)
+    let root = tempfile::tempdir().unwrap();
+    let output = isolated_cli_command(CLI, root.path())
         .args(["version", "--release"])
         .output()
         .unwrap();
@@ -233,7 +247,7 @@ fn version_release_prints_the_matching_tag() {
         String::from_utf8(output.stdout).unwrap().trim(),
         format!("v{}", swarmy_version::VERSION)
     );
-    let output = Command::new(CLI)
+    let output = isolated_cli_command(CLI, root.path())
         .args(["--json", "version", "--release"])
         .output()
         .unwrap();

@@ -72,14 +72,15 @@ pub(crate) enum DevService {
 struct Layout {
     /// File dev up creates or updates.
     config: PathBuf,
-    /// Anchor for relative paths and services' cwd.
+    /// Anchor for relative paths and services' cwd: the project, the
+    /// checkout, or the user config directory.
     root: PathBuf,
-    /// Resolved state directory containing dev/ and core/.
-    state_dir: PathBuf,
-    /// Supervised service state under `state_dir/dev`.
+    /// Supervised service state, `<state_dir>/dev`: pids, logs, lock.
     state: PathBuf,
     /// Backing stack directory passed as `SWARMY_DEV_DIR`.
     stack: PathBuf,
+    /// HOME, XDG and dev variables this layout was resolved from.
+    environment: BTreeMap<String, String>,
 }
 
 impl Layout {
@@ -89,6 +90,9 @@ impl Layout {
         let environment = [
             "HOME",
             "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+            "XDG_CACHE_HOME",
             "SWARMY_DEV_DIR",
             "SWARMY_STATE_DIR",
         ]
@@ -109,49 +113,62 @@ impl Layout {
             .map(Path::canonicalize)
             .transpose()?;
         let found = loaded.path.is_some();
+        let project = loaded
+            .path
+            .as_deref()
+            .and_then(swarmy_config::project_root)
+            .is_some();
+        let dirs = || swarmy_config::paths::Dirs::from_env(environment);
         let (config, root) = if let Some(path) = loaded.path {
             (path, loaded.root)
         } else if let Some(repo) = &repo {
             (repo.join(".swarmy/config.toml"), repo.clone())
         } else {
             let config = Settings::user_config_path(environment).context(
-                "set HOME (or XDG_CONFIG_HOME), or run swarmy dev inside a checkout or a directory with .swarmy/config.toml",
+                "set HOME (or XDG_CONFIG_HOME) to an absolute path, or run swarmy dev inside a checkout or a directory with .swarmy/config.toml",
             )?;
-            let home = environment
-                .get("HOME")
-                .context("set HOME for swarmy dev state")?;
-            (config, PathBuf::from(home))
+            let root = config
+                .parent()
+                .context("the user config path has no directory")?
+                .to_owned();
+            (config, root)
         };
         let state_dir = if found || environment.contains_key("SWARMY_STATE_DIR") {
             loaded.settings.state_dir
+        } else if repo.is_some() {
+            root.join(".swarmy")
         } else {
-            root.join(Settings::default().state_dir)
+            dirs()?.state
         };
         let state_dir = if state_dir.is_absolute() {
             state_dir
         } else {
             root.join(state_dir)
         };
-        let stack = environment
+        let stack = match environment
             .get("SWARMY_DEV_DIR")
             .filter(|dir| !dir.is_empty())
-            .map_or_else(
-                || repo.map_or_else(|| state_dir.join("stack"), |repo| repo.join(".dev")),
-                |dir| {
-                    let path = PathBuf::from(dir);
-                    if path.is_absolute() {
-                        path
-                    } else {
-                        cwd.join(path)
-                    }
-                },
-            );
+        {
+            Some(dir) => {
+                let path = PathBuf::from(dir);
+                if path.is_absolute() {
+                    path
+                } else {
+                    cwd.join(path)
+                }
+            }
+            None => match &repo {
+                Some(repo) => repo.join(".dev"),
+                None if project => state_dir.join("stack"),
+                None => dirs()?.data.join("stack"),
+            },
+        };
         Ok(Self {
             config,
             root,
             state: state_dir.join("dev"),
-            state_dir,
             stack,
+            environment: environment.clone(),
         })
     }
 
@@ -296,13 +313,17 @@ pub(crate) struct ResolvedCore {
     pub(crate) source: &'static str,
     pub(crate) fix: String,
 }
-/// `<state_dir>/core` for the layout `swarmy dev` uses.
+/// `core/` in swarmy's XDG cache directory: downloaded swarmy-core releases.
 pub(crate) fn core_cache() -> Result<PathBuf> {
-    Ok(Layout::discover()?.state_dir.join("core"))
+    Ok(swarmy_config::paths::Dirs::from_process()?
+        .cache
+        .join("core"))
 }
-/// `<state_dir>/images`, the release image download cache.
+/// `images/` in swarmy's XDG cache directory: release base-image downloads.
 pub(crate) fn image_cache() -> Result<PathBuf> {
-    Ok(Layout::discover()?.state_dir.join("images"))
+    Ok(swarmy_config::paths::Dirs::from_process()?
+        .cache
+        .join("images"))
 }
 /// Set `selection.default_image` in CONFIG, keeping the rest of the file.
 pub(crate) fn set_default_image(config: &Path, image: &str) -> Result<()> {
@@ -430,7 +451,7 @@ async fn up(
     if remote.is_none() && !no_image {
         match settings.selection.default_image.as_deref() {
             None => match crate::image::pull_release_image(
-                &layout.state_dir.join("images"),
+                &image_cache()?,
                 swarmy_version::RELEASE_TAG,
                 swarmy_cloud::release::Target::host()?,
                 false,
@@ -582,10 +603,18 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
         let exports = swarmy_config::parse_exports(&fs::read_to_string(layout.stack.join("env"))?)?;
         settings.apply_environment(&exports)?;
     }
-    if settings.selection.credential_file.as_os_str().is_empty() {
-        settings.selection.credential_file = std::env::var_os("HOME")
-            .map_or_else(|| layout.root.clone(), PathBuf::from)
-            .join(".swarmy/auth.json");
+    settings.fill_default_locations(
+        &layout.root,
+        swarmy_config::project_root(&layout.config).is_some(),
+        &layout.environment,
+    );
+    // The fake provider's files sit beside the service state, <state_dir>/dev.
+    let defaults = swarmy_config::Fake::default();
+    if settings.fake.script == defaults.script {
+        settings.fake.script = layout.state.join("fake.json");
+    }
+    if settings.fake.call_log == defaults.call_log {
+        settings.fake.call_log = layout.state.join("calls.log");
     }
     settings.resolve_paths(&layout.root);
     if settings.api.token.is_empty() {
@@ -860,7 +889,7 @@ mod layout_tests {
         assert_eq!(layout.stack, repo.join(".dev"));
     }
     #[test]
-    fn no_checkout_uses_user_config_and_home_state() {
+    fn no_checkout_uses_xdg_directories() {
         let temp = tempfile::tempdir().unwrap();
         let cwd = temp.path().join("cwd");
         let home = temp.path().join("home");
@@ -870,17 +899,25 @@ mod layout_tests {
         };
         let layout = make(&env);
         assert_eq!(layout.config, home.join(".config/swarmy/config.toml"));
-        assert_eq!(layout.root, home);
-        assert_eq!(layout.state_dir, home.join(".swarmy"));
-        assert_eq!(layout.stack, home.join(".swarmy/stack"));
+        assert_eq!(layout.root, home.join(".config/swarmy"));
+        assert_eq!(layout.state, home.join(".local/state/swarmy/dev"));
+        assert_eq!(layout.stack, home.join(".local/share/swarmy/stack"));
         env.insert(
             "XDG_CONFIG_HOME".into(),
             temp.path().join("xdg").display().to_string(),
         );
-        assert_eq!(
-            make(&env).config,
-            temp.path().join("xdg/swarmy/config.toml")
-        );
+        for (key, dir) in [
+            ("XDG_DATA_HOME", "data"),
+            ("XDG_STATE_HOME", "state"),
+            ("XDG_CACHE_HOME", "cache"),
+        ] {
+            env.insert(key.into(), temp.path().join(dir).display().to_string());
+        }
+        let layout = make(&env);
+        assert_eq!(layout.config, temp.path().join("xdg/swarmy/config.toml"));
+        assert_eq!(layout.root, temp.path().join("xdg/swarmy"));
+        assert_eq!(layout.state, temp.path().join("state/swarmy/dev"));
+        assert_eq!(layout.stack, temp.path().join("data/swarmy/stack"));
     }
     #[test]
     fn discovered_config_wins_and_supplies_state_dir() {
@@ -895,7 +932,39 @@ mod layout_tests {
         )
         .unwrap();
         assert_eq!(layout.root, root);
-        assert_eq!(layout.state_dir, state);
+        assert_eq!(layout.state, state.join("dev"));
+        assert_eq!(layout.stack, state.join("stack"));
+    }
+    #[test]
+    fn user_config_keeps_the_stack_in_the_data_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let xdg = temp.path().join("config");
+        let root = xdg.join("swarmy");
+        let custom = temp.path().join("custom");
+        let env = BTreeMap::from([
+            ("XDG_CONFIG_HOME".into(), xdg.display().to_string()),
+            (
+                "XDG_DATA_HOME".into(),
+                temp.path().join("data").display().to_string(),
+            ),
+            (
+                "XDG_STATE_HOME".into(),
+                temp.path().join("state").display().to_string(),
+            ),
+            (
+                "XDG_CACHE_HOME".into(),
+                temp.path().join("cache").display().to_string(),
+            ),
+        ]);
+        let layout = Layout::resolve(
+            loaded(Some(root.join("config.toml")), &root, custom.clone()),
+            temp.path(),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(layout.root, root);
+        assert_eq!(layout.state, custom.join("dev"));
+        assert_eq!(layout.stack, temp.path().join("data/swarmy/stack"));
     }
     #[test]
     fn state_dir_env_applies_without_a_file() {
@@ -909,8 +978,8 @@ mod layout_tests {
         assert_eq!(
             Layout::resolve(loaded(None, cwd, state.clone()), cwd, &env)
                 .unwrap()
-                .state_dir,
-            state
+                .state,
+            state.join("dev")
         );
     }
     #[test]
@@ -940,7 +1009,7 @@ mod layout_tests {
             Layout::resolve(loaded(None, cwd, cwd.join(".swarmy")), cwd, &env)
                 .unwrap()
                 .stack,
-            cwd.join(".swarmy/stack")
+            cwd.join(".local/share/swarmy/stack")
         );
     }
     #[test]

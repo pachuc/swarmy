@@ -24,8 +24,7 @@ fn run(home: &std::path::Path, args: &[&str], release: Option<&str>) -> Output {
     command
         .args(args)
         .current_dir(home)
-        .env("HOME", home)
-        .env("XDG_CONFIG_HOME", home.join("config"))
+        .envs(swarmy_testkit::isolated_home(home))
         .output()
         .unwrap()
 }
@@ -101,11 +100,13 @@ fn image_pull_verifies_uploads_sparse_and_sets_default() {
         settings.selection.default_image.as_deref(),
         Some(format!("base-ubuntu:{}", swarmy_version::RELEASE_TAG).as_str())
     );
+    assert!(home.path().join("cache/swarmy/images").is_dir());
+    assert!(!home.path().join(".swarmy").join("images").exists());
     assert!(
         !home
             .path()
             .join(format!(
-                ".swarmy/images/{}/swarmy-image-base-ubuntu-{}",
+                "cache/swarmy/images/{}/swarmy-image-base-ubuntu-{}",
                 swarmy_version::RELEASE_TAG,
                 host_target()
             ))

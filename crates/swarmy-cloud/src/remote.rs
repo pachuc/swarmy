@@ -231,7 +231,9 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
     // The base settings are enough here: provisioning does not use the selected tunnel profile.
     let loaded = Settings::load_base()?;
     let state_dir = PathBuf::from(&loaded.settings.state_dir);
-    let cache = state_dir.join("core");
+    let cache = swarmy_config::paths::Dirs::from_process()?
+        .cache
+        .join("core");
     let state = State::open(&state_dir.join("remote"))?;
     match command {
         Command::Up { .. } => {
