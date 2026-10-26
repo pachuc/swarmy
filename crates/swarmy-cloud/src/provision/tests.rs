@@ -1,5 +1,6 @@
 #![deny(clippy::disallowed_methods)]
 use super::*;
+use std::future::Future;
 use std::sync::Mutex;
 struct FakeHost {
     calls: Mutex<Vec<String>>,
@@ -22,51 +23,82 @@ impl FakeHost {
     }
 }
 impl SwarmHost for FakeHost {
-    async fn adopt_key(&self, node: &RemoteNode, source: &Path) -> Result<()> {
-        self.push(format!("adopt {}", node.name));
-        swarmy_config::write_private(&node.key_path, &fs::read(source)?)?;
-        Ok(())
+    fn adopt_key(&self, node: &RemoteNode, source: &Path) -> impl Future<Output = Result<()>> {
+        std::future::ready((|| {
+            self.push(format!("adopt {}", node.name));
+            swarmy_config::write_private(&node.key_path, &fs::read(source)?)?;
+            Ok(())
+        })())
     }
-    async fn provision(&self, node: &RemoteNode, primary: Option<&RemoteNode>) -> Result<String> {
-        self.push(format!(
-            "provision {} primary={}",
-            node.name,
-            primary.map_or("none", |p| &p.name)
-        ));
-        if self.fail_provision.lock().unwrap().as_deref() == Some(&node.name) {
-            return Err(Error::other("provision failed"));
-        }
-        Ok(node.public_ip.clone())
+    fn provision(
+        &self,
+        node: &RemoteNode,
+        primary: Option<&RemoteNode>,
+    ) -> impl Future<Output = Result<String>> {
+        std::future::ready((|| {
+            self.push(format!(
+                "provision {} primary={}",
+                node.name,
+                primary.map_or("none", |p| &p.name)
+            ));
+            if self.fail_provision.lock().unwrap().as_deref() == Some(&node.name) {
+                return Err(Error::other("provision failed"));
+            }
+            Ok(node.public_ip.clone())
+        })())
     }
-    async fn services(&self, node: &RemoteNode, _: &str, _: &services::Options<'_>) -> Result<()> {
-        self.push(format!("services {}", node.name));
-        Ok(())
+    fn services(
+        &self,
+        node: &RemoteNode,
+        _: &str,
+        _: &services::Options<'_>,
+    ) -> impl Future<Output = Result<()>> {
+        std::future::ready((|| {
+            self.push(format!("services {}", node.name));
+            Ok(())
+        })())
     }
-    async fn api_token(&self, node: &RemoteNode, _: &str) -> Result<String> {
-        self.push(format!("token {}", node.name));
-        Ok("node-token".into())
+    fn api_token(&self, node: &RemoteNode, _: &str) -> impl Future<Output = Result<String>> {
+        std::future::ready((|| {
+            self.push(format!("token {}", node.name));
+            Ok("node-token".into())
+        })())
     }
-    async fn build_image(&self, node: &RemoteNode, _: &str, _: &Path, tag: &str) -> Result<()> {
-        self.push(format!("image {} {tag}", node.name));
-        Ok(())
+    fn build_image(
+        &self,
+        node: &RemoteNode,
+        _: &str,
+        _: &Path,
+        tag: &str,
+    ) -> impl Future<Output = Result<()>> {
+        std::future::ready((|| {
+            self.push(format!("image {} {tag}", node.name));
+            Ok(())
+        })())
     }
-    async fn decommission(&self, node: &RemoteNode) -> Result<()> {
-        self.push(format!("decommission {}", node.name));
-        if self.fail_decommission.lock().unwrap().as_deref() == Some(&node.name) {
-            return Err(Error::other("decommission failed"));
-        }
-        Ok(())
+    fn decommission(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
+        std::future::ready((|| {
+            self.push(format!("decommission {}", node.name));
+            if self.fail_decommission.lock().unwrap().as_deref() == Some(&node.name) {
+                return Err(Error::other("decommission failed"));
+            }
+            Ok(())
+        })())
     }
-    async fn stop(&self, node: &RemoteNode) -> Result<()> {
-        self.push(format!("stop {}", node.name));
-        Ok(())
+    fn stop(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
+        std::future::ready((|| {
+            self.push(format!("stop {}", node.name));
+            Ok(())
+        })())
     }
-    async fn start(&self, node: &RemoteNode) -> Result<()> {
-        self.push(format!("start {}", node.name));
-        Ok(())
+    fn start(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
+        std::future::ready((|| {
+            self.push(format!("start {}", node.name));
+            Ok(())
+        })())
     }
-    async fn reachable(&self, _: &RemoteNode) -> bool {
-        true
+    fn reachable(&self, _: &RemoteNode) -> impl Future<Output = bool> {
+        std::future::ready((|| true)())
     }
 }
 fn fixture() -> (tempfile::TempDir, Registry, SwarmSpec) {

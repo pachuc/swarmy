@@ -68,7 +68,9 @@ pub fn existing_sources(spec: &SwarmSpec, swarm_dir: &Path) -> Result<Vec<HostSo
 /// # Errors
 /// Rejects unsupported placements and invalid hosts.
 pub fn plan(spec: &SwarmSpec, sources: Vec<HostSource>) -> Result<Vec<Planned>> {
-    plan::plan(spec, &sources)
+    let planned = plan::plan(spec, &sources)?;
+    drop(sources);
+    Ok(planned)
 }
 
 pub struct UpRequest<'a> {
