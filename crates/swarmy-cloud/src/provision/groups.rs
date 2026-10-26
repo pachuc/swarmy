@@ -316,6 +316,18 @@ fn hosts_from(
     key: &Path,
     previous: &[RecordedHost],
 ) -> Result<Vec<RecordedHost>> {
+    for old in previous.iter().filter(|host| host.provisioned) {
+        if !outputs
+            .machines
+            .iter()
+            .any(|machine| machine.name == old.name)
+        {
+            return Err(Error::other(format!(
+                "group {group}: provisioned host {} disappeared from OpenTofu outputs; restore the previous machine before retrying",
+                old.name
+            )));
+        }
+    }
     outputs.machines.iter().map(|m| {
         let public = m.public_ipv4.ok_or_else(|| Error::other(format!("group {group}: machine {} has no public IPv4 address; swarmy provisions over IPv4", m.name)))?;
         let private_address = match m.private_ip {

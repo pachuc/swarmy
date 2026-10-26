@@ -1,6 +1,8 @@
 #![deny(clippy::disallowed_methods)]
 use super::*;
-use crate::provision::{UpRequest, decommission_swarm_with, provision_swarm_with, tests::FakeHost};
+use crate::provision::{
+    UpRequest, decommission_swarm_with, existing_sources, provision_swarm_with, tests::FakeHost,
+};
 use std::os::unix::fs::PermissionsExt;
 use swarmy_config::{Settings, cloud::CloudCredential, paths::Dirs};
 
@@ -67,6 +69,8 @@ case "$1" in
       printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":null,"ssh_user":"root"}}]}}}}\n'
     elif test "$group" = control; then
       printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":"10.0.0.10","ssh_user":"root"}}]}},"network_id":{{"value":"4711"}},"bucket":{{"value":{{"endpoint":"https://objects.example.com","name":"%s","region":"fsn1"}}}}}}\n' "$bucket"
+    elif test -f '{fixture}/workers-renamed'; then
+      printf '{{"machines":{{"value":[{{"name":"fleet-workers-renamed","public_ipv4":"203.0.113.11","public_ipv6":null,"private_ip":"10.0.0.11","ssh_user":"root"}},{{"name":"fleet-workers-2","public_ipv4":"203.0.113.12","public_ipv6":null,"private_ip":"10.0.0.12","ssh_user":"root"}}]}},"network_id":{{"value":null}}}}\n'
     elif test -f '{fixture}/workers-no-private'; then
       printf '{{"machines":{{"value":[{{"name":"fleet-workers-1","public_ipv4":"203.0.113.11","public_ipv6":null,"private_ip":null,"ssh_user":"root"}}]}}}}\n'
     else
@@ -105,6 +109,27 @@ esac
             credentials,
         }
     }
+    fn add_existing_group(&mut self, name: &str) {
+        let key = self.temp.path().join(format!("{name}-bootstrap"));
+        fs::write(&key, "test-key").unwrap();
+        let mut group = self.spec.groups["workers"].clone();
+        group.module = Module::Existing;
+        group.size = None;
+        group.location = None;
+        group.count = None;
+        group.local_storage = Some("dir:/srv/swarmy-local".into());
+        group.hosts = vec![swarmy_config::swarm::HostSpec {
+            address: "203.0.113.21".into(),
+            private_address: Some("10.0.0.21".into()),
+            ssh_user: "root".into(),
+            ssh_key: key,
+        }];
+        self.spec.groups.insert(name.into(), group);
+        if !self.spec.placement.nodes.contains(&name.to_owned()) {
+            self.spec.placement.nodes.push(name.into());
+        }
+        self.registry.write_spec(&self.spec).unwrap();
+    }
     fn machines(&self) -> MachineGroups<'_> {
         MachineGroups {
             tofu: &self.tofu,
@@ -124,7 +149,10 @@ esac
                 UpRequest {
                     registry: &self.registry,
                     spec: &self.spec,
-                    sources: Vec::new(),
+                    sources: existing_sources(
+                        &self.spec,
+                        &self.registry.swarm_dir(&self.spec.name)?,
+                    )?,
                     settings: &settings,
                     copy_credential: false,
                     recipe: None,
@@ -209,6 +237,120 @@ async fn cloud_swarm_applies_in_order_and_provisions_through_the_shared_path() {
     }
     assert!(!f.log().contains("env fake"));
     assert!(f.log().contains("AWS_SHARED_CREDENTIALS_FILE=/dev/null"));
+}
+
+#[tokio::test]
+async fn mixed_cloud_stack_with_existing_nodes() {
+    let mut f = Fixture::new();
+    f.add_existing_group("workers");
+    let host = FakeHost::new();
+    let reports = f.up(&host).await.unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(
+        f.log()
+            .lines()
+            .filter(|line| line.starts_with("call "))
+            .collect::<Vec<_>>(),
+        [
+            "call control init",
+            "call control apply",
+            "call control output"
+        ]
+    );
+    let calls = host.calls();
+    assert!(calls.contains(&"ready fleet-control-1".into()));
+    assert!(!calls.contains(&"ready fleet-workers-1".into()));
+    assert!(calls.contains(&"adopt fleet-workers-1".into()));
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.starts_with("provision fleet-control-1 "))
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.starts_with("provision fleet-workers-1 "))
+    );
+    let record = f.registry.read_record("fleet").unwrap().unwrap();
+    assert!(record.hosts["control"][0].provisioned);
+    assert!(record.hosts["workers"][0].provisioned);
+    assert_eq!(
+        fs::read(&record.hosts["workers"][0].ssh_key).unwrap(),
+        b"test-key"
+    );
+    assert!(
+        !f.registry
+            .swarm_dir("fleet")
+            .unwrap()
+            .join("tofu/workers")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn down_cleans_existing_hosts_and_destroys_groups_in_reverse() {
+    let mut f = Fixture::new();
+    f.add_existing_group("existing");
+    let host = FakeHost::new();
+    f.up(&host).await.unwrap();
+    let reports = decommission_swarm_with(&host, &f.registry, &f.spec, Some(f.machines()))
+        .await
+        .unwrap();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].name, "fleet-existing-1");
+    let calls = host.calls();
+    assert!(calls.contains(&"decommission fleet-existing-1".into()));
+    assert!(
+        !calls
+            .iter()
+            .any(|call| call == "decommission fleet-control-1")
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|call| call == "decommission fleet-workers-1")
+    );
+    assert_eq!(
+        f.log()
+            .lines()
+            .filter(|line| line.contains(" destroy"))
+            .collect::<Vec<_>>(),
+        ["call workers destroy", "call control destroy"]
+    );
+    assert!(f.registry.read_record("fleet").unwrap().is_none());
+    assert!(!f.registry.swarm_dir("fleet").unwrap().exists());
+}
+
+#[tokio::test]
+async fn down_destroys_orphan_group_before_groups_in_the_spec() {
+    let f = Fixture::new();
+    let host = FakeHost::new();
+    f.up(&host).await.unwrap();
+    let root = f.registry.swarm_dir("fleet").unwrap().join("tofu");
+    let orphan = root.join("orphan");
+    fs::create_dir(&orphan).unwrap();
+    for entry in fs::read_dir(root.join("workers")).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().is_file() {
+            fs::copy(entry.path(), orphan.join(entry.file_name())).unwrap();
+        }
+    }
+    assert!(orphan.join("terraform.tfstate").exists());
+    decommission_swarm_with(&host, &f.registry, &f.spec, Some(f.machines()))
+        .await
+        .unwrap();
+    assert_eq!(
+        f.log()
+            .lines()
+            .filter(|line| line.contains(" destroy"))
+            .collect::<Vec<_>>(),
+        [
+            "call orphan destroy",
+            "call workers destroy",
+            "call control destroy"
+        ]
+    );
+    assert!(f.registry.read_record("fleet").unwrap().is_none());
 }
 
 #[tokio::test]
@@ -303,6 +445,15 @@ async fn guards_run_before_any_tofu_call() {
         )
         .unwrap(),
     );
+    f.spec.groups.get_mut("workers").unwrap().module = Module::Path("relative/module".into());
+    let error = f.up(&host).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("module path relative/module must be absolute")
+    );
+    assert!(f.log().is_empty());
+    f.spec.groups.get_mut("workers").unwrap().module = Module::HetznerCloud;
     f.spec.groups.get_mut("workers").unwrap().count = Some(1);
     f.up(&host).await.unwrap();
     let prior_calls = f.log().lines().filter(|s| s.contains(" apply")).count();
@@ -366,6 +517,8 @@ async fn aws_receives_only_aws_credentials_and_no_bucket() {
     assert!(log.contains("AWS_CONFIG_FILE=/dev/null"));
     assert!(log.contains("AWS_EC2_METADATA_DISABLED=true"));
     assert!(log.contains("AWS_ACCESS_KEY_ID=aws-access-example"));
+    assert!(!log.contains("HCLOUD_TOKEN"));
+    assert!(!log.contains("MINIO_USER"));
     assert!(!log.contains("MINIO_PASSWORD"));
     assert_eq!(
         f.registry.read_record("fleet").unwrap().unwrap().hosts["control"][0].ssh_user,
@@ -455,6 +608,27 @@ async fn failed_destroy_keeps_remaining_hosts_recorded() {
         .await
         .unwrap();
     assert!(f.registry.read_record("fleet").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn changed_output_names_keep_previous_hosts_recorded() {
+    let f = Fixture::new();
+    let host = FakeHost::new();
+    f.up(&host).await.unwrap();
+    fs::write(f.temp.path().join("workers-renamed"), "").unwrap();
+    let error = f.up(&host).await.unwrap_err();
+    assert!(error.to_string().contains("fleet-workers-1"));
+    let record = f.registry.read_record("fleet").unwrap().unwrap();
+    assert!(
+        record.hosts["workers"]
+            .iter()
+            .any(|h| h.name == "fleet-workers-1" && h.provisioned)
+    );
+    assert!(
+        !record.hosts["workers"]
+            .iter()
+            .any(|h| h.name == "fleet-workers-renamed")
+    );
 }
 
 #[tokio::test]
