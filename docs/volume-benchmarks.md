@@ -1351,7 +1351,7 @@ swarmy chat --remote no-root-proof 01M2PBXXR5TCHDEST70BZ8QCJ0
 swarmy remote add-node no-root-proof
 ```
 
-The real ChatGPT flow is documented in [REMOTE.md](REMOTE.md#up-authenticate-and-chat).
+The real ChatGPT flow is documented in [swarms.md](swarms.md#model-provider-credentials).
 There was deliberately no ChatGPT credential in this run. The gateway used the
 existing scripted fake provider from `swarmy-gateway`, with `latency_ms = 30`
 and an indexed `responses` map in `.dev/remote-fake.json`. A response has the

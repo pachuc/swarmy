@@ -2,6 +2,8 @@
 
 `swarmy swarm create NAME --host ADDRESS` and `swarmy swarm up NAME` provision existing hosts over SSH. The opt-in `remote` feature supplies the S3 client for static-key swarm buckets. `swarmy-cloud` contains the object-storage and SSH boundaries; machine creation belongs to `swarmy-infra`.
 
+For user-facing setup and lifecycle, see [swarms.md](swarms.md).
+
 ## The interface
 
 ```rust

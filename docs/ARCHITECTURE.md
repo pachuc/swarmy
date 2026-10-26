@@ -1,8 +1,8 @@
 # Architecture
 
 This describes the shipped system, not a deployment promise. For planned work
-see [ROADMAP.md](ROADMAP.md); for local and remote operation see [DEV.md](DEV.md)
-and [REMOTE.md](REMOTE.md). Each section names its implementation entry points.
+see [ROADMAP.md](ROADMAP.md); for operating swarms see [swarms.md](swarms.md)
+and for checkout development see [DEV.md](DEV.md). Each section names its implementation entry points.
 
 ## Crate map and dependency direction
 
@@ -216,10 +216,11 @@ A local checkout starts FoundationDB, NATS and SeaweedFS with
 services and scheduler, worker, gateway and API processes; the sandbox node
 runs `swarmyd`, runc containers and the volume/NBD path
 ([remote-provision.sh](../scripts/remote-provision.sh),
-[swarmyd main](../crates/swarmyd/src/role.rs)). One machine can perform both
-roles. A client reaches a remote swarm's API through an on-demand SSH tunnel;
-provisioning and upgrade are CLI operations, not a Kubernetes controller
-([REMOTE.md](REMOTE.md), [cloud source](../crates/swarmy-cloud/src/lib.rs)).
+[swarmyd main](../crates/swarmyd/src/role.rs)). One machine can perform both roles. Groups supply machines: local, existing
+hosts, or OpenTofu modules run by `swarmy-infra`. Placement assigns stack,
+services and node roles. Provisioning uses the same SSH path for every group.
+Clients reach a remote API through an on-demand per-swarm SSH tunnel
+([swarms.md](swarms.md), [cloud source](../crates/swarmy-cloud/src/lib.rs)).
 
 The worker advances events and yields tool execution to placed sandboxes;
 the gateway resolves inference separately. The scheduler uses durable runnable

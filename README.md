@@ -22,6 +22,8 @@ and aarch64 are supported. The archive is checked against the release's
 SHA256SUMS, but releases are not signed. The default destination is
 `~/.local/bin`; the installer prints a PATH line if needed.
 
+### On this machine
+
 ```sh
 swarmy install-tools
 swarmy swarm create dev --local
@@ -30,23 +32,28 @@ ANTHROPIC_API_KEY=... swarmy auth set anthropic --from-env
 swarmy chat --provider anthropic
 ```
 
-`swarmy swarm create dev --local` writes `~/.config/swarmy/swarms/dev.toml`
-and makes `dev` current when none is selected. `swarmy swarm up dev` keeps its
-record and stack in `~/.local/share/swarmy/swarms/dev/`, and logs and pids
-in `~/.local/state/swarmy/swarms/dev/`. Downloads go to `~/.cache/swarmy/`.
-`swarmy swarm status dev`, `swarmy swarm logs dev`, `swarmy swarm stop dev`,
-and `swarmy chat` then work from any directory. On Linux x86-64, up downloads
-and registers the release base image and sets `default_image`. Chat needs no
-`--image`; tool-calling turns still need a sandbox node. Use `--no-image` to
-skip the download, or retry with `swarmy image pull base-ubuntu --set-default`
-and `swarmy swarm up dev`.
+`swarmy install-tools` supports Linux x86-64. Up uses the fake provider by default; configure credentials after up, then run `swarmy doctor` to check dependencies and connectivity. ChatGPT login needs the `swarmy-auth` helper from a source install; see [docs/providers.md](docs/providers.md).
 
-`swarmy install-tools` is Linux x86-64 only. `swarmy swarm up dev` defaults to
-the fake provider without credentials. Run `swarmy auth set` after `swarmy swarm up dev`:
-it stores the key in the cluster. ChatGPT sign-in (`swarmy auth login`) currently
-needs the `swarmy-auth` helper from a source install. See
-[docs/providers.md](docs/providers.md) for provider setup. Run `swarmy doctor`
-to check dependencies and connectivity.
+### On a server you own
+
+```sh
+swarmy swarm create box --host 203.0.113.10 --ssh-key ~/.ssh/id_ed25519 --local-storage dir:/srv/swarmy-local
+swarmy swarm up box
+swarmy --swarm box chat
+```
+
+### On Hetzner Cloud
+
+```sh
+swarmy cloud login hetzner-cloud
+swarmy cloud login hetzner-s3
+swarmy swarm create fleet --on hetzner-cloud --size cpx41 --nodes 1
+swarmy swarm up fleet --copy-credential
+swarmy --swarm fleet chat
+swarmy swarm down fleet --destroy
+```
+
+See [docs/swarms.md](docs/swarms.md) for swarm specs, target selection and lifecycle.
 
 ## Building from source
 

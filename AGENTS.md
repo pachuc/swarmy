@@ -61,7 +61,7 @@ measured numbers with raw samples.
   the checkout with no root (`docs/DEV.md`). `swarmy swarm create NAME --host …` and `swarmy swarm up NAME` provision
   machines already owned (Hetzner dedicated servers), optionally with an
   S3-compatible bucket and static keys; client commands reach them with
-  `--swarm NAME` through an on-demand SSH tunnel (`docs/REMOTE.md`).
+  `--swarm NAME` through an on-demand SSH tunnel (`docs/swarms.md` covers local, host and cloud swarms).
   EC2 launching was removed; cloud machines come from the OpenTofu modules in
   `infra/modules`. CI runs fmt, workspace tests
   against a live dev stack, pedantic clippy, and reduced chaos; root-only
@@ -484,7 +484,5 @@ master. The operator's method is in `docs/fleet-operator-handoff.md`
 
 1. Read this file and the relevant section of `docs/ARCHITECTURE.md`.
 2. Pick up work from the plan ([Where the plan lives](#where-the-plan-lives)).
-3. Local bring-up, remotes, and provider checks live in `docs/DEV.md`,
-   `docs/REMOTE.md`, and `docs/providers.md` and are not repeated here.
-   (Those commands change under the swarm-model goal; its docs task updates
-   those documents.)
+3. Swarm operation, checkout development and provider checks live in
+   `docs/swarms.md`, `docs/DEV.md` and `docs/providers.md`.

@@ -47,24 +47,8 @@ in `fleet.toml`, or 60 seconds if unset; `--timeout-seconds` overrides it.
 
 ### Choosing the target swarm
 
-Client commands choose their API in order: `--swarm NAME`, `SWARMY_SWARM`,
-the `SWARMY_API_URL` and `SWARMY_API_TOKEN` pair, then the current swarm.
-Without any target, the client explains how to list, use, or create a swarm.
-Configuration files never choose the client's API: `[api] url` and `token`
-tune local services. `swarmy swarm up NAME` records a local swarm's API, and `swarm create` makes the new swarm current when none is selected.
+See [Choosing the target swarm](swarms.md#choosing-the-target-swarm) for selection precedence, registration and defaults.
 
-Specs live under `$XDG_CONFIG_HOME/swarmy/swarms`, records under
-`$XDG_DATA_HOME/swarmy/swarms`, and the `current` file under
-`$XDG_STATE_HOME/swarmy` (with standard HOME-based XDG defaults).
-
-```sh
-swarmy swarm ls
-swarmy swarm show
-swarmy swarm use dev
-printf '%s' "$TOKEN" | swarmy swarm attach staging --url https://swarmy.example.test --token-stdin
-swarmy --swarm staging session ls
-swarmy swarm rm staging
-```
 
 Install the pinned backing services using the instructions below. With Rust and
 those binaries installed, run these commands from a clean checkout. The commands
@@ -116,55 +100,13 @@ It reloads configuration, so edits take effect on the next `up`. An unexpected
 service exit stops the other services; inspect the logs and run `up` again.
 PID records contain Linux process start times to guard against PID reuse.
 
-To run the backing services and swarmyd on another machine, see [remote node workflow](#remote-node-workflow).
+To run the backing services and swarmyd on another machine, see [swarms on other machines](#swarms-on-other-machines).
 
 ## Local swarms
 
-A local swarm runs FoundationDB, NATS, SeaweedFS, and the scheduler, worker,
-gateway, and API on this machine. Create it once, then use the same name to
-manage it. It does not run a sandbox node, so tool-calling turns still need a
-node. Ephemeral swarms delete their data on `down`; persistent swarms require
-`down --destroy` to delete data. `stop` and `start` preserve data.
+See [Swarms on this machine](swarms.md#swarms-on-this-machine) for creation, lifecycle and files. Inside a checkout, creation finds the first ancestor with `scripts/dev-stack.sh` and sets `stack_dir` to its `.dev`. This shares the stack with `scripts/dev-stack.sh` and `make check`. `--stack-dir PATH` overrides it; relative paths resolve against the current directory. Down stops but never deletes an explicit or detected `stack_dir`.
 
-```sh
-swarmy swarm create demo --local
-swarmy swarm up demo
-swarmy swarm status demo
-swarmy swarm logs demo worker
-swarmy swarm stop demo
-swarmy swarm start demo
-swarmy swarm down demo
-```
-
-The files follow XDG directories (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and
-`XDG_STATE_HOME`, with HOME-based defaults):
-
-| Path under swarmy's XDG root | Contents |
-|---|---|
-| config/swarms/NAME.toml | Private swarm spec |
-| data/swarms/NAME/record.toml | Private API URL and token record |
-| data/swarms/NAME/services.toml | Effective service settings, regenerated on each up/start; do not edit |
-| data/swarms/NAME/stack/ | Default backing stack data, owned by the swarm |
-| state/swarms/NAME/ | Supervisor and service pids, ready marker, logs, fake files, API uploads |
-| state/local.lock | Machine-wide local lifecycle lock |
-| data/keyring | Shared local cluster keyring |
-
-Inside a checkout, creation finds the first ancestor with
-`scripts/dev-stack.sh` and sets `stack_dir` to its `.dev`. This shares the
-stack with `scripts/dev-stack.sh` and `make check`. `--stack-dir PATH` overrides
-it; relative paths resolve against the current directory. `down` stops but
-never deletes an explicit or detected `stack_dir`. Without either, the swarm
-owns its stack under its data directory.
-
-A release client downloads its matching `swarmy-core`. A development client
-uses a sibling `target/*/swarmy-core` or one on PATH. Use `--core-bin PATH`
-to choose explicitly. Service tuning is read on every up/start from the first
-project `.swarmy/config.toml` found from the current directory, otherwise
-`~/.config/swarmy/config.toml`. Only the default image is saved to this file;
-`services.toml` is rebuilt each time. Shell `SWARMY_*` variables do not
-change the local services' settings; put overrides in the tuning file. Fixed
-ports allow only one local swarm to run at a time.
-`swarmy swarm rm` refuses to forget a running local swarm; stop it first.
+A development client uses a sibling `target/*/swarmy-core` or one on PATH. Service tuning is read on every up/start from the first project `.swarmy/config.toml` found from the current directory, otherwise `~/.config/swarmy/config.toml`. Only the default image is saved to this file; `services.toml` is rebuilt each time. Shell `SWARMY_*` variables do not change local service settings; put overrides in the tuning file.
 
 ## Ephemeral sessions and named agents
 
@@ -761,13 +703,9 @@ To add another killable service in a later slice, add its `Kind` variant and
 binary name in `crates/swarmy-chaos/src/process.rs`, then register its process
 count and environment at startup. Restart and health checks remain shared.
 
-## Remote node workflow
+## Swarms on other machines
 
-Cloud API keys for creating machines are stored with `swarmy cloud login`; see [cloud.md](cloud.md).
-
-Use [REMOTE.md](REMOTE.md) for remote bring-up, upgrade, recovery, teardown,
-costs and node troubleshooting. For fleet-driver commands see
-[fleet-runbook.md](fleet-runbook.md).
+For creation, cloud credentials and lifecycle see [swarms.md](swarms.md). For installed units and recovery see [REMOTE.md](REMOTE.md); for fleet-driver operations see [fleet-runbook.md](fleet-runbook.md).
 
 ### Conversation summaries and memory
 
