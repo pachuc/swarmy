@@ -16,7 +16,7 @@ pub(crate) fn parse_name(value: &str) -> Result<String, swarmy_config::Error> {
 #[derive(Subcommand)]
 pub(crate) enum Command {
     /// Write a new swarm spec; --local runs the stack and services on this machine
-    #[command(group(clap::ArgGroup::new("kind").required(true).args(["local", "host"])))]
+    #[command(group(clap::ArgGroup::new("kind").required(true).args(["local", "host", "on"])))]
     Create {
         #[arg(value_parser = parse_name)]
         name: String,
@@ -26,37 +26,47 @@ pub(crate) enum Command {
         /// Adopt a host at this IPv4 address
         #[arg(long, requires = "ssh_key")]
         host: Option<String>,
+        /// Create machines with an `OpenTofu` module
+        #[arg(long, requires = "size")]
+        on: Option<String>,
+        /// Machine size (required with --on)
+        #[arg(long, requires = "on")]
+        size: Option<String>,
+        /// Machine location (defaults to fsn1 for hetzner-cloud)
+        #[arg(long, requires = "on", required_if_eq("on", "aws"))]
+        location: Option<String>,
+        /// Number of worker machines (default: 0)
+        #[arg(long, requires = "on", default_value_t = 0)]
+        nodes: u32,
+        /// Worker machine size (defaults to --size)
+        #[arg(long, requires = "on")]
+        node_size: Option<String>,
         /// SSH login on the host (default: root)
-        #[arg(
-            long,
-            default_value = "root",
-            requires = "host",
-            conflicts_with = "local"
-        )]
+        #[arg(long, default_value = "root", requires = "host", conflicts_with = "on")]
         ssh_user: String,
         /// Private SSH key for the host
         #[arg(long, requires = "host", conflicts_with = "local")]
         ssh_key: Option<PathBuf>,
         /// IPv4 address for traffic between hosts (default: --host)
-        #[arg(long, requires = "host", conflicts_with = "local")]
+        #[arg(long, requires = "host")]
         private_address: Option<String>,
-        /// Sandbox capacity on the host (default: 64)
-        #[arg(long, requires = "host", conflicts_with = "local")]
+        /// Sandbox capacity on node-running hosts (default: 64)
+        #[arg(long, conflicts_with = "local")]
         sandboxes: Option<u32>,
         /// Node storage device or `dir:/path`
-        #[arg(long, requires = "host", conflicts_with = "local")]
+        #[arg(long, conflicts_with = "local")]
         local_storage: Option<String>,
         /// Account that owns the installed services (default: swarmy)
-        #[arg(long, requires = "host", conflicts_with = "local")]
+        #[arg(long, requires = "host")]
         service_user: Option<String>,
         /// Ephemeral or persistent lifecycle (default: persistent)
-        #[arg(long, value_enum, requires = "host", conflicts_with = "local")]
+        #[arg(long, value_enum, conflicts_with = "local")]
         lifecycle: Option<LifecycleArg>,
         /// Keep data on down unless --destroy is given (local swarms default to ephemeral)
-        #[arg(long, conflicts_with = "host")]
+        #[arg(long, conflicts_with_all = ["host", "on"])]
         persistent: bool,
         /// Backing stack directory (default: the checkout's .dev inside a checkout, else the swarm's data directory)
-        #[arg(long, value_name = "PATH", conflicts_with = "host")]
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["host", "on"])]
         stack_dir: Option<PathBuf>,
     },
     /// Bring a swarm up, restarting running services
@@ -84,6 +94,11 @@ pub(crate) enum Command {
         /// Read the static S3 secret from standard input
         #[arg(long)]
         s3_secret_stdin: bool,
+    },
+    /// Show what `OpenTofu` would create or change for a swarm's machine groups, without applying it
+    Plan {
+        #[arg(value_parser = parse_name)]
+        name: String,
     },
     /// Start a stopped swarm again
     Start {
@@ -215,19 +230,7 @@ pub(crate) fn managed_spec(registry: &Registry, name: &str) -> Result<swarm::Swa
 }
 fn host_spec(registry: &Registry, name: &str) -> Result<Option<swarm::SwarmSpec>> {
     let spec = managed_spec(registry, name)?;
-    if swarmy_cloud::provision::is_host_swarm(&spec) {
-        return Ok(Some(spec));
-    }
-    if spec.local_group().is_some() {
-        return Ok(None);
-    }
-    let modules = spec
-        .groups
-        .values()
-        .map(|g| String::from(g.module.clone()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    bail!("swarm \"{name}\" uses module groups ({modules}); swarmy cannot create machines yet")
+    Ok(spec.local_group().is_none().then_some(spec))
 }
 // Lifecycle commands follow the recorded inventory even if the spec was edited
 // after up. Up still checks that every group is a supported source.
@@ -437,6 +440,11 @@ fn run_create(registry: &Registry, command: Command, json_output: bool) -> Resul
             name,
             local,
             host,
+            on,
+            size,
+            location,
+            nodes,
+            node_size,
             ssh_user,
             ssh_key,
             private_address,
@@ -447,35 +455,62 @@ fn run_create(registry: &Registry, command: Command, json_output: bool) -> Resul
             persistent,
             stack_dir,
         } => {
-            if let Some(address) = host {
-                let path = registry.spec_path(&name)?;
-                if path.exists() {
-                    bail!("swarm \"{name}\" already has a spec at {}", path.display());
-                }
-                let spec = crate::swarm_hosts::host_spec(
-                    registry,
+            if local {
+                return crate::local::create(registry, &name, persistent, stack_dir, json_output);
+            }
+            let path = registry.spec_path(&name)?;
+            if path.exists() {
+                bail!("swarm \"{name}\" already has a spec at {}", path.display());
+            }
+            let (spec, next) = if let Some(address) = host {
+                (
+                    crate::swarm_hosts::host_spec(
+                        registry,
+                        &name,
+                        &crate::swarm_hosts::CreateHost {
+                            address,
+                            ssh_user,
+                            ssh_key: ssh_key.expect("--host requires --ssh-key"),
+                            private_address,
+                            sandboxes,
+                            local_storage,
+                            service_user,
+                            lifecycle: lifecycle.map(Into::into),
+                        },
+                    )?,
+                    None,
+                )
+            } else if let Some(module) = on {
+                let spec = crate::swarm_hosts::cloud_spec(
                     &name,
-                    &crate::swarm_hosts::CreateHost {
-                        address,
-                        ssh_user,
-                        ssh_key: ssh_key.expect("--host requires --ssh-key"),
-                        private_address,
+                    &crate::swarm_hosts::CreateCloud {
+                        module,
+                        size,
+                        location,
+                        nodes,
+                        node_size,
                         sandboxes,
                         local_storage,
-                        service_user,
                         lifecycle: lifecycle.map(Into::into),
                     },
                 )?;
-                registry.write_spec(&spec)?;
-                print_value(
-                    &json!({"created":name}),
-                    format!("created swarm {name}"),
-                    json_output,
-                );
-            } else if local {
-                crate::local::create(registry, &name, persistent, stack_dir, json_output)?;
+                let next = (!json_output)
+                    .then(|| crate::swarm_hosts::cloud_next(registry, &spec))
+                    .transpose()?;
+                (spec, next)
             } else {
-                bail!("choose --local or --host ADDRESS");
+                bail!("choose --local, --host ADDRESS or --on MODULE");
+            };
+            registry.write_spec(&spec)?;
+            print_value(
+                &json!({"created":name}),
+                format!("created swarm {name}"),
+                json_output,
+            );
+            if let Some(lines) = next {
+                for line in lines {
+                    println!("{line}");
+                }
             }
         }
         _ => unreachable!("create dispatch"),
@@ -752,6 +787,10 @@ pub(crate) async fn run(
         }
         command @ (Command::Logs { .. } | Command::Upgrade { .. }) => {
             run_host_observation(&registry, command, json_output).await?;
+        }
+        Command::Plan { name } => {
+            let spec = managed_spec(&registry, &name)?;
+            crate::swarm_hosts::plan(&registry, &spec, json_output).await?;
         }
         Command::Ls => list(&registry, json_output)?,
         Command::Show { name } => {

@@ -168,12 +168,24 @@ fn compatible_network(a: &GroupSpec, b: &GroupSpec) -> bool {
         _ => false,
     }
 }
+/// Check the credentials required by module groups before resolving `OpenTofu`.
+/// # Errors
+/// Reports missing provider logins without exposing credential values.
+pub fn check_credentials(spec: &SwarmSpec, credentials: &CloudCredentials) -> Result<()> {
+    for name in apply_order(spec) {
+        let group = &spec.groups[&name];
+        let bucket = name == spec.placement.stack && creates_bucket(spec);
+        let _ = credential_env(credentials, group, bucket)?;
+    }
+    Ok(())
+}
 pub(crate) fn preflight(
     spec: &SwarmSpec,
     record: &SwarmRecord,
     machines: &MachineGroups<'_>,
     dir: &Path,
 ) -> Result<()> {
+    check_credentials(spec, machines.credentials)?;
     let mut seen: Vec<String> = Vec::new();
     for name in apply_order(spec) {
         let group = &spec.groups[&name];
@@ -209,8 +221,6 @@ pub(crate) fn preflight(
             )));
         }
         let _ = module_files(&name, group)?;
-        let bucket = name == spec.placement.stack && creates_bucket(spec);
-        let _ = credential_env(machines.credentials, group, bucket)?;
         let previous = record.hosts.get(&name).map_or(0, Vec::len);
         let count = group.count.unwrap_or_default();
         if previous > count as usize {

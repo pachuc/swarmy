@@ -3,6 +3,7 @@ use super::*;
 use std::future::Future;
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::Mutex;
+use swarmy_config::swarm::Module;
 pub(super) struct FakeHost {
     calls: Mutex<Vec<String>>,
     configs: Mutex<Vec<String>>,

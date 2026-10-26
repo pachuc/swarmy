@@ -3875,6 +3875,7 @@ dependencies = [
  "swarmy-config",
  "swarmy-core",
  "swarmy-image",
+ "swarmy-infra",
  "swarmy-testkit",
  "swarmy-version",
  "tempfile",
