@@ -131,12 +131,12 @@ mod tests {
         let host = RecordedHost {
             name: "box".into(),
             public_address: "203.0.113.10".into(),
-            private_address: Some("10.0.0.1".into()),
+            private_address: Some("203.0.113.11".into()),
             ssh_user: "root".into(),
             ssh_key: "/keys/box".into(),
         };
         let target = ssh_target(&host);
-        assert_eq!(target.addresses, ["203.0.113.10", "10.0.0.1"]);
+        assert_eq!(target.addresses, ["203.0.113.10", "203.0.113.11"]);
         assert_eq!(target.known_hosts, Path::new("/keys/box.known_hosts"));
     }
 }
