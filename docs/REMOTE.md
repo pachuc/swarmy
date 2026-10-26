@@ -873,14 +873,10 @@ swarmy remote disconnect test
 Selection also works with `export SWARMY_SWARM=test` or `swarmy swarm use test`;
 see docs/DEV.md, Choosing the target swarm.
 
-Remote `dev up` starts scheduler, gateway, and worker locally only for a
-remote created with laptop services. A remote created with node services starts
-none locally, including when local service binaries are not installed. It records that
-choice so `dev down` leaves the backing services running, even without a remote
-flag. Disconnect stops the SSH control master and removes its profile, cluster
-file, tunnel record in `<state_dir>/remote/NAME.tunnel/`, and control socket; instance state and
-logs remain. Reconnecting a healthy tunnel is
-idempotent. SSH uses the configured identity, batch authentication, normal host
+Node services stay running after disconnect. Disconnect stops the SSH control
+master and removes its profile, cluster file, tunnel record in
+`<state_dir>/remote/NAME.tunnel/`, and control socket; instance state and logs
+remain. Reconnecting a healthy tunnel is idempotent. SSH uses the configured identity, batch authentication, normal host
 key verification with first-use acceptance, and keepalives. SSH diagnostics are
 saved in `<state_dir>/remote/NAME.tunnel/ssh.log`. `remote logs` follows
 the `swarmyd` systemd journal until interrupted; the SSH user needs permission to read that journal.
@@ -1002,11 +998,9 @@ keep running when the laptop disconnects. Use SSH and
 Inspect their logs with `sudo journalctl -u swarmy-worker -u swarmy-gateway
 -u swarmy-scheduler`. `remote logs` continues to follow the execution node log.
 
-Both configurations use the same port-4500 tunnel requirement, tool placement,
-rebuild notices, and teardown commands:
+For node services, disconnect the tunnel before tearing down the remote:
 
 ```sh
-swarmy dev down
 swarmy remote disconnect demo
 swarmy remote down demo
 ```

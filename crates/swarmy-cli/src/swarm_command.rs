@@ -160,7 +160,7 @@ fn list(registry: &Registry, json_output: bool) -> Result<()> {
     Ok(())
 }
 async fn remove(registry: &Registry, name: &str, force: bool, json_output: bool) -> Result<()> {
-    let swarm = registry.read(&name)?;
+    let swarm = registry.read(name)?;
     let hosts: usize = swarm
         .record
         .as_ref()
@@ -177,12 +177,12 @@ async fn remove(registry: &Registry, name: &str, force: bool, json_output: bool)
     }
     swarmy_core::ignore_best_effort(
         Tunnels::ssh()
-            .disconnect(&registry.swarm_dir(&name)?.join("tunnel"))
+            .disconnect(&registry.swarm_dir(name)?.join("tunnel"))
             .await,
         "close the swarm's SSH tunnel",
     );
-    let was_current = registry.current()?.as_deref() == Some(&name);
-    registry.remove(&name)?;
+    let was_current = registry.current()?.as_deref() == Some(name);
+    registry.remove(name)?;
     print_value(
         &json!({"removed":name,"was_current":was_current}),
         format!(
@@ -198,7 +198,7 @@ async fn remove(registry: &Registry, name: &str, force: bool, json_output: bool)
     Ok(())
 }
 fn attach(registry: &Registry, name: &str, url: &str, json_output: bool) -> Result<()> {
-    let url = url::Url::parse(&url).context("--url must be an http or https URL")?;
+    let url = url::Url::parse(url).context("--url must be an http or https URL")?;
     if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
         bail!("--url must be an http or https URL");
     }
@@ -209,7 +209,7 @@ fn attach(registry: &Registry, name: &str, url: &str, json_output: bool) -> Resu
         );
     }
     let url = url.as_str().trim_end_matches('/');
-    registry.attach(&name, url, &token)?;
+    registry.attach(name, url, &token)?;
     print_value(
         &json!({"attached":name,"api_url":url}),
         format!("attached swarm {name} at {url}; make it current with swarmy swarm use NAME"),

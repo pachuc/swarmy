@@ -222,17 +222,16 @@ mod tests {
     #[test]
     fn every_selection_rule() {
         let (_tmp, r) = registry();
-        assert!(matches!(
-            select_api(
-                &r,
-                swarmy_config::swarm::Target::Endpoint {
-                    url: "https://example.test".into(),
-                    token: "secret".into()
-                }
-            )
-            .unwrap(),
-            Api::Direct { .. }
-        ));
+        let endpoint = select_api(
+            &r,
+            swarmy_config::swarm::Target::Endpoint {
+                url: "https://example.test".into(),
+                token: "secret".into(),
+            },
+        )
+        .unwrap();
+        assert!(matches!(endpoint, Api::Direct { .. }));
+        assert!(!format!("{endpoint:?}").contains("secret"));
         r.attach("attached", "https://example.test", "secret")
             .unwrap();
         assert!(matches!(
@@ -257,6 +256,7 @@ mod tests {
             ("tunnel", None, Some("secret"), true),
             ("no-record", None, None, false),
             ("no-token", None, None, true),
+            ("url-no-token", Some("https://example.test"), None, true),
             ("no-host", None, Some("secret"), false),
         ] {
             r.write_spec(&spec(name)).unwrap();
