@@ -20,31 +20,38 @@ pub(crate) enum Command {
     Create {
         #[arg(value_parser = parse_name)]
         name: String,
-        /// Run the backing stack and the services on this machine (the only kind so far)
+        /// Run the backing stack and services on this machine
         #[arg(long, conflicts_with = "host")]
         local: bool,
         /// Adopt a host at this IPv4 address
         #[arg(long, requires = "ssh_key")]
         host: Option<String>,
-        #[arg(long, default_value = "root")]
+        /// SSH login on the host (default: root)
+        #[arg(long, default_value = "root", requires = "host")]
         ssh_user: String,
-        #[arg(long)]
+        /// Private SSH key for the host
+        #[arg(long, requires = "host")]
         ssh_key: Option<PathBuf>,
-        #[arg(long)]
+        /// IPv4 address for traffic between hosts (default: --host)
+        #[arg(long, requires = "host")]
         private_address: Option<String>,
-        #[arg(long)]
+        /// Sandbox capacity on the host (default: 64)
+        #[arg(long, requires = "host")]
         sandboxes: Option<u32>,
-        #[arg(long)]
+        /// Node storage device or dir:/path
+        #[arg(long, requires = "host")]
         local_storage: Option<String>,
-        #[arg(long)]
+        /// Account that owns the installed services (default: swarmy)
+        #[arg(long, requires = "host")]
         service_user: Option<String>,
-        #[arg(long, value_enum)]
+        /// Ephemeral or persistent lifecycle (default: persistent)
+        #[arg(long, value_enum, requires = "host")]
         lifecycle: Option<LifecycleArg>,
         /// Keep data on down unless --destroy is given (local swarms default to ephemeral)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "host")]
         persistent: bool,
         /// Backing stack directory (default: the checkout's .dev inside a checkout, else the swarm's data directory)
-        #[arg(long, value_name = "PATH")]
+        #[arg(long, value_name = "PATH", conflicts_with = "host")]
         stack_dir: Option<PathBuf>,
     },
     /// Bring a swarm up, restarting running services
@@ -61,8 +68,8 @@ pub(crate) enum Command {
         #[arg(long)]
         copy_credential: bool,
         /// Image recipe carried by this client
-        #[arg(long, default_value = "images/base-ubuntu")]
-        image_recipe: PathBuf,
+        #[arg(long)]
+        image_recipe: Option<PathBuf>,
     },
     /// Start a stopped swarm again
     Start {
@@ -165,8 +172,8 @@ pub(crate) enum NodeCommand {
         private_address: Option<String>,
     },
 }
-fn managed_spec(registry: &Registry, name: &str) -> Result<swarm::SwarmSpec> {
-    registry.read_spec(name)?.ok_or_else(|| {
+pub(crate) fn managed_spec(registry: &Registry, name: &str) -> Result<swarm::SwarmSpec> {
+    registry.read(name)?.spec.ok_or_else(|| {
         anyhow::anyhow!(
             "swarm \"{name}\" has no spec; it is an attached API, which swarmy does not provision"
         )
@@ -400,11 +407,12 @@ fn run_create(registry: &Registry, command: Command, json_output: bool) -> Resul
                     bail!("swarm \"{name}\" already has a spec at {}", path.display());
                 }
                 let spec = crate::swarm_hosts::host_spec(
+                    registry,
                     &name,
                     &crate::swarm_hosts::CreateHost {
                         address,
                         ssh_user,
-                        ssh_key: ssh_key.context("--host requires --ssh-key")?,
+                        ssh_key: ssh_key.expect("--host requires --ssh-key"),
                         private_address,
                         sandboxes,
                         local_storage,
@@ -449,7 +457,7 @@ async fn run_up_start(
                     &crate::swarm_hosts::UpArgs {
                         copy_credential,
                         no_image,
-                        image_recipe,
+                        image_recipe: image_recipe.unwrap_or_else(|| "images/base-ubuntu".into()),
                     },
                     json_output,
                 )
@@ -460,6 +468,9 @@ async fn run_up_start(
                 }
                 if copy_credential {
                     bail!("--copy-credential applies only to swarms on hosts");
+                }
+                if image_recipe.is_some() {
+                    bail!("--image-recipe applies only to swarms on hosts");
                 }
                 crate::local::up(
                     registry,
@@ -628,22 +639,6 @@ pub(crate) async fn run(
             url,
             token_stdin: _,
         } => attach(&registry, &name, &url, json_output)?,
-    }
-    Ok(())
-}
-/// Transitional registration of the local dev API.
-pub(crate) fn register_dev(dirs: Dirs, url: &str, token: &str) -> Result<()> {
-    let registry = Registry::new(dirs);
-    if registry.read_spec("dev")?.is_some() {
-        eprintln!("warning: a swarm spec named dev exists; not registering this API as swarm dev");
-        return Ok(());
-    }
-    registry.attach("dev", url, token)?;
-    if registry.current()?.is_none() {
-        registry.set_current("dev")?;
-        println!("swarm dev: {url} (current)");
-    } else {
-        println!("swarm dev: {url} (select it with swarmy swarm use dev or --swarm dev)");
     }
     Ok(())
 }

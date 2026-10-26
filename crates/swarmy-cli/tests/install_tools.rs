@@ -1,5 +1,5 @@
 #![deny(clippy::disallowed_methods)]
-//! `swarmy dev install-tools` runs the embedded installer without a checkout.
+//! `swarmy install-tools` runs the embedded installer without a checkout.
 const CLI: &str = env!("CARGO_BIN_EXE_swarmy");
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -9,7 +9,7 @@ fn install_tools_passes_the_prefix_to_the_embedded_installer() {
     let output = std::process::Command::new(CLI)
         .current_dir(dir.path())
         .env("HOME", dir.path())
-        .args(["dev", "install-tools", "--prefix", "bad:prefix"])
+        .args(["install-tools", "--prefix", "bad:prefix"])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -24,7 +24,7 @@ fn install_tools_passes_the_prefix_to_the_embedded_installer() {
 #[test]
 fn install_tools_rejects_json() {
     let output = std::process::Command::new(CLI)
-        .args(["--json", "dev", "install-tools"])
+        .args(["--json", "install-tools"])
         .output()
         .unwrap();
     assert!(!output.status.success());

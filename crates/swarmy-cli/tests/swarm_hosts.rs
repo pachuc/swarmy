@@ -45,6 +45,7 @@ case "$last" in
   'cat /etc/ssh/ssh_host_ed25519_key.pub') printf 'ssh-ed25519 AAAATEST test\n' ;;
   'cat ~swarmy/swarmy/.swarmy/config.toml') printf '[api]\ntoken = "node-token"\n' ;;
   'sudo -n sh -c '*) cat >/dev/null ;;
+  *) echo remote-output ;;
 esac
 "#,
             path.display(),
@@ -126,6 +127,13 @@ fn create_up_status_stop_start_down_on_one_host() {
             .unwrap()
             .lifecycle,
         swarmy_config::swarm::Lifecycle::Persistent
+    );
+    assert!(!f.path().join("home").exists());
+    let parsed = swarmy_config::swarm::SwarmSpec::parse(&spec).unwrap();
+    assert_eq!(parsed.groups.len(), 1);
+    assert_eq!(
+        parsed.groups["box"].module,
+        swarmy_config::swarm::Module::Existing
     );
     let output = f.ok(&["--json", "swarm", "up", "box", "--no-image"]);
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -217,11 +225,19 @@ fn node_add_provisions_only_the_new_host() {
         1
     );
     assert!(!added.contains("remote-services.sh"));
-    assert!(
-        fs::read_to_string(f.path().join("data/swarmy/swarms/box/record.toml"))
+    let spec = fs::read_to_string(f.path().join("config/swarmy/swarms/box.toml")).unwrap();
+    assert_eq!(
+        swarmy_config::swarm::SwarmSpec::parse(&spec)
             .unwrap()
-            .contains("box-box-2")
+            .groups["box"]
+            .hosts
+            .len(),
+        2
     );
+    let record = fs::read_to_string(f.path().join("data/swarmy/swarms/box/record.toml")).unwrap();
+    assert!(record.contains("box-box-2"));
+    let parsed: swarmy_config::swarm::SwarmRecord = toml::from_str(&record).unwrap();
+    assert!(parsed.hosts["box"][1].provisioned);
 }
 #[test]
 fn up_refuses_bad_hosts_before_any_ssh() {

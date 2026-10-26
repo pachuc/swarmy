@@ -119,7 +119,7 @@ pub(super) fn plan(spec: &SwarmSpec, sources: Vec<HostSource>) -> Result<Vec<Pla
     }
     ordered.into_iter().map(|(index, source)| {
         let group = &spec.groups[&source.group];
-        let primary = source.host.name == ordered_primary_name(spec, stack);
+        let primary = source.group == *stack && index == 0;
         let sandboxes = if primary && !stack_nodes { 0 } else { group.sandboxes.unwrap_or(swarmy_config::default_sandboxes()) };
         let local_storage = group.local_storage.clone().unwrap_or_default();
         if sandboxes > 0 && local_storage.is_empty() {
@@ -128,7 +128,4 @@ pub(super) fn plan(spec: &SwarmSpec, sources: Vec<HostSource>) -> Result<Vec<Pla
         Ok(Planned { group: source.group, index, host: source.host, copy_key_from: source.copy_key_from,
             role: if primary { Role::Stack { services: true } } else { Role::Node }, sandboxes, local_storage })
     }).collect()
-}
-fn ordered_primary_name(spec: &SwarmSpec, stack: &str) -> String {
-    format!("{}-{stack}-1", spec.name)
 }

@@ -187,6 +187,7 @@ async fn checked(command: &mut Command, action: &str) -> Result<()> {
     let status = command
         .kill_on_drop(true)
         .stdin(Stdio::null())
+        .stdout(std::io::stderr())
         .status()
         .await
         .map_err(crate::Error::ssh(action))?;

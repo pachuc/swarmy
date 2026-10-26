@@ -337,7 +337,10 @@ async fn provision_swarm_with(
     for p in &planned {
         if recorded(&record, p).is_some_and(|h| h.provisioned) {
             cloud_out!("{}: already provisioned", p.host.name);
-            reports.push(report(p, false));
+            reports.push(HostReport {
+                provisioned: true,
+                ..report(p, false)
+            });
             continue;
         }
         let result = provision_one(
@@ -367,7 +370,11 @@ async fn provision_swarm_with(
     Ok(reports)
 }
 fn recorded<'a>(record: &'a SwarmRecord, p: &Planned) -> Option<&'a RecordedHost> {
-    record.hosts.get(&p.group)?.get(p.index)
+    record
+        .hosts
+        .values()
+        .flatten()
+        .find(|h| h.name == p.host.name)
 }
 async fn provision_one(
     host: &impl SwarmHost,
@@ -380,10 +387,10 @@ async fn provision_one(
     let registry = request.registry;
     let spec = request.spec;
     let hosts = record.hosts.entry(p.group.clone()).or_default();
-    if p.index == hosts.len() {
-        hosts.push(p.host.clone());
+    if let Some(old) = hosts.iter_mut().find(|h| h.name == p.host.name) {
+        *old = p.host.clone();
     } else {
-        hosts[p.index] = p.host.clone();
+        hosts.push(p.host.clone());
     }
     registry.write_record(record)?;
     let machine = node(p, user(spec));
@@ -411,9 +418,48 @@ async fn provision_one(
     } else {
         host.provision(&machine, Some(primary)).await?;
     }
-    record.hosts.get_mut(&p.group).expect("group inserted")[p.index].provisioned = true;
+    record
+        .hosts
+        .get_mut(&p.group)
+        .expect("group inserted")
+        .iter_mut()
+        .find(|h| h.name == p.host.name)
+        .expect("host inserted")
+        .provisioned = true;
     registry.write_record(record)?;
     Ok(())
+}
+// The record is the teardown inventory. A changed or broken spec must not hide a host.
+// Keep the stack host first for start and last for stop/down, with all nodes in
+// reverse record order for teardown.
+fn record_plan(record: &SwarmRecord, stack: &str) -> Vec<Planned> {
+    let mut planned = Vec::new();
+    let mut add_group = |group: &str, hosts: &[RecordedHost]| {
+        for (index, host) in hosts.iter().enumerate() {
+            planned.push(Planned {
+                group: group.to_owned(),
+                index,
+                host: host.clone(),
+                copy_key_from: None,
+                role: if group == stack && index == 0 {
+                    Role::Stack { services: true }
+                } else {
+                    Role::Node
+                },
+                sandboxes: 0,
+                local_storage: String::new(),
+            });
+        }
+    };
+    if let Some(hosts) = record.hosts.get(stack) {
+        add_group(stack, hosts);
+    }
+    for (group, hosts) in &record.hosts {
+        if group != stack {
+            add_group(group, hosts);
+        }
+    }
+    planned
 }
 fn recorded_plan(registry: &Registry, spec: &SwarmSpec) -> Result<(SwarmRecord, Vec<Planned>)> {
     let record = registry.read_record(&spec.name)?.ok_or_else(|| {
@@ -422,18 +468,7 @@ fn recorded_plan(registry: &Registry, spec: &SwarmSpec) -> Result<(SwarmRecord, 
             spec.name, spec.name
         ))
     })?;
-    let sources = record
-        .hosts
-        .iter()
-        .flat_map(|(group, hosts)| {
-            hosts.iter().map(move |host| HostSource {
-                group: group.clone(),
-                host: host.clone(),
-                copy_key_from: None,
-            })
-        })
-        .collect();
-    let planned = plan(spec, sources)?;
+    let planned = record_plan(&record, &spec.placement.stack);
     Ok((record, planned))
 }
 /// Stop provisioned hosts in reverse dependency order.
@@ -503,32 +538,7 @@ async fn decommission_swarm_with(
         );
         return Ok(Vec::new());
     };
-    // Rebuild the full role order even after a partial down removed the primary.
-    let sources = existing_sources(spec, &registry.swarm_dir(&spec.name)?)?
-        .into_iter()
-        .map(|mut source| {
-            source.copy_key_from = None;
-            if let Some(old) = record
-                .hosts
-                .values()
-                .flatten()
-                .find(|h| h.name == source.host.name)
-            {
-                source.host = old.clone();
-            }
-            source
-        })
-        .collect();
-    let planned: Vec<_> = plan(spec, sources)?
-        .into_iter()
-        .filter(|p| {
-            record
-                .hosts
-                .values()
-                .flatten()
-                .any(|h| h.name == p.host.name)
-        })
-        .collect();
+    let planned = record_plan(&record, &spec.placement.stack);
     let mut reports = Vec::new();
     let mut failures = Vec::new();
     let mut failed = BTreeMap::<String, Vec<RecordedHost>>::new();

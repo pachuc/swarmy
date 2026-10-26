@@ -26,3 +26,24 @@ pub(crate) fn find(name: &str) -> Option<PathBuf> {
             })
         })
 }
+
+/// Run the embedded installer with bash, inheriting stdio so download progress shows.
+pub(crate) async fn install(prefix: Option<&std::path::Path>) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let mut command = crate::local::embedded(
+        swarmy_cloud::node_files::INSTALL_DEV_TOOLS,
+        "swarmy install-tools",
+    );
+    if let Some(prefix) = prefix {
+        command.arg("--prefix").arg(prefix);
+    }
+    let status = command
+        .status()
+        .await
+        .context("cannot run bash for the backing tool installer")?;
+    anyhow::ensure!(
+        status.success(),
+        "backing tool installation failed ({status})"
+    );
+    Ok(())
+}

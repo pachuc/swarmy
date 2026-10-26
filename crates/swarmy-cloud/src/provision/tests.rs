@@ -205,6 +205,22 @@ fn plan_refuses_unsupported_layouts_and_bad_hosts() {
             .contains("separate group")
     );
     spec.placement.services = "control".into();
+    spec.groups.insert(
+        "local".into(),
+        swarmy_config::swarm::GroupSpec {
+            module: Module::Local,
+            ..spec.groups["control"].clone()
+        },
+    );
+    spec.placement.services = "local".into();
+    assert!(
+        plan(&spec, source_list(&registry, &spec))
+            .unwrap_err()
+            .to_string()
+            .contains("services on this machine")
+    );
+    spec.placement.services = "control".into();
+    spec.groups.remove("local");
     let mut sources = source_list(&registry, &spec);
     sources[0].host.public_address = "invalid".into();
     assert!(
@@ -220,6 +236,14 @@ fn plan_refuses_unsupported_layouts_and_bad_hosts() {
             .unwrap_err()
             .to_string()
             .contains("ssh_user")
+    );
+    let mut sources = source_list(&registry, &spec);
+    sources[0].copy_key_from = Some(PathBuf::from("/definitely/missing/swarmy-key"));
+    assert!(
+        plan(&spec, sources)
+            .unwrap_err()
+            .to_string()
+            .contains("does not exist")
     );
     let mut sources = source_list(&registry, &spec);
     sources[0].copy_key_from = Some(PathBuf::from("relative"));
@@ -335,8 +359,18 @@ async fn decommission_goes_nodes_first_and_keeps_failed_hosts() {
             .await
             .is_err()
     );
+    let calls = fake.calls();
+    assert_eq!(
+        &calls[calls.len() - 3..],
+        [
+            "decommission fleet-workers-2",
+            "decommission fleet-workers-1",
+            "decommission fleet-control-1"
+        ]
+    );
     let record = registry.read_record("fleet").unwrap().unwrap();
     assert_eq!(record.hosts["workers"].len(), 1);
+    assert_eq!(record.hosts["workers"][0].name, "fleet-workers-1");
     *fake.fail_decommission.lock().unwrap() = None;
     decommission_swarm_with(&fake, &registry, &spec)
         .await
@@ -366,6 +400,69 @@ async fn stop_and_start_order() {
         ]
     );
 }
+#[tokio::test]
+async fn down_removes_hosts_missing_from_spec() {
+    let (_tmp, registry, mut spec) = fixture();
+    let fake = FakeHost::new();
+    provision_swarm_with(&fake, request(&registry, &spec, &settings(), None))
+        .await
+        .unwrap();
+    spec.groups.get_mut("workers").unwrap().hosts.pop();
+    registry.write_spec(&spec).unwrap();
+    let before = fake.calls().len();
+    decommission_swarm_with(&fake, &registry, &spec)
+        .await
+        .unwrap();
+    assert_eq!(
+        &fake.calls()[before..],
+        [
+            "decommission fleet-workers-2",
+            "decommission fleet-workers-1",
+            "decommission fleet-control-1"
+        ]
+    );
+}
+#[tokio::test]
+async fn broken_spec_does_not_block_recorded_host_cleanup() {
+    let (_tmp, registry, mut spec) = fixture();
+    let fake = FakeHost::new();
+    provision_swarm_with(&fake, request(&registry, &spec, &settings(), None))
+        .await
+        .unwrap();
+    spec.groups.get_mut("workers").unwrap().hosts[0].address = "invalid".into();
+    registry.write_spec(&spec).unwrap();
+    assert!(plan(&spec, source_list(&registry, &spec)).is_err());
+    let before = fake.calls().len();
+    stop_swarm_with(&fake, &registry, &spec).await.unwrap();
+    start_swarm_with(&fake, &registry, &spec).await.unwrap();
+    let status = status_with(&fake, &registry, &spec).await.unwrap();
+    assert_eq!(status.hosts.len(), 3);
+    decommission_swarm_with(&fake, &registry, &spec)
+        .await
+        .unwrap();
+    assert!(fake.calls()[before..].contains(&"decommission fleet-workers-2".to_owned()));
+    assert!(!registry.swarm_dir("fleet").unwrap().exists());
+}
+#[test]
+fn stack_primary_is_first_in_group_not_named_by_index() {
+    let (_tmp, registry, spec) = fixture();
+    let mut sources = source_list(&registry, &spec);
+    sources[0].host.name = "arbitrary-machine".into();
+    let planned = plan(&spec, sources).unwrap();
+    assert_eq!(planned[0].role, Role::Stack { services: true });
+}
+#[test]
+fn stack_group_extra_hosts_need_node_placement() {
+    let (_tmp, registry, mut spec) = fixture();
+    let second = spec.groups["control"].hosts[0].clone();
+    spec.groups.get_mut("control").unwrap().hosts.push(second);
+    assert!(
+        plan(&spec, source_list(&registry, &spec))
+            .unwrap_err()
+            .to_string()
+            .contains("other hosts must run nodes")
+    );
+}
 #[test]
 fn machine_maps_the_recorded_host() {
     let (_tmp, registry, spec) = fixture();
@@ -376,7 +473,7 @@ fn machine_maps_the_recorded_host() {
     assert_eq!(node.cloud_settings().services, RemoteServices::Node);
 }
 #[test]
-fn lock_releases_on_drop() {
+fn lock_is_exclusive() {
     let (_tmp, registry, _spec) = fixture();
     let guard = lock(&registry, "fleet").unwrap();
     assert!(lock(&registry, "fleet").is_err());

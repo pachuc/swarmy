@@ -120,7 +120,7 @@ check-cli-session:
 
 check-remote:
 	$(CARGO) test --locked -p swarmy-cloud --features remote
-	$(CARGO) test --locked -p swarmy-cli --features remote -- --skip dev_up_run_recover_reconfigure_and_down
+	$(CARGO) test --locked -p swarmy-cli --features remote -- --skip local_swarm_run_recover_reconfigure_and_down
 
 check-openapi:
 	scripts/check-openapi-compat.sh origin/master

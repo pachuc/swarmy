@@ -37,7 +37,6 @@ impl Fixture {
                 command.env_remove(key);
             }
         }
-        command.env("SWARMY_DEV_DIR", self.repo.join(".dev"));
         command
     }
 
@@ -56,7 +55,7 @@ impl Fixture {
     }
 
     fn state(&self) -> PathBuf {
-        self.files.path().join(".swarmy/dev")
+        self.files.path().join("state/swarmy/swarms/e2e")
     }
 }
 
@@ -66,13 +65,12 @@ impl Drop for Fixture {
         command
             .current_dir(self.files.path())
             .envs(swarmy_testkit::isolated_home(self.files.path()))
-            .args(["dev", "down"]);
+            .args(["swarm", "down", "e2e"]);
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("SWARMY_") {
                 command.env_remove(key);
             }
         }
-        command.env("SWARMY_DEV_DIR", self.repo.join(".dev"));
         ignore_best_effort(command.output(), "stop leftover dev services");
         if self.restore_stack {
             let result = Command::new(self.repo.join("scripts/dev-stack.sh"))
@@ -90,7 +88,7 @@ impl Drop for Fixture {
 }
 
 #[tokio::test]
-async fn dev_up_run_recover_reconfigure_and_down() {
+async fn local_swarm_run_recover_reconfigure_and_down() {
     if swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE").is_none()
         || swarmy_testkit::require_stack("SWARMY_NATS_URL").is_none()
     {
@@ -126,6 +124,16 @@ async fn dev_up_run_recover_reconfigure_and_down() {
         ..Default::default()
     };
     fs::write(&config, settings.to_toml().unwrap()).unwrap();
+    fixture
+        .output(&[
+            "swarm",
+            "create",
+            "e2e",
+            "--local",
+            "--stack-dir",
+            fixture.repo.join(".dev").to_str().unwrap(),
+        ])
+        .await;
     check_startup(&fixture).await;
     register_image(&fixture).await;
     assert!(
@@ -147,7 +155,7 @@ async fn dev_up_run_recover_reconfigure_and_down() {
 
     let old = identities(&fixture.state());
     signal(old["supervisor"].0, "-KILL").await;
-    let up = String::from_utf8(fixture.output(&["dev", "up"]).await.stdout).unwrap();
+    let up = String::from_utf8(fixture.output(&["swarm", "up", "e2e"]).await.stdout).unwrap();
     assert!(up.contains("replacing recorded processes:"), "{up}");
     assert!(up.contains("scheduler, worker, gateway"), "{up}");
     assert_gone(&old);
@@ -160,7 +168,7 @@ async fn dev_up_run_recover_reconfigure_and_down() {
     let mut settings = swarmy_config::Settings::read(&config).unwrap();
     settings.store.directory = format!("{prefix}_changed");
     fs::write(&config, settings.to_toml().unwrap()).unwrap();
-    fixture.output(&["dev", "up"]).await;
+    fixture.output(&["swarm", "up", "e2e"]).await;
     assert!(fixture.output(&["session", "list"]).await.stdout.is_empty());
     register_image(&fixture).await;
     fixture.output(&["run", "new directory"]).await;
@@ -174,31 +182,35 @@ async fn dev_up_run_recover_reconfigure_and_down() {
         1
     );
     let running = identities(&fixture.state());
-    fixture.output(&["dev", "down"]).await;
-    fixture.output(&["dev", "down"]).await;
-    let status = String::from_utf8(fixture.output(&["dev", "status"]).await.stdout).unwrap();
+    fixture.output(&["swarm", "stop", "e2e"]).await;
+    fixture.output(&["swarm", "stop", "e2e"]).await;
+    let status =
+        String::from_utf8(fixture.output(&["swarm", "status", "e2e"]).await.stdout).unwrap();
     assert!(
-        status.lines().all(|line| line.ends_with(": down")),
+        status
+            .lines()
+            .filter(|line| !line.starts_with("swarm:") && !line.starts_with("endpoint:"))
+            .all(|line| line.ends_with(": down")),
         "{status}"
     );
     assert_gone(&running);
 }
 
 #[test]
-fn json_dev_status_is_rejected_without_touching_the_stack() {
+fn json_swarm_status_is_rejected_without_touching_the_stack() {
     // The `--json` rejection runs before layout discovery, so this needs no
     // stack environment and fails even with an empty HOME.
     let files = tempfile::tempdir().unwrap();
     let output = Command::new(CLI)
         .current_dir(files.path())
         .envs(swarmy_testkit::isolated_home(files.path()))
-        .args(["--json", "dev", "status"])
+        .args(["--json", "swarm", "status", "e2e"])
         .output()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("--json is not supported for dev commands"),
+        stderr.contains("--json is not supported for swarm"),
         "{stderr}"
     );
 }
@@ -208,7 +220,8 @@ async fn check_uptime(fixture: &Fixture) {
     // fixed sleep covers a loaded runner.
     let state =
         swarmy_testkit::eventually("uptime advances", Duration::from_secs(30), async || {
-            let state = String::from_utf8(fixture.output(&["dev", "status"]).await.stdout).unwrap();
+            let state = String::from_utf8(fixture.output(&["swarm", "status", "e2e"]).await.stdout)
+                .unwrap();
             (!state.contains("uptime 0s")).then_some(state)
         })
         .await;
@@ -223,7 +236,7 @@ async fn check_startup(fixture: &Fixture) {
     let stack_pids = ["fdb", "nats", "seaweed"]
         .map(|name| fs::read_to_string(fixture.repo.join(format!(".dev/{name}.pid"))).unwrap());
     let started = Instant::now();
-    let up = fixture.output(&["dev", "up"]).await;
+    let up = fixture.output(&["swarm", "up", "e2e"]).await;
     assert!(started.elapsed() < Duration::from_secs(30));
     for (name, previous) in ["fdb", "nats", "seaweed"].into_iter().zip(stack_pids) {
         assert_eq!(
@@ -256,7 +269,7 @@ async fn check_startup(fixture: &Fixture) {
 
 async fn check_logs(fixture: &Fixture) {
     let mut log = fixture
-        .command(&["dev", "logs", "worker"])
+        .command(&["swarm", "logs", "e2e", "worker"])
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
@@ -321,14 +334,22 @@ fn assert_gone(identities: &BTreeMap<String, (u32, String)>) {
 }
 
 async fn register_image(fixture: &Fixture) {
-    let settings =
-        swarmy_config::Settings::read(&fixture.files.path().join(".swarmy/config.toml")).unwrap();
-    let endpoint = settings
-        .api
-        .url
-        .clone()
-        .unwrap_or_else(|| format!("http://{}", settings.api.listen));
-    let client = swarmy_client::Client::new(&endpoint, settings.api.token.clone()).unwrap();
+    let dirs = swarmy_config::paths::Dirs::from_env(
+        &swarmy_testkit::isolated_home(fixture.files.path())
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value.to_string_lossy().into_owned()))
+            .collect(),
+    )
+    .unwrap();
+    let record = swarmy_config::swarm::Registry::new(dirs)
+        .read_record("e2e")
+        .unwrap()
+        .unwrap();
+    let client = swarmy_client::Client::new(
+        record.api.url.as_deref().unwrap(),
+        record.api.token.unwrap(),
+    )
+    .unwrap();
     // A zeroed file stands in for a built filesystem: zero chunks never
     // reach object storage, so registration needs no root or image tools.
     let raw = fixture.files.path().join("fixture.ext4");

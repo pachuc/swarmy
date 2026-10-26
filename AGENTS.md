@@ -57,7 +57,7 @@ measured numbers with raw samples.
   `--effort` everywhere; usage and cost recorded per completion. Verified
   live on 2026-09-21: anthropic, openai, chatgpt, xai, meta, openrouter,
   azure, amazon-bedrock, google, google-vertex (Gemini).
-- **Operating it.** `make dev-tools` and `swarmy dev up` run the stack under
+- **Operating it.** `make dev-tools` and `swarmy swarm up dev` run the stack under
   the checkout with no root (`docs/DEV.md`). `swarmy remote adopt NAME` builds
   on machines already owned (Hetzner dedicated servers) with any S3-compatible
   bucket and static keys, and `remote connect` tunnels to it (`docs/REMOTE.md`).

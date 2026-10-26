@@ -23,25 +23,26 @@ SHA256SUMS, but releases are not signed. The default destination is
 `~/.local/bin`; the installer prints a PATH line if needed.
 
 ```sh
-swarmy dev install-tools
-swarmy dev up
+swarmy install-tools
+swarmy swarm create dev --local
+swarmy swarm up dev
 ANTHROPIC_API_KEY=... swarmy auth set anthropic --from-env
 swarmy chat --provider anthropic
 ```
 
-Outside a checkout, `swarmy dev up` writes `~/.config/swarmy/config.toml`,
-keeps the stack's data and the cluster keyring in `~/.local/share/swarmy/`,
-logs and process ids in `~/.local/state/swarmy/`, and downloads in
-`~/.cache/swarmy/` (each follows its `XDG_*_HOME` variable). `swarmy dev status`,
-`swarmy dev logs`, `swarmy dev down`, and `swarmy chat` then work from any
-directory. On Linux x86-64, `swarmy dev up` downloads the release's prebuilt
-base-ubuntu image (a few hundred MB), verifies it against SHA256SUMS, registers
-`base-ubuntu:<release tag>`, and sets `default_image`. Chat needs no `--image`. Plain chat works without a sandbox node, but local `swarmy dev up` has none, so turns that call tools need a node (see [docs/DEV.md](docs/DEV.md) and [docs/REMOTE.md](docs/REMOTE.md)).
-Use `--no-image` to skip the download, or retry with
-`swarmy image pull base-ubuntu --set-default` and `swarmy dev up`.
+`swarmy swarm create dev --local` writes `~/.config/swarmy/swarms/dev.toml`
+and makes `dev` current when none is selected. `swarmy swarm up dev` keeps its
+record and stack in `~/.local/share/swarmy/swarms/dev/`, and logs and pids
+in `~/.local/state/swarmy/swarms/dev/`. Downloads go to `~/.cache/swarmy/`.
+`swarmy swarm status dev`, `swarmy swarm logs dev`, `swarmy swarm stop dev`,
+and `swarmy chat` then work from any directory. On Linux x86-64, up downloads
+and registers the release base image and sets `default_image`. Chat needs no
+`--image`; tool-calling turns still need a sandbox node. Use `--no-image` to
+skip the download, or retry with `swarmy image pull base-ubuntu --set-default`
+and `swarmy swarm up dev`.
 
-`swarmy dev install-tools` is Linux x86-64 only. `swarmy dev up` defaults to
-the fake provider without credentials. Run `swarmy auth set` after `dev up`:
+`swarmy install-tools` is Linux x86-64 only. `swarmy swarm up dev` defaults to
+the fake provider without credentials. Run `swarmy auth set` after `swarmy swarm up dev`:
 it stores the key in the cluster. ChatGPT sign-in (`swarmy auth login`) currently
 needs the `swarmy-auth` helper from a source install. See
 [docs/providers.md](docs/providers.md) for provider setup. Run `swarmy doctor`

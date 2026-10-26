@@ -29,7 +29,7 @@ pub(crate) struct NodeAdd {
     pub ssh_key: PathBuf,
     pub private_address: Option<String>,
 }
-pub(crate) fn host_spec(name: &str, args: &CreateHost) -> Result<SwarmSpec> {
+pub(crate) fn host_spec(registry: &Registry, name: &str, args: &CreateHost) -> Result<SwarmSpec> {
     let spec = SwarmSpec {
         name: name.into(),
         lifecycle: args.lifecycle.unwrap_or(Lifecycle::Persistent),
@@ -60,6 +60,10 @@ pub(crate) fn host_spec(name: &str, args: &CreateHost) -> Result<SwarmSpec> {
         },
     };
     spec.validate()?;
+    provision::plan(
+        &spec,
+        provision::existing_sources(&spec, &registry.swarm_dir(name)?)?,
+    )?;
     Ok(spec)
 }
 pub(crate) async fn up(
@@ -192,11 +196,7 @@ pub(crate) async fn node_add(
     json_output: bool,
 ) -> Result<()> {
     let lock = provision::lock(registry, name)?;
-    let mut spec = registry.read_spec(name)?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "swarm \"{name}\" has no spec; it is an attached API, which swarmy does not provision"
-        )
-    })?;
+    let mut spec = crate::swarm_command::managed_spec(registry, name)?;
     let group = spec.groups.get(&args.group);
     if !group.is_some_and(|g| g.module == Module::Existing)
         || !spec.placement.nodes.contains(&args.group)
@@ -214,12 +214,11 @@ pub(crate) async fn node_add(
     {
         bail!("{} is already a host of swarm {name}", args.address);
     }
-    let primary = format!("{name}-{}-1", spec.placement.stack);
     if !registry.read_record(name)?.is_some_and(|r| {
         r.hosts
-            .values()
-            .flatten()
-            .any(|h| h.name == primary && h.provisioned)
+            .get(&spec.placement.stack)
+            .and_then(|hosts| hosts.first())
+            .is_some_and(|host| host.provisioned)
     }) {
         bail!("swarm {name} is not up; run swarmy swarm up {name} first");
     }
@@ -234,11 +233,17 @@ pub(crate) async fn node_add(
             private_address: args.private_address,
         });
     spec.validate()?;
+    provision::plan(
+        &spec,
+        provision::existing_sources(&spec, &registry.swarm_dir(name)?)?,
+    )?;
     registry.write_spec(&spec)?;
     eprintln!(
         "note: swarmy rewrote {}; comments in it are not kept",
         registry.spec_path(name)?.display()
     );
+    // flock is not reentrant: up takes this lock again. A concurrent down can
+    // run in this gap; up will reconcile the resulting record before SSH work.
     fs2::FileExt::unlock(&lock)?;
     drop(lock);
     up(
