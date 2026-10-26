@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs,
+    io::Write,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Output},
@@ -49,7 +50,7 @@ impl Fixture {
         let log = root.path().join("ssh.log");
         let fail = root.path().join("ssh-fail");
         let script = format!(
-            r##"#!/bin/sh
+            r#"#!/bin/sh
 printf '%s\n' "$*" >> '{}'
 if test -e '{}'; then
  echo 'ssh: connect to host 203.0.113.10 port 22: Connection refused' >&2
@@ -58,7 +59,7 @@ fi
 case "$*" in
  *'.swarmy/config.toml'*) printf '[api]\nlisten = "127.0.0.1:8742"\ntoken = "node-token-7c1f"\n' ;;
 esac
-"##,
+"#,
             log.display(),
             fail.display()
         );
@@ -166,6 +167,20 @@ fn converted(f: &Fixture, node: bool) {
     let spec = swarm.spec.unwrap();
     let record = swarm.record.unwrap();
     let dir = registry.swarm_dir("hz").unwrap();
+    check_spec(&spec, &dir, node);
+    check_record(&record);
+    check_plan(&spec, &record, &dir);
+    let lines = f.ssh_lines();
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("StrictHostKeyChecking=yes"));
+    assert!(lines[0].contains("-l root 203.0.113.10"));
+    assert!(lines[0].contains(if node {
+        "cat ~swarmy/swarmy/.swarmy/config.toml"
+    } else {
+        "cat ~root/swarmy/.swarmy/config.toml"
+    }));
+}
+fn check_spec(spec: &swarmy_config::swarm::SwarmSpec, dir: &Path, node: bool) {
     assert_eq!(spec.name, "hz");
     assert_eq!(spec.lifecycle, Lifecycle::Persistent);
     assert_eq!(
@@ -196,11 +211,19 @@ fn converted(f: &Fixture, node: bool) {
     assert_eq!(bucket.region, "fsn1");
     assert_eq!(bucket.prefix.as_str(), "swarmy/hz");
     assert!(bucket.conditional_create);
+}
+fn check_record(record: &swarmy_config::swarm::SwarmRecord) {
     assert_eq!(record.api.token.as_deref(), Some(SECRETS[0]));
     assert!(record.api.url.is_none());
     assert_eq!(record.bucket_keys.as_ref().unwrap().access_key, SECRETS[1]);
     assert_eq!(record.bucket_keys.as_ref().unwrap().secret_key, SECRETS[2]);
     assert!(record.tofu_state.is_none());
+}
+fn check_plan(
+    spec: &swarmy_config::swarm::SwarmSpec,
+    record: &swarmy_config::swarm::SwarmRecord,
+    dir: &Path,
+) {
     let planned = swarmy_cloud::provision::plan(
         &spec,
         swarmy_cloud::provision::existing_sources(&spec, &dir).unwrap(),
@@ -217,15 +240,6 @@ fn converted(f: &Fixture, node: bool) {
         assert_eq!(found.ssh_user, host.host.ssh_user);
     }
     assert_eq!(planned[0].sandboxes, 4);
-    let lines = f.ssh_lines();
-    assert_eq!(lines.len(), 1);
-    assert!(lines[0].contains("StrictHostKeyChecking=yes"));
-    assert!(lines[0].contains("-l root 203.0.113.10"));
-    assert!(lines[0].contains(if node {
-        "cat ~swarmy/swarmy/.swarmy/config.toml"
-    } else {
-        "cat ~root/swarmy/.swarmy/config.toml"
-    }));
 }
 #[test]
 fn dry_run_prints_the_plan_and_writes_nothing() {
@@ -355,7 +369,6 @@ fn refuses_to_overwrite_and_makes_no_ssh_call() {
         .spawn()
         .unwrap();
     let mut child = output;
-    use std::io::Write;
     child.stdin.take().unwrap().write_all(b"t\n").unwrap();
     let attached = child.wait_with_output().unwrap();
     no_secrets(&attached);
@@ -420,7 +433,7 @@ fn unsupported_records_are_refused() {
             0 => f.value["launch_settings"]["services"] = json!("laptop"),
             1 => {
                 f.value["launch_settings"]["bucket"]["credentials"] =
-                    json!({"source":"instance_role"})
+                    json!({"source":"instance_role"});
             }
             2 => f.value["launch_settings"]["bucket"] = json!("swarmy-hz-fixture"),
             3 => {
