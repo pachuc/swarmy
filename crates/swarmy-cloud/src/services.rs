@@ -141,7 +141,6 @@ impl<'a> Options<'a> {
             fake_script,
         })
     }
-
 }
 
 pub(crate) async fn install(node: &RemoteNode, address: &str, options: &Options<'_>) -> Result<()> {

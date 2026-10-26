@@ -1,15 +1,12 @@
 //! Remote provisioning, compiled only with the remote feature.
-use super::{
-    Cloud, Command, Host, ObjectBucket, Ownership, RemoteNode, RemoteSettings, Result, services,
-    ssh,
-};
+use super::{Cloud, Command, Host, ObjectBucket, Ownership, RemoteNode, Result, services, ssh};
 
 use state::State;
 use std::{
     future::Future,
     path::{Path, PathBuf},
 };
-use swarmy_config::Settings;
+use swarmy_config::{RemoteSettings, Settings};
 
 mod add_node;
 mod adopt;
