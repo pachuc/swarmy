@@ -209,7 +209,7 @@ pub(crate) async fn install(node: &RemoteNode, address: &str, options: &Options<
 
 /// Install the cluster keyring where the node's services look for it: the
 /// XDG default for their HOME, `~user/.local/share/swarmy/keyring` (the units
-/// set HOME and no XDG_DATA_HOME). The service user creates any missing
+/// set HOME and no `XDG_DATA_HOME`). The service user creates any missing
 /// parents, so none of them ends up owned by root; the directory and the key
 /// are private.
 fn keyring_script(user: &str, home: &str) -> String {

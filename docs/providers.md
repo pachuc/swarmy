@@ -31,7 +31,7 @@ inputs are not sent yet.
 ## Credentials and auth commands
 
 Start a local cluster with `swarmy dev up`. It creates a base64 32-byte keyring
-at `~/.local/share/swarmy/keyring (`$XDG_DATA_HOME/swarmy/keyring`)` with mode 600, or uses `SWARMY_KEYRING`. The key encrypts
+at `~/.local/share/swarmy/keyring` (`$XDG_DATA_HOME/swarmy/keyring`) with mode 600, or uses `SWARMY_KEYRING`. The key encrypts
 FoundationDB credential records with XChaCha20-Poly1305. Keep a separate backup:
 replacing the key cannot decrypt existing records. CLI and gateway hosts need
 the same key. `remote up --services node --copy-credential` and
