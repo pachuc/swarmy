@@ -4,11 +4,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+use super::Machine;
 use crate::Result;
 use serde::{Deserialize, Serialize};
-use swarmy_config::RemoteNode;
 
-use super::ssh;
+use crate::ssh;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Scope {
@@ -50,21 +50,8 @@ impl Options {
     }
 }
 
-pub(super) async fn command(
-    state: &super::state::State,
-    name: &str,
-    mut options: Options,
-    cache: &Path,
-) -> Result<()> {
-    let _lock = state.lock()?;
-    let node = state.require(name)?;
-    let host = super::provisioning_host(cache)?;
-    options.dirty_paths = host.checkout_changes()?;
-    run(&host, &node, options).await.map(|_| ())
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-pub(super) struct Summary {
+pub struct Summary {
     pub node: String,
     pub changed: Vec<String>,
     #[serde(default)]
@@ -74,11 +61,11 @@ pub(super) struct Summary {
 }
 
 pub(super) trait UpgradeHost {
-    async fn version(&self, node: &RemoteNode) -> Result<String>;
-    async fn has_service_units(&self, node: &RemoteNode) -> Result<bool>;
+    async fn version(&self, node: &Machine) -> Result<String>;
+    async fn has_service_units(&self, node: &Machine) -> Result<bool>;
     async fn upgrade(
         &self,
-        node: &RemoteNode,
+        node: &Machine,
         services_only: bool,
         drain_timeout: Duration,
         stack: bool,
@@ -86,19 +73,19 @@ pub(super) trait UpgradeHost {
 }
 
 impl UpgradeHost for ssh::Ssh {
-    async fn has_service_units(&self, node: &RemoteNode) -> Result<bool> {
+    async fn has_service_units(&self, node: &Machine) -> Result<bool> {
         let address = ssh::reachable_address(node).await?;
         self.has_service_units(node, &address).await
     }
 
-    async fn version(&self, node: &RemoteNode) -> Result<String> {
+    async fn version(&self, node: &Machine) -> Result<String> {
         let address = ssh::reachable_address(node).await?;
         self.node_version(node, &address).await
     }
 
     async fn upgrade(
         &self,
-        node: &RemoteNode,
+        node: &Machine,
         services_only: bool,
         drain_timeout: Duration,
         stack: bool,
@@ -115,13 +102,6 @@ impl UpgradeHost for ssh::Ssh {
     }
 }
 
-fn visit<'a>(node: &'a RemoteNode, nodes: &mut Vec<&'a RemoteNode>) {
-    for child in &node.nodes {
-        visit(child, nodes);
-    }
-    nodes.push(node);
-}
-
 fn print_version(message: &str, json: bool) {
     if json {
         cloud_err!("{message}");
@@ -136,7 +116,7 @@ pub(super) fn json_line(summary: &Summary) -> Result<String> {
 
 pub(super) async fn run(
     host: &impl UpgradeHost,
-    primary: &RemoteNode,
+    nodes: &[Machine],
     options: Options,
 ) -> Result<Vec<Summary>> {
     crate::Error::ensure(
@@ -146,13 +126,11 @@ pub(super) async fn run(
             options.dirty_paths.join(", ")
         ),
     )?;
-    let mut nodes = Vec::new();
-    visit(primary, &mut nodes);
     print_version(
         &format!("Local CLI: swarmy {}", swarmy_version::IDENTITY),
         options.format == Format::Json,
     );
-    for node in &nodes {
+    for node in nodes {
         print_version(
             &format!("{}: {}", node.name, host.version(node).await?),
             options.format == Format::Json,

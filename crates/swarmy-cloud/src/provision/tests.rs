@@ -24,7 +24,7 @@ impl FakeHost {
     }
 }
 impl SwarmHost for FakeHost {
-    fn adopt_key(&self, node: &RemoteNode, source: &Path) -> impl Future<Output = Result<()>> {
+    fn adopt_key(&self, node: &Machine, source: &Path) -> impl Future<Output = Result<()>> {
         std::future::ready((|| {
             self.push(format!("adopt {}", node.name));
             swarmy_config::write_private(&node.key_path, &fs::read(source)?)?;
@@ -33,8 +33,8 @@ impl SwarmHost for FakeHost {
     }
     fn provision(
         &self,
-        node: &RemoteNode,
-        primary: Option<&RemoteNode>,
+        node: &Machine,
+        primary: Option<&Machine>,
     ) -> impl Future<Output = Result<String>> {
         std::future::ready((|| {
             self.push(format!(
@@ -50,7 +50,7 @@ impl SwarmHost for FakeHost {
     }
     fn services(
         &self,
-        node: &RemoteNode,
+        node: &Machine,
         _: &str,
         _: &services::Options<'_>,
     ) -> impl Future<Output = Result<()>> {
@@ -59,7 +59,7 @@ impl SwarmHost for FakeHost {
             Ok(())
         })
     }
-    fn api_token(&self, node: &RemoteNode, _: &str) -> impl Future<Output = Result<String>> {
+    fn api_token(&self, node: &Machine, _: &str) -> impl Future<Output = Result<String>> {
         std::future::ready({
             self.push(format!("token {}", node.name));
             Ok("node-token".into())
@@ -67,7 +67,7 @@ impl SwarmHost for FakeHost {
     }
     fn build_image(
         &self,
-        node: &RemoteNode,
+        node: &Machine,
         _: &str,
         _: &Path,
         tag: &str,
@@ -77,7 +77,7 @@ impl SwarmHost for FakeHost {
             Ok(())
         })
     }
-    fn decommission(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
+    fn decommission(&self, node: &Machine) -> impl Future<Output = Result<()>> {
         std::future::ready((|| {
             self.push(format!("decommission {}", node.name));
             if self.fail_decommission.lock().unwrap().as_deref() == Some(&node.name) {
@@ -86,19 +86,19 @@ impl SwarmHost for FakeHost {
             Ok(())
         })())
     }
-    fn stop(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
+    fn stop(&self, node: &Machine) -> impl Future<Output = Result<()>> {
         std::future::ready({
             self.push(format!("stop {}", node.name));
             Ok(())
         })
     }
-    fn start(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
+    fn start(&self, node: &Machine) -> impl Future<Output = Result<()>> {
         std::future::ready({
             self.push(format!("start {}", node.name));
             Ok(())
         })
     }
-    fn reachable(&self, _: &RemoteNode) -> impl Future<Output = bool> {
+    fn reachable(&self, _: &Machine) -> impl Future<Output = bool> {
         std::future::ready(true)
     }
 }
@@ -157,6 +157,7 @@ fn request<'a>(
         copy_credential: false,
         recipe,
         cache: Path::new("/tmp/cache"),
+        bucket_keys: None,
     }
 }
 fn settings() -> Settings {
@@ -507,7 +508,7 @@ fn machine_maps_the_recorded_host() {
     let node = machine(&p.host, "swarmy", p.role, p.sandboxes, &p.local_storage);
     assert_eq!(node.private_ip, p.host.public_address);
     assert_eq!(node.key_path, p.host.ssh_key);
-    assert_eq!(node.cloud_settings().services, RemoteServices::Node);
+    assert_eq!(node.services, true);
 }
 #[test]
 fn lock_is_exclusive() {

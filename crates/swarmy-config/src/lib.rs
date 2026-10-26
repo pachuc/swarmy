@@ -13,14 +13,12 @@ mod object;
 mod partitions;
 pub use models::{CustomModel, CustomProvider};
 pub use partitions::{Partitions, PartitionsError};
-mod remote;
+mod bucket;
+mod names;
+pub use bucket::{BucketCredentials, BucketSpec, ownership_marker_key};
 pub use exports::parse_exports;
+pub use names::{default_sandboxes, validate_name, validate_service_user};
 pub use object::ObjectPrefix;
-pub use remote::{
-    AwsSettings, BucketCredentials, BucketSpec, Provider, RemoteNode, RemotePorts, RemoteProfile,
-    RemoteServices, RemoteSettings, default_sandboxes, ownership_marker_key, remote_path,
-    validate_remote_name, validate_service_user,
-};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -75,9 +73,9 @@ pub enum Error {
     KeyringRandomness(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("a new session requires --image NAME:TAG or default_image (SWARMY_DEFAULT_IMAGE)")]
     MissingImage,
-    #[error("remote configuration: {0}")]
-    Remote(&'static str),
-    #[error("invalid remote JSON: {0}")]
+    #[error("invalid value: {0}")]
+    Invalid(&'static str),
+    #[error("invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
     #[error("invalid S3 namespace: {0}")]
     S3Namespace(&'static str),
@@ -575,7 +573,6 @@ pub struct Settings {
     /// Service state: remote records, the API's upload staging, and `dev`'s pids
     /// and logs. Empty means the default; see `Settings::fill_default_locations`.
     pub state_dir: PathBuf,
-    pub remote: RemoteSettings,
     pub volume_snapshots: VolumeSnapshots,
     pub sandbox: SandboxSettings,
     pub gc: GarbageCollection,
@@ -635,7 +632,6 @@ impl Default for Settings {
         Self {
             state_dir: PathBuf::new(),
             api: ApiSettings::default(),
-            remote: RemoteSettings::default(),
             volume_snapshots: VolumeSnapshots::default(),
             sandbox: SandboxSettings::default(),
             gc: GarbageCollection::default(),
@@ -888,11 +884,10 @@ impl Settings {
         if table.remove("remote").is_some() {
             tracing::warn!(path = %path.display(), "ignoring the removed [remote] section; delete it (swarms are described in ~/.config/swarmy/swarms/NAME.toml)");
         }
-        let mut settings: Self = table.try_into()?;
+        let settings: Self = table.try_into()?;
         // An absent service user predates the setting; configuration files
         // take the new default while saved node records keep the empty value
         // so they fall back to the SSH login they were provisioned with.
-        settings.remote.normalize_service_user();
         settings.validate()?;
         settings.catalog()?;
         Ok(settings)

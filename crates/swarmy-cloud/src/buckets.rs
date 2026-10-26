@@ -7,7 +7,7 @@
 //! under the prefix.
 use aws_sdk_s3::error::ProvideErrorMetadata;
 
-use super::Cloud;
+use crate::Cloud;
 use crate::{BucketRemoval, ObjectBucket, Ownership, Result};
 use swarmy_config::BucketCredentials;
 
@@ -91,7 +91,7 @@ fn client(bucket: &ObjectBucket) -> Result<aws_sdk_s3::Client> {
     Ok(aws_sdk_s3::Client::from_conf(config))
 }
 
-pub(super) struct S3Buckets;
+pub(crate) struct S3Buckets;
 
 impl Cloud for S3Buckets {
     async fn verify_bucket_access(&self, bucket: &ObjectBucket) -> Result<()> {

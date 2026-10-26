@@ -8,13 +8,13 @@ use std::{
 };
 
 use crate::Result;
-use swarmy_config::{RemoteNode, RemoteProfile};
+use crate::provision::Machine;
 use tokio::io::AsyncWriteExt;
 use tokio::{process::Command, time::timeout};
 
 /// Options shared by every SSH and rsync invocation for a node. The host key
 /// learned while provisioning lives next to the key so later commands verify it.
-fn arguments(node: &RemoteNode) -> Result<Vec<String>> {
+fn arguments(node: &Machine) -> Result<Vec<String>> {
     options(
         &node.ssh_user,
         &node.key_path,
@@ -56,7 +56,7 @@ pub(crate) fn options(user: &str, key: &Path, known_hosts: &Path) -> Result<Vec<
 /// Service login for a node, validated so it is data, never shell.
 /// Bash on the host resolves its home (`~user`); Rust never assumes
 /// `/home/<user>`.
-fn service_user(node: &RemoteNode) -> Result<String> {
+fn service_user(node: &Machine) -> Result<String> {
     let user = node.service_user().to_owned();
     swarmy_config::validate_service_user(&user)?;
     Ok(user)
@@ -77,7 +77,7 @@ fn ssh_with(program: &OsStr, options: &[String]) -> Command {
     command
 }
 
-fn base(node: &RemoteNode) -> Result<Command> {
+fn base(node: &Machine) -> Result<Command> {
     Ok(ssh_with(OsStr::new("ssh"), &arguments(node)?))
 }
 
@@ -88,7 +88,7 @@ fn base(node: &RemoteNode) -> Result<Command> {
 /// # Errors
 ///
 /// Rejects node records whose public address is not an IP address.
-pub fn command(node: &RemoteNode) -> Result<Command> {
+pub fn command(node: &Machine) -> Result<Command> {
     let _: std::net::IpAddr = node
         .public_ip
         .parse()
@@ -101,7 +101,7 @@ pub fn command(node: &RemoteNode) -> Result<Command> {
 /// # Errors
 ///
 /// Rejects malformed instance addresses and reports when neither address answers over SSH.
-pub async fn reachable_address(node: &RemoteNode) -> Result<String> {
+pub async fn reachable_address(node: &Machine) -> Result<String> {
     first_reachable(
         OsStr::new("ssh"),
         &arguments(node)?,
@@ -136,20 +136,11 @@ pub(crate) async fn first_reachable(
 /// # Errors
 ///
 /// Rejects node records with an invalid SSH user.
-pub fn command_line(node: &RemoteNode, address: &str) -> Result<String> {
+pub fn command_line(node: &Machine, address: &str) -> Result<String> {
     let mut args = vec!["ssh".to_owned()];
     args.extend(arguments(node)?);
     args.push(address.to_owned());
     Ok(shell_words::join(args))
-}
-
-/// Send one control action (`check` or `exit`) to a running SSH control master.
-///
-/// # Errors
-///
-/// Reports a missing control socket and commands that time out after five seconds.
-pub async fn control(profile: &RemoteProfile, action: &str) -> Result<std::process::Output> {
-    control_socket(OsStr::new("ssh"), &profile.socket_path, action).await
 }
 
 pub(crate) async fn control_socket(
@@ -171,10 +162,6 @@ pub(crate) async fn control_socket(
     .map_err(|source| crate::Error::context(source, "SSH control request timed out"))?
     .map_err(crate::Error::ssh(&format!("control {action}")))?;
     Ok(output)
-}
-
-pub async fn healthy(profile: &RemoteProfile) -> bool {
-    alive(OsStr::new("ssh"), &profile.socket_path).await
 }
 
 pub(crate) async fn alive(program: &OsStr, socket: &Path) -> bool {
@@ -215,7 +202,7 @@ async fn run_output(command: &mut Command, action: &str) -> Result<std::process:
 /// that must work with no checkout on the host. The `action` names the
 /// attempted operation in [`crate::Error::Ssh`].
 async fn pipe_script(
-    node: &RemoteNode,
+    node: &Machine,
     address: &str,
     action: &str,
     script: &str,
@@ -270,7 +257,7 @@ pub(crate) async fn feed_and_wait(
 /// # Errors
 ///
 /// Reports `ssh-keygen` failures.
-pub async fn generate_key(node: &RemoteNode) -> Result<Vec<u8>> {
+pub async fn generate_key(node: &Machine) -> Result<Vec<u8>> {
     checked(
         Command::new("ssh-keygen")
             .args(["-q", "-t", "ed25519", "-N", "", "-f"])
@@ -289,7 +276,7 @@ pub async fn generate_key(node: &RemoteNode) -> Result<Vec<u8>> {
 /// # Errors
 ///
 /// Reports unreadable sources and keys `ssh-keygen` cannot parse.
-pub async fn adopt_key(node: &RemoteNode, source: &Path) -> Result<()> {
+pub async fn adopt_key(node: &Machine, source: &Path) -> Result<()> {
     let bytes = std::fs::read(source)?;
     swarmy_config::write_private(&node.key_path, &bytes)?;
     let output = run_output(
@@ -370,7 +357,7 @@ impl Ssh {
         Self { binaries: None }
     }
 
-    async fn node_target(node: &RemoteNode, address: &str) -> Result<crate::release::Target> {
+    async fn node_target(node: &Machine, address: &str) -> Result<crate::release::Target> {
         let output = run_output(
             base(node)?.arg(address).arg("uname -m"),
             "read node architecture",
@@ -380,7 +367,7 @@ impl Ssh {
     }
 
     async fn upload_release(
-        node: &RemoteNode,
+        node: &Machine,
         address: &str,
         node_dir: &str,
         release: &crate::release::Release,
@@ -437,7 +424,7 @@ impl Ssh {
     /// `/home/<user>`.
     async fn ensure_service_user(
         &self,
-        node: &RemoteNode,
+        node: &Machine,
         address: &str,
         user: &str,
     ) -> Result<String> {
@@ -472,7 +459,7 @@ impl Ssh {
         Ok(home)
     }
 
-    async fn prepare_host(&self, node: &RemoteNode, address: &str) -> Result<String> {
+    async fn prepare_host(&self, node: &Machine, address: &str) -> Result<String> {
         // Dedicated servers boot without cloud-init, so wait only when it is present.
         checked(base(node)?.arg(address)
             .arg("command -v rsync >/dev/null || (if command -v cloud-init >/dev/null 2>&1; then sudo cloud-init status --wait; fi; sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y rsync)"), "prepare remote rsync").await?;
@@ -482,7 +469,7 @@ impl Ssh {
         Ok(format!("{home}/swarmy"))
     }
 
-    async fn stage(&self, node: &RemoteNode, address: &str, stack: bool) -> Result<bool> {
+    async fn stage(&self, node: &Machine, address: &str, stack: bool) -> Result<bool> {
         let Some(binaries) = &self.binaries else {
             return Err(crate::Error::other(
                 "this SSH host was opened for teardown and cannot provision",
@@ -534,7 +521,7 @@ impl Ssh {
     /// # Errors
     ///
     /// Reports SSH failures and non-zero remote exits.
-    pub async fn has_service_units(&self, node: &RemoteNode, address: &str) -> Result<bool> {
+    pub async fn has_service_units(&self, node: &Machine, address: &str) -> Result<bool> {
         let mut script = piped_env();
         // Fail loudly inside the piped script, like decommission does: the
         // query must error when systemctl fails, never look like no units.
@@ -548,7 +535,7 @@ impl Ssh {
     /// # Errors
     ///
     /// Reports SSH failures and non-zero remote exits.
-    pub async fn node_version(&self, node: &RemoteNode, address: &str) -> Result<String> {
+    pub async fn node_version(&self, node: &Machine, address: &str) -> Result<String> {
         let output = run_output(
             base(node)?
                 .arg(address)
@@ -575,7 +562,7 @@ impl Ssh {
     /// remote build or restart failures.
     pub async fn upgrade(
         &self,
-        node: &RemoteNode,
+        node: &Machine,
         address: &str,
         services_only: bool,
         drain_timeout: Duration,
@@ -599,9 +586,9 @@ impl Ssh {
         );
         let mut remote = base(node)?;
         remote.arg(address).arg(script).stderr(Stdio::inherit());
-        let output = run_output(&mut remote, "remote upgrade").await?;
+        let output = run_output(&mut remote, "upgrade host").await?;
         serde_json::from_slice(&output.stdout)
-            .map_err(|source| crate::Error::context(source, "parse remote upgrade summary"))
+            .map_err(|source| crate::Error::context(source, "parse the host upgrade summary"))
     }
 
     /// Upload node files and run the provisioning script; returns the reachable address.
@@ -609,11 +596,7 @@ impl Ssh {
     /// # Errors
     ///
     /// Reports unreachable hosts and provisioning script failures.
-    pub async fn provision(
-        &self,
-        node: &RemoteNode,
-        primary: Option<&RemoteNode>,
-    ) -> Result<String> {
+    pub async fn provision(&self, node: &Machine, primary: Option<&Machine>) -> Result<String> {
         let address = wait_ssh(node).await?;
         let prebuilt = self.stage(node, &address, primary.is_none()).await?;
         let service_ip: std::net::Ipv4Addr =
@@ -668,7 +651,7 @@ impl Ssh {
                     mode,
                     service_ip,
                     spec.as_ref(),
-                    &node.region,
+                    node.region(),
                     node.sandboxes,
                     node,
                     prebuilt,
@@ -695,7 +678,7 @@ impl Ssh {
     /// Reports unreachable hosts and SSH failures. The wait is short
     /// (about half a minute): `down` must continue past a cancelled
     /// server instead of blocking for a full provisioning wait per host.
-    pub async fn decommission(&self, node: &RemoteNode) -> Result<()> {
+    pub async fn decommission(&self, node: &Machine) -> Result<()> {
         let address = wait_ssh_for(node, 6).await?;
         let user = service_user(node)?;
         let mut script = piped_env();
@@ -736,7 +719,7 @@ fn node_files_rsync_args(source: &Path, destination: &str) -> Vec<String> {
     .collect()
 }
 
-async fn upload_node_files(node: &RemoteNode, address: &str, node_dir: &str) -> Result<()> {
+async fn upload_node_files(node: &Machine, address: &str, node_dir: &str) -> Result<()> {
     let temp = tempfile::tempdir()?;
     crate::node_files::write_to(temp.path())?;
     cloud_out!(
@@ -769,12 +752,7 @@ async fn upload_node_files(node: &RemoteNode, address: &str, node_dir: &str) -> 
     .await
 }
 
-async fn copy_source(
-    node: &RemoteNode,
-    address: &str,
-    node_dir: &str,
-    checkout: &Path,
-) -> Result<()> {
+async fn copy_source(node: &Machine, address: &str, node_dir: &str, checkout: &Path) -> Result<()> {
     cloud_out!(
         "Copying {} to {node_dir}/source for the on-node build",
         checkout.display()
@@ -863,7 +841,7 @@ fn provisioning_command(
     spec: Option<&swarmy_config::BucketSpec>,
     fallback_region: &str,
     sandboxes: u32,
-    node: &RemoteNode,
+    node: &Machine,
     prebuilt: bool,
 ) -> Result<String> {
     let (bucket, region, endpoint, prefix, conditional_create, static_keys) = match spec {
@@ -902,7 +880,7 @@ fn provisioning_command(
 ///
 /// Reports SSH failures and image build failures on the node.
 pub async fn build_image_tagged(
-    node: &RemoteNode,
+    node: &Machine,
     address: &str,
     recipe: &Path,
     tag: &str,
@@ -919,14 +897,14 @@ pub async fn build_image_tagged(
 /// Build an image tagged with the node name for legacy remotes.
 /// # Errors
 /// Reports SSH or image build failures.
-pub async fn build_image(node: &RemoteNode, address: &str, recipe: &Path) -> Result<()> {
+pub async fn build_image(node: &Machine, address: &str, recipe: &Path) -> Result<()> {
     build_image_tagged(node, address, recipe, &node.name).await
 }
 
 /// Read the installed services token rather than assuming the uploaded value.
 /// # Errors
 /// Reports SSH and configuration failures.
-pub async fn api_token(node: &RemoteNode, address: &str) -> Result<String> {
+pub async fn api_token(node: &Machine, address: &str) -> Result<String> {
     let user = service_user(node)?;
     let output = run_output(
         base(node)?
@@ -947,7 +925,7 @@ pub async fn api_token(node: &RemoteNode, address: &str) -> Result<String> {
         })
 }
 
-async fn run_piped(node: &RemoteNode, action: &str, call: &str) -> Result<()> {
+async fn run_piped(node: &Machine, action: &str, call: &str) -> Result<()> {
     let address = wait_ssh_for(node, 6).await?;
     let mut script = piped_env();
     script.push_str("set -euo pipefail\n");
@@ -959,13 +937,13 @@ async fn run_piped(node: &RemoteNode, action: &str, call: &str) -> Result<()> {
 /// Stop and disable installed units.
 /// # Errors
 /// Reports SSH and unit failures.
-pub async fn stop_units(node: &RemoteNode) -> Result<()> {
+pub async fn stop_units(node: &Machine) -> Result<()> {
     run_piped(node, "stop swarmy units", "stop_installed_units").await
 }
 /// Enable and start installed units.
 /// # Errors
 /// Reports SSH and unit failures.
-pub async fn start_units(node: &RemoteNode) -> Result<()> {
+pub async fn start_units(node: &Machine) -> Result<()> {
     run_piped(node, "start swarmy units", "start_installed_units").await
 }
 
@@ -996,12 +974,12 @@ fn image_build_command(user: &str, recipe: &Path, tag: &str) -> Result<String> {
 /// the provisioning futures. Each validates the service user first and
 /// resolves its home through `~user` on the host, keeping one path
 /// implementation in bash.
-fn read_cluster_command(primary: &RemoteNode) -> Result<String> {
+fn read_cluster_command(primary: &Machine) -> Result<String> {
     let user = service_user(primary)?;
     Ok(format!("cat {}/.dev/fdb.cluster", tilde_repo(&user)))
 }
 
-fn copy_cluster_command(node: &RemoteNode, cluster: &str) -> Result<String> {
+fn copy_cluster_command(node: &Machine, cluster: &str) -> Result<String> {
     let user = service_user(node)?;
     let repo = tilde_repo(&user);
     Ok(format!(
@@ -1010,7 +988,7 @@ fn copy_cluster_command(node: &RemoteNode, cluster: &str) -> Result<String> {
     ))
 }
 
-fn tunnel_key_command(node: &RemoteNode) -> Result<String> {
+fn tunnel_key_command(node: &Machine) -> Result<String> {
     let user = service_user(node)?;
     let repo = tilde_repo(&user);
     Ok(format!(
@@ -1018,7 +996,7 @@ fn tunnel_key_command(node: &RemoteNode) -> Result<String> {
     ))
 }
 
-fn pin_primary_key_command(node: &RemoteNode, known_host: &str) -> Result<String> {
+fn pin_primary_key_command(node: &Machine, known_host: &str) -> Result<String> {
     let user = service_user(node)?;
     let repo = tilde_repo(&user);
     Ok(format!(
@@ -1029,9 +1007,9 @@ fn pin_primary_key_command(node: &RemoteNode, known_host: &str) -> Result<String
 
 // Generate the forwarding key on its owner; the primary login key never leaves the client.
 async fn install_tunnel(
-    node: &RemoteNode,
+    node: &Machine,
     address: &str,
-    primary: &RemoteNode,
+    primary: &Machine,
     source: &str,
 ) -> Result<()> {
     let output = run_output(
@@ -1120,7 +1098,7 @@ fn credential_excludes(repo: &Path, credential: &Path) -> Vec<PathBuf> {
     paths
 }
 
-async fn wait_ssh(node: &RemoteNode) -> Result<String> {
+async fn wait_ssh(node: &Machine) -> Result<String> {
     wait_ssh_for(node, 90).await
 }
 
@@ -1128,7 +1106,7 @@ async fn wait_ssh(node: &RemoteNode) -> Result<String> {
 /// passes over both addresses). Provisioning waits the full budget while a
 /// new machine boots; `down` passes a short budget so a cancelled server
 /// cannot block teardown for minutes per host.
-async fn wait_ssh_for(node: &RemoteNode, attempts: u32) -> Result<String> {
+async fn wait_ssh_for(node: &Machine, attempts: u32) -> Result<String> {
     for address in [&node.public_ip, &node.private_ip] {
         let _: std::net::IpAddr = address
             .parse()
@@ -1403,16 +1381,19 @@ mod provisioning_command_tests {
     #![deny(clippy::disallowed_methods)]
     use super::provisioning_command;
 
-    fn node() -> swarmy_config::RemoteNode {
-        serde_json::from_value(serde_json::json!({
-            "name": "demo", "region": "us-east-1", "instance_id": "i-test",
-            "public_ip": "203.0.113.1", "private_ip": "10.0.0.1",
-            "key_path": "key", "launch_attempted": true, "created_at": "now",
-            "launch_settings": {
-                "service_user": "swarmy", "local_storage": "/dev/nvme1n1",
-            },
-        }))
-        .unwrap()
+    fn node() -> super::Machine {
+        super::Machine {
+            name: "demo".into(),
+            public_ip: "203.0.113.1".into(),
+            private_ip: "10.0.0.1".into(),
+            key_path: "key".into(),
+            ssh_user: "root".into(),
+            service_user: "swarmy".into(),
+            local_storage: "/dev/nvme1n1".into(),
+            sandboxes: 4,
+            bucket: None,
+            services: true,
+        }
     }
 
     #[test]
@@ -1435,41 +1416,6 @@ mod provisioning_command_tests {
             provisioning_command("node", ip, None, "us-east-1", 4, &node(), true)
                 .unwrap()
                 .ends_with(" /dev/nvme1n1 true")
-        );
-    }
-
-    #[test]
-    fn legacy_nodes_keep_the_ssh_login_and_checkout() {
-        let ip = "10.0.0.1".parse().unwrap();
-        let legacy: swarmy_config::RemoteNode = serde_json::from_value(serde_json::json!({
-            "name": "legacy", "region": "us-east-1", "instance_id": "i-test",
-            "public_ip": "203.0.113.1", "private_ip": "10.0.0.1",
-            "key_path": "key", "launch_attempted": true, "created_at": "now",
-        }))
-        .unwrap();
-        assert_eq!(legacy.service_user(), "ubuntu");
-        assert_eq!(
-            provisioning_command("stack", ip, None, "us-east-1", 0, &legacy, false).unwrap(),
-            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 '' '' true false 0 ubuntu '' false"
-        );
-    }
-
-    #[test]
-    fn existing_launch_settings_without_user_keep_the_login() {
-        let ip = "10.0.0.1".parse().unwrap();
-        let existing: swarmy_config::RemoteNode = serde_json::from_value(serde_json::json!({
-            "name": "existing", "region": "us-east-1", "instance_id": "i-test",
-            "public_ip": "203.0.113.1", "private_ip": "10.0.0.1",
-            "key_path": "key", "launch_attempted": true, "created_at": "now",
-            "launch_settings": {
-                "aws": {"instance_type": "m6id.xlarge"}, "disk_gb": 100,
-            },
-        }))
-        .unwrap();
-        assert_eq!(existing.service_user(), "ubuntu");
-        assert_eq!(
-            provisioning_command("stack", ip, None, "us-east-1", 0, &existing, false).unwrap(),
-            "cd ~ubuntu/swarmy && bash scripts/remote-provision.sh stack 10.0.0.1 '' us-east-1 '' '' true false 0 ubuntu '' false"
         );
     }
 
@@ -1583,15 +1529,10 @@ mod provisioning_command_tests {
                 .unwrap()
                 .success()
         );
-        let node: swarmy_config::RemoteNode = serde_json::from_value(serde_json::json!({
-            "name": "demo", "region": "us-east-1", "instance_id": "",
-            "launch_attempted": false,
-            "public_ip": "203.0.113.10", "private_ip": "203.0.113.10",
-            "key_path": dir.path().join("adopted-key"), "ssh_user": "root",
-            "launch_settings": { "provider": "existing", "service_user": "swarmy" },
-            "created_at": "now"
-        }))
-        .unwrap();
+        let mut node = node();
+        node.key_path = dir.path().join("adopted-key");
+        node.public_ip = "203.0.113.10".into();
+        node.private_ip = node.public_ip.clone();
         super::adopt_key(&node, &source).await.unwrap();
         assert_eq!(
             std::fs::metadata(&node.key_path)

@@ -61,7 +61,7 @@ async fn open_tunnel(
             dir,
             target: ssh_target(host),
             placement: tunnel::Placement::Remote,
-            remote_ports: swarmy_config::RemotePorts::default(),
+            remote_ports: tunnel::StackPorts::default(),
         })
         .await
         .with_context(|| format!("opening the SSH tunnel to swarm {swarm}"))?;

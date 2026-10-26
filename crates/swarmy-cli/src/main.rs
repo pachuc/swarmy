@@ -70,11 +70,6 @@ enum Command {
         #[command(subcommand)]
         command: bench_command::Command,
     },
-    /// Launch, connect to, and inspect remote development stacks
-    Remote {
-        #[command(subcommand)]
-        command: swarmy_cloud::Command,
-    },
     /// Collect unreferenced chunks older than the configured grace window
     Gc {
         #[arg(long)]
@@ -214,12 +209,6 @@ fn main() -> anyhow::Result<()> {
         Command::Chat { args } => {
             runtime.block_on(run_chat(args, json, cli.allow_version_mismatch))
         }
-        #[cfg(feature = "remote")]
-        Command::Remote { command } => runtime.block_on(remote(command, json)),
-        #[cfg(not(feature = "remote"))]
-        Command::Remote { .. } => {
-            anyhow::bail!("swarmy was built without remote support");
-        }
         Command::Gc {
             dry_run,
             grace_seconds,
@@ -326,96 +315,6 @@ async fn run_doctor(json: bool) -> anyhow::Result<()> {
         std::process::exit(1);
     }
     Ok(())
-}
-
-/// Run a `swarmy remote` subcommand. The library reports what `remote down`
-/// would delete; only the CLI prints the
-/// confirmation wording and prompts.
-#[cfg(feature = "remote")]
-async fn remote(command: swarmy_cloud::Command, json: bool) -> anyhow::Result<()> {
-    let name = remote_name(&command);
-    let advises = matches!(&command, swarmy_cloud::Command::Down { .. });
-    let retry = command.clone();
-    let outcome = run_once(command, json, false, name, advises).await?;
-    match outcome {
-        swarmy_cloud::RunOutcome::Completed => Ok(()),
-        swarmy_cloud::RunOutcome::NeedsConfirmation { plan } => {
-            confirm_deletion(&plan, json)?;
-            run_once(retry, json, true, name, advises).await?;
-            Ok(())
-        }
-    }
-}
-
-/// One `swarmy remote` attempt: the library error plus the command context.
-/// Permission advice prints only for `down`, on every attempt.
-#[cfg(feature = "remote")]
-async fn run_once(
-    command: swarmy_cloud::Command,
-    json: bool,
-    confirmed: bool,
-    name: &'static str,
-    advises: bool,
-) -> anyhow::Result<swarmy_cloud::RunOutcome> {
-    use anyhow::Context as _;
-    Box::pin(swarmy_cloud::run(command, json, confirmed))
-        .await
-        .map_err(|error| {
-            if advises && matches!(error, swarmy_cloud::Error::MissingPermission { .. }) {
-                eprintln!(
-                    "The object store denied the named permission; nothing was deleted by this operation. Grant it and retry; local remote state is retained"
-                );
-            }
-            error
-        })
-        .with_context(|| format!("swarmy remote {name} failed"))
-}
-
-/// The subcommand name for edge error context.
-#[cfg(feature = "remote")]
-fn remote_name(command: &swarmy_cloud::Command) -> &'static str {
-    match command {
-        swarmy_cloud::Command::Adopt { .. } => "adopt",
-        swarmy_cloud::Command::AddNode { .. } => "add-node",
-        swarmy_cloud::Command::Upgrade { .. } => "upgrade",
-        swarmy_cloud::Command::Down { .. } => "down",
-        swarmy_cloud::Command::Connect { .. } => "connect",
-        swarmy_cloud::Command::Disconnect { .. } => "disconnect",
-        swarmy_cloud::Command::Logs { .. } => "logs",
-        swarmy_cloud::Command::Ls => "ls",
-    }
-}
-
-/// Print what `remote down` would delete and read one confirmation.
-/// The caller reruns the original command with `confirmed` set.
-#[cfg(feature = "remote")]
-fn confirm_deletion(plan: &swarmy_cloud::DeletionPlan, json: bool) -> anyhow::Result<()> {
-    use std::io::IsTerminal;
-    if json {
-        anyhow::bail!("remote down --json requires --yes to delete owned resources");
-    }
-    if !std::io::stdin().is_terminal() {
-        anyhow::bail!("remote down requires --yes without a terminal");
-    }
-    println!("Permanently delete these owned resources and their data:");
-    println!("  bucket {} (all objects and versions)", plan.bucket);
-    let answer = read_confirmation("Continue? [y/N] ")?;
-    if answer.trim() != "y" && answer.trim() != "yes" {
-        anyhow::bail!("remote down cancelled");
-    }
-    Ok(())
-}
-
-/// One confirmation reader for every remote prompt: print the wording,
-/// flush, and return the operator's answer.
-#[cfg(feature = "remote")]
-fn read_confirmation(message: &str) -> anyhow::Result<String> {
-    use std::io::Write;
-    print!("{message}");
-    std::io::stdout().flush()?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    Ok(answer)
 }
 
 /// Documented `swarmy ...` commands resolve against the real clap tree.

@@ -5,9 +5,10 @@ use std::{
 };
 
 use crate::Result;
-use swarmy_config::{RemoteNode, RemoteServices, Settings};
+use crate::provision::Machine;
+use swarmy_config::Settings;
 
-pub struct Options<'a> {
+pub(crate) struct Options<'a> {
     pub recipe: Option<&'a Path>,
     pub credential: Option<PathBuf>,
     pub keyring: Option<PathBuf>,
@@ -52,24 +53,32 @@ impl<'a> Options<'a> {
     ///
     /// Rejects credential copying without node services, and reports missing
     /// credential files and unreadable keyrings.
-    pub fn new(settings: &Settings, copy: bool, recipe: Option<&'a Path>) -> Result<Self> {
+    pub(crate) fn new(
+        settings: &Settings,
+        services: bool,
+        service_user: &str,
+        copy: bool,
+        recipe: Option<&'a Path>,
+    ) -> Result<Self> {
         let keyring = if copy {
             Some(swarmy_config::Keyring::path()?)
         } else {
             None
         };
-        Self::with_keyring(settings, copy, recipe, keyring)
+        Self::with_keyring(settings, services, service_user, copy, recipe, keyring)
     }
 
     pub(super) fn with_keyring(
         settings: &Settings,
+        services: bool,
+        service_user: &str,
         copy: bool,
         recipe: Option<&'a Path>,
         keyring: Option<PathBuf>,
     ) -> Result<Self> {
         crate::Error::ensure(
-            !copy || settings.remote.services == RemoteServices::Node,
-            "--copy-credential requires --services node (or remote.services = 'node')",
+            !copy || services,
+            "--copy-credential requires the swarm's services on its hosts",
         )?;
         if let Some(path) = &keyring {
             swarmy_config::Keyring::read(path)?;
@@ -85,14 +94,12 @@ impl<'a> Options<'a> {
             None
         };
         crate::Error::ensure(
-            settings.remote.services != RemoteServices::Node
-                || settings.selection.provider == "fake"
-                || credential.is_some(),
+            !services || settings.selection.provider == "fake" || credential.is_some(),
             "node gateway requires --copy-credential for ChatGPT; this explicitly acknowledges the credential leaves the laptop",
         )?;
         // Copy only service options. Local paths, cloud secrets, endpoints, and
         // the selected tunnel profile must never become node configuration.
-        swarmy_config::validate_service_user(&settings.remote.service_user)?;
+        swarmy_config::validate_service_user(&service_user)?;
         let mut remote = Settings {
             api: settings.api.clone(),
             selection: swarmy_config::SelectionSettings {
@@ -130,16 +137,14 @@ impl<'a> Options<'a> {
             },
             ..Settings::default()
         };
-        if settings.remote.services == RemoteServices::Node && remote.api.token.is_empty() {
+        if services && remote.api.token.is_empty() {
             // Control nodes serve the API, which rejects every request while its
             // token is empty. Provision a token here with the same generator
             // local swarms use. Only fill when empty so a reinstall never rotates
             // an existing token out from under connected profiles.
             remote.api.token = ulid::Ulid::generate().to_string();
         }
-        let fake_script = if settings.remote.services == RemoteServices::Node
-            && settings.selection.provider == "fake"
-        {
+        let fake_script = if services && settings.selection.provider == "fake" {
             Some(match std::fs::read(&settings.fake.script) {
                     Ok(script) => script,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
@@ -159,7 +164,7 @@ impl<'a> Options<'a> {
     }
 }
 
-pub(crate) async fn install(node: &RemoteNode, address: &str, options: &Options<'_>) -> Result<()> {
+pub(crate) async fn install(node: &Machine, address: &str, options: &Options<'_>) -> Result<()> {
     let user = node.service_user().to_owned();
     swarmy_config::validate_service_user(&user)?;
     // Bash resolves `~user` through the passwd entry; Rust passes only the login.
@@ -230,7 +235,7 @@ fn keyring_script(user: &str, home: &str) -> String {
     )
 }
 
-async fn upload(node: &RemoteNode, address: &str, path: &str, bytes: &[u8]) -> Result<()> {
+async fn upload(node: &Machine, address: &str, path: &str, bytes: &[u8]) -> Result<()> {
     // Data travels on stdin, never in a shell argument, diagnostic, or process listing.
     // The remote file is private from creation, including on interrupted writes.
     let user = node.service_user();
@@ -244,7 +249,7 @@ async fn upload(node: &RemoteNode, address: &str, path: &str, bytes: &[u8]) -> R
 /// Upload bytes to a root-owned 0600 path over SSH stdin. Data travels on
 /// stdin, never in a shell argument, diagnostic, or process listing.
 pub(crate) async fn upload_root(
-    node: &RemoteNode,
+    node: &Machine,
     address: &str,
     path: &str,
     bytes: &[u8],
@@ -259,7 +264,7 @@ pub(crate) async fn upload_root(
 /// SSH stdin into a root-owned 0600 file; the provisioning script merges them
 /// into the node environment without printing them, and deletes any staging
 /// file left from before when the bucket uses the instance role.
-pub(crate) async fn upload_bucket_keys(node: &RemoteNode, address: &str) -> Result<()> {
+pub(crate) async fn upload_bucket_keys(node: &Machine, address: &str) -> Result<()> {
     let Some(spec) = node.bucket_spec() else {
         return Ok(());
     };
@@ -280,7 +285,7 @@ pub(crate) async fn upload_bucket_keys(node: &RemoteNode, address: &str) -> Resu
     upload_root(node, address, "/etc/swarmy/s3-keys.env", bytes.as_bytes()).await
 }
 
-async fn upload_with(node: &RemoteNode, address: &str, script: &str, bytes: &[u8]) -> Result<()> {
+async fn upload_with(node: &Machine, address: &str, script: &str, bytes: &[u8]) -> Result<()> {
     let command = "copy node service file".to_owned();
     let child = super::ssh::command(node)?
         .arg(address)
@@ -301,9 +306,8 @@ mod tests {
     fn default_image_keeps_token() {
         let mut settings = Settings::default();
         settings.selection.provider = "fake".into();
-        settings.remote.services = RemoteServices::Node;
         settings.api.token = "test-token".into();
-        let options = Options::with_keyring(&settings, false, None, None)
+        let options = Options::with_keyring(&settings, true, "swarmy", false, None, None)
             .unwrap()
             .with_default_image("base-ubuntu:test")
             .unwrap();

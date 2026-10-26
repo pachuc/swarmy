@@ -1,7 +1,7 @@
 //! Placement always names groups. To run services on this machine, declare
 //! `[groups.local] module = "local"` and set `services = "local"`. The value
 //! is a group name, not a keyword; `swarm create --local` will write that group.
-use crate::{Error, remote::is_valid_name};
+use crate::{Error, names::is_valid_name};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},

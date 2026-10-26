@@ -28,19 +28,15 @@ macro_rules! cloud_err {
     ($($arg:tt)*) => { $crate::emit(&format!($($arg)*), true) };
 }
 
-mod command;
+#[cfg(feature = "remote")]
+mod buckets;
 pub mod node_files;
 pub mod provision;
 pub mod release;
+pub mod secrets;
+mod services;
 pub mod ssh;
 pub mod tunnel;
-pub use command::{BucketArgs, Command};
-#[cfg(feature = "remote")]
-mod remote;
-mod services;
-#[cfg(feature = "remote")]
-pub use remote::{DeletionPlan, RunOutcome, ServiceOptions, run};
-
 /// Failures returned to clients of the remote provisioning entry point.
 ///
 /// Only failures callers act on have their own variant: missing permissions
@@ -51,10 +47,6 @@ pub use remote::{DeletionPlan, RunOutcome, ServiceOptions, run};
 /// as its source for the binary to render with its source chain.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("no remote node named {0}; create it with swarmy remote adopt")]
-    NotFound(String),
-    #[error("remote node {0} already exists; run swarmy remote down {0} first")]
-    AlreadyExists(String),
     #[error("missing permission for {operation}")]
     MissingPermission {
         operation: String,
@@ -196,8 +188,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 use std::future::Future;
 use swarmy_core::ignore_best_effort;
 
-use swarmy_config::RemoteNode;
-
 /// Provider-neutral description of the object bucket backing a remote.
 ///
 /// The bucket description is [`swarmy_config::BucketSpec`]: endpoint, region,
@@ -255,65 +245,4 @@ pub trait Cloud {
     fn bucket_ownership(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<Ownership>>;
     /// Delete the owned prefix scope and bucket when empty.
     fn delete_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<BucketRemoval>>;
-}
-
-/// Provisioning and decommissioning over SSH, replaceable by a fake in tests.
-pub trait Host {
-    fn services(
-        &self,
-        node: &RemoteNode,
-        address: &str,
-        options: &services::Options<'_>,
-    ) -> impl Future<Output = Result<()>>;
-    fn build_image(
-        &self,
-        node: &RemoteNode,
-        address: &str,
-        recipe: &std::path::Path,
-    ) -> impl Future<Output = Result<()>>;
-    /// Copy an operator-owned bootstrap key into remote state for adoption.
-    fn adopt_key(
-        &self,
-        node: &RemoteNode,
-        source: &std::path::Path,
-    ) -> impl Future<Output = Result<()>>;
-    /// Stop services and remove swarmy files on an adopted host.
-    fn decommission(&self, node: &RemoteNode) -> impl Future<Output = Result<()>>;
-    fn provision(
-        &self,
-        node: &RemoteNode,
-        primary: Option<&RemoteNode>,
-    ) -> impl Future<Output = Result<String>>;
-}
-
-impl Host for ssh::Ssh {
-    async fn services(
-        &self,
-        node: &RemoteNode,
-        address: &str,
-        options: &services::Options<'_>,
-    ) -> Result<()> {
-        services::install(node, address, options).await
-    }
-
-    async fn build_image(
-        &self,
-        node: &RemoteNode,
-        address: &str,
-        recipe: &std::path::Path,
-    ) -> Result<()> {
-        ssh::build_image(node, address, recipe).await
-    }
-
-    async fn adopt_key(&self, node: &RemoteNode, source: &std::path::Path) -> Result<()> {
-        ssh::adopt_key(node, source).await
-    }
-
-    async fn decommission(&self, node: &RemoteNode) -> Result<()> {
-        ssh::Ssh::decommission(self, node).await
-    }
-
-    async fn provision(&self, node: &RemoteNode, primary: Option<&RemoteNode>) -> Result<String> {
-        ssh::Ssh::provision(self, node, primary).await
-    }
 }
