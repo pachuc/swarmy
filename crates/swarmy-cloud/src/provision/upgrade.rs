@@ -107,10 +107,6 @@ fn print_version(message: &str, json: bool) {
     }
 }
 
-pub(super) fn json_line(summary: &Summary) -> Result<String> {
-    Ok(serde_json::to_string(summary)?)
-}
-
 pub(super) async fn run(
     host: &impl UpgradeHost,
     nodes: &[Machine],

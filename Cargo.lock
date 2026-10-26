@@ -3914,14 +3914,12 @@ name = "swarmy-cloud"
 version = "0.1.0"
 dependencies = [
  "aws-sdk-s3",
- "clap",
  "fs2",
  "jiff",
  "reqwest",
  "serde",
  "serde_json",
  "shell-words",
- "swarmy-api-types",
  "swarmy-aws",
  "swarmy-client",
  "swarmy-config",

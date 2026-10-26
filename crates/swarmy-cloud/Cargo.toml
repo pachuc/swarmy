@@ -17,14 +17,12 @@ workspace = true
 [dependencies]
 aws-sdk-s3 = { workspace = true, optional = true }
 swarmy-aws = { workspace = true, optional = true }
-clap.workspace = true
 fs2.workspace = true
 jiff.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 shell-words.workspace = true
-swarmy-api-types.workspace = true
 swarmy-client.workspace = true
 swarmy-config.workspace = true
 swarmy-infra.workspace = true
