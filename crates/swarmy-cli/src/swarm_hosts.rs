@@ -456,7 +456,8 @@ pub(crate) async fn scale(
     force: bool,
     json_output: bool,
 ) -> Result<()> {
-    use swarmy_cloud::provision::scale::{ScaleRequest, scale_swarm};
+    use swarmy_cloud::provision::scale::{ScaleRequest, check_scalable, scale_swarm};
+    let _ = check_scalable(spec, group)?;
     let pair = machines_for(registry, spec, groups::has_module_groups(spec)).await?;
     let settings = swarmy_config::Settings::load_base()?.settings;
     let report = scale_swarm(ScaleRequest {

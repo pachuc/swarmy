@@ -114,7 +114,9 @@ pub async fn scale_swarm(request: ScaleRequest<'_>) -> Result<ScaleReport> {
             request.group, request.spec.name, request.group
         )));
     }
-    let host = if usize::try_from(request.count).unwrap_or(usize::MAX) > recorded {
+    // A same-count rerun can still have an unprovisioned host recorded by a
+    // previous apply. Keep provisioning binaries available for that resume.
+    let host = if kind == GroupKind::Module && request.count as usize >= recorded {
         ssh::Ssh::for_client(request.cache)?
     } else {
         ssh::Ssh::teardown()

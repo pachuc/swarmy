@@ -685,3 +685,32 @@ fn scale_refuses_stack_group_and_local_swarm() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("runs on this machine"));
 }
+
+#[test]
+fn same_count_scale_resumes_an_unprovisioned_worker() {
+    let f = setup();
+    single_worker(&f);
+    worker_outputs(&f, 2);
+    f.ok(&["swarm", "scale", "fleet", "workers", "2"]);
+    let dirs = Dirs {
+        config: f.path().join("config/swarmy"),
+        data: f.path().join("data/swarmy"),
+        state: f.path().join("state/swarmy"),
+        cache: f.path().join("cache/swarmy"),
+    };
+    let registry = Registry::new(dirs);
+    let mut record = registry.read_record("fleet").unwrap().unwrap();
+    record.hosts.get_mut("workers").unwrap()[1].provisioned = false;
+    registry.write_record(&record).unwrap();
+    let before = fs::read_to_string(f.path().join("ssh-commands"))
+        .unwrap()
+        .matches("remote-provision.sh node")
+        .count();
+    f.ok(&["swarm", "scale", "fleet", "workers", "2"]);
+    let after = fs::read_to_string(f.path().join("ssh-commands"))
+        .unwrap()
+        .matches("remote-provision.sh node")
+        .count();
+    assert_eq!(after, before + 1);
+    assert!(registry.read_record("fleet").unwrap().unwrap().hosts["workers"][1].provisioned);
+}
