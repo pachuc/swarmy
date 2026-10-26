@@ -23,6 +23,7 @@ case $* in
   *'/server_types?'*) cat "$CURL_FIXTURE/server-types.json";;
   *'/pricing'*) cat "$CURL_FIXTURE/pricing.json";;
   *'/servers?'*) cat "$CURL_FIXTURE/servers.json";;
+  *'/primary_ips/'*) printf '%s' "${PRIMARY_IP_CODE:-404}";;
   *'/networks?'*) echo '{"networks":[]}' ;;
   *'/firewalls?'*) echo '{"firewalls":[]}' ;;
   *'/ssh_keys?'*) echo '{"ssh_keys":[]}' ;;
@@ -67,7 +68,17 @@ PY
 if py server-type "$fake/bad.json" fsn1 cpx31 > "$fake/out" 2> "$fake/err"; then exit 1; fi
 py alternatives "$fake/bad.json" fsn1 2> "$fake/err"
 grep -q cpx41 "$fake/err"
+primary_ids=(1)
 verify_clean
+printf '{"servers":[{"id":1,"name":"acc-test-control-1","public_net":{"ipv4":{"id":1}}}]}\n' > "$fake/servers.json"
+[[ $(py primary-ids "$fake/servers.json") == 1 ]]
+printf '{"servers":[{"public_net":{"ipv4":{"id":null}}}]}\n' > "$fake/servers.json"
+if py primary-ids "$fake/servers.json" 2> "$fake/err"; then exit 1; fi
+printf '{"servers":[]}\n' > "$fake/servers.json"
+PRIMARY_IP_CODE=200; export PRIMARY_IP_CODE
+if verify_clean 2> "$fake/err"; then exit 1; fi
+grep -q "primary IPv4 remains" "$fake/err"
+unset PRIMARY_IP_CODE
 printf '{"servers":[{"id":1,"name":"acc-test-control-1"}]}\n' > "$fake/servers.json"
 if verify_clean 2> "$fake/err"; then exit 1; fi
 grep -q 'servers: acc-test-control-1' "$fake/err"
@@ -79,11 +90,21 @@ manual_cleanup 2> "$fake/err"
 grep -q 'swarmy-swarm=acc-test' "$fake/err"
 grep -q acc-test-bucket "$fake/err"
 if grep -Eq 'hcloud-secret-5f2b9c|s3-secret-91d0' "$fake/err"; then exit 1; fi
-py tool-output-contains "$fixture/session-show.json" swarmy-acceptance-abcdef123456 checkpoint
-if py tool-output-contains "$fixture/session-show.json" assistant-only-nonce 2> "$fake/err"; then exit 1; fi
+py tool-output-contains "$fixture/session-show.json" swarmy-acceptance-abcdef123456 0 checkpoint
+[[ $(py max-seq "$fixture/session-show.json") == 5 ]]
+if py tool-output-contains "$fixture/session-show.json" swarmy-acceptance-abcdef123456 4 2> "$fake/err"; then exit 1; fi
+if py tool-output-contains "$fixture/session-show.json" assistant-only-nonce 0 2> "$fake/err"; then exit 1; fi
 if parse_args --location ash 2>/dev/null; then exit 1; fi
+if parse_args --server-type "bad/type" 2>/dev/null; then exit 1; fi
 if parse_args --max-minutes 5 2>/dev/null; then exit 1; fi
 [[ $( (parse_args --unknown) 2>/dev/null; echo $? ) == 2 ]]
+py doctor "$fixture/doctor.json"
+python3 - "$fixture/doctor.json" "$fake/doctor-warn.json" <<'PY'
+import json,sys
+body=json.load(open(sys.argv[1])); body["checks"][0]["status"]="warn"
+open(sys.argv[2],"w").write(json.dumps(body))
+PY
+if py doctor "$fake/doctor-warn.json" 2> "$fake/err"; then exit 1; fi
 yes=0
 if confirm_cost > "$fake/out" 2>&1; then exit 1; fi
 grep -qx 're-run with --yes to create these machines' "$fake/out"
@@ -98,5 +119,63 @@ chmod +x "$fake/bin/swarmy"
 parse_args --provider openai --swarmy "$fake/bin/swarmy"
 if local_preconditions 2> "$fake/err"; then exit 1; fi
 grep -q -- '--model ID' "$fake/err"
+printf 'fixture-key' > "$fake/key"
+chmod 600 "$fake/key"
+parse_args --provider openai --model fixture --api-key-file "$fake/key" --swarmy "$fake/bin/swarmy"
+if local_preconditions 2> "$fake/err"; then exit 1; fi
+grep -q 'this swarmy has no swarm scale' "$fake/err"
+# Source the script in a separate shell: no cloud path runs. The actual EXIT
+# teardown must wait for a hung step to stop before invoking fake swarm down.
+cat > "$fake/bin/teardown-swarmy" <<'STUB'
+#!/usr/bin/env bash
+case $* in
+    'swarm down acc-signal')
+        if [[ -f $SIGNAL_DIR/stopped ]]; then
+            touch "$SIGNAL_DIR/teardown-after-stop"
+        else
+            touch "$SIGNAL_DIR/teardown-before-stop"
+        fi;;
+    'swarm rm acc-signal') :;;
+    *) exit 1;;
+esac
+STUB
+chmod +x "$fake/bin/teardown-swarmy"
+cat > "$fake/signal-harness.sh" <<'HARNESS'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ACCEPTANCE_SCRIPT"
+deadline=$((SECONDS + 60))
+step_pid=''
+created=1 dry_run=1 name=acc-signal bucket='' location=fsn1
+work="$SIGNAL_DIR/work"
+mkdir -p "$work"
+swarmy=$SIGNAL_SWARMY
+trap 'interrupted 130' INT TERM
+trap 'interrupted 129' HUP
+trap on_exit EXIT
+step hung bash -c 'trap "touch \"$SIGNAL_DIR/stopped\"; exit 130" INT TERM HUP; touch "$SIGNAL_DIR/ready"; while :; do sleep 1; done'
+HARNESS
+export ACCEPTANCE_SCRIPT=$PWD/scripts/acceptance-hetzner-cloud.sh SIGNAL_SWARMY=$fake/bin/teardown-swarmy
+set -m
+for signal in INT HUP; do
+    export SIGNAL_DIR="$fake/$signal"
+    mkdir -p "$SIGNAL_DIR"
+    bash "$fake/signal-harness.sh" > "$SIGNAL_DIR/out" 2> "$SIGNAL_DIR/err" &
+    signal_pid=$!
+    for _ in {1..100}; do [[ -f $SIGNAL_DIR/ready ]] && break; sleep 0.02; done
+    [[ -f $SIGNAL_DIR/ready ]] || { kill -KILL "$signal_pid"; echo "step never started" >&2; exit 1; }
+    kill -s "$signal" "$signal_pid"
+    for _ in {1..100}; do ! kill -0 "$signal_pid" 2>/dev/null && break; sleep 0.02; done
+    if kill -0 "$signal_pid" 2>/dev/null; then
+        kill -KILL "$signal_pid" 2>/dev/null || :
+        echo "$signal did not promptly interrupt the step" >&2
+        exit 1
+    fi
+    signal_status=0
+    wait "$signal_pid" || signal_status=$?
+    if [[ $signal == INT ]]; then [[ $signal_status == 130 ]]; else [[ $signal_status == 129 ]]; fi
+    [[ -f $SIGNAL_DIR/stopped && -f $SIGNAL_DIR/teardown-after-stop && ! -e $SIGNAL_DIR/teardown-before-stop ]]
+    if grep -q 'acceptance passed' "$SIGNAL_DIR/out"; then exit 1; fi
+done
 # The real main path is never invoked here; even negative cases stay isolated.
 echo 'acceptance helper tests passed'

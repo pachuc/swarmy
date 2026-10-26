@@ -58,26 +58,37 @@ elif cmd == 'plan':
     groups = load(args[0])['groups']
     assert len(groups) == 2 and {g['group'] for g in groups} == {'control', 'workers'} and all(g['changes'] is True for g in groups)
 elif cmd == 'doctor':
-    assert any('sandbox' in n['roles'] for n in load(args[0])['nodes'])
+    body = load(args[0])
+    assert body['ok'] is True, 'doctor reported failures'
+    assert any(c['name'] == 'nodes' and c['status'] == 'pass' for c in body['checks']), 'doctor sees no live node'
+elif cmd == 'primary-ids':
+    for server in load(args[0])['servers']:
+        ip_id = server['public_net']['ipv4']['id']
+        assert isinstance(ip_id, int), 'server primary IPv4 has no id'
+        print(ip_id)
 elif cmd == 'session-id':
     print(next(e['session_id'] for e in map(json.loads, Path(args[0]).read_text().splitlines()) if e.get('event') in ('session_created', 'session_opened')))
+elif cmd == 'max-seq':
+    rows = [json.loads(l) for l in Path(args[0]).read_text().splitlines()[1:]]
+    print(max((v.get('seq', 0) for r in rows for v in r.values() if isinstance(v, dict)), default=0))
 elif cmd == 'session-node':
     session = json.loads(Path(args[0]).read_text().splitlines()[0])
     node = (session.get('placement') or session.get('scratch') or {}).get('node_id')
     if node: print('agent node after shrink: ' + node)
 elif cmd == 'tool-output-contains':
+    after = int(args[2])
     records = [json.loads(line) for line in Path(args[0]).read_text().splitlines()[1:]]
     calls = {}
     results = {}
     for row in records:
         event = row.get('tool_call_requested') or row.get('tool_call_completed')
-        if not event: continue
+        if not event or event['seq'] <= after: continue
         if 'call' in event: calls[event['call']['call_id']] = event['call']['tool']
         if 'result' in event: results[event['call_id']] = event['result']
     needle = args[1]
     assert any(needle in r.get('completed', {}).get('output', '') and calls.get(cid) == 'bash'
                for cid, r in results.items()), 'nonce absent from bash tool result'
-    if len(args) > 2 and args[2] == 'checkpoint':
+    if len(args) > 3 and args[3] == 'checkpoint':
         assert any(calls.get(cid) == 'checkpoint' and 'completed' in r for cid, r in results.items()), 'checkpoint did not succeed'
 elif cmd == 'leftovers':
     body, kind = load(args[0]), args[1]
@@ -92,6 +103,7 @@ fail() { echo "$*" >&2; return 1; }
 py() { python3 -c "$ACCEPTANCE_PY" "$@"; }
 new_name() { printf 'acc-%s\n' "$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"; }
 hcloud_get() { py hcloud-config | curl -K - --fail-with-body --silent --show-error --max-time 30 --retry 3 "https://api.hetzner.cloud/v1$1"; }
+hcloud_status() { py hcloud-config | curl -K - --fail-with-body --silent --show-error --max-time 30 --retry 3 -o /dev/null -w '%{http_code}' "https://api.hetzner.cloud/v1$1"; }
 s3_status() { py s3-config "$location" | curl -K - --fail-with-body --silent --show-error --max-time 30 --retry 3 -I -o /dev/null -w '%{http_code}' "https://$location.your-objectstorage.com/$1"; }
 s3_list_ok() {
     local code
@@ -99,11 +111,19 @@ s3_list_ok() {
     [[ $code == 200 ]]
 }
 step() {
-    local label=$1 remaining; shift
+    local label=$1 remaining status=0; shift
     echo "== $label" >&2
     remaining=$((deadline - SECONDS))
     ((remaining > 0)) || fail "max runtime reached before $label"
-    timeout --signal=INT --kill-after=60 "$remaining" "$@"
+    timeout --signal=INT --kill-after=60 "$remaining" "$@" &
+    step_pid=$!
+    wait "$step_pid" || status=$?
+    step_pid=''
+    return "$status"
+}
+interrupted() {
+    if [[ -n ${step_pid:-} ]]; then kill -INT "$step_pid" 2>/dev/null || :; wait "$step_pid" 2>/dev/null || :; fi
+    exit "$1"
 }
 manual_cleanup() {
     echo "retry: swarmy swarm down $name --destroy" >&2
@@ -115,12 +135,16 @@ manual_cleanup() {
     echo 'No credential was printed.' >&2
 }
 verify_clean() {
-    local kind file leftovers=0 code
+    local kind file leftovers=0 code ip_id
     for kind in servers networks firewalls ssh_keys; do
         file=$(mktemp)
         if ! hcloud_get "/$kind?label_selector=swarmy-swarm%3D$name" > "$file"; then leftovers=1
         elif ! py leftovers "$file" "$kind"; then leftovers=1; fi
         rm -f "$file"
+    done
+    for ip_id in "${primary_ids[@]}"; do
+        code=$(hcloud_status "/primary_ips/$ip_id") || :
+        [[ $code == 404 ]] || { echo "primary IPv4 remains (HTTP $code)" >&2; leftovers=1; }
     done
     if [[ -n $bucket ]]; then
         code=$(s3_status "$bucket") || :
@@ -134,7 +158,7 @@ on_exit() {
     local result=$? down_ok=0 clean_ok=0
     trap - EXIT
     if ((created)); then
-        trap 'echo "teardown interrupted" >&2; manual_cleanup; exit 130' INT
+        trap 'echo "teardown interrupted" >&2; manual_cleanup; exit 130' INT TERM HUP
         if ((dry_run)); then
             timeout 1800 "$swarmy" swarm down "$name" && down_ok=1 || :
             echo 'dry run: Hetzner API checks skipped'
@@ -176,11 +200,12 @@ parse_args() {
         esac
         shift
     done
+    [[ $server_type =~ ^[a-z0-9-]+$ ]] || { fail 'choose --server-type using lowercase letters, digits and hyphens'; return 1; }
     [[ $location =~ ^(fsn1|nbg1|hel1)$ ]] || { fail 'choose --location fsn1, nbg1, or hel1'; return 1; }
     if ! [[ $max_minutes =~ ^[0-9]+$ ]] || ((max_minutes < 20 || max_minutes > 240)); then fail 'choose --max-minutes between 20 and 240'; return 1; fi
 }
 local_preconditions() {
-    ((BASH_VERSINFO[0] >= 4)) || fail 'install bash 4 or newer'
+    ((BASH_VERSINFO[0] > 4 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4)) || fail 'install bash 4.4 or newer'
     for bin in curl python3 ssh-keygen timeout; do command -v "$bin" >/dev/null || fail "install $bin"; done
     python3 -c 'import tomllib,sys; sys.exit(sys.version_info < (3,11))' || fail 'install Python 3.11 or newer'
     local version
@@ -196,7 +221,7 @@ local_preconditions() {
             [[ -f $api_key_file && ! -L $api_key_file && -s $api_key_file && $(stat -c %a "$api_key_file") == 600 ]] || fail 'pass --api-key-file FILE: nonempty regular file with mode 0600'
         fi
         [[ -z ${SWARMY_TOFU_BIN:-} ]] || echo 'warning: SWARMY_TOFU_BIN set; real run should use pinned OpenTofu download' >&2
-        "$swarmy" swarm scale --help >/dev/null 2>&1 || echo 'warning: swarm scale is not available yet; the run will fail at scaling' >&2
+        "$swarmy" swarm scale --help >/dev/null 2>&1 || fail 'this swarmy has no swarm scale; pass --swarmy built from the swarms branch'
     fi
 }
 setup_dry_run() {
@@ -223,11 +248,13 @@ confirm_cost() {
     ((yes)) || { echo 're-run with --yes to create these machines'; return 1; }
 }
 main() {
-    yes=0 dry_run=0 provider='' model='' api_key_file='' server_type='' location='' max_minutes='' swarmy='' name='' bucket='' work='' created=0 deadline=0 nonce='' plan_file='' file='' session_id='' rate='' started=$SECONDS
+    yes=0 dry_run=0 provider='' model='' api_key_file='' server_type='' location='' max_minutes='' swarmy='' name='' bucket='' work='' created=0 deadline=0 nonce='' plan_file='' file='' session_id='' rate='' after_seq='' step_pid='' started=$SECONDS
+    primary_ids=()
     parse_args "$@"
     [[ -n $swarmy ]] || swarmy=$(command -v swarmy || :)
     trap on_exit EXIT
-    trap 'exit 130' INT TERM
+    trap 'interrupted 130' INT TERM
+    trap 'interrupted 129' HUP
     ((dry_run == 0)) || setup_dry_run
     local_preconditions
     name=$(new_name)
@@ -267,7 +294,7 @@ main() {
     file=$(mktemp)
     step volume-write "$swarmy" --swarm "$name" --json run --agent acceptance "Use the bash tool to run exactly: printf %s $nonce > /home/agent/acceptance.txt && cat /home/agent/acceptance.txt && uname -m. Then call the checkpoint tool. Reply with the command output." > "$file"
     session_id=$(py session-id "$file"); rm -f "$file"
-    file=$(mktemp); step show-write "$swarmy" --swarm "$name" session show "$session_id" --json > "$file"; py tool-output-contains "$file" "$nonce" checkpoint; rm -f "$file"
+    file=$(mktemp); step show-write "$swarmy" --swarm "$name" session show "$session_id" --json > "$file"; py tool-output-contains "$file" "$nonce" 0 checkpoint; after_seq=$(py max-seq "$file"); rm -f "$file"
     step scale-up "$swarmy" swarm scale "$name" workers 2
     check_hosts 3
     step scale-down "$swarmy" swarm scale "$name" workers 1
@@ -275,11 +302,19 @@ main() {
     file=$(mktemp)
     step volume-read "$swarmy" --swarm "$name" --json run --agent acceptance 'Use the bash tool to run exactly: cat /home/agent/acceptance.txt' > "$file"
     session_id=$(py session-id "$file"); rm -f "$file"
-    file=$(mktemp); step show-read "$swarmy" --swarm "$name" session show "$session_id" --json > "$file"; py tool-output-contains "$file" "$nonce"; py session-node "$file"; rm -f "$file"
+    file=$(mktemp); step show-read "$swarmy" --swarm "$name" session show "$session_id" --json > "$file"; py tool-output-contains "$file" "$nonce" "$after_seq"; py session-node "$file"; rm -f "$file"
 }
 check_hosts() {
-    local file; file=$(mktemp)
+    local file ids_file; file=$(mktemp)
     step "status-$1" "$swarmy" --json swarm status "$name" > "$file"; py count "$file" hosts "$1"; rm -f "$file"
-    file=$(mktemp); hcloud_get "/servers?label_selector=swarmy-swarm%3D$name" > "$file"; py count "$file" servers "$1"; rm -f "$file"
+    file=$(mktemp); hcloud_get "/servers?label_selector=swarmy-swarm%3D$name" > "$file"; py count "$file" servers "$1"
+    if [[ $1 == 3 ]]; then
+        ids_file=$(mktemp)
+        py primary-ids "$file" > "$ids_file"
+        mapfile -t primary_ids < "$ids_file"
+        rm -f "$ids_file"
+        [[ ${#primary_ids[@]} == 3 ]] || fail 'expected three primary IPv4 ids'
+    fi
+    rm -f "$file"
 }
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

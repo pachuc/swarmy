@@ -54,8 +54,9 @@ hand-lowering `count` and running `up` remains refused.
 
 Only the owner runs the approved acceptance test. The script creates a control
 and a workers group (three machines at peak), checks a model turn and durable
-sandbox file, scales the workers group to two and back to one, and verifies teardown against Hetzner Cloud
-and Object Storage. It prints a maximum cost estimate before the `--yes` gate,
+sandbox file, scales the workers group to two and back to one using the
+swarm scale command, and verifies teardown against Hetzner Cloud and Object
+Storage. It prints a maximum cost estimate before the `--yes` gate,
 bounds the run to 90 minutes by default, and allows 30 more minutes for teardown.
 If leftovers remain, follow the printed manual cleanup instructions in the
 Hetzner console before attempting another run. The dry run uses fake OpenTofu
