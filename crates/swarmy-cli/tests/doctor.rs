@@ -436,6 +436,7 @@ fn attached_swarm_skips_backing_stack_checks() {
             "--token-stdin",
         ])
         .current_dir(fixture.0.path())
+        .env_clear()
         .envs(swarmy_testkit::isolated_home(fixture.0.path()))
         .env("PATH", fixture.0.path().join("bin"))
         .stdin(Stdio::piped())
@@ -446,6 +447,7 @@ fn attached_swarm_skips_backing_stack_checks() {
     let output = Command::new(env!("CARGO_BIN_EXE_swarmy"))
         .args(["--swarm", "node", "doctor", "--json"])
         .current_dir(fixture.0.path())
+        .env_clear()
         .envs(swarmy_testkit::isolated_home(fixture.0.path()))
         .env("PATH", fixture.0.path().join("bin"))
         .output()
@@ -479,6 +481,7 @@ fn local_swarm_runs_backing_stack_checks() {
     let created = Command::new(env!("CARGO_BIN_EXE_swarmy"))
         .args(["swarm", "create", "dev", "--local"])
         .current_dir(fixture.0.path())
+        .env_clear()
         .envs(swarmy_testkit::isolated_home(fixture.0.path()))
         .env("PATH", fixture.0.path().join("bin"))
         .output()
