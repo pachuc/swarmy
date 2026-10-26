@@ -153,6 +153,31 @@ fn refusals_are_ordered() {
         check_scalable(&f.spec, "workers").unwrap(),
         GroupKind::Module
     );
+    let mut spec = f.spec.clone();
+    spec.groups
+        .insert("services".into(), spec.groups["control"].clone());
+    spec.placement.services = "services".into();
+    assert!(
+        check_scalable(&spec, "services")
+            .unwrap_err()
+            .to_string()
+            .contains("runs the services")
+    );
+    spec.groups
+        .insert("unused".into(), spec.groups["control"].clone());
+    assert!(
+        check_scalable(&spec, "unused")
+            .unwrap_err()
+            .to_string()
+            .contains("not a node group")
+    );
+    spec.groups.get_mut("workers").unwrap().module = Module::Local;
+    assert!(
+        check_scalable(&spec, "workers")
+            .unwrap_err()
+            .to_string()
+            .contains("runs on this machine")
+    );
 }
 
 async fn grown_three(f: &Fixture, host: &FakeHost, settings: &Settings) -> SwarmSpec {
@@ -387,6 +412,12 @@ async fn existing_group_shrink_drains_decommissions_and_truncates() {
         host.address = format!("203.0.113.{}", 20 + i);
         group.hosts.push(host);
     }
+    let mut control = f.spec.groups["workers"].clone();
+    control.hosts.truncate(1);
+    control.hosts[0].address = "203.0.113.10".into();
+    control.hosts[0].private_address = Some("10.0.0.10".into());
+    control.local_storage = None;
+    f.spec.groups.insert("control".into(), control);
     f.registry.write_spec(&f.spec).unwrap();
     let host = FakeHost::new();
     f.up(&host).await.unwrap();
@@ -430,6 +461,12 @@ async fn existing_group_decommission_failure_keeps_failed_host() {
         other.address = format!("203.0.113.{}", 20 + i);
         group.hosts.push(other);
     }
+    let mut control = f.spec.groups["workers"].clone();
+    control.hosts.truncate(1);
+    control.hosts[0].address = "203.0.113.10".into();
+    control.hosts[0].private_address = Some("10.0.0.10".into());
+    control.local_storage = None;
+    f.spec.groups.insert("control".into(), control);
     f.registry.write_spec(&f.spec).unwrap();
     let host = FakeHost::new();
     f.up(&host).await.unwrap();

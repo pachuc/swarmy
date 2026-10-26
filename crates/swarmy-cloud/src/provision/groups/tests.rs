@@ -571,7 +571,7 @@ async fn guards_run_before_any_tofu_call() {
     assert!(
         error
             .to_string()
-            .contains("lowering count would destroy machines")
+            .contains("lowering count in the spec would destroy machines")
     );
     assert_eq!(
         f.log().lines().filter(|s| s.contains(" apply")).count(),

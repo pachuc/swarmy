@@ -225,7 +225,7 @@ pub(crate) fn preflight(
         let count = group.count.unwrap_or_default();
         if previous > count as usize {
             return Err(Error::other(format!(
-                "group \"{name}\" has {previous} machines recorded but count = {count}; lowering count would destroy machines without draining them; restore count = {previous}, then run swarmy swarm scale {} {name} {count} (node groups only)",
+                "group \"{name}\" has {previous} machines recorded but count = {count}; lowering count in the spec would destroy machines without draining them; restore count = {previous}, then run swarmy swarm scale {} {name} {count} (node groups only)",
                 spec.name
             )));
         }

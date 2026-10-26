@@ -679,7 +679,7 @@ async fn run_host_lifecycle(
                     private_address,
                 },
         } => {
-            crate::swarm_hosts::node_add(
+            Box::pin(crate::swarm_hosts::node_add(
                 registry,
                 &name,
                 crate::swarm_hosts::NodeAdd {
@@ -690,7 +690,7 @@ async fn run_host_lifecycle(
                     private_address,
                 },
                 json_output,
-            )
+            ))
             .await?;
         }
         _ => unreachable!("lifecycle dispatch"),
@@ -817,7 +817,7 @@ pub(crate) async fn run(
                     "swarm \"{name}\" runs on this machine; scale applies to swarms on hosts or cloud machines"
                 );
             }
-            crate::swarm_hosts::scale(
+            Box::pin(crate::swarm_hosts::scale(
                 &registry,
                 &spec,
                 &group,
@@ -825,7 +825,7 @@ pub(crate) async fn run(
                 drain_timeout,
                 force,
                 json_output,
-            )
+            ))
             .await?;
         }
         Command::Plan { name } => {

@@ -81,30 +81,8 @@ pub struct ScaleReport {
     pub interrupted: Vec<String>,
     pub unreleased: Vec<String>,
 }
-/// # Errors
-/// Reports invalid groups, unavailable hosts and infrastructure failures.
-pub async fn scale_swarm(request: ScaleRequest<'_>) -> Result<ScaleReport> {
-    let recorded = request
-        .registry
-        .read_record(&request.spec.name)?
-        .and_then(|r| r.hosts.get(request.group).map(Vec::len))
-        .unwrap_or(0);
-    let host = if usize::try_from(request.count).unwrap_or(usize::MAX) > recorded {
-        ssh::Ssh::for_client(request.cache)?
-    } else {
-        ssh::Ssh::teardown()
-    };
-    scale_swarm_with(&host, request).await
-}
-
-pub(crate) async fn scale_swarm_with(
-    host: &impl SwarmHost,
-    request: ScaleRequest<'_>,
-) -> Result<ScaleReport> {
-    let spec = request.spec;
-    let kind = check_scalable(spec, request.group)?;
-    let _lock = Locked(lock(request.registry, &spec.name)?);
-    let mut record = request.registry.read_record(&spec.name)?.ok_or_else(|| {
+fn read_up_record(registry: &Registry, spec: &SwarmSpec) -> Result<SwarmRecord> {
+    let record = registry.read_record(&spec.name)?.ok_or_else(|| {
         Error::other(format!(
             "swarm {} is not up; run swarmy swarm up {} first",
             spec.name, spec.name
@@ -121,6 +99,37 @@ pub(crate) async fn scale_swarm_with(
             spec.name, spec.name
         )));
     }
+    Ok(record)
+}
+
+/// # Errors
+/// Reports invalid groups, unavailable hosts and infrastructure failures.
+pub async fn scale_swarm(request: ScaleRequest<'_>) -> Result<ScaleReport> {
+    let kind = check_scalable(request.spec, request.group)?;
+    let record = read_up_record(request.registry, request.spec)?;
+    let recorded = record.hosts.get(request.group).map_or(0, Vec::len);
+    if kind == GroupKind::Existing && request.count as usize > recorded {
+        return Err(Error::other(format!(
+            "group \"{}\" lists existing hosts; add machines with swarmy swarm node add {} {} --host ADDRESS --ssh-key PATH",
+            request.group, request.spec.name, request.group
+        )));
+    }
+    let host = if usize::try_from(request.count).unwrap_or(usize::MAX) > recorded {
+        ssh::Ssh::for_client(request.cache)?
+    } else {
+        ssh::Ssh::teardown()
+    };
+    scale_swarm_with(&host, request).await
+}
+
+pub(crate) async fn scale_swarm_with(
+    host: &impl SwarmHost,
+    request: ScaleRequest<'_>,
+) -> Result<ScaleReport> {
+    let spec = request.spec;
+    let kind = check_scalable(spec, request.group)?;
+    let _lock = Locked(lock(request.registry, &spec.name)?);
+    let mut record = read_up_record(request.registry, spec)?;
     let before = record.hosts.get(request.group).cloned().unwrap_or_default();
     let from = before.len();
     let target = request.count as usize;
