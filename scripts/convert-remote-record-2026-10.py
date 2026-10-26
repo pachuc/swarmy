@@ -56,7 +56,8 @@ def key_for(value, old_dir, field):
     return path, known
 
 
-def host(value, old_dir, swarm_dir, group, index):
+def host(value, old_dir, swarm_dir, group, index, check_key=True):
+    require(isinstance(value, dict), f"{group}[{index}]")
     for field in ("public_ip", "ssh_user", "key_path"):
         require(field in value, f"{group}[{index}].{field}")
     ipv4(value["public_ip"], f"{group}[{index}].public_ip")
@@ -65,7 +66,8 @@ def host(value, old_dir, swarm_dir, group, index):
         ipv4(private, f"{group}[{index}].private_ip")
     require(isinstance(value["ssh_user"], str) and NAME.fullmatch(value["ssh_user"]),
             f"{group}[{index}].ssh_user")
-    key, known = key_for(value["key_path"], old_dir, f"{group}[{index}].key_path")
+    key, known = (key_for(value["key_path"], old_dir, f"{group}[{index}].key_path")
+                  if check_key else (None, None))
     name = f"{swarm_dir.name}-{group}-{index + 1}"
     address = value["public_ip"]
     private = private if private and private != address else None
@@ -113,16 +115,9 @@ def convert(old_path):
             "laptop services cannot be converted")
     nodes = old.get("nodes", [])
     require(isinstance(nodes, list), "nodes")
-    for index, value in [(0, old)] + list(enumerate(nodes)):
-        label = "main" if value is old else "nodes"
-        require(isinstance(value, dict), f"{label}[{index}]")
-        for field in ("public_ip", "ssh_user", "key_path"):
-            require(field in value, f"{label}[{index}].{field}")
-        ipv4(value["public_ip"], f"{label}[{index}].public_ip")
-        if value.get("private_ip"):
-            ipv4(value["private_ip"], f"{label}[{index}].private_ip")
-        require(isinstance(value["ssh_user"], str) and NAME.fullmatch(value["ssh_user"]),
-                f"{label}[{index}].ssh_user")
+    host(old, old_path.parent, Path(name), "main", 0, check_key=False)
+    for index, node in enumerate(nodes):
+        host(node, old_path.parent, Path(name), "nodes", index, check_key=False)
     service_user = settings.get("service_user") or old["ssh_user"]
     require(isinstance(service_user, str) and NAME.fullmatch(service_user),
             "launch_settings.service_user")
@@ -146,6 +141,8 @@ def convert(old_path):
         bucket_spec = dict(name=bucket["bucket"], endpoint=endpoint, region=region,
                            prefix=bucket["prefix"],
                            conditional_create=bucket.get("conditional_create", True))
+        require(isinstance(bucket_spec["conditional_create"], bool),
+                "launch_settings.bucket.conditional_create")
         keys = dict(access_key=credentials["access_key"], secret_key=credentials["secret_key"])
     primary_sandboxes = old.get("sandboxes", 64)
     primary_storage = settings.get("local_storage") or ""
@@ -154,6 +151,9 @@ def convert(old_path):
     for index, node in enumerate(nodes):
         launch = node.get("launch_settings") or settings
         require(isinstance(launch, dict), f"nodes[{index}].launch_settings")
+        require((launch.get("service_user") or service_user) == service_user,
+                f"nodes[{index}].launch_settings.service_user",
+                "differs from the primary's; a swarm has one service user")
         values = (node.get("sandboxes", primary_sandboxes), launch.get("local_storage") or "")
         group(*values, [])
         node_settings.append(values)
@@ -184,7 +184,7 @@ def convert(old_path):
                                               nodes=list(groups)))
     if bucket_spec:
         spec["bucket"] = bucket_spec
-    existing = [path for path in (spec_path, swarm_dir) if path.exists()]
+    existing = [path for path in (spec_path, swarm_dir) if os.path.lexists(path)]
     if existing:
         raise ValueError(f"swarm {name} already exists ({', '.join(map(str, existing))}); nothing was written. To convert again, run swarmy swarm rm {name} --force first")
     return spec, hosts, keys, copies, spec_path, swarm_dir
@@ -192,7 +192,12 @@ def convert(old_path):
 
 def scalar(value):
     if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=True)
+        # JSON surrogate-pair escapes are not valid TOML basic strings.
+        return '"' + "".join(
+            "\\" + c if c in '\"\\'
+            else f"\\u{ord(c):04x}" if ord(c) < 0x20 or ord(c) == 0x7F
+            else c
+            for c in value) + '"'
     if isinstance(value, bool):
         return str(value).lower()
     if isinstance(value, int):
@@ -254,7 +259,8 @@ def token_from_node(spec, copies):
                f"UserKnownHostsFile={known}", "-i", str(old_key), "-l",
                primary["ssh_user"], primary["address"],
                f"cat ~{spec['service_user']}/swarmy/.swarmy/config.toml"]
-    result = subprocess.run(command, capture_output=True, check=False)
+    result = subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL,
+                            timeout=60, check=False)
     if result.returncode:
         raise ValueError("ssh: " + (result.stderr.decode(errors="replace").splitlines() or ["failed"])[-1])
     try:
@@ -300,11 +306,11 @@ def publish(spec, hosts, keys, copies, spec_path, swarm_dir, token):
         os.rename(temp_dir, swarm_dir)
         renamed = True
         os.rename(temp_spec, spec_path)
-    except Exception:
+    except BaseException:
         shutil.rmtree(temp_dir, ignore_errors=True)
         temp_spec.unlink(missing_ok=True)
         if renamed:
-            shutil.rmtree(swarm_dir)
+            shutil.rmtree(swarm_dir, ignore_errors=True)
         raise
 
 
@@ -315,6 +321,11 @@ def main():
     args = parser.parse_args()
     try:
         spec, hosts, keys, copies, spec_path, swarm_dir = convert(args.old_record)
+        try:
+            tomllib.loads(spec_toml(spec))
+            tomllib.loads(record_toml(spec["name"], "-", keys, hosts))
+        except ValueError:
+            raise ValueError("the converted spec or record does not render as TOML; convert by hand") from None
         if args.dry_run:
             print(f"# spec: {spec_path}\n{spec_toml(spec)}")
             redacted = {key: "<redacted>" for key in keys} if keys else None
@@ -334,7 +345,7 @@ def main():
                         f"swarmy swarm use {spec['name']}"):
             print(f"next: {command}")
         return 0
-    except Exception as error:
+    except (Exception, KeyboardInterrupt) as error:
         print(f"convert: {error}", file=sys.stderr)
         return 1
 

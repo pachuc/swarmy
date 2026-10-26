@@ -27,6 +27,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Option<Self> {
+        Self::new_with_prefix("swarmy-convert-")
+    }
+    fn new_with_prefix(prefix: &str) -> Option<Self> {
         let path = std::env::var_os("PATH")?;
         let Some(python) = std::env::split_paths(&path)
             .map(|p| p.join("python3"))
@@ -44,7 +47,7 @@ impl Fixture {
             println!("skip: python3 has no tomllib");
             return None;
         }
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::Builder::new().prefix(prefix).tempdir().unwrap();
         let bin = root.path().join("bin");
         fs::create_dir(&bin).unwrap();
         let log = root.path().join("ssh.log");
@@ -240,6 +243,10 @@ fn check_plan(
         assert_eq!(found.ssh_user, host.host.ssh_user);
     }
     assert_eq!(planned[0].sandboxes, 4);
+    assert_eq!(
+        record.hosts.values().map(Vec::len).sum::<usize>(),
+        planned.len()
+    );
 }
 #[test]
 fn dry_run_prints_the_plan_and_writes_nothing() {
@@ -431,6 +438,70 @@ fn joined_nodes_become_a_node_group() {
     );
 }
 #[test]
+fn equal_private_address_is_omitted() {
+    let Some(mut f) = Fixture::new() else { return };
+    f.value["private_ip"] = json!("203.0.113.10");
+    f.save();
+    let output = f.run(false);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let swarm = f.registry().read("hz").unwrap();
+    let (spec, record) = (swarm.spec.unwrap(), swarm.record.unwrap());
+    assert_eq!(spec.groups["main"].hosts[0].private_address, None);
+    assert_eq!(record.hosts["main"][0].private_address, None);
+    check_plan(&spec, &record, &f.registry().swarm_dir("hz").unwrap());
+}
+#[test]
+fn unusual_path_characters_render_valid_toml() {
+    for (prefix, expected) in [("swarmy-😀-", "😀"), ("swarmy-\u{7f}-", "\\u007f")] {
+        let Some(f) = Fixture::new_with_prefix(prefix) else {
+            return;
+        };
+        let output = f.run(false);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let spec_text = fs::read_to_string(f.registry().spec_path("hz").unwrap()).unwrap();
+        assert!(spec_text.contains(expected));
+        let swarm = f.registry().read("hz").unwrap();
+        assert!(swarm.spec.is_some() && swarm.record.is_some());
+    }
+}
+#[test]
+fn joined_node_with_another_service_user_is_refused_before_ssh() {
+    let Some(mut f) = Fixture::new() else { return };
+    f.value["nodes"] = json!([{
+        "public_ip":"203.0.113.11", "private_ip":"10.0.0.3",
+        "ssh_user":"root", "key_path":f.value["key_path"], "sandboxes":8,
+        "launch_settings":{"service_user":"other", "local_storage":"dir:/srv/swarmy-local"}
+    }]);
+    f.save();
+    let output = f.run(false);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("nodes[0].launch_settings.service_user")
+    );
+    f.assert_empty();
+}
+#[test]
+fn conditional_create_is_checked_before_ssh() {
+    let Some(mut f) = Fixture::new() else { return };
+    f.value["launch_settings"]["bucket"]["conditional_create"] = Value::Null;
+    f.save();
+    let output = f.run(false);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("launch_settings.bucket.conditional_create")
+    );
+    f.assert_empty();
+}
+#[test]
 fn unsupported_records_are_refused() {
     for case in 0..5 {
         let Some(mut f) = Fixture::new() else { return };
@@ -453,6 +524,14 @@ fn unsupported_records_are_refused() {
         f.save();
         let output = f.run(false);
         assert!(!output.status.success());
+        let field = [
+            "launch_settings.services",
+            "launch_settings.bucket",
+            "launch_settings.bucket",
+            "key_path",
+            "local_storage",
+        ][case];
+        assert!(String::from_utf8_lossy(&output.stderr).contains(field));
         f.assert_empty();
     }
 }
