@@ -117,7 +117,6 @@ swarmy remote connect demo
 swarmy doctor --swarm demo
 swarmy chat --swarm demo        # ask it to run pwd; no image flag needed
 swarmy remote ls
-swarmy dev down
 swarmy remote disconnect demo
 swarmy remote down demo
 ```
@@ -543,7 +542,6 @@ remote; the provisioning and tunnel contracts above still apply.
 
 ```bash
 chmod 600 .swarmy/config.toml
-swarmy dev down                 # stop any local stack before reserving port 4500
 swarmy remote up demo --services node           # builds binaries and base-ubuntu:demo; prints build times and SSH command
 swarmy remote connect demo
 swarmy auth login              # dedicated ChatGPT login, on the laptop
@@ -615,15 +613,8 @@ swarmy session show SESSION_ID --swarm demo --json
 Escape, Ctrl-C, or EOF in `chat --json` closes the client only. The session
 and computer remain available for resume. `session close` completes an ephemeral
 session and deletes its computer while keeping its transcript. The scheduler
-also closes Idle ephemeral sessions after 24 hours by default. For a disposable
-retention test, set the interval on the scheduler before starting services:
-
-```bash
-swarmy dev down
-```
-
-This override applies to local services in the default laptop mode. Node services
-need the override in their systemd environment and a scheduler restart. The sweep
+also closes Idle ephemeral sessions after 24 hours by default. For a disposable retention test on node services, set the override in the
+scheduler's systemd environment and restart it. The sweep
 runs every 60 seconds or every retention interval if shorter. Only idle sessions
 strictly older than the cutoff qualify; active sessions and named agents do not.
 
@@ -741,7 +732,6 @@ local record. With the optional AWS CLI installed as your user:
 aws ec2 describe-instances --region us-east-1 \
   --filters Name=tag:Name,Values=demo,demo-2 \
   --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,Key:KeyName}'
-swarmy dev down
 swarmy remote disconnect demo
 swarmy remote down demo --yes
 # Replace the following values with every id/key saved above.

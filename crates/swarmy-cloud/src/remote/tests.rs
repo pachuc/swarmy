@@ -1535,7 +1535,7 @@ fn assert_bucket_recreated_once(cloud: &FakeCloud) {
 }
 
 struct StaticSetup {
-    dir: tempfile::TempDir,
+    _dir: tempfile::TempDir,
     state: State,
     cloud: FakeCloud,
     host: FakeHost,
@@ -1566,7 +1566,7 @@ fn static_setup_with(bucket: &str) -> StaticSetup {
         ..settings()
     };
     StaticSetup {
-        dir,
+        _dir: dir,
         state,
         cloud: FakeCloud::default(),
         host: FakeHost::default(),
