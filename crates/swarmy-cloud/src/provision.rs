@@ -1,5 +1,5 @@
 //! Provision SSH-reachable hosts as one swarm: stack first, services, then sandbox nodes.
-//! Groups provide hosts (existing sources now, OpenTofu groups later), and everything after is shared.
+//! Groups provide hosts (existing sources now, `OpenTofu` groups later), and everything after is shared.
 //! Records precede host changes so a failed up resumes and down can clean up.
 mod plan;
 #[cfg(test)]
@@ -68,7 +68,7 @@ pub fn existing_sources(spec: &SwarmSpec, swarm_dir: &Path) -> Result<Vec<HostSo
 /// # Errors
 /// Rejects unsupported placements and invalid hosts.
 pub fn plan(spec: &SwarmSpec, sources: Vec<HostSource>) -> Result<Vec<Planned>> {
-    plan::plan(spec, sources)
+    plan::plan(spec, &sources)
 }
 
 pub struct UpRequest<'a> {
@@ -216,6 +216,7 @@ pub fn lock(registry: &Registry, name: &str) -> Result<fs::File> {
     let path = dir.join("swarm.lock");
     let file = fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .write(true)
         .open(&path)?;
     if let Err(error) = file.try_lock_exclusive() {
@@ -268,12 +269,12 @@ pub async fn provision_swarm(request: UpRequest<'_>) -> Result<Vec<HostReport>> 
 }
 async fn provision_swarm_with(
     host: &impl SwarmHost,
-    request: UpRequest<'_>,
+    mut request: UpRequest<'_>,
 ) -> Result<Vec<HostReport>> {
     let _lock = lock(request.registry, &request.spec.name)?;
     let spec = request.spec;
     let swarm_dir = request.registry.swarm_dir(&spec.name)?;
-    let planned = plan(spec, request.sources)?;
+    let planned = plan(spec, std::mem::take(&mut request.sources))?;
     let mut record = request
         .registry
         .read_record(&spec.name)?
@@ -333,13 +334,11 @@ async fn provision_swarm_with(
         }
         let result = provision_one(
             host,
-            request.registry,
+            &request,
             &mut record,
             p,
             &primary_node,
             options.as_ref(),
-            request.recipe,
-            spec,
         )
         .await;
         if let Err(error) = result {
@@ -364,14 +363,14 @@ fn recorded<'a>(record: &'a SwarmRecord, p: &Planned) -> Option<&'a RecordedHost
 }
 async fn provision_one(
     host: &impl SwarmHost,
-    registry: &Registry,
+    request: &UpRequest<'_>,
     record: &mut SwarmRecord,
     p: &Planned,
     primary: &RemoteNode,
     options: Option<&services::Options<'_>>,
-    recipe: Option<&Path>,
-    spec: &SwarmSpec,
 ) -> Result<()> {
+    let registry = request.registry;
+    let spec = request.spec;
     let hosts = record.hosts.entry(p.group.clone()).or_default();
     if p.index == hosts.len() {
         hosts.push(p.host.clone());
@@ -393,7 +392,7 @@ async fn provision_one(
         .await?;
         record.api.token = Some(host.api_token(&machine, &address).await?);
         registry.write_record(record)?;
-        if let Some(recipe) = recipe {
+        if let Some(recipe) = request.recipe {
             cloud_out!(
                 "Building base-ubuntu:{} (this takes several minutes)",
                 spec.name

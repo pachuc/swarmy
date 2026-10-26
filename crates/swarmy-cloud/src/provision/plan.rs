@@ -31,7 +31,7 @@ pub(super) fn existing_sources(spec: &SwarmSpec, swarm_dir: &Path) -> Result<Vec
     Ok(sources)
 }
 
-pub(super) fn plan(spec: &SwarmSpec, sources: Vec<HostSource>) -> Result<Vec<Planned>> {
+pub(super) fn plan(spec: &SwarmSpec, sources: &[HostSource]) -> Result<Vec<Planned>> {
     let stack = &spec.placement.stack;
     if spec.placement.services != *stack {
         let services = &spec.groups[&spec.placement.services];
@@ -53,7 +53,7 @@ pub(super) fn plan(spec: &SwarmSpec, sources: Vec<HostSource>) -> Result<Vec<Pla
             "group \"{stack}\" runs the stack on its first host; its other hosts must run nodes: add \"{stack}\" to placement.nodes"
         )));
     }
-    for source in &sources {
+    for source in sources {
         for address in [
             Some(source.host.public_address.as_str()),
             source.host.private_address.as_deref(),

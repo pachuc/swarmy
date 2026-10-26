@@ -343,3 +343,11 @@ fn machine_maps_the_recorded_host() {
     assert_eq!(node.key_path, p.host.ssh_key);
     assert_eq!(node.cloud_settings().services, RemoteServices::Node);
 }
+#[test]
+fn lock_releases_on_drop() {
+    let (_tmp, registry, _spec) = fixture();
+    let guard = lock(&registry, "fleet").unwrap();
+    assert!(lock(&registry, "fleet").is_err());
+    drop(guard);
+    let _again = lock(&registry, "fleet").unwrap();
+}
