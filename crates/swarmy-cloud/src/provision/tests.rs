@@ -8,7 +8,7 @@ pub(super) struct FakeHost {
     calls: Mutex<Vec<String>>,
     configs: Mutex<Vec<String>>,
     fail_provision: Mutex<Option<String>>,
-    fail_decommission: Mutex<Option<String>>,
+    pub(super) fail_decommission: Mutex<Option<String>>,
     pub(super) drain_results:
         Mutex<std::collections::HashMap<String, std::result::Result<ssh::Drain, String>>>,
 }

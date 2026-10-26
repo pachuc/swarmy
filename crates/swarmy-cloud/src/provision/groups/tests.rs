@@ -1,12 +1,10 @@
 #![deny(clippy::disallowed_methods)]
 use super::*;
 use crate::provision::{
-    UpRequest, decommission_swarm_with, existing_sources, provision_swarm_with,
-    test_support::Fixture, tests::FakeHost,
+    decommission_swarm_with, provision_swarm_with, test_support::Fixture, tests::FakeHost,
 };
-use std::future::Future;
 use std::os::unix::fs::PermissionsExt;
-use swarmy_config::{Settings, cloud::CloudCredential, paths::Dirs};
+use swarmy_config::{Settings, cloud::CloudCredential};
 
 #[tokio::test]
 async fn cloud_swarm_applies_in_order_and_provisions_through_the_shared_path() {

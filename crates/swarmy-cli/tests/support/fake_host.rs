@@ -37,7 +37,7 @@ printf '%s\n' "$last" >> '{}/ssh-commands'
 case "$last" in
   true) exit 0 ;;
   'bash -s') file='{}/piped-'$(ls '{}/piped-'* 2>/dev/null | wc -l); cat > "$file"; printf '%s\n' "$*" > "$file.args";
-    if grep -q '^list_installed_control_units$' "$file"; then printf 'swarmy-api.service\n'; else printf '/home/fake\n'; fi ;;
+    if grep -q '^list_installed_control_units$' "$file"; then printf 'swarmy-api.service\n'; elif grep -q '^drain_node_agent ' "$file"; then if [ -f '{}/fake/drain-line' ]; then cat '{}/fake/drain-line'; else printf 'drain {{"stopped":true,"busy":[],"unreleased":[]}}\n'; fi; else printf '/home/fake\n'; fi ;;
   'uname -m') /usr/bin/uname -m ;;
   *'swarmy-core --version'*) printf 'swarmy-core test\n' ;;
   *'journalctl --unit swarmyd --follow --no-pager --lines 100'*) if [ -e '{}/fail-journal' ]; then echo journal-failed >&2; exit 23; fi; echo remote-output ;;
@@ -50,6 +50,8 @@ case "$last" in
   *) echo remote-output ;;
 esac
 "#,
+            path.display(),
+            path.display(),
             path.display(),
             path.display(),
             path.display(),

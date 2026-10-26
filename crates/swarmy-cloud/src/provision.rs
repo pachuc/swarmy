@@ -9,6 +9,7 @@ mod upgrade;
 pub use machine::Machine;
 pub use upgrade::Summary;
 #[cfg(test)]
+#[path = "provision/tests/support.rs"]
 mod test_support;
 #[cfg(test)]
 mod tests;

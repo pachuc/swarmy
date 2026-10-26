@@ -30,6 +30,8 @@ output)
  bucket=$(python3 -c 'import json; print(json.load(open("swarmy.tfvars.json"))["bucket_name"])')
  if test "$group" = control; then
  printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":"10.0.0.10","ssh_user":"root"}}]}},"network_id":{{"value":"4711"}},"bucket":{{"value":{{"endpoint":"https://fsn1.your-objectstorage.com","name":"%s","region":"fsn1"}}}}}}\n' "$bucket"
+ elif test -f '{root}/outputs-workers.json'; then
+ cat '{root}/outputs-workers.json'
  else
  printf '{{"machines":{{"value":[{{"name":"fleet-workers-1","public_ipv4":"203.0.113.11","public_ipv6":null,"private_ip":"10.0.0.11","ssh_user":"root"}},{{"name":"fleet-workers-2","public_ipv4":"203.0.113.12","public_ipv6":null,"private_ip":"10.0.0.12","ssh_user":"root"}}]}}}}\n'
  fi ;;
@@ -541,4 +543,145 @@ fn missing_s3_login_fails_before_tofu_resolution() {
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("swarmy cloud login hetzner-s3"));
     assert!(!f.path().join("cache/swarmy/tofu").exists());
+}
+
+fn worker_outputs(f: &Fixture, count: usize) {
+    let machines = (1..=count)
+        .map(|i| {
+            serde_json::json!({
+                "name": format!("fleet-workers-{i}"),
+                "public_ipv4": format!("203.0.113.{}", 10+i),
+                "public_ipv6": null,
+                "private_ip": format!("10.0.0.{}", 10+i),
+                "ssh_user": "root"
+            })
+        })
+        .collect::<Vec<_>>();
+    fs::write(
+        f.path().join("outputs-workers.json"),
+        serde_json::json!({"machines":{"value":machines}}).to_string(),
+    )
+    .unwrap();
+}
+fn single_worker(f: &Fixture) {
+    credentials(f);
+    f.ok(&[
+        "swarm",
+        "create",
+        "fleet",
+        "--on",
+        "hetzner-cloud",
+        "--size",
+        "cpx41",
+        "--nodes",
+        "1",
+        "--lifecycle",
+        "ephemeral",
+    ]);
+    worker_outputs(f, 1);
+    f.ok(&["swarm", "up", "fleet", "--no-image"]);
+}
+#[test]
+fn scale_workers_up_then_down() {
+    let f = setup();
+    single_worker(&f);
+    worker_outputs(&f, 2);
+    let output = f.ok(&["--json", "swarm", "scale", "fleet", "workers", "2"]);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["from"], 1);
+    assert_eq!(value["to"], 2);
+    assert_eq!(value["added"], serde_json::json!(["fleet-workers-2"]));
+    assert_eq!(
+        fs::read_to_string(f.path().join("ssh-commands"))
+            .unwrap()
+            .matches("remote-provision.sh node")
+            .count(),
+        2
+    );
+    worker_outputs(&f, 1);
+    f.ok(&["swarm", "scale", "fleet", "workers", "1"]);
+    let piped = fs::read_dir(f.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().starts_with("piped-"))
+        .filter_map(|e| fs::read_to_string(e.path()).ok())
+        .collect::<Vec<_>>();
+    assert!(
+        piped
+            .iter()
+            .any(|s| s.contains("drain_node_agent 'swarmy' 600 wait"))
+    );
+    let ssh = fs::read_to_string(f.path().join("ssh-commands")).unwrap();
+    assert!(ssh.contains("grep -vxF"));
+    let status = f.ok(&["--json", "swarm", "status", "fleet"]);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&status.stdout).unwrap()["hosts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+#[test]
+fn scale_flags_reach_the_node() {
+    let f = setup();
+    single_worker(&f);
+    worker_outputs(&f, 2);
+    f.ok(&["swarm", "scale", "fleet", "workers", "2"]);
+    worker_outputs(&f, 1);
+    f.ok(&[
+        "swarm",
+        "scale",
+        "fleet",
+        "workers",
+        "1",
+        "--drain-timeout",
+        "5",
+        "--force",
+    ]);
+    let piped = fs::read_dir(f.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().starts_with("piped-"))
+        .filter_map(|e| fs::read_to_string(e.path()).ok())
+        .collect::<Vec<_>>();
+    assert!(
+        piped
+            .iter()
+            .any(|s| s.contains("drain_node_agent 'swarmy' 5 force")),
+        "{piped:?}"
+    );
+}
+#[test]
+fn busy_node_fails_clearly() {
+    let f = setup();
+    single_worker(&f);
+    worker_outputs(&f, 2);
+    f.ok(&["swarm", "scale", "fleet", "workers", "2"]);
+    worker_outputs(&f, 1);
+    fs::create_dir_all(f.path().join("fake")).unwrap();
+    fs::write(
+        f.path().join("fake/drain-line"),
+        "drain {\"stopped\":false,\"busy\":[\"agent-a\"],\"unreleased\":[]}\n",
+    )
+    .unwrap();
+    let output = f.run(&["swarm", "scale", "fleet", "workers", "1"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("still has running sandbox commands after 600s")
+    );
+    assert!(!f.path().join("applied-workers-3.json").exists());
+}
+#[test]
+fn scale_refuses_stack_group_and_local_swarm() {
+    let f = setup();
+    single_worker(&f);
+    let output = f.run(&["swarm", "scale", "fleet", "control", "2"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("runs the stack"));
+    f.ok(&["swarm", "create", "local", "--local"]);
+    let output = f.run(&["swarm", "scale", "local", "control", "2"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("runs on this machine"));
 }

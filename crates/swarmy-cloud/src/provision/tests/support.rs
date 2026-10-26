@@ -100,23 +100,7 @@ esac
         fs::write(&script, body).unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         let tofu = Tofu::from_binary(script, &temp.path().join("cache"));
-        let mut credentials = CloudCredentials::default();
-        credentials.set(
-            CloudCredential::new(
-                CloudProvider::HetznerCloud,
-                vec!["hcloud-secret-5f2b9c".into()],
-                None,
-            )
-            .unwrap(),
-        );
-        credentials.set(
-            CloudCredential::new(
-                CloudProvider::HetznerS3,
-                vec!["s3-access-7a1e".into(), "s3-secret-91d0".into()],
-                None,
-            )
-            .unwrap(),
-        );
+        let credentials = fake_credentials();
         Self {
             temp,
             registry,
@@ -195,4 +179,25 @@ esac
     pub(crate) fn log(&self) -> String {
         fs::read_to_string(self.temp.path().join("tofu.log")).unwrap_or_default()
     }
+}
+
+fn fake_credentials() -> CloudCredentials {
+    let mut credentials = CloudCredentials::default();
+    credentials.set(
+        CloudCredential::new(
+            CloudProvider::HetznerCloud,
+            vec!["hcloud-secret-5f2b9c".into()],
+            None,
+        )
+        .unwrap(),
+    );
+    credentials.set(
+        CloudCredential::new(
+            CloudProvider::HetznerS3,
+            vec!["s3-access-7a1e".into(), "s3-secret-91d0".into()],
+            None,
+        )
+        .unwrap(),
+    );
+    credentials
 }

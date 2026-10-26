@@ -1,6 +1,6 @@
 //! Grow or shrink a node group. New machines go through the shared provisioning path;
 //! removed machines are drained first, highest-numbered first, then destroyed by
-//! OpenTofu or cleaned of swarmy (existing hosts).
+//! `OpenTofu` or cleaned of swarmy (existing hosts).
 #[cfg(test)]
 mod tests;
 use super::{
@@ -267,6 +267,15 @@ async fn restart(host: &impl SwarmHost, drained: &[Machine]) {
         }
     }
 }
+fn warn_unreleased(node: &Machine, drain: &ssh::Drain) {
+    if !drain.unreleased.is_empty() {
+        cloud_err!(
+            "host {}: the node agent stopped before releasing the computers of {}; they start on another node once their leases expire",
+            node.name,
+            drain.unreleased.join(", ")
+        );
+    }
+}
 async fn drain_all(
     host: &impl SwarmHost,
     request: &ScaleRequest<'_>,
@@ -315,13 +324,7 @@ async fn drain_all(
                     )));
                 }
                 Ok(drain) => {
-                    if !drain.unreleased.is_empty() {
-                        cloud_err!(
-                            "host {}: the node agent stopped before releasing the computers of {}; they start on another node once their leases expire",
-                            node.name,
-                            drain.unreleased.join(", ")
-                        );
-                    }
+                    warn_unreleased(&node, &drain);
                     cloud_out!(
                         "{}: drained{}",
                         node.name,

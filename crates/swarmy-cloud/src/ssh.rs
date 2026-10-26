@@ -944,8 +944,8 @@ pub async fn drain_node(node: &Machine, timeout: Duration, force: bool) -> Resul
     let address = wait_ssh_for(node, 6).await?;
     let script = piped_env()
         + &format!(
-            "set -euo pipefail\ndrain_node_agent {} {} {}\n",
-            shell_words::quote(&service_user(node)?),
+            "set -euo pipefail\ndrain_node_agent '{}' {} {}\n",
+            service_user(node)?,
             timeout.as_secs(),
             if force { "force" } else { "wait" }
         );
@@ -959,7 +959,7 @@ pub async fn drain_node(node: &Machine, timeout: Duration, force: bool) -> Resul
     Ok(serde_json::from_str(line)?)
 }
 
-/// Remove a node's tunnel key from the primary's service-user authorized_keys.
+/// Remove a node's tunnel key from the primary's service-user `authorized_keys`.
 /// # Errors
 /// SSH failures, or a node without a tunnel key.
 pub async fn revoke_tunnel(node: &Machine, primary: &Machine) -> Result<()> {
