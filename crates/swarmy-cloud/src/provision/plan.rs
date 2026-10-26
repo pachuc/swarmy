@@ -1,6 +1,6 @@
 use super::{HostSource, Planned, Role};
 use crate::{Error, Result};
-use std::{net::Ipv4Addr, path::Path};
+use std::{collections::BTreeMap, net::Ipv4Addr, path::Path};
 use swarmy_config::swarm::{Module, RecordedHost, SwarmSpec};
 
 pub(super) fn existing_sources(spec: &SwarmSpec, swarm_dir: &Path) -> Result<Vec<HostSource>> {
@@ -31,7 +31,7 @@ pub(super) fn existing_sources(spec: &SwarmSpec, swarm_dir: &Path) -> Result<Vec
     Ok(sources)
 }
 
-pub(super) fn plan(spec: &SwarmSpec, sources: &[HostSource]) -> Result<Vec<Planned>> {
+pub(super) fn plan(spec: &SwarmSpec, sources: Vec<HostSource>) -> Result<Vec<Planned>> {
     let stack = &spec.placement.stack;
     if spec.placement.services != *stack {
         let services = &spec.groups[&spec.placement.services];
@@ -46,6 +46,14 @@ pub(super) fn plan(spec: &SwarmSpec, sources: &[HostSource]) -> Result<Vec<Plann
             spec.name
         )));
     }
+    for (name, group) in &spec.groups {
+        if group.module != Module::Existing {
+            let module: String = group.module.clone().into();
+            return Err(Error::other(format!(
+                "group \"{name}\" uses module {module}; only existing-host groups can be provisioned so far"
+            )));
+        }
+    }
     let stack_count = sources.iter().filter(|s| &s.group == stack).count();
     let stack_nodes = spec.placement.nodes.contains(stack);
     if stack_count > 1 && !stack_nodes {
@@ -53,7 +61,7 @@ pub(super) fn plan(spec: &SwarmSpec, sources: &[HostSource]) -> Result<Vec<Plann
             "group \"{stack}\" runs the stack on its first host; its other hosts must run nodes: add \"{stack}\" to placement.nodes"
         )));
     }
-    for source in sources {
+    for source in &sources {
         for address in [
             Some(source.host.public_address.as_str()),
             source.host.private_address.as_deref(),
@@ -96,24 +104,20 @@ pub(super) fn plan(spec: &SwarmSpec, sources: &[HostSource]) -> Result<Vec<Plann
             }
         }
     }
-    let mut ordered = Vec::new();
-    let primary = sources
-        .iter()
-        .find(|source| &source.group == stack)
+    let mut groups: BTreeMap<String, Vec<(usize, HostSource)>> = BTreeMap::new();
+    for source in sources {
+        let hosts = groups.entry(source.group.clone()).or_default();
+        hosts.push((hosts.len(), source));
+    }
+    let mut ordered = groups
+        .remove(stack)
         .ok_or_else(|| Error::other(format!("group \"{stack}\" has no stack host")))?;
-    ordered.push(primary.clone());
-    ordered.extend(
-        sources
-            .iter()
-            .filter(|s| &s.group == stack && s.host.name != primary.host.name)
-            .cloned(),
-    );
     for group in &spec.placement.nodes {
         if group != stack {
-            ordered.extend(sources.iter().filter(|s| &s.group == group).cloned());
+            ordered.extend(groups.remove(group).unwrap_or_default());
         }
     }
-    ordered.into_iter().map(|source| {
+    ordered.into_iter().map(|(index, source)| {
         let group = &spec.groups[&source.group];
         let primary = source.host.name == ordered_primary_name(spec, stack);
         let sandboxes = if primary && !stack_nodes { 0 } else { group.sandboxes.unwrap_or(swarmy_config::default_sandboxes()) };
@@ -121,8 +125,6 @@ pub(super) fn plan(spec: &SwarmSpec, sources: &[HostSource]) -> Result<Vec<Plann
         if sandboxes > 0 && local_storage.is_empty() {
             return Err(Error::other(format!("group \"{}\": hosts that run sandboxes need local_storage (a block device or dir:/path), or set sandboxes = 0", source.group)));
         }
-        let index = sources.iter().filter(|s| s.group == source.group).position(|s| s.host.name == source.host.name)
-            .expect("ordered source must exist in input");
         Ok(Planned { group: source.group, index, host: source.host, copy_key_from: source.copy_key_from,
             role: if primary { Role::Stack { services: true } } else { Role::Node }, sandboxes, local_storage })
     }).collect()

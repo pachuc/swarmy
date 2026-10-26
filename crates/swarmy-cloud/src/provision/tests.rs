@@ -53,16 +53,16 @@ impl SwarmHost for FakeHost {
         _: &str,
         _: &services::Options<'_>,
     ) -> impl Future<Output = Result<()>> {
-        std::future::ready((|| {
+        std::future::ready({
             self.push(format!("services {}", node.name));
             Ok(())
-        })())
+        })
     }
     fn api_token(&self, node: &RemoteNode, _: &str) -> impl Future<Output = Result<String>> {
-        std::future::ready((|| {
+        std::future::ready({
             self.push(format!("token {}", node.name));
             Ok("node-token".into())
-        })())
+        })
     }
     fn build_image(
         &self,
@@ -71,10 +71,10 @@ impl SwarmHost for FakeHost {
         _: &Path,
         tag: &str,
     ) -> impl Future<Output = Result<()>> {
-        std::future::ready((|| {
+        std::future::ready({
             self.push(format!("image {} {tag}", node.name));
             Ok(())
-        })())
+        })
     }
     fn decommission(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
         std::future::ready((|| {
@@ -86,19 +86,19 @@ impl SwarmHost for FakeHost {
         })())
     }
     fn stop(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
-        std::future::ready((|| {
+        std::future::ready({
             self.push(format!("stop {}", node.name));
             Ok(())
-        })())
+        })
     }
     fn start(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
-        std::future::ready((|| {
+        std::future::ready({
             self.push(format!("start {}", node.name));
             Ok(())
-        })())
+        })
     }
     fn reachable(&self, _: &RemoteNode) -> impl Future<Output = bool> {
-        std::future::ready((|| true)())
+        std::future::ready(true)
     }
 }
 fn fixture() -> (tempfile::TempDir, Registry, SwarmSpec) {
