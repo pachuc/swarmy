@@ -167,3 +167,127 @@ pub async fn call_upload<T>(
         .len();
     call_with_timeout(endpoint, crate::upload_timeout(size), future).await
 }
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use swarmy_config::{
+        paths::Dirs,
+        swarm::{Registry, SwarmApi, SwarmRecord, SwarmSpec},
+    };
+    fn registry() -> (tempfile::TempDir, Registry) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let registry = Registry::new(Dirs {
+            config: root.join("config"),
+            data: root.join("data"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        });
+        (tmp, registry)
+    }
+    fn spec(name: &str) -> SwarmSpec {
+        SwarmSpec::parse(&format!("name = '{name}'\nlifecycle = 'persistent'\n[groups.box]\nmodule = 'existing'\n[[groups.box.hosts]]\naddress = '203.0.113.10'\nssh_user = 'root'\nssh_key = '/keys/box'\n[placement]\nstack = 'box'\nservices = 'box'\nnodes = ['box']\n")).unwrap()
+    }
+    fn record(name: &str, url: Option<&str>, token: Option<&str>, host: bool) -> SwarmRecord {
+        SwarmRecord {
+            name: name.into(),
+            created_at: "2026-10-26T00:00:00Z".parse().unwrap(),
+            api: SwarmApi {
+                url: url.map(str::to_owned),
+                token: token.map(str::to_owned),
+            },
+            hosts: if host {
+                [(
+                    "box".into(),
+                    vec![swarmy_config::swarm::RecordedHost {
+                        name: "box".into(),
+                        public_address: "203.0.113.10".into(),
+                        private_address: None,
+                        ssh_user: "root".into(),
+                        ssh_key: "/keys/box".into(),
+                    }],
+                )]
+                .into()
+            } else {
+                Default::default()
+            },
+            tofu_state: None,
+        }
+    }
+    #[test]
+    fn every_selection_rule() {
+        let (_tmp, r) = registry();
+        assert!(matches!(
+            select_api(
+                &r,
+                swarmy_config::swarm::Target::Endpoint {
+                    url: "https://example.test".into(),
+                    token: "secret".into()
+                }
+            )
+            .unwrap(),
+            Api::Direct { .. }
+        ));
+        r.attach("attached", "https://example.test", "secret")
+            .unwrap();
+        assert!(matches!(
+            select_api(
+                &r,
+                swarmy_config::swarm::Target::Swarm(Box::new(r.read("attached").unwrap()))
+            )
+            .unwrap(),
+            Api::Direct { .. }
+        ));
+        assert!(matches!(
+            connect_to("http://localhost", String::new()),
+            Err(Error::MissingToken)
+        ));
+        for (name, url, token, host) in [
+            (
+                "direct",
+                Some("https://example.test"),
+                Some("secret"),
+                false,
+            ),
+            ("tunnel", None, Some("secret"), true),
+            ("no-record", None, None, false),
+            ("no-token", None, None, true),
+            ("no-host", None, Some("secret"), false),
+        ] {
+            r.write_spec(&spec(name)).unwrap();
+            if name != "no-record" {
+                r.write_record(&record(name, url, token, host)).unwrap();
+            }
+            let result = select_api(
+                &r,
+                swarmy_config::swarm::Target::Swarm(Box::new(r.read(name).unwrap())),
+            );
+            match name {
+                "direct" => assert!(matches!(result.unwrap(), Api::Direct { .. })),
+                "tunnel" => {
+                    let api = result.unwrap();
+                    assert!(!format!("{api:?}").contains("secret"));
+                    if let Api::Tunnel { host, dir, .. } = api {
+                        assert_eq!(host.public_address, "203.0.113.10");
+                        assert_eq!(dir, r.swarm_dir(name).unwrap().join("tunnel"));
+                    } else {
+                        panic!("expected tunnel");
+                    }
+                }
+                "no-host" => assert!(matches!(result, Err(Error::SwarmNoHost { .. }))),
+                _ => assert!(matches!(result, Err(Error::SwarmNotUp { .. }))),
+            }
+        }
+        r.write_record(&record("incomplete", None, Some("secret"), false))
+            .unwrap();
+        assert!(matches!(
+            select_api(
+                &r,
+                swarmy_config::swarm::Target::Swarm(Box::new(r.read("incomplete").unwrap()))
+            ),
+            Err(Error::SwarmIncomplete { .. })
+        ));
+    }
+}

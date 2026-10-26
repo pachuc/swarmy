@@ -468,11 +468,7 @@ async fn up(
                 .map(|id| format!("{name}={}", id.pid))
         })
         .collect::<Vec<_>>();
-    if let Some(name) = remote {
-        println!("stack: remote {name}");
-    } else {
-        println!("stack: ready ({})", stack_pids.join(", "));
-    }
+    println!("stack: ready ({})", stack_pids.join(", "));
     for (name, _) in SERVICES {
         let identity = Identity::read(&layout.state.join(format!("{name}.pid")))
             .context("service exited during startup")?;
@@ -746,9 +742,7 @@ async fn status(layout: &Layout) -> Result<()> {
                 .map(|identity| (name, identity))
         })
         .collect::<Vec<_>>();
-    if let Ok(name) = fs::read_to_string(layout.state.join("remote")) {
-        println!("stack: remote {name}");
-    } else if stack.is_empty() {
+    if stack.is_empty() {
         println!("stack: down");
     } else {
         let mut entries = Vec::new();

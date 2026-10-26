@@ -32,11 +32,18 @@ pub(super) async fn run(state_dir: &Path, state: &State, name: &str, json: bool)
         && let Ok(profile) = RemoteProfile::read(state_dir, name)
         && profile.socket_path == opened.record.socket
     {
-        return print(
+        let registry =
+            swarmy_config::swarm::Registry::new(swarmy_config::paths::Dirs::from_process()?);
+        let attached = attach_swarm(&registry, &node, &profile)?;
+        let result = print(
             &profile,
             json,
             &Timing::new(started, Duration::ZERO, Duration::ZERO, true),
         );
+        if attached && !json {
+            cloud_out!("# Registered as swarm {name}; client commands take --swarm {name}");
+        }
+        return result;
     }
     let record = &opened.record;
     let ports = RemotePorts {
@@ -63,11 +70,35 @@ pub(super) async fn run(state_dir: &Path, state: &State, name: &str, json: bool)
         );
         return Err(error);
     }
-    print(
+    let registry = swarmy_config::swarm::Registry::new(swarmy_config::paths::Dirs::from_process()?);
+    let attached = attach_swarm(&registry, &node, &profile)?;
+    let result = print(
         &profile,
         json,
         &Timing::new(started, opened.probe, opened.startup, opened.reused),
-    )
+    );
+    if attached && !json {
+        cloud_out!("# Registered as swarm {name}; client commands take --swarm {name}");
+    }
+    result
+}
+
+/// Register a node-services remote's tunnelled API as an attached swarm.
+/// # Errors
+/// Returns registry errors for invalid or managed names.
+pub(super) fn attach_swarm(
+    registry: &swarmy_config::swarm::Registry,
+    node: &RemoteNode,
+    profile: &RemoteProfile,
+) -> Result<bool> {
+    if !remote_api(node) || registry.read_spec(&node.name)?.is_some() {
+        return Ok(false);
+    }
+    let (Some(url), Some(token)) = (&profile.api_url, &profile.api_token) else {
+        return Ok(false);
+    };
+    registry.attach(&node.name, url, token)?;
+    Ok(true)
 }
 
 pub(super) async fn stop_legacy(profile: &RemoteProfile) -> Result<()> {
@@ -289,15 +320,10 @@ fn print(profile: &RemoteProfile, json: bool, timing: &Timing) -> Result<()> {
             None => profile.s3_endpoint.clone(),
         };
         if profile.ports.fdb == 0 {
-            cloud_out!(
-                "export SWARMY_REMOTE={}\n# API: {}",
-                profile.name,
-                profile.api_url.as_deref().unwrap_or("")
-            );
+            cloud_out!("# API: {}", profile.api_url.as_deref().unwrap_or(""));
         } else {
             cloud_out!(
-                "export SWARMY_REMOTE={}\n# FoundationDB: {}\n# NATS: {}\n# S3: {}",
-                profile.name,
+                "# FoundationDB: {}\n# NATS: {}\n# S3: {}",
                 profile.fdb_cluster_file.display(),
                 profile.nats_url,
                 s3
@@ -306,7 +332,6 @@ fn print(profile: &RemoteProfile, json: bool, timing: &Timing) -> Result<()> {
         if let Some(image) = &profile.default_image {
             cloud_out!("# Default image: {image}");
         }
-        cloud_out!("# swarmy dev up --remote {}", profile.name);
         cloud_out!(
             "# Connected in {:.3}s (address probing: {:.3}s; tunnel startup: {:.3}s; reused: {})",
             timing.elapsed_seconds,

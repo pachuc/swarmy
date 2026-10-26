@@ -365,6 +365,53 @@ pub(super) mod tests {
         assert!(r.current().is_err());
     }
     #[test]
+    fn attached_record_only_round_trip() {
+        let (_tmp, r) = setup();
+        r.attach("api", "https://example.test", "secret").unwrap();
+        assert!(r.read("api").unwrap().spec.is_none());
+        r.set_current("api").unwrap();
+        assert_eq!(r.current().unwrap().as_deref(), Some("api"));
+        let old = r.read_record("api").unwrap().unwrap().created_at;
+        assert_eq!(
+            fs::metadata(r.record_path("api").unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(r.swarm_dir("api").unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        r.attach("api", "https://new.example.test", "new-secret")
+            .unwrap();
+        let record = r.read_record("api").unwrap().unwrap();
+        assert_eq!(record.created_at, old);
+        assert_eq!(record.api.url.as_deref(), Some("https://new.example.test"));
+        assert_eq!(record.api.token.as_deref(), Some("new-secret"));
+        r.write_spec(&spec("managed")).unwrap();
+        assert!(
+            r.attach("managed", "https://example.test", "secret")
+                .unwrap_err()
+                .to_string()
+                .contains("managed by swarmy")
+        );
+        let mut record = record;
+        record.hosts.insert("box".into(), vec![]);
+        r.write_record(&record).unwrap();
+        assert!(
+            r.attach("api", "https://example.test", "secret")
+                .unwrap_err()
+                .to_string()
+                .contains("has machines recorded")
+        );
+    }
+    #[test]
     fn file_errors_name_mismatch() {
         let (_tmp, r) = setup();
         r.write_spec(&spec("a")).unwrap();

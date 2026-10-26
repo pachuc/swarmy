@@ -1252,9 +1252,6 @@ async fn up_skip_custom_recipe_and_failed_image_preserve_correct_default() {
         let profile: RemoteProfile =
             serde_json::from_slice(&serde_json::to_vec(&profile).unwrap()).unwrap();
         assert_eq!(profile.default_image.as_deref(), expected);
-        let mut settings = swarmy_config::Settings::default();
-        profile.apply(&mut settings);
-        assert_eq!(settings.selection.default_image.as_deref(), expected);
         assert_eq!(node.instance_id, "i-test");
         assert_eq!(
             host.images
@@ -1723,21 +1720,6 @@ async fn static_bucket_up_skips_roles_and_redacts_logs() {
         assert!(!rendered.contains("static-access"), "{rendered}");
         assert!(!rendered.contains("static-secret"), "{rendered}");
     }
-    // The connect profile carries keys into service settings for the laptop.
-    let profile = super::connect::new_profile(
-        setup.dir.path(),
-        &node,
-        node.ports,
-        8742,
-        setup.dir.path().join("socket"),
-    )
-    .unwrap();
-    let mut applied = swarmy_config::Settings::default();
-    profile.apply(&mut applied);
-    assert_eq!(applied.s3.endpoint, "https://objects.example.invalid");
-    assert_eq!(applied.s3.access_key, "static-access");
-    assert_eq!(applied.s3.secret_key, "static-secret");
-    assert_eq!(applied.s3.prefix.as_str(), "runs/team");
 }
 
 #[tokio::test]

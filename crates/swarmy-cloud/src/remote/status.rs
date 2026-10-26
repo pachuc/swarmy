@@ -278,19 +278,19 @@ async fn inventory(
     Vec<ImageRecord>,
     Vec<ServiceSummary>,
 )> {
-    let mut settings = base.clone();
     let profile = RemoteProfile::read(Path::new(&base.state_dir), name)?;
-    profile.apply(&mut settings);
-    let endpoint = settings
-        .api
-        .url
+    let endpoint = profile
+        .api_url
         .clone()
-        .unwrap_or_else(|| format!("http://{}", settings.api.listen));
+        .unwrap_or_else(|| format!("http://{}", base.api.listen));
     crate::Error::ensure(
-        !settings.api.token.is_empty(),
+        profile
+            .api_token
+            .as_ref()
+            .is_some_and(|token| !token.is_empty()),
         format!("no [api] token configured for remote {name}"),
     )?;
-    let client = swarmy_client::Client::new(&endpoint, settings.api.token.clone())
+    let client = swarmy_client::Client::new(&endpoint, profile.api_token.unwrap_or_default())
         .map_err(|source| client_error(&endpoint, source))?;
     let snapshot = timeout(Duration::from_secs(10), client.doctor())
         .await

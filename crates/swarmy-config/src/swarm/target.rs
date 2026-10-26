@@ -90,6 +90,16 @@ mod tests {
         }
     }
     #[test]
+    fn attached_flag_resolves_without_spec() {
+        let (_tmp, registry) = setup();
+        registry
+            .attach("attached", "https://example.test", "secret")
+            .unwrap();
+        assert!(
+            matches!(resolve(&registry, Some("attached"), &BTreeMap::new()).unwrap(), Target::Swarm(s) if s.spec.is_none())
+        );
+    }
+    #[test]
     fn precedence_and_errors() {
         let (_temp, registry) = setup();
         for name in ["flag", "env", "cur"] {
