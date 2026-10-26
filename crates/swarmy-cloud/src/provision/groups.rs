@@ -206,11 +206,11 @@ fn check_immutable_fields(
         return Ok(());
     };
     for (field, current) in [("size", &group.size), ("location", &group.location)] {
-        if let Some(old) = last.get(field).and_then(Value::as_str)
-            && current.as_deref() != Some(old)
-        {
+        let old = last.get(field).and_then(Value::as_str);
+        if old != current.as_deref() {
             return Err(Error::other(format!(
-                "group \"{name}\": {field} changed from {old} to {} since its machines were created; that would rebuild them. Restore it, or run swarmy swarm down {} first",
+                "group \"{name}\": {field} changed from {} to {} since its machines were created; that would rebuild them. Restore it, or run swarmy swarm down {} first",
+                old.unwrap_or("<unset>"),
                 current.as_deref().unwrap_or("<unset>"),
                 spec.name
             )));
@@ -359,6 +359,12 @@ pub(crate) async fn apply(
 ) -> Result<Applied> {
     let dir = registry.swarm_dir(&spec.name)?;
     preflight(spec, record, machines, &dir)?;
+    let order = apply_order(spec);
+    // Generate every group's key before the first apply can create a machine.
+    let mut keys = BTreeMap::new();
+    for name in &order {
+        keys.insert(name.clone(), group_key(&dir, &spec.name, name).await?);
+    }
     let bucket = bucket_name(spec, record);
     let root = root(&dir);
     create_private_dir(&root)?;
@@ -366,7 +372,7 @@ pub(crate) async fn apply(
     registry.write_record(record)?;
     let mut sources = Vec::new();
     let mut networks: Vec<(Module, String)> = Vec::new();
-    for name in apply_order(spec) {
+    for name in order {
         let group = &spec.groups[&name];
         let group_bucket = if name == spec.placement.stack {
             bucket.as_deref().unwrap_or("")
@@ -377,14 +383,7 @@ pub(crate) async fn apply(
             .iter()
             .find(|(kind, _)| kind == &group.module)
             .map_or("", |(_, id)| id.as_str());
-        let vars = variables(
-            spec,
-            &name,
-            group,
-            &group_key(&dir, &spec.name, &name).await?,
-            group_bucket,
-            network,
-        );
+        let vars = variables(spec, &name, group, &keys[&name], group_bucket, network);
         let env = credential_env(machines.credentials, group, !group_bucket.is_empty())?;
         let workspace = machines.tofu.workspace(group_dir(&dir, &name), env);
         let module = module_files(&name, group)?;
@@ -481,6 +480,7 @@ pub async fn plan_groups(
         });
     preflight(spec, &record, &machines, &dir)?;
     let bucket = bucket_name(spec, &mut record);
+    create_private_dir(&root(&dir))?;
     registry.write_record(&record)?;
     let mut result = Vec::new();
     let mut networks: Vec<(Module, String)> = Vec::new();

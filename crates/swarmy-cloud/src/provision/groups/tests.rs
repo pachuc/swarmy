@@ -475,3 +475,31 @@ async fn private_ip_is_awaited_for_builtin_modules() {
         2
     );
 }
+
+#[tokio::test]
+async fn adding_a_path_module_size_after_provisioning_is_refused() {
+    let mut f = Fixture::new();
+    f.spec.groups.remove("workers");
+    f.spec.placement.nodes.clear();
+    let path = f.temp.path().join("custom-module");
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("main.tf"), "# main").unwrap();
+    let group = f.spec.groups.get_mut("control").unwrap();
+    group.module = Module::Path(path);
+    group.size = None;
+    group.location = None;
+    let host = FakeHost::new();
+    f.up(&host).await.unwrap();
+    let prior = f.log().lines().filter(|s| s.contains(" apply")).count();
+    f.spec.groups.get_mut("control").unwrap().size = Some("larger".into());
+    let error = f.up(&host).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("size changed from <unset> to larger")
+    );
+    assert_eq!(
+        f.log().lines().filter(|s| s.contains(" apply")).count(),
+        prior
+    );
+}
