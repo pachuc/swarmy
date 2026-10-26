@@ -13,6 +13,7 @@ mod doctor;
 mod gc;
 mod image;
 mod image_command;
+mod local;
 mod models;
 mod models_probe;
 mod models_probe_command;
@@ -180,7 +181,11 @@ fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let json = cli.json;
     match cli.command {
-        Command::Swarm { command } => runtime.block_on(swarm_command::run(command, json)),
+        Command::Swarm { command } => runtime.block_on(swarm_command::run(
+            command,
+            json,
+            cli.allow_version_mismatch,
+        )),
         Command::Dev { command } => {
             runtime.block_on(dev::run(command, json, cli.allow_version_mismatch))
         }

@@ -82,6 +82,13 @@ impl Registry {
         validate_swarm_name(name)?;
         Ok(self.dirs.records().join(name))
     }
+    /// Runtime files of a locally running swarm.
+    /// # Errors
+    /// Returns `Spec` for invalid names.
+    pub fn state_dir(&self, name: &str) -> Result<PathBuf, Error> {
+        validate_swarm_name(name)?;
+        Ok(self.dirs.state.join("swarms").join(name))
+    }
     /// # Errors
     /// Returns `Spec` on an invalid name.
     pub fn record_path(&self, name: &str) -> Result<PathBuf, Error> {
@@ -170,6 +177,24 @@ impl Registry {
             tofu_state: None,
         })
     }
+    /// Set the API endpoint of a managed swarm while preserving its identity and machines.
+    /// # Errors
+    /// Returns `UnknownSwarm` without a spec, or registry errors.
+    pub fn set_api(&self, name: &str, url: &str, token: &str) -> Result<(), Error> {
+        if self.read_spec(name)?.is_none() {
+            return Err(Error::UnknownSwarm(name.into()));
+        }
+        let mut record = self.read_record(name)?.unwrap_or_else(|| SwarmRecord {
+            name: name.into(),
+            created_at: jiff::Timestamp::now(),
+            api: SwarmApi::default(),
+            hosts: Default::default(),
+            tofu_state: None,
+        });
+        record.api.url = Some(url.into());
+        record.api.token = Some(token.into());
+        self.write_record(&record)
+    }
     /// # Errors
     /// Returns validation, encode, or filesystem errors.
     pub fn write_spec(&self, spec: &SwarmSpec) -> Result<(), Error> {
@@ -200,6 +225,11 @@ impl Registry {
             return Err(e.into());
         }
         if let Err(e) = fs::remove_dir_all(dir)
+            && e.kind() != ErrorKind::NotFound
+        {
+            return Err(e.into());
+        }
+        if let Err(e) = fs::remove_dir_all(self.state_dir(name)?)
             && e.kind() != ErrorKind::NotFound
         {
             return Err(e.into());
@@ -276,6 +306,7 @@ pub(super) mod tests {
                     size: None,
                     location: None,
                     count: None,
+                    stack_dir: None,
                     hosts: vec![crate::swarm::HostSpec {
                         address: "203.0.113.10".into(),
                         ssh_user: "root".into(),

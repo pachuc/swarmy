@@ -88,7 +88,7 @@ async fn pull(
     let tag = tag.as_deref().unwrap_or(swarmy_version::RELEASE_TAG);
     let target = target.as_deref().map_or_else(Target::host, Target::parse)?;
     let image = release_image(tag);
-    if pull_release_image(None, &crate::dev::image_cache()?, tag, target, json)
+    if pull_release_image(None, &crate::image::image_cache()?, tag, target, json)
         .await?
         .is_none()
     {
@@ -101,7 +101,7 @@ async fn pull(
         let path = loaded.path.context(
             "no configuration file to update; run swarmy dev up first or set SWARMY_DEFAULT_IMAGE",
         )?;
-        crate::dev::set_default_image(&path, &image)?;
+        crate::image::set_default_image(&path, &image)?;
         if json {
             println!(
                 "{}",
@@ -290,4 +290,29 @@ mod tests {
             assert!(!other_release_image(&name));
         }
     }
+}
+
+/// `images/` in swarmy's XDG cache directory: release base-image downloads.
+pub(crate) fn image_cache() -> Result<PathBuf> {
+    Ok(swarmy_config::paths::Dirs::from_process()?
+        .cache
+        .join("images"))
+}
+/// Set `selection.default_image` in CONFIG, keeping the rest of the file.
+pub(crate) fn set_default_image(config: &Path, image: &str) -> Result<()> {
+    if !config.exists() {
+        if let Some(parent) = config.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let encoded = format!(
+            "[selection]\ndefault_image = {}\n",
+            toml::Value::String(image.into())
+        );
+        swarmy_config::write_private(config, encoded.as_bytes())?;
+        return Ok(());
+    }
+    let mut settings = swarmy_config::Settings::read(config)?;
+    settings.selection.default_image = Some(image.to_owned());
+    swarmy_config::write_private(config, settings.to_toml()?.as_bytes())?;
+    Ok(())
 }
