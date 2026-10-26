@@ -1,11 +1,7 @@
 //! Verified release assets shared by local and remote provisioning.
 use crate::{Error, Result};
-use sha2::{Digest, Sha256};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
-use tokio::{fs, io::AsyncWriteExt};
+use std::path::{Path, PathBuf};
+use swarmy_infra::download;
 
 pub const DEFAULT_BASE_URL: &str = "https://github.com/pachuc/swarmy/releases/download";
 pub const BASE_URL_ENV: &str = "SWARMY_RELEASE_BASE_URL";
@@ -103,20 +99,12 @@ impl Release {
     /// Rejects unsafe or invalid base URLs.
     pub fn new(base: &str, tag: &str) -> Result<Self> {
         let value = base;
-        let base = url::Url::parse(value.trim_end_matches('/')).map_err(|error| {
-            Error::context(error, format!("{BASE_URL_ENV}={value}: invalid URL"))
+        let base = download::release_base_url(base).map_err(|error| {
+            Error::context(
+                error,
+                format!("{BASE_URL_ENV}={value} is not a usable release base URL"),
+            )
         })?;
-        let loopback = match base.host() {
-            Some(url::Host::Domain("localhost")) => true,
-            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-            _ => false,
-        };
-        if base.scheme() != "https" && !(base.scheme() == "http" && loopback) {
-            return Err(Error::other(format!(
-                "{BASE_URL_ENV}={value}: requires https or http on loopback"
-            )));
-        }
         Ok(Self {
             base,
             tag: tag.to_owned(),
@@ -158,12 +146,9 @@ impl Release {
     #[must_use]
     pub fn cached(&self, cache: &Path, component: Component, target: Target) -> Option<PathBuf> {
         let dir = self.unpacked(cache, component, target);
-        (dir.join(".sha256").is_file()
-            && component
-                .files()
-                .iter()
-                .all(|file| dir.join(file).is_file()))
-        .then_some(dir)
+        download::verified_digest(&dir, component.files())
+            .is_some()
+            .then_some(dir)
     }
     fn url(&self, asset: &str) -> Result<url::Url> {
         Ok(url::Url::parse(&format!(
@@ -173,7 +158,7 @@ impl Release {
         ))?)
     }
     fn digest(&self, sums: &str, asset: &str, component: Component) -> Result<String> {
-        expected_digest(sums, asset).map_err(|_| {
+        download::expected_digest(sums, asset).ok_or_else(|| {
             Error::other(format!(
                 "SHA256SUMS for {} has no entry for {asset}; {}",
                 self.tag,
@@ -190,18 +175,22 @@ impl Release {
         component: Component,
         target: Target,
     ) -> Result<PathBuf> {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("swarmy/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_mins(15))
-            .build()?;
+        let fetcher = download::Fetcher::new()?;
         let asset = Self::asset(component, target);
         let sums_url = self.url(SUMS)?;
-        let cached = self.cached(cache, component, target);
-        let response = match client.get(sums_url.clone()).send().await {
-            Ok(response) => response,
+        let destination = self.unpacked(cache, component, target);
+        let sums = match fetcher.get_text(sums_url.clone()).await {
+            Ok(Some(sums)) => sums,
+            Ok(None) => {
+                return Err(Error::other(format!(
+                    "no swarmy release {} at {} (HTTP 404 for SHA256SUMS); {}",
+                    self.tag,
+                    self.base,
+                    component.missing_hint()
+                )));
+            }
             Err(error) => {
-                if let Some(dir) = cached {
+                if let Some(dir) = self.cached(cache, component, target) {
                     cloud_err!(
                         "warning: cannot reach {sums_url}: {error}; using the verified copy at {}",
                         dir.display()
@@ -211,73 +200,25 @@ impl Release {
                 return Err(error.into());
             }
         };
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(Error::other(format!(
-                "no swarmy release {} at {} (HTTP 404 for SHA256SUMS); {}",
-                self.tag,
-                self.base,
-                component.missing_hint()
-            )));
-        }
-        let sums = response.error_for_status()?.text().await?;
         let expected = self.digest(&sums, &asset, component)?;
-        if let Some(dir) = self.cached(cache, component, target)
-            && fs::read_to_string(dir.join(".sha256")).await?.trim() == expected
+        if download::verified_digest(&destination, component.files()).as_deref()
+            == Some(expected.as_str())
         {
-            return Ok(dir);
+            return Ok(destination);
         }
-        let parent = cache.join(&self.tag);
-        fs::create_dir_all(&parent).await?;
-        let temp = tempfile::Builder::new()
-            .prefix(".partial-")
-            .tempdir_in(&parent)?;
         let url = self.url(&asset)?;
         cloud_out!("Downloading {url}");
-        let mut response = client.get(url).send().await?.error_for_status()?;
-        let archive = temp.path().join(&asset);
-        let mut file = fs::File::create(&archive).await?;
-        let mut hash = Sha256::new();
-        while let Some(chunk) = response.chunk().await? {
-            hash.update(&chunk);
-            file.write_all(&chunk).await?;
-        }
-        file.flush().await?;
-        drop(file);
-        let actual = format!("{:x}", hash.finalize());
-        if actual != expected {
-            return Err(Error::other(format!(
-                "checksum mismatch for {asset}: SHA256SUMS lists {expected} but the download hashes to {actual}; refusing to unpack it (retry; if it persists the release asset is corrupt)"
-            )));
-        }
-        let extract = temp.path().join("extract");
-        fs::create_dir(&extract).await?;
-        let status = tokio::process::Command::new("tar")
-            .arg("-xzf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(&extract)
-            .status()
+        let top = format!("{}-{}", component.prefix(), target.triple());
+        fetcher
+            .install_tarball(download::Install {
+                url,
+                asset: &asset,
+                sha256: &expected,
+                top: Some(&top),
+                members: component.files(),
+                destination: &destination,
+            })
             .await?;
-        Error::ensure(
-            status.success(),
-            format!("tar failed unpacking {asset}: {status}"),
-        )?;
-        let unpacked = extract.join(format!("{}-{}", component.prefix(), target.triple()));
-        for member in component.files() {
-            Error::ensure(
-                fs::symlink_metadata(unpacked.join(member))
-                    .await?
-                    .file_type()
-                    .is_file(),
-                format!("invalid release member {member}"),
-            )?;
-        }
-        fs::write(unpacked.join(".sha256"), &expected).await?;
-        let destination = self.unpacked(cache, component, target);
-        if destination.exists() {
-            fs::remove_dir_all(&destination).await?;
-        }
-        fs::rename(&unpacked, &destination).await?;
         cloud_out!(
             "Verified {asset} ({}) against SHA256SUMS: {}",
             self.tag,
@@ -285,21 +226,6 @@ impl Release {
         );
         Ok(destination)
     }
-}
-
-pub(crate) fn expected_digest(sums: &str, asset: &str) -> Result<String> {
-    for line in sums.lines() {
-        if let Some((hex, name)) = line.split_once(' ')
-            && (name.strip_prefix(' ') == Some(asset) || name.strip_prefix('*') == Some(asset))
-            && hex.len() == 64
-            && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Ok(hex.to_ascii_lowercase());
-        }
-    }
-    Err(Error::other(format!(
-        "no valid SHA256SUMS entry for {asset}"
-    )))
 }
 
 #[cfg(test)]
@@ -361,17 +287,6 @@ mod tests {
     }
     #[test]
     fn checksums_and_targets() {
-        let hex = "a".repeat(64);
-        assert_eq!(
-            expected_digest(&format!("{hex}  core"), "core").unwrap(),
-            hex
-        );
-        assert_eq!(
-            expected_digest(&format!("{hex} *core"), "core").unwrap(),
-            hex
-        );
-        assert!(expected_digest("ab  core", "core").is_err());
-        assert!(expected_digest(&format!("{hex}  other"), "core").is_err());
         for (machine, target) in [
             ("x86_64", Target::X86_64Linux),
             ("aarch64", Target::Aarch64Linux),
