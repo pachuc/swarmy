@@ -294,10 +294,8 @@ impl CloudCredentials {
             // TOML diagnostics can include the source line, including secret values.
             let start = e.span().map_or(0, |span| span.start.min(content.len()));
             let line = content.as_bytes()[..start]
-                .iter()
-                .filter(|&&byte| byte == b'\n')
-                .count()
-                + 1;
+                .split(|&byte| byte == b'\n')
+                .count();
             file_error(
                 path,
                 Error::CloudCredential(format!(
