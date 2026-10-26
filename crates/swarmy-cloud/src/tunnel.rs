@@ -1,5 +1,5 @@
 //! One SSH control master per swarm, with a private record, lock, and log in its directory.
-//! FoundationDB prefers its advertised port: two services-local swarms cannot both
+//! `FoundationDB` prefers its advertised port: two services-local swarms cannot both
 //! have a usable FDB forward. Fully remote swarms have no such limit.
 //! Health proves the local API listener is up, not that the remote API answers.
 use crate::{Error, Result, ssh};
@@ -482,9 +482,12 @@ mod tests {
         fn drop(&mut self) {
             for entry in fs::read_dir(self.root.path()).unwrap().flatten() {
                 if let Ok(Some(record)) = Record::read(&entry.path()) {
-                    let _ = std::process::Command::new("kill")
-                        .arg(record.pid.to_string())
-                        .status();
+                    ignore_best_effort(
+                        std::process::Command::new("kill")
+                            .arg(record.pid.to_string())
+                            .status(),
+                        "kill test SSH master",
+                    );
                 }
             }
         }
@@ -673,7 +676,7 @@ mod extra_tests {
             self.records.push(dir.clone());
             dir
         }
-        fn request<'a>(dir: &'a Path, placement: Placement) -> Request<'a> {
+        fn request(dir: &Path, placement: Placement) -> Request<'_> {
             Request {
                 dir,
                 placement,
@@ -697,9 +700,12 @@ mod extra_tests {
         fn drop(&mut self) {
             for dir in &self.records {
                 if let Ok(Some(record)) = Record::read(dir) {
-                    let _ = std::process::Command::new("kill")
-                        .arg(record.pid.to_string())
-                        .status();
+                    ignore_best_effort(
+                        std::process::Command::new("kill")
+                            .arg(record.pid.to_string())
+                            .status(),
+                        "kill test SSH master",
+                    );
                 }
             }
         }

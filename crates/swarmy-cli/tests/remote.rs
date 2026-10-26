@@ -5,6 +5,16 @@ use std::{
     process::{Command, Output},
 };
 
+struct Kill(String);
+impl Drop for Kill {
+    fn drop(&mut self) {
+        swarmy_core::ignore_best_effort(
+            Command::new("kill").arg(&self.0).status(),
+            "kill test SSH master",
+        );
+    }
+}
+
 fn cli_command(root: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_swarmy"));
     command
@@ -299,12 +309,6 @@ fn connect_opens_an_api_only_tunnel_for_node_services_and_disconnect_removes_it(
     let record: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
     let pid = record["pid"].as_u64().unwrap().to_string();
-    struct Kill(String);
-    impl Drop for Kill {
-        fn drop(&mut self) {
-            let _ = Command::new("kill").arg(&self.0).status();
-        }
-    }
     let _guard = Kill(pid);
     let port = record["forwards"][0]["local"].as_u64().unwrap();
     assert_eq!(record["forwards"][0]["service"], "api");
