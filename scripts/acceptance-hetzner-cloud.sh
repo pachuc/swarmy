@@ -143,7 +143,7 @@ on_exit() {
         fi
         if ((down_ok && clean_ok)); then
             "$swarmy" swarm rm "$name" || result=1
-            if [[ -f ${XDG_CONFIG_HOME:-$HOME/.config}/swarmy/current ]] && grep -qx "$name" "${XDG_CONFIG_HOME:-$HOME/.config}/swarmy/current"; then echo 'note: current still names removed swarm' >&2; fi
+            if [[ -f ${XDG_STATE_HOME:-$HOME/.local/state}/swarmy/current ]] && grep -qx "$name" "${XDG_STATE_HOME:-$HOME/.local/state}/swarmy/current"; then echo 'note: current still names removed swarm' >&2; fi
         else
             ((result != 0)) || result=1
         fi
