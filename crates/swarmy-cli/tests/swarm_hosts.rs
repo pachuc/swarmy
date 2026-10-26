@@ -205,7 +205,8 @@ fn node_add_provisions_only_the_new_host() {
     f.create();
     f.ok(&["swarm", "up", "box", "--no-image"]);
     let old = fs::read_to_string(f.path().join("ssh-commands")).unwrap();
-    f.ok(&[
+    let output = f.ok(&[
+        "--json",
         "swarm",
         "node",
         "add",
@@ -216,6 +217,10 @@ fn node_add_provisions_only_the_new_host() {
         "--ssh-key",
         f.key.to_str().unwrap(),
     ]);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["hosts"][0]["provisioned"], true);
+    assert_eq!(value["hosts"][1]["provisioned"], true);
+    assert_eq!(value["hosts"][1]["name"], "box-box-2");
     let commands = fs::read_to_string(f.path().join("ssh-commands")).unwrap();
     let added = &commands[old.len()..];
     assert_eq!(
