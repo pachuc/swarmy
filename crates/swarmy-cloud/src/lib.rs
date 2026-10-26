@@ -33,7 +33,7 @@ pub mod node_files;
 pub mod release;
 pub mod ssh;
 pub mod tunnel;
-pub use command::{BucketArgs, Command, select};
+pub use command::{BucketArgs, Command};
 #[cfg(feature = "remote")]
 mod remote;
 mod services;

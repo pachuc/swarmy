@@ -123,7 +123,7 @@ pub fn recipe(path: &Path) -> Result<PathBuf> {
         Ok(PathBuf::from(normalized))
     } else {
         Err(crate::Error::other(format!(
-            "image recipe {raw} is not carried by this client; choose one of {}, or build a custom recipe with swarmy image build --remote NAME DIR",
+            "image recipe {raw} is not carried by this client; choose one of {}, or build a custom recipe with swarmy image build --swarm NAME DIR",
             recipes().join(", ")
         )))
     }
@@ -289,7 +289,7 @@ mod tests {
                 error.contains("images/base-ubuntu")
                     && error.contains("images/base-desktop")
                     && error.contains("images/swarmy-dev")
-                    && error.contains("swarmy image build --remote")
+                    && error.contains("swarmy image build --swarm")
             );
         }
     }

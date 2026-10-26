@@ -19,6 +19,8 @@ mod models_probe_command;
 mod provider_report;
 mod selection_command;
 mod session_command;
+mod swarm_command;
+mod target;
 mod tools;
 mod version_guard;
 
@@ -35,9 +37,9 @@ struct Cli {
     /// Emit compact machine-readable JSON
     #[arg(long, global = true)]
     json: bool,
-    /// Use a saved remote tunnel profile
-    #[arg(long, global = true)]
-    remote: Option<String>,
+    /// Talk to this swarm (overrides `SWARMY_SWARM`, `SWARMY_API_URL`, and the current swarm)
+    #[arg(long, global = true, value_name = "NAME", value_parser = swarm_command::parse_name)]
+    swarm: Option<String>,
     /// Talk to, or start, a swarmy-core whose version differs from this client
     #[arg(long, global = true)]
     allow_version_mismatch: bool,
@@ -47,6 +49,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// List, show, select, attach, and forget swarms
+    Swarm {
+        #[command(subcommand)]
+        command: swarm_command::Command,
+    },
     /// Browse the configured provider and model catalog
     Models {
         #[command(subcommand)]
@@ -154,7 +161,7 @@ fn main() -> anyhow::Result<()> {
             }
         });
     }
-    swarmy_cloud::select(cli.remote.as_deref())?;
+    target::select(cli.swarm.clone())?;
     // Background service logs must not overwrite the full-screen transcript.
     let writer = if matches!(cli.command, Command::Chat { .. }) {
         tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::sink)
@@ -173,6 +180,7 @@ fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let json = cli.json;
     match cli.command {
+        Command::Swarm { command } => runtime.block_on(swarm_command::run(command, json)),
         Command::Dev { command } => {
             runtime.block_on(dev::run(command, json, cli.allow_version_mismatch))
         }
@@ -233,7 +241,7 @@ fn main() -> anyhow::Result<()> {
 async fn connect_client(
     allow_version_mismatch: bool,
 ) -> anyhow::Result<(swarmy_client::Client, String)> {
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    let (client, endpoint) = target::connect().await?;
     let health = swarmy_client::api_client::call(&endpoint, client.health()).await?;
     version_guard::enforce(&health, allow_version_mismatch)?;
     Ok((client, endpoint))

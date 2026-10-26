@@ -814,15 +814,14 @@ impl Settings {
     }
 
     /// Discover configuration and apply the current process's environment.
+    /// Same as [`Settings::load_base`]; services call this name.
     /// # Errors
     /// Fails for unreadable files, invalid TOML, or invalid overrides.
     pub fn load() -> Result<Loaded, Error> {
-        let mut loaded = Self::load_base()?;
-        loaded.settings.apply_remote()?;
-        Ok(loaded)
+        Self::load_base()
     }
 
-    /// Load configuration without opening the selected tunnel profile.
+    /// Discover configuration and apply the current process environment.
     /// # Errors
     /// Returns invalid configuration or filesystem errors.
     pub fn load_base() -> Result<Loaded, Error> {
@@ -835,18 +834,6 @@ impl Settings {
                 )
         })?;
         Self::load_base_from(&cwd, &environment)
-    }
-
-    /// Apply the selected profile after environment overrides.
-    /// # Errors
-    /// Returns errors for missing or invalid profiles.
-    pub fn apply_remote(&mut self) -> Result<(), Error> {
-        if let Some(name) = &self.remote.profile {
-            let profile = RemoteProfile::read(&self.state_dir, name)?;
-            profile.validate_fdb_port()?;
-            profile.apply(self);
-        }
-        Ok(())
     }
 
     fn load_base_from(cwd: &Path, environment: &BTreeMap<String, String>) -> Result<Loaded, Error> {
@@ -1004,7 +991,6 @@ macro_rules! e {
 #[rustfmt::skip]
 static ENV_TABLE: &[EnvEntry] = &[
     e!("SWARMY_STATE_DIR", |s, v, _| assign(&mut s.state_dir, v), |s| Some(s.state_dir.to_string_lossy().into_owned())),
-    e!("SWARMY_REMOTE", |s, v, _| { s.remote.profile = Some(v.into()); Ok(()) }, |s| s.remote.profile.clone()),
     e!("SWARMY_FDB_CLUSTER_FILE", |s, v, _| assign(&mut s.store.cluster_file, v), |s| Some(s.store.cluster_file.to_string_lossy().into_owned())),
     e!("SWARMY_NATS_URL", |s, v, _| assign(&mut s.bus.nats_url, v), |s| Some(s.bus.nats_url.clone())),
     e!("SWARMY_S3_ENDPOINT", |s, v, _| assign(&mut s.s3.endpoint, v), |s| Some(s.s3.endpoint.clone())),
@@ -1210,13 +1196,11 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
 
-    pub(crate) fn load_with_remote(
+    pub(crate) fn load_from(
         cwd: &Path,
         environment: &BTreeMap<String, String>,
     ) -> Result<Loaded, Error> {
-        let mut loaded = Settings::load_base_from(cwd, environment)?;
-        loaded.settings.apply_remote()?;
-        Ok(loaded)
+        Settings::load_base_from(cwd, environment)
     }
 
     #[test]
@@ -1350,12 +1334,12 @@ mod tests {
     #[test]
     fn node_identity_persists_and_environment_can_select_another_node() {
         let dir = tempfile::tempdir().unwrap();
-        let loaded = load_with_remote(dir.path(), &BTreeMap::new()).unwrap();
+        let loaded = load_from(dir.path(), &BTreeMap::new()).unwrap();
         let first = loaded.node_id().unwrap();
         assert_eq!(loaded.node_id().unwrap(), first);
         let second = swarmy_core::NodeId::from_ulid(ulid::Ulid::generate());
         let environment = BTreeMap::from([("SWARMY_NODE_ID".into(), second.to_string())]);
-        let loaded = load_with_remote(dir.path(), &environment).unwrap();
+        let loaded = load_from(dir.path(), &environment).unwrap();
         assert_eq!(loaded.node_id().unwrap(), second);
         assert_eq!(
             loaded.settings.environment()["SWARMY_NODE_ID"],
@@ -1401,7 +1385,7 @@ mod tests {
             "XDG_CONFIG_HOME".into(),
             temp.path().join("xdg").display().to_string(),
         );
-        let loaded = load_with_remote(&nested, &environment).unwrap();
+        let loaded = load_from(&nested, &environment).unwrap();
         assert_eq!(loaded.path, Some(config.clone()));
         assert_eq!(loaded.settings.store.directory, "project");
         assert_eq!(loaded.settings.selection.model, "custom");
@@ -1415,13 +1399,13 @@ mod tests {
         );
         environment.insert("SWARMY_STORE_DIRECTORY".into(), "override".into());
         environment.insert("SWARMY_GATEWAY_CONCURRENCY".into(), "7".into());
-        let loaded = load_with_remote(&nested, &environment).unwrap();
+        let loaded = load_from(&nested, &environment).unwrap();
         assert_eq!(loaded.settings.store.directory, "override");
         assert_eq!(loaded.settings.gateway.concurrency, 7);
         environment.remove("SWARMY_STORE_DIRECTORY");
         std::fs::remove_file(config).unwrap();
         assert_eq!(
-            load_with_remote(&nested, &environment)
+            load_from(&nested, &environment)
                 .unwrap()
                 .settings
                 .store
@@ -1429,7 +1413,7 @@ mod tests {
             "user"
         );
         environment.insert("SWARMY_GATEWAY_CONCURRENCY".into(), "bad".into());
-        assert!(load_with_remote(&nested, &environment).is_err());
+        assert!(load_from(&nested, &environment).is_err());
     }
 
     #[test]
@@ -1450,7 +1434,7 @@ mod tests {
             ("XDG_CONFIG_HOME".into(), String::new()),
             ("SWARMY_FDB_CLUSTER_FILE".into(), "custom.cluster".into()),
         ]);
-        let loaded = load_with_remote(&cwd, &environment).unwrap();
+        let loaded = load_from(&cwd, &environment).unwrap();
         assert_eq!(loaded.settings.selection.model, "user-model");
         assert_eq!(loaded.settings.state_dir, home.join(".local/state/swarmy"));
         assert_eq!(
@@ -1466,13 +1450,13 @@ mod tests {
             "[selection]\ncredential_file = 'credentials/auth.json'",
         )
         .unwrap();
-        let loaded = load_with_remote(&cwd, &environment).unwrap();
+        let loaded = load_from(&cwd, &environment).unwrap();
         assert_eq!(
             loaded.settings.selection.credential_file,
             user.join("credentials/auth.json")
         );
         std::fs::write(user.join("config.toml"), "bad toml").unwrap();
-        assert!(load_with_remote(&cwd, &environment).is_err());
+        assert!(load_from(&cwd, &environment).is_err());
     }
 
     #[test]
@@ -1508,7 +1492,7 @@ mod tests {
                 temp.path().join("state").display().to_string(),
             ),
         ]);
-        let loaded = load_with_remote(&nested, &env).unwrap();
+        let loaded = load_from(&nested, &env).unwrap();
         assert_eq!(loaded.settings.state_dir, project.join(".swarmy"));
         assert_eq!(
             loaded.settings.selection.credential_file,
@@ -1516,11 +1500,11 @@ mod tests {
         );
         std::fs::remove_file(&config).unwrap();
         assert_eq!(
-            load_with_remote(&nested, &env).unwrap().settings.state_dir,
+            load_from(&nested, &env).unwrap().settings.state_dir,
             temp.path().join("state/swarmy")
         );
         env.clear();
-        let loaded = load_with_remote(&nested, &env).unwrap();
+        let loaded = load_from(&nested, &env).unwrap();
         assert_eq!(loaded.settings.state_dir, nested.join(".swarmy"));
         assert_eq!(
             loaded.settings.selection.credential_file,
@@ -1528,7 +1512,7 @@ mod tests {
         );
         env.insert("SWARMY_STATE_DIR".into(), "/abs/state".into());
         env.insert("SWARMY_CHATGPT_AUTH".into(), "/abs/auth.json".into());
-        let loaded = load_with_remote(&nested, &env).unwrap();
+        let loaded = load_from(&nested, &env).unwrap();
         assert_eq!(loaded.settings.state_dir, Path::new("/abs/state"));
         assert_eq!(
             loaded.settings.selection.credential_file,
@@ -1537,7 +1521,7 @@ mod tests {
         env.clear();
         std::fs::write(&config, "state_dir = 'custom'").unwrap();
         assert_eq!(
-            load_with_remote(&nested, &env).unwrap().settings.state_dir,
+            load_from(&nested, &env).unwrap().settings.state_dir,
             project.join("custom")
         );
     }
@@ -1582,7 +1566,6 @@ mod tests {
         // wrong field fails the round trip instead of passing on defaults.
         let distinct: &[(&str, &str)] = &[
             ("SWARMY_STATE_DIR", "/tmp/test-state"),
-            ("SWARMY_REMOTE", "profile-test"),
             ("SWARMY_FDB_CLUSTER_FILE", "/tmp/test.cluster"),
             ("SWARMY_NATS_URL", "nats://127.0.0.1:4333"),
             ("SWARMY_S3_ENDPOINT", "http://127.0.0.1:8334"),

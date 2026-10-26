@@ -528,7 +528,7 @@ fn agent_options_validate_before_connecting_to_services() {
         ] {
             let output = std::process::Command::new(binary)
                 .args(args)
-                .args(["--json", "--remote", "demo", "--help"])
+                .args(["--json", "--swarm", "demo", "--help"])
                 .output()
                 .unwrap();
             assert!(
@@ -537,7 +537,7 @@ fn agent_options_validate_before_connecting_to_services() {
                 String::from_utf8_lossy(&output.stderr)
             );
             let text = String::from_utf8(output.stdout).unwrap();
-            assert!(text.contains("--json") && text.contains("--remote"));
+            assert!(text.contains("--json") && text.contains("--swarm"));
         }
     }
     for args in [
@@ -546,7 +546,7 @@ fn agent_options_validate_before_connecting_to_services() {
     ] {
         let output = std::process::Command::new(swarmy_testkit::bin("swarmy"))
             .args(args)
-            .args(["--json", "--remote", "demo", "--help"])
+            .args(["--json", "--swarm", "demo", "--help"])
             .output()
             .unwrap();
         assert!(
@@ -555,7 +555,7 @@ fn agent_options_validate_before_connecting_to_services() {
             String::from_utf8_lossy(&output.stderr)
         );
         let text = String::from_utf8(output.stdout).unwrap();
-        assert!(text.contains("--json") && text.contains("--remote"));
+        assert!(text.contains("--json") && text.contains("--swarm"));
     }
 }
 
@@ -678,31 +678,19 @@ async fn agent_show_reports_placement_and_committed_snapshot() {
 }
 
 #[tokio::test]
-async fn new_commands_use_the_selected_remote_profile() {
+async fn new_commands_use_the_selected_swarm() {
     run(|fixture| async move {
         let files = tempfile::tempdir().unwrap();
-        std::fs::create_dir(files.path().join("remote")).unwrap();
-        let profile = swarmy_config::RemoteProfile {
-            name: "fixture".into(),
-            socket_path: files.path().join("unused.sock"),
-            pid: 0,
-            ports: swarmy_config::RemotePorts::default(),
-            remote_ports: swarmy_config::RemotePorts::default(),
-            fdb_cluster_file: fixture.cluster.clone().into(),
-            nats_url: fixture.url.clone(),
-            s3_endpoint: swarmy_testkit::test_settings(&["SWARMY_S3_ENDPOINT"])
-                .s3
-                .endpoint,
-            api_url: Some(fixture.api_url.clone()),
-            api_token: Some(fixture.api_token.clone()),
-            bucket: None,
-            default_image: Some("fixture:test".into()),
-        };
-        std::fs::write(
-            files.path().join("remote/fixture.profile.json"),
-            serde_json::to_vec(&profile).unwrap(),
+        let env = swarmy_testkit::isolated_home(files.path());
+        let dirs = swarmy_config::paths::Dirs::from_env(
+            &env.iter()
+                .map(|(key, value)| ((*key).into(), value.display().to_string()))
+                .collect(),
         )
         .unwrap();
+        swarmy_config::swarm::Registry::new(dirs)
+            .attach("fixture", &fixture.api_url, &fixture.api_token)
+            .unwrap();
         let ephemeral = fixture
             .store
             .create_agent_session(
@@ -730,14 +718,14 @@ async fn new_commands_use_the_selected_remote_profile() {
         ] {
             let mut command = fixture.command(&args);
             command
-                .args(["--remote", "fixture", "--json"])
-                .env("SWARMY_STATE_DIR", files.path())
+                .args(["--swarm", "fixture", "--json"])
+                .envs(swarmy_testkit::isolated_home(files.path()))
+                .env("SWARMY_API_URL", "http://127.0.0.1:1")
                 .env(
                     "SWARMY_FDB_CLUSTER_FILE",
                     files.path().join("missing.cluster"),
                 )
-                .env("SWARMY_NATS_URL", "nats://127.0.0.1:1")
-                .env("SWARMY_DEFAULT_IMAGE", "missing:default");
+                .env("SWARMY_NATS_URL", "nats://127.0.0.1:1");
             let text = success(timeout(WAIT, command.output()).await.unwrap().unwrap());
             assert!(!text.is_empty());
             for line in text.lines() {

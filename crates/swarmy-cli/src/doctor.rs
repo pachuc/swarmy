@@ -3,7 +3,6 @@ use std::{
     process::Stdio,
     time::Duration,
 };
-use swarmy_cloud::ssh as remote_ssh;
 
 use serde::Serialize;
 use swarmy_config::{Loaded, Settings};
@@ -46,15 +45,9 @@ impl Check {
 }
 
 pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
-    let loaded = Settings::load_base().map(|mut loaded| {
-        if let Some(name) = &loaded.settings.remote.profile
-            && let Ok(profile) =
-                swarmy_config::RemoteProfile::read(Path::new(&loaded.settings.state_dir), name)
-        {
-            profile.apply(&mut loaded.settings);
-        }
-        loaded
-    });
+    let loaded = Settings::load_base();
+    let target = crate::target::resolve();
+    let remote = matches!(target, Ok(swarmy_client::api_client::Api::Tunnel { .. }));
     let mut checks = vec![Check::new(
         "config",
         match &loaded {
@@ -72,10 +65,12 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
         },
         "Run swarmy dev up to create one (.swarmy/config.toml in a checkout, else ~/.config/swarmy/config.toml); repair an existing file or its SWARMY_* overrides. See docs/DEV.md.",
     )];
+    checks.push(Check::new("target", match &target {
+        Ok(swarmy_client::api_client::Api::Direct { url, .. }) => Ok(format!("API {url}")),
+        Ok(swarmy_client::api_client::Api::Tunnel { swarm, host, .. }) => Ok(format!("swarm {swarm} over SSH to {}", host.public_address)),
+        Err(error) => Err(error.to_string()),
+    }, "Run swarmy swarm ls to list swarms and swarmy swarm use NAME to choose one, or set SWARMY_API_URL and SWARMY_API_TOKEN."));
     checks.push(Check::new("keyring", keyring(), "Run swarmy dev up to create a keyring, or install the existing cluster key with chmod 600; set SWARMY_KEYRING for another path."));
-    let remote = loaded
-        .as_ref()
-        .is_ok_and(|loaded| loaded.settings.remote.profile.is_some());
     if !remote {
         for (name, argument) in [
             ("fdbserver", "--version"),
@@ -90,8 +85,7 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
     checks.push(core_binary_check(remote).await);
 
     let providers = if let Ok(loaded) = &loaded {
-        checks.extend(remote_checks(loaded).await);
-        checks.push(s3_line(&loaded.settings).await);
+        checks.push(s3_line(&loaded.settings, remote).await);
         if let Some(path) = loaded.settings.selection.credential_file.to_str() {
             let result = if Path::new(path).is_file() {
                 Check::new("credential file", Ok(format!("{path} present")), "")
@@ -203,49 +197,6 @@ fn report(
     ok
 }
 
-async fn remote_checks(loaded: &Loaded) -> Vec<Check> {
-    let mut checks = Vec::new();
-    if let Some(name) = &loaded.settings.remote.profile {
-        let profile =
-            match swarmy_config::RemoteProfile::read(Path::new(&loaded.settings.state_dir), name) {
-                Ok(profile) => profile,
-                Err(error) => {
-                    return vec![Check::new(
-                        "remote tunnel",
-                        Err(format!("{name}: profile unavailable: {error}")),
-                        &format!(
-                            "Run swarmy remote connect {name}; repair an invalid profile if needed."
-                        ),
-                    )];
-                }
-            };
-        if profile.ports.fdb != 0 {
-            checks.push(Check::new(
-                "remote FoundationDB port",
-                profile
-                    .validate_fdb_port()
-                    .map(|()| "advertised port preserved".into())
-                    .map_err(|error| error.to_string()),
-                "Disconnect, free the advertised FoundationDB port, and reconnect.",
-            ));
-        }
-        let result = if remote_ssh::healthy(&profile).await {
-            Ok(format!(
-                "{name}: SSH control master healthy (pid {})",
-                profile.pid
-            ))
-        } else {
-            Err(format!("{name}: SSH control master is down"))
-        };
-        checks.push(Check::new(
-            "remote tunnel",
-            result,
-            &format!("Run swarmy remote connect {name}."),
-        ));
-    }
-    checks
-}
-
 fn invalid_config() -> String {
     let environment = ["HOME", "XDG_CONFIG_HOME"]
         .into_iter()
@@ -312,49 +263,16 @@ fn keyring() -> Result<String, String> {
     }
 }
 
-async fn s3_line(settings: &Settings) -> Check {
-    let profile = settings.remote.profile.as_ref().and_then(|name| {
-        swarmy_config::RemoteProfile::read(Path::new(&settings.state_dir), name).ok()
-    });
-    if let Some(spec) = profile
-        .as_ref()
-        .filter(|profile| {
-            profile
-                .bucket
-                .as_ref()
-                .is_some_and(|spec| spec.endpoint.is_empty())
-        })
-        .and_then(|profile| profile.bucket.as_ref())
-    {
-        // The client holds no object store credentials; the control plane
-        // owns its bucket. Listing it from the laptop would need the same
-        // identity the API host already uses. The description prints without
-        // secrets; static keys stay in the 0600 profile file.
+async fn s3_line(settings: &Settings, remote: bool) -> Check {
+    if remote {
         return Check::warn(
             "remote S3",
-            format!(
-                "bucket {}: object storage is verified on the API host, not from the client",
-                spec.describe()
-            ),
-            "Check the API host's object storage credentials and region if image or volume operations fail.",
-        );
-    }
-    if profile.as_ref().is_some_and(|profile| {
-        profile.ports.s3 == 0 && profile.bucket.is_none() && profile.s3_endpoint.is_empty()
-    }) {
-        return Check::warn(
-            "remote S3",
-            "object store runs on the API host; verified there, not from the client",
-            "Check the API host's object storage if image or volume operations fail.",
+            "object store runs on the swarm; verified there, not from the client",
+            "Check the swarm's object storage if image or volume operations fail.",
         );
     }
     let (result, fix) = s3_check(settings).await;
-    let label = if settings.remote.profile.is_some() {
-        "remote S3"
-    } else {
-        "dev stack S3"
-    };
-    Check::new(label, result, fix)
+    Check::new("dev stack S3", result, fix)
 }
 
 async fn s3_check(settings: &Settings) -> (Result<String, String>, &'static str) {
@@ -388,13 +306,13 @@ async fn api_checks(
     checks: &mut Vec<Check>,
     loaded: &Loaded,
 ) -> Vec<crate::provider_report::ProviderRow> {
-    let (client, endpoint) = match swarmy_client::api_client::connect() {
+    let (client, endpoint) = match crate::target::connect().await {
         Ok(result) => result,
         Err(error) => {
             checks.push(Check::new(
                 "API",
                 Err(format!("{error:#}")),
-                "Run swarmy dev up or swarmy remote connect NAME; check the API URL and token.",
+                "Check the target with swarmy swarm show, or run swarmy dev up for a local stack; check the API URL and token.",
             ));
             return Vec::new();
         }
@@ -406,7 +324,7 @@ async fn api_checks(
             checks.push(Check::new(
                 "API",
                 Err(format!("{error:#}")),
-                "Run swarmy dev up or swarmy remote connect NAME; check the API URL and token.",
+                "Check the target with swarmy swarm show, or run swarmy dev up for a local stack; check the API URL and token.",
             ));
             return Vec::new();
         }
@@ -437,7 +355,7 @@ async fn api_checks(
         "Reinstall the CLI and API from checkouts with the same major API version.",
     ));
     let core_fix = concat!(
-        "Run swarmy dev up, or swarmy remote upgrade NAME for a node; ",
+        "Run swarmy dev up, or upgrade the swarm's nodes; ",
         "run and chat refuse an incompatible core unless --allow-version-mismatch."
     );
     checks.push(match crate::version_guard::core_mismatch(&health) {

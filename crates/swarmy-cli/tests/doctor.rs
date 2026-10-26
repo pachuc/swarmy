@@ -27,6 +27,14 @@ impl Fixture {
                 command.env_remove(key);
             }
         }
+        if let Ok(settings) =
+            swarmy_config::Settings::read(&self.0.path().join(".swarmy/config.toml"))
+            && let Some(url) = settings.api.url
+        {
+            command
+                .env("SWARMY_API_URL", url)
+                .env("SWARMY_API_TOKEN", settings.api.token);
+        }
         command
             .current_dir(self.0.path())
             .envs(swarmy_testkit::isolated_home(self.0.path()))
@@ -120,89 +128,32 @@ fn doctor_reports_no_client_library_check() {
     assert_eq!(check(&report, "config")["ok"], true);
 }
 
-fn remote_fixture(cluster: &str, nats_url: &str) -> Fixture {
-    remote_fixture_with(cluster, nats_url, |_| {})
-}
-
-fn remote_fixture_with(
-    cluster: &str,
-    nats_url: &str,
-    edit: impl FnOnce(&mut swarmy_config::RemoteProfile),
-) -> Fixture {
+#[test]
+fn doctor_reports_the_target() {
     let fixture = Fixture::new();
-    fixture.config("[selection]\nprovider = 'fake'");
-    let remote = fixture.0.path().join(".swarmy/remote");
-    fs::create_dir_all(&remote).unwrap();
-    let cluster_path = remote.join("test.cluster");
-    fs::write(&cluster_path, cluster).unwrap();
-    let profile = swarmy_config::RemoteProfile {
-        name: "test".into(),
-        socket_path: remote.join("socket"),
-        pid: 123,
-        ports: swarmy_config::RemotePorts::default(),
-        remote_ports: swarmy_config::RemotePorts::default(),
-        fdb_cluster_file: cluster_path,
-        nats_url: nats_url.into(),
-        s3_endpoint: "http://127.0.0.1:8333".into(),
-        api_url: None,
-        api_token: None,
-        bucket: None,
-        default_image: None,
-    };
-    let mut profile = profile;
-    edit(&mut profile);
-    fs::write(
-        remote.join("test.profile.json"),
-        serde_json::to_vec(&profile).unwrap(),
-    )
-    .unwrap();
-    let bin = fixture.0.path().join("bin");
-    fs::create_dir(&bin).unwrap();
-    fs::write(bin.join("ssh"), "#!/bin/sh\nexit 0\n").unwrap();
-    fs::set_permissions(bin.join("ssh"), fs::Permissions::from_mode(0o700)).unwrap();
-    fixture
-}
-
-#[test]
-fn api_only_profile_skips_backing_stack_checks() {
-    let fixture = remote_fixture_with("", "", |profile| {
-        profile.ports = swarmy_config::RemotePorts {
-            fdb: 0,
-            nats: 0,
-            s3: 0,
-        };
-        profile.remote_ports = profile.ports;
-        profile.s3_endpoint.clear();
-        profile.api_url = Some("http://127.0.0.1:1".into());
-    });
-    let output = fixture
-        .command(true)
-        .args(["--remote", "test"])
-        .output()
-        .unwrap();
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let checks = report["checks"].as_array().unwrap();
+    let report: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
+    assert_eq!(check(&report, "target")["ok"], false);
     assert!(
-        !checks
-            .iter()
-            .any(|check| check["name"] == "remote FoundationDB port")
+        check(&report, "target")["fix"]
+            .as_str()
+            .unwrap()
+            .contains("swarmy swarm ls")
     );
-    assert_eq!(check(&report, "remote S3")["status"], "warn");
-    assert_eq!(check(&report, "remote tunnel")["ok"], true);
-}
-
-#[test]
-fn remote_doctor_requires_api_even_with_healthy_tunnel() {
-    let fixture = remote_fixture("test:test@127.0.0.1:4500", "nats://127.0.0.1:1");
     let output = fixture
         .command(true)
-        .args(["--remote", "test"])
+        .env("SWARMY_API_URL", "http://127.0.0.1:1")
+        .env("SWARMY_API_TOKEN", "fixture")
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(check(&report, "remote tunnel")["ok"], true);
-    assert_eq!(check(&report, "API")["status"], "fail");
+    assert_eq!(check(&report, "target")["ok"], true);
+    assert!(
+        check(&report, "target")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("http://127.0.0.1:1")
+    );
+    assert_eq!(check(&report, "API")["ok"], false);
 }
 
 #[test]

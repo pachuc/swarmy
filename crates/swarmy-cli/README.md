@@ -56,7 +56,7 @@ calls. Missing, expired, or replaced-placement observations report `unknown`.
 Samples expire after three node heartbeat intervals. This is call occupancy, not
 a health probe or execution authority.
 
-Every agent and session command supports global `--json` and `--remote NAME`.
+Every agent and session command supports global `--json` and `--swarm NAME`.
 JSON create returns an agent record; ls emits one summary record per line
 with the identity fields only (agents omit `node_id`, `session_count`,
 `sessions`, `usage`, and placement until hydrated; sessions carry the fleet

@@ -181,6 +181,7 @@ impl Fixture {
         let executable = swarmy_testkit::bin("swarmy");
         let output = Command::new(executable)
             .args(["session", "interrupt", &id.to_string()])
+            .env_remove("SWARMY_SWARM")
             .env("SWARMY_API_URL", &self.api_url)
             .env("SWARMY_API_TOKEN", &self.api_token)
             .output()

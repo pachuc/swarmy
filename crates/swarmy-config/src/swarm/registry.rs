@@ -1,5 +1,5 @@
 //! Private on-disk registry of swarm specs and records.
-use super::{SwarmRecord, SwarmSpec, validate_swarm_name};
+use super::{SwarmApi, SwarmRecord, SwarmSpec, validate_swarm_name};
 use crate::{Error, create_private_dir, paths::Dirs, write_private};
 use std::{
     collections::BTreeSet,
@@ -8,7 +8,9 @@ use std::{
     path::{Path, PathBuf},
 };
 pub struct Swarm {
-    pub spec: SwarmSpec,
+    pub name: String,
+    /// None for an attached swarm or a record left behind without its spec.
+    pub spec: Option<SwarmSpec>,
     pub record: Option<SwarmRecord>,
 }
 pub struct Registry {
@@ -124,14 +126,48 @@ impl Registry {
         Ok(Some(record))
     }
     /// # Errors
-    /// Returns `UnknownSwarm` without a spec, or registry read errors.
+    /// Returns `UnknownSwarm` when neither spec nor record exists, or registry errors.
     pub fn read(&self, name: &str) -> Result<Swarm, Error> {
-        let spec = self
-            .read_spec(name)?
-            .ok_or_else(|| Error::UnknownSwarm(name.to_owned()))?;
+        let spec = self.read_spec(name)?;
+        let record = self.read_record(name)?;
+        if spec.is_none() && record.is_none() {
+            return Err(Error::UnknownSwarm(name.to_owned()));
+        }
         Ok(Swarm {
+            name: name.to_owned(),
             spec,
-            record: self.read_record(name)?,
+            record,
+        })
+    }
+    /// Register an API swarmy does not manage. Re-attaching keeps `created_at`.
+    /// # Errors
+    /// Returns registry errors when the name belongs to a managed swarm, or I/O errors.
+    pub fn attach(&self, name: &str, url: &str, token: &str) -> Result<(), Error> {
+        let path = self.spec_path(name)?;
+        if self.read_spec(name)?.is_some() {
+            return Err(Error::Registry(format!(
+                "swarm \"{name}\" is managed by swarmy (spec {}); attach registers only APIs swarmy does not manage",
+                path.display()
+            )));
+        }
+        let old = self.read_record(name)?;
+        if old
+            .as_ref()
+            .is_some_and(|r| !r.hosts.is_empty() || r.tofu_state.is_some())
+        {
+            return Err(Error::Registry(format!(
+                "swarm \"{name}\" has machines recorded; attach registers only APIs swarmy does not manage"
+            )));
+        }
+        self.write_record(&SwarmRecord {
+            name: name.to_owned(),
+            created_at: old.map_or_else(jiff::Timestamp::now, |r| r.created_at),
+            api: SwarmApi {
+                url: Some(url.to_owned()),
+                token: Some(token.to_owned()),
+            },
+            hosts: std::collections::BTreeMap::default(),
+            tofu_state: None,
         })
     }
     /// # Errors
@@ -193,9 +229,11 @@ impl Registry {
         Ok(Some(name.to_owned()))
     }
     /// # Errors
-    /// Returns `UnknownSwarm` or filesystem errors.
+    /// Returns `UnknownSwarm` when neither spec nor record directory exists, or filesystem errors.
     pub fn set_current(&self, name: &str) -> Result<(), Error> {
-        self.read(name)?;
+        if !self.spec_path(name)?.exists() && !self.swarm_dir(name)?.exists() {
+            return Err(Error::UnknownSwarm(name.to_owned()));
+        }
         create_private_dir(&self.dirs.state)?;
         write_private(&self.dirs.current(), format!("{name}\n").as_bytes())
     }
@@ -327,6 +365,53 @@ pub(super) mod tests {
         assert!(matches!(r.remove("unknown"), Err(Error::UnknownSwarm(_))));
         fs::write(r.dirs().current(), "../x").unwrap();
         assert!(r.current().is_err());
+    }
+    #[test]
+    fn attached_record_only_round_trip() {
+        let (_tmp, r) = setup();
+        r.attach("api", "https://example.test", "secret").unwrap();
+        assert!(r.read("api").unwrap().spec.is_none());
+        r.set_current("api").unwrap();
+        assert_eq!(r.current().unwrap().as_deref(), Some("api"));
+        let old = r.read_record("api").unwrap().unwrap().created_at;
+        assert_eq!(
+            fs::metadata(r.record_path("api").unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(r.swarm_dir("api").unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        r.attach("api", "https://new.example.test", "new-secret")
+            .unwrap();
+        let record = r.read_record("api").unwrap().unwrap();
+        assert_eq!(record.created_at, old);
+        assert_eq!(record.api.url.as_deref(), Some("https://new.example.test"));
+        assert_eq!(record.api.token.as_deref(), Some("new-secret"));
+        r.write_spec(&spec("managed")).unwrap();
+        assert!(
+            r.attach("managed", "https://example.test", "secret")
+                .unwrap_err()
+                .to_string()
+                .contains("managed by swarmy")
+        );
+        let mut record = record;
+        record.hosts.insert("box".into(), vec![]);
+        r.write_record(&record).unwrap();
+        assert!(
+            r.attach("api", "https://example.test", "secret")
+                .unwrap_err()
+                .to_string()
+                .contains("has machines recorded")
+        );
     }
     #[test]
     fn file_errors_name_mismatch() {
