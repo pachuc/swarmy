@@ -115,14 +115,15 @@ step() {
     echo "== $label" >&2
     remaining=$((deadline - SECONDS))
     ((remaining > 0)) || fail "max runtime reached before $label"
-    timeout --signal=INT --kill-after=60 "$remaining" "$@" &
+    # Background steps may ignore INT; TERM reaches both swarmy and OpenTofu.
+    timeout --signal=TERM --kill-after=60 "$remaining" "$@" &
     step_pid=$!
     wait "$step_pid" || status=$?
     step_pid=''
     return "$status"
 }
 interrupted() {
-    if [[ -n ${step_pid:-} ]]; then kill -INT "$step_pid" 2>/dev/null || :; wait "$step_pid" 2>/dev/null || :; fi
+    if [[ -n ${step_pid:-} ]]; then kill -TERM "$step_pid" 2>/dev/null || :; wait "$step_pid" 2>/dev/null || :; fi
     exit "$1"
 }
 manual_cleanup() {
