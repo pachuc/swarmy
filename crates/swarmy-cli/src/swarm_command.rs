@@ -2,6 +2,7 @@
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use serde_json::json;
+use std::path::PathBuf;
 use swarmy_cloud::tunnel::Tunnels;
 use swarmy_config::{
     paths::Dirs,
@@ -14,6 +15,66 @@ pub(crate) fn parse_name(value: &str) -> Result<String, swarmy_config::Error> {
 }
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    /// Write a new swarm spec; --local runs the stack and services on this machine
+    Create {
+        #[arg(value_parser = parse_name)]
+        name: String,
+        /// Run the backing stack and the services on this machine (the only kind so far)
+        #[arg(long, required = true)]
+        local: bool,
+        /// Keep data on down unless --destroy is given (local swarms default to ephemeral)
+        #[arg(long)]
+        persistent: bool,
+        /// Backing stack directory (default: the checkout's .dev inside a checkout, else the swarm's data directory)
+        #[arg(long, value_name = "PATH")]
+        stack_dir: Option<PathBuf>,
+    },
+    /// Bring a swarm up, restarting running services
+    Up {
+        #[arg(value_parser = parse_name)]
+        name: String,
+        /// Run this swarmy-core instead of the matching release
+        #[arg(long, env = "SWARMY_CORE_BIN", value_name = "PATH")]
+        core_bin: Option<PathBuf>,
+        /// Do not download and register the release base image when no default image is configured
+        #[arg(long)]
+        no_image: bool,
+    },
+    /// Start a stopped swarm again
+    Start {
+        #[arg(value_parser = parse_name)]
+        name: String,
+        /// Run this swarmy-core instead of the matching release
+        #[arg(long, env = "SWARMY_CORE_BIN", value_name = "PATH")]
+        core_bin: Option<PathBuf>,
+    },
+    /// Stop a swarm, keeping its data
+    Stop {
+        #[arg(value_parser = parse_name)]
+        name: String,
+    },
+    /// Delete swarm data; persistent swarms require --destroy
+    Down {
+        #[arg(value_parser = parse_name)]
+        name: String,
+        /// Delete a persistent swarm's data
+        #[arg(long)]
+        destroy: bool,
+    },
+    /// Show a swarm's processes and uptime
+    Status {
+        #[arg(value_parser = parse_name)]
+        name: String,
+    },
+    /// Follow service logs
+    Logs {
+        #[arg(value_parser = parse_name)]
+        name: String,
+        #[arg(value_enum)]
+        service: Option<crate::local::Service>,
+    },
+    #[command(hide = true)]
+    Supervise { state: PathBuf, core: PathBuf },
     /// List registered swarms; `*` marks the current one
     Ls,
     /// Show a swarm's API, record, and spec (default: the swarm this command would use)
@@ -171,6 +232,9 @@ fn list(registry: &Registry, json_output: bool) -> Result<()> {
 }
 async fn remove(registry: &Registry, name: &str, force: bool, json_output: bool) -> Result<()> {
     let swarm = registry.read(name)?;
+    if let Some(spec) = &swarm.spec {
+        crate::local::refuse_running(registry, spec)?;
+    }
     let hosts: usize = swarm
         .record
         .as_ref()
@@ -232,9 +296,74 @@ fn attach(registry: &Registry, name: &str, url: &str, json_output: bool) -> Resu
     );
     Ok(())
 }
-pub(crate) async fn run(command: Command, json_output: bool) -> Result<()> {
+pub(crate) async fn run(
+    command: Command,
+    json_output: bool,
+    allow_version_mismatch: bool,
+) -> Result<()> {
+    if let Command::Supervise { state, core } = command {
+        return crate::local::supervise(&state, &core).await;
+    }
+    if json_output
+        && matches!(
+            command,
+            Command::Up { .. }
+                | Command::Start { .. }
+                | Command::Stop { .. }
+                | Command::Down { .. }
+                | Command::Status { .. }
+                | Command::Logs { .. }
+        )
+    {
+        bail!(
+            "--json is not supported for swarm up, start, stop, down, status, or logs; run without it for human-readable output"
+        );
+    }
     let registry = Registry::new(Dirs::from_process()?);
     match command {
+        Command::Supervise { .. } => unreachable!("supervisor dispatched above"),
+        Command::Create {
+            name,
+            local: _,
+            persistent,
+            stack_dir,
+        } => crate::local::create(&registry, &name, persistent, stack_dir, json_output)?,
+        Command::Up {
+            name,
+            core_bin,
+            no_image,
+        } => {
+            crate::local::up(
+                &registry,
+                &name,
+                crate::local::Start {
+                    core_bin,
+                    register_image: !no_image,
+                    require_record: false,
+                    allow_version_mismatch,
+                },
+            )
+            .await?;
+        }
+        Command::Start { name, core_bin } => {
+            crate::local::up(
+                &registry,
+                &name,
+                crate::local::Start {
+                    core_bin,
+                    register_image: false,
+                    require_record: true,
+                    allow_version_mismatch,
+                },
+            )
+            .await?;
+        }
+        Command::Stop { name } => crate::local::stop(&registry, &name).await?,
+        Command::Down { name, destroy } => crate::local::down(&registry, &name, destroy).await?,
+        Command::Status { name } => crate::local::show_status(&registry, &name).await?,
+        Command::Logs { name, service } => {
+            crate::local::follow_logs(&registry, &name, service).await?;
+        }
         Command::Ls => list(&registry, json_output)?,
         Command::Show { name } => {
             if let Some(name) = name {

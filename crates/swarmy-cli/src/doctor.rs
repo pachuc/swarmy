@@ -111,20 +111,26 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
 }
 
 async fn core_binary_check(remote: bool) -> Check {
-    let source =
-        crate::dev::CoreSource::select(std::env::var_os("SWARMY_CORE_BIN").map(PathBuf::from));
+    let source = crate::core_command::CoreSource::select(
+        std::env::var_os("SWARMY_CORE_BIN").map(PathBuf::from),
+    );
     let fix = source.as_ref().map_or_else(
-        |_| format!("Reinstall from the CLI checkout: {}", crate::dev::REINSTALL),
+        |_| {
+            format!(
+                "Reinstall from the CLI checkout: {}",
+                crate::core_command::REINSTALL
+            )
+        },
         |source| source.fix().unwrap_or_else(|error| format!("{error:#}")),
     );
     let (path, not_downloaded): (anyhow::Result<PathBuf>, bool) = match source {
-        Ok(crate::dev::CoreSource::Explicit(path)) => (Ok(path), false),
-        Ok(crate::dev::CoreSource::Development) => {
-            (crate::dev::service_binary("swarmy-core"), false)
+        Ok(crate::core_command::CoreSource::Explicit(path)) => (Ok(path), false),
+        Ok(crate::core_command::CoreSource::Development) => {
+            (crate::core_command::service_binary("swarmy-core"), false)
         }
-        Ok(crate::dev::CoreSource::Release(release)) => {
+        Ok(crate::core_command::CoreSource::Release(release)) => {
             match (
-                crate::dev::core_cache(),
+                crate::core_command::core_cache(),
                 swarmy_cloud::release::Target::host(),
             ) {
                 (Ok(cache), Ok(target)) => {
@@ -140,7 +146,7 @@ async fn core_binary_check(remote: bool) -> Check {
         Err(error) => (Err(error), false),
     };
     let result = match path {
-        Ok(path) => crate::dev::version_check(&path, "swarmy-core").await,
+        Ok(path) => crate::core_command::version_check(&path, "swarmy-core").await,
         Err(error) => Err(error),
     }
     .map_err(|error| format!("{error:#}"));

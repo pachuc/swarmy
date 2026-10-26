@@ -66,6 +66,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = self.run(&["dev", "down"], None, None);
+        let _ = self.run(&["swarm", "down", "demo", "--destroy"], None, None);
     }
 }
 fn executable(path: &Path) {
@@ -323,6 +324,207 @@ fn downloaded_core_with_other_identity_is_refused() {
             .root
             .path()
             .join("state/swarmy/dev/supervisor.pid")
+            .exists()
+    );
+}
+#[test]
+fn swarm_up_launches_the_downloaded_core() {
+    let fixture = Fixture::at("data/swarmy/swarms/demo/stack");
+    fixture.run(&["swarm", "create", "demo", "--local"], None, None);
+    let url = release(swarmy_version::IDENTITY);
+    let output = fixture.run(&["swarm", "up", "demo", "--no-image"], Some(&url), None);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let state = fixture.root.path().join("state/swarmy/swarms/demo");
+    assert!(state.join("supervisor.pid").is_file());
+    assert!(!fixture.root.path().join(".swarmy").exists());
+    let pid = fs::read_to_string(state.join("supervisor.pid")).unwrap();
+    let pid = pid.split_whitespace().next().unwrap();
+    let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    let path = fixture.root.path().join(format!(
+        "cache/swarmy/core/{}/swarmy-core-{}/swarmy-core",
+        swarmy_version::RELEASE_TAG,
+        host_target()
+    ));
+    assert!(
+        String::from_utf8_lossy(&command).contains(path.to_str().unwrap()),
+        "{}",
+        String::from_utf8_lossy(&command)
+    );
+}
+
+#[test]
+fn swarm_up_registers_the_release_image() {
+    let fixture = Fixture::at("data/swarmy/swarms/demo/stack");
+    fixture.run(&["swarm", "create", "demo", "--local"], None, None);
+    let (api, requests) = fake_api::serve(false);
+    fs::create_dir_all(fixture.root.path().join(".swarmy")).unwrap();
+    fs::write(
+        fixture.root.path().join(".swarmy/config.toml"),
+        format!("[api]\nurl = \"http://{api}\"\ntoken = \"x\"\n"),
+    )
+    .unwrap();
+    let tag = swarmy_version::RELEASE_TAG;
+    let mut files = fake_release(tag, &host_target(), &core_script(swarmy_version::IDENTITY));
+    let name = format!("swarmy-image-base-ubuntu-{}", host_target());
+    let asset = format!("{name}.tar.gz");
+    let bytes = image_archive(
+        &name,
+        16 * 1024 * 1024,
+        &[(0, &[1; 4096]), (8 * 1024 * 1024, &[2; 4096])],
+        FAKE_IMAGE_RECIPE,
+    );
+    let sums = sha256sums(&[(&asset, &bytes)]);
+    let original = String::from_utf8(
+        files
+            .iter()
+            .find(|(path, _)| path.ends_with("SHA256SUMS"))
+            .unwrap()
+            .1
+            .clone(),
+    )
+    .unwrap();
+    files.retain(|(path, _)| !path.ends_with("SHA256SUMS"));
+    files.push((format!("/{tag}/{asset}"), bytes));
+    files.push((
+        format!("/{tag}/SHA256SUMS"),
+        format!("{original}{sums}").into_bytes(),
+    ));
+    let release = format!("http://{}", serve_files(files));
+    let output = fixture.run(&["swarm", "up", "demo"], Some(&release), None);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!(
+            "default image: base-ubuntu:{tag}; restarting services"
+        )),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let settings =
+        swarmy_config::Settings::read(&fixture.root.path().join(".swarmy/config.toml")).unwrap();
+    assert_eq!(
+        settings.selection.default_image.as_deref(),
+        Some(format!("base-ubuntu:{tag}").as_str())
+    );
+    let effective = swarmy_config::Settings::read(
+        &fixture
+            .root
+            .path()
+            .join("data/swarmy/swarms/demo/services.toml"),
+    )
+    .unwrap();
+    assert_eq!(
+        effective.selection.default_image,
+        settings.selection.default_image
+    );
+    assert!(fixture.root.path().join("cache/swarmy/images").is_dir());
+    assert!(!fixture.root.path().join(".swarmy").join("images").exists());
+    let images = fs::read_to_string(fixture.root.path().join("default-images")).unwrap();
+    assert_eq!(
+        images.lines().last(),
+        Some(format!("base-ubuntu:{tag}").as_str())
+    );
+    let requests = requests.lock().unwrap();
+    let posts: Vec<_> = requests
+        .iter()
+        .filter(|request| request.method == "POST")
+        .collect();
+    assert_eq!(posts.len(), 1);
+    assert!(posts[0].path_and_query.contains("name=base-ubuntu"));
+    assert!(posts[0].body_len < 16 * 1024 * 1024);
+    assert_eq!(posts[0].first_offset, Some(0));
+    assert!(
+        fixture
+            .root
+            .path()
+            .join("state/swarmy/swarms/demo/supervisor.pid")
+            .exists()
+    );
+}
+
+#[test]
+fn swarm_up_uses_core_bin_flag_and_env() {
+    let fixture = Fixture::at("data/swarmy/swarms/demo/stack");
+    fixture.run(&["swarm", "create", "demo", "--local"], None, None);
+    let path = fixture.root.path().join("core");
+    fs::write(&path, core_script(swarmy_version::IDENTITY)).unwrap();
+    executable(&path);
+    let output = fixture.run(
+        &[
+            "swarm",
+            "up",
+            "demo",
+            "--no-image",
+            "--core-bin",
+            path.to_str().unwrap(),
+        ],
+        None,
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let pid = fs::read_to_string(
+        fixture
+            .root
+            .path()
+            .join("state/swarmy/swarms/demo/supervisor.pid"),
+    )
+    .unwrap();
+    let pid = pid.split_whitespace().next().unwrap();
+    let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap();
+    assert!(String::from_utf8_lossy(&command).contains(path.to_str().unwrap()));
+    let output = fixture.run(&["swarm", "up", "demo", "--no-image"], None, Some(&path));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let pid = fs::read_to_string(
+        fixture
+            .root
+            .path()
+            .join("state/swarmy/swarms/demo/supervisor.pid"),
+    )
+    .unwrap();
+    let pid = pid.split_whitespace().next().unwrap();
+    let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap();
+    assert!(String::from_utf8_lossy(&command).contains(path.to_str().unwrap()));
+}
+
+#[test]
+fn swarm_up_refuses_a_downloaded_core_with_other_identity() {
+    let mut fixture = Fixture::at("data/swarmy/swarms/demo/stack");
+    fixture.run(&["swarm", "create", "demo", "--local"], None, None);
+    let url = release("0.0.1 (other)");
+    let output = fixture.run(&["swarm", "up", "demo", "--no-image"], Some(&url), None);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for needle in [
+        "swarmy-core version mismatch",
+        "0.0.1 (other)",
+        swarmy_version::IDENTITY,
+        "--allow-version-mismatch",
+        "Remove",
+    ] {
+        assert!(stderr.contains(needle), "{stderr}");
+    }
+    assert!(fixture.stack.running());
+    assert!(
+        !fixture
+            .root
+            .path()
+            .join("state/swarmy/swarms/demo/supervisor.pid")
             .exists()
     );
 }

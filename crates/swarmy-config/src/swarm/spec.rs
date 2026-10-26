@@ -33,6 +33,9 @@ pub struct GroupSpec {
     pub count: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<HostSpec>,
+    /// Local groups only: an absolute directory for the backing stack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_dir: Option<PathBuf>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -86,6 +89,7 @@ impl Module {
 pub struct Placement {
     pub stack: String,
     pub services: String,
+    #[serde(default)]
     pub nodes: Vec<String>,
 }
 /// # Errors
@@ -110,6 +114,11 @@ impl GroupSpec {
     }
 }
 fn group_failure(g: &str, group: &GroupSpec) -> Option<String> {
+    if group.stack_dir.is_some() && group.module != Module::Local {
+        return Some(format!(
+            "group \"{g}\": stack_dir applies only to local groups"
+        ));
+    }
     match &group.module {
         Module::HetznerCloud | Module::Aws | Module::Path(_) => {
             let m = group.module.label();
@@ -152,10 +161,57 @@ fn group_failure(g: &str, group: &GroupSpec) -> Option<String> {
             || group.size.is_some()
             || group.location.is_some()
             || !group.hosts.is_empty())
-        .then(|| format!("group \"{g}\": a local group takes no count, size, location, or hosts")),
+        .then(|| format!("group \"{g}\": a local group takes no count, size, location, or hosts"))
+        .or_else(|| {
+            group
+                .stack_dir
+                .as_ref()
+                .filter(|p| !p.is_absolute())
+                .map(|_| format!("group \"{g}\": stack_dir must be an absolute path"))
+        }),
     }
 }
 impl SwarmSpec {
+    /// The local group when stack and services run here without sandbox nodes.
+    #[must_use]
+    pub fn local_group(&self) -> Option<&GroupSpec> {
+        (self.placement.stack == self.placement.services && self.placement.nodes.is_empty())
+            .then(|| self.groups.get(&self.placement.stack))
+            .flatten()
+            .filter(|g| g.module == Module::Local)
+    }
+    /// Build a local swarm spec.
+    /// # Errors
+    /// Returns `Spec` for an invalid name or relative stack directory.
+    pub fn local(
+        name: &str,
+        lifecycle: Lifecycle,
+        stack_dir: Option<PathBuf>,
+    ) -> Result<Self, Error> {
+        let spec = Self {
+            name: name.into(),
+            lifecycle,
+            groups: [(
+                "local".into(),
+                GroupSpec {
+                    module: Module::Local,
+                    size: None,
+                    location: None,
+                    count: None,
+                    hosts: vec![],
+                    stack_dir,
+                },
+            )]
+            .into(),
+            placement: Placement {
+                stack: "local".into(),
+                services: "local".into(),
+                nodes: vec![],
+            },
+        };
+        spec.validate()?;
+        Ok(spec)
+    }
     /// # Errors
     /// Returns `Decode` or `Spec`.
     pub fn parse(text: &str) -> Result<Self, Error> {
@@ -199,7 +255,7 @@ impl SwarmSpec {
                 )));
             }
         }
-        if self.placement.nodes.is_empty() {
+        if self.placement.nodes.is_empty() && self.local_group().is_none() {
             return Err(Error::Spec(
                 "placement.nodes must name at least one group".into(),
             ));
@@ -278,6 +334,49 @@ stack = "box"
 services = "local"
 nodes = ["box"]
 "#;
+    #[test]
+    fn local_spec_round_trips() {
+        let spec = SwarmSpec::local("dev", Lifecycle::Ephemeral, None).unwrap();
+        let text = spec.to_toml().unwrap();
+        assert!(text.contains("module = \"local\""));
+        assert!(text.contains("nodes = []"));
+        assert_eq!(SwarmSpec::parse(&text).unwrap(), spec);
+        assert!(spec.local_group().is_some());
+    }
+    #[test]
+    fn local_spec_without_nodes_key_parses() {
+        let text = SwarmSpec::local("dev", Lifecycle::Ephemeral, None)
+            .unwrap()
+            .to_toml()
+            .unwrap();
+        assert!(
+            SwarmSpec::parse(&text.replace("nodes = []\n", ""))
+                .unwrap()
+                .local_group()
+                .is_some()
+        );
+    }
+    #[test]
+    fn stack_dir_rules() {
+        let mut cloud = SwarmSpec::parse(CLOUD).unwrap();
+        cloud.groups.get_mut("control").unwrap().stack_dir = Some("/tmp/stack".into());
+        assert_eq!(
+            cloud.validate().unwrap_err().to_string(),
+            "invalid swarm spec: group \"control\": stack_dir applies only to local groups"
+        );
+        assert_eq!(
+            SwarmSpec::local("dev", Lifecycle::Ephemeral, Some("relative".into()))
+                .unwrap_err()
+                .to_string(),
+            "invalid swarm spec: group \"local\": stack_dir must be an absolute path"
+        );
+        assert!(SwarmSpec::local("dev", Lifecycle::Ephemeral, Some("/tmp/stack".into())).is_ok());
+    }
+    #[test]
+    fn local_group_is_none_for_split_and_cloud() {
+        assert!(SwarmSpec::parse(LOCAL).unwrap().local_group().is_none());
+        assert!(SwarmSpec::parse(CLOUD).unwrap().local_group().is_none());
+    }
     #[test]
     fn examples_round_trip() {
         for text in [CLOUD, EXISTING, LOCAL] {
