@@ -68,7 +68,7 @@ resource "aws_route_table_association" "this" {
 }
 # From the internet only SSH is open; the API is reached through an SSH tunnel.
 resource "aws_security_group" "this" {
-  name        = local.name
+  name        = "swarmy-${local.name}"
   description = "swarmy ${local.name} machines"
   vpc_id      = local.vpc_id
   tags        = merge(local.tags, { Name = local.name })

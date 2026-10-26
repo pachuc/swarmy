@@ -51,7 +51,7 @@ pub(super) fn parse_ipv4(field: &str, value: &str) -> Result<std::net::Ipv4Addr>
 }
 
 /// Validate an adopted bucket name before any state or host changes.
-pub(super) fn validate_bucket_binding(settings: &RemoteSettings, _name: &str) -> Result<()> {
+pub(super) fn validate_bucket_binding(settings: &RemoteSettings) -> Result<()> {
     if let Some(spec) = &settings.bucket {
         spec.validate_name()?;
     }
@@ -104,12 +104,11 @@ pub enum RunOutcome {
     NeedsConfirmation { plan: DeletionPlan },
 }
 
-fn down_target(state: &State, name: &str) -> Result<RemoteNode> {
-    let node = state.require(name)?;
+fn ensure_not_ec2(node: &RemoteNode) -> Result<()> {
     if node.cloud_settings().provider != swarmy_config::Provider::Existing {
-        return Err(launched_on_ec2(name));
+        return Err(launched_on_ec2(&node.name));
     }
-    Ok(node)
+    Ok(())
 }
 
 fn existing_launch(node: &RemoteNode) -> Result<&RemoteSettings> {
@@ -118,9 +117,7 @@ fn existing_launch(node: &RemoteNode) -> Result<&RemoteSettings> {
             "remote has no saved launch configuration; adopt it again before adding nodes",
         )
     })?;
-    if launch.provider != swarmy_config::Provider::Existing {
-        return Err(launched_on_ec2(&node.name));
-    }
+    ensure_not_ec2(node)?;
     Ok(launch)
 }
 
@@ -172,7 +169,7 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
                 cloud_out!("No remote node named {name}");
                 return Ok(RunOutcome::Completed);
             };
-            down_target(&state, &name)?;
+            ensure_not_ec2(&node)?;
             let cloud = buckets::S3Buckets;
             if !keep_bucket
                 && !yes
@@ -203,9 +200,8 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
     }
 }
 
-/// Resolve the remote's bucket description from flags, environment, and
-/// config. Shared by `up` (create a machine, then provision it) and `adopt`
-/// (provision an existing machine) so the bucket options never drift apart.
+/// Resolve the remote's bucket description for `adopt` from flags,
+/// environment, and config.
 fn resolve_bucket(settings: &mut RemoteSettings, args: &crate::BucketArgs) -> Result<()> {
     let stdin_secret = args
         .s3_secret_stdin
@@ -235,7 +231,7 @@ fn resolve_bucket(settings: &mut RemoteSettings, args: &crate::BucketArgs) -> Re
 }
 
 /// Resolve the image recipe unless `--no-image` skips the registered build.
-/// Shared by `up` and `adopt`: a missing recipe fails before any host changes.
+/// A missing recipe fails before any host changes.
 fn resolve_recipe(no_image: bool, image_recipe: &Path) -> Result<Option<PathBuf>> {
     if no_image {
         Ok(None)
@@ -269,8 +265,7 @@ fn provisioning_host(cache: &Path) -> Result<ssh::Ssh> {
 
 /// Provision an existing SSH-reachable machine as the first node of a
 /// remote. The machine is recorded with the existing-host provider, then the
-/// shared provisioning `up` runs after its machine is ready (services,
-/// image build) runs against its address. No machine is created and no
+/// shared provisioning (services, image build) runs against its address. No machine is created and no
 /// cloud machine call happens.
 async fn run_adopt(
     state: &State,

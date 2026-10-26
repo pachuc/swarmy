@@ -34,10 +34,6 @@ pub(super) async fn plan(
 fn object_bucket(node: &RemoteNode) -> Option<ObjectBucket> {
     let spec = node.bucket_spec()?;
     if !spec.needs_static_keys() {
-        cloud_err!(
-            "Bucket {}: left in place; it uses an AWS instance role, which swarmy no longer manages",
-            spec.bucket
-        );
         return None;
     }
     Some(ObjectBucket::from_spec(
@@ -148,6 +144,14 @@ async fn cleanup_bucket(
     node: &RemoteNode,
     keep_bucket: bool,
 ) -> Result<()> {
+    if let Some(spec) = node.bucket_spec()
+        && !spec.needs_static_keys()
+    {
+        cloud_err!(
+            "Bucket {}: left in place; it uses an AWS instance role, which swarmy no longer manages",
+            spec.bucket
+        );
+    }
     if let Some(bucket) = object_bucket(node) {
         let name = bucket.spec.bucket.clone();
         if keep_bucket {

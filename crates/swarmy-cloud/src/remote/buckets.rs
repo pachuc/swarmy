@@ -13,7 +13,7 @@ use swarmy_config::BucketCredentials;
 
 // AWS error codes, rather than rendered SDK messages, determine whether an
 // operation can be retried after an operator grants a missing permission.
-pub(super) trait AwsContext<T> {
+trait AwsContext<T> {
     fn aws_context(self, operation: &'static str) -> Result<T>;
 }
 
@@ -29,7 +29,7 @@ where
             let Some(code) = error.code() else {
                 return crate::Error::context(error, operation);
             };
-            if access_denied(Some(code)) {
+            if access_denied(code) {
                 crate::Error::MissingPermission {
                     operation: operation.to_owned(),
                     source: Box::new(error),
@@ -45,16 +45,16 @@ where
     }
 }
 
-fn access_denied(code: Option<&str>) -> bool {
+fn access_denied(code: &str) -> bool {
     matches!(
         code,
-        Some("AccessDenied" | "AccessDeniedException" | "UnauthorizedOperation")
+        "AccessDenied" | "AccessDeniedException" | "UnauthorizedOperation"
     )
 }
 
-pub(super) const REMOTE_TAG: &str = "swarmy-remote";
-pub(super) const MANAGED_TAG: &str = "managed-by";
-pub(super) const MANAGER: &str = "swarmy";
+const REMOTE_TAG: &str = "swarmy-remote";
+const MANAGED_TAG: &str = "managed-by";
+const MANAGER: &str = "swarmy";
 
 /// S3 client authenticated with the bucket's static keys against its
 /// endpoint. Path-style requests work on providers that do not serve
@@ -122,7 +122,7 @@ impl Cloud for S3Buckets {
 /// empty bucket. Ownership is recorded with bucket tags where the provider
 /// supports them, else in the marker object. No IAM, public-access-block,
 /// or encryption calls: those are AWS-only.
-pub(super) async fn ensure(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -> Result<()> {
+async fn ensure(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -> Result<()> {
     match client
         .head_bucket()
         .bucket(&bucket.spec.bucket)
@@ -153,10 +153,7 @@ pub(super) async fn ensure(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -
 /// Ownership from bucket tags, or from the marker object where the provider
 /// does not support tagging. No tags and no marker means the bucket is
 /// adoptable only when its prefix scope is empty.
-pub(super) async fn ownership(
-    client: &aws_sdk_s3::Client,
-    bucket: &ObjectBucket,
-) -> Result<Ownership> {
+async fn ownership(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -> Result<Ownership> {
     match client
         .get_bucket_tagging()
         .bucket(&bucket.spec.bucket)
@@ -228,7 +225,7 @@ async fn prefix_empty(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -> Res
 /// provider does not support tagging. Denied tagging warns and still records
 /// the marker, mirroring bucket creation on AWS.
 async fn record_ownership(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -> Result<()> {
-    let tags = merged_bucket_tags(&bucket.owner);
+    let tags = ownership_tags(&bucket.owner);
     match client
         .put_bucket_tagging()
         .bucket(&bucket.spec.bucket)
@@ -276,10 +273,7 @@ async fn write_marker(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -> Res
 /// Delete an owned static bucket's prefix scope, then remove the bucket
 /// itself when nothing else remains. Shared buckets keep their other
 /// content; only what the swarm owns is deleted.
-pub(super) async fn delete(
-    client: &aws_sdk_s3::Client,
-    bucket: &ObjectBucket,
-) -> Result<BucketRemoval> {
+async fn delete(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -> Result<BucketRemoval> {
     match ownership(client, bucket).await? {
         Ownership::Absent => return Ok(BucketRemoval::Absent),
         Ownership::Unmanaged => {
@@ -378,7 +372,7 @@ async fn delete_prefix_scope(
     Ok(count)
 }
 
-pub(super) fn error_code<E>(error: &aws_sdk_s3::error::SdkError<E>) -> Option<&str>
+fn error_code<E>(error: &aws_sdk_s3::error::SdkError<E>) -> Option<&str>
 where
     E: ProvideErrorMetadata + std::fmt::Debug + Send + Sync + 'static,
 {
@@ -387,7 +381,7 @@ where
         .and_then(ProvideErrorMetadata::code)
 }
 
-pub(super) fn is_no_such_bucket<E>(error: &aws_sdk_s3::error::SdkError<E>) -> bool
+fn is_no_such_bucket<E>(error: &aws_sdk_s3::error::SdkError<E>) -> bool
 where
     E: ProvideErrorMetadata + std::fmt::Debug + Send + Sync + 'static,
 {
@@ -429,13 +423,13 @@ fn tagging_unsupported(code: Option<&str>) -> bool {
     )
 }
 
-pub(super) fn warn_untagged(permission: &str, resource: &str, owner: &str) {
+fn warn_untagged(permission: &str, resource: &str, owner: &str) {
     cloud_err!(
         "Warning: missing {permission} for {resource}; remote down will leave it in place. Grant {permission}, then tag the bucket managed-by=swarmy and swarmy-remote={owner} by hand."
     );
 }
 
-pub(super) fn warn_tag_denied(
+fn warn_tag_denied(
     error: crate::Error,
     permission: &str,
     resource: &str,
@@ -448,7 +442,7 @@ pub(super) fn warn_tag_denied(
     Ok(())
 }
 
-pub(super) fn s3_tag(key: &str, value: &str) -> aws_sdk_s3::types::Tag {
+fn s3_tag(key: &str, value: &str) -> aws_sdk_s3::types::Tag {
     aws_sdk_s3::types::Tag::builder()
         .key(key)
         .value(value)
@@ -456,11 +450,11 @@ pub(super) fn s3_tag(key: &str, value: &str) -> aws_sdk_s3::types::Tag {
         .expect("tag fields")
 }
 
-fn merged_bucket_tags(owner: &str) -> Vec<aws_sdk_s3::types::Tag> {
+fn ownership_tags(owner: &str) -> Vec<aws_sdk_s3::types::Tag> {
     vec![s3_tag(MANAGED_TAG, MANAGER), s3_tag(REMOTE_TAG, owner)]
 }
 
-pub(super) fn owned<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, owner: &str) -> Ownership {
+fn owned<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, owner: &str) -> Ownership {
     let tags: Vec<_> = tags.collect();
     if tags
         .iter()

@@ -98,7 +98,8 @@ Machines have `ssh_user` ubuntu, no public IPv6, and a fixed encrypted
 100 GiB root disk. Image changes are ignored after launch to avoid replacing
 running machines when Canonical updates its SSM parameter. An AWS key needs
 permissions for EC2 instances, key pairs, VPC, subnet, route table, internet
-gateway and security groups; `ssm:GetParameter` for Canonical's public
-parameters; and S3 bucket creation, tagging, public-access-block and deletion.
+gateway and security groups, including `ec2:DescribeInstanceTypes`;
+`ssm:GetParameter` for Canonical's public parameters; and S3 bucket
+creation, tagging, `s3:PutBucketPublicAccessBlock`, and deletion.
 This module has only been checked by `tofu validate` and offline mock tests.
 It has not been run against real AWS.

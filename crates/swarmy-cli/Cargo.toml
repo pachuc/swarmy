@@ -7,9 +7,9 @@ publish.workspace = true
 license.workspace = true
 
 [features]
-# Provisioning (static-key bucket setup through the S3 SDK) is opt-in so the default build skips the
-# EC2 provisioning SDKs. Laptop installs enable `remote` and `chat`; node
-# installs disable default features to omit terminal dependencies.
+# Provisioning (static-key bucket setup through the S3 SDK) is opt-in,
+# so the default build skips the S3 SDK. Laptop installs enable `remote`
+# and `chat`; node installs disable default features to omit terminal dependencies.
 default = ["chat"]
 chat = ["swarmy-chat/terminal", "dep:crossterm", "dep:unicode-width"]
 remote = ["swarmy-cloud/remote"]

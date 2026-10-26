@@ -157,7 +157,7 @@ fn validate(settings: &RemoteSettings, request: &AdoptNode<'_>) -> Result<()> {
     validate_bootstrap(request.host, request.ssh_user, request.ssh_key, "adopt")?;
     swarmy_config::validate_service_user(&settings.service_user)?;
     super::validate_sandbox_storage(request.sandboxes, &settings.local_storage, "adopt")?;
-    super::validate_bucket_binding(settings, request.name)?;
+    super::validate_bucket_binding(settings)?;
     // An existing host can never use an IAM instance role: the role would be
     // created but the machine could never assume it. Require static keys.
     if let Some(spec) = &settings.bucket {

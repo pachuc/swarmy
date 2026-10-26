@@ -37,11 +37,7 @@ pub(super) async fn run(
         existing,
     } = request;
     let mut primary = state.require(name)?;
-    let Some(mut settings) = primary.launch_settings.clone() else {
-        return Err(crate::Error::other(
-            "remote has no saved launch configuration; adopt it again before adding nodes",
-        ));
-    };
+    let mut settings = super::existing_launch(&primary)?.clone();
     settings.local_storage = local_storage;
     let effective = plan_join(&primary, &mut settings, sandboxes, &existing)?;
     crate::Error::ensure(

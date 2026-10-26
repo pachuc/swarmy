@@ -200,8 +200,8 @@ use swarmy_config::RemoteNode;
 /// Provider-neutral description of the object bucket backing a remote.
 ///
 /// The bucket description is [`swarmy_config::BucketSpec`]: endpoint, region,
-/// bucket name, prefix, and static keys. There is one description everywhere. [`std::fmt::Debug`] redacts static keys through the
-/// description.
+/// bucket name, prefix, and credentials. There is one description everywhere.
+/// [`std::fmt::Debug`] redacts static keys through the description.
 #[derive(Clone, Debug)]
 pub struct ObjectBucket {
     /// The one bucket description, with the region filled from the remote's
