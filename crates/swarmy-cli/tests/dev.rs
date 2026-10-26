@@ -29,11 +29,7 @@ impl Fixture {
         let mut command = AsyncCommand::new(CLI);
         command
             .current_dir(self.files.path())
-            .env("HOME", self.files.path())
-            .env("XDG_CONFIG_HOME", self.files.path().join("config"))
-            .env("XDG_DATA_HOME", self.files.path().join("data"))
-            .env("XDG_STATE_HOME", self.files.path().join("state"))
-            .env("XDG_CACHE_HOME", self.files.path().join("cache"))
+            .envs(swarmy_testkit::isolated_home(self.files.path()))
             .args(args)
             .kill_on_drop(true);
         for (key, _) in std::env::vars_os() {
@@ -69,11 +65,7 @@ impl Drop for Fixture {
         let mut command = Command::new(CLI);
         command
             .current_dir(self.files.path())
-            .env("HOME", self.files.path())
-            .env("XDG_CONFIG_HOME", self.files.path().join("config"))
-            .env("XDG_DATA_HOME", self.files.path().join("data"))
-            .env("XDG_STATE_HOME", self.files.path().join("state"))
-            .env("XDG_CACHE_HOME", self.files.path().join("cache"))
+            .envs(swarmy_testkit::isolated_home(self.files.path()))
             .args(["dev", "down"]);
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("SWARMY_") {
@@ -199,11 +191,7 @@ fn json_dev_status_is_rejected_without_touching_the_stack() {
     let files = tempfile::tempdir().unwrap();
     let output = Command::new(CLI)
         .current_dir(files.path())
-        .env("HOME", files.path())
-        .env("XDG_CONFIG_HOME", files.path().join("config"))
-        .env("XDG_DATA_HOME", files.path().join("data"))
-        .env("XDG_STATE_HOME", files.path().join("state"))
-        .env("XDG_CACHE_HOME", files.path().join("cache"))
+        .envs(swarmy_testkit::isolated_home(files.path()))
         .args(["--json", "dev", "status"])
         .output()
         .unwrap();

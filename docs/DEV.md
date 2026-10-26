@@ -217,7 +217,7 @@ provider = "fake"
 model = "gpt-5"
 default_image = "base-ubuntu:dev"
 effort = "medium"
-credential_file = "/home/me/.swarmy/auth.json"
+credential_file = "/home/me/.local/share/swarmy/auth.json"
 
 [worker]
 partitions = "0-255"

@@ -29,11 +29,7 @@ impl Fixture {
         }
         command
             .current_dir(self.0.path())
-            .env("HOME", self.0.path())
-            .env("XDG_CONFIG_HOME", self.0.path().join("config"))
-            .env("XDG_DATA_HOME", self.0.path().join("data"))
-            .env("XDG_STATE_HOME", self.0.path().join("state"))
-            .env("XDG_CACHE_HOME", self.0.path().join("cache"))
+            .envs(swarmy_testkit::isolated_home(self.0.path()))
             .env("PATH", self.0.path().join("bin"))
             .arg("doctor");
         if json {

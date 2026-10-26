@@ -24,11 +24,7 @@ fn run(home: &std::path::Path, args: &[&str], release: Option<&str>) -> Output {
     command
         .args(args)
         .current_dir(home)
-        .env("HOME", home)
-        .env("XDG_CONFIG_HOME", home.join("config"))
-        .env("XDG_DATA_HOME", home.join("data"))
-        .env("XDG_STATE_HOME", home.join("state"))
-        .env("XDG_CACHE_HOME", home.join("cache"))
+        .envs(swarmy_testkit::isolated_home(home))
         .output()
         .unwrap()
 }

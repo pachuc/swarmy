@@ -116,11 +116,7 @@ impl Fixture {
         }
         command
             .current_dir(self.dir.path())
-            .env("HOME", self.dir.path())
-            .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
-            .env("XDG_DATA_HOME", self.dir.path().join("data"))
-            .env("XDG_STATE_HOME", self.dir.path().join("state"))
-            .env("XDG_CACHE_HOME", self.dir.path().join("cache"))
+            .envs(swarmy_testkit::isolated_home(self.dir.path()))
             .args(args);
         command
     }

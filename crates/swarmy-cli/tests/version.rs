@@ -63,11 +63,7 @@ exec /bin/sleep 600"
         command
             .args(args)
             .current_dir(self.root.path())
-            .env("HOME", self.root.path())
-            .env("XDG_CONFIG_HOME", self.root.path().join("config"))
-            .env("XDG_DATA_HOME", self.root.path().join("data"))
-            .env("XDG_STATE_HOME", self.root.path().join("state"))
-            .env("XDG_CACHE_HOME", self.root.path().join("cache"))
+            .envs(swarmy_testkit::isolated_home(self.root.path()))
             .env(
                 "PATH",
                 format!("{}:/usr/bin:/bin", self.root.path().join("bin").display()),
@@ -169,12 +165,7 @@ fn doctor_reports_each_identity_and_flags_stale_service() {
 
 fn isolated_cli_command(path: &str, root: &Path) -> Command {
     let mut command = Command::new(path);
-    command
-        .env("HOME", root)
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_DATA_HOME", root.join("data"))
-        .env("XDG_STATE_HOME", root.join("state"))
-        .env("XDG_CACHE_HOME", root.join("cache"));
+    command.envs(swarmy_testkit::isolated_home(root));
     command
 }
 

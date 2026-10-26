@@ -608,8 +608,7 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
         swarmy_config::project_root(&layout.config).is_some(),
         &layout.environment,
     );
-    // The fake provider's files live beside the service state; in a project this
-    // is the same `<root>/.swarmy/dev/` the relative defaults name.
+    // The fake provider's files sit beside the service state, <state_dir>/dev.
     let defaults = swarmy_config::Fake::default();
     if settings.fake.script == defaults.script {
         settings.fake.script = layout.state.join("fake.json");
