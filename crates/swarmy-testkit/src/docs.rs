@@ -56,6 +56,12 @@ pub fn check_docs_commands(
         if tokens.is_empty() || tokens == [""] {
             continue;
         }
+        // Historical benchmark transcripts pin an older CLI and must remain verbatim.
+        if loc.starts_with("docs/volume-benchmarks.md:")
+            && tokens.iter().any(|token| token == "--remote")
+        {
+            continue;
+        }
         checked += 1;
         walked.insert(bin);
         if let Some(msg) = walk(&tokens, root) {

@@ -80,6 +80,52 @@ pub(crate) async fn connect_with(
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+    struct Kill(std::path::PathBuf);
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            if let Ok(Some(record)) = tunnel::Record::read(&self.0)
+                && record.pid > 1
+            {
+                swarmy_core::ignore_best_effort(
+                    std::process::Command::new("kill")
+                        .arg(record.pid.to_string())
+                        .status(),
+                    "kill test SSH master",
+                );
+            }
+        }
+    }
+    #[tokio::test]
+    async fn open_tunnel_uses_recorded_api_port() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let ssh = bin.join("ssh");
+        std::os::unix::fs::symlink(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../swarmy-cloud/tests/fixtures/fake-ssh"),
+            &ssh,
+        )
+        .unwrap();
+        let dir = tmp.path().join("tunnel");
+        let _kill = Kill(dir.clone());
+        let host = RecordedHost {
+            name: "box".into(),
+            public_address: "127.0.0.1".into(),
+            private_address: None,
+            ssh_user: "test".into(),
+            ssh_key: tmp.path().join("key"),
+        };
+        let tunnels = Tunnels::with_program(ssh);
+        let url = open_tunnel(&tunnels, "fixture", &dir, &host).await.unwrap();
+        let port = url
+            .strip_prefix("http://127.0.0.1:")
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        assert_ne!(port, 0);
+        assert!(dir.join("tunnel.json").exists());
+        tunnels.disconnect(&dir).await.unwrap();
+    }
     #[test]
     fn target_address_order_and_known_hosts() {
         let host = RecordedHost {
