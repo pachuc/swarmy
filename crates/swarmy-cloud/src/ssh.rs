@@ -519,7 +519,13 @@ impl Ssh {
         let output = run_output(
             base(node)?
                 .arg(address)
-                .arg("/usr/local/bin/swarmy-core --version"),
+                // A node provisioned before swarmy-core still has the per-role
+                // binaries; report their version so upgrade can replace them.
+                .arg(
+                    "/usr/local/bin/swarmy-core --version 2>/dev/null \
+                     || /usr/local/bin/swarmyd --version 2>/dev/null \
+                     || echo 'swarmy-core not installed'",
+                ),
             "read node version",
         )
         .await?;
