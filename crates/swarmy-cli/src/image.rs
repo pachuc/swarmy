@@ -98,9 +98,11 @@ async fn pull(
     }
     if set_default {
         let loaded = swarmy_config::Settings::load_base()?;
-        let path = loaded.path.context(
-            "no configuration file to update; run swarmy dev up first or set SWARMY_DEFAULT_IMAGE",
-        )?;
+        let path = loaded
+            .path
+            .unwrap_or(swarmy_config::Settings::user_config_path(
+                &std::env::vars().collect(),
+            )?);
         set_default_image(&path, &image)?;
         if json {
             println!(
@@ -109,7 +111,7 @@ async fn pull(
             );
         } else {
             println!(
-                "default_image = {image} in {}; run swarmy dev up to restart the API with it",
+                "default_image = {image} in {}; run swarmy swarm up NAME to restart the API with it",
                 path.display()
             );
             if std::env::var_os("SWARMY_DEFAULT_IMAGE").is_some() {

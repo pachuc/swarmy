@@ -154,7 +154,7 @@ async fn read_remote_api_token(
         .unwrap_or("");
     crate::Error::ensure(
         !token.is_empty(),
-        "remote API has no token; run swarmy dev up on the node",
+        "remote API has no token; run swarmy remote upgrade NAME on the node",
     )?;
     Ok(Some(token.to_owned()))
 }

@@ -1,6 +1,6 @@
 # Remote development nodes
 
-The laptop-services layout (`dev up` with a remote profile) has been removed;
+The laptop-services layout (`swarm up` with a remote profile) has been removed;
 adopt remotes with `--services node`; remotes adopted with the default laptop
 services are no longer usable from client commands. `swarmy remote connect NAME`
 registers the node's API as swarm NAME, so client commands take `--swarm NAME`.
@@ -458,7 +458,7 @@ space after compaction. See the dated lifecycle run in
 swarmy remote add-node demo
 swarmy remote ls
 swarmy remote logs demo         # Ctrl-C stops following the primary's journal
-swarmy dev logs worker          # local routing and placement diagnostics
+swarmy swarm logs dev worker          # local routing and placement diagnostics
 ```
 
 `add-node` provisions another existing host using the saved settings and the

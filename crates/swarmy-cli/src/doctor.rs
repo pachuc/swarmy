@@ -63,14 +63,14 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
             // TOML diagnostics can include source values, including secrets.
             Err(_) => Err(invalid_config()),
         },
-        "Run swarmy dev up to create one (.swarmy/config.toml in a checkout, else ~/.config/swarmy/config.toml); repair an existing file or its SWARMY_* overrides. See docs/DEV.md.",
+        "Run swarmy swarm up NAME to create one (.swarmy/config.toml in a checkout, else ~/.config/swarmy/config.toml); repair an existing file or its SWARMY_* overrides. See docs/DEV.md.",
     )];
     checks.push(Check::new("target", match &target {
         Ok(swarmy_client::api_client::Api::Direct { url, .. }) => Ok(format!("API {url}")),
         Ok(swarmy_client::api_client::Api::Tunnel { swarm, host, .. }) => Ok(format!("swarm {swarm} over SSH to {}", host.public_address)),
         Err(error) => Err(error.to_string()),
     }, "Run swarmy swarm ls to list swarms and swarmy swarm use NAME to choose one, or set SWARMY_API_URL and SWARMY_API_TOKEN."));
-    checks.push(Check::new("keyring", keyring(), "Run swarmy dev up to create a keyring, or install the existing cluster key with chmod 600; set SWARMY_KEYRING for another path."));
+    checks.push(Check::new("keyring", keyring(), "Run swarmy swarm up NAME to create a keyring, or install the existing cluster key with chmod 600; set SWARMY_KEYRING for another path."));
     if !remote {
         for (name, argument) in [
             ("fdbserver", "--version"),
@@ -79,7 +79,7 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
             ("weed", "version"),
         ] {
             checks.push(Check::new(name, binary_version(name, argument).await,
-            "Run swarmy dev install-tools (scripts/install-dev-tools.sh from a checkout). swarmy searches PATH, the install prefix's bin directory, and ~/.local/bin automatically; add another location to PATH if needed."));
+            "Run swarmy install-tools (scripts/install-dev-tools.sh from a checkout). swarmy searches PATH, the install prefix's bin directory, and ~/.local/bin automatically; add another location to PATH if needed."));
         }
     }
     checks.push(core_binary_check(remote).await);
@@ -154,7 +154,7 @@ async fn core_binary_check(remote: bool) -> Check {
         Check::warn(
             "swarmy-core",
             "not downloaded yet",
-            "Run swarmy dev up or swarmy core ensure.",
+            "Run swarmy swarm up NAME or swarmy core ensure.",
         )
     } else {
         match (remote, result) {
@@ -293,7 +293,7 @@ async fn s3_check(settings: &Settings) -> (Result<String, String>, &'static str)
     };
     (
         result,
-        "Run swarmy dev up; check the configured endpoint if the stack is remote.",
+        "Run swarmy swarm up NAME; check the configured endpoint if the stack is remote.",
     )
 }
 
@@ -318,7 +318,7 @@ async fn api_checks(
             checks.push(Check::new(
                 "API",
                 Err(format!("{error:#}")),
-                "Check the target with swarmy swarm show, or run swarmy dev up for a local stack; check the API URL and token.",
+                "Check the target with swarmy swarm show, or run swarmy swarm up NAME for a local stack; check the API URL and token.",
             ));
             return Vec::new();
         }
@@ -330,7 +330,7 @@ async fn api_checks(
             checks.push(Check::new(
                 "API",
                 Err(format!("{error:#}")),
-                "Check the target with swarmy swarm show, or run swarmy dev up for a local stack; check the API URL and token.",
+                "Check the target with swarmy swarm show, or run swarmy swarm up NAME for a local stack; check the API URL and token.",
             ));
             return Vec::new();
         }
@@ -361,7 +361,7 @@ async fn api_checks(
         "Reinstall the CLI and API from checkouts with the same major API version.",
     ));
     let core_fix = concat!(
-        "Run swarmy dev up, or upgrade the swarm's nodes; ",
+        "Run swarmy swarm up NAME, or upgrade the swarm's nodes; ",
         "run and chat refuse an incompatible core unless --allow-version-mismatch."
     );
     checks.push(match crate::version_guard::core_mismatch(&health) {
@@ -482,7 +482,7 @@ fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
                     if images.is_empty() { "none" } else { &images },
                     snapshot.default_image.as_deref().unwrap_or("unset")
                 ),
-                "Run swarmy image pull base-ubuntu --set-default (release clients) or swarmy image build images/base-ubuntu from a checkout, then restart with swarmy dev up.",
+                "Run swarmy image pull base-ubuntu --set-default (release clients) or swarmy image build images/base-ubuntu from a checkout, then restart with swarmy swarm up NAME.",
             )
         } else {
             Check::new(
@@ -530,7 +530,7 @@ fn snapshot_checks(
             let available = if available.is_empty() { "none" } else { &available };
             Err(format!("{available}; unserved: {}", missing.join(", ")))
         },
-        "Inspect the gateway log for provider discovery errors (swarmy dev logs gateway: .swarmy/dev/logs in a project, ~/.local/state/swarmy/dev/logs otherwise; journalctl -u swarmy-gateway remotely); configure credentials and restart the gateway.",
+        "Inspect the gateway log for provider discovery errors (swarmy swarm logs NAME gateway: .swarmy/dev/logs in a project, ~/.local/state/swarmy/dev/logs otherwise; journalctl -u swarmy-gateway remotely); configure credentials and restart the gateway.",
     ));
     let mut rows = api_providers.map_or_else(
         || {
