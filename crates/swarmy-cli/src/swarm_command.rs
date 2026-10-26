@@ -33,7 +33,7 @@ pub(crate) enum Command {
         #[arg(long, requires = "on")]
         size: Option<String>,
         /// Machine location (defaults to fsn1 for hetzner-cloud)
-        #[arg(long, requires = "on")]
+        #[arg(long, requires = "on", required_if_eq("on", "aws"))]
         location: Option<String>,
         /// Number of worker machines (default: 0)
         #[arg(long, requires = "on", default_value_t = 0)]
@@ -45,28 +45,28 @@ pub(crate) enum Command {
         #[arg(long, default_value = "root", requires = "host", conflicts_with = "on")]
         ssh_user: String,
         /// Private SSH key for the host
-        #[arg(long, requires = "host")]
+        #[arg(long, requires = "host", conflicts_with = "local")]
         ssh_key: Option<PathBuf>,
         /// IPv4 address for traffic between hosts (default: --host)
         #[arg(long, requires = "host")]
         private_address: Option<String>,
-        /// Sandbox capacity on the host (default: 64)
-        #[arg(long, requires = "host")]
+        /// Sandbox capacity on node-running hosts (default: 64)
+        #[arg(long, conflicts_with = "local")]
         sandboxes: Option<u32>,
         /// Node storage device or `dir:/path`
         #[arg(long, conflicts_with = "local")]
         local_storage: Option<String>,
         /// Account that owns the installed services (default: swarmy)
-        #[arg(long, conflicts_with = "local")]
+        #[arg(long, requires = "host")]
         service_user: Option<String>,
         /// Ephemeral or persistent lifecycle (default: persistent)
         #[arg(long, value_enum, conflicts_with = "local")]
         lifecycle: Option<LifecycleArg>,
         /// Keep data on down unless --destroy is given (local swarms default to ephemeral)
-        #[arg(long, conflicts_with = "host")]
+        #[arg(long, conflicts_with_all = ["host", "on"])]
         persistent: bool,
         /// Backing stack directory (default: the checkout's .dev inside a checkout, else the swarm's data directory)
-        #[arg(long, value_name = "PATH", conflicts_with = "host")]
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["host", "on"])]
         stack_dir: Option<PathBuf>,
     },
     /// Bring a swarm up, restarting running services
@@ -504,7 +504,9 @@ fn run_create(registry: &Registry, command: Command, json_output: bool) -> Resul
                     format!("created swarm {name}"),
                     json_output,
                 );
-                crate::swarm_hosts::cloud_next(registry, &spec)?;
+                if !json_output {
+                    crate::swarm_hosts::cloud_next(registry, &spec)?;
+                }
             } else if local {
                 crate::local::create(registry, &name, persistent, stack_dir, json_output)?;
             } else {

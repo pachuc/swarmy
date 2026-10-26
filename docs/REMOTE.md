@@ -1,5 +1,35 @@
 # Swarms on existing hosts
 
+## Swarms on cloud machines (OpenTofu groups)
+
+An OpenTofu group describes machines created and tracked by OpenTofu, an
+infrastructure-as-code tool. A group's `module` is `"hetzner-cloud"`, `"aws"`,
+or an absolute path to your own module. Hetzner Cloud needs credentials from
+`swarmy cloud login hetzner-cloud`, and its stack bucket also needs
+`swarmy cloud login hetzner-s3`; AWS needs `swarmy cloud login aws`.
+Credentials reach OpenTofu only through its environment, not through tfvars.
+
+```sh
+printf '%s\n' "$HCLOUD_TOKEN" | swarmy cloud login hetzner-cloud
+swarmy cloud login hetzner-s3
+swarmy swarm create fleet --on hetzner-cloud --size cpx41 --nodes 2
+swarmy swarm plan fleet
+swarmy swarm up fleet --copy-credential
+swarmy --swarm fleet chat
+swarmy swarm down fleet --destroy
+```
+
+`swarmy swarm plan fleet` previews every group's changes without applying.
+`up` creates a working directory and state per group under the swarm's data
+directory, generates one SSH key per group, shares the network between groups,
+and creates a bucket for a hetzner-cloud stack group only. It waits for SSH
+and cloud-init before the same provisioning used for existing hosts. `down`
+destroys groups in reverse order and removes the bucket with the data;
+persistent swarms require `--destroy`. Reducing a group's `count` is refused
+until scaling exists. Cloud and existing-host groups may coexist in a mixed
+swarm. `SWARMY_TOFU_BIN` is a development and test override for the pinned,
+checksum-verified OpenTofu download.
+
 An existing-host swarm provisions machines you already own over SSH. Swarmy
 installs its stack, control services, and sandbox node on the primary host;
 additional hosts run sandbox nodes. It never creates or deletes machines.
