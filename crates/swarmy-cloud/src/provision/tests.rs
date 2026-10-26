@@ -380,6 +380,7 @@ fn lock_releases_on_drop() {
     let (_tmp, registry, _spec) = fixture();
     let guard = lock(&registry, "fleet").unwrap();
     assert!(lock(&registry, "fleet").is_err());
+    FileExt::unlock(&guard).unwrap();
     drop(guard);
     let _again = lock(&registry, "fleet").unwrap();
 }

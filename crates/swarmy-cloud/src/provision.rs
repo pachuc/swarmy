@@ -230,6 +230,14 @@ pub fn lock(registry: &Registry, name: &str) -> Result<fs::File> {
     }
     Ok(file)
 }
+// Explicit unlock makes the transition between consecutive CLI commands
+// deterministic even when a runtime retains completed futures briefly.
+struct Locked(fs::File);
+impl Drop for Locked {
+    fn drop(&mut self) {
+        swarmy_core::ignore_best_effort(self.0.unlock(), "release swarm command lock");
+    }
+}
 fn reconcile(plan: &[Planned], record: &SwarmRecord) -> Result<()> {
     for old in record.hosts.values().flatten() {
         let Some(new) = plan.iter().find(|p| p.host.name == old.name) else {
@@ -271,7 +279,7 @@ async fn provision_swarm_with(
     host: &impl SwarmHost,
     mut request: UpRequest<'_>,
 ) -> Result<Vec<HostReport>> {
-    let _lock = lock(request.registry, &request.spec.name)?;
+    let _lock = Locked(lock(request.registry, &request.spec.name)?);
     let spec = request.spec;
     let swarm_dir = request.registry.swarm_dir(&spec.name)?;
     let planned = plan(spec, std::mem::take(&mut request.sources))?;
@@ -439,7 +447,7 @@ async fn stop_swarm_with(
     registry: &Registry,
     spec: &SwarmSpec,
 ) -> Result<Vec<HostReport>> {
-    let _lock = lock(registry, &spec.name)?;
+    let _lock = Locked(lock(registry, &spec.name)?);
     let (record, planned) = recorded_plan(registry, spec)?;
     let mut reports = Vec::new();
     for p in planned.iter().rev() {
@@ -463,7 +471,7 @@ async fn start_swarm_with(
     registry: &Registry,
     spec: &SwarmSpec,
 ) -> Result<Vec<HostReport>> {
-    let _lock = lock(registry, &spec.name)?;
+    let _lock = Locked(lock(registry, &spec.name)?);
     let (record, planned) = recorded_plan(registry, spec)?;
     let mut reports = Vec::new();
     for p in &planned {
@@ -487,7 +495,7 @@ async fn decommission_swarm_with(
     registry: &Registry,
     spec: &SwarmSpec,
 ) -> Result<Vec<HostReport>> {
-    let _lock = lock(registry, &spec.name)?;
+    let _lock = Locked(lock(registry, &spec.name)?);
     let Some(mut record) = registry.read_record(&spec.name)? else {
         cloud_out!(
             "swarm {} has no hosts recorded; nothing to remove",

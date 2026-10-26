@@ -239,6 +239,7 @@ pub(crate) async fn node_add(
         "note: swarmy rewrote {}; comments in it are not kept",
         registry.spec_path(name)?.display()
     );
+    fs2::FileExt::unlock(&lock)?;
     drop(lock);
     up(
         registry,
