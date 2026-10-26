@@ -1449,14 +1449,14 @@ async fn competing_workers_claim_each_step_once() {
             // go to different workers rather than one draining the queue.
             let context =
                 async_nats::jetstream::new(async_nats::connect(&f.stack.nats_url).await.unwrap());
-            let stream = context
-                .get_stream(format!("{}_SCHED_RUNNABLE", f.stack.prefix))
-                .await
-                .unwrap();
-            let mut consumer: async_nats::jetstream::consumer::PullConsumer =
-                stream.get_consumer("runnable_7").await.unwrap();
             swarmy_testkit::eventually("both workers have pending pulls", WAIT, async || {
-                (consumer.info().await.unwrap().num_waiting >= 2).then_some(())
+                let stream = context
+                    .get_stream(format!("{}_SCHED_RUNNABLE", f.stack.prefix))
+                    .await
+                    .ok()?;
+                let mut consumer: async_nats::jetstream::consumer::PullConsumer =
+                    stream.get_consumer("runnable_7").await.ok()?;
+                (consumer.info().await.ok()?.num_waiting >= 2).then_some(())
             })
             .await;
             let mut sessions = Vec::new();
