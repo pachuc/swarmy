@@ -401,6 +401,13 @@ mod tests {
                 .to_string()
                 .contains("chmod 600")
         );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(
+            CloudCredentials::load(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("chmod 600")
+        );
         store.save(&path).unwrap();
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
         assert_eq!(
@@ -418,14 +425,26 @@ mod tests {
         );
         assert!(!path.parent().unwrap().exists());
         for (contents, decode) in [
-            ("[digitalocean]\nkey = 'x'", true),
-            ("[aws]\nregion2 = 'x'", true),
+            (
+                "[digitalocean]\nkey = 'x'\n[hetzner-cloud]\ntoken = 'hcloud-test-token-5f2b9c'",
+                true,
+            ),
+            (
+                "[aws]\nregion2 = 'x'\n[hetzner-cloud]\ntoken = 'hcloud-test-token-5f2b9c'",
+                true,
+            ),
             ("[hetzner-cloud]\ntoken = ''", false),
         ] {
             let path = tmp.path().join("bad");
             fs::write(&path, contents).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-            match CloudCredentials::load(&path).unwrap_err() {
+            let error = CloudCredentials::load(&path).unwrap_err();
+            let mut cause: Option<&dyn std::error::Error> = Some(&error);
+            while let Some(current) = cause {
+                assert!(!current.to_string().contains(TOKEN));
+                cause = current.source();
+            }
+            match error {
                 Error::File { source, .. } => {
                     assert_eq!(matches!(*source, Error::Decode(_)), decode);
                 }
@@ -493,6 +512,30 @@ mod tests {
         assert!(
             CloudCredential::new(CloudProvider::HetznerS3, vec![S3_ACCESS.into()], None).is_err()
         );
+        let aws_without_region = entry(CloudProvider::Aws, &[AWS_ACCESS, AWS_SECRET], None);
+        assert_eq!(
+            aws_without_region.env().iter().collect::<Vec<_>>(),
+            vec![
+                ("AWS_ACCESS_KEY_ID", AWS_ACCESS),
+                ("AWS_SECRET_ACCESS_KEY", AWS_SECRET)
+            ]
+        );
+        assert_eq!(hc.set_fields(), ["token"]);
+        assert_eq!(s3.set_fields(), ["access_key", "secret_key"]);
+        assert_eq!(
+            aws.set_fields(),
+            ["access_key_id", "secret_access_key", "region"]
+        );
+        assert_eq!(
+            aws_without_region.set_fields(),
+            ["access_key_id", "secret_access_key"]
+        );
+        for env in [&hc.env(), &s3.env(), &aws.env()] {
+            let debug = format!("{env:?}");
+            for secret in [TOKEN, S3_ACCESS, S3_SECRET, AWS_ACCESS, AWS_SECRET] {
+                assert!(!debug.contains(secret));
+            }
+        }
         for c in [hc, s3, aws] {
             let debug = format!("{c:?}");
             for secret in [TOKEN, S3_ACCESS, S3_SECRET, AWS_ACCESS, AWS_SECRET] {
@@ -532,6 +575,9 @@ mod tests {
         );
         assert!(store.remove(CloudProvider::Aws));
         assert!(!store.remove(CloudProvider::Aws));
+        let debug = format!("{store:?}");
+        assert!(debug.contains("..redacted.."));
+        assert!(!debug.contains(TOKEN));
         assert!(store.get(CloudProvider::HetznerCloud).is_some());
         assert!(
             format!("{:?}", store.env(CloudProvider::HetznerCloud).unwrap())
