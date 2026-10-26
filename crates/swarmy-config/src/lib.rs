@@ -884,7 +884,11 @@ impl Settings {
     /// # Errors
     /// Fails if the file cannot be read or decoded.
     pub fn read(path: &Path) -> Result<Self, Error> {
-        let mut settings: Self = toml::from_str(&std::fs::read_to_string(path)?)?;
+        let mut table: toml::Table = toml::from_str(&std::fs::read_to_string(path)?)?;
+        if table.remove("remote").is_some() {
+            tracing::warn!(path = %path.display(), "ignoring the removed [remote] section; delete it (swarms are described in ~/.config/swarmy/swarms/NAME.toml)");
+        }
+        let mut settings: Self = table.try_into()?;
         // An absent service user predates the setting; configuration files
         // take the new default while saved node records keep the empty value
         // so they fall back to the SSH login they were provisioned with.
@@ -1774,4 +1778,23 @@ pub(crate) fn process_environment(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod removed_remote_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+
+    #[test]
+    fn removed_remote_section_is_ignored_with_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[remote]\nprovider = \"existing\"\n[selection]\nprovider = \"fake\"\n",
+        )
+        .unwrap();
+        let settings = Settings::read(&path).unwrap();
+        assert_eq!(settings.selection.provider, "fake");
+    }
 }

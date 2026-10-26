@@ -523,6 +523,7 @@ fn reconcile_refuses_removed_or_moved_hosts() {
     let (_tmp, registry, spec) = fixture();
     let planned = plan(&spec, source_list(&registry, &spec)).unwrap();
     let mut record = SwarmRecord {
+        bucket_keys: None,
         name: "fleet".into(),
         created_at: jiff::Timestamp::now(),
         api: SwarmApi::default(),

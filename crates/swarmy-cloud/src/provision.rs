@@ -287,6 +287,7 @@ async fn provision_swarm_with(
         .registry
         .read_record(&spec.name)?
         .unwrap_or_else(|| SwarmRecord {
+            bucket_keys: None,
             name: spec.name.clone(),
             created_at: jiff::Timestamp::now(),
             api: SwarmApi::default(),

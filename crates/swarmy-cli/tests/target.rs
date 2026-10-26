@@ -335,6 +335,7 @@ fn rm_refuses_machines_without_force() {
     let f = Fixture::new();
     let r = f.registry();
     r.write_record(&SwarmRecord {
+        bucket_keys: None,
         name: "m".into(),
         created_at: "2026-10-26T00:00:00Z".parse().unwrap(),
         api: SwarmApi::default(),

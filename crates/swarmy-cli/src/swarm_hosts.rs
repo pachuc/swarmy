@@ -31,6 +31,7 @@ pub(crate) struct NodeAdd {
 }
 pub(crate) fn host_spec(registry: &Registry, name: &str, args: &CreateHost) -> Result<SwarmSpec> {
     let spec = SwarmSpec {
+        bucket: None,
         name: name.into(),
         lifecycle: args.lifecycle.unwrap_or(Lifecycle::Persistent),
         service_user: args.service_user.clone(),

@@ -193,6 +193,7 @@ mod tests {
     }
     fn record(name: &str, url: Option<&str>, token: Option<&str>, host: bool) -> SwarmRecord {
         SwarmRecord {
+            bucket_keys: None,
             name: name.into(),
             created_at: "2026-10-26T00:00:00Z".parse().unwrap(),
             api: SwarmApi {

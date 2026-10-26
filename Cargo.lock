@@ -3956,8 +3956,10 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "toml",
+ "tracing",
  "tracing-subscriber",
  "ulid",
+ "url",
 ]
 
 [[package]]
