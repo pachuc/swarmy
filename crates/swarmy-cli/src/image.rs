@@ -88,7 +88,7 @@ async fn pull(
     let tag = tag.as_deref().unwrap_or(swarmy_version::RELEASE_TAG);
     let target = target.as_deref().map_or_else(Target::host, Target::parse)?;
     let image = release_image(tag);
-    if pull_release_image(None, &crate::image::image_cache()?, tag, target, json)
+    if pull_release_image(None, &image_cache()?, tag, target, json)
         .await?
         .is_none()
     {
@@ -101,7 +101,7 @@ async fn pull(
         let path = loaded.path.context(
             "no configuration file to update; run swarmy dev up first or set SWARMY_DEFAULT_IMAGE",
         )?;
-        crate::image::set_default_image(&path, &image)?;
+        set_default_image(&path, &image)?;
         if json {
             println!(
                 "{}",
@@ -304,10 +304,7 @@ pub(crate) fn set_default_image(config: &Path, image: &str) -> Result<()> {
         if let Some(parent) = config.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let encoded = format!(
-            "[selection]\ndefault_image = {}\n",
-            toml::Value::String(image.into())
-        );
+        let encoded = format!("[selection]\ndefault_image = {}\n", format!("{image:?}"));
         swarmy_config::write_private(config, encoded.as_bytes())?;
         return Ok(());
     }

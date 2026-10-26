@@ -13,11 +13,7 @@ pub(crate) enum Command {
         target: Option<String>,
     },
 }
-pub(crate) async fn run(
-    command: Command,
-    json: bool,
-    allow_version_mismatch: bool,
-) -> anyhow::Result<()> {
+pub(crate) async fn run(command: Command, json: bool, allow_version_mismatch: bool) -> Result<()> {
     let Command::Ensure { core_bin, target } = command;
     let target = target
         .as_deref()
@@ -26,17 +22,17 @@ pub(crate) async fn run(
         .map_or_else(Target::host, Ok)?;
     if Some(target) != Target::host().ok()
         && !matches!(
-            crate::core_command::CoreSource::select(core_bin.clone())?,
-            crate::core_command::CoreSource::Release(_)
+            CoreSource::select(core_bin.clone())?,
+            CoreSource::Release(_)
         )
     {
         anyhow::bail!(
             "--target only selects a release download; --core-bin and development builds use this machine's binary"
         );
     }
-    let core = crate::core_command::resolve_core(core_bin, Some(target)).await?;
+    let core = resolve_core(core_bin, Some(target)).await?;
     if Some(target) == Target::host().ok() {
-        crate::core_command::check_versions(&core, allow_version_mismatch).await?;
+        check_versions(&core, allow_version_mismatch).await?;
     }
     if json {
         println!(
@@ -105,22 +101,9 @@ pub(crate) fn core_cache() -> Result<PathBuf> {
         .cache
         .join("core"))
 }
-/// `images/` in swarmy's XDG cache directory: release base-image downloads.
-pub(crate) fn image_cache() -> Result<PathBuf> {
-    Ok(swarmy_config::paths::Dirs::from_process()?
-        .cache
-        .join("images"))
-}
-/// Set `selection.default_image` in CONFIG, keeping the rest of the file.
-pub(crate) fn set_default_image(config: &Path, image: &str) -> Result<()> {
-    let mut settings = Settings::read(config)?;
-    settings.selection.default_image = Some(image.to_owned());
-    swarmy_config::write_private(config, settings.to_toml()?.as_bytes())?;
-    Ok(())
-}
 pub(crate) async fn resolve_core(
     core_bin: Option<PathBuf>,
-    target: Option<swarmy_cloud::release::Target>,
+    target: Option<Target>,
 ) -> Result<ResolvedCore> {
     use swarmy_cloud::release::{Component, Target};
     let source = CoreSource::select(core_bin)?;

@@ -335,6 +335,49 @@ services = "local"
 nodes = ["box"]
 "#;
     #[test]
+    fn local_spec_round_trips() {
+        let spec = SwarmSpec::local("dev", Lifecycle::Ephemeral, None).unwrap();
+        let text = spec.to_toml().unwrap();
+        assert!(text.contains("module = \"local\""));
+        assert!(text.contains("nodes = []"));
+        assert_eq!(SwarmSpec::parse(&text).unwrap(), spec);
+        assert!(spec.local_group().is_some());
+    }
+    #[test]
+    fn local_spec_without_nodes_key_parses() {
+        let text = SwarmSpec::local("dev", Lifecycle::Ephemeral, None)
+            .unwrap()
+            .to_toml()
+            .unwrap();
+        assert!(
+            SwarmSpec::parse(&text.replace("nodes = []\n", ""))
+                .unwrap()
+                .local_group()
+                .is_some()
+        );
+    }
+    #[test]
+    fn stack_dir_rules() {
+        let mut cloud = SwarmSpec::parse(CLOUD).unwrap();
+        cloud.groups.get_mut("control").unwrap().stack_dir = Some("/tmp/stack".into());
+        assert_eq!(
+            cloud.validate().unwrap_err().to_string(),
+            "invalid swarm spec: group \"control\": stack_dir applies only to local groups"
+        );
+        assert_eq!(
+            SwarmSpec::local("dev", Lifecycle::Ephemeral, Some("relative".into()))
+                .unwrap_err()
+                .to_string(),
+            "invalid swarm spec: group \"local\": stack_dir must be an absolute path"
+        );
+        assert!(SwarmSpec::local("dev", Lifecycle::Ephemeral, Some("/tmp/stack".into())).is_ok());
+    }
+    #[test]
+    fn local_group_is_none_for_split_and_cloud() {
+        assert!(SwarmSpec::parse(LOCAL).unwrap().local_group().is_none());
+        assert!(SwarmSpec::parse(CLOUD).unwrap().local_group().is_none());
+    }
+    #[test]
     fn examples_round_trip() {
         for text in [CLOUD, EXISTING, LOCAL] {
             let spec = SwarmSpec::parse(text).unwrap();

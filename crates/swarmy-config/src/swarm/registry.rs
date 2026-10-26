@@ -323,6 +323,40 @@ pub(super) mod tests {
         }
     }
     #[test]
+    fn set_api_preserves_identity_and_private_modes() {
+        let (_tmp, r) = setup();
+        assert!(matches!(
+            r.set_api("none", "http://example.test", "t"),
+            Err(Error::UnknownSwarm(_))
+        ));
+        r.write_spec(&spec("a")).unwrap();
+        r.set_api("a", "http://example.test", "t").unwrap();
+        let old = r.read_record("a").unwrap().unwrap().created_at;
+        r.set_api("a", "http://other.test", "new").unwrap();
+        let record = r.read_record("a").unwrap().unwrap();
+        assert_eq!(record.created_at, old);
+        assert_eq!(record.api.token.as_deref(), Some("new"));
+        assert_eq!(
+            fs::metadata(r.record_path("a").unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(r.swarm_dir("a").unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        create_private_dir(&r.state_dir("a").unwrap()).unwrap();
+        r.remove("a").unwrap();
+        assert!(!r.state_dir("a").unwrap().exists());
+    }
+    #[test]
     fn disk_round_trip_and_modes() {
         let (_tmp, r) = setup();
         assert!(r.list().unwrap().is_empty());

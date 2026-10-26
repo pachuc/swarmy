@@ -130,6 +130,53 @@ PID records contain Linux process start times to guard against PID reuse.
 
 To run the backing services and swarmyd on another machine, see [remote node workflow](#remote-node-workflow).
 
+## Local swarms
+
+A local swarm runs FoundationDB, NATS, SeaweedFS, and the scheduler, worker,
+gateway, and API on this machine. Create it once, then use the same name to
+manage it. It does not run a sandbox node, so tool-calling turns still need a
+node. Ephemeral swarms delete their data on `down`; persistent swarms require
+`down --destroy` to delete data. `stop` and `start` preserve data.
+
+```sh
+swarmy swarm create dev --local
+swarmy swarm up dev
+swarmy swarm status dev
+swarmy swarm logs dev worker
+swarmy swarm stop dev
+swarmy swarm start dev
+swarmy swarm down dev
+```
+
+The files follow XDG directories (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and
+`XDG_STATE_HOME`, with HOME-based defaults):
+
+| Path under swarmy's XDG root | Contents |
+|---|---|
+| config/swarms/NAME.toml | Private swarm spec |
+| data/swarms/NAME/record.toml | Private API URL and token record |
+| data/swarms/NAME/services.toml | Effective service settings, regenerated on each up/start; do not edit |
+| data/swarms/NAME/stack/ | Default backing stack data, owned by the swarm |
+| state/swarms/NAME/ | Supervisor and service pids, ready marker, logs, fake files, API uploads |
+| state/local.lock | Machine-wide local lifecycle lock |
+| data/keyring | Shared local cluster keyring |
+
+Inside a checkout, creation finds the first ancestor with
+`scripts/dev-stack.sh` and sets `stack_dir` to its `.dev`. This shares the
+stack with `scripts/dev-stack.sh` and `make check`. `--stack-dir PATH` overrides
+it; relative paths resolve against the current directory. `down` stops but
+never deletes an explicit or detected `stack_dir`. Without either, the swarm
+owns its stack under its data directory.
+
+A release client downloads its matching `swarmy-core`. A development client
+uses a sibling `target/*/swarmy-core` or one on PATH. Use `--core-bin PATH`
+to choose explicitly. Service tuning is read on every up/start from the first
+project `.swarmy/config.toml` found from the current directory, otherwise
+`~/.config/swarmy/config.toml`. Only the default image is saved to this file;
+`services.toml` is rebuilt each time. Shell `SWARMY_*` variables do not reach
+the local services. Fixed ports allow only one local swarm to run at a time.
+`swarmy swarm rm` refuses to forget a running local swarm; stop it first.
+
 ## Ephemeral sessions and named agents
 
 A new `swarmy run` or `swarmy chat` conversation is ephemeral by default and

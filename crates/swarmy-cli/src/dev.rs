@@ -3,20 +3,12 @@ use std::{
     fs::{self, File, OpenOptions},
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
-    process::Stdio,
-    time::Duration,
 };
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::Subcommand;
 use fs2::FileExt;
 use swarmy_config::Settings;
-use tokio::{
-    process::{Child, Command as Process},
-    time::{sleep, timeout},
-};
-
-use crate::local::process::Identity;
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
