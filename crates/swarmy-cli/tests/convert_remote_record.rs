@@ -395,6 +395,11 @@ fn ssh_failure_writes_nothing() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("Connection refused"));
     assert!(!f.registry().spec_path("hz").unwrap().exists());
     assert!(!f.registry().swarm_dir("hz").unwrap().exists());
+    for parent in [f.registry().dirs().specs(), f.registry().dirs().records()] {
+        if parent.exists() {
+            assert!(fs::read_dir(parent).unwrap().next().is_none());
+        }
+    }
 }
 #[test]
 fn joined_nodes_become_a_node_group() {
