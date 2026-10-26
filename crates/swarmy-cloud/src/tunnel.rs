@@ -322,6 +322,24 @@ impl Tunnels {
         options: &[String],
         address: String,
     ) -> Result<(Record, Duration)> {
+        // The reservation must be released before SSH binds. Another tunnel can
+        // claim a port in that gap, so choose fresh ports after a failed bind.
+        for _ in 0..3 {
+            if let Some(started) = self.start_once(request, options, &address).await? {
+                return Ok(started);
+            }
+        }
+        Err(Error::other(format!(
+            "SSH exited (exit status: 255); inspect {}",
+            request.dir.join(LOG_FILE).display()
+        )))
+    }
+    async fn start_once(
+        &self,
+        request: &Request<'_>,
+        options: &[String],
+        address: &str,
+    ) -> Result<Option<(Record, Duration)>> {
         let socket_dir = tempfile::Builder::new()
             .prefix("swarmy-ssh-")
             .tempdir_in("/tmp")?;
@@ -365,7 +383,7 @@ impl Tunnels {
                 .child
                 .id()
                 .ok_or_else(|| Error::other("SSH exited before recording pid"))?,
-            address,
+            address: address.to_owned(),
             addresses: request.target.addresses.clone(),
             forwards,
         };
@@ -373,13 +391,16 @@ impl Tunnels {
         let result = timeout(Duration::from_secs(15), async {
             loop {
                 if let Some(exit) = starting.child.try_wait()? {
+                    if exit.code() == Some(255) {
+                        return Ok(false);
+                    }
                     return Err(Error::other(format!(
                         "SSH exited ({exit}); inspect {}",
                         log_path.display()
                     )));
                 }
                 if self.healthy(&record).await {
-                    return Ok(());
+                    return Ok(true);
                 }
                 sleep(Duration::from_millis(50)).await;
             }
@@ -394,10 +415,12 @@ impl Tunnels {
                 ),
             )
         })?;
-        result?;
+        if !result? {
+            return Ok(None);
+        }
         starting.published = true;
         let _socket_dir = socket_dir.keep();
-        Ok((record, began.elapsed()))
+        Ok(Some((record, began.elapsed())))
     }
 }
 struct StartingTunnel {
@@ -730,6 +753,23 @@ mod tests {
                 .unwrap()
                 .contains("boom")
         );
+    }
+    #[tokio::test]
+    async fn bind_collision_reselects_ports_before_publishing() {
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.program.parent().unwrap().join("fail-bind-once"),
+            b"",
+        )
+        .unwrap();
+        let tunnels = Tunnels::with_program(fixture.program.clone());
+        let dir = fixture.dir("one");
+        let request = Fixture::request(&dir, Placement::Remote);
+        let opened = tunnels.open(&request).await.unwrap();
+        assert_eq!(fixture.masters(), 1);
+        assert!(opened.record.local_port(Service::Api).is_some());
+        assert_eq!(Record::read(&dir).unwrap(), Some(opened.record));
+        tunnels.disconnect(&dir).await.unwrap();
     }
     #[tokio::test]
     async fn local_services_forward_the_backing_stack() {
