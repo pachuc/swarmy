@@ -26,7 +26,7 @@ case $* in
   *'/networks?'*) echo '{"networks":[]}' ;;
   *'/firewalls?'*) echo '{"firewalls":[]}' ;;
   *'/ssh_keys?'*) echo '{"ssh_keys":[]}' ;;
-  *'your-objectstorage.com/'*) if [[ $* == *' -I '* ]]; then printf '%s' "${BUCKET_CODE:-404}"; else echo 'ok'; fi;;
+  *'your-objectstorage.com/'*) if [[ $* == *' -I '* ]]; then printf '%s' "${BUCKET_CODE:-404}"; else printf '%s' "${LIST_CODE:-200}"; fi;;
   *) echo 'unexpected URL' >&2; exit 1;;
 esac
 STUB
@@ -44,6 +44,10 @@ for secret in hcloud-secret-5f2b9c s3-secret-91d0; do
     if env | grep -q "$secret"; then exit 1; fi
 done
 grep -q 's3-secret-91d0' "$fake/curl-stdin"
+s3_list_ok
+LIST_CODE=403; export LIST_CODE
+if s3_list_ok; then exit 1; fi
+unset LIST_CODE
 hcloud_get /pricing >/dev/null
 grep -q 'hcloud-secret-5f2b9c' "$fake/curl-stdin"
 [[ $(py cost "$fixture/pricing.json" fsn1 0.20 90 cpx31) == *'€1.26'* ]]

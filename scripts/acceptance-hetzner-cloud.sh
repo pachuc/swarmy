@@ -91,7 +91,11 @@ py() { python3 -c "$ACCEPTANCE_PY" "$@"; }
 new_name() { printf 'acc-%s\n' "$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"; }
 hcloud_get() { py hcloud-config | curl -K - --fail-with-body --silent --show-error --max-time 30 --retry 3 "https://api.hetzner.cloud/v1$1"; }
 s3_status() { py s3-config "$location" | curl -K - --fail-with-body --silent --show-error --max-time 30 --retry 3 -I -o /dev/null -w '%{http_code}' "https://$location.your-objectstorage.com/$1"; }
-s3_list_ok() { py s3-config "$location" | curl -K - --fail-with-body --silent --show-error --max-time 30 --retry 3 -o /dev/null "https://$location.your-objectstorage.com/"; }
+s3_list_ok() {
+    local code
+    code=$(py s3-config "$location" | curl -K - --fail-with-body --silent --show-error --max-time 30 --retry 3 -o /dev/null -w '%{http_code}' "https://$location.your-objectstorage.com/") || return 1
+    [[ $code == 200 ]]
+}
 step() {
     local label=$1 remaining; shift
     echo "== $label" >&2
