@@ -38,9 +38,11 @@ elif cmd == 'server-type':
     body, location, name = load(args[0]), args[1], args[2]
     found = [t for t in body['server_types'] if t['name'] == name]
     if len(found) != 1 or found[0].get('deprecation') is not None or found[0].get('architecture') != 'x86' or not any(p['location'] == location for p in found[0]['prices']):
-        print('server type unavailable; alternatives: ' + ', '.join(n for _, n in types(body, location)[:10]), file=sys.stderr)
+        print('server type unavailable; pass --server-type with one of the listed alternatives', file=sys.stderr)
         sys.exit(1)
     print(priced(found[0], location))
+elif cmd == 'alternatives':
+    print('alternatives: ' + ', '.join(n for _, n in types(load(args[0]), args[1])[:10]), file=sys.stderr)
 elif cmd == 'cost':
     pricing, location, rate, minutes = load(args[0]), args[1], Decimal(args[2]), int(args[3])
     ip = next(p for p in pricing['pricing']['primary_ips'] if p['type'] == 'ipv4')
@@ -233,7 +235,14 @@ main() {
     if ((dry_run)); then echo 'estimated cost: not fetched in dry run'
     else
         file=$(mktemp); hcloud_get "/server_types?name=$server_type" > "$file"
-        rate=$(py server-type "$file" "$location" "$server_type") || { rm -f "$file"; return 1; }; rm -f "$file"
+        rate=$(py server-type "$file" "$location" "$server_type") || {
+            rm -f "$file"
+            file=$(mktemp)
+            hcloud_get '/server_types?per_page=50' > "$file"
+            py alternatives "$file" "$location"
+            rm -f "$file"
+            return 1
+        }; rm -f "$file"
         file=$(mktemp); hcloud_get /pricing > "$file"; py cost "$file" "$location" "$rate" "$max_minutes" "$server_type"; rm -f "$file"
         s3_list_ok || fail "the stored hetzner-s3 keys were rejected by $location.your-objectstorage.com"
         file=$(mktemp); hcloud_get "/servers?label_selector=swarmy-swarm%3D$name" > "$file"
