@@ -75,7 +75,7 @@ elif cmd == 'tool-output-contains':
         assert any(calls.get(cid) == 'checkpoint' and 'completed' in r for cid, r in results.items()), 'checkpoint did not succeed'
 elif cmd == 'leftovers':
     body, kind = load(args[0]), args[1]
-    for row in body[kind]: print(row['name'])
+    for row in body[kind]: print(f'{kind}: {row["name"]}', file=sys.stderr)
     sys.exit(bool(body[kind]))
 else:
     raise ValueError('unknown acceptance helper command')
@@ -164,8 +164,8 @@ parse_args() {
         esac
         shift
     done
-    [[ $location =~ ^(fsn1|nbg1|hel1)$ ]] || fail 'choose --location fsn1, nbg1, or hel1'
-    if ! [[ $max_minutes =~ ^[0-9]+$ ]] || ((max_minutes < 20 || max_minutes > 240)); then fail 'choose --max-minutes between 20 and 240'; fi
+    [[ $location =~ ^(fsn1|nbg1|hel1)$ ]] || { fail 'choose --location fsn1, nbg1, or hel1'; return 1; }
+    if ! [[ $max_minutes =~ ^[0-9]+$ ]] || ((max_minutes < 20 || max_minutes > 240)); then fail 'choose --max-minutes between 20 and 240'; return 1; fi
 }
 local_preconditions() {
     ((BASH_VERSINFO[0] >= 4)) || fail 'install bash 4 or newer'
@@ -179,11 +179,12 @@ local_preconditions() {
     if ! "$swarmy" --json cloud ls > "$cloud_file" || ! py cloud-ready "$cloud_file"; then rm -f "$cloud_file"; fail "run: printf '%s\\n' \"\$TOKEN\" | swarmy cloud login hetzner-cloud; swarmy cloud login hetzner-s3"; fi
     rm -f "$cloud_file"
     if (( ! dry_run )); then
-        [[ -n $provider && -n $model ]] || fail 'pass --provider ID and --model ID'
+        [[ -n $provider && -n $model ]] || { fail 'pass --provider ID and --model ID'; return 1; }
         if [[ $provider != chatgpt ]]; then
             [[ -f $api_key_file && -s $api_key_file && $(stat -c %a "$api_key_file") == 600 ]] || fail 'pass --api-key-file FILE: nonempty regular file with mode 0600'
         fi
         [[ -z ${SWARMY_TOFU_BIN:-} ]] || echo 'warning: SWARMY_TOFU_BIN set; real run should use pinned OpenTofu download' >&2
+        "$swarmy" swarm scale --help >/dev/null 2>&1 || echo 'warning: swarm scale is not available yet; the run will fail at scaling' >&2
     fi
 }
 setup_dry_run() {
@@ -206,6 +207,9 @@ TOFU
     chmod +x "$work/bin/tofu"
     export ACCEPTANCE_TOFU_LOG="$work/tofu.log" SWARMY_TOFU_BIN="$work/bin/tofu"
 }
+confirm_cost() {
+    ((yes)) || { echo 're-run with --yes to create these machines'; return 1; }
+}
 main() {
     yes=0 dry_run=0 provider='' model='' api_key_file='' server_type='' location='' max_minutes='' swarmy='' name='' bucket='' work='' created=0 deadline=0 nonce='' plan_file='' file='' session_id='' rate='' started=$SECONDS
     parse_args "$@"
@@ -224,7 +228,7 @@ main() {
         s3_list_ok || fail "the stored hetzner-s3 keys were rejected by $location.your-objectstorage.com"
         file=$(mktemp); hcloud_get "/servers?label_selector=swarmy-swarm%3D$name" > "$file"
         py count "$file" servers 0 || { rm -f "$file"; fail 'generated swarm label already has servers'; }; rm -f "$file"
-        ((yes)) || { echo 're-run with --yes to create these machines'; return 1; }
+        confirm_cost
     fi
     deadline=$((SECONDS + max_minutes * 60))
     created=1

@@ -16,6 +16,7 @@ secret_key = "s3-secret-91d0"
 CREDS
 cat > "$fake/bin/curl" <<'STUB'
 #!/usr/bin/env bash
+if [[ $* == '--version' ]]; then echo 'curl 8.0.0'; exit 0; fi
 printf '%s\n' "$*" >> "$CURL_FIXTURE/curl-argv"
 cat > "$CURL_FIXTURE/curl-stdin"
 case $* in
@@ -30,6 +31,8 @@ case $* in
 esac
 STUB
 chmod +x "$fake/bin/curl"
+# Fixtures use server_types[].prices[location].price_hourly.gross and
+# pricing.primary_ips[type=ipv4].prices[location].price_hourly.gross.
 cp "$fixture/server-types.json" "$fixture/pricing.json" "$fake/"
 printf '{"servers":[]}\n' > "$fake/servers.json"
 : > "$fake/curl-argv"
@@ -54,8 +57,8 @@ if py server-type "$fake/bad.json" fsn1 cpx31 > "$fake/out" 2> "$fake/err"; then
 grep -q cpx41 "$fake/err"
 verify_clean
 printf '{"servers":[{"id":1,"name":"acc-test-control-1"}]}\n' > "$fake/servers.json"
-if verify_clean > "$fake/out"; then exit 1; fi
-grep -q acc-test-control-1 "$fake/out"
+if verify_clean 2> "$fake/err"; then exit 1; fi
+grep -q 'servers: acc-test-control-1' "$fake/err"
 printf '{"servers":[]}\n' > "$fake/servers.json"
 BUCKET_CODE=200; export BUCKET_CODE
 if verify_clean > "$fake/out" 2> "$fake/err"; then exit 1; fi
@@ -65,10 +68,22 @@ grep -q 'swarmy-swarm=acc-test' "$fake/err"
 grep -q acc-test-bucket "$fake/err"
 if grep -Eq 'hcloud-secret-5f2b9c|s3-secret-91d0' "$fake/err"; then exit 1; fi
 py tool-output-contains "$fixture/session-show.json" swarmy-acceptance-abcdef123456 checkpoint
-if py tool-output-contains "$fixture/session-show.json" assistant-only-nonce; then exit 1; fi
+if py tool-output-contains "$fixture/session-show.json" assistant-only-nonce 2> "$fake/err"; then exit 1; fi
 if parse_args --location ash 2>/dev/null; then exit 1; fi
 if parse_args --max-minutes 5 2>/dev/null; then exit 1; fi
 [[ $( (parse_args --unknown) 2>/dev/null; echo $? ) == 2 ]]
-# The real main path fails before curl when required flags or credentials are absent.
-# Cost/no --yes is covered by the fixture cost helper; it never creates a machine.
+yes=0
+[[ $(confirm_cost 2>&1 || :) == 're-run with --yes to create these machines' ]]
+yes=1
+confirm_cost
+cat > "$fake/bin/swarmy" <<'STUB'
+#!/usr/bin/env bash
+[[ $* == '--json cloud ls' ]] || exit 1
+echo '[{"provider":"hetzner-cloud","set":true},{"provider":"hetzner-s3","set":true}]'
+STUB
+chmod +x "$fake/bin/swarmy"
+parse_args --provider openai --swarmy "$fake/bin/swarmy"
+if local_preconditions 2> "$fake/err"; then exit 1; fi
+grep -q -- '--model ID' "$fake/err"
+# The real main path is never invoked here; even negative cases stay isolated.
 echo 'acceptance helper tests passed'
