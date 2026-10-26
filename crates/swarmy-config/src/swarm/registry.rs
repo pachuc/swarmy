@@ -34,6 +34,17 @@ fn read_text(path: &Path) -> Result<Option<String>, Error> {
         Err(e) => Err(file_error(path, e.into())),
     }
 }
+fn check_name(path: &Path, found: &str, expected: &str) -> Result<(), Error> {
+    if found == expected {
+        return Ok(());
+    }
+    Err(file_error(
+        path,
+        Error::Registry(format!(
+            "names swarm \"{found}\" but belongs to \"{expected}\""
+        )),
+    ))
+}
 fn registry_entry_name(path: &Path, specs: bool) -> Option<String> {
     let name = if specs {
         if !path.is_file() || path.extension().is_none_or(|e| e != "toml") {
@@ -98,17 +109,7 @@ impl Registry {
             return Ok(None);
         };
         let spec = SwarmSpec::parse(&text).map_err(|e| file_error(&path, e))?;
-        if spec.name != name {
-            return Err(file_error(
-                &path,
-                Error::Registry(format!(
-                    "{} names swarm \"{}\" but belongs to \"{}\"",
-                    path.display(),
-                    spec.name,
-                    name
-                )),
-            ));
-        }
+        check_name(&path, &spec.name, name)?;
         Ok(Some(spec))
     }
     /// # Errors
@@ -119,17 +120,7 @@ impl Registry {
             return Ok(None);
         };
         let record = SwarmRecord::parse(&text).map_err(|e| file_error(&path, e))?;
-        if record.name != name {
-            return Err(file_error(
-                &path,
-                Error::Registry(format!(
-                    "{} names swarm \"{}\" but belongs to \"{}\"",
-                    path.display(),
-                    record.name,
-                    name
-                )),
-            ));
-        }
+        check_name(&path, &record.name, name)?;
         Ok(Some(record))
     }
     /// # Errors
@@ -196,7 +187,7 @@ impl Registry {
         if validate_swarm_name(name).is_err() {
             return Err(file_error(
                 &path,
-                Error::Registry(format!("{} does not hold a swarm name", path.display())),
+                Error::Registry("does not hold a swarm name".into()),
             ));
         }
         Ok(Some(name.to_owned()))
@@ -220,12 +211,12 @@ impl Registry {
     }
 }
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use crate::swarm::{GroupSpec, Lifecycle, Module, Placement, SwarmApi};
     use std::os::unix::fs::PermissionsExt;
-    fn setup() -> (tempfile::TempDir, Registry) {
+    pub(crate) fn setup() -> (tempfile::TempDir, Registry) {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         let dirs = Dirs {
@@ -236,7 +227,7 @@ mod tests {
         };
         (temp, Registry::new(dirs))
     }
-    fn spec(name: &str) -> SwarmSpec {
+    pub(crate) fn spec(name: &str) -> SwarmSpec {
         SwarmSpec {
             name: name.into(),
             lifecycle: Lifecycle::Persistent,
@@ -327,7 +318,11 @@ mod tests {
         r.remove("z").unwrap();
         assert_eq!(r.current().unwrap(), Some("a".into()));
         r.remove("a").unwrap();
+        assert!(!r.spec_path("a").unwrap().exists());
         assert_eq!(r.current().unwrap(), None);
+        r.remove("m").unwrap();
+        assert!(!r.swarm_dir("m").unwrap().exists());
+        assert!(r.list().unwrap().is_empty());
         r.clear_current().unwrap();
         assert!(matches!(r.remove("unknown"), Err(Error::UnknownSwarm(_))));
         fs::write(r.dirs().current(), "../x").unwrap();

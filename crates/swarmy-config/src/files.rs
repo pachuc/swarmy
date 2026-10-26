@@ -65,6 +65,7 @@ mod tests {
         assert!(
             matches!(create_private(&path,b"wrong"),Err(Error::Io(e)) if e.kind()==std::io::ErrorKind::AlreadyExists)
         );
+        assert_eq!(fs::read(&path).unwrap(), b"first");
         fs::set_permissions(&path, Permissions::from_mode(0o644)).unwrap();
         write_private(&path, b"second").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"second");

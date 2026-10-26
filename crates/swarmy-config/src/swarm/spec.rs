@@ -1,4 +1,6 @@
-//! Placement always names groups; local services require a declared local group.
+//! Placement always names groups. To run services on this machine, declare
+//! `[groups.local] module = "local"` and set `services = "local"`. The value
+//! is a group name, not a keyword; `swarm create --local` will write that group.
 use crate::{Error, remote::is_valid_name};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -298,7 +300,7 @@ nodes = ["box"]
             SwarmSpec::parse(&invalid)
                 .unwrap_err()
                 .to_string()
-                .contains("hetzner")
+                .contains("module \"hetzner\" is not one of hetzner-cloud, aws, existing, local; a path to your own module must contain a slash")
         );
     }
     #[test]
