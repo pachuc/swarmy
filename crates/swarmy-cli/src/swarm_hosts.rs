@@ -445,3 +445,34 @@ pub(crate) async fn node_add(
     )
     .await
 }
+
+/// Change a node group's size after draining removed machines.
+pub(crate) async fn scale(
+    registry: &Registry,
+    spec: &SwarmSpec,
+    group: &str,
+    count: u32,
+    drain_timeout: u64,
+    force: bool,
+    json_output: bool,
+) -> Result<()> {
+    use swarmy_cloud::provision::scale::{ScaleRequest, scale_swarm};
+    let pair = machines_for(registry, spec, groups::has_module_groups(spec)).await?;
+    let settings = swarmy_config::Settings::load_base()?.settings;
+    let report = scale_swarm(ScaleRequest {
+        registry,
+        spec,
+        group,
+        count,
+        drain_timeout: std::time::Duration::from_secs(drain_timeout),
+        force,
+        machines: machine_refs(pair.as_ref()),
+        settings: &settings,
+        cache: &registry.dirs().cache.join("core"),
+    })
+    .await?;
+    if json_output {
+        println!("{}", serde_json::to_string(&report)?);
+    }
+    Ok(())
+}

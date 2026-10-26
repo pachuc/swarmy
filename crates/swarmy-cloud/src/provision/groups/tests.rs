@@ -1,173 +1,19 @@
 #![deny(clippy::disallowed_methods)]
 use super::*;
 use crate::provision::{
-    UpRequest, decommission_swarm_with, existing_sources, provision_swarm_with, tests::FakeHost,
+    UpRequest, decommission_swarm_with, existing_sources, provision_swarm_with,
+    test_support::Fixture, tests::FakeHost,
 };
+use std::future::Future;
 use std::os::unix::fs::PermissionsExt;
 use swarmy_config::{Settings, cloud::CloudCredential, paths::Dirs};
 
-struct Fixture {
-    temp: tempfile::TempDir,
-    registry: Registry,
-    spec: SwarmSpec,
-    tofu: Tofu,
-    credentials: CloudCredentials,
-}
-impl Fixture {
-    fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
-        let dirs = Dirs {
-            data: temp.path().join("data"),
-            config: temp.path().join("config"),
-            state: temp.path().join("state"),
-            cache: temp.path().join("cache"),
-        };
-        let registry = Registry::new(dirs);
-        let spec = SwarmSpec::parse(
-            r#"
-name = "fleet"
-lifecycle = "ephemeral"
-[groups.control]
-module = "hetzner-cloud"
-size = "cx22"
-location = "fsn1"
-count = 1
-[groups.workers]
-module = "hetzner-cloud"
-size = "cx22"
-location = "fsn1"
-count = 2
-[placement]
-stack = "control"
-services = "control"
-nodes = ["workers"]
-"#,
-        )
-        .unwrap();
-        registry.write_spec(&spec).unwrap();
-        let script = temp.path().join("fake-tofu");
-        let body = format!(
-            r#"#!/bin/sh
-set -eu
-group=$(basename "$PWD")
-printf 'call %s %s\n' "$group" "$1" >> '{fixture}/tofu.log'
-env | grep -E '^(HCLOUD_TOKEN|MINIO_USER|MINIO_PASSWORD|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SHARED_CREDENTIALS_FILE|AWS_CONFIG_FILE|AWS_EC2_METADATA_DISABLED)=' >> '{fixture}/tofu.log' || true
-case "$1" in
-  init) exit 0 ;;
-  plan) echo "plan for $group"; exit 2 ;;
-  apply)
-    i=1
-    while test -f '{fixture}/applied-'"$group"'-'"$i"'.json'; do i=$((i+1)); done
-    cp swarmy.tfvars.json '{fixture}/applied-'"$group"'-'"$i"'.json'
-    echo state > terraform.tfstate
-    if test -f '{fixture}/fail-apply-'"$group"; then echo 'Error: apply failed' >&2; exit 1; fi ;;
-  output)
-    bucket=$(python3 -c 'import json; print(json.load(open("swarmy.tfvars.json"))["bucket_name"])')
-    if test "${{AWS_ACCESS_KEY_ID:-}}" != ""; then
-      printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":"10.0.0.10","ssh_user":"ubuntu"}}]}}}}\n'
-    elif test "$group" = control && test "$bucket" = "" && test -f '{fixture}/control-no-bucket-private'; then
-      printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":"10.0.0.10","ssh_user":"root"}}]}}}}\n'
-    elif test "$group" = control && test "$bucket" = ""; then
-      printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":null,"ssh_user":"root"}}]}}}}\n'
-    elif test "$group" = control; then
-      printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":"10.0.0.10","ssh_user":"root"}}]}},"network_id":{{"value":"4711"}},"bucket":{{"value":{{"endpoint":"https://objects.example.com","name":"%s","region":"fsn1"}}}}}}\n' "$bucket"
-    elif test -f '{fixture}/workers-renamed'; then
-      printf '{{"machines":{{"value":[{{"name":"fleet-workers-renamed","public_ipv4":"203.0.113.11","public_ipv6":null,"private_ip":"10.0.0.11","ssh_user":"root"}},{{"name":"fleet-workers-2","public_ipv4":"203.0.113.12","public_ipv6":null,"private_ip":"10.0.0.12","ssh_user":"root"}}]}},"network_id":{{"value":null}}}}\n'
-    elif test -f '{fixture}/workers-no-private'; then
-      printf '{{"machines":{{"value":[{{"name":"fleet-workers-1","public_ipv4":"203.0.113.11","public_ipv6":null,"private_ip":null,"ssh_user":"root"}}]}}}}\n'
-    else
-      printf '{{"machines":{{"value":[{{"name":"fleet-workers-1","public_ipv4":"203.0.113.11","public_ipv6":null,"private_ip":"10.0.0.11","ssh_user":"root"}},{{"name":"fleet-workers-2","public_ipv4":"203.0.113.12","public_ipv6":null,"private_ip":"10.0.0.12","ssh_user":"root"}}]}},"network_id":{{"value":null}}}}\n'
-    fi ;;
-  destroy) cp swarmy.tfvars.json '{fixture}/destroyed-'"$group"'.json'; if test -f '{fixture}/fail-destroy-'"$group"; then exit 1; fi; rm terraform.tfstate ;;
-esac
-"#,
-            fixture = temp.path().display()
-        );
-        fs::write(&script, body).unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-        let tofu = Tofu::from_binary(script, &temp.path().join("cache"));
-        let mut credentials = CloudCredentials::default();
-        credentials.set(
-            CloudCredential::new(
-                CloudProvider::HetznerCloud,
-                vec!["hcloud-secret-5f2b9c".into()],
-                None,
-            )
-            .unwrap(),
-        );
-        credentials.set(
-            CloudCredential::new(
-                CloudProvider::HetznerS3,
-                vec!["s3-access-7a1e".into(), "s3-secret-91d0".into()],
-                None,
-            )
-            .unwrap(),
-        );
-        Self {
-            temp,
-            registry,
-            spec,
-            tofu,
-            credentials,
-        }
-    }
-    fn add_existing_group(&mut self, name: &str) {
-        let key = self.temp.path().join(format!("{name}-bootstrap"));
-        fs::write(&key, "test-key").unwrap();
-        let mut group = self.spec.groups["workers"].clone();
-        group.module = Module::Existing;
-        group.size = None;
-        group.location = None;
-        group.count = None;
-        group.local_storage = Some("dir:/srv/swarmy-local".into());
-        group.hosts = vec![swarmy_config::swarm::HostSpec {
-            address: "203.0.113.21".into(),
-            private_address: Some("10.0.0.21".into()),
-            ssh_user: "root".into(),
-            ssh_key: key,
-        }];
-        self.spec.groups.insert(name.into(), group);
-        if !self.spec.placement.nodes.contains(&name.to_owned()) {
-            self.spec.placement.nodes.push(name.into());
-        }
-        self.registry.write_spec(&self.spec).unwrap();
-    }
-    fn machines(&self) -> MachineGroups<'_> {
-        MachineGroups {
-            tofu: &self.tofu,
-            credentials: &self.credentials,
-        }
-    }
-    fn request<'a>(&'a self, settings: &'a Settings) -> Result<UpRequest<'a>> {
-        Ok(UpRequest {
-            registry: &self.registry,
-            spec: &self.spec,
-            sources: existing_sources(&self.spec, &self.registry.swarm_dir(&self.spec.name)?)?,
-            settings,
-            copy_credential: false,
-            recipe: None,
-            cache: self.temp.path(),
-            bucket_keys: None,
-            machines: Some(self.machines()),
-        })
-    }
-    fn up<'a>(
-        &'a self,
-        host: &'a FakeHost,
-    ) -> impl Future<Output = Result<Vec<crate::provision::HostReport>>> + 'a {
-        let mut settings = Settings::default();
-        settings.selection.provider = "fake".into();
-        async move { provision_swarm_with(host, self.request(&settings)?).await }
-    }
-    fn log(&self) -> String {
-        fs::read_to_string(self.temp.path().join("tofu.log")).unwrap_or_default()
-    }
-}
-use std::future::Future;
-
 #[tokio::test]
 async fn cloud_swarm_applies_in_order_and_provisions_through_the_shared_path() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    f.spec.groups.get_mut("workers").unwrap().count = Some(2);
+    f.registry.write_spec(&f.spec).unwrap();
+    f.workers(2);
     let host = FakeHost::new();
     f.up(&host).await.unwrap();
     let log = f.log();
@@ -291,7 +137,10 @@ fn assert_group_keys_and_environment(f: &Fixture, record: &SwarmRecord) {
 
 #[tokio::test]
 async fn second_up_reapplies_both_groups_without_reprovisioning() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    f.spec.groups.get_mut("workers").unwrap().count = Some(2);
+    f.registry.write_spec(&f.spec).unwrap();
+    f.workers(2);
     let host = FakeHost::new();
     f.up(&host).await.unwrap();
     let bucket = f
@@ -488,7 +337,10 @@ async fn down_cleans_existing_hosts_and_destroys_groups_in_reverse() {
 
 #[tokio::test]
 async fn down_destroys_orphan_group_before_groups_in_the_spec() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    f.spec.groups.get_mut("workers").unwrap().count = Some(2);
+    f.registry.write_spec(&f.spec).unwrap();
+    f.workers(2);
     let host = FakeHost::new();
     f.up(&host).await.unwrap();
     let root = f.registry.swarm_dir("fleet").unwrap().join("tofu");
@@ -565,7 +417,10 @@ async fn plan_only_directory_does_not_hide_an_existing_host_from_down() {
 
 #[tokio::test]
 async fn state_free_directories_do_not_count_as_destroyed_machine_groups() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    f.spec.groups.get_mut("workers").unwrap().count = Some(2);
+    f.registry.write_spec(&f.spec).unwrap();
+    f.workers(2);
     f.up(&FakeHost::new()).await.unwrap();
     fs::create_dir(
         f.registry
@@ -593,7 +448,10 @@ async fn state_free_directories_do_not_count_as_destroyed_machine_groups() {
 
 #[tokio::test]
 async fn plan_and_destroy_use_recorded_state() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    f.spec.groups.get_mut("workers").unwrap().count = Some(2);
+    f.registry.write_spec(&f.spec).unwrap();
+    f.workers(2);
     let plans = plan_groups(&f.registry, &f.spec, f.machines())
         .await
         .unwrap();
@@ -748,7 +606,10 @@ async fn invalid_names_layout_and_chatgpt_credential_refuse_before_apply() {
     assert!(layout.log().is_empty());
     assert!(layout.registry.read_record("fleet").unwrap().is_none());
 
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    f.spec.groups.get_mut("workers").unwrap().count = Some(2);
+    f.registry.write_spec(&f.spec).unwrap();
+    f.workers(2);
     let mut settings = Settings::default();
     settings.selection.provider = "chatgpt".into();
     let error = provision_swarm_with(&FakeHost::new(), f.request(&settings).unwrap())
@@ -786,7 +647,10 @@ async fn builtin_size_change_refuses_before_reapplying() {
 
 #[tokio::test]
 async fn failed_apply_can_be_destroyed() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    f.spec.groups.get_mut("workers").unwrap().count = Some(2);
+    f.registry.write_spec(&f.spec).unwrap();
+    f.workers(2);
     fs::write(f.temp.path().join("fail-apply-workers"), "").unwrap();
     let host = FakeHost::new();
     assert!(f.up(&host).await.is_err());
@@ -869,7 +733,10 @@ fn check_dir(dir: &Path) {
 }
 #[tokio::test]
 async fn credentials_never_reach_files() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    f.spec.groups.get_mut("workers").unwrap().count = Some(2);
+    f.registry.write_spec(&f.spec).unwrap();
+    f.workers(2);
     f.up(&FakeHost::new()).await.unwrap();
     for dir in [
         f.registry.dirs().data.as_path(),
@@ -909,7 +776,10 @@ async fn path_module_uses_only_top_level_terraform_files() {
 
 #[tokio::test]
 async fn failed_destroy_keeps_remaining_hosts_recorded() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    f.spec.groups.get_mut("workers").unwrap().count = Some(2);
+    f.registry.write_spec(&f.spec).unwrap();
+    f.workers(2);
     let host = FakeHost::new();
     f.up(&host).await.unwrap();
     fs::write(f.temp.path().join("fail-destroy-control"), "").unwrap();
@@ -933,7 +803,10 @@ async fn failed_destroy_keeps_remaining_hosts_recorded() {
 
 #[tokio::test]
 async fn changed_output_names_keep_previous_hosts_recorded() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    f.spec.groups.get_mut("workers").unwrap().count = Some(2);
+    f.registry.write_spec(&f.spec).unwrap();
+    f.workers(2);
     let host = FakeHost::new();
     f.up(&host).await.unwrap();
     fs::write(f.temp.path().join("workers-renamed"), "").unwrap();
@@ -954,7 +827,10 @@ async fn changed_output_names_keep_previous_hosts_recorded() {
 
 #[tokio::test]
 async fn private_ip_is_awaited_for_builtin_modules() {
-    let f = Fixture::new();
+    let mut f = Fixture::new();
+    f.spec.groups.get_mut("workers").unwrap().count = Some(2);
+    f.registry.write_spec(&f.spec).unwrap();
+    f.workers(2);
     fs::write(f.temp.path().join("workers-no-private"), "").unwrap();
     let error = f.up(&FakeHost::new()).await.unwrap_err();
     assert!(

@@ -1,6 +1,8 @@
 //! Grow or shrink a node group. New machines go through the shared provisioning path;
 //! removed machines are drained first, highest-numbered first, then destroyed by
 //! OpenTofu or cleaned of swarmy (existing hosts).
+#[cfg(test)]
+mod tests;
 use super::{
     Locked, Machine, Role, SwarmHost, UpRequest, existing_sources, groups, lock, machine,
     provision_locked, user,
@@ -353,15 +355,22 @@ async fn drain_all(
                     cloud_out!("{}: removed without draining (--force)", node.name);
                 }
             }
-            if let Err(error) = host.revoke_tunnel(&node, &primary).await {
-                cloud_err!(
-                    "host {}: could not revoke its tunnel key on {} ({}); remove its line from ~{}/.ssh/authorized_keys there",
-                    node.name,
-                    primary.name,
-                    swarmy_core::error_chain(&error),
-                    user(spec)
-                );
-            }
+        }
+    }
+    for victim in before[request.count as usize..]
+        .iter()
+        .rev()
+        .filter(|h| h.provisioned)
+    {
+        let node = as_machine(spec, request.group, victim);
+        if let Err(error) = host.revoke_tunnel(&node, &primary).await {
+            cloud_err!(
+                "host {}: could not revoke its tunnel key on {} ({}); remove its line from ~{}/.ssh/authorized_keys there",
+                node.name,
+                primary.name,
+                swarmy_core::error_chain(&error),
+                user(spec)
+            );
         }
     }
     Ok(drained)

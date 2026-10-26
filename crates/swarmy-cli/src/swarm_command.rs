@@ -100,6 +100,22 @@ pub(crate) enum Command {
         #[arg(value_parser = parse_name)]
         name: String,
     },
+    /// Change the number of machines in a node group; removed machines are drained first, highest-numbered first
+    Scale {
+        #[arg(value_parser = parse_name)]
+        name: String,
+        /// A group listed in placement.nodes that runs neither the stack nor the services
+        group: String,
+        /// New number of machines (1-50)
+        #[arg(value_parser = clap::value_parser!(u32).range(1..=50))]
+        count: u32,
+        /// Seconds to wait on each removed node for running sandbox commands to finish
+        #[arg(long, default_value_t = 600)]
+        drain_timeout: u64,
+        /// Stop removed nodes even if sandbox commands are still running (or the node is unreachable) at the deadline
+        #[arg(long)]
+        force: bool,
+    },
     /// Start a stopped swarm again
     Start {
         #[arg(value_parser = parse_name)]
@@ -787,6 +803,30 @@ pub(crate) async fn run(
         }
         command @ (Command::Logs { .. } | Command::Upgrade { .. }) => {
             run_host_observation(&registry, command, json_output).await?;
+        }
+        Command::Scale {
+            name,
+            group,
+            count,
+            drain_timeout,
+            force,
+        } => {
+            let spec = managed_spec(&registry, &name)?;
+            if spec.local_group().is_some() {
+                bail!(
+                    "swarm \"{name}\" runs on this machine; scale applies to swarms on hosts or cloud machines"
+                );
+            }
+            crate::swarm_hosts::scale(
+                &registry,
+                &spec,
+                &group,
+                count,
+                drain_timeout,
+                force,
+                json_output,
+            )
+            .await?;
         }
         Command::Plan { name } => {
             let spec = managed_spec(&registry, &name)?;

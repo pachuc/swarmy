@@ -9,6 +9,8 @@ mod upgrade;
 pub use machine::Machine;
 pub use upgrade::Summary;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod tests;
 use crate::{Error, Result, services, ssh, tunnel::Tunnels};
 use fs2::FileExt;

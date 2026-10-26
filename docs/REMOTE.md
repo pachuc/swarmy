@@ -25,10 +25,30 @@ directory, generates one SSH key per group, shares the network between groups of
 and creates a bucket for a hetzner-cloud stack group only. It waits for SSH
 and cloud-init before the same provisioning used for existing hosts. `down`
 destroys groups in reverse order and removes the bucket with the data;
-persistent swarms require `--destroy`. Reducing a group's `count` is refused
-until scaling exists. Cloud and existing-host groups may coexist in a mixed
+persistent swarms require `--destroy`. Cloud and existing-host groups may coexist in a mixed
 swarm. `SWARMY_TOFU_BIN` is a development and test override for the pinned,
 checksum-verified OpenTofu download.
+
+### Scaling node groups
+
+```sh
+swarmy swarm scale fleet workers 4
+swarmy swarm scale fleet workers 2 --drain-timeout 1200
+```
+
+Growing updates the spec and reruns the normal provisioning path; already provisioned
+machines are skipped. Shrinking removes the highest-numbered nodes first. It waits
+up to `--drain-timeout` seconds per node (600 by default) for running sandbox
+commands and turns to finish. The node agent then stops cleanly, checkpointing
+and releasing its computers, which start on another node at their next turn.
+`--force` stops nodes that remain busy or removes unreachable nodes; their
+computers recover when leases expire. The node tunnel key is revoked on the
+stack host. OpenTofu node machines are destroyed, while existing hosts have
+swarmy removed but the machines themselves are kept. Add an existing host with
+`swarmy swarm node add` rather than growing its count. Stack and services
+groups and local swarms cannot be scaled. Scale rewrites the spec without
+preserving comments. After a failure, rerun the same scale command to finish;
+hand-lowering `count` and running `up` remains refused.
 
 ## Swarms on existing hosts
 
@@ -56,6 +76,7 @@ owns the node checkout and runs services (default `swarmy`). Set
 `--sandboxes` sets node capacity. A node group may be extended with
 `swarmy swarm node add demo GROUP --host 203.0.113.11 --ssh-key <bootstrap-key>`.
 The primary is provisioned first; upgrade and teardown visit nodes first.
+Remove existing node hosts with `swarmy swarm scale`.
 
 ## Up, authenticate, and chat
 
