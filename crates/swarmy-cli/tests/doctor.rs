@@ -190,6 +190,12 @@ fn reports_keyring_presence_and_permissions() {
         check(&present, "keyring")["detail"]
             .as_str()
             .unwrap()
+            .contains(path.to_str().unwrap())
+    );
+    assert!(
+        check(&present, "keyring")["detail"]
+            .as_str()
+            .unwrap()
             .contains("mode 600")
     );
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
