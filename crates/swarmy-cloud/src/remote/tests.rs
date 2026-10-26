@@ -1,6 +1,7 @@
 #![deny(clippy::disallowed_methods)]
 use super::{add_node, adopt, down, state::State};
 use crate::{BucketRemoval, Cloud, Host, ObjectBucket, Ownership, Result};
+use std::os::unix::fs::PermissionsExt;
 use std::{
     cell::{Cell, RefCell},
     future::Future,
@@ -1234,7 +1235,6 @@ async fn static_bucket_up_skips_roles_and_redacts_logs() {
     assert_eq!(&*cloud.ensured.borrow(), &["test-bucket"]);
     assert_eq!(&*host.provisioned.borrow(), &["static-test"]);
     let node = state.require("static-test").unwrap();
-    use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(state.directory.join("static-test.json"))
         .unwrap()
         .permissions()
