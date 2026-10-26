@@ -23,6 +23,7 @@ bash scripts/test-dev-stack.sh
 bash scripts/test-s3-compat-probe.sh
 bash scripts/remote-provision-test.sh
 bash scripts/test-remote-decommission.sh
+bash scripts/test-remote-drain.sh
 bash scripts/test-acceptance-hetzner-cloud.sh
 bash scripts/test-remote-stop-start.sh
 bash scripts/test-node-suites.sh

@@ -572,6 +572,46 @@ decommission_remove() {
     sudo rm -rf "$service_repo"
 }
 
+# Agents placed on this node whose sandboxes are busy, as a JSON array ('[]' when idle).
+# After the node agent stops, every placement it did not release counts as busy.
+swarmy_busy_sandboxes() {
+    local repo_dir=${1:?node directory} binary=${2:?core binary} role
+    role=$(swarmy_unit_role "$(swarmy_agent_unit)") || return 1
+    sudo -n sh -c "cd $repo_dir && set -a && . $(swarmy_etc_dir)/node.env && set +a && exec $binary $role --upgrade-processes"
+}
+
+# A clean stop checkpoints and releases every computer before removing a node.
+drain_node_agent() {
+    local service_user=${1-} timeout=${2:?seconds} mode=${3:?wait or force}
+    validate_service_user "$service_user" || return 1
+    [[ $mode == wait || $mode == force ]] || return 1
+    local repo unit binary deadline busy='[]' after
+    repo=$(service_repo_for "$service_user")
+    unit=$(swarmy_agent_unit)
+    binary=${SWARMY_BIN_DIR:-/usr/local/bin}/$(swarmy_core_binary)
+    deadline=$((SECONDS + timeout))
+    while sudo -n systemctl is-active --quiet "$unit"; do
+        busy=$(swarmy_busy_sandboxes "$repo" "$binary") || return 1
+        [[ $busy == '[]' ]] && break
+        if (( SECONDS >= deadline )); then
+            if [[ $mode == wait ]]; then
+                printf 'drain {"stopped":false,"busy":%s,"unreleased":[]}\n' "$busy"
+                return 0
+            fi
+            break
+        fi
+        echo "Waiting for running sandbox commands: $busy" >&2
+        sleep "${SWARMY_DRAIN_POLL_SECONDS:-5}"
+    done
+    if sudo -n systemctl is-active --quiet "$unit"; then
+        sudo -n systemctl disable --now "$unit" || return 1
+    else
+        busy='[]'
+    fi
+    after=$(swarmy_busy_sandboxes "$repo" "$binary") || return 1
+    printf 'drain {"stopped":true,"busy":%s,"unreleased":%s}\n' "$busy" "$after"
+}
+
 # Decommission entrypoint for piped use (no node directory needed): run the
 # shared removal when the node script file is present (proving the
 # node directory is intact), fail loudly when units remain without a node directory,
