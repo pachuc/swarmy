@@ -225,8 +225,8 @@ fn check_plan(
     dir: &Path,
 ) {
     let planned = swarmy_cloud::provision::plan(
-        &spec,
-        swarmy_cloud::provision::existing_sources(&spec, &dir).unwrap(),
+        spec,
+        swarmy_cloud::provision::existing_sources(spec, dir).unwrap(),
     )
     .unwrap();
     for host in &planned {
