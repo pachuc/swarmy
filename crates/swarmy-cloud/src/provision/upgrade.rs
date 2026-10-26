@@ -1,14 +1,11 @@
-//! In-place upgrades keep the remote state and all instance identities intact.
-use std::{
-    path::Path,
-    time::{Duration, Instant},
-};
+//! In-place upgrades keep swarm records and host identities intact.
+use std::time::{Duration, Instant};
 
+use super::Machine;
 use crate::Result;
 use serde::{Deserialize, Serialize};
-use swarmy_config::RemoteNode;
 
-use super::ssh;
+use crate::ssh;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Scope {
@@ -50,21 +47,8 @@ impl Options {
     }
 }
 
-pub(super) async fn command(
-    state: &super::state::State,
-    name: &str,
-    mut options: Options,
-    cache: &Path,
-) -> Result<()> {
-    let _lock = state.lock()?;
-    let node = state.require(name)?;
-    let host = super::provisioning_host(cache)?;
-    options.dirty_paths = host.checkout_changes()?;
-    run(&host, &node, options).await.map(|_| ())
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-pub(super) struct Summary {
+pub struct Summary {
     pub node: String,
     pub changed: Vec<String>,
     #[serde(default)]
@@ -74,11 +58,11 @@ pub(super) struct Summary {
 }
 
 pub(super) trait UpgradeHost {
-    async fn version(&self, node: &RemoteNode) -> Result<String>;
-    async fn has_service_units(&self, node: &RemoteNode) -> Result<bool>;
+    async fn version(&self, node: &Machine) -> Result<String>;
+    async fn has_service_units(&self, node: &Machine) -> Result<bool>;
     async fn upgrade(
         &self,
-        node: &RemoteNode,
+        node: &Machine,
         services_only: bool,
         drain_timeout: Duration,
         stack: bool,
@@ -86,19 +70,19 @@ pub(super) trait UpgradeHost {
 }
 
 impl UpgradeHost for ssh::Ssh {
-    async fn has_service_units(&self, node: &RemoteNode) -> Result<bool> {
+    async fn has_service_units(&self, node: &Machine) -> Result<bool> {
         let address = ssh::reachable_address(node).await?;
         self.has_service_units(node, &address).await
     }
 
-    async fn version(&self, node: &RemoteNode) -> Result<String> {
+    async fn version(&self, node: &Machine) -> Result<String> {
         let address = ssh::reachable_address(node).await?;
         self.node_version(node, &address).await
     }
 
     async fn upgrade(
         &self,
-        node: &RemoteNode,
+        node: &Machine,
         services_only: bool,
         drain_timeout: Duration,
         stack: bool,
@@ -115,13 +99,6 @@ impl UpgradeHost for ssh::Ssh {
     }
 }
 
-fn visit<'a>(node: &'a RemoteNode, nodes: &mut Vec<&'a RemoteNode>) {
-    for child in &node.nodes {
-        visit(child, nodes);
-    }
-    nodes.push(node);
-}
-
 fn print_version(message: &str, json: bool) {
     if json {
         cloud_err!("{message}");
@@ -130,14 +107,20 @@ fn print_version(message: &str, json: bool) {
     }
 }
 
-pub(super) fn json_line(summary: &Summary) -> Result<String> {
-    Ok(serde_json::to_string(summary)?)
-}
-
+#[cfg(test)]
 pub(super) async fn run(
     host: &impl UpgradeHost,
-    primary: &RemoteNode,
+    nodes: &[Machine],
     options: Options,
+) -> Result<Vec<Summary>> {
+    run_with(host, nodes, options, |_| Ok(())).await
+}
+
+pub(super) async fn run_with(
+    host: &impl UpgradeHost,
+    nodes: &[Machine],
+    options: Options,
+    mut on_summary: impl FnMut(&Summary) -> Result<()>,
 ) -> Result<Vec<Summary>> {
     crate::Error::ensure(
         options.dirty_paths.is_empty() || options.allow_dirty,
@@ -146,13 +129,11 @@ pub(super) async fn run(
             options.dirty_paths.join(", ")
         ),
     )?;
-    let mut nodes = Vec::new();
-    visit(primary, &mut nodes);
     print_version(
         &format!("Local CLI: swarmy {}", swarmy_version::IDENTITY),
         options.format == Format::Json,
     );
-    for node in &nodes {
+    for node in nodes {
         print_version(
             &format!("{}: {}", node.name, host.version(node).await?),
             options.format == Format::Json,
@@ -173,9 +154,7 @@ pub(super) async fn run(
                 stack,
             )
             .await?;
-        if options.format == Format::Json {
-            cloud_out!("{}", json_line(&summary)?);
-        } else {
+        if options.format != Format::Json {
             cloud_out!(
                 "{}: changed={} units={} restarted={} elapsed={:.1}s",
                 summary.node,
@@ -185,6 +164,7 @@ pub(super) async fn run(
                 summary.elapsed_seconds
             );
         }
+        on_summary(&summary)?;
         summaries.push(summary);
     }
     Ok(summaries)

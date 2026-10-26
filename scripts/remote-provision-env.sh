@@ -585,7 +585,7 @@ decommission_probe() {
     if [[ -f $repo/scripts/remote-decommission.sh ]]; then
         decommission_remove "$service_user"
     elif ls "${SWARMY_SYSTEMD_DIR:-/etc/systemd/system}"/swarmy*.service >/dev/null 2>&1; then
-        echo "swarmy node directory is missing from $repo but swarmy units are still installed; restore it with swarmy remote upgrade or remove the units by hand (see docs/REMOTE.md)" >&2
+        echo "swarmy node directory is missing from $repo but swarmy units are still installed; restore it with swarmy swarm upgrade or remove the units by hand (see docs/REMOTE.md)" >&2
         return 1
     else
         echo 'swarmy node directory already removed; nothing to tear down'

@@ -3914,14 +3914,12 @@ name = "swarmy-cloud"
 version = "0.1.0"
 dependencies = [
  "aws-sdk-s3",
- "clap",
  "fs2",
  "jiff",
  "reqwest",
  "serde",
  "serde_json",
  "shell-words",
- "swarmy-api-types",
  "swarmy-aws",
  "swarmy-client",
  "swarmy-config",
@@ -3956,8 +3954,10 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "toml",
+ "tracing",
  "tracing-subscriber",
  "ulid",
+ "url",
 ]
 
 [[package]]

@@ -37,10 +37,10 @@ BENCH_MODEL=meta/muse-spark-1.3-contributor BENCH_EFFORT=medium`. The
 codex-daytona leg needs `OPENROUTER_API_KEY` in the launcher's `.env` (it is
 placed in the sandbox as a private file) and `CODEX_DAYTONA_DIR` when the
 launcher is not at `~/code/codex-daytona`. The runner closes by invoking
-`scripts/fleet/fleet report --remote REMOTE --label LABEL --session ID
+the fleet driver's `report` action for the remote, with `--label LABEL --session ID
 --wall ID=SECONDS ...`, which prints each run's wall time as `wall_s` next to
 `duration_s`; `benchmark` and `report` need no `fleet.toml` and can also run
-ad hoc against the local API with `--remote local`.
+ad hoc against the local API by naming the remote `local`.
 
 ## Daily operation
 

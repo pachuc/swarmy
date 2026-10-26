@@ -9,6 +9,7 @@ use swarmy_config::swarm::{
 
 pub(crate) struct UpArgs {
     pub copy_credential: bool,
+    pub bucket_keys: Option<swarmy_config::swarm::StaticKeys>,
     pub no_image: bool,
     pub image_recipe: PathBuf,
 }
@@ -31,6 +32,7 @@ pub(crate) struct NodeAdd {
 }
 pub(crate) fn host_spec(registry: &Registry, name: &str, args: &CreateHost) -> Result<SwarmSpec> {
     let spec = SwarmSpec {
+        bucket: None,
         name: name.into(),
         lifecycle: args.lifecycle.unwrap_or(Lifecycle::Persistent),
         service_user: args.service_user.clone(),
@@ -85,6 +87,7 @@ pub(crate) async fn up(
         copy_credential: args.copy_credential,
         recipe: recipe.as_deref(),
         cache: &registry.dirs().cache.join("core"),
+        bucket_keys: args.bucket_keys.clone(),
     })
     .await?;
     if json_output {
@@ -250,6 +253,7 @@ pub(crate) async fn node_add(
         registry,
         &spec,
         &UpArgs {
+            bucket_keys: None,
             no_image: true,
             copy_credential: false,
             image_recipe: "images/base-ubuntu".into(),

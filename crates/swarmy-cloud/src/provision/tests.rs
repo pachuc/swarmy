@@ -5,6 +5,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::sync::Mutex;
 struct FakeHost {
     calls: Mutex<Vec<String>>,
+    configs: Mutex<Vec<String>>,
     fail_provision: Mutex<Option<String>>,
     fail_decommission: Mutex<Option<String>>,
 }
@@ -12,9 +13,13 @@ impl FakeHost {
     fn new() -> Self {
         Self {
             calls: Mutex::new(Vec::new()),
+            configs: Mutex::new(Vec::new()),
             fail_provision: Mutex::new(None),
             fail_decommission: Mutex::new(None),
         }
+    }
+    fn configs(&self) -> Vec<String> {
+        self.configs.lock().unwrap().clone()
     }
     fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
@@ -24,7 +29,7 @@ impl FakeHost {
     }
 }
 impl SwarmHost for FakeHost {
-    fn adopt_key(&self, node: &RemoteNode, source: &Path) -> impl Future<Output = Result<()>> {
+    fn adopt_key(&self, node: &Machine, source: &Path) -> impl Future<Output = Result<()>> {
         std::future::ready((|| {
             self.push(format!("adopt {}", node.name));
             swarmy_config::write_private(&node.key_path, &fs::read(source)?)?;
@@ -33,8 +38,8 @@ impl SwarmHost for FakeHost {
     }
     fn provision(
         &self,
-        node: &RemoteNode,
-        primary: Option<&RemoteNode>,
+        node: &Machine,
+        primary: Option<&Machine>,
     ) -> impl Future<Output = Result<String>> {
         std::future::ready((|| {
             self.push(format!(
@@ -50,16 +55,20 @@ impl SwarmHost for FakeHost {
     }
     fn services(
         &self,
-        node: &RemoteNode,
+        node: &Machine,
         _: &str,
-        _: &services::Options<'_>,
+        options: &services::Options,
     ) -> impl Future<Output = Result<()>> {
         std::future::ready({
+            self.configs
+                .lock()
+                .unwrap()
+                .push(options.config_toml().to_owned());
             self.push(format!("services {}", node.name));
             Ok(())
         })
     }
-    fn api_token(&self, node: &RemoteNode, _: &str) -> impl Future<Output = Result<String>> {
+    fn api_token(&self, node: &Machine, _: &str) -> impl Future<Output = Result<String>> {
         std::future::ready({
             self.push(format!("token {}", node.name));
             Ok("node-token".into())
@@ -67,7 +76,7 @@ impl SwarmHost for FakeHost {
     }
     fn build_image(
         &self,
-        node: &RemoteNode,
+        node: &Machine,
         _: &str,
         _: &Path,
         tag: &str,
@@ -77,7 +86,7 @@ impl SwarmHost for FakeHost {
             Ok(())
         })
     }
-    fn decommission(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
+    fn decommission(&self, node: &Machine) -> impl Future<Output = Result<()>> {
         std::future::ready((|| {
             self.push(format!("decommission {}", node.name));
             if self.fail_decommission.lock().unwrap().as_deref() == Some(&node.name) {
@@ -86,19 +95,19 @@ impl SwarmHost for FakeHost {
             Ok(())
         })())
     }
-    fn stop(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
+    fn stop(&self, node: &Machine) -> impl Future<Output = Result<()>> {
         std::future::ready({
             self.push(format!("stop {}", node.name));
             Ok(())
         })
     }
-    fn start(&self, node: &RemoteNode) -> impl Future<Output = Result<()>> {
+    fn start(&self, node: &Machine) -> impl Future<Output = Result<()>> {
         std::future::ready({
             self.push(format!("start {}", node.name));
             Ok(())
         })
     }
-    fn reachable(&self, _: &RemoteNode) -> impl Future<Output = bool> {
+    fn reachable(&self, _: &Machine) -> impl Future<Output = bool> {
         std::future::ready(true)
     }
 }
@@ -157,6 +166,7 @@ fn request<'a>(
         copy_credential: false,
         recipe,
         cache: Path::new("/tmp/cache"),
+        bucket_keys: None,
     }
 }
 fn settings() -> Settings {
@@ -507,7 +517,7 @@ fn machine_maps_the_recorded_host() {
     let node = machine(&p.host, "swarmy", p.role, p.sandboxes, &p.local_storage);
     assert_eq!(node.private_ip, p.host.public_address);
     assert_eq!(node.key_path, p.host.ssh_key);
-    assert_eq!(node.cloud_settings().services, RemoteServices::Node);
+    assert!(node.services);
 }
 #[test]
 fn lock_is_exclusive() {
@@ -523,6 +533,7 @@ fn reconcile_refuses_removed_or_moved_hosts() {
     let (_tmp, registry, spec) = fixture();
     let planned = plan(&spec, source_list(&registry, &spec)).unwrap();
     let mut record = SwarmRecord {
+        bucket_keys: None,
         name: "fleet".into(),
         created_at: jiff::Timestamp::now(),
         api: SwarmApi::default(),
@@ -556,4 +567,475 @@ async fn copy_credential_is_checked_before_any_host_change() {
     );
     assert!(fake.calls().is_empty());
     assert!(registry.read_record("fleet").unwrap().is_none());
+}
+
+#[cfg(not(feature = "remote"))]
+#[tokio::test]
+async fn bucket_swarm_needs_the_s3_client() {
+    let (_tmp, registry, mut spec) = fixture();
+    spec.bucket = Some(swarmy_config::swarm::SwarmBucket {
+        name: "test-bucket".into(),
+        endpoint: "https://objects.example.invalid".into(),
+        region: "eu-west-1".into(),
+        prefix: swarmy_config::ObjectPrefix::default(),
+        conditional_create: true,
+    });
+    let host = FakeHost::new();
+    let error = provision_swarm_with(&host, request(&registry, &spec, &settings(), None))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("built without the S3 client"));
+    assert!(host.calls().is_empty());
+    assert!(registry.read_record(&spec.name).unwrap().is_none());
+    let error = decommission_swarm_with(&host, &registry, &spec)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("built without the S3 client"));
+}
+
+#[cfg(feature = "remote")]
+mod bucket_lifecycle {
+    use super::*;
+    use crate::{BucketRemoval, Cloud, ObjectBucket, Ownership};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static OUTPUT_LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    fn capture_output(message: &str, _stderr: bool) {
+        OUTPUT_LINES.lock().unwrap().push(message.to_owned());
+    }
+
+    struct FakeCloud {
+        ensure: AtomicUsize,
+        delete: AtomicUsize,
+        ownership: Ownership,
+        reject: bool,
+    }
+    impl Cloud for FakeCloud {
+        fn verify_bucket_access(&self, _: &ObjectBucket) -> impl Future<Output = Result<()>> {
+            std::future::ready(if self.reject {
+                Err(Error::other("rejected"))
+            } else {
+                Ok(())
+            })
+        }
+        fn ensure_bucket(&self, _: &ObjectBucket) -> impl Future<Output = Result<()>> {
+            self.ensure.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Ok(()))
+        }
+        fn bucket_ownership(&self, _: &ObjectBucket) -> impl Future<Output = Result<Ownership>> {
+            std::future::ready(Ok(self.ownership))
+        }
+        fn delete_bucket(&self, _: &ObjectBucket) -> impl Future<Output = Result<BucketRemoval>> {
+            self.delete.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Ok(BucketRemoval::Removed))
+        }
+    }
+    fn fixture_bucket() -> (tempfile::TempDir, Registry, SwarmSpec, SwarmRecord) {
+        let (dir, registry, mut spec) = fixture();
+        spec.bucket = Some(swarmy_config::swarm::SwarmBucket {
+            name: "test-bucket".into(),
+            endpoint: "https://objects.example.invalid".into(),
+            region: "eu-west-1".into(),
+            prefix: swarmy_config::ObjectPrefix::default(),
+            conditional_create: true,
+        });
+        let record = SwarmRecord {
+            name: spec.name.clone(),
+            created_at: jiff::Timestamp::now(),
+            api: SwarmApi::default(),
+            hosts: BTreeMap::new(),
+            tofu_state: None,
+            bucket_keys: Some(StaticKeys {
+                access_key: "access-secret".into(),
+                secret_key: "value-secret".into(),
+            }),
+        };
+        (dir, registry, spec, record)
+    }
+    #[tokio::test]
+    async fn bucket_keys_are_verified_before_anything_is_recorded() {
+        let (_dir, registry, spec, saved) = fixture_bucket();
+        let cloud = FakeCloud {
+            ensure: AtomicUsize::new(0),
+            delete: AtomicUsize::new(0),
+            ownership: Ownership::Owned,
+            reject: true,
+        };
+        let host = FakeHost::new();
+        let base = settings();
+        let mut up = request(&registry, &spec, &base, None);
+        up.bucket_keys = saved.bucket_keys.clone();
+        let err = provision_swarm_with_backend(&host, &cloud, up)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("static bucket keys"));
+        assert!(!format!("{err:?}").contains("value-secret"));
+        assert_eq!(cloud.ensure.load(Ordering::Relaxed), 0);
+        assert!(host.calls().is_empty());
+        assert!(registry.read_record(&spec.name).unwrap().is_none());
+    }
+    #[tokio::test]
+    async fn bucket_reaches_provisioning_with_static_keys() {
+        let (_dir, registry, spec, record) = fixture_bucket();
+        let cloud = FakeCloud {
+            ensure: AtomicUsize::new(0),
+            delete: AtomicUsize::new(0),
+            ownership: Ownership::Owned,
+            reject: false,
+        };
+        verify_bucket_with(&cloud, &spec, &record).await.unwrap();
+        ensure_bucket_with(&cloud, &spec, &record).await.unwrap();
+        assert_eq!(cloud.ensure.load(Ordering::Relaxed), 1);
+        let bucket = bucket_spec(&spec, &record).unwrap();
+        assert!(bucket.needs_static_keys());
+        let planned = plan(&spec, source_list(&registry, &spec)).unwrap();
+        let primary = node(&planned[0], user(&spec), &spec, &record);
+        assert!(primary.bucket.unwrap().needs_static_keys());
+    }
+    #[tokio::test]
+    async fn down_deletes_only_an_owned_bucket_scope() {
+        let (_dir, _registry, spec, record) = fixture_bucket();
+        crate::set_output_sink(capture_output);
+        for (ownership, expected) in [(Ownership::Owned, 1), (Ownership::Unmanaged, 0)] {
+            OUTPUT_LINES.lock().unwrap().clear();
+            let cloud = FakeCloud {
+                ensure: AtomicUsize::new(0),
+                delete: AtomicUsize::new(0),
+                ownership,
+                reject: false,
+            };
+            delete_bucket_with(&cloud, &spec, &record).await.unwrap();
+            assert_eq!(cloud.delete.load(Ordering::Relaxed), expected);
+            let output = OUTPUT_LINES.lock().unwrap().join("\n");
+            if ownership == Ownership::Unmanaged {
+                assert!(output.contains("left in place"));
+            } else {
+                assert!(output.contains("Removed"));
+            }
+        }
+    }
+    #[tokio::test]
+    async fn provisioned_hosts_reject_bucket_changes_and_key_rotation() {
+        let (_dir, registry, spec, saved) = fixture_bucket();
+        let cloud = FakeCloud {
+            ensure: AtomicUsize::new(0),
+            delete: AtomicUsize::new(0),
+            ownership: Ownership::Owned,
+            reject: false,
+        };
+        let host = FakeHost::new();
+        let base = settings();
+        let mut first = request(&registry, &spec, &base, None);
+        first.bucket_keys = saved.bucket_keys.clone();
+        provision_swarm_with_backend(&host, &cloud, first)
+            .await
+            .unwrap();
+        let original = registry.read_record(&spec.name).unwrap().unwrap();
+        let mut changed = request(&registry, &spec, &base, None);
+        changed.bucket_keys = Some(StaticKeys {
+            access_key: "new-key".into(),
+            secret_key: "new-secret".into(),
+        });
+        let error = provision_swarm_with_backend(&host, &cloud, changed)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("cannot rotate"));
+        let mut removed = spec.clone();
+        removed.bucket = None;
+        let error =
+            provision_swarm_with_backend(&host, &cloud, request(&registry, &removed, &base, None))
+                .await
+                .unwrap_err();
+        assert!(error.to_string().contains("[bucket] changed"));
+        assert_eq!(registry.read_record(&spec.name).unwrap().unwrap(), original);
+        assert_eq!(cloud.ensure.load(Ordering::Relaxed), 1);
+
+        let (_dir, registry, mut no_bucket) = fixture();
+        let host = FakeHost::new();
+        provision_swarm_with(&host, request(&registry, &no_bucket, &base, None))
+            .await
+            .unwrap();
+        no_bucket.bucket = spec.bucket.clone();
+        let error = provision_swarm_with_backend(
+            &host,
+            &cloud,
+            request(&registry, &no_bucket, &base, None),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("[bucket] changed"));
+    }
+
+    #[tokio::test]
+    async fn bucket_swarm_never_logs_keys() {
+        let (_dir, registry, spec, saved) = fixture_bucket();
+        crate::set_output_sink(capture_output);
+        OUTPUT_LINES.lock().unwrap().clear();
+        let cloud = FakeCloud {
+            ensure: AtomicUsize::new(0),
+            delete: AtomicUsize::new(0),
+            ownership: Ownership::Owned,
+            reject: false,
+        };
+        let host = FakeHost::new();
+        let base = settings();
+        let mut up = request(&registry, &spec, &base, None);
+        up.bucket_keys = saved.bucket_keys.clone();
+        let reports = provision_swarm_with_backend(&host, &cloud, up)
+            .await
+            .unwrap();
+        assert_eq!(cloud.ensure.load(Ordering::Relaxed), 1);
+        assert!(
+            host.calls()
+                .iter()
+                .any(|call| call.starts_with("provision fleet-control-1"))
+        );
+        let record = registry.read_record(&spec.name).unwrap().unwrap();
+        assert_eq!(record.bucket_keys, saved.bucket_keys);
+        let mode = fs::metadata(registry.swarm_dir(&spec.name).unwrap().join("record.toml"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "record containing bucket keys must stay private"
+        );
+        let primary = upgrade_machines(&record, &spec).pop().unwrap();
+        assert!(primary.bucket_spec().unwrap().needs_static_keys());
+        delete_bucket_with(&cloud, &spec, &record).await.unwrap();
+        let lines = OUTPUT_LINES.lock().unwrap().join("\n");
+        assert!(lines.contains("bucket test-bucket"));
+        for output in [
+            format!("{primary:?}"),
+            lines,
+            format!("{record:?}"),
+            format!("{reports:?}"),
+            format!("{:?}", host.calls()),
+            format!("{:?}", host.configs()),
+        ] {
+            assert!(!output.contains("access-secret"));
+            assert!(!output.contains("value-secret"));
+        }
+    }
+
+    #[tokio::test]
+    async fn bucket_without_keys_fails_first_up() {
+        let (_dir, registry, spec, _record) = fixture_bucket();
+        let host = FakeHost::new();
+        let err = provision_swarm_with(&host, request(&registry, &spec, &settings(), None))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("on its first swarmy swarm up"));
+        assert!(host.calls().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn control_node_provisioning_generates_a_fresh_api_token_unless_configured() {
+    let mut generated = Vec::new();
+    for _ in 0..2 {
+        let (_dir, registry, spec) = fixture();
+        let host = FakeHost::new();
+        provision_swarm_with(&host, request(&registry, &spec, &settings(), None))
+            .await
+            .unwrap();
+        let config: Settings = toml::from_str(&host.configs()[0]).unwrap();
+        assert!(!config.api.token.is_empty());
+        generated.push(config.api.token);
+    }
+    assert_ne!(generated[0], generated[1]);
+
+    let (_dir, registry, spec) = fixture();
+    let host = FakeHost::new();
+    let mut configured = settings();
+    configured.api.token = "operator-token".into();
+    provision_swarm_with(&host, request(&registry, &spec, &configured, None))
+        .await
+        .unwrap();
+    let config: Settings = toml::from_str(&host.configs()[0]).unwrap();
+    assert_eq!(config.api.token, "operator-token");
+    assert!(registry.read_record(&spec.name).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn node_config_keeps_fake_call_log_relative_to_the_checkout() {
+    let (_dir, registry, mut spec) = fixture();
+    spec.service_user = Some("deploy-user".into());
+    let host = FakeHost::new();
+    provision_swarm_with(&host, request(&registry, &spec, &settings(), None))
+        .await
+        .unwrap();
+    let config: Settings = toml::from_str(&host.configs()[0]).unwrap();
+    assert_eq!(config.selection.provider, "fake");
+    assert_eq!(config.fake.call_log, PathBuf::from(".swarmy/calls.log"));
+    assert!(!host.configs()[0].contains("[remote]"));
+    assert!(
+        host.calls()
+            .contains(&"services fleet-control-1".to_owned())
+    );
+}
+
+#[derive(Default)]
+struct FakeUpgradeHost {
+    events: Mutex<Vec<String>>,
+    upgrades: Mutex<Vec<(String, bool, bool, Duration)>>,
+}
+impl upgrade::UpgradeHost for FakeUpgradeHost {
+    fn version(&self, node: &Machine) -> impl Future<Output = Result<String>> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("version:{}", node.name));
+        std::future::ready(Ok("swarmy-core 0.1.0 (test)".into()))
+    }
+    fn has_service_units(&self, node: &Machine) -> impl Future<Output = Result<bool>> {
+        std::future::ready(Ok(node.name != "fleet-workers-1"))
+    }
+    fn upgrade(
+        &self,
+        node: &Machine,
+        services_only: bool,
+        drain_timeout: Duration,
+        stack: bool,
+    ) -> impl Future<Output = Result<Summary>> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("upgrade:{}", node.name));
+        self.upgrades.lock().unwrap().push((
+            node.name.clone(),
+            services_only,
+            stack,
+            drain_timeout,
+        ));
+        std::future::ready(Ok(Summary {
+            node: node.name.clone(),
+            changed: vec!["swarmy-core".into()],
+            units: vec!["swarmyd.service".into()],
+            restarted: if services_only {
+                vec!["gateway".into()]
+            } else {
+                vec!["gateway".into(), "node".into()]
+            },
+            elapsed_seconds: 1.5,
+        }))
+    }
+}
+async fn upgrade_fixture() -> (tempfile::TempDir, Registry, SwarmSpec, Vec<Machine>) {
+    let (dir, registry, spec) = fixture();
+    provision_swarm_with(
+        &FakeHost::new(),
+        request(&registry, &spec, &settings(), None),
+    )
+    .await
+    .unwrap();
+    let record = registry.read_record(&spec.name).unwrap().unwrap();
+    let machines = upgrade_machines(&record, &spec);
+    (dir, registry, spec, machines)
+}
+#[tokio::test]
+async fn upgrade_orders_nodes_and_respects_drain_and_dirty_checkout() {
+    let (_dir, _registry, _spec, machines) = upgrade_fixture().await;
+    let host = FakeUpgradeHost::default();
+    let mut policy = upgrade::Options::new(false, false, 600, false);
+    policy.dirty_paths = vec!["M src/main.rs".into()];
+    let error = upgrade::run(&host, &machines, policy).await.unwrap_err();
+    assert!(error.to_string().contains("src/main.rs"));
+    assert!(host.events.lock().unwrap().is_empty());
+    let clean = upgrade::Options::new(false, true, 17, true);
+    assert_eq!(
+        upgrade::run(&host, &machines, clean).await.unwrap().len(),
+        3
+    );
+    host.events.lock().unwrap().clear();
+    host.upgrades.lock().unwrap().clear();
+    let mut allowed = upgrade::Options::new(true, true, 17, false);
+    allowed.dirty_paths = vec!["M src/main.rs".into()];
+    let summaries = upgrade::run(&host, &machines, allowed).await.unwrap();
+    assert_eq!(
+        host.events.lock().unwrap().as_slice(),
+        [
+            "version:fleet-workers-2",
+            "version:fleet-workers-1",
+            "version:fleet-control-1",
+            "upgrade:fleet-workers-2",
+            "upgrade:fleet-workers-1",
+            "upgrade:fleet-control-1",
+        ]
+    );
+    let upgrades = host.upgrades.lock().unwrap();
+    assert_eq!(
+        upgrades
+            .iter()
+            .map(|row| row.0.as_str())
+            .collect::<Vec<_>>(),
+        ["fleet-workers-2", "fleet-workers-1", "fleet-control-1"]
+    );
+    assert!(
+        upgrades
+            .iter()
+            .all(|row| row.1 && row.3 == Duration::from_secs(17))
+    );
+    assert_eq!(
+        upgrades.iter().map(|row| row.2).collect::<Vec<_>>(),
+        [true, false, true]
+    );
+    assert_eq!(summaries[0].changed, ["swarmy-core"]);
+    assert!(
+        summaries
+            .iter()
+            .all(|summary| !summary.restarted.contains(&"node".to_owned()))
+    );
+}
+#[tokio::test]
+async fn upgrade_json_has_one_complete_object_per_node() {
+    let (_dir, _registry, _spec, machines) = upgrade_fixture().await;
+    let summaries = upgrade::run(
+        &FakeUpgradeHost::default(),
+        &machines,
+        upgrade::Options::new(false, false, 17, true),
+    )
+    .await
+    .unwrap();
+    assert_eq!(summaries.len(), 3);
+    // swarm upgrade --json serializes each Summary to exactly one line on stdout.
+    for summary in &summaries {
+        let line = serde_json::to_string(summary).unwrap();
+        assert_eq!(line.lines().count(), 1);
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(value.is_object());
+        for field in ["changed", "units", "restarted"] {
+            assert!(value[field].is_array());
+        }
+        assert!(value["elapsed_seconds"].is_number());
+    }
+}
+#[tokio::test]
+async fn upgrade_callback_reports_completed_hosts_before_failure() {
+    let (_dir, _registry, _spec, machines) = upgrade_fixture().await;
+    let host = FakeUpgradeHost::default();
+    let mut seen = Vec::new();
+    let err = upgrade::run_with(
+        &host,
+        &machines,
+        upgrade::Options::new(false, false, 17, true),
+        |summary| {
+            seen.push(summary.node.clone());
+            Err(Error::other("stop after the first completed host"))
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("first completed host"));
+    assert_eq!(seen, ["fleet-workers-2"]);
+    assert_eq!(host.upgrades.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn upgrade_summary_accepts_old_json() {
+    let summary: Summary =
+        serde_json::from_str(r#"{"node":"","changed":[],"restarted":[],"elapsed_seconds":0}"#)
+            .unwrap();
+    assert!(summary.units.is_empty());
 }

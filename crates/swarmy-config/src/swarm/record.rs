@@ -10,6 +10,8 @@ pub struct SwarmRecord {
     pub created_at: jiff::Timestamp,
     #[serde(default)]
     pub api: SwarmApi,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket_keys: Option<StaticKeys>,
     /// Machines per group, as created or adopted.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub hosts: BTreeMap<String, Vec<RecordedHost>>,
@@ -17,6 +19,21 @@ pub struct SwarmRecord {
     /// (normally `<record dir>/tofu`); unset until a module group is applied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tofu_state: Option<PathBuf>,
+}
+/// Static S3 credentials kept in the private swarm record, never in the spec.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StaticKeys {
+    pub access_key: String,
+    pub secret_key: String,
+}
+impl fmt::Debug for StaticKeys {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StaticKeys")
+            .field("access_key", &"..redacted..")
+            .field("secret_key", &"..redacted..")
+            .finish()
+    }
 }
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -86,6 +103,7 @@ mod tests {
         assert!(!text.contains("provisioned"));
         assert!(!toml::from_str::<RecordedHost>(&text).unwrap().provisioned);
         let record = SwarmRecord {
+            bucket_keys: None,
             name: "demo".into(),
             created_at: "2026-10-26T00:00:00Z".parse().unwrap(),
             api: SwarmApi {
@@ -110,5 +128,24 @@ mod tests {
             record
         );
         assert!(!format!("{record:?}").contains("very-secret-token"));
+    }
+}
+
+#[cfg(test)]
+mod bucket_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+
+    #[test]
+    fn static_keys_round_trip_without_debug_leak() {
+        let keys = StaticKeys {
+            access_key: "access-private".into(),
+            secret_key: "secret-private".into(),
+        };
+        let debug = format!("{keys:?}");
+        assert!(!debug.contains("access-private"));
+        assert!(!debug.contains("secret-private"));
+        let text = toml::to_string(&keys).unwrap();
+        assert_eq!(toml::from_str::<StaticKeys>(&text).unwrap(), keys);
     }
 }

@@ -32,8 +32,8 @@ python3 -m unittest discover -s benchmarks -p 'test_*.py'
 ```
 
 The swarm runner calls the fleet driver's `benchmark` action for each isolated
-session, waits for completion, and invokes `scripts/fleet/fleet report
---remote REMOTE --label LABEL --session ID --wall ID=SECONDS ...` on the six
+session, waits for completion, and invokes the fleet driver's `report` action for the remote, with
+`--label LABEL --session ID --wall ID=SECONDS ...` on the six
 session IDs with each run's wall time. The runner passes the remote through,
 so `benchmark` and `report` need no `scripts/fleet/fleet.toml`. The driver uses ephemeral
 sessions rather than tasky assignments, so benchmark branches do not consume

@@ -14,13 +14,30 @@ use std::{
     process::Stdio,
     time::{Duration, Instant},
 };
-use swarmy_config::{RemoteNode, RemotePorts};
 use swarmy_core::ignore_best_effort;
 use tokio::{
     net::TcpStream,
     process::{Child, Command},
     time::{sleep, timeout},
 };
+
+/// Remote ports of a host's backing stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StackPorts {
+    pub fdb: u16,
+    pub nats: u16,
+    pub s3: u16,
+}
+impl Default for StackPorts {
+    fn default() -> Self {
+        Self {
+            fdb: 4500,
+            nats: 4222,
+            s3: 8333,
+        }
+    }
+}
 
 pub const REMOTE_API_PORT: u16 = 8742;
 pub const RECORD_FILE: &str = "tunnel.json";
@@ -73,18 +90,6 @@ pub struct SshTarget {
     /// Host keys accepted by this identity.
     pub known_hosts: PathBuf,
 }
-impl SshTarget {
-    #[must_use]
-    /// Use the node's public then private address and its SSH identity.
-    pub fn for_node(node: &RemoteNode) -> Self {
-        Self {
-            addresses: vec![node.public_ip.clone(), node.private_ip.clone()],
-            user: node.ssh_user.clone(),
-            key: node.key_path.clone(),
-            known_hosts: node.key_path.with_extension("known_hosts"),
-        }
-    }
-}
 /// Everything needed to open or reuse one swarm's tunnel.
 pub struct Request<'a> {
     /// The swarm's private state directory, holding the record, lock, and log.
@@ -94,7 +99,7 @@ pub struct Request<'a> {
     /// Selects the services requiring forwards.
     pub placement: Placement,
     /// Remote backing-stack ports; the remote API port is fixed.
-    pub remote_ports: RemotePorts,
+    pub remote_ports: StackPorts,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// One loopback-to-loopback SSH forward.
@@ -554,7 +559,7 @@ mod tests {
                     known_hosts: "hosts".into(),
                 },
                 placement,
-                remote_ports: RemotePorts::default(),
+                remote_ports: StackPorts::default(),
             }
         }
         fn dir(&self, name: &str) -> PathBuf {
@@ -780,7 +785,7 @@ mod tests {
         let fdb = reserved.local_addr().unwrap().port();
         drop(reserved);
         let mut request = Fixture::request(&dir, Placement::LocalServices { object_store: true });
-        request.remote_ports = RemotePorts {
+        request.remote_ports = StackPorts {
             fdb,
             nats: 14222,
             s3: 18333,

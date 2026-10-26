@@ -38,7 +38,7 @@ printf 'different binary' > "$work/running"
 unit_needs_restart fake.service "$work/running"
 systemctl() { printf '0\n'; }
 unit_needs_restart fake.service "$work/running"
-printf 'remote upgrade arguments and hashes: ok\n'
+printf 'host upgrade arguments and hashes: ok\n'
 token_dir="$work/api-token"
 mkdir -p "$token_dir"
 # A control node provisioned before token provisioning gets a non-empty token.
@@ -134,7 +134,7 @@ unit_inputs_text > "$SWARMY_ETC_DIR/units.env"
 if unit_inputs_for_upgrade stack swarmy 2>/dev/null; then echo 'accepted mismatched recorded mode' >&2; exit 1; fi
 systemctl() { return 99; }
 unit_restart_wanted fake.service /missing/binary fake.service
-printf 'remote upgrade unit reconciliation: ok\n'
+printf 'host upgrade unit reconciliation: ok\n'
 
 # Exercise the SSH entrypoint against a pre-units.env node without touching host units.
 scenario=$work/entrypoint
@@ -236,4 +236,4 @@ with open(sys.argv[1], encoding='utf-8') as file:
 assert data['units'] == [], data
 PY
 [[ $(grep -c '^daemon-reload$' "$node_root/systemctl.log") == 1 ]]
-printf 'remote upgrade entrypoint: ok\n'
+printf 'host upgrade entrypoint: ok\n'

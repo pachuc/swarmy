@@ -363,11 +363,10 @@ make install
 `make install` is `make install-client` plus `make install-core`. The client
 links no database library and needs no `libfdb_c`; `swarmy-core` (scheduler, worker, gateway, API, node, and vol) still links it. Install only the client with
 `make install-client` when the services live elsewhere. `make install-client`
-builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs `swarmy-core`. The `remote` feature compiles the S3 client behind the `swarmy remote`
-provisioning commands. A plain
+builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs `swarmy-core`. The `remote` feature compiles the S3 client for swarm buckets. A plain
 `cargo build -p swarmy-cli` leaves that feature off for the slimmer node
-binary; add `--features remote` to a plain cargo invocation when the
-provisioning commands are needed.
+binary; add `--features remote` to a plain cargo invocation when a swarm uses
+a `[bucket]`.
 
 The Makefile looks for the client library in `~/.local/lib`, `/usr/local/lib`,
 `/usr/lib`, and `/usr/lib/x86_64-linux-gnu`, in that order, and passes the first
@@ -540,7 +539,7 @@ SWARMY_RELEASE_BASE_URL=http://127.0.0.1:8765 swarmy swarm up dev
 `swarmy doctor` checks `core version`. `run`, `chat`, and `bench` refuse an API
 core that is incompatible: a different package version, or a different major
 API version. Upgrade the core (`swarmy swarm up dev` locally or
-`swarmy remote upgrade NAME`) or pass the global `--allow-version-mismatch` flag
+`swarmy swarm upgrade NAME`) or pass the global `--allow-version-mismatch` flag
 to proceed with a warning. A core built from another commit of the same version
 is only reported (a note from `run` and `chat`, a warning in `doctor`): every
 development build shares one version, and most commits change nothing the

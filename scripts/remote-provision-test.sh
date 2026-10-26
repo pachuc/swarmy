@@ -10,7 +10,7 @@ for invalid in -1 word 1.5 4294967296; do
     fi
 done
 # Every provisioning argument lands in the variable the SSH command sends it
-# as; defaults match a bare `remote adopt` with no bucket.
+# as; defaults match a stack host without a bucket.
 parse_provision_args node 10.0.0.2 test-bucket eu-west-1 https://objects.example.invalid runs/team false true 4 deploy-user dir:/srv/data true
 [[ $mode == node ]]
 [[ $service_address == 10.0.0.2 ]]

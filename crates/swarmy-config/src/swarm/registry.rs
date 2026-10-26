@@ -167,6 +167,7 @@ impl Registry {
             )));
         }
         self.write_record(&SwarmRecord {
+            bucket_keys: None,
             name: name.to_owned(),
             created_at: old.map_or_else(jiff::Timestamp::now, |r| r.created_at),
             api: SwarmApi {
@@ -185,6 +186,7 @@ impl Registry {
             return Err(Error::UnknownSwarm(name.into()));
         }
         let mut record = self.read_record(name)?.unwrap_or_else(|| SwarmRecord {
+            bucket_keys: None,
             name: name.into(),
             created_at: jiff::Timestamp::now(),
             api: SwarmApi::default(),
@@ -297,6 +299,7 @@ pub(super) mod tests {
     }
     pub(crate) fn spec(name: &str) -> SwarmSpec {
         SwarmSpec {
+            bucket: None,
             service_user: None,
             name: name.into(),
             lifecycle: Lifecycle::Persistent,
@@ -370,6 +373,7 @@ pub(super) mod tests {
         r.write_spec(&spec).unwrap();
         assert_eq!(r.read_spec("a").unwrap(), Some(spec));
         let record = SwarmRecord {
+            bucket_keys: None,
             name: "a".into(),
             created_at: "2026-10-26T00:00:00Z".parse().unwrap(),
             api: SwarmApi::default(),

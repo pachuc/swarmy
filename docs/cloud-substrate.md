@@ -1,8 +1,6 @@
 # Cloud substrate
 
-The optional `remote` client feature provisions existing hosts over SSH and
-manages their static-key S3-compatible buckets. `swarmy-cloud` contains the
-object-storage boundary and SSH boundary, not machine provisioning.
+`swarmy swarm create NAME --host ADDRESS` and `swarmy swarm up NAME` provision existing hosts over SSH. The opt-in `remote` feature supplies the S3 client for static-key swarm buckets. `swarmy-cloud` contains the object-storage and SSH boundaries; machine creation belongs to `swarmy-infra`.
 
 ## The interface
 
@@ -18,14 +16,14 @@ pub trait Cloud {
 `S3Buckets` uses static credentials and a configured endpoint. It creates a
 bucket or adopts an empty one, then records ownership with tags or a marker
 object when bucket tags are unsupported. `HeadBucket` verifies access before
-adoption saves state. Teardown removes the remote's prefix scope and deletes
+adoption saves state. Teardown removes the swarm's prefix scope and deletes
 the bucket only when empty and owned. It makes no IAM calls. A bucket using
 an AWS instance role is left in place with a warning.
 
-`Host` handles SSH provisioning, service installation, image builds, copying
+`provision::SwarmHost` handles SSH provisioning, service installation, image builds, copying
 the operator's bootstrap key and decommissioning swarmy services. The SSH
 implementation does not generate a key or inspect block devices through
-this boundary. Adopted hosts remain operator-owned, and `remote down` never
+this boundary. Adopted hosts remain operator-owned, and `swarm down` never
 terminates them.
 
 ## Machines

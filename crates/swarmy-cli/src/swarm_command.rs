@@ -75,6 +75,15 @@ pub(crate) enum Command {
         /// Image recipe carried by this client
         #[arg(long)]
         image_recipe: Option<PathBuf>,
+        /// Static S3 access key for this swarm's bucket
+        #[arg(long)]
+        s3_access_key: Option<String>,
+        /// Read the static S3 secret from a 0600 file
+        #[arg(long, conflicts_with = "s3_secret_stdin")]
+        s3_secret_file: Option<PathBuf>,
+        /// Read the static S3 secret from standard input
+        #[arg(long)]
+        s3_secret_stdin: bool,
     },
     /// Start a stopped swarm again
     Start {
@@ -107,12 +116,32 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: NodeCommand,
     },
+    /// Upgrade a host swarm's binaries, units, and services in place
+    Upgrade {
+        #[arg(value_parser = parse_name)]
+        name: String,
+        /// Restart only the control services
+        #[arg(long)]
+        services_only: bool,
+        /// Allow a development checkout with uncommitted changes
+        #[arg(long)]
+        allow_dirty: bool,
+        /// Seconds to wait for sandboxes to drain
+        #[arg(long, default_value_t = 600)]
+        drain_timeout: u64,
+    },
     /// Follow service logs
     Logs {
         #[arg(value_parser = parse_name)]
         name: String,
         #[arg(value_enum)]
         service: Option<crate::local::Service>,
+        /// Follow logs on this host of a host swarm
+        #[arg(long)]
+        host: Option<String>,
+        /// Systemd unit on a host swarm (default: swarmyd)
+        #[arg(long)]
+        unit: Option<String>,
     },
     #[command(hide = true)]
     Supervise { state: PathBuf, core: PathBuf },
@@ -466,13 +495,36 @@ async fn run_up_start(
             no_image,
             copy_credential,
             image_recipe,
+            s3_access_key,
+            s3_secret_file,
+            s3_secret_stdin,
         } => {
+            let has_keys = s3_access_key.is_some() || s3_secret_file.is_some() || s3_secret_stdin;
+            let bucket_keys = if let Some(access_key) = s3_access_key {
+                let secret_key = if let Some(path) = s3_secret_file.as_deref() {
+                    swarmy_cloud::secrets::read_secret_file(path)?
+                } else if s3_secret_stdin {
+                    swarmy_cloud::secrets::read_secret_stdin()?
+                } else {
+                    bail!("--s3-access-key requires --s3-secret-file or --s3-secret-stdin");
+                };
+                Some(swarm::StaticKeys {
+                    access_key,
+                    secret_key,
+                })
+            } else {
+                if s3_secret_file.is_some() || s3_secret_stdin {
+                    bail!("--s3-secret-file and --s3-secret-stdin require --s3-access-key");
+                }
+                None
+            };
             if let Some(spec) = host_spec(registry, &name)? {
                 crate::swarm_hosts::up(
                     registry,
                     &spec,
                     &crate::swarm_hosts::UpArgs {
                         copy_credential,
+                        bucket_keys,
                         no_image,
                         image_recipe: image_recipe.unwrap_or_else(|| "images/base-ubuntu".into()),
                     },
@@ -482,6 +534,9 @@ async fn run_up_start(
             } else {
                 if json_output {
                     bail!("--json is not supported for local swarm up");
+                }
+                if has_keys {
+                    bail!("S3 keys apply only to swarms on hosts");
                 }
                 if copy_credential {
                     bail!("--copy-credential applies only to swarms on hosts");
@@ -591,6 +646,71 @@ async fn run_host_lifecycle(
     }
     Ok(())
 }
+async fn run_host_observation(
+    registry: &Registry,
+    command: Command,
+    json_output: bool,
+) -> Result<()> {
+    match command {
+        Command::Logs {
+            name,
+            service,
+            host,
+            unit,
+        } => {
+            if let Some(spec) = lifecycle_host_spec(registry, &name)? {
+                if service.is_some() {
+                    bail!("a positional service applies only to local swarms");
+                }
+                swarmy_cloud::provision::logs(
+                    registry,
+                    &spec,
+                    host.as_deref(),
+                    unit.as_deref().unwrap_or("swarmyd"),
+                )
+                .await?;
+            } else {
+                if host.is_some() || unit.is_some() {
+                    bail!("--host and --unit apply only to swarms on hosts");
+                }
+                crate::local::follow_logs(registry, &name, service).await?;
+            }
+        }
+        Command::Upgrade {
+            name,
+            services_only,
+            allow_dirty,
+            drain_timeout,
+        } => {
+            let Some(spec) = lifecycle_host_spec(registry, &name)? else {
+                bail!(
+                    "upgrade applies to swarms on hosts; a local swarm runs this client's binaries"
+                );
+            };
+            swarmy_cloud::provision::upgrade_swarm_with(
+                registry,
+                &spec,
+                swarmy_cloud::provision::UpgradeOptions {
+                    allow_dirty,
+                    services_only,
+                    drain_timeout: std::time::Duration::from_secs(drain_timeout),
+                    json: json_output,
+                    cache: registry.dirs().cache.join("core"),
+                },
+                |summary| {
+                    if json_output {
+                        println!("{}", serde_json::to_string(summary)?);
+                        std::io::Write::flush(&mut std::io::stdout())?;
+                    }
+                    Ok(())
+                },
+            )
+            .await?;
+        }
+        _ => unreachable!("host observation dispatch"),
+    }
+    Ok(())
+}
 pub(crate) async fn run(
     command: Command,
     json_output: bool,
@@ -616,16 +736,22 @@ pub(crate) async fn run(
         Command::Supervise { .. } => unreachable!("supervisor dispatched above"),
         command @ Command::Create { .. } => run_create(&registry, command, json_output)?,
         command @ (Command::Up { .. } | Command::Start { .. }) => {
-            run_up_start(&registry, command, json_output, allow_version_mismatch).await?;
+            Box::pin(run_up_start(
+                &registry,
+                command,
+                json_output,
+                allow_version_mismatch,
+            ))
+            .await?;
         }
         command @ (Command::Stop { .. }
         | Command::Down { .. }
         | Command::Status { .. }
         | Command::Node { .. }) => {
-            run_host_lifecycle(&registry, command, json_output).await?;
+            Box::pin(run_host_lifecycle(&registry, command, json_output)).await?;
         }
-        Command::Logs { name, service } => {
-            crate::local::follow_logs(&registry, &name, service).await?;
+        command @ (Command::Logs { .. } | Command::Upgrade { .. }) => {
+            run_host_observation(&registry, command, json_output).await?;
         }
         Command::Ls => list(&registry, json_output)?,
         Command::Show { name } => {

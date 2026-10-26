@@ -7,7 +7,7 @@
 //! under the prefix.
 use aws_sdk_s3::error::ProvideErrorMetadata;
 
-use super::Cloud;
+use crate::Cloud;
 use crate::{BucketRemoval, ObjectBucket, Ownership, Result};
 use swarmy_config::BucketCredentials;
 
@@ -91,7 +91,7 @@ fn client(bucket: &ObjectBucket) -> Result<aws_sdk_s3::Client> {
     Ok(aws_sdk_s3::Client::from_conf(config))
 }
 
-pub(super) struct S3Buckets;
+pub(crate) struct S3Buckets;
 
 impl Cloud for S3Buckets {
     async fn verify_bucket_access(&self, bucket: &ObjectBucket) -> Result<()> {
@@ -133,7 +133,7 @@ async fn ensure(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -> Result<()
             Ownership::Owned => Ok(()),
             Ownership::Absent => record_ownership(client, bucket).await,
             Ownership::Unmanaged => Err(crate::Error::other(format!(
-                "bucket {} exists and is not empty; use an empty bucket or one owned by remote {}",
+                "bucket {} exists and is not empty; use an empty bucket or one owned by swarm {}",
                 bucket.spec.bucket, bucket.owner
             ))),
         },
@@ -425,7 +425,7 @@ fn tagging_unsupported(code: Option<&str>) -> bool {
 
 fn warn_untagged(permission: &str, resource: &str, owner: &str) {
     cloud_err!(
-        "Warning: missing {permission} for {resource}; remote down will leave it in place. Grant {permission}, then tag the bucket managed-by=swarmy and swarmy-remote={owner} by hand."
+        "Warning: missing {permission} for {resource}; swarmy swarm down will leave it in place. Grant {permission}, then tag the bucket managed-by=swarmy and swarmy-remote={owner} by hand."
     );
 }
 

@@ -1,7 +1,7 @@
 //! Placement always names groups. To run services on this machine, declare
 //! `[groups.local] module = "local"` and set `services = "local"`. The value
 //! is a group name, not a keyword; `swarm create --local` will write that group.
-use crate::{Error, remote::is_valid_name};
+use crate::{Error, names::is_valid_name};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -15,8 +15,50 @@ pub struct SwarmSpec {
     /// Login that owns the node directory and units on every host (default `swarmy`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<SwarmBucket>,
     pub groups: BTreeMap<String, GroupSpec>,
     pub placement: Placement,
+}
+/// Public bucket coordinates; credentials are held only in the private record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwarmBucket {
+    pub name: String,
+    pub endpoint: String,
+    pub region: String,
+    #[serde(default)]
+    pub prefix: crate::ObjectPrefix,
+    #[serde(default = "yes")]
+    pub conditional_create: bool,
+}
+const fn yes() -> bool {
+    true
+}
+impl SwarmBucket {
+    /// Validate the bucket coordinates before provisioning changes any state.
+    /// # Errors
+    /// Returns a spec error for invalid bucket coordinates.
+    pub fn validate(&self) -> Result<(), Error> {
+        crate::BucketSpec {
+            bucket: self.name.clone(),
+            ..Default::default()
+        }
+        .validate_name()
+        .map_err(|error| Error::Spec(format!("bucket: {error}")))?;
+        let url = url::Url::parse(&self.endpoint).map_err(|_| {
+            Error::Spec("bucket: endpoint must be an http or https URL with a host".into())
+        })?;
+        if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
+            return Err(Error::Spec(
+                "bucket: endpoint must be an http or https URL with a host".into(),
+            ));
+        }
+        if self.region.is_empty() {
+            return Err(Error::Spec("bucket: region must not be empty".into()));
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -208,6 +250,7 @@ impl SwarmSpec {
             name: name.into(),
             lifecycle,
             service_user: None,
+            bucket: None,
             groups: [(
                 "local".into(),
                 GroupSpec {
@@ -248,6 +291,9 @@ impl SwarmSpec {
     /// Returns the first violated rule as `Spec`.
     pub fn validate(&self) -> Result<(), Error> {
         validate_swarm_name(&self.name)?;
+        if let Some(bucket) = &self.bucket {
+            bucket.validate()?;
+        }
         if self.groups.is_empty() {
             return Err(Error::Spec(format!(
                 "swarm \"{}\" has no groups",
@@ -606,5 +652,49 @@ nodes = ["box"]
                 format!("invalid swarm spec: {expected}")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod bucket_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+
+    #[test]
+    fn bucket_coordinates_validate() {
+        let mut bucket = SwarmBucket {
+            name: "example-bucket".into(),
+            endpoint: "https://objects.example.invalid".into(),
+            region: "eu-west-1".into(),
+            prefix: crate::ObjectPrefix::default(),
+            conditional_create: true,
+        };
+        bucket.validate().unwrap();
+        bucket.name = "bad.name".into();
+        assert!(
+            bucket
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("bucket:")
+        );
+        bucket.name = "example-bucket".into();
+        bucket.endpoint = "ftp://objects.example.invalid".into();
+        assert!(
+            bucket
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("endpoint")
+        );
+        bucket.endpoint = "https://objects.example.invalid".into();
+        bucket.region.clear();
+        assert!(
+            bucket
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("region")
+        );
     }
 }

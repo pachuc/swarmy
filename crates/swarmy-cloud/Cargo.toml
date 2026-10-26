@@ -6,8 +6,8 @@ publish.workspace = true
 license.workspace = true
 
 [features]
-# Bucket setup through the S3 SDK is opt-in so the default build skips the AWS SDK.
-# The SSH helpers, the remote parser, bucket interface, and SSH boundary need no SDK.
+# The S3 client for swarm buckets is opt-in so the default build skips the AWS SDK;
+# provisioning over SSH and tunnels need no SDK.
 default = []
 remote = ["dep:aws-sdk-s3", "dep:swarmy-aws"]
 
@@ -17,14 +17,12 @@ workspace = true
 [dependencies]
 aws-sdk-s3 = { workspace = true, optional = true }
 swarmy-aws = { workspace = true, optional = true }
-clap.workspace = true
 fs2.workspace = true
 jiff.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 shell-words.workspace = true
-swarmy-api-types.workspace = true
 swarmy-client.workspace = true
 swarmy-config.workspace = true
 swarmy-infra.workspace = true

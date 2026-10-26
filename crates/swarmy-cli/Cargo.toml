@@ -21,14 +21,6 @@ workspace = true
 name = "swarmy"
 path = "src/main.rs"
 
-# The remote suite drives provisioning commands, so it needs the provisioning client and
-# only builds when the `remote` feature is on. tests/remote_feature.rs covers
-# the binary built without provisioning support and always builds.
-[[test]]
-name = "remote"
-path = "tests/remote.rs"
-required-features = ["remote"]
-
 # The client talks to the control plane API only. It links no database,
 # message bus, or object store library, so it builds without libfdb_c.
 [dependencies]

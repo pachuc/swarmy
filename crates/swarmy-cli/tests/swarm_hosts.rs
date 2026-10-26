@@ -38,8 +38,11 @@ printf '%s\n' "$last" >> '{}/ssh-commands'
 case "$last" in
   true) exit 0 ;;
   'bash -s') file='{}/piped-'$(ls '{}/piped-'* 2>/dev/null | wc -l); cat > "$file";
-    if ! grep -q '^list_installed_control_units$' "$file"; then printf '/home/fake\n'; fi ;;
+    if grep -q '^list_installed_control_units$' "$file"; then printf 'swarmy-api.service\n'; else printf '/home/fake\n'; fi ;;
   'uname -m') /usr/bin/uname -m ;;
+  *'swarmy-core --version'*) printf 'swarmy-core test\n' ;;
+  *'journalctl --unit swarmyd --follow --no-pager --lines 100'*) if [ -e '{}/fail-journal' ]; then echo journal-failed >&2; exit 23; fi; echo remote-output ;;
+  *'remote-upgrade.sh'*) if [ -e '{}/fail-upgrade-primary' ] && [[ " $* " == *203.0.113.10* ]]; then echo upgrade-failed >&2; exit 23; fi; printf '{{"node":"","changed":[],"restarted":[],"elapsed_seconds":0}}\n' ;;
   'cat ~swarmy/swarmy/.dev/fdb.cluster') printf 'test:test@127.0.0.1:4500\n' ;;
   *'cat ~swarmy/swarmy/.swarmy/tunnel-key.pub') printf 'ssh-ed25519 AAAATEST test\n' ;;
   'cat /etc/ssh/ssh_host_ed25519_key.pub') printf 'ssh-ed25519 AAAATEST test\n' ;;
@@ -48,6 +51,8 @@ case "$last" in
   *) echo remote-output ;;
 esac
 "#,
+            path.display(),
+            path.display(),
             path.display(),
             path.display(),
             path.display()
@@ -365,4 +370,167 @@ fn lifecycle_uses_record_after_bad_spec_edit() {
     f.ok(&["swarm", "start", "box"]);
     f.ok(&["swarm", "down", "box", "--destroy"]);
     assert!(!f.path().join("data/swarmy/swarms/box/record.toml").exists());
+}
+
+#[test]
+fn logs_passes_fixed_journal_command_and_preserves_exit_failure() {
+    let f = Fixture::new();
+    f.create();
+    f.ok(&["swarm", "up", "box", "--no-image"]);
+    let out = f.ok(&["swarm", "logs", "box"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("remote-output"));
+    let commands = fs::read_to_string(f.path().join("ssh-commands")).unwrap();
+    assert!(commands.contains("journalctl --unit swarmyd --follow --no-pager --lines 100"));
+    assert!(
+        !f.run(&["swarm", "logs", "box", "--unit", "invalid"])
+            .status
+            .success()
+    );
+    fs::write(f.path().join("fail-journal"), "").unwrap();
+    let failed = f.run(&["swarm", "logs", "box"]);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("journal-failed"));
+}
+#[test]
+fn upgrade_without_a_checkout_uploads_node_files_and_release_binaries() {
+    let f = Fixture::new();
+    f.create();
+    f.ok(&["swarm", "up", "box", "--no-image"]);
+    let result = f.run(&["--json", "swarm", "upgrade", "box"]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let summary: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(summary["node"], "box-box-1");
+    let commands = fs::read_to_string(f.path().join("ssh-commands")).unwrap();
+    assert!(
+        commands.contains("bash scripts/remote-upgrade.sh stack all 600 prebuilt"),
+        "{commands}"
+    );
+}
+#[test]
+fn development_client_outside_a_checkout_refuses_before_ssh() {
+    let f = Fixture::new();
+    f.create();
+    f.ok(&["swarm", "up", "box", "--no-image"]);
+    fs::remove_file(f.path().join("ssh-commands")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_swarmy"))
+        .env_clear()
+        .env("HOME", f.path().join("home"))
+        .env("XDG_CONFIG_HOME", f.path().join("config"))
+        .env("XDG_DATA_HOME", f.path().join("data"))
+        .env("XDG_STATE_HOME", f.path().join("state"))
+        .env("XDG_CACHE_HOME", f.path().join("cache"))
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", f.path().join("bin").display()),
+        )
+        .current_dir(f.path())
+        .args(["swarm", "upgrade", "box"])
+        .output()
+        .unwrap();
+    if !swarmy_version::RELEASE_BUILD {
+        assert!(!output.status.success());
+        assert!(!f.path().join("ssh-commands").exists());
+    }
+}
+
+#[cfg(not(feature = "remote"))]
+#[test]
+fn bucket_up_requires_s3_client_before_ssh() {
+    let f = Fixture::new();
+    f.create();
+    let path = f.path().join("config/swarmy/swarms/box.toml");
+    let mut spec = fs::read_to_string(&path).unwrap();
+    spec.push_str("\n[bucket]\nname = 'test-bucket'\nendpoint = 'https://objects.example.invalid'\nregion = 'eu-west-1'\n");
+    fs::write(path, spec).unwrap();
+    let result = f.run(&["swarm", "up", "box", "--no-image"]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("built without the S3 client"));
+    assert!(!f.path().join("ssh-commands").exists());
+}
+
+#[test]
+fn s3_flags_require_a_host_bucket_and_a_complete_key_pair() {
+    let f = Fixture::new();
+    fs::write(f.path().join("s3-secret"), "test-secret").unwrap();
+    fs::set_permissions(
+        f.path().join("s3-secret"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    f.ok(&["swarm", "create", "local-box", "--local"]);
+    let local = f.run(&[
+        "swarm",
+        "up",
+        "local-box",
+        "--s3-access-key",
+        "test-key",
+        "--s3-secret-file",
+        f.path().join("s3-secret").to_str().unwrap(),
+    ]);
+    assert!(!local.status.success());
+    assert!(
+        String::from_utf8_lossy(&local.stderr).contains("S3 keys apply only to swarms on hosts")
+    );
+    f.create();
+    let secret_only = f.run(&[
+        "swarm",
+        "up",
+        "box",
+        "--s3-secret-file",
+        f.path().join("s3-secret").to_str().unwrap(),
+    ]);
+    assert!(!secret_only.status.success());
+    assert!(String::from_utf8_lossy(&secret_only.stderr).contains("require --s3-access-key"));
+    let access_only = f.run(&["swarm", "up", "box", "--s3-access-key", "test-key"]);
+    assert!(!access_only.status.success());
+    assert!(String::from_utf8_lossy(&access_only.stderr).contains("requires --s3-secret"));
+    let no_bucket = f.run(&[
+        "swarm",
+        "up",
+        "box",
+        "--s3-access-key",
+        "test-key",
+        "--s3-secret-file",
+        f.path().join("s3-secret").to_str().unwrap(),
+    ]);
+    assert!(!no_bucket.status.success());
+    assert!(String::from_utf8_lossy(&no_bucket.stderr).contains("has no [bucket]"));
+    assert!(!f.path().join("data/swarmy/swarms/box/record.toml").exists());
+}
+
+#[test]
+fn upgrade_json_reports_completed_host_before_later_host_fails() {
+    let f = Fixture::new();
+    f.create();
+    f.ok(&["swarm", "up", "box", "--no-image"]);
+    f.ok(&[
+        "swarm",
+        "node",
+        "add",
+        "box",
+        "box",
+        "--host",
+        "203.0.113.11",
+        "--ssh-key",
+        f.key.to_str().unwrap(),
+    ]);
+    fs::write(f.path().join("fail-upgrade-primary"), "").unwrap();
+    let result = f.run(&["--json", "swarm", "upgrade", "box"]);
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("upgrade host failed"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let lines = String::from_utf8(result.stdout).unwrap();
+    let summaries = lines
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(summaries.len(), 1, "{lines}");
+    assert_eq!(summaries[0]["node"], "box-box-2");
 }
