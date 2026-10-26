@@ -425,17 +425,23 @@ async fn api_checks(
         },
         "Reinstall the CLI and API from checkouts with the same major API version.",
     ));
-    checks.push(Check::new(
-        "core version",
-        crate::version_guard::core_mismatch(&health).map_or_else(
-            || Ok(format!("{} matches this client", swarmy_version::IDENTITY)),
-            Err,
+    let core_fix = concat!(
+        "Run swarmy dev up, or swarmy remote upgrade NAME for a node; ",
+        "run and chat refuse an incompatible core unless --allow-version-mismatch."
+    );
+    checks.push(match crate::version_guard::core_mismatch(&health) {
+        None => Check::new(
+            "core version",
+            Ok(format!("{} matches this client", swarmy_version::IDENTITY)),
+            core_fix,
         ),
-        concat!(
-            "Run swarmy dev up, or swarmy remote upgrade NAME for a node; ",
-            "run and chat refuse a mismatched core unless --allow-version-mismatch."
-        ),
-    ));
+        Some(crate::version_guard::CoreMismatch::Commit(message)) => {
+            Check::warn("core version", message, core_fix)
+        }
+        Some(crate::version_guard::CoreMismatch::Incompatible(message)) => {
+            Check::new("core version", Err(message), core_fix)
+        }
+    });
     let snapshot = swarmy_client::api_client::call(&endpoint, client.doctor())
         .await
         .map_err(|error| format!("{error:#}"));

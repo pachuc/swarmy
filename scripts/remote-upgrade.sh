@@ -27,6 +27,8 @@ else
     source_dir=$(node_source_dir "$repo_dir")
     [[ -f $source_dir/Cargo.toml ]] || { echo "Missing $source_dir; a development client copies its checkout there" >&2; exit 1; }
     ( cd "$source_dir"
+    SWARMY_GIT_COMMIT=$(source_git_commit .)
+    export SWARMY_GIT_COMMIT
     # rsync preserves timestamps; a different commit can otherwise look older to cargo.
     find crates -type f \( -name '*.rs' -o -name 'build.rs' \) -exec touch {} +
     if [[ $mode == stack ]]; then

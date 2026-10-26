@@ -519,7 +519,13 @@ impl Ssh {
         let output = run_output(
             base(node)?
                 .arg(address)
-                .arg("/usr/local/bin/swarmy-core --version"),
+                // A node provisioned before swarmy-core still has the per-role
+                // binaries; report their version so upgrade can replace them.
+                .arg(
+                    "/usr/local/bin/swarmy-core --version 2>/dev/null \
+                     || /usr/local/bin/swarmyd --version 2>/dev/null \
+                     || echo 'swarmy-core not installed'",
+                ),
             "read node version",
         )
         .await?;
@@ -769,6 +775,20 @@ async fn copy_source(
         "copy checkout with rsync",
     )
     .await?;
+    // The copy excludes .git, so record its commit for the build's identity;
+    // otherwise the node reports an unknown commit and the version guard
+    // refuses every client.
+    let commit = source_commit(checkout).await?;
+    let marker = format!("{node_dir}/source/.swarmy-source-commit");
+    checked(
+        base(node)?.arg(address).arg(format!(
+            "printf '%s\\n' {} > {}",
+            shell_words::quote(&commit),
+            shell_words::quote(&marker)
+        )),
+        "record copied checkout commit",
+    )
+    .await?;
     // A root bootstrap login owns the copied tree; hand it to the service user.
     // The user already exists from the bootstrap, so the chown cannot fail
     // on a missing login.
@@ -781,6 +801,19 @@ async fn copy_source(
     )
     .await?;
     Ok(())
+}
+
+/// The short commit of the checkout a development client copies to a node.
+async fn source_commit(checkout: &Path) -> Result<String> {
+    let output = run_output(
+        Command::new("git")
+            .arg("-C")
+            .arg(checkout)
+            .args(["rev-parse", "--short=12", "HEAD"]),
+        "read checkout commit",
+    )
+    .await?;
+    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
 }
 
 fn is_python_cache(status_line: &str) -> bool {

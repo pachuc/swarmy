@@ -135,6 +135,8 @@ if [[ $prebuilt == false ]]; then
     # separately with its own feature flags). read_shared_list fails loudly:
     # an empty package list would become a whole-workspace build.
     ( cd "$source_dir"
+    SWARMY_GIT_COMMIT=$(source_git_commit .)
+    export SWARMY_GIT_COMMIT
     if [[ $mode == stack ]]; then
         SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p "$(swarmy_cli_package)" --no-default-features
     fi
