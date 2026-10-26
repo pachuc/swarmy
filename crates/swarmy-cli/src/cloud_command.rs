@@ -29,7 +29,7 @@ pub(crate) fn run(command: Command, json: bool) -> anyhow::Result<()> {
     let path = CloudCredentials::path(&swarmy_config::paths::Dirs::from_process()?);
     match command {
         Command::Login { provider, region } => {
-            if region.is_some() && provider != CloudProvider::Aws {
+            if region.is_some() && provider.option_field() != Some("region") {
                 bail!("--region applies only to aws");
             }
             let credential = CloudCredential::new(provider, read_secrets(provider)?, region)?;
@@ -146,7 +146,7 @@ fn read_hidden(prompt: &str) -> anyhow::Result<String> {
     if result? == 0 {
         bail!("no input");
     }
-    Ok(line.trim().to_owned())
+    Ok(line.trim_end_matches(['\r', '\n']).to_owned())
 }
 #[cfg(test)]
 mod tests {
