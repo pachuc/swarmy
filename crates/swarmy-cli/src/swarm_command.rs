@@ -54,7 +54,7 @@ pub(crate) enum Command {
         #[arg(long, env = "SWARMY_CORE_BIN", value_name = "PATH")]
         core_bin: Option<PathBuf>,
         /// Do not download and register the release base image when no default image is configured
-        #[arg(long)]
+        #[arg(long, conflicts_with = "image_recipe")]
         no_image: bool,
         /// Acknowledge copying the credential and keyring onto host services
         #[arg(long)]

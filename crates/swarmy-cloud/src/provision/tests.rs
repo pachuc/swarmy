@@ -383,3 +383,42 @@ fn lock_releases_on_drop() {
     drop(guard);
     let _again = lock(&registry, "fleet").unwrap();
 }
+#[test]
+fn reconcile_refuses_removed_or_moved_hosts() {
+    let (_tmp, registry, spec) = fixture();
+    let planned = plan(&spec, source_list(&registry, &spec)).unwrap();
+    let mut record = SwarmRecord {
+        name: spec.name.clone(),
+        created_at: jiff::Timestamp::now(),
+        api: SwarmApi::default(),
+        hosts: BTreeMap::from([("workers".into(), vec![planned[2].host.clone()])]),
+        tofu_state: None,
+    };
+    assert!(
+        reconcile(&planned[..2], &record)
+            .unwrap_err()
+            .to_string()
+            .contains("no longer in the spec")
+    );
+    record.hosts.get_mut("workers").unwrap()[0].public_address = "203.0.113.99".into();
+    assert!(
+        reconcile(&planned, &record)
+            .unwrap_err()
+            .to_string()
+            .contains("changed in the spec")
+    );
+}
+#[tokio::test]
+async fn copy_credential_is_checked_before_any_host_change() {
+    let (_tmp, registry, spec) = fixture();
+    let fake = FakeHost::new();
+    let mut settings = Settings::default();
+    settings.selection.provider = "chatgpt".into();
+    assert!(
+        provision_swarm_with(&fake, request(&registry, &spec, &settings, None))
+            .await
+            .is_err()
+    );
+    assert!(fake.calls().is_empty());
+    assert!(registry.read_record("fleet").unwrap().is_none());
+}
