@@ -31,9 +31,15 @@ impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join("bin")).unwrap();
-        let stack = FakeStack::start(&root.path().join("data/swarmy/stack"));
+        let stack = FakeStack::start(&root.path().join("data/swarmy/swarms/demo/stack"));
         let fixture = Self { root, stack };
         fixture.core(swarmy_version::IDENTITY);
+        assert!(
+            fixture
+                .run(&["swarm", "create", "demo", "--local"])
+                .status
+                .success()
+        );
         fixture
     }
 
@@ -74,9 +80,9 @@ exec /bin/sleep 600"
 
     fn assert_started(&self, override_mismatch: bool) {
         let args: &[&str] = if override_mismatch {
-            &["dev", "up", "--allow-version-mismatch"]
+            &["--allow-version-mismatch", "swarm", "up", "demo"]
         } else {
-            &["dev", "up"]
+            &["swarm", "up", "demo"]
         };
         let output = self.run(args);
         assert!(
@@ -99,7 +105,7 @@ exec /bin/sleep 600"
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = self.run(&["dev", "down"]);
+        let _ = self.run(&["swarm", "down", "demo", "--destroy"]);
     }
 }
 
@@ -112,7 +118,7 @@ fn matching_path_services_start() {
 fn stale_path_service_is_refused_before_starting_or_stopping_anything() {
     let mut fixture = Fixture::new();
     fixture.core("0.1.0 (stale)");
-    let output = fixture.run(&["dev", "up"]);
+    let output = fixture.run(&["swarm", "up", "demo"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("swarmy-core version mismatch"), "{stderr}");
@@ -125,7 +131,7 @@ fn stale_path_service_is_refused_before_starting_or_stopping_anything() {
         !fixture
             .root
             .path()
-            .join("state/swarmy/dev/supervisor.pid")
+            .join("state/swarmy/swarms/demo/supervisor.pid")
             .exists()
     );
 }
@@ -208,7 +214,7 @@ fn failed_version_probe_is_refused() {
         &fixture.root.path().join("bin/swarmy-core"),
         "echo 'old worker does not understand --version' >&2\nexit 2",
     );
-    let output = fixture.run(&["dev", "up"]);
+    let output = fixture.run(&["swarm", "up", "demo"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
@@ -223,13 +229,16 @@ fn failed_version_probe_is_refused() {
 fn mismatch_keeps_existing_supervisor_running() {
     let fixture = Fixture::new();
     fixture.assert_started(false);
-    let pid_file = fixture.root.path().join("state/swarmy/dev/supervisor.pid");
+    let pid_file = fixture
+        .root
+        .path()
+        .join("state/swarmy/swarms/demo/supervisor.pid");
     let before = fs::read(&pid_file).unwrap();
     fixture.core("0.0.1 (old)");
-    let output = fixture.run(&["dev", "up"]);
+    let output = fixture.run(&["swarm", "up", "demo"]);
     assert!(!output.status.success());
     assert_eq!(fs::read(pid_file).unwrap(), before);
-    let status = fixture.run(&["dev", "status"]);
+    let status = fixture.run(&["swarm", "status", "demo"]);
     assert!(status.status.success());
     let stdout = String::from_utf8(status.stdout).unwrap();
     assert!(stdout.contains("supervisor: up"), "{stdout}");

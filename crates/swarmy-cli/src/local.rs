@@ -316,10 +316,11 @@ pub(crate) async fn logs(state: &Path, service: Option<Service>) -> Result<()> {
         ensure!(path.exists(), "no log for {name}; start the services first");
         command.arg(path);
     }
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut child = command.kill_on_drop(true).spawn()?;
     tokio::select! {
         result = child.wait() => { ensure!(result?.success(), "tail failed"); },
-        result = tokio::signal::ctrl_c() => { result?; child.kill().await?; },
+        _ = interrupt.recv() => { child.kill().await?; },
     }
     Ok(())
 }
@@ -397,18 +398,7 @@ pub(crate) struct Start {
     pub(crate) require_record: bool,
     pub(crate) allow_version_mismatch: bool,
 }
-fn xdg_environment() -> BTreeMap<String, String> {
-    [
-        "HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "XDG_STATE_HOME",
-        "XDG_CACHE_HOME",
-    ]
-    .into_iter()
-    .filter_map(|key| std::env::var(key).ok().map(|value| (key.into(), value)))
-    .collect()
-}
+
 fn checkout_stack(cwd: &Path) -> Option<PathBuf> {
     cwd.ancestors()
         .find(|p| p.join("scripts/dev-stack.sh").is_file())
@@ -695,7 +685,7 @@ pub(crate) async fn up(registry: &Registry, name: &str, start: Start) -> Result<
     stop_services(&swarm.state).await?;
     ensure_stack(&swarm.stack).await?;
     let exports = swarmy_config::parse_exports(&fs::read_to_string(swarm.stack.join("env"))?)?;
-    let environment = xdg_environment();
+    let environment = crate::target::xdg_environment();
     let tuning = Tuning::discover(&std::env::current_dir()?, &environment);
     let token = registry
         .read_record(name)?

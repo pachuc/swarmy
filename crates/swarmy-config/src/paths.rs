@@ -4,6 +4,14 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
+/// Environment keys used to locate the XDG base directories.
+pub const XDG_KEYS: [&str; 5] = [
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+];
 /// Swarmy's four base directories, each already ending in `swarmy`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dirs {
@@ -28,12 +36,7 @@ impl Dirs {
     /// # Errors
     /// Returns `Environment` for non-UTF-8 values, or errors from `from_env`.
     pub fn from_process() -> Result<Self, Error> {
-        Self::from_env(&process_environment(|key| {
-            matches!(
-                key,
-                "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_STATE_HOME" | "XDG_CACHE_HOME"
-            )
-        })?)
+        Self::from_env(&process_environment(|key| XDG_KEYS.contains(&key))?)
     }
     #[must_use]
     pub fn specs(&self) -> PathBuf {

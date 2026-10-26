@@ -396,19 +396,3 @@ pub(crate) async fn run(
     }
     Ok(())
 }
-/// Transitional registration of the local dev API.
-pub(crate) fn register_dev(dirs: Dirs, url: &str, token: &str) -> Result<()> {
-    let registry = Registry::new(dirs);
-    if registry.read_spec("dev")?.is_some() {
-        eprintln!("warning: a swarm spec named dev exists; not registering this API as swarm dev");
-        return Ok(());
-    }
-    registry.attach("dev", url, token)?;
-    if registry.current()?.is_none() {
-        registry.set_current("dev")?;
-        println!("swarm dev: {url} (current)");
-    } else {
-        println!("swarm dev: {url} (select it with swarmy swarm use dev or --swarm dev)");
-    }
-    Ok(())
-}

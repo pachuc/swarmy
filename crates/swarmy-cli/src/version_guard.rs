@@ -27,7 +27,7 @@ pub(crate) fn core_mismatch(health: &HealthResponse) -> Option<CoreMismatch> {
         return Some(CoreMismatch::Incompatible(format!(
             concat!(
                 "API core {} ({}) with api {} is incompatible with this client {} (api {}); ",
-                "run swarmy dev up (local) or swarmy remote upgrade NAME (remote) to align them"
+                "run swarmy swarm up NAME (local) or swarmy remote upgrade NAME (remote) to align them"
             ),
             health.version,
             health.git_commit,

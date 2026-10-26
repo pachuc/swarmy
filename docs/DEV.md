@@ -52,8 +52,7 @@ Client commands choose their API in order: `--swarm NAME`, `SWARMY_SWARM`,
 the `SWARMY_API_URL` and `SWARMY_API_TOKEN` pair, then the current swarm.
 Without any target, the client explains how to list, use, or create a swarm.
 Configuration files never choose the client's API: `[api] url` and `token`
-configure the services started by `swarmy dev up`. That command registers its
-API as swarm `dev` and makes it current when none is selected.
+tune local services. `swarmy swarm up NAME` records a local swarm's API, and `swarm create` makes the new swarm current when none is selected.
 
 Specs live under `$XDG_CONFIG_HOME/swarmy/swarms`, records under
 `$XDG_DATA_HOME/swarmy/swarms`, and the `current` file under
@@ -74,29 +73,19 @@ work in Bash and fish without sourcing an environment file.
 
 ```sh
 SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --workspace --locked
-./target/debug/swarmy dev up
+./target/debug/swarmy swarm create dev --local
+./target/debug/swarmy swarm up dev
 ./target/debug/swarmy doctor
-sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev
+sudo -E env HOME="$HOME" ./target/debug/swarmy --swarm dev image build images/base-ubuntu --tag dev
 ./target/debug/swarmy run --image base-ubuntu:dev "hello"
-./target/debug/swarmy dev status
-./target/debug/swarmy dev down
+./target/debug/swarmy swarm status dev
+./target/debug/swarmy swarm stop dev
 ```
 
-**Where dev keeps its files.** Inside a checkout, `swarmy dev up` creates
-`<checkout>/.swarmy/config.toml`, keeps supervised service state under
-`<checkout>/.swarmy/dev/`, and uses `<checkout>/.dev/` for the backing stack.
-A directory with its own `.swarmy/config.toml` works the same way, with the
-stack in the project state directory's `stack/`. Outside both, swarmy follows the XDG Base Directory
-layout: `~/.config/swarmy/config.toml`, the stack in
-`~/.local/share/swarmy/stack/`, and service logs, pids, the fake script and
-its call log in `~/.local/state/swarmy/dev/`. Absolute `XDG_CONFIG_HOME`,
-`XDG_DATA_HOME` and `XDG_STATE_HOME` move them. The keyring and default
-`auth.json` live in `~/.local/share/swarmy/` in every layout. Downloaded cores
-and images go to `~/.cache/swarmy/` (`XDG_CACHE_HOME`) in every layout.
-An existing configuration file wins; `SWARMY_STATE_DIR` changes the service
-state root, and `SWARMY_DEV_DIR` overrides the stack directory. The CLI runs a
-compiled-in copy of the backing script, so it needs no checkout. The fixed
-NATS and SeaweedFS ports allow only one stack per host.
+**Where local swarms keep their files.** See [Local swarms](#local-swarms).
+In a checkout, creation records `<checkout>/.dev` as `stack_dir` and reads
+`.swarmy/config.toml` only for tuning. Swarmy writes neither its token nor
+its state there. The fixed NATS and SeaweedFS ports allow only one stack per host.
 
 On one fleet worker, a clean `cargo test --workspace --no-run --locked` build
 used 28,860,925,523 bytes of target space and took 404 seconds before the
@@ -116,13 +105,13 @@ search path to use `swarmy` directly. When using a system client library, omit `
 install prefix, set it to that prefix's `lib` directory at build time.
 
 ```sh
-./target/debug/swarmy dev logs           # follow all four service logs
-./target/debug/swarmy dev logs worker    # follow one service; Ctrl-C ends tailing
-./target/debug/swarmy dev logs supervisor
+./target/debug/swarmy swarm logs dev           # follow all four service logs
+./target/debug/swarmy swarm logs dev worker    # follow one service; Ctrl-C ends tailing
+./target/debug/swarmy swarm logs dev supervisor
 ```
 
 `status` shows the backing stack, services, and supervisor with pids and uptime.
-`down` stops them all and preserves data. Repeating `up` reports and replaces
+`stop` stops them all and preserves data. Repeating `up` reports and replaces
 recorded processes, including survivors of a supervisor killed with SIGKILL.
 It reloads configuration, so edits take effect on the next `up`. An unexpected
 service exit stops the other services; inspect the logs and run `up` again.
@@ -263,15 +252,14 @@ Relative filesystem paths in a project file are relative to the directory
 containing `.swarmy`; paths in the user file are relative to its directory.
 Relative environment paths remain relative to the invoking directory.
 
-`dev up` creates a project file in a checkout or a user file outside one,
-imports connection settings from the stack's `env` file as data, and saves the
-file with private permissions. It updates stack connection fields on each start
-and preserves other settings. Environment overrides are passed to children but
-are not saved. Service logs and pid records live under `<state_dir>/dev/`,
-and so do the default fake script and call log. `state_dir` defaults to
-`<project>/.swarmy` for a project file and `~/.local/state/swarmy` otherwise.
+Local swarms read tuning from the project file or the user file, and never
+write their token there; `swarm up` merges it with the stack's `env` file into
+`services.toml` (see [Local swarms](#local-swarms)). Their logs, pid records,
+and default fake files live in the swarm's state directory. `state_dir`
+defaults to `<project>/.swarmy` for a project file and `~/.local/state/swarmy`
+otherwise.
 
-The generated file contains every setting. This partial example shows the
+This partial example shows the
 common choices (store directories are FoundationDB directory names):
 
 ```toml
@@ -296,8 +284,8 @@ partitions = "0-255"
 partitions = "0-255"
 
 [fake]
-script = ".swarmy/dev/fake.json"
-call_log = ".swarmy/dev/calls.log"
+script = ".swarmy/fake.json"
+call_log = ".swarmy/calls.log"
 ```
 
 Every new ephemeral session needs a registered image, including sessions that only use
@@ -354,7 +342,7 @@ libclang-dev ca-certificates curl tar git`. Clone the repository with
 When pinned backing tools and the FoundationDB library are already installed
 system-wide, `make install` finds them in `/usr/local/lib` or `/usr/lib`.
 
-Without a checkout, `swarmy dev install-tools` runs the same compiled-in script.
+Without a checkout, `swarmy install-tools` runs the same compiled-in script.
 It accepts `--prefix DIRECTORY` to select another installation root.
 
 From the checkout:
@@ -419,10 +407,9 @@ Ubuntu runner, the same `make install` needs no variable because the library
 is found in a system directory.
 
 Cargo puts all executables in `~/.cargo/bin` by default. Reinstall all of them
-together after pulling: `swarmy dev up` refuses to start a scheduler, worker, or
+together after pulling: `swarmy swarm up dev` refuses to start a scheduler, worker, or
 gateway whose version differs from the CLI. Use `swarmy` after
-rustup's normal shell setup, or `~/.cargo/bin/swarmy` directly. Keep the checkout
-because `swarmy dev` uses `scripts/dev-stack.sh` from it.
+rustup's normal shell setup, or `~/.cargo/bin/swarmy` directly. The CLI embeds the backing-stack script, so a checkout is not required to run a local swarm.
 
 ### Service binary
 
@@ -431,7 +418,7 @@ because `swarmy dev` uses `scripts/dev-stack.sh` from it.
 ### Diagnose an installation
 
 ```sh
-swarmy dev up
+swarmy swarm up dev
 swarmy doctor
 swarmy doctor --json
 ```
@@ -446,7 +433,7 @@ The object-store check is a TCP connection to the configured S3 endpoint;
 there is no FoundationDB or NATS port probe. Database and bus liveness for a
 running stack come from the API snapshot: reaching the API and reading its
 service heartbeats proves the store path. TCP connectivity does not verify
-database or S3 permissions. A stopped stack reports a fix pointing to `swarmy dev up`.
+database or S3 permissions. A stopped stack reports a fix pointing to `swarmy swarm up dev`.
 Before initialization, doctor asks for the missing config and tells you that the
 stack has not been initialized. Each failure includes a fix and causes exit 1.
 JSON output is one object containing `ok`, a `checks` array, and a
@@ -516,7 +503,7 @@ fake releases in `make check-scripts`.
 
 `swarmy image pull base-ubuntu --set-default` verifies and uploads the release
 image through the sparse upload path, then sets `selection.default_image`.
-Restart with `swarmy dev up` to apply it. `dev up` does this automatically when
+Restart with `swarmy swarm up dev` to apply it. `swarm up` does this automatically when
 there is no default image; `--no-image` skips it. The download is temporarily
 cached in `~/.cache/swarmy/images` and removed after upload. For local fake releases,
 set `SWARMY_RELEASE_BASE_URL` and include the image archive in SHA256SUMS.
@@ -524,11 +511,11 @@ set `SWARMY_RELEASE_BASE_URL` and include the image archive in SHA256SUMS.
 ## The core binary
 
 `swarmy core ensure [--core-bin PATH] [--target TRIPLE]` locates the matching
-Linux core and prints its path. `swarmy dev up --core-bin PATH` or
+Linux core and prints its path. `swarmy swarm up dev --core-bin PATH` or
 `SWARMY_CORE_BIN` selects an explicit executable first. Release builds fetch
 and verify the matching release next; development builds instead find
 `swarmy-core` beside the CLI (or on PATH), so `cargo build && target/debug/swarmy
-dev up` still works. Set `SWARMY_RELEASE_BASE_URL` to force release selection
+swarm up` still works. Set `SWARMY_RELEASE_BASE_URL` to force release selection
 in development; it accepts HTTPS, or HTTP on loopback only.
 
 Archives live in swarmy's cache directory under `core/<tag>/`
@@ -547,12 +534,12 @@ make release-package RELEASE_COMPONENT=client RELEASE_DIR=target/fake-release/v0
 make release-package RELEASE_COMPONENT=image RELEASE_DIR=target/fake-release/v0.1.0
 scripts/release.sh checksums target/fake-release/v0.1.0
 python3 -m http.server --bind 127.0.0.1 --directory target/fake-release 8765
-SWARMY_RELEASE_BASE_URL=http://127.0.0.1:8765 swarmy dev up
+SWARMY_RELEASE_BASE_URL=http://127.0.0.1:8765 swarmy swarm up dev
 ```
 
 `swarmy doctor` checks `core version`. `run`, `chat`, and `bench` refuse an API
 core that is incompatible: a different package version, or a different major
-API version. Upgrade the core (`swarmy dev up` locally or
+API version. Upgrade the core (`swarmy swarm up dev` locally or
 `swarmy remote upgrade NAME`) or pass the global `--allow-version-mismatch` flag
 to proceed with a warning. A core built from another commit of the same version
 is only reported (a note from `run` and `chat`, a warning in `doctor`): every
@@ -660,7 +647,7 @@ cargo test --locked -p swarmy-e2e --test cli_session -- --test-threads=1
 cargo test --locked -p swarmy-e2e --test gateway --test scheduler --test worker -- --test-threads=1
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --locked -p swarmy-cloud --features remote
-cargo test --locked -p swarmy-cli --features remote -- --skip dev_up_run_recover_reconfigure_and_down
+cargo test --locked -p swarmy-cli --features remote -- --skip local_swarm_run_recover_reconfigure_and_down
 cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
 cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
 cargo test --locked -p swarmy-llm --no-default-features

@@ -238,4 +238,4 @@ sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(cargo test -p swarmy-e2e --test
 It skips without root or `SWARMY_TEST_IMAGE`. Drop guards stop the node, destroy
 containers, unmount filesystems, and detach NBD devices even if an assertion fails.
 
-Release clients can run `swarmy image pull base-ubuntu --set-default` to register the verified base image and select it for new sessions after `swarmy dev up`.
+Release clients can run `swarmy image pull base-ubuntu --set-default` to register the verified base image and select it for new sessions after `swarmy swarm up dev`.

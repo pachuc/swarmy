@@ -8,7 +8,6 @@ mod client_commands;
 mod cloud_command;
 mod core_command;
 mod cost_command;
-mod dev;
 mod doctor;
 mod gc;
 mod image;
@@ -93,10 +92,11 @@ enum Command {
         #[command(subcommand)]
         command: core_command::Command,
     },
-    /// Start and operate the local development system
-    Dev {
-        #[command(subcommand)]
-        command: dev::Command,
+    /// Install `FoundationDB`, NATS, and `SeaweedFS` for local swarms (Linux x86-64)
+    InstallTools {
+        /// Install root: tools go to PREFIX/bin and PREFIX/lib (default ~/.local)
+        #[arg(long)]
+        prefix: Option<PathBuf>,
     },
     /// Check installation, configuration, credentials, and local connectivity
     Doctor,
@@ -176,7 +176,7 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
     // One match owns every command and calls into its module. Each arm
-    // connects on its own path, except the local swarm supervisor, dev commands,
+    // connects on its own path, except the local swarm supervisor, install-tools,
     // auth helpers, and cloud credentials which never touch the API.
     let runtime = tokio::runtime::Runtime::new()?;
     let json = cli.json;
@@ -186,8 +186,11 @@ fn main() -> anyhow::Result<()> {
             json,
             cli.allow_version_mismatch,
         )),
-        Command::Dev { command } => {
-            runtime.block_on(dev::run(command, json, cli.allow_version_mismatch))
+        Command::InstallTools { prefix } => {
+            if json {
+                anyhow::bail!("--json is not supported for install-tools; run without it");
+            }
+            runtime.block_on(tools::install(prefix.as_deref()))
         }
         Command::Core { command } => {
             runtime.block_on(core_command::run(command, json, cli.allow_version_mismatch))

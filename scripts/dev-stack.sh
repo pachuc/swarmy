@@ -8,7 +8,7 @@ fail() {
     exit 1
 }
 
-# swarmy dev runs a compiled-in copy and passes the stack directory in
+# swarmy runs a compiled-in copy for local swarms and passes the stack directory in
 # SWARMY_DEV_DIR; run from a checkout, the default is <checkout>/.dev.
 if [[ -n ${SWARMY_DEV_DIR:-} ]]; then
     dev_dir=$SWARMY_DEV_DIR
@@ -141,9 +141,9 @@ start() {
     local binary service port requested_port
     local -a ports
     for binary in fdbserver fdbcli nats-server curl; do
-        command -v "$binary" >/dev/null || fail "Missing $binary; run swarmy dev install-tools or see docs/DEV.md."
+        command -v "$binary" >/dev/null || fail "Missing $binary; run swarmy install-tools or see docs/DEV.md."
     done
-    if [[ ${SWARMY_DEV_SKIP_S3:-0} != 1 ]]; then command -v weed >/dev/null || fail 'Missing weed; run swarmy dev install-tools or see docs/DEV.md.'; fi
+    if [[ ${SWARMY_DEV_SKIP_S3:-0} != 1 ]]; then command -v weed >/dev/null || fail 'Missing weed; run swarmy install-tools or see docs/DEV.md.'; fi
     [[ $(curl --help all) == *'--aws-sigv4'* ]] || fail 'curl 7.75 or newer is required for S3 authentication.'
     mkdir -p -- "$dev_dir/fdb/data" "$dev_dir/fdb/logs" "$dev_dir/nats" "$dev_dir/seaweed" "$dev_dir/logs"
 

@@ -191,6 +191,6 @@ See [the desktop image](base-desktop/README.md) for example commands.
 
 ## Prebuilt base image
 
-Each release publishes base-ubuntu for Linux x86-64. `swarmy dev up` pulls it
+Each release publishes base-ubuntu for Linux x86-64. `swarmy swarm up dev` pulls it
 when no default image is configured; `swarmy image pull base-ubuntu --set-default`
 retries the verified download and registration. The recipe here remains the source.

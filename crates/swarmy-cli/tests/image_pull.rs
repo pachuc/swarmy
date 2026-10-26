@@ -123,6 +123,37 @@ fn image_pull_verifies_uploads_sparse_and_sets_default() {
     );
 }
 #[test]
+fn image_pull_set_default_creates_user_config_when_none_exists() {
+    let (home, url, requests) = setup(false);
+    fs::remove_file(home.path().join(".swarmy/config.toml")).unwrap();
+    let output = run(
+        home.path(),
+        &["image", "pull", "base-ubuntu", "--set-default"],
+        Some(&url),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let config = home.path().join("config/swarmy/config.toml");
+    let settings = swarmy_config::Settings::read(&config).unwrap();
+    assert_eq!(
+        settings.selection.default_image.as_deref(),
+        Some(format!("base-ubuntu:{}", swarmy_version::RELEASE_TAG).as_str())
+    );
+    assert!(!home.path().join(".swarmy/config.toml").exists());
+    assert_eq!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "POST")
+            .count(),
+        1
+    );
+}
+#[test]
 fn image_pull_refuses_a_corrupt_asset() {
     let (home, _, requests) = setup(false);
     let tag = swarmy_version::RELEASE_TAG;

@@ -67,7 +67,7 @@ fn reports_missing_and_invalid_config_without_leaking_values() {
         check(&report, "config")["fix"]
             .as_str()
             .unwrap()
-            .contains("swarmy dev up")
+            .contains("config.toml")
     );
     fixture.config("[s3]\nsecret_key = 'DO_NOT_PRINT'\n[gateway]\nconcurrency = 'DO_NOT_PRINT'");
     let output = fixture.doctor(false);

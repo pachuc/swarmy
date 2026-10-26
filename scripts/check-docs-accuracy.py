@@ -241,7 +241,7 @@ def command_rows():
     rows, seen = [], set()
     for path in md_files():
         # Dated history pins an older CLI; still check its links in the other modes.
-        if path == "docs/volume-benchmarks.md":
+        if path == "docs/volume-benchmarks.md" or path.startswith(("docs/proofs/", "docs/benchmarks/")):
             continue
         with open(os.path.join(ROOT, path), encoding="utf-8") as h:
             lines = h.read().splitlines()

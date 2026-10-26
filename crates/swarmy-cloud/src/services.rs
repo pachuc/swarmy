@@ -123,7 +123,7 @@ impl<'a> Options<'a> {
         if settings.remote.services == RemoteServices::Node && remote.api.token.is_empty() {
             // Control nodes serve the API, which rejects every request while its
             // token is empty. Provision a token here with the same generator
-            // `dev up` uses. Only fill when empty so a reinstall never rotates
+            // local swarms use. Only fill when empty so a reinstall never rotates
             // an existing token out from under connected profiles.
             remote.api.token = ulid::Ulid::generate().to_string();
         }

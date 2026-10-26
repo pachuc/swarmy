@@ -16,9 +16,9 @@ pub const SERVICES: &str = "scripts/remote-services.sh";
 pub const DECOMMISSION: &str = "scripts/remote-decommission.sh";
 /// Shared environment for remote scripts and SSH stdin.
 pub const REMOTE_PROVISION_ENV: &str = include_str!("../../../scripts/remote-provision-env.sh");
-/// Installer shared with `swarmy dev install-tools`.
+/// Installer shared with `swarmy install-tools`.
 pub const INSTALL_DEV_TOOLS: &str = include_str!("../../../scripts/install-dev-tools.sh");
-/// Backing stack shared with `swarmy dev`.
+/// Backing stack shared with local swarms.
 pub const DEV_STACK: &str = include_str!("../../../scripts/dev-stack.sh");
 
 /// Files uploaded to the node directory, sorted by path.
