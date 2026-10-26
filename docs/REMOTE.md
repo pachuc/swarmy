@@ -114,13 +114,6 @@ after this is not supported.
 as `base-ubuntu:NAME`. Use `--no-image` to skip the build; the two options
 cannot be combined.
 `add-node` reuses the stack's registry and does not rebuild the image.
-Both commands accept `--instance-type` and `--disk-gb` overrides; absent flags
-use `[remote]` defaults for the first node and its saved settings for joining
-nodes. Each node's resolved settings remain in its state record. The example
-uses a 40 GiB `m6i.large` control node with no sandboxes and a 100 GiB
-`m6id.4xlarge` sandbox node with local NVMe. Without `--sandboxes 0`, a node
-hosting sandboxes must have local NVMe.
-
 After a successful build, the node record stores `default_image`.
 `connect` copies it into `<state directory>/remote/<name>.profile.json` alongside
 the service endpoints. Selecting that profile with `--remote NAME`,
@@ -130,35 +123,11 @@ An explicit session `--image NAME:TAG` still takes precedence. Older profiles
 and remotes created with `--no-image` preserve any locally configured default;
 otherwise a new session requires an explicit registered image.
 
-The instance, root volume, and imported ed25519 key pair receive `Name` and
-`managed-by` tags at creation. IAM needs EC2 `DescribeImages`,
-`DescribeInstances`, `DescribeKeyPairs`, `RunInstances`, `ImportKeyPair`, `CreateTags`,
-`TerminateInstances`, and `DeleteKeyPair`, plus SSM `GetParameter` when no image
-is supplied. Tag-restricted identities should set `managed_by_tag` to their
-permitted value. The root volume is encrypted and deleted on termination.
-
-Node records are JSON at `<state directory>/remote/<name>.json`. The state
-directory is the configuration file's parent, or `.swarmy` in the current
-directory when no configuration exists. Records include region, instance id,
-public/private IPs, SSH user and key path, ports, creation time, and joining
-instances in `nodes`, including each node's sandbox count.
-`launch_settings` retains the resolved AMI and launch
-configuration, so later config edits do not change the subnet, security group,
-instance type, disk size, region, or ownership tag used by `add-node`.
-Older records without saved launch settings still support connect and down;
-recreate those remotes before adding nodes. Provisioning, tunnels, logs, and status try the public address and then the private address, so launchers in the
-same VPC can use security group membership rules. The final SSH command uses the
-address that answered. Keys and records are private local files. SSH stores host keys next to the generated key.
-
-An interrupted or failed `adopt` or `add-node` retains its state so `down` can clean up. A unique
-client token identifies a launch if its response was lost before the instance id
-was saved. Run `down` before retrying an interrupted `adopt` with the same name.
-A completed bucket-backed remote accepts a repeat `up --bucket` without creating
-more resources. `down` attempts instance termination and key-pair deletion
-independently, and reports missing AWS permissions. It removes local state once
-all instances are confirmed terminated or never launched, even if key-pair
-cleanup is denied. If an instance could still exist, it retains state for retry.
-The bucket, objects, IAM role, and instance profile remain for reuse.
+Node records are private JSON files under `<state directory>/remote`.
+They retain host addresses, SSH user, key path, port settings, and the
+provisioned nodes. A failed `adopt` or `add-node` keeps its record for a
+retry with `remote down` before re-adopting. The last host is never deleted
+by swarmy; only its services and files are decommissioned.
 
 All service units share one `swarmy-core` executable. `swarmyd.service` runs `/usr/local/bin/swarmy-core node` as root; it needs NBD and runc. Service units run `swarmy-core scheduler`, `swarmy-core worker`, `swarmy-core gateway`, and `swarmy-core api`. A changed core restarts each service unit; the node unit restarts only after the drain.
 
@@ -183,21 +152,10 @@ automatically after SSH failure. Inspect it with
 under `/etc/swarmy/`, readable only by the service user. The scheduler, gateway, worker,
 and CLI release binaries are also installed in `/usr/local/bin`.
 
-The local NVMe mount persists across reboot. Instance stop/start can discard
-instance-store data and is not supported as a preservation mechanism. `down`
-permanently deletes the development node and its EBS backing data.
-
-`add-node` adds compute capacity, not replicas of the backing services. Losing
-the first node still loses this development stack. For a recovery exercise,
-place a computer on a joining node and terminate that node while the first node
-remains running. `status` lists every saved instance and the stack's live and
-stale swarmyd registrations, plus the registered image names, tags, and manifest
-ids. JSON output includes `images` and `image_error`. Image and registration
-queries require a connected tunnel; disconnected or unavailable stores are
-reported as unknown rather than as an empty registry. The laptop tunnel forwards to the first node's
-loopback address and keeps local FoundationDB port 4500; stop any local dev stack
-before connecting. Remotes created with private FoundationDB advertising must
-be recreated with this version before using `add-node`.
+A local disk mount persists across reboot. `down` deletes swarmy's node
+directory and its data, but never the machine or operator-owned storage.
+`add-node` adds compute capacity, not replicas of backing services. Losing
+the first node still loses this development stack.
 
 Doctor's checks are described under [Tunnel and profile reference](#tunnel-and-profile-reference):
 control master and port mapping, the control-plane API snapshot, and the S3
@@ -209,21 +167,6 @@ Connect's JSON preserves the profile fields and adds `timing` with
 includes port allocation, SSH readiness, and fetching the cluster identity.
 Reusing a healthy control master reports `reused: true` and zero for the two
 skipped phases.
-
-For a proof from a launcher in the same VPC, block direct access before running
-the workflow as the ordinary user. Keep SSH port 22 allowed. Add port 8333
-when using SeaweedFS instead of an S3 bucket. For example:
-
-```sh
-sudo iptables -I OUTPUT -m owner --uid-owner ubuntu -d FIRST_NODE_PRIVATE_IP \
-  -p tcp -m multiport --dports 4500,4222 -j REJECT
-# Run up/connect/doctor/run/chat/checkpoint/add-node/recovery/down as ubuntu.
-sudo iptables -D OUTPUT -m owner --uid-owner ubuntu -d FIRST_NODE_PRIVATE_IP \
-  -p tcp -m multiport --dports 4500,4222 -j REJECT
-```
-
-Record the block, failed direct probes, successful doctor checks, and
-provider teardown queries with the run. Remove the rule even after a failure.
 
 ## Persistent object storage
 
@@ -531,7 +474,7 @@ swarmy remote logs demo         # Ctrl-C stops following the primary's journal
 swarmy dev logs worker          # local routing and placement diagnostics
 ```
 
-`add-node` launches another `swarmyd` using the saved launch settings and the
+`add-node` provisions another existing host using the saved settings and the
 first node's private backing-service endpoints. It adds compute, not database
 replicas. The first node must remain available. For a controlled failure, locate
 the hosting node from worker/node logs and the saved JSON in
@@ -543,52 +486,6 @@ the durable rebuild notice reports the restart, lost processes, and latest
 snapshot. An interrupted call may return the notice as an error; retry the
 read-only marker check after recovery. The checkpointed marker should survive;
 the HTTP server must be started again. A kill does not guarantee migration to the added node.
-
-
-### Costs, inspection, and teardown
-
-
-EC2 time, the 100 GiB gp3 root disk on each node, public IPv4 addresses, and
-applicable network transfer cost money. Instance storage is part of the instance
-allocation. Every `add-node` adds another instance and disk. Real inference also
-uses the operator's provider account. Without `--bucket`, the development stack uses SeaweedFS on the first node.
-With `--bucket`, the instance role accesses S3 objects until teardown. Disconnecting, closing
-chat, or stopping local services leaves cloud resources running and billable.
-
-`swarmy dev status` shows local processes. `swarmy remote ls` shows saved
-instances, SSH reachability, and node heartbeat ages; it does **not** query EC2
-power state or billing. Use the AWS console or provider queries for that.
-Save the instance ids and key names before teardown, since `down` removes the
-local record. With the optional AWS CLI installed as your user:
-
-```bash
-aws ec2 describe-instances --region us-east-1 \
-  --filters Name=tag:Name,Values=demo,demo-2 \
-  --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,Key:KeyName}'
-swarmy dev down
-swarmy remote disconnect demo
-swarmy remote down demo --yes
-# Replace the following values with every id/key saved above.
-aws ec2 describe-instances --region us-east-1 --instance-ids i-<first-id> i-<second-id> \
-  --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name}'
-aws ec2 describe-volumes --region us-east-1 \
-  --filters Name=tag:Name,Values=demo,demo-2 --query 'Volumes[].VolumeId'
-aws ec2 describe-key-pairs --region us-east-1 \
-  --filters Name=key-name,Values=swarmy-FIRST,swarmy-SECOND --query 'KeyPairs[].KeyName'
-```
-
-Expect `terminated` for all recorded instances (or eventual absence), and empty
-volume and key-pair lists. `down` waits for termination, deletes imported keys,
-empties and deletes its bucket, removes the instance profile and role,
-and removes local state. Use `--keep-bucket` to leave the bucket and its
-guarding role and instance profile intact. Without that flag, `down` asks for
-confirmation naming every owned resource it will delete on a terminal; `--json`
-requires `--yes` when there are owned resources to remove. `--keep-bucket`
-terminates the instances without a prompt. It permanently deletes this stack's backing data;
-checkpoints here do not survive teardown of the first node. Failed provisioning
-retains its state for `remote down`; failed cleanup retains state for retry.
-Never delete that state to work around an error while resources still exist.
-See the state and service contract above.
 
 
 ### Tunnel and profile reference
@@ -631,8 +528,7 @@ sudo when it is missing. `--local-storage` is required for sandbox nodes
 (a block device or `dir:/path`); control-only nodes (`--sandboxes 0`) leave
 it empty. The bucket flags are the same object-bucket options `adopt` takes.
 `--services`, `--copy-credential`, `--sandboxes`, `--no-image`, and
-`--image-recipe` behave as in `adopt`; `--instance-type` and `--disk-gb` do
-not exist here because there is no machine to size.
+`--image-recipe` behave as in `adopt`.
 
 `swarmy remote add-node NAME --host <machine-address> --ssh-key
 <bootstrap-key>` joins another existing machine the same way, with
@@ -662,8 +558,7 @@ machines themselves, and says so. A failed host does not block the others:
 its real failure reason is reported, its record (and the bucket) is kept,
 and `down` waits only briefly per host instead of the full provisioning
 wait, so re-running `down` retries exactly the failed hosts.
-`status` reports no instance type for existing hosts, and owned bucket or
-role resources still ask for confirmation before deletion.
+`status` reports no instance type for existing hosts, and owned buckets still ask for confirmation before deletion.
 
 `down` deliberately leaves the service user, the fstab line and its mount,
 local sandbox disk data, and the tunnel keys joining nodes authorized on
@@ -753,7 +648,7 @@ information for scripts.
 
 ### Maintainer tunnel acceptance tests
 
-These localhost tests are separate from the no-root EC2 workflow above.
+These localhost tests exercise the SSH workflow without a cloud provider.
 To run the SSH acceptance test on the launcher, authorize a temporary SSH key for
 `ubuntu@127.0.0.1`, then run:
 
@@ -818,7 +713,7 @@ For a ChatGPT gateway, use `swarmy remote adopt demo --services node
 `credential_file` leaves the laptop. A warning precedes transfer. SSH sends the
 contents on stdin, and `/etc/swarmy/auth.json` is owned by ubuntu with mode 0600.
 The development source copy at `source/` excludes the configured credential path as well as
-`.swarmy`, `.dev`, and environment files. Without the flag a ChatGPT node launch
+`.swarmy`, `.dev`, and environment files. Without the flag a ChatGPT node
 fails before creating resources. Do not run a laptop gateway that refreshes the
 same account concurrently. Stopping the services does not erase the copied file;
 `remote down` terminates the node and its root disk.

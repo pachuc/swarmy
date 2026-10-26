@@ -4,8 +4,7 @@
 //! created, adopted, and torn down here with plain S3 calls: no IAM,
 //! public-access-block, or encryption calls. Ownership is recorded with
 //! bucket tags where the provider supports them, else in a marker object
-//! under the prefix. The prefix-scoped delete loop and the S3 error helpers
-//! are used by the static-key bucket lifecycle.
+//! under the prefix.
 use aws_sdk_s3::error::ProvideErrorMetadata;
 
 use super::Cloud;
@@ -229,7 +228,7 @@ async fn prefix_empty(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -> Res
 /// provider does not support tagging. Denied tagging warns and still records
 /// the marker, mirroring bucket creation on AWS.
 async fn record_ownership(client: &aws_sdk_s3::Client, bucket: &ObjectBucket) -> Result<()> {
-    let tags = merged_bucket_tags(Vec::new(), &bucket.owner);
+    let tags = merged_bucket_tags(&bucket.owner);
     match client
         .put_bucket_tagging()
         .bucket(&bucket.spec.bucket)
@@ -457,17 +456,8 @@ pub(super) fn s3_tag(key: &str, value: &str) -> aws_sdk_s3::types::Tag {
         .expect("tag fields")
 }
 
-pub(super) fn merged_bucket_tags(
-    existing: Vec<aws_sdk_s3::types::Tag>,
-    owner: &str,
-) -> Vec<aws_sdk_s3::types::Tag> {
-    let mut tags: Vec<_> = existing
-        .into_iter()
-        .filter(|tag| tag.key() != MANAGED_TAG && tag.key() != REMOTE_TAG)
-        .collect();
-    tags.push(s3_tag(MANAGED_TAG, MANAGER));
-    tags.push(s3_tag(REMOTE_TAG, owner));
-    tags
+fn merged_bucket_tags(owner: &str) -> Vec<aws_sdk_s3::types::Tag> {
+    vec![s3_tag(MANAGED_TAG, MANAGER), s3_tag(REMOTE_TAG, owner)]
 }
 
 pub(super) fn owned<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, owner: &str) -> Ownership {
@@ -482,5 +472,51 @@ pub(super) fn owned<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>, owner: &
         Ownership::Owned
     } else {
         Ownership::Unmanaged
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::AwsContext;
+
+    fn mapped(operation: &'static str, code: &str, message: &str) -> crate::Error {
+        let metadata = aws_sdk_s3::error::ErrorMetadata::builder()
+            .code(code)
+            .message(message)
+            .build();
+        Err::<(), _>(metadata).aws_context(operation).unwrap_err()
+    }
+
+    #[test]
+    fn denial_codes_become_missing_permission() {
+        for code in [
+            "AccessDenied",
+            "AccessDeniedException",
+            "UnauthorizedOperation",
+        ] {
+            match mapped("s3:HeadBucket", code, "not authorized") {
+                crate::Error::MissingPermission { operation, .. } => {
+                    assert_eq!(operation, "s3:HeadBucket")
+                }
+                error => panic!("expected MissingPermission for {code}, got {error:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn other_errors_carry_code_and_message_from_metadata() {
+        match mapped("s3:HeadBucket", "InvalidRequest", "bad bucket request") {
+            crate::Error::Aws {
+                operation,
+                code,
+                message,
+            } => {
+                assert_eq!(operation, "s3:HeadBucket");
+                assert_eq!(code, "InvalidRequest");
+                assert_eq!(message, "bad bucket request");
+            }
+            error => panic!("expected Aws, got {error:?}"),
+        }
     }
 }

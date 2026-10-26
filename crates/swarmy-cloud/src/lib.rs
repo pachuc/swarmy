@@ -1,6 +1,6 @@
 //! Provision existing remote hosts over SSH and manage their static-key
 //! object buckets through [`Cloud`]. Cloud swarm machines come from the
-//! OpenTofu modules in `infra/modules`, run by `swarmy-infra`.
+//! `OpenTofu` modules in `infra/modules`, run by `swarmy-infra`.
 //! See `docs/cloud-substrate.md`.
 // The CLI owns presentation. Provisioning reports lines through this process-level
 // sink because work may continue on different Tokio threads during an upgrade.

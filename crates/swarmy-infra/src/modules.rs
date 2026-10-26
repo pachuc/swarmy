@@ -1,4 +1,4 @@
-//! The machine-group OpenTofu modules this client carries, compiled in from
+//! The machine-group `OpenTofu` modules this client carries, compiled in from
 //! `infra/modules`. Each entry is a complete root configuration: its `*.tf`
 //! files and its provider lock file. Tests stay in the repository.
 use crate::ModuleFile;

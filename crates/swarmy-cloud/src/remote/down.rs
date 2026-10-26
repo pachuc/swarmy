@@ -25,7 +25,7 @@ pub(super) async fn plan(
         return Ok(None);
     }
     Ok(
-        (cloud.bucket_ownership(&bucket).await? == Ownership::Owned).then(|| DeletionPlan {
+        (cloud.bucket_ownership(&bucket).await? == Ownership::Owned).then_some(DeletionPlan {
             bucket: bucket.spec.bucket,
         }),
     )
@@ -165,7 +165,7 @@ async fn cleanup_bucket(
                 },
                 Ownership::Absent => cloud_out!("Bucket {name}: absent"),
                 Ownership::Unmanaged => {
-                    cloud_out!("Bucket {name}: kept (ownership tags do not match)")
+                    cloud_out!("Bucket {name}: kept (ownership tags do not match)");
                 }
             }
         }

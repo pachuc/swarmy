@@ -16,26 +16,25 @@ struct FakeCloud {
     denied: Cell<bool>,
 }
 impl Cloud for FakeCloud {
-    async fn ensure_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
+    fn ensure_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<()>> {
         self.ensured.borrow_mut().push(bucket.spec.bucket.clone());
-        Ok(())
+        std::future::ready(Ok(()))
     }
-    async fn verify_bucket_access(&self, _: &ObjectBucket) -> Result<()> {
-        Ok(())
+    fn verify_bucket_access(&self, _: &ObjectBucket) -> impl Future<Output = Result<()>> {
+        std::future::ready(Ok(()))
     }
-    async fn bucket_ownership(&self, _: &ObjectBucket) -> Result<Ownership> {
-        if self.denied.get() {
-            return Err(crate::Error::other("permission denied"));
-        }
-        Ok(if self.unmanaged.get() {
-            Ownership::Unmanaged
+    fn bucket_ownership(&self, _: &ObjectBucket) -> impl Future<Output = Result<Ownership>> {
+        std::future::ready(if self.denied.get() {
+            Err(crate::Error::other("permission denied"))
+        } else if self.unmanaged.get() {
+            Ok(Ownership::Unmanaged)
         } else {
-            Ownership::Owned
+            Ok(Ownership::Owned)
         })
     }
-    async fn delete_bucket(&self, bucket: &ObjectBucket) -> Result<BucketRemoval> {
+    fn delete_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<BucketRemoval>> {
         self.removed.borrow_mut().push(bucket.spec.bucket.clone());
-        Ok(BucketRemoval::Removed)
+        std::future::ready(Ok(BucketRemoval::Removed))
     }
 }
 
