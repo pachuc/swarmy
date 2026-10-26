@@ -24,7 +24,7 @@ daemon=
 cleanup() {
     result=$?
     if (( result != 0 )); then
-        for log in "$work"/.swarmy/dev/logs/*.log "$work"/swarmyd.log; do
+        for log in "$work"/.local/state/swarmy/swarms/dev/logs/*.log "$work"/swarmyd.log; do
             if [[ -f $log ]]; then cat "$log"; fi
         done
     fi

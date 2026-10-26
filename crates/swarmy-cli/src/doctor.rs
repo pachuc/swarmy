@@ -63,7 +63,7 @@ pub(crate) async fn run(json: bool) -> anyhow::Result<bool> {
             // TOML diagnostics can include source values, including secrets.
             Err(_) => Err(invalid_config()),
         },
-        "Run swarmy swarm up NAME to create one (.swarmy/config.toml in a checkout, else ~/.config/swarmy/config.toml); repair an existing file or its SWARMY_* overrides. See docs/DEV.md.",
+        "Create ~/.config/swarmy/config.toml for preferences, or .swarmy/config.toml in a project for service tuning; repair an existing file or its SWARMY_* overrides. See docs/DEV.md.",
     )];
     checks.push(Check::new("target", match &target {
         Ok(swarmy_client::api_client::Api::Direct { url, .. }) => Ok(format!("API {url}")),
@@ -318,7 +318,7 @@ async fn api_checks(
             checks.push(Check::new(
                 "API",
                 Err(format!("{error:#}")),
-                "Check the target with swarmy swarm show, or run swarmy swarm up NAME for a local stack; check the API URL and token.",
+                "Check the target with swarmy swarm show, or bring up a local swarm with swarmy swarm up NAME; check the API URL and token.",
             ));
             return Vec::new();
         }
@@ -330,7 +330,7 @@ async fn api_checks(
             checks.push(Check::new(
                 "API",
                 Err(format!("{error:#}")),
-                "Check the target with swarmy swarm show, or run swarmy swarm up NAME for a local stack; check the API URL and token.",
+                "Check the target with swarmy swarm show, or bring up a local swarm with swarmy swarm up NAME; check the API URL and token.",
             ));
             return Vec::new();
         }
@@ -530,7 +530,7 @@ fn snapshot_checks(
             let available = if available.is_empty() { "none" } else { &available };
             Err(format!("{available}; unserved: {}", missing.join(", ")))
         },
-        "Inspect the gateway log for provider discovery errors (swarmy swarm logs NAME gateway: .swarmy/dev/logs in a project, ~/.local/state/swarmy/dev/logs otherwise; journalctl -u swarmy-gateway remotely); configure credentials and restart the gateway.",
+        "Inspect the gateway log for provider discovery errors (swarmy swarm logs NAME gateway: ~/.local/state/swarmy/swarms/NAME/logs; journalctl -u swarmy-gateway remotely); configure credentials and restart the gateway.",
     ));
     let mut rows = api_providers.map_or_else(
         || {

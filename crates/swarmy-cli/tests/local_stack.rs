@@ -341,7 +341,11 @@ async fn register_image(fixture: &Fixture) {
         .read_record("e2e")
         .unwrap()
         .unwrap();
-    let client = swarmy_client::Client::new(&record.url, record.token).unwrap();
+    let client = swarmy_client::Client::new(
+        record.api.url.as_deref().unwrap(),
+        record.api.token.unwrap(),
+    )
+    .unwrap();
     // A zeroed file stands in for a built filesystem: zero chunks never
     // reach object storage, so registration needs no root or image tools.
     let raw = fixture.files.path().join("fixture.ext4");

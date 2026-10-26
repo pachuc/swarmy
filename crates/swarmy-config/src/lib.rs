@@ -625,8 +625,8 @@ pub struct Fake {
 impl Default for Fake {
     fn default() -> Self {
         Self {
-            script: ".swarmy/dev/fake.json".into(),
-            call_log: ".swarmy/dev/calls.log".into(),
+            script: ".local/state/swarmy/swarms/dev/fake.json".into(),
+            call_log: ".local/state/swarmy/swarms/dev/calls.log".into(),
         }
     }
 }
