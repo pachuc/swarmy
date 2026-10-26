@@ -14,6 +14,7 @@ swarmy-catalog.workspace = true
 base64.workspace = true
 rand.workspace = true
 tempfile.workspace = true
+jiff.workspace = true
 tracing-subscriber.workspace = true
 swarmy-core.workspace = true
 ulid.workspace = true

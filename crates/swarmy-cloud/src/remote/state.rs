@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File, OpenOptions},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
@@ -14,8 +14,7 @@ pub(super) struct State {
 
 impl State {
     pub(super) fn open(directory: &Path) -> Result<Self> {
-        fs::create_dir_all(directory)?;
-        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+        swarmy_config::create_private_dir(directory)?;
         Ok(Self {
             directory: directory.canonicalize()?,
         })
@@ -97,8 +96,7 @@ impl State {
         let path = self.path(&node.name, "json")?;
         let mut bytes = serde_json::to_vec_pretty(node)?;
         bytes.push(b'\n');
-        write(&path, &bytes)?;
-        File::open(&self.directory)?.sync_all()?;
+        swarmy_config::write_private(&path, &bytes)?;
         Ok(())
     }
 
@@ -129,17 +127,4 @@ impl State {
         File::open(&self.directory)?.sync_all()?;
         Ok(())
     }
-}
-
-/// Replace a file atomically; the temporary file is private to this user.
-pub(super) fn write(path: &Path, bytes: &[u8]) -> Result<()> {
-    use std::io::Write;
-    let Some(parent) = path.parent() else {
-        return Err(crate::Error::other("path has no parent"));
-    };
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    file.write_all(bytes)?;
-    file.as_file().sync_all()?;
-    file.persist(path)?;
-    Ok(())
 }

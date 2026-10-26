@@ -4,7 +4,6 @@ mod process;
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::Write,
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     process::Stdio,
@@ -229,20 +228,6 @@ fn local(json: bool) -> Result<Layout> {
     Layout::discover()
 }
 
-fn write_private(path: &Path, content: &str) -> Result<()> {
-    let temporary = path.with_extension("tmp");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    file.write_all(content.as_bytes())?;
-    file.sync_all()?;
-    fs::rename(temporary, path)?;
-    Ok(())
-}
-
 /// `bash -c SCRIPT NAME`: run a compiled-in script; NAME becomes its $0.
 fn embedded(script: &str, name: &str) -> Process {
     let mut command = Process::new("bash");
@@ -323,7 +308,8 @@ pub(crate) fn image_cache() -> Result<PathBuf> {
 pub(crate) fn set_default_image(config: &Path, image: &str) -> Result<()> {
     let mut settings = Settings::read(config)?;
     settings.selection.default_image = Some(image.to_owned());
-    write_private(config, &settings.to_toml()?)
+    swarmy_config::write_private(config, settings.to_toml()?.as_bytes())?;
+    Ok(())
 }
 pub(crate) async fn resolve_core(
     core_bin: Option<PathBuf>,
@@ -579,7 +565,7 @@ async fn prepare_stack(layout: &Layout, remote: Option<&str>) -> Result<()> {
             remote_ssh::healthy(&profile).await,
             "remote tunnel is down; run swarmy remote connect {name}"
         );
-        write_private(&marker, name)?;
+        swarmy_config::write_private(&marker, name.as_bytes())?;
     } else if marker.exists() {
         fs::remove_file(&marker)?;
     }
@@ -609,7 +595,7 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
     if let Some(parent) = layout.config.parent() {
         fs::create_dir_all(parent)?;
     }
-    write_private(&layout.config, &settings.to_toml()?)?;
+    swarmy_config::write_private(&layout.config, settings.to_toml()?.as_bytes())?;
     // Load again so environment overrides win, without persisting those overrides.
     settings = Settings::load()?.settings;
     if settings.selection.provider == "fake" {
@@ -618,9 +604,9 @@ fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
             fs::create_dir_all(parent)?;
         }
         if !script.exists() {
-            write_private(
+            swarmy_config::write_private(
                 script,
-                r#"{"request_based":{"steps":1,"tool_steps":[],"final_answer":"Hello from swarmy!"}}"#,
+                r#"{"request_based":{"steps":1,"tool_steps":[],"final_answer":"Hello from swarmy!"}}"#.as_bytes(),
             )?;
         }
         if let Some(parent) = Path::new(&settings.fake.call_log).parent() {
@@ -738,7 +724,7 @@ async fn serve(state: &Path, core: &Path, children: &mut Vec<(&'static str, Chil
                 fs::read_to_string(state.join(format!("logs/{name}.log")))
                     .is_ok_and(|log| log.contains(message))
             }) {
-                write_private(&state.join("ready"), "ready\n")?;
+                swarmy_config::write_private(&state.join("ready"), b"ready\n")?;
                 return Ok::<_, anyhow::Error>(());
             }
             sleep(Duration::from_millis(50)).await;

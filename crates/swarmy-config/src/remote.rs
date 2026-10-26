@@ -633,12 +633,7 @@ impl RemoteProfile {
 /// # Errors
 /// Rejects empty names, path traversal, and shell metacharacters.
 pub fn validate_remote_name(name: &str) -> Result<(), Error> {
-    if name.is_empty()
-        || name.len() > 64
-        || !name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
+    if !is_valid_name(name) {
         return Err(Error::Remote(
             "names must contain 1-64 letters, digits, hyphens, or underscores",
         ));
@@ -1006,4 +1001,12 @@ mod tests {
         assert!(!debug.contains("test-access"), "{debug}");
         assert!(!debug.contains("test-secret"), "{debug}");
     }
+}
+
+pub(crate) fn is_valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }

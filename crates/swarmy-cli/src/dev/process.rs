@@ -40,7 +40,8 @@ impl Identity {
     }
 
     pub(super) fn save(self, path: &Path) -> Result<()> {
-        super::write_private(path, &format!("{} {}\n", self.pid, self.start))
+        swarmy_config::write_private(path, format!("{} {}\n", self.pid, self.start).as_bytes())?;
+        Ok(())
     }
 
     pub(super) async fn signal(self, signal: &str) -> Result<()> {
