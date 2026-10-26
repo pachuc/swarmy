@@ -388,7 +388,7 @@ fn reconcile_refuses_removed_or_moved_hosts() {
     let (_tmp, registry, spec) = fixture();
     let planned = plan(&spec, source_list(&registry, &spec)).unwrap();
     let mut record = SwarmRecord {
-        name: spec.name.clone(),
+        name: "fleet".into(),
         created_at: jiff::Timestamp::now(),
         api: SwarmApi::default(),
         hosts: BTreeMap::from([("workers".into(), vec![planned[2].host.clone()])]),
