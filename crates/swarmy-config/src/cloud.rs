@@ -1,5 +1,5 @@
 //! Operator cloud keys live here because machines must be created before a swarm
-//! exists. Unlike cluster credentials, these reach OpenTofu only through its
+//! exists. Unlike cluster credentials, these reach `OpenTofu` only through its
 //! process environment.
 use crate::{Error, create_private_dir, paths::Dirs, write_private};
 use serde::{Deserialize, Serialize};
@@ -117,6 +117,8 @@ impl CloudCredential {
     /// Build and validate, consuming secret values in provider field order.
     /// # Errors
     /// Returns `CloudCredential` for invalid values or count.
+    /// # Panics
+    /// The checked field count guarantees each expected secret is present.
     pub fn new(
         provider: CloudProvider,
         secrets: Vec<String>,
@@ -227,7 +229,7 @@ impl CloudCredential {
         Ok(())
     }
 }
-/// Environment for one OpenTofu run. Debug exposes names, never values.
+/// Environment for one `OpenTofu` run. Debug exposes names, never values.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ProviderEnv {
     vars: Vec<(&'static str, String)>,
@@ -425,7 +427,7 @@ mod tests {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
             match CloudCredentials::load(&path).unwrap_err() {
                 Error::File { source, .. } => {
-                    assert_eq!(matches!(*source, Error::Decode(_)), decode)
+                    assert_eq!(matches!(*source, Error::Decode(_)), decode);
                 }
                 e => panic!("unexpected error: {e}"),
             }
