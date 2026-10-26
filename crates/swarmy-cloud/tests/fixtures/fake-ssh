@@ -32,11 +32,14 @@ if ((master)) && [[ -f "$(dirname "$0")/fail-start" ]]; then
     echo boom >&2
     exit 255
 fi
+if ((master)) && [[ -f "$(dirname "$0")/fail-bind-once" ]]; then
+    rm "$(dirname "$0")/fail-bind-once"
+    exit 255
+fi
 if ((master)); then
-    printf '%s\n' "$*" >> "$(dirname "$0")/ssh-masters"
     exec python3 -c '
 import os, signal, socket, sys
-args = sys.argv[1:]
+master_log, *args = sys.argv[1:]
 listeners = []
 for i, arg in enumerate(args):
     if arg == "-L":
@@ -55,9 +58,11 @@ with open(path + ".pid", "w") as file:
 control = socket.socket(socket.AF_UNIX)
 control.bind(path)
 control.listen()
+with open(master_log, "a") as log:
+    log.write(" ".join(args) + "\n")
 while True:
     signal.pause()
-' "$@"
+' "$(dirname "$0")/ssh-masters" "$@"
 fi
 case "${args[-1]}" in
     *config.toml*) printf '[api]\ntoken = "fake-token"\n' ;;
