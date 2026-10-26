@@ -26,6 +26,7 @@ path = "src/main.rs"
 [dependencies]
 swarmy-version.workspace = true
 swarmy-cloud.workspace = true
+swarmy-infra.workspace = true
 url.workspace = true
 serde.workspace = true
 fs2.workspace = true

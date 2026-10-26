@@ -1,11 +1,14 @@
-//! CLI presentation for hosts provided by an existing-host group.
+//! CLI presentation for swarms on hosts.
 use anyhow::{Result, bail};
 use serde_json::json;
 use std::path::PathBuf;
+use swarmy_cloud::provision::groups::{self, MachineGroups};
 use swarmy_cloud::provision::{self, UpRequest};
+use swarmy_config::cloud::{CloudCredentials, CloudProvider};
 use swarmy_config::swarm::{
     GroupSpec, HostSpec, Lifecycle, Module, Placement, Registry, SwarmSpec,
 };
+use swarmy_infra::Tofu;
 
 pub(crate) struct UpArgs {
     pub copy_credential: bool,
@@ -23,6 +26,166 @@ pub(crate) struct CreateHost {
     pub service_user: Option<String>,
     pub lifecycle: Option<Lifecycle>,
 }
+pub(crate) struct CreateCloud {
+    pub module: String,
+    pub size: Option<String>,
+    pub location: Option<String>,
+    pub nodes: u32,
+    pub node_size: Option<String>,
+    pub sandboxes: Option<u32>,
+    pub local_storage: Option<String>,
+    pub lifecycle: Option<Lifecycle>,
+}
+
+// SWARMY_TOFU_BIN is a development and test override of the pinned download.
+async fn tofu(registry: &Registry) -> Result<Tofu> {
+    if let Some(path) = std::env::var_os("SWARMY_TOFU_BIN").filter(|p| !p.is_empty()) {
+        if !std::path::Path::new(&path).is_file() {
+            bail!("SWARMY_TOFU_BIN={} does not exist", path.to_string_lossy());
+        }
+        return Ok(Tofu::from_binary(path, &registry.dirs().cache));
+    }
+    Ok(Tofu::install(
+        &registry.dirs().cache,
+        &swarmy_infra::opentofu::Source::pinned(),
+    )
+    .await?)
+}
+async fn machines_for(registry: &Registry, need: bool) -> Result<Option<(Tofu, CloudCredentials)>> {
+    if !need {
+        return Ok(None);
+    }
+    let creds = CloudCredentials::load(&CloudCredentials::path(registry.dirs()))?;
+    let runner = tofu(registry).await?;
+    Ok(Some((runner, creds)))
+}
+fn machine_refs(pair: &Option<(Tofu, CloudCredentials)>) -> Option<MachineGroups<'_>> {
+    pair.as_ref()
+        .map(|(tofu, credentials)| MachineGroups { tofu, credentials })
+}
+
+pub(crate) fn cloud_spec(name: &str, args: &CreateCloud) -> Result<SwarmSpec> {
+    let module = Module::try_from(args.module.clone()).map_err(|_| anyhow::anyhow!(
+        "--on takes hetzner-cloud, aws, or an absolute path to your own module; use --host for machines you own and --local for this machine"
+    ))?;
+    if matches!(module, Module::Existing | Module::Local)
+        || matches!(&module, Module::Path(p) if !p.is_absolute())
+    {
+        bail!(
+            "--on takes hetzner-cloud, aws, or an absolute path to your own module; use --host for machines you own and --local for this machine"
+        );
+    }
+    let size = args
+        .size
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("--size is required with --on"))?;
+    let location = args
+        .location
+        .clone()
+        .or_else(|| (module == Module::HetznerCloud).then(|| "fsn1".into()))
+        .ok_or_else(|| anyhow::anyhow!("--location is required with --on {}", args.module))?;
+    let group = |size: String, count, nodes: bool| GroupSpec {
+        module: module.clone(),
+        size: Some(size),
+        location: Some(location.clone()),
+        count: Some(count),
+        stack_dir: None,
+        hosts: Vec::new(),
+        sandboxes: if nodes { args.sandboxes } else { None },
+        local_storage: if nodes {
+            args.local_storage.clone()
+        } else {
+            None
+        },
+    };
+    let mut groups = std::collections::BTreeMap::new();
+    groups.insert("control".into(), group(size.clone(), 1, args.nodes == 0));
+    if args.nodes > 0 {
+        groups.insert(
+            "workers".into(),
+            group(args.node_size.clone().unwrap_or(size), args.nodes, true),
+        );
+    }
+    let spec = SwarmSpec {
+        name: name.into(),
+        lifecycle: args.lifecycle.unwrap_or(Lifecycle::Persistent),
+        service_user: None,
+        bucket: None,
+        groups,
+        placement: Placement {
+            stack: "control".into(),
+            services: "control".into(),
+            nodes: vec![
+                if args.nodes == 0 {
+                    "control"
+                } else {
+                    "workers"
+                }
+                .into(),
+            ],
+        },
+    };
+    spec.validate()?;
+    Ok(spec)
+}
+
+pub(crate) fn cloud_next(registry: &Registry, spec: &SwarmSpec) -> Result<()> {
+    let creds = CloudCredentials::load(&CloudCredentials::path(registry.dirs()))?;
+    for provider in [
+        CloudProvider::HetznerCloud,
+        CloudProvider::HetznerS3,
+        CloudProvider::Aws,
+    ] {
+        let needed = match provider {
+            CloudProvider::HetznerCloud | CloudProvider::HetznerS3 => spec
+                .groups
+                .values()
+                .any(|g| g.module == Module::HetznerCloud),
+            CloudProvider::Aws => spec.groups.values().any(|g| g.module == Module::Aws),
+        };
+        if needed && creds.get(provider).is_none() {
+            println!("next: swarmy cloud login {provider}");
+        }
+    }
+    println!("next: swarmy swarm plan {}", spec.name);
+    Ok(())
+}
+
+pub(crate) async fn plan(registry: &Registry, spec: &SwarmSpec, json_output: bool) -> Result<()> {
+    if !groups::has_module_groups(spec) {
+        bail!(
+            "swarm \"{}\" has no OpenTofu groups; nothing to plan",
+            spec.name
+        );
+    }
+    let pair = machines_for(registry, true)
+        .await?
+        .expect("module group needs tofu");
+    let plans = groups::plan_groups(
+        registry,
+        spec,
+        MachineGroups {
+            tofu: &pair.0,
+            credentials: &pair.1,
+        },
+    )
+    .await?;
+    if json_output {
+        println!("{}", json!({"swarm":spec.name,"groups":plans}));
+    } else {
+        for p in plans {
+            println!(
+                "== group {} ({}): {} ==",
+                p.group,
+                p.module,
+                if p.changes { "changes" } else { "no changes" }
+            );
+            println!("{}", p.plan);
+        }
+    }
+    Ok(())
+}
+
 pub(crate) struct NodeAdd {
     pub group: String,
     pub address: String,
@@ -79,6 +242,8 @@ pub(crate) async fn up(
         .transpose()?;
     let settings = swarmy_config::Settings::load_base()?.settings;
     let sources = provision::existing_sources(spec, &registry.swarm_dir(&spec.name)?)?;
+    let pair = machines_for(registry, groups::has_module_groups(spec)).await?;
+    let applied = groups::apply_order(spec);
     let reports = provision::provision_swarm(UpRequest {
         registry,
         spec,
@@ -87,12 +252,15 @@ pub(crate) async fn up(
         copy_credential: args.copy_credential,
         recipe: recipe.as_deref(),
         cache: &registry.dirs().cache.join("core"),
-        machines: None,
+        machines: machine_refs(&pair),
         bucket_keys: args.bucket_keys.clone(),
     })
     .await?;
     if json_output {
-        println!("{}", json!({"swarm":spec.name,"hosts":reports}));
+        println!(
+            "{}",
+            json!({"swarm":spec.name,"hosts":reports,"groups":applied})
+        );
     } else {
         for r in reports {
             println!(
@@ -117,6 +285,13 @@ pub(crate) async fn down(
     destroy: bool,
     json_output: bool,
 ) -> Result<()> {
+    if spec.lifecycle == Lifecycle::Persistent && !destroy && groups::has_module_groups(spec) {
+        bail!(
+            "swarm \"{}\" is persistent: down destroys its machines, database and bucket. Stop it with swarmy swarm stop {}, or pass --destroy",
+            spec.name,
+            spec.name
+        );
+    }
     if spec.lifecycle == Lifecycle::Persistent && !destroy {
         bail!(
             "swarm \"{}\" is persistent: down deletes its database and swarmy's files on every host (the machines keep running). Stop it with swarmy swarm stop {}, or pass --destroy",
@@ -124,11 +299,25 @@ pub(crate) async fn down(
             spec.name
         );
     }
-    let removed = provision::decommission_swarm(registry, spec, None).await?;
+    let tofu_dir = registry.swarm_dir(&spec.name)?.join("tofu");
+    let destroyed_groups = if tofu_dir.is_dir() {
+        std::fs::read_dir(&tofu_dir)?
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.path().is_dir())
+            .count()
+    } else {
+        0
+    };
+    let pair = machines_for(
+        registry,
+        groups::has_module_groups(spec) || tofu_dir.exists(),
+    )
+    .await?;
+    let removed = provision::decommission_swarm(registry, spec, machine_refs(&pair)).await?;
     if json_output {
         println!(
             "{}",
-            json!({"swarm":spec.name,"removed":removed.iter().map(|r| &r.name).collect::<Vec<_>>()})
+            json!({"swarm":spec.name,"removed":removed.iter().map(|r| &r.name).collect::<Vec<_>>(),"destroyed_groups":destroyed_groups})
         );
     }
     Ok(())

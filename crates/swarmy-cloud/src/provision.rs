@@ -20,7 +20,7 @@ use std::{
 };
 use swarmy_config::{
     self, Settings, create_private_dir,
-    swarm::{Module, RecordedHost, Registry, StaticKeys, SwarmApi, SwarmRecord, SwarmSpec},
+    swarm::{RecordedHost, Registry, StaticKeys, SwarmApi, SwarmRecord, SwarmSpec},
 };
 
 /// One machine a group provides before provisioning.
@@ -58,11 +58,6 @@ pub struct Planned {
     pub role: Role,
     pub sandboxes: u32,
     pub local_storage: String,
-}
-/// True when every group lists existing hosts.
-#[must_use]
-pub fn is_host_swarm(spec: &SwarmSpec) -> bool {
-    spec.groups.values().all(|g| g.module == Module::Existing)
 }
 /// Build host sources from an existing-host spec.
 /// # Errors

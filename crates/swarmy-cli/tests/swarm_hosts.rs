@@ -269,17 +269,6 @@ fn up_refuses_bad_hosts_before_any_ssh() {
     assert!(!f.path().join("ssh-commands").exists());
 }
 #[test]
-fn module_groups_are_refused() {
-    let f = Fixture::new();
-    fs::create_dir_all(f.path().join("config/swarmy/swarms")).unwrap();
-    fs::write(f.path().join("config/swarmy/swarms/box.toml"),"name = 'box'\nlifecycle = 'ephemeral'\n[groups.box]\nmodule = 'hetzner-cloud'\ncount = 1\nsize = 'small'\nlocation = 'test'\n[placement]\nstack = 'box'\nservices = 'box'\nnodes = ['box']\n").unwrap();
-    assert!(
-        String::from_utf8_lossy(&f.run(&["swarm", "up", "box", "--no-image"]).stderr)
-            .contains("cannot create machines yet")
-    );
-}
-
-#[test]
 fn invalid_host_inputs_leave_specs_unchanged() {
     let f = Fixture::new();
     let create = f.run(&[
