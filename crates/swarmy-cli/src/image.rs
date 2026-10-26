@@ -100,9 +100,8 @@ async fn pull(
         let loaded = swarmy_config::Settings::load_base()?;
         let path = loaded
             .path
-            .unwrap_or(swarmy_config::Settings::user_config_path(
-                &std::env::vars().collect(),
-            )?);
+            .or_else(|| swarmy_config::Settings::user_config_path(&std::env::vars().collect()))
+            .context("set HOME or XDG_CONFIG_HOME to save the default image")?;
         set_default_image(&path, &image)?;
         if json {
             println!(

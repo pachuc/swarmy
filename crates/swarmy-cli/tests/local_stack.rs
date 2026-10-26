@@ -334,9 +334,13 @@ fn assert_gone(identities: &BTreeMap<String, (u32, String)>) {
 }
 
 async fn register_image(fixture: &Fixture) {
-    let dirs =
-        swarmy_config::paths::Dirs::from_env(&swarmy_testkit::isolated_home(fixture.files.path()))
-            .unwrap();
+    let dirs = swarmy_config::paths::Dirs::from_env(
+        &swarmy_testkit::isolated_home(fixture.files.path())
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value.to_string_lossy().into_owned()))
+            .collect(),
+    )
+    .unwrap();
     let record = swarmy_config::swarm::Registry::new(dirs)
         .read_record("e2e")
         .unwrap()
