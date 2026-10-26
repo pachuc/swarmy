@@ -1,5 +1,5 @@
 //! Provision SSH-reachable hosts as one swarm: stack first, services, then sandbox nodes.
-//! Groups provide hosts (existing sources now, `OpenTofu` groups later), and everything after is shared.
+//! Existing sources and `OpenTofu` groups provide hosts; everything after is shared.
 //! Records precede host changes so a failed up resumes and down can clean up.
 pub mod groups;
 mod machine;
