@@ -90,6 +90,20 @@ service_ports() {
     esac
 }
 
+# CLI tests use PID-backed /bin/sleep fixtures with no listeners. Only wait
+# for ports of services this script actually launched, not unrelated listeners.
+stack_service_process() {
+    local expected comm
+    case $1 in
+        fdb) expected=fdbserver ;;
+        nats) expected=nats-server ;;
+        seaweed) expected=weed ;;
+    esac
+    [[ -r /proc/$pid/comm ]] || return 1
+    read -r comm < "/proc/$pid/comm"
+    [[ $comm == "$expected" ]]
+}
+
 # A process can exit before its sockets can be rebound. Check the actual
 # bind operation rather than probing connections to closing listeners.
 ports_bindable() {
@@ -344,8 +358,10 @@ else
     for service in seaweed nats fdb; do
         if running "$service"; then
             if [[ $service == fdb ]]; then read_fdb_port; fi
-            service_ports "$service"
-            stopped_ports+=("${ports[@]}")
+            if stack_service_process "$service"; then
+                service_ports "$service"
+                stopped_ports+=("${ports[@]}")
+            fi
         fi
         stop_service "$service" || result=1
     done
