@@ -130,7 +130,7 @@ cat > "$fake/bin/teardown-swarmy" <<'STUB'
 #!/usr/bin/env bash
 case $* in
     'swarm down acc-signal')
-        if [[ -f $SIGNAL_DIR/stopped ]]; then
+        if [[ -f $SIGNAL_DIR/child-pid ]] && ! kill -0 "$(cat "$SIGNAL_DIR/child-pid")" 2>/dev/null; then
             touch "$SIGNAL_DIR/teardown-after-stop"
         else
             touch "$SIGNAL_DIR/teardown-before-stop"
@@ -153,20 +153,27 @@ swarmy=$SIGNAL_SWARMY
 trap 'interrupted 130' INT TERM
 trap 'interrupted 129' HUP
 trap on_exit EXIT
-step hung bash -c 'trap "touch \"$SIGNAL_DIR/stopped\"; exit 130" INT TERM HUP; touch "$SIGNAL_DIR/ready"; while :; do sleep 1; done'
+# This child installs no signal handler; it inherits the real step's dispositions.
+step hung bash -c 'echo "$$" > "$SIGNAL_DIR/child-pid"; echo ready > "$SIGNAL_DIR/ready"; while :; do sleep 1; done'
 HARNESS
 export ACCEPTANCE_SCRIPT=$PWD/scripts/acceptance-hetzner-cloud.sh SIGNAL_SWARMY=$fake/bin/teardown-swarmy
 set -m
-for signal in INT HUP; do
+for signal in INT TERM HUP; do
     export SIGNAL_DIR="$fake/$signal"
     mkdir -p "$SIGNAL_DIR"
+    mkfifo "$SIGNAL_DIR/ready"
     bash "$fake/signal-harness.sh" > "$SIGNAL_DIR/out" 2> "$SIGNAL_DIR/err" &
     signal_pid=$!
-    for _ in {1..100}; do [[ -f $SIGNAL_DIR/ready ]] && break; sleep 0.02; done
-    [[ -f $SIGNAL_DIR/ready ]] || { kill -KILL "$signal_pid"; echo "step never started" >&2; exit 1; }
+    # A FIFO handshake ensures the step is running before sending the signal.
+    if ! timeout 3 cat "$SIGNAL_DIR/ready" > "$SIGNAL_DIR/started"; then
+        kill -KILL -- "-$signal_pid" 2>/dev/null || :
+        echo "step never started" >&2
+        exit 1
+    fi
+    grep -qx ready "$SIGNAL_DIR/started"
     kill -s "$signal" "$signal_pid"
-    for _ in {1..100}; do ! kill -0 "$signal_pid" 2>/dev/null && break; sleep 0.02; done
-    if kill -0 "$signal_pid" 2>/dev/null; then
+    # tail --pid has a deadline and completes only after the harness exits.
+    if ! timeout 3 tail --pid="$signal_pid" -f /dev/null; then
         kill -TERM -- "-$signal_pid" 2>/dev/null || :
         kill -KILL -- "-$signal_pid" 2>/dev/null || :
         echo "$signal did not promptly interrupt the step" >&2
@@ -174,8 +181,8 @@ for signal in INT HUP; do
     fi
     signal_status=0
     wait "$signal_pid" || signal_status=$?
-    if [[ $signal == INT ]]; then [[ $signal_status == 130 ]]; else [[ $signal_status == 129 ]]; fi
-    [[ -f $SIGNAL_DIR/stopped && -f $SIGNAL_DIR/teardown-after-stop && ! -e $SIGNAL_DIR/teardown-before-stop ]]
+    if [[ $signal == HUP ]]; then [[ $signal_status == 129 ]]; else [[ $signal_status == 130 ]]; fi
+    [[ -f $SIGNAL_DIR/teardown-after-stop && ! -e $SIGNAL_DIR/teardown-before-stop ]]
     if grep -q 'acceptance passed' "$SIGNAL_DIR/out"; then exit 1; fi
 done
 # The real main path is never invoked here; even negative cases stay isolated.
