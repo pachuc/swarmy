@@ -64,7 +64,7 @@ sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev
 `<checkout>/.swarmy/config.toml`, keeps supervised service state under
 `<checkout>/.swarmy/dev/`, and uses `<checkout>/.dev/` for the backing stack.
 A directory with its own `.swarmy/config.toml` works the same way, with the
-stack in `.swarmy/stack/`. Outside both, swarmy follows the XDG Base Directory
+stack in the project state directory's `stack/`. Outside both, swarmy follows the XDG Base Directory
 layout: `~/.config/swarmy/config.toml`, the stack in
 `~/.local/share/swarmy/stack/`, and service logs, pids, the fake script and
 its call log in `~/.local/state/swarmy/dev/`. Absolute `XDG_CONFIG_HOME`,

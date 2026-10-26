@@ -118,6 +118,9 @@ impl Fixture {
             .current_dir(self.dir.path())
             .env("HOME", self.dir.path())
             .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
+            .env("XDG_DATA_HOME", self.dir.path().join("data"))
+            .env("XDG_STATE_HOME", self.dir.path().join("state"))
+            .env("XDG_CACHE_HOME", self.dir.path().join("cache"))
             .args(args);
         command
     }

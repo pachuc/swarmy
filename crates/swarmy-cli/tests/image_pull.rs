@@ -105,7 +105,7 @@ fn image_pull_verifies_uploads_sparse_and_sets_default() {
         Some(format!("base-ubuntu:{}", swarmy_version::RELEASE_TAG).as_str())
     );
     assert!(home.path().join("cache/swarmy/images").is_dir());
-    assert!(!home.path().join(".swarmy/images").exists());
+    assert!(!home.path().join(".swarmy").join("images").exists());
     assert!(
         !home
             .path()

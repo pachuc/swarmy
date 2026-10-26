@@ -1517,7 +1517,7 @@ mod tests {
         assert_eq!(loaded.settings.state_dir, nested.join(".swarmy"));
         assert_eq!(
             loaded.settings.selection.credential_file,
-            nested.join(".swarmy/auth.json")
+            nested.join(".swarmy").join("auth.json")
         );
         env.insert("SWARMY_STATE_DIR".into(), "/abs/state".into());
         env.insert("SWARMY_CHATGPT_AUTH".into(), "/abs/auth.json".into());

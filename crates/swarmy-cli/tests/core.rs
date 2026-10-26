@@ -239,7 +239,7 @@ fn dev_up_registers_the_release_image() {
         Some(format!("base-ubuntu:{tag}").as_str())
     );
     assert!(fixture.root.path().join("cache/swarmy/images").is_dir());
-    assert!(!fixture.root.path().join(".swarmy/images").exists());
+    assert!(!fixture.root.path().join(".swarmy").join("images").exists());
     let images = fs::read_to_string(fixture.root.path().join("default-images")).unwrap();
     assert_eq!(
         images.lines().last(),
