@@ -295,12 +295,11 @@ fn connect_opens_an_api_only_tunnel_for_node_services_and_disconnect_removes_it(
     node["launch_settings"] = serde_json::json!({"services":"node"});
     std::fs::write(path, serde_json::to_vec(&node).unwrap()).unwrap();
     let ssh = root.path().join("ssh");
-    std::fs::write(
+    std::os::unix::fs::symlink(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../swarmy-cloud/tests/fixtures/fake-ssh"),
         &ssh,
-        include_str!("../../swarmy-cloud/tests/fixtures/fake-ssh"),
     )
     .unwrap();
-    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
     let output = cli(root.path(), &["remote", "connect", "test", "--json"]);
     assert!(
         output.status.success(),

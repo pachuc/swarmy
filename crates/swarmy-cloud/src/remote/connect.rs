@@ -16,10 +16,7 @@ pub(super) async fn run(state_dir: &Path, state: &State, name: &str, json: bool)
     let dir = remote_path(state_dir, name, "tunnel")?;
     if path.exists() && !dir.join(tunnel::RECORD_FILE).exists() {
         let profile = RemoteProfile::read(state_dir, name)?;
-        if ssh::healthy(&profile).await {
-            let output = ssh::control(&profile, "exit").await?;
-            crate::Error::ensure(output.status.success(), "cannot stop legacy tunnel")?;
-        }
+        stop_legacy(&profile).await?;
         cleanup(&profile)?;
         std::fs::remove_file(&path)?;
     }
@@ -71,6 +68,14 @@ pub(super) async fn run(state_dir: &Path, state: &State, name: &str, json: bool)
         json,
         &Timing::new(started, opened.probe, opened.startup, opened.reused),
     )
+}
+
+pub(super) async fn stop_legacy(profile: &RemoteProfile) -> Result<()> {
+    if ssh::healthy(profile).await {
+        let output = ssh::control(profile, "exit").await?;
+        crate::Error::ensure(output.status.success(), "cannot stop legacy tunnel")?;
+    }
+    Ok(())
 }
 
 pub(super) fn placement(node: &RemoteNode) -> Placement {

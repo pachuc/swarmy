@@ -552,7 +552,8 @@ swarmy doctor --remote demo
 swarmy remote ls
 ```
 
-FoundationDB must bind local `127.0.0.1:4500` exactly. A local stack using that
+For laptop-services remotes, FoundationDB must bind local `127.0.0.1:4500` exactly.
+A local stack using that
 port prevents a usable remote connection. Stop a conflicting local stack, disconnect, and reconnect.
 The API, NATS and S3 use automatically selected free local ports.
 
@@ -885,8 +886,9 @@ Remote `dev up` starts scheduler, gateway, and worker locally only for a
 remote created with laptop services. A remote created with node services starts
 none locally, including when local service binaries are not installed. It records that
 choice so `dev down` leaves the backing services running, even without a remote
-flag. Disconnect stops only the SSH control master and removes its profile and
-cluster file; instance state and logs remain. Reconnecting a healthy tunnel is
+flag. Disconnect stops the SSH control master and removes its profile, cluster
+file, tunnel record in `<state_dir>/remote/NAME.tunnel/`, and control socket; instance state and
+logs remain. Reconnecting a healthy tunnel is
 idempotent. SSH uses the configured identity, batch authentication, normal host
 key verification with first-use acceptance, and keepalives. SSH diagnostics are
 saved in `<state_dir>/remote/NAME.tunnel/ssh.log`. `remote logs` follows

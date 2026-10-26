@@ -68,13 +68,17 @@ fn tilde_repo(user: &str) -> String {
     format!("~{user}/swarmy")
 }
 
-fn base(node: &RemoteNode) -> Result<Command> {
-    let mut command = Command::new("ssh");
+fn ssh_with(program: &OsStr, options: &[String]) -> Command {
+    let mut command = Command::new(program);
     command
-        .args(arguments(node)?)
+        .args(options)
         .stdin(Stdio::null())
         .kill_on_drop(true);
-    Ok(command)
+    command
+}
+
+fn base(node: &RemoteNode) -> Result<Command> {
+    Ok(ssh_with(OsStr::new("ssh"), &arguments(node)?))
 }
 
 /// A configured `ssh` command; callers append the public address and remote command.
@@ -117,13 +121,7 @@ pub(crate) async fn first_reachable(
             .map_err(|source| crate::Error::context(source, "invalid instance IP"))?;
         let result = timeout(
             Duration::from_secs(7),
-            Command::new(program)
-                .args(options)
-                .stdin(Stdio::null())
-                .kill_on_drop(true)
-                .arg(address)
-                .arg("true")
-                .output(),
+            ssh_with(program, options).arg(address).arg("true").output(),
         )
         .await;
         if result.is_ok_and(|output| output.is_ok_and(|output| output.status.success())) {
@@ -176,7 +174,11 @@ pub(crate) async fn control_socket(
 }
 
 pub async fn healthy(profile: &RemoteProfile) -> bool {
-    control(profile, "check")
+    alive(OsStr::new("ssh"), &profile.socket_path).await
+}
+
+pub(crate) async fn alive(program: &OsStr, socket: &Path) -> bool {
+    control_socket(program, socket, "check")
         .await
         .is_ok_and(|output| output.status.success())
 }

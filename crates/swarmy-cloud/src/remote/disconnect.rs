@@ -1,4 +1,4 @@
-use super::{connect, ssh, state::State};
+use super::{connect, state::State};
 use crate::{Result, tunnel::Tunnels};
 use std::path::Path;
 use swarmy_config::{RemoteProfile, remote_path};
@@ -11,9 +11,8 @@ pub(super) async fn run(state_dir: &Path, state: &State, name: &str) -> Result<(
     let path = remote_path(state_dir, name, "profile.json")?;
     if path.exists() {
         let profile = RemoteProfile::read(state_dir, name)?;
-        if !had_record && ssh::healthy(&profile).await {
-            let output = ssh::control(&profile, "exit").await?;
-            crate::Error::ensure(output.status.success(), "cannot stop legacy tunnel")?;
+        if !had_record {
+            connect::stop_legacy(&profile).await?;
         }
         connect::cleanup(&profile)?;
         std::fs::remove_file(path)?;
