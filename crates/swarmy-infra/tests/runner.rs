@@ -233,7 +233,7 @@ async fn no_credential_in_files_or_logs() {
         .with_max_level(tracing::Level::TRACE)
         .with_writer(Writer(captured.clone()))
         .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    tracing::subscriber::set_global_default(subscriber).unwrap();
     let fixture = tempfile::tempdir().unwrap();
     let work = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
@@ -272,7 +272,12 @@ async fn no_credential_in_files_or_logs() {
         serde_json::Value::Object(variables())
     );
     let log = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
-    assert!(!log.is_empty() && !log.contains(SECRET));
+    assert!(
+        !log.is_empty() && !log.contains(SECRET),
+        "log len={} redacted={}",
+        log.len(),
+        log.replace(SECRET, "<redacted>")
+    );
     assert!(!format!("{workspace:?}").contains(SECRET));
     assert!(!format!("{:?}", CredentialEnv::new().with("HCLOUD_TOKEN", SECRET)).contains(SECRET));
 }
