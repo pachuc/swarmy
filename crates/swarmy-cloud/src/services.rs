@@ -142,11 +142,6 @@ impl<'a> Options<'a> {
         })
     }
 
-    /// The TOML uploaded to the node's `.swarmy/config.toml`.
-    #[cfg(all(test, feature = "remote"))]
-    pub(crate) fn config_toml(&self) -> &str {
-        &self.config
-    }
 }
 
 pub(crate) async fn install(node: &RemoteNode, address: &str, options: &Options<'_>) -> Result<()> {

@@ -194,7 +194,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 use std::future::Future;
 use swarmy_core::ignore_best_effort;
 
-use swarmy_config::{RemoteNode, RemoteSettings};
+use swarmy_config::RemoteNode;
 
 /// Provider-neutral description of the object bucket backing a remote.
 ///

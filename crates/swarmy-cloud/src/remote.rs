@@ -1,5 +1,8 @@
 //! Remote provisioning, compiled only with the remote feature.
-use super::{Cloud, Command, ObjectBucket, RemoteNode, RemoteSettings, Result, services, ssh};
+use super::{
+    Cloud, Command, Host, ObjectBucket, Ownership, RemoteNode, RemoteSettings, Result, services,
+    ssh,
+};
 
 use state::State;
 use std::{
@@ -7,8 +10,6 @@ use std::{
     path::{Path, PathBuf},
 };
 use swarmy_config::Settings;
-
-use crate::BucketRemoval;
 
 mod add_node;
 mod adopt;
@@ -108,6 +109,26 @@ pub enum RunOutcome {
     NeedsConfirmation { plan: DeletionPlan },
 }
 
+fn down_target(state: &State, name: &str) -> Result<RemoteNode> {
+    let node = state.require(name)?;
+    if node.cloud_settings().provider != swarmy_config::Provider::Existing {
+        return Err(launched_on_ec2(name));
+    }
+    Ok(node)
+}
+
+fn existing_launch(node: &RemoteNode) -> Result<&RemoteSettings> {
+    let launch = node.launch_settings.as_ref().ok_or_else(|| {
+        crate::Error::other(
+            "remote has no saved launch configuration; adopt it again before adding nodes",
+        )
+    })?;
+    if launch.provider != swarmy_config::Provider::Existing {
+        return Err(launched_on_ec2(&node.name));
+    }
+    Ok(launch)
+}
+
 /// Run the `swarmy remote` subcommand.
 ///
 /// # Errors
@@ -154,9 +175,7 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
                 cloud_out!("No remote node named {name}");
                 return Ok(RunOutcome::Completed);
             };
-            if node.cloud_settings().provider != swarmy_config::Provider::Existing {
-                return Err(launched_on_ec2(&name));
-            }
+            down_target(&state, &name)?;
             let cloud = buckets::S3Buckets;
             if !keep_bucket
                 && !yes
@@ -350,14 +369,7 @@ async fn run_add_node(
     let _lock = state.lock()?;
     let node = state.require(&name)?;
     let host = provisioning_host(cache)?;
-    let launch = node.launch_settings.as_ref().ok_or_else(|| {
-        crate::Error::other(
-            "remote has no saved launch configuration; adopt it again before adding nodes",
-        )
-    })?;
-    if launch.provider != swarmy_config::Provider::Existing {
-        return Err(launched_on_ec2(&name));
-    }
+    existing_launch(&node)?;
     let existing = add_node::resolve_join(
         &name,
         join_host.as_deref(),
