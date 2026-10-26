@@ -39,8 +39,10 @@ swarmy swarm down box --destroy
 ```
 
 `up` can be re-run: hosts marked provisioned are skipped. `node add` writes
-back the spec, losing its comments. Stop disables units until start enables
-them; both preserve data. A persistent swarm requires `--destroy` for down,
+back the spec, losing its comments. `status` lists recorded hosts, their
+provisioning and SSH reachability, and whether the API token and tunnel are
+available; it does not depend on the current host list in the spec. Stop
+disables units until start enables them; both preserve data. A persistent swarm requires `--destroy` for down,
 because down removes its database and files from every host, but never deletes
 machines. Ephemeral swarms go down without that flag. The spec remains after
 down for a later up or `swarmy swarm rm box`. External buckets, host swarm

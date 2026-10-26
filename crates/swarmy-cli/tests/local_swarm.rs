@@ -333,20 +333,8 @@ nodes = ["box"]
     )
     .unwrap();
     f.registry().write_spec(&spec).unwrap();
-    for command in ["up", "status"] {
-        let args = if command == "up" {
-            vec!["swarm", command, "box", "--no-image"]
-        } else {
-            vec!["swarm", command, "box"]
-        };
-        let error = String::from_utf8_lossy(&f.run(&f.path("work"), &args).stderr).into_owned();
-        assert!(
-            error.contains(if command == "up" {
-                "no release binaries"
-            } else {
-                "has no hosts recorded"
-            }),
-            "{error}"
-        );
-    }
+    let error =
+        String::from_utf8_lossy(&f.run(&f.path("work"), &["swarm", "status", "box"]).stderr)
+            .into_owned();
+    assert!(error.contains("has no hosts recorded"), "{error}");
 }

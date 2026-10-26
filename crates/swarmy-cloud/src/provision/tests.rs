@@ -1,6 +1,7 @@
 #![deny(clippy::disallowed_methods)]
 use super::*;
 use std::future::Future;
+use std::os::unix::fs::PermissionsExt as _;
 use std::sync::Mutex;
 struct FakeHost {
     calls: Mutex<Vec<String>>,
@@ -205,6 +206,7 @@ fn plan_refuses_unsupported_layouts_and_bad_hosts() {
             .contains("separate group")
     );
     spec.placement.services = "control".into();
+    let existing = source_list(&registry, &spec);
     spec.groups.insert(
         "local".into(),
         swarmy_config::swarm::GroupSpec {
@@ -214,7 +216,7 @@ fn plan_refuses_unsupported_layouts_and_bad_hosts() {
     );
     spec.placement.services = "local".into();
     assert!(
-        plan(&spec, source_list(&registry, &spec))
+        plan(&spec, existing)
             .unwrap_err()
             .to_string()
             .contains("services on this machine")
@@ -261,6 +263,17 @@ fn plan_refuses_unsupported_layouts_and_bad_hosts() {
             .contains("need local_storage")
     );
 }
+#[test]
+fn existing_sources_rejects_module_groups() {
+    let (_tmp, registry, mut spec) = fixture();
+    spec.groups.get_mut("workers").unwrap().module = Module::HetznerCloud;
+    assert!(
+        existing_sources(&spec, &registry.swarm_dir("fleet").unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("only existing-host groups")
+    );
+}
 #[tokio::test]
 async fn up_provisions_in_order_and_records_the_token() {
     let (_tmp, registry, spec) = fixture();
@@ -287,6 +300,12 @@ async fn up_provisions_in_order_and_records_the_token() {
     assert!(record.hosts.values().flatten().all(|h| h.provisioned));
     assert_eq!(record.api.token.as_deref(), Some("node-token"));
     assert_eq!(record.api.url, None);
+    for host in record.hosts.values().flatten() {
+        assert_eq!(
+            fs::metadata(&host.ssh_key).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
     assert_eq!(registry.current().unwrap().as_deref(), Some("fleet"));
 }
 #[tokio::test]
@@ -297,9 +316,10 @@ async fn up_rerun_skips_provisioned_hosts_and_node_add_provisions_only_the_new_o
         .await
         .unwrap();
     let old = fake.calls().len();
-    provision_swarm_with(&fake, request(&registry, &spec, &settings(), None))
+    let reports = provision_swarm_with(&fake, request(&registry, &spec, &settings(), None))
         .await
         .unwrap();
+    assert!(reports.iter().all(|r| r.provisioned && !r.changed));
     assert_eq!(fake.calls().len(), old);
     let new = spec.groups["workers"].hosts[0].clone();
     spec.groups
@@ -321,6 +341,23 @@ async fn up_rerun_skips_provisioned_hosts_and_node_add_provisions_only_the_new_o
             "provision fleet-workers-3 primary=fleet-control-1"
         ]
     );
+}
+#[tokio::test]
+async fn recorded_hosts_are_matched_by_name_after_reordering() {
+    let (_tmp, registry, spec) = fixture();
+    let fake = FakeHost::new();
+    provision_swarm_with(&fake, request(&registry, &spec, &settings(), None))
+        .await
+        .unwrap();
+    let mut record = registry.read_record("fleet").unwrap().unwrap();
+    record.hosts.get_mut("workers").unwrap().reverse();
+    registry.write_record(&record).unwrap();
+    let old = fake.calls().len();
+    let reports = provision_swarm_with(&fake, request(&registry, &spec, &settings(), None))
+        .await
+        .unwrap();
+    assert_eq!(fake.calls().len(), old);
+    assert!(reports.iter().all(|r| r.provisioned && !r.changed));
 }
 #[tokio::test]
 async fn failed_host_stays_unprovisioned_and_resumes() {

@@ -27,25 +27,30 @@ pub(crate) enum Command {
         #[arg(long, requires = "ssh_key")]
         host: Option<String>,
         /// SSH login on the host (default: root)
-        #[arg(long, default_value = "root", requires = "host")]
+        #[arg(
+            long,
+            default_value = "root",
+            requires = "host",
+            conflicts_with = "local"
+        )]
         ssh_user: String,
         /// Private SSH key for the host
-        #[arg(long, requires = "host")]
+        #[arg(long, requires = "host", conflicts_with = "local")]
         ssh_key: Option<PathBuf>,
         /// IPv4 address for traffic between hosts (default: --host)
-        #[arg(long, requires = "host")]
+        #[arg(long, requires = "host", conflicts_with = "local")]
         private_address: Option<String>,
         /// Sandbox capacity on the host (default: 64)
-        #[arg(long, requires = "host")]
+        #[arg(long, requires = "host", conflicts_with = "local")]
         sandboxes: Option<u32>,
-        /// Node storage device or dir:/path
-        #[arg(long, requires = "host")]
+        /// Node storage device or `dir:/path`
+        #[arg(long, requires = "host", conflicts_with = "local")]
         local_storage: Option<String>,
         /// Account that owns the installed services (default: swarmy)
-        #[arg(long, requires = "host")]
+        #[arg(long, requires = "host", conflicts_with = "local")]
         service_user: Option<String>,
         /// Ephemeral or persistent lifecycle (default: persistent)
-        #[arg(long, value_enum, requires = "host")]
+        #[arg(long, value_enum, requires = "host", conflicts_with = "local")]
         lifecycle: Option<LifecycleArg>,
         /// Keep data on down unless --destroy is given (local swarms default to ephemeral)
         #[arg(long, conflicts_with = "host")]
@@ -194,6 +199,18 @@ fn host_spec(registry: &Registry, name: &str) -> Result<Option<swarm::SwarmSpec>
         .collect::<Vec<_>>()
         .join(", ");
     bail!("swarm \"{name}\" uses module groups ({modules}); swarmy cannot create machines yet")
+}
+// Lifecycle commands follow the recorded inventory even if the spec was edited
+// after up. Up still checks that every group is a supported source.
+fn lifecycle_host_spec(registry: &Registry, name: &str) -> Result<Option<swarm::SwarmSpec>> {
+    let spec = managed_spec(registry, name)?;
+    if registry
+        .read_record(name)?
+        .is_some_and(|r| !r.hosts.is_empty())
+    {
+        return Ok(Some(spec));
+    }
+    host_spec(registry, name)
 }
 fn kind(s: &Swarm) -> &'static str {
     if s.spec.is_some() {
@@ -486,7 +503,7 @@ async fn run_up_start(
             }
         }
         Command::Start { name, core_bin } => {
-            if let Some(spec) = host_spec(registry, &name)? {
+            if let Some(spec) = lifecycle_host_spec(registry, &name)? {
                 crate::swarm_hosts::start(registry, &spec, json_output).await?;
             } else {
                 if json_output {
@@ -516,7 +533,7 @@ async fn run_host_lifecycle(
 ) -> Result<()> {
     match command {
         Command::Stop { name } => {
-            if let Some(spec) = host_spec(registry, &name)? {
+            if let Some(spec) = lifecycle_host_spec(registry, &name)? {
                 crate::swarm_hosts::stop(registry, &spec, json_output).await?;
             } else {
                 if json_output {
@@ -526,7 +543,7 @@ async fn run_host_lifecycle(
             }
         }
         Command::Down { name, destroy } => {
-            if let Some(spec) = host_spec(registry, &name)? {
+            if let Some(spec) = lifecycle_host_spec(registry, &name)? {
                 crate::swarm_hosts::down(registry, &spec, destroy, json_output).await?;
             } else {
                 if json_output {
@@ -536,7 +553,7 @@ async fn run_host_lifecycle(
             }
         }
         Command::Status { name } => {
-            if let Some(spec) = host_spec(registry, &name)? {
+            if let Some(spec) = lifecycle_host_spec(registry, &name)? {
                 crate::swarm_hosts::status(registry, &spec, json_output).await?;
             } else {
                 if json_output {

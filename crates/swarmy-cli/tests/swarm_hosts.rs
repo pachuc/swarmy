@@ -236,7 +236,8 @@ fn node_add_provisions_only_the_new_host() {
     );
     let record = fs::read_to_string(f.path().join("data/swarmy/swarms/box/record.toml")).unwrap();
     assert!(record.contains("box-box-2"));
-    let parsed: swarmy_config::swarm::SwarmRecord = toml::from_str(&record).unwrap();
+    let parsed: swarmy_config::swarm::SwarmRecord =
+        swarmy_config::swarm::SwarmRecord::parse(&record).unwrap();
     assert!(parsed.hosts["box"][1].provisioned);
 }
 #[test]
@@ -266,4 +267,97 @@ fn module_groups_are_refused() {
         String::from_utf8_lossy(&f.run(&["swarm", "up", "box", "--no-image"]).stderr)
             .contains("cannot create machines yet")
     );
+}
+
+#[test]
+fn invalid_host_inputs_leave_specs_unchanged() {
+    let f = Fixture::new();
+    let create = f.run(&[
+        "swarm",
+        "create",
+        "box",
+        "--host",
+        "myhost.example",
+        "--ssh-key",
+        f.key.to_str().unwrap(),
+        "--local-storage",
+        "dir:/tmp",
+    ]);
+    assert!(!create.status.success());
+    assert!(String::from_utf8_lossy(&create.stderr).contains("IPv4 address"));
+    assert!(!f.path().join("config/swarmy/swarms/box.toml").exists());
+    f.create();
+    f.ok(&["swarm", "up", "box", "--no-image"]);
+    let path = f.path().join("config/swarmy/swarms/box.toml");
+    let before = fs::read_to_string(&path).unwrap();
+    let add = f.run(&[
+        "swarm",
+        "node",
+        "add",
+        "box",
+        "box",
+        "--host",
+        "myhost.example",
+        "--ssh-key",
+        f.key.to_str().unwrap(),
+    ]);
+    assert!(!add.status.success());
+    assert!(String::from_utf8_lossy(&add.stderr).contains("IPv4 address"));
+    assert_eq!(fs::read_to_string(path).unwrap(), before);
+}
+#[test]
+fn host_only_flags_are_rejected_for_local_create() {
+    let f = Fixture::new();
+    for flag in ["--lifecycle", "--ssh-key", "--local-storage"] {
+        let value = if flag == "--lifecycle" {
+            "ephemeral"
+        } else if flag == "--ssh-key" {
+            f.key.to_str().unwrap()
+        } else {
+            "dir:/tmp"
+        };
+        assert!(
+            !f.run(&["swarm", "create", "box", "--local", flag, value])
+                .status
+                .success()
+        );
+    }
+    for flag in ["--persistent", "--stack-dir"] {
+        let mut args = vec![
+            "swarm",
+            "create",
+            "box",
+            "--host",
+            "203.0.113.10",
+            "--ssh-key",
+            f.key.to_str().unwrap(),
+            flag,
+        ];
+        if flag == "--stack-dir" {
+            args.push("/tmp");
+        }
+        assert!(!f.run(&args).status.success());
+    }
+}
+#[test]
+fn lifecycle_uses_record_after_bad_spec_edit() {
+    let f = Fixture::new();
+    f.create();
+    f.ok(&["swarm", "up", "box", "--no-image"]);
+    let path = f.path().join("config/swarmy/swarms/box.toml");
+    let original = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        original.replace("203.0.113.10", "not-an-ipv4-address"),
+    )
+    .unwrap();
+    assert!(
+        String::from_utf8_lossy(&f.run(&["swarm", "up", "box", "--no-image"]).stderr)
+            .contains("IPv4 address")
+    );
+    f.ok(&["swarm", "status", "box"]);
+    f.ok(&["swarm", "stop", "box"]);
+    f.ok(&["swarm", "start", "box"]);
+    f.ok(&["swarm", "down", "box", "--destroy"]);
+    assert!(!f.path().join("data/swarmy/swarms/box/record.toml").exists());
 }
