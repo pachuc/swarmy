@@ -35,12 +35,23 @@ use std::{
     collections::{BTreeMap, HashSet},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
+// Unlike serde's default Option handling, missing address keys violate the contract.
+fn present_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    serde::Deserialize::deserialize(deserializer)
+}
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Machine {
     pub name: String,
+    #[serde(deserialize_with = "present_option")]
     pub public_ipv4: Option<Ipv4Addr>,
+    #[serde(deserialize_with = "present_option")]
     pub public_ipv6: Option<Ipv6Addr>,
+    #[serde(deserialize_with = "present_option")]
     pub private_ip: Option<IpAddr>,
     pub ssh_user: String,
 }
@@ -186,6 +197,11 @@ mod tests {
         );
         assert!(matches!(
             parse_outputs(&unknown),
+            Err(OutputError::Shape { .. })
+        ));
+        let missing_ip = VALID.replace("\"private_ip\":\"10.0.1.2\",", "");
+        assert!(matches!(
+            parse_outputs(&missing_ip),
             Err(OutputError::Shape { .. })
         ));
         let bad_ip = VALID.replace("203.0.113.10", "bad");
