@@ -24,15 +24,21 @@ impl Keyring {
         &self.0
     }
 
+    /// The keyring path: `SWARMY_KEYRING` when set, else `keyring` in swarmy's
+    /// XDG data directory (`$XDG_DATA_HOME/swarmy`, default
+    /// `~/.local/share/swarmy`).
     /// # Errors
-    /// Fails if neither an override nor a home directory is available.
+    /// Fails without `SWARMY_KEYRING` and without an absolute HOME or
+    /// XDG_DATA_HOME, or when one of those is not UTF-8.
     pub fn path() -> Result<PathBuf, Error> {
-        std::env::var_os("SWARMY_KEYRING")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".swarmy/keyring"))
-            })
-            .ok_or(Error::Keyring("set HOME or SWARMY_KEYRING"))
+        Ok(Self::location()?.0)
+    }
+
+    fn location() -> Result<(PathBuf, bool), Error> {
+        locate(
+            std::env::var_os("SWARMY_KEYRING"),
+            &crate::process_environment(|key| matches!(key, "HOME" | "XDG_DATA_HOME"))?,
+        )
     }
 
     /// # Errors
@@ -66,11 +72,17 @@ impl Keyring {
         })?))
     }
 
-    /// Atomically create a fresh key. Never replace an existing cluster key.
+    /// Atomically create a fresh key at `path()`. Never replace an existing
+    /// cluster key. The default location's directory is made private (0700); an
+    /// explicit `SWARMY_KEYRING` directory keeps its mode.
     /// # Errors
     /// Returns an error on I/O, randomness failure, or an existing destination.
     pub fn generate() -> Result<Self, Error> {
-        Self::generate_at(&Self::path()?)
+        let (path, default) = Self::location()?;
+        if default && let Some(directory) = path.parent() {
+            crate::create_private_dir(directory)?;
+        }
+        Self::generate_at(&path)
     }
 
     /// # Errors
@@ -97,10 +109,46 @@ impl Keyring {
     }
 }
 
+/// The keyring path and whether it is swarmy's default location.
+fn locate(
+    keyring: Option<std::ffi::OsString>,
+    environment: &std::collections::BTreeMap<String, String>,
+) -> Result<(PathBuf, bool), Error> {
+    if let Some(path) = keyring {
+        return Ok((PathBuf::from(path), false));
+    }
+    crate::paths::data(environment)
+        .map(|directory| (directory.join("keyring"), true))
+        .ok_or(Error::Keyring(
+            "set HOME (or XDG_DATA_HOME) to an absolute path, or set SWARMY_KEYRING",
+        ))
+}
+
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+    #[test]
+    fn locate_prefers_override_then_xdg_data() {
+        let mut env = std::collections::BTreeMap::from([("HOME".into(), "/h".into())]);
+        assert_eq!(
+            locate(Some("/k/ring".into()), &env).unwrap(),
+            ("/k/ring".into(), false)
+        );
+        env.insert("XDG_DATA_HOME".into(), "/x".into());
+        assert_eq!(
+            locate(None, &env).unwrap(),
+            ("/x/swarmy/keyring".into(), true)
+        );
+        env.remove("XDG_DATA_HOME");
+        assert_eq!(
+            locate(None, &env).unwrap(),
+            ("/h/.local/share/swarmy/keyring".into(), true)
+        );
+        env.insert("HOME".into(), "relative".into());
+        assert!(matches!(locate(None, &env), Err(Error::Keyring(_))));
+    }
+
     #[test]
     fn rejects_malformed_keys() {
         let dir = tempfile::tempdir().unwrap();

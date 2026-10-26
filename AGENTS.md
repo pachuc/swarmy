@@ -454,7 +454,7 @@ master. The operator's method is in `docs/fleet-operator-handoff.md`
   infrastructure: credentials and tokens of any kind, IP addresses and host
   names of real machines, cloud account ids, instance, volume, subnet, and
   security-group ids, ARNs, bucket names, SSH keys or known-hosts entries, and
-  the contents of `.swarmy/`, `scripts/fleet/fleet.toml`, or `/etc/swarmy/`.
+  the contents of `.swarmy/`, `~/.local/share/swarmy/`, `scripts/fleet/fleet.toml`, or `/etc/swarmy/`.
   Benchmark and proof records use placeholders such as `<account-id>`,
   `<swarm-bucket>`, and `i-<redacted>`, and name machines by their role
   (`dev2-3`, "the suite node"). Public identifiers that are not ours, such as

@@ -565,6 +565,8 @@ impl Default for StoreSettings {
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub api: ApiSettings,
+    /// Service state: remote records, the API's upload staging, and `dev`'s pids
+    /// and logs. Empty means the default; see `Settings::fill_default_locations`.
     pub state_dir: PathBuf,
     pub remote: RemoteSettings,
     pub volume_snapshots: VolumeSnapshots,
@@ -624,7 +626,7 @@ impl Default for Fake {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            state_dir: ".swarmy".into(),
+            state_dir: PathBuf::new(),
             api: ApiSettings::default(),
             remote: RemoteSettings::default(),
             volume_snapshots: VolumeSnapshots::default(),
@@ -743,7 +745,46 @@ pub fn service_hostname() -> String {
     std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into())
 }
 
+/// The project directory of a project configuration file
+/// (`<project>/.swarmy/config.toml`), or `None` for any other file, such as
+/// the user file in the XDG config directory.
+#[must_use]
+pub fn project_root(config: &Path) -> Option<&Path> {
+    let directory = config.parent()?;
+    (directory.file_name()? == ".swarmy")
+        .then(|| directory.parent())
+        .flatten()
+}
+
 impl Settings {
+    /// Fill the paths whose defaults depend on where configuration lives. An
+    /// empty `state_dir` becomes `<root>/.swarmy` for a project file and swarmy's
+    /// XDG state directory otherwise (`$XDG_STATE_HOME/swarmy`, default
+    /// `~/.local/state/swarmy`). An empty `selection.credential_file` becomes
+    /// `auth.json` in swarmy's XDG data directory (`$XDG_DATA_HOME/swarmy`,
+    /// default `~/.local/share/swarmy`). Without an absolute HOME or XDG value
+    /// both fall back under `<root>/.swarmy`.
+    pub fn fill_default_locations(
+        &mut self,
+        root: &Path,
+        project: bool,
+        environment: &BTreeMap<String, String>,
+    ) {
+        let fallback = root.join(".swarmy");
+        if self.state_dir.as_os_str().is_empty() {
+            self.state_dir = if project {
+                fallback.clone()
+            } else {
+                paths::state(environment).unwrap_or_else(|| fallback.clone())
+            };
+        }
+        if self.selection.credential_file.as_os_str().is_empty() {
+            self.selection.credential_file = paths::data(environment)
+                .unwrap_or(fallback)
+                .join("auth.json");
+        }
+    }
+
     /// Select the image for a new session, giving an explicit flag precedence.
     /// # Errors
     /// Requires a configured default or an explicit image.
@@ -780,7 +821,11 @@ impl Settings {
     pub fn load_base() -> Result<Loaded, Error> {
         let cwd = std::env::current_dir()?;
         let environment = process_environment(|key| {
-            key.starts_with("SWARMY_") || key == "HOME" || key == "XDG_CONFIG_HOME"
+            key.starts_with("SWARMY_")
+                || matches!(
+                    key,
+                    "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_STATE_HOME"
+                )
         })?;
         Self::load_base_from(&cwd, &environment)
     }
@@ -799,27 +844,17 @@ impl Settings {
 
     fn load_base_from(cwd: &Path, environment: &BTreeMap<String, String>) -> Result<Loaded, Error> {
         let path = Self::discover_from(cwd, environment);
-        let root = path.as_ref().and_then(|path| path.parent()).map_or_else(
-            || cwd.to_owned(),
-            |dir| {
-                if dir.file_name().is_some_and(|name| name == ".swarmy") {
-                    dir.parent().unwrap_or(dir).to_owned()
-                } else {
-                    dir.to_owned()
-                }
-            },
-        );
+        let project = path.as_deref().and_then(project_root).map(Path::to_owned);
+        let root = project
+            .clone()
+            .or_else(|| path.as_deref().and_then(Path::parent).map(Path::to_owned))
+            .unwrap_or_else(|| cwd.to_owned());
         let mut settings = if let Some(path) = &path {
             Self::read(path)?
         } else {
             Self::default()
         };
-        if settings.selection.credential_file.as_os_str().is_empty() {
-            settings.selection.credential_file = environment
-                .get("HOME")
-                .map_or_else(|| root.clone(), PathBuf::from)
-                .join(".swarmy/auth.json");
-        }
+        settings.fill_default_locations(&root, project.is_some(), environment);
         settings.resolve_paths(&root);
         settings.apply_environment(environment)?;
         // Relative environment paths retain their historical meaning: the invoking directory.
@@ -1410,9 +1445,10 @@ mod tests {
         ]);
         let loaded = load_with_remote(&cwd, &environment).unwrap();
         assert_eq!(loaded.settings.selection.model, "user-model");
+        assert_eq!(loaded.settings.state_dir, home.join(".local/state/swarmy"));
         assert_eq!(
             loaded.settings.selection.credential_file,
-            home.join(".swarmy/auth.json")
+            home.join(".local/share/swarmy/auth.json")
         );
         assert_eq!(
             loaded.settings.store.cluster_file,
@@ -1420,16 +1456,83 @@ mod tests {
         );
         std::fs::write(
             user.join("config.toml"),
-            "[selection]\ncredential_file = '.swarmy/auth.json'",
+            "[selection]\ncredential_file = 'credentials/auth.json'",
         )
         .unwrap();
         let loaded = load_with_remote(&cwd, &environment).unwrap();
         assert_eq!(
             loaded.settings.selection.credential_file,
-            user.join(".swarmy/auth.json")
+            user.join("credentials/auth.json")
         );
         std::fs::write(user.join("config.toml"), "bad toml").unwrap();
         assert!(load_with_remote(&cwd, &environment).is_err());
+    }
+
+    #[test]
+    fn project_root_names_only_dot_swarmy_files() {
+        assert_eq!(
+            project_root(Path::new("/p/.swarmy/config.toml")),
+            Some(Path::new("/p"))
+        );
+        assert_eq!(project_root(Path::new("/x/swarmy/config.toml")), None);
+        assert_eq!(project_root(Path::new("config.toml")), None);
+    }
+
+    #[test]
+    fn default_locations_follow_projects_and_xdg() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let nested = project.join("nested");
+        std::fs::create_dir_all(project.join(".swarmy")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        let config = project.join(".swarmy/config.toml");
+        std::fs::write(&config, "").unwrap();
+        let mut env = BTreeMap::from([
+            (
+                "HOME".into(),
+                temp.path().join("home").display().to_string(),
+            ),
+            (
+                "XDG_DATA_HOME".into(),
+                temp.path().join("data").display().to_string(),
+            ),
+            (
+                "XDG_STATE_HOME".into(),
+                temp.path().join("state").display().to_string(),
+            ),
+        ]);
+        let loaded = load_with_remote(&nested, &env).unwrap();
+        assert_eq!(loaded.settings.state_dir, project.join(".swarmy"));
+        assert_eq!(
+            loaded.settings.selection.credential_file,
+            temp.path().join("data/swarmy/auth.json")
+        );
+        std::fs::remove_file(&config).unwrap();
+        assert_eq!(
+            load_with_remote(&nested, &env).unwrap().settings.state_dir,
+            temp.path().join("state/swarmy")
+        );
+        env.clear();
+        let loaded = load_with_remote(&nested, &env).unwrap();
+        assert_eq!(loaded.settings.state_dir, nested.join(".swarmy"));
+        assert_eq!(
+            loaded.settings.selection.credential_file,
+            nested.join(".swarmy/auth.json")
+        );
+        env.insert("SWARMY_STATE_DIR".into(), "/abs/state".into());
+        env.insert("SWARMY_CHATGPT_AUTH".into(), "/abs/auth.json".into());
+        let loaded = load_with_remote(&nested, &env).unwrap();
+        assert_eq!(loaded.settings.state_dir, Path::new("/abs/state"));
+        assert_eq!(
+            loaded.settings.selection.credential_file,
+            Path::new("/abs/auth.json")
+        );
+        env.clear();
+        std::fs::write(&config, "state_dir = 'custom'").unwrap();
+        assert_eq!(
+            load_with_remote(&nested, &env).unwrap().settings.state_dir,
+            project.join("custom")
+        );
     }
 
     #[test]

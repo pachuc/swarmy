@@ -31,7 +31,7 @@ impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join("bin")).unwrap();
-        let stack = FakeStack::start(&root.path().join(".swarmy/stack"));
+        let stack = FakeStack::start(&root.path().join("data/swarmy/stack"));
         let fixture = Self { root, stack };
         fixture.core(swarmy_version::IDENTITY);
         fixture
@@ -65,6 +65,9 @@ exec /bin/sleep 600"
             .current_dir(self.root.path())
             .env("HOME", self.root.path())
             .env("XDG_CONFIG_HOME", self.root.path().join("config"))
+            .env("XDG_DATA_HOME", self.root.path().join("data"))
+            .env("XDG_STATE_HOME", self.root.path().join("state"))
+            .env("XDG_CACHE_HOME", self.root.path().join("cache"))
             .env(
                 "PATH",
                 format!("{}:/usr/bin:/bin", self.root.path().join("bin").display()),
@@ -126,7 +129,7 @@ fn stale_path_service_is_refused_before_starting_or_stopping_anything() {
         !fixture
             .root
             .path()
-            .join(".swarmy/dev/supervisor.pid")
+            .join("state/swarmy/dev/supervisor.pid")
             .exists()
     );
 }
@@ -142,6 +145,7 @@ fn override_starts_stale_path_service() {
 fn doctor_reports_each_identity_and_flags_stale_service() {
     let fixture = Fixture::new();
     // Avoid unrelated network probes: an invalid config still permits version checks.
+    fs::create_dir_all(fixture.root.path().join(".swarmy")).unwrap();
     fs::write(fixture.root.path().join(".swarmy/config.toml"), "invalid").unwrap();
     fixture.core("0.1.0 (stale)");
     let output = fixture.run(&["doctor", "--json"]);
@@ -210,7 +214,7 @@ fn failed_version_probe_is_refused() {
 fn mismatch_keeps_existing_supervisor_running() {
     let fixture = Fixture::new();
     fixture.assert_started(false);
-    let pid_file = fixture.root.path().join(".swarmy/dev/supervisor.pid");
+    let pid_file = fixture.root.path().join("state/swarmy/dev/supervisor.pid");
     let before = fs::read(&pid_file).unwrap();
     fixture.core("0.0.1 (old)");
     let output = fixture.run(&["dev", "up"]);

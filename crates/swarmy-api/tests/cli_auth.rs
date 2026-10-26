@@ -53,8 +53,7 @@ impl Fixture {
             settings.to_toml().unwrap(),
         )
         .unwrap();
-        let keyring =
-            swarmy_config::Keyring::generate_at(&dir.path().join(".swarmy/keyring")).unwrap();
+        let keyring = swarmy_config::Keyring::generate_at(&dir.path().join("keyring")).unwrap();
         fs::write(
             dir.path().join("auth.json"),
             include_bytes!("../../swarmy-llm/tests/fixtures/auth.json"),

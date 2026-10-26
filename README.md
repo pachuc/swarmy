@@ -29,8 +29,10 @@ ANTHROPIC_API_KEY=... swarmy auth set anthropic --from-env
 swarmy chat --provider anthropic
 ```
 
-Outside a checkout, `swarmy dev up` writes `~/.config/swarmy/config.toml` and
-keeps stack, logs, and data under `~/.swarmy/`. `swarmy dev status`,
+Outside a checkout, `swarmy dev up` writes `~/.config/swarmy/config.toml`,
+keeps the stack's data and the cluster keyring in `~/.local/share/swarmy/`,
+logs and process ids in `~/.local/state/swarmy/`, and downloads in
+`~/.cache/swarmy/` (each follows its `XDG_*_HOME` variable). `swarmy dev status`,
 `swarmy dev logs`, `swarmy dev down`, and `swarmy chat` then work from any
 directory. On Linux x86-64, `swarmy dev up` downloads the release's prebuilt
 base-ubuntu image (a few hundred MB), verifies it against SHA256SUMS, registers

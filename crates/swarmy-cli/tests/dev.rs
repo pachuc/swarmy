@@ -30,6 +30,10 @@ impl Fixture {
         command
             .current_dir(self.files.path())
             .env("HOME", self.files.path())
+            .env("XDG_CONFIG_HOME", self.files.path().join("config"))
+            .env("XDG_DATA_HOME", self.files.path().join("data"))
+            .env("XDG_STATE_HOME", self.files.path().join("state"))
+            .env("XDG_CACHE_HOME", self.files.path().join("cache"))
             .args(args)
             .kill_on_drop(true);
         for (key, _) in std::env::vars_os() {
@@ -189,6 +193,10 @@ fn json_dev_status_is_rejected_without_touching_the_stack() {
     let output = Command::new(CLI)
         .current_dir(files.path())
         .env("HOME", files.path())
+        .env("XDG_CONFIG_HOME", files.path().join("config"))
+        .env("XDG_DATA_HOME", files.path().join("data"))
+        .env("XDG_STATE_HOME", files.path().join("state"))
+        .env("XDG_CACHE_HOME", files.path().join("cache"))
         .args(["--json", "dev", "status"])
         .output()
         .unwrap();
@@ -228,7 +236,7 @@ async fn check_startup(fixture: &Fixture) {
             previous
         );
     }
-    let keyring = fixture.files.path().join(".swarmy/keyring");
+    let keyring = fixture.files.path().join("data/swarmy/keyring");
     swarmy_config::Keyring::read(&keyring).unwrap();
     let doctor = fixture
         .command(&["doctor", "--json"])

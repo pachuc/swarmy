@@ -180,10 +180,10 @@ pub(crate) async fn install(node: &RemoteNode, address: &str, options: &Options<
     }
     if let Some(path) = &options.keyring {
         swarmy_config::Keyring::read(path)?;
-        upload(
+        upload_with(
             node,
             address,
-            &format!("{home}/.swarmy/keyring"),
+            &keyring_script(&user, &home),
             &std::fs::read(path)?,
         )
         .await?;
@@ -205,6 +205,18 @@ pub(crate) async fn install(node: &RemoteNode, address: &str, options: &Options<
         });
     }
     Ok(())
+}
+
+/// Install the cluster keyring where the node's services look for it: the
+/// XDG default for their HOME, `~user/.local/share/swarmy/keyring` (the units
+/// set HOME and no XDG_DATA_HOME). The service user creates any missing
+/// parents, so none of them ends up owned by root; the directory and the key
+/// are private.
+fn keyring_script(user: &str, home: &str) -> String {
+    let directory = format!("{home}/.local/share/swarmy");
+    format!(
+        "umask 077; sudo -u {user} mkdir -p {directory} && chmod 700 {directory} && cat > {directory}/keyring.tmp && chown {user}:{user} {directory}/keyring.tmp && chmod 600 {directory}/keyring.tmp && mv {directory}/keyring.tmp {directory}/keyring"
+    )
 }
 
 async fn upload(node: &RemoteNode, address: &str, path: &str, bytes: &[u8]) -> Result<()> {
@@ -268,4 +280,19 @@ async fn upload_with(node: &RemoteNode, address: &str, script: &str, bytes: &[u8
         .map_err(crate::Error::ssh(&command))?;
     super::ssh::feed_and_wait(child, bytes, &command).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    #[test]
+    fn keyring_goes_to_the_service_users_xdg_data_directory() {
+        let script = keyring_script("swarmy", "~swarmy");
+        assert!(script.contains("sudo -u swarmy mkdir -p ~swarmy/.local/share/swarmy && chmod 700 ~swarmy/.local/share/swarmy"));
+        assert!(script.ends_with(
+            "mv ~swarmy/.local/share/swarmy/keyring.tmp ~swarmy/.local/share/swarmy/keyring"
+        ));
+        assert!(!script.contains("/.swarmy/"));
+    }
 }

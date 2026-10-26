@@ -18,6 +18,7 @@ work=$(mktemp -d /tmp/swarmy-remote-test.XXXXXX)
 while IFS= read -r variable; do
     case "$variable" in SWARMY_REMOTE_TEST_*) ;; SWARMY_*) unset "$variable" ;; esac
 done < <(compgen -e)
+export XDG_CACHE_HOME="$work/cache"
 export SWARMY_STATE_DIR="$work/.swarmy"
 daemon=
 cleanup() {
