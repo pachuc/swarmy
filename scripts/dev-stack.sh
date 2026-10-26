@@ -90,21 +90,30 @@ service_ports() {
     esac
 }
 
-# A process can exit before its listening sockets disappear. Wait for the
-# actual ports before another stack (or the script tests) tries to bind them.
+# A process can exit before its sockets can be rebound. Check the actual
+# bind operation rather than probing connections to closing listeners.
+ports_bindable() {
+    python3 - "${stopped_ports[@]}" <<'PYTHON'
+import socket
+import sys
+
+for port in sys.argv[1:]:
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("127.0.0.1", int(port)))
+    except OSError:
+        sys.exit(1)
+    finally:
+        sock.close()
+PYTHON
+}
+
 wait_ports_down() {
-    local deadline=$((SECONDS + 60)) port
-    local -a listening=()
-    while :; do
-        listening=()
-        for port in "${stopped_ports[@]}"; do
-            if ss -H -ltn "( sport = :$port )" | grep -q .; then
-                listening+=("$port")
-            fi
-        done
-        (( ${#listening[@]} == 0 )) && return 0
+    local deadline=$((SECONDS + 60))
+    until ports_bindable; do
         if (( SECONDS >= deadline )); then
-            printf 'Ports still listening after 60 seconds: %s\n' "${listening[*]}" >&2
+            printf 'Stack ports still cannot be bound after 60 seconds: %s\n' "${stopped_ports[*]}" >&2
             return 1
         fi
         sleep 0.2
