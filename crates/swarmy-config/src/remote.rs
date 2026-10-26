@@ -262,7 +262,7 @@ fn valid_bucket_name(bucket: &str) -> bool {
         && !bucket.starts_with('-')
         && !bucket.ends_with('-')
 }
-/// Placement, resource ownership, and the selected tunnel profile.
+/// Placement and resource ownership.
 #[derive(Clone, Debug, Serialize)]
 pub struct RemoteSettings {
     /// Cloud substrate backing the remote.
@@ -275,7 +275,6 @@ pub struct RemoteSettings {
     pub bucket: Option<BucketSpec>,
     pub disk_gb: u32,
     pub managed_by_tag: String,
-    pub profile: Option<String>,
     /// Login that owns the checkout and runs the node units. Plain servers
     /// use `swarmy`; EC2 launches write `ubuntu` explicitly.
     pub service_user: String,
@@ -296,7 +295,6 @@ impl Default for RemoteSettings {
             bucket: None,
             disk_gb: 100,
             managed_by_tag: "swarmy".into(),
-            profile: None,
             service_user: default_service_user(),
             local_storage: String::new(),
             aws: AwsSettings::default(),
@@ -314,6 +312,7 @@ struct RemoteSettingsHelper {
     bucket: Option<BucketSpec>,
     disk_gb: u32,
     managed_by_tag: String,
+    /// Rejected when set: old node records carry `profile: null`.
     profile: Option<String>,
     service_user: String,
     local_storage: String,
@@ -356,6 +355,9 @@ impl<'de> Deserialize<'de> for RemoteSettings {
         D: serde::Deserializer<'de>,
     {
         let helper = RemoteSettingsHelper::deserialize(deserializer)?;
+        if helper.profile.is_some() {
+            return Err(serde::de::Error::custom("[remote] profile was removed; select a swarm with --swarm NAME, SWARMY_SWARM, or swarmy swarm use NAME"));
+        }
         // Keep an absent service user empty so saved node records fall back to
         // the SSH login they were provisioned with. Configuration files fill
         // the new default on load; see `Settings::read`.
@@ -366,7 +368,6 @@ impl<'de> Deserialize<'de> for RemoteSettings {
             bucket: helper.bucket,
             disk_gb: helper.disk_gb,
             managed_by_tag: helper.managed_by_tag,
-            profile: helper.profile,
             service_user: helper.service_user,
             local_storage: helper.local_storage,
             aws: AwsSettings {
@@ -591,32 +592,6 @@ impl RemoteProfile {
         Ok(())
     }
 
-    /// Apply stack endpoints and its default image, preserving namespaces.
-    /// A bucket description carries the endpoint, region, bucket, prefix,
-    /// and credential source; static keys become the S3 credentials while
-    /// the instance-role source clears them.
-    pub fn apply(&self, settings: &mut Settings) {
-        settings
-            .store
-            .cluster_file
-            .clone_from(&self.fdb_cluster_file);
-        settings.bus.nats_url.clone_from(&self.nats_url);
-        settings.s3.endpoint.clone_from(&self.s3_endpoint);
-        settings.api.url.clone_from(&self.api_url);
-        if let Some(token) = &self.api_token {
-            settings.api.token.clone_from(token);
-        }
-        if let Some(spec) = &self.bucket {
-            spec.apply_to_settings(settings);
-        }
-        if self.default_image.is_some() {
-            settings
-                .selection
-                .default_image
-                .clone_from(&self.default_image);
-        }
-    }
-
     /// # Errors
     /// Returns errors for missing or invalid profiles.
     pub fn read(state: &Path, name: &str) -> Result<Self, Error> {
@@ -662,7 +637,6 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    use crate::tests::load_with_remote;
 
     #[test]
     fn aws_sub_table_rejects_flat_keys() {
@@ -804,21 +778,9 @@ mod tests {
     }
 
     #[test]
-    fn older_profiles_preserve_the_configured_default() {
+    fn older_profiles_parse_without_a_default_image() {
         let profile: RemoteProfile = serde_json::from_str(r#"{"name":"old","socket_path":"socket","pid":1,"ports":{},"fdb_cluster_file":"cluster","nats_url":"nats://localhost:4222","s3_endpoint":"http://localhost:8333"}"#).unwrap();
         assert!(profile.default_image.is_none());
-        let mut settings = Settings {
-            selection: crate::SelectionSettings {
-                default_image: Some("configured:tag".into()),
-                ..crate::SelectionSettings::default()
-            },
-            ..Settings::default()
-        };
-        profile.apply(&mut settings);
-        assert_eq!(
-            settings.selection.default_image.as_deref(),
-            Some("configured:tag")
-        );
     }
 
     #[test]
@@ -873,98 +835,15 @@ mod tests {
     }
 
     #[test]
-    fn selected_profile_overrides_discovered_config_and_endpoint_environment() {
-        let root = tempfile::tempdir().unwrap();
-        let state = root.path().join(".swarmy");
-        std::fs::create_dir_all(state.join("remote")).unwrap();
-        std::fs::create_dir_all(root.path().join("nested")).unwrap();
-        std::fs::write(
-            state.join("config.toml"),
-            "[selection]\nprovider = 'fake'\n[remote]\nprofile = 'test'\n",
-        )
-        .unwrap();
-        let profile = RemoteProfile {
-            name: "test".into(),
-            socket_path: state.join("socket"),
-            pid: 123,
-            remote_ports: RemotePorts::default(),
-            ports: RemotePorts {
-                fdb: 4500,
-                nats: 14222,
-                s3: 18333,
-            },
-            fdb_cluster_file: state.join("test.cluster"),
-            nats_url: "nats://127.0.0.1:14222".into(),
-            s3_endpoint: "http://127.0.0.1:18333".into(),
-            api_url: Some("http://127.0.0.1:18742".into()),
-            api_token: Some("fixture-token".into()),
-            bucket: None,
-            default_image: Some("base-ubuntu:test".into()),
-        };
-        // A profile with its own bucket and region takes the laptop's regional
-        // credentials into the service settings without an endpoint override.
-        let mut regional_profile = profile.clone();
-        regional_profile.bucket = Some(BucketSpec {
-            region: "eu-west-1".into(),
-            bucket: "bucket".into(),
-            ..BucketSpec::default()
-        });
-        regional_profile.s3_endpoint.clear();
-        let mut regional_settings = Settings::default();
-        regional_profile.apply(&mut regional_settings);
-        assert_eq!(regional_settings.s3.bucket, "bucket");
-        assert_eq!(regional_settings.s3.region, "eu-west-1");
-        assert!(regional_settings.s3.endpoint.is_empty());
-        assert!(regional_settings.s3.access_key.is_empty());
-        assert!(regional_settings.s3.secret_key.is_empty());
-        std::fs::write(
-            remote_path(&state, "test", "profile.json").unwrap(),
-            serde_json::to_vec(&profile).unwrap(),
-        )
-        .unwrap();
-        let env = BTreeMap::from([
-            ("SWARMY_DEFAULT_IMAGE".into(), "local:old".into()),
-            ("SWARMY_NATS_URL".into(), "nats://wrong:4222".into()),
-            ("SWARMY_S3_BUCKET".into(), "custom".into()),
-        ]);
-        let loaded = load_with_remote(&root.path().join("nested"), &env).unwrap();
-        assert_eq!(
-            loaded.settings.selection.default_image.as_deref(),
-            Some("base-ubuntu:test")
-        );
-        assert_eq!(
-            loaded.settings.session_image(None).unwrap(),
-            "base-ubuntu:test"
-        );
-        assert_eq!(
-            loaded
-                .settings
-                .session_image(Some("custom:override"))
-                .unwrap(),
-            "custom:override"
-        );
-        assert_eq!(loaded.settings.bus.nats_url, profile.nats_url);
-        assert_eq!(loaded.settings.s3.endpoint, profile.s3_endpoint);
-        assert_eq!(loaded.settings.api.url, profile.api_url);
-        assert_eq!(loaded.settings.api.token, "fixture-token");
-        assert_eq!(loaded.settings.store.cluster_file, profile.fdb_cluster_file);
-        assert_eq!(loaded.settings.s3.bucket, "custom");
-        assert_eq!(loaded.settings.environment()["SWARMY_REMOTE"], "test");
-        let mut invalid = profile;
-        invalid.ports.fdb = 14500;
-        assert!(invalid.validate_fdb_port().is_err());
-        std::fs::write(
-            remote_path(&state, "test", "profile.json").unwrap(),
-            serde_json::to_vec(&invalid).unwrap(),
-        )
-        .unwrap();
-        assert!(load_with_remote(root.path(), &env).is_err());
+    fn remote_profile_key_is_rejected_with_the_fix() {
+        let error = toml::from_str::<Settings>("[remote]\nprofile = 'x'").unwrap_err();
+        assert!(error.to_string().contains("swarmy swarm use"));
+    }
 
-        let mut env = env;
-        env.insert("SWARMY_REMOTE".into(), "missing".into());
-        assert!(load_with_remote(root.path(), &env).is_err());
-        env.insert("SWARMY_REMOTE".into(), "../test".into());
-        assert!(load_with_remote(root.path(), &env).is_err());
+    #[test]
+    fn null_profile_in_saved_node_loads() {
+        let node: RemoteNode = serde_json::from_str(r#"{"name":"old","region":"us-east-1","instance_id":"i-old","public_ip":"127.0.0.1","private_ip":"127.0.0.1","key_path":"/tmp/key","launch_settings":{"profile":null},"launch_attempted":true,"created_at":"2026-09-16T00:00:00Z"}"#).unwrap();
+        assert!(node.launch_settings.is_some());
     }
 
     #[test]
@@ -993,14 +872,6 @@ mod tests {
             }),
             default_image: None,
         };
-        let mut settings = Settings::default();
-        profile.apply(&mut settings);
-        assert_eq!(settings.s3.endpoint, "https://objects.example.invalid");
-        assert_eq!(settings.s3.bucket, "bucket");
-        assert_eq!(settings.s3.region, "eu-west-1");
-        assert_eq!(settings.s3.access_key, "test-access");
-        assert_eq!(settings.s3.secret_key, "test-secret");
-        assert_eq!(settings.s3.prefix.as_str(), "runs/team");
         // The serialized profile keeps the keys; its debug form does not.
         let encoded = serde_json::to_vec(&profile).unwrap();
         let decoded: RemoteProfile = serde_json::from_slice(&encoded).unwrap();

@@ -1,5 +1,5 @@
 //! Private on-disk registry of swarm specs and records.
-use super::{SwarmRecord, SwarmSpec, validate_swarm_name};
+use super::{SwarmApi, SwarmRecord, SwarmSpec, validate_swarm_name};
 use crate::{Error, create_private_dir, paths::Dirs, write_private};
 use std::{
     collections::BTreeSet,
@@ -8,7 +8,9 @@ use std::{
     path::{Path, PathBuf},
 };
 pub struct Swarm {
-    pub spec: SwarmSpec,
+    pub name: String,
+    /// None for an attached swarm or a record left behind without its spec.
+    pub spec: Option<SwarmSpec>,
     pub record: Option<SwarmRecord>,
 }
 pub struct Registry {
@@ -124,14 +126,33 @@ impl Registry {
         Ok(Some(record))
     }
     /// # Errors
-    /// Returns `UnknownSwarm` without a spec, or registry read errors.
+    /// Returns `UnknownSwarm` when neither spec nor record exists, or registry errors.
     pub fn read(&self, name: &str) -> Result<Swarm, Error> {
-        let spec = self
-            .read_spec(name)?
-            .ok_or_else(|| Error::UnknownSwarm(name.to_owned()))?;
-        Ok(Swarm {
-            spec,
-            record: self.read_record(name)?,
+        let spec = self.read_spec(name)?;
+        let record = self.read_record(name)?;
+        if spec.is_none() && record.is_none() {
+            return Err(Error::UnknownSwarm(name.to_owned()));
+        }
+        Ok(Swarm { name: name.to_owned(), spec, record })
+    }
+    /// Register an API swarmy does not manage. Re-attaching keeps `created_at`.
+    /// # Errors
+    /// Returns registry errors when the name belongs to a managed swarm, or I/O errors.
+    pub fn attach(&self, name: &str, url: &str, token: &str) -> Result<(), Error> {
+        let path = self.spec_path(name)?;
+        if self.read_spec(name)?.is_some() {
+            return Err(Error::Registry(format!("swarm \"{name}\" is managed by swarmy (spec {}); attach registers only APIs swarmy does not manage", path.display())));
+        }
+        let old = self.read_record(name)?;
+        if old.as_ref().is_some_and(|r| !r.hosts.is_empty() || r.tofu_state.is_some()) {
+            return Err(Error::Registry(format!("swarm \"{name}\" has machines recorded; attach registers only APIs swarmy does not manage")));
+        }
+        self.write_record(&SwarmRecord {
+            name: name.to_owned(),
+            created_at: old.map_or_else(jiff::Timestamp::now, |r| r.created_at),
+            api: SwarmApi { url: Some(url.to_owned()), token: Some(token.to_owned()) },
+            hosts: Default::default(),
+            tofu_state: None,
         })
     }
     /// # Errors

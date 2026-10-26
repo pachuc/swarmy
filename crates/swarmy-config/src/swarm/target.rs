@@ -9,7 +9,7 @@ pub enum Target {
 impl fmt::Debug for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Swarm(s) => f.debug_tuple("Swarm").field(&s.spec.name).finish(),
+            Self::Swarm(s) => f.debug_tuple("Swarm").field(&s.name).finish(),
             Self::Endpoint { url, .. } => f
                 .debug_struct("Endpoint")
                 .field("url", url)
@@ -55,6 +55,18 @@ pub fn resolve(
     }
     Err(Error::NoSwarm)
 }
+/// Resolve a client target from the process environment and registry.
+/// # Errors
+/// Returns resolution, environment, or directory errors.
+pub fn resolve_process(flag: Option<&str>) -> Result<(Registry, Target), Error> {
+    let environment = crate::process_environment(|key| {
+        matches!(key, "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_STATE_HOME"
+            | "XDG_CACHE_HOME" | "SWARMY_SWARM" | "SWARMY_API_URL" | "SWARMY_API_TOKEN")
+    })?;
+    let registry = Registry::new(crate::paths::Dirs::from_env(&environment)?);
+    let target = resolve(&registry, flag, &environment)?;
+    Ok((registry, target))
+}
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
@@ -81,10 +93,10 @@ mod tests {
             ("SWARMY_API_TOKEN".into(), "secret".into()),
         ]);
         assert!(
-            matches!(resolve(&registry,Some("flag"),&env).unwrap(),Target::Swarm(s) if s.spec.name=="flag")
+            matches!(resolve(&registry,Some("flag"),&env).unwrap(),Target::Swarm(s) if s.name=="flag")
         );
         assert!(
-            matches!(resolve(&registry,None,&env).unwrap(),Target::Swarm(s) if s.spec.name=="env")
+            matches!(resolve(&registry,None,&env).unwrap(),Target::Swarm(s) if s.name=="env")
         );
         env.insert("SWARMY_SWARM".into(), String::new());
         assert!(
@@ -104,7 +116,7 @@ mod tests {
         env.insert("SWARMY_API_URL".into(), String::new());
         env.insert("SWARMY_API_TOKEN".into(), "secret".into());
         assert!(
-            matches!(resolve(&registry,None,&env).unwrap(),Target::Swarm(s) if s.spec.name=="cur")
+            matches!(resolve(&registry,None,&env).unwrap(),Target::Swarm(s) if s.name=="cur")
         );
         assert!(matches!(
             resolve(&registry, Some("missing"), &env),
