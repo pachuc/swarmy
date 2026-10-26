@@ -390,4 +390,54 @@ mod tests {
             assert!(rewrite_address(bad, 4500).is_err());
         }
     }
+    #[test]
+    fn placement_follows_the_services_setting() {
+        let mut node: RemoteNode = serde_json::from_value(serde_json::json!({
+            "name": "test", "region": "test", "instance_id": "i-test",
+            "public_ip": "127.0.0.1", "private_ip": "127.0.0.1",
+            "key_path": "key", "launch_attempted": true, "created_at": "now"
+        }))
+        .unwrap();
+        assert_eq!(
+            placement(&node),
+            Placement::LocalServices { object_store: true }
+        );
+        node.launch_settings = Some(swarmy_config::RemoteSettings {
+            services: swarmy_config::RemoteServices::Node,
+            ..Default::default()
+        });
+        assert_eq!(placement(&node), Placement::Remote);
+        node.launch_settings = Some(swarmy_config::RemoteSettings {
+            bucket: Some(swarmy_config::BucketSpec::aws("example")),
+            ..Default::default()
+        });
+        assert_eq!(
+            placement(&node),
+            Placement::LocalServices {
+                object_store: false
+            }
+        );
+    }
+
+    #[test]
+    fn api_only_profile_passes_the_fdb_port_check() {
+        let node: RemoteNode = serde_json::from_value(serde_json::json!({
+            "name": "test", "region": "test", "instance_id": "i-test",
+            "public_ip": "127.0.0.1", "private_ip": "127.0.0.1",
+            "key_path": "key", "launch_attempted": true, "created_at": "now"
+        }))
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let zero = RemotePorts {
+            fdb: 0,
+            nats: 0,
+            s3: 0,
+        };
+        let profile =
+            new_profile(dir.path(), &node, zero, 40000, dir.path().join("socket")).unwrap();
+        assert!(profile.validate_fdb_port().is_ok());
+        assert_eq!(profile.nats_url, "");
+        assert_eq!(profile.s3_endpoint, "");
+        assert_eq!(profile.api_url.as_deref(), Some("http://127.0.0.1:40000"));
+    }
 }
