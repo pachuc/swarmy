@@ -92,7 +92,7 @@ enum Command {
         #[command(subcommand)]
         command: core_command::Command,
     },
-    /// Install FoundationDB, NATS, and SeaweedFS for local swarms (Linux x86-64)
+    /// Install `FoundationDB`, NATS, and `SeaweedFS` for local swarms (Linux x86-64)
     InstallTools {
         /// Install root: tools go to PREFIX/bin and PREFIX/lib (default ~/.local)
         #[arg(long)]
