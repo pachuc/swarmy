@@ -79,13 +79,19 @@ time.sleep(600)' "$test_dir/dummy-ready" &
     return 2
 }
 
+# An address-in-use result may be a closing socket, not a lasting
+# occupant. Keep trying to own the port before relying on someone else.
 port_was_free=false
-if start_dummy; then
-    port_was_free=true
-else
-    result=$?
-    (( result == 1 )) || exit "$result"
-fi
+for ((bind_attempt = 0; bind_attempt < 50; bind_attempt++)); do
+    if start_dummy; then
+        port_was_free=true
+        break
+    else
+        result=$?
+        (( result == 1 )) || exit "$result"
+    fi
+    sleep 0.1
+done
 
 occupied_stack="$test_dir/occupied/scripts/dev-stack.sh"
 "$occupied_stack" start
