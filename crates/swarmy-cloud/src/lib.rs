@@ -1,4 +1,4 @@
-//! Provision existing remote hosts over SSH and manage their static-key
+//! Provision swarm hosts over SSH and manage their static-key
 //! object buckets through [`Cloud`]. Cloud swarm machines come from the
 //! `OpenTofu` modules in `infra/modules`, run by `swarmy-infra`.
 //! See `docs/cloud-substrate.md`.
@@ -37,7 +37,7 @@ pub mod secrets;
 mod services;
 pub mod ssh;
 pub mod tunnel;
-/// Failures returned to clients of the remote provisioning entry point.
+/// Failures returned to clients provisioning a swarm on hosts.
 ///
 /// Only failures callers act on have their own variant: missing permissions
 /// (retried or reported with the operation name), AWS failures (reported
@@ -61,14 +61,14 @@ pub enum Error {
     },
     #[error("ssh {command} failed")]
     Ssh {
-        /// Names the attempted operation, such as "provision remote node".
+        /// Names the attempted operation, such as "provision swarm host".
         command: String,
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
     #[error("ssh {command} failed with {status}")]
     SshStatus {
-        /// Names the attempted operation, such as "provision remote node".
+        /// Names the attempted operation, such as "provision swarm host".
         command: String,
         status: std::process::ExitStatus,
     },
@@ -188,17 +188,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 use std::future::Future;
 use swarmy_core::ignore_best_effort;
 
-/// Provider-neutral description of the object bucket backing a remote.
+/// Provider-neutral description of the object bucket backing a swarm.
 ///
 /// The bucket description is [`swarmy_config::BucketSpec`]: endpoint, region,
 /// bucket name, prefix, and credentials. There is one description everywhere.
 /// [`std::fmt::Debug`] redacts static keys through the description.
 #[derive(Clone, Debug)]
 pub struct ObjectBucket {
-    /// The one bucket description, with the region filled from the remote's
+    /// The one bucket description, with the region filled from the swarm's
     /// configured region.
     pub spec: swarmy_config::BucketSpec,
-    /// Owning remote.
+    /// Owning swarm.
     pub owner: String,
 }
 
@@ -215,7 +215,7 @@ impl ObjectBucket {
     }
 }
 
-/// Whether `remote down` removed the bucket itself.
+/// Whether `swarmy swarm down` removed the bucket itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BucketRemoval {
     /// The bucket itself was deleted.
@@ -227,7 +227,7 @@ pub enum BucketRemoval {
     Retained,
 }
 
-/// Whether a cloud resource belongs to this remote.
+/// Whether a cloud resource belongs to this swarm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ownership {
     Owned,
@@ -235,7 +235,7 @@ pub enum Ownership {
     Unmanaged,
 }
 
-/// The object-storage boundary for remote buckets.
+/// The object-storage boundary for swarm buckets.
 pub trait Cloud {
     /// Create or adopt a bucket and record its ownership.
     fn ensure_bucket(&self, bucket: &ObjectBucket) -> impl Future<Output = Result<()>>;

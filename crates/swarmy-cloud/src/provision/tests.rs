@@ -654,19 +654,24 @@ mod bucket_lifecycle {
     }
     #[tokio::test]
     async fn bucket_keys_are_verified_before_anything_is_recorded() {
-        let (_dir, registry, spec, record) = fixture_bucket();
+        let (_dir, registry, spec, saved) = fixture_bucket();
         let cloud = FakeCloud {
             ensure: AtomicUsize::new(0),
             delete: AtomicUsize::new(0),
             ownership: Ownership::Owned,
             reject: true,
         };
-        let err = verify_bucket_with(&cloud, &spec, &record)
+        let host = FakeHost::new();
+        let base = settings();
+        let mut up = request(&registry, &spec, &base, None);
+        up.bucket_keys = saved.bucket_keys.clone();
+        let err = provision_swarm_with_backend(&host, &cloud, up)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("static bucket keys"));
         assert!(!format!("{err:?}").contains("value-secret"));
         assert_eq!(cloud.ensure.load(Ordering::Relaxed), 0);
+        assert!(host.calls().is_empty());
         assert!(registry.read_record(&spec.name).unwrap().is_none());
     }
     #[tokio::test]
@@ -690,7 +695,9 @@ mod bucket_lifecycle {
     #[tokio::test]
     async fn down_deletes_only_an_owned_bucket_scope() {
         let (_dir, _registry, spec, record) = fixture_bucket();
+        crate::set_output_sink(capture_output);
         for (ownership, expected) in [(Ownership::Owned, 1), (Ownership::Unmanaged, 0)] {
+            OUTPUT_LINES.lock().unwrap().clear();
             let cloud = FakeCloud {
                 ensure: AtomicUsize::new(0),
                 delete: AtomicUsize::new(0),
@@ -699,8 +706,66 @@ mod bucket_lifecycle {
             };
             delete_bucket_with(&cloud, &spec, &record).await.unwrap();
             assert_eq!(cloud.delete.load(Ordering::Relaxed), expected);
+            let output = OUTPUT_LINES.lock().unwrap().join("\n");
+            if ownership == Ownership::Unmanaged {
+                assert!(output.contains("left in place"));
+            } else {
+                assert!(output.contains("Removed"));
+            }
         }
     }
+    #[tokio::test]
+    async fn provisioned_hosts_reject_bucket_changes_and_key_rotation() {
+        let (_dir, registry, spec, saved) = fixture_bucket();
+        let cloud = FakeCloud {
+            ensure: AtomicUsize::new(0),
+            delete: AtomicUsize::new(0),
+            ownership: Ownership::Owned,
+            reject: false,
+        };
+        let host = FakeHost::new();
+        let base = settings();
+        let mut first = request(&registry, &spec, &base, None);
+        first.bucket_keys = saved.bucket_keys.clone();
+        provision_swarm_with_backend(&host, &cloud, first)
+            .await
+            .unwrap();
+        let original = registry.read_record(&spec.name).unwrap().unwrap();
+        let mut changed = request(&registry, &spec, &base, None);
+        changed.bucket_keys = Some(StaticKeys {
+            access_key: "new-key".into(),
+            secret_key: "new-secret".into(),
+        });
+        let error = provision_swarm_with_backend(&host, &cloud, changed)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("cannot rotate"));
+        let mut removed = spec.clone();
+        removed.bucket = None;
+        let error =
+            provision_swarm_with_backend(&host, &cloud, request(&registry, &removed, &base, None))
+                .await
+                .unwrap_err();
+        assert!(error.to_string().contains("[bucket] changed"));
+        assert_eq!(registry.read_record(&spec.name).unwrap().unwrap(), original);
+        assert_eq!(cloud.ensure.load(Ordering::Relaxed), 1);
+
+        let (_dir, registry, mut no_bucket) = fixture();
+        let host = FakeHost::new();
+        provision_swarm_with(&host, request(&registry, &no_bucket, &base, None))
+            .await
+            .unwrap();
+        no_bucket.bucket = spec.bucket.clone();
+        let error = provision_swarm_with_backend(
+            &host,
+            &cloud,
+            request(&registry, &no_bucket, &base, None),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("[bucket] changed"));
+    }
+
     #[tokio::test]
     async fn bucket_swarm_never_logs_keys() {
         let (_dir, registry, spec, saved) = fixture_bucket();
@@ -946,6 +1011,27 @@ async fn upgrade_json_has_one_complete_object_per_node() {
         assert!(value["elapsed_seconds"].is_number());
     }
 }
+#[tokio::test]
+async fn upgrade_callback_reports_completed_hosts_before_failure() {
+    let (_dir, _registry, _spec, machines) = upgrade_fixture().await;
+    let host = FakeUpgradeHost::default();
+    let mut seen = Vec::new();
+    let err = upgrade::run_with(
+        &host,
+        &machines,
+        upgrade::Options::new(false, false, 17, true),
+        |summary| {
+            seen.push(summary.node.clone());
+            Err(Error::other("stop after the first completed host"))
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("first completed host"));
+    assert_eq!(seen, ["fleet-workers-2"]);
+    assert_eq!(host.upgrades.lock().unwrap().len(), 1);
+}
+
 #[test]
 fn upgrade_summary_accepts_old_json() {
     let summary: Summary =

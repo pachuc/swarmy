@@ -34,9 +34,8 @@ Start a local cluster with `swarmy swarm up dev`. It creates a base64 32-byte ke
 at `~/.local/share/swarmy/keyring` (`$XDG_DATA_HOME/swarmy/keyring`) with mode 600, or uses `SWARMY_KEYRING`. The key encrypts
 FoundationDB credential records with XChaCha20-Poly1305. Keep a separate backup:
 replacing the key cannot decrypt existing records. CLI and gateway hosts need
-the same key. `remote adopt --services node --copy-credential` and
-`remote add-node --copy-credential` explicitly copy it over SSH; ordinary node
-hosts need no provider credentials.
+the same key. `swarmy swarm up NAME --copy-credential` explicitly copies it over SSH on
+the swarm's first up; ordinary node hosts need no provider credentials.
 
 ```sh
 swarmy auth set anthropic --from-env

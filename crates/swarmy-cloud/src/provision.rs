@@ -376,31 +376,59 @@ async fn provision_swarm_with_backend(
     }
     Ok(reports)
 }
+#[cfg(feature = "remote")]
 async fn prepare_bucket(
-    #[cfg(feature = "remote")] cloud: &impl crate::Cloud,
+    cloud: &impl crate::Cloud,
     request: &mut UpRequest<'_>,
     record: &mut SwarmRecord,
 ) -> Result<()> {
+    validate_bucket_keys(request, record)?;
     let spec = request.spec;
-    if let Some(keys) = request.bucket_keys.take() {
-        record.bucket_keys = Some(keys);
+    if spec.bucket.is_some() {
+        verify_bucket_with(cloud, spec, record).await?;
+        request.registry.write_record(record)?;
+        ensure_bucket_with(cloud, spec, record).await?;
     }
-    if let Some(bucket) = &spec.bucket {
-        if record.bucket_keys.is_none() {
+    Ok(())
+}
+#[cfg(not(feature = "remote"))]
+fn prepare_bucket(
+    request: &mut UpRequest<'_>,
+    record: &mut SwarmRecord,
+) -> impl Future<Output = Result<()>> {
+    std::future::ready(validate_bucket_keys(request, record))
+}
+fn validate_bucket_keys(request: &mut UpRequest<'_>, record: &mut SwarmRecord) -> Result<()> {
+    let spec = request.spec;
+    let provisioned = record.hosts.values().flatten().any(|host| host.provisioned);
+    if let Some(keys) = request.bucket_keys.take() {
+        if spec.bucket.is_none() {
             return Err(Error::other(format!(
-                "swarm {} uses bucket {}: pass --s3-access-key KEY with --s3-secret-stdin or --s3-secret-file FILE on its first swarmy swarm up",
-                spec.name, bucket.name
+                "swarm {} has no [bucket]; S3 keys apply only to a swarm whose spec names a bucket",
+                spec.name
             )));
         }
-        #[cfg(feature = "remote")]
-        verify_bucket_with(cloud, spec, record).await?;
-        #[cfg(not(feature = "remote"))]
-        verify_bucket(spec, record).await?;
-        request.registry.write_record(record)?;
-        #[cfg(feature = "remote")]
-        ensure_bucket_with(cloud, spec, record).await?;
-        #[cfg(not(feature = "remote"))]
-        ensure_bucket(spec, record).await?;
+        if provisioned && record.bucket_keys.as_ref() != Some(&keys) {
+            return Err(Error::other(format!(
+                "swarm {} is provisioned; its hosts keep the bucket keys they were provisioned with, and swarmy cannot rotate them in place yet",
+                spec.name
+            )));
+        }
+        record.bucket_keys = Some(keys);
+    }
+    if provisioned && spec.bucket.is_some() != record.bucket_keys.is_some() {
+        return Err(Error::other(format!(
+            "swarm {}: [bucket] changed after its hosts were provisioned; restore it, or run swarmy swarm down {} --destroy first",
+            spec.name, spec.name
+        )));
+    }
+    if let Some(bucket) = &spec.bucket
+        && record.bucket_keys.is_none()
+    {
+        return Err(Error::other(format!(
+            "swarm {} uses bucket {}: pass --s3-access-key KEY with --s3-secret-stdin or --s3-secret-file FILE on its first swarmy swarm up",
+            spec.name, bucket.name
+        )));
     }
     Ok(())
 }
@@ -428,13 +456,7 @@ fn service_options(
             token,
             ..Default::default()
         };
-        let options = services::Options::new(
-            &settings,
-            true,
-            user(spec),
-            request.copy_credential,
-            request.recipe,
-        )?;
+        let options = services::Options::new(&settings, true, user(spec), request.copy_credential)?;
         Some(if request.recipe.is_some() {
             options.with_default_image(&format!("base-ubuntu:{}", spec.name))?
         } else {
@@ -731,6 +753,17 @@ pub async fn upgrade_swarm(
     spec: &SwarmSpec,
     options: UpgradeOptions,
 ) -> Result<Vec<Summary>> {
+    upgrade_swarm_with(registry, spec, options, |_| Ok(())).await
+}
+/// Upgrade hosts and report each completed summary before starting the next host.
+/// # Errors
+/// Reports a host, checkout, or callback failure.
+pub async fn upgrade_swarm_with(
+    registry: &Registry,
+    spec: &SwarmSpec,
+    options: UpgradeOptions,
+    on_summary: impl FnMut(&Summary) -> Result<()>,
+) -> Result<Vec<Summary>> {
     let _lock = Locked(lock(registry, &spec.name)?);
     let (record, _) = recorded_plan(registry, spec)?;
     let host = ssh::Ssh::for_client(&options.cache)?;
@@ -742,7 +775,7 @@ pub async fn upgrade_swarm(
     );
     policy.dirty_paths = host.checkout_changes()?;
     let machines = upgrade_machines(&record, spec);
-    upgrade::run(&host, &machines, policy).await
+    upgrade::run_with(&host, &machines, policy, on_summary).await
 }
 
 fn upgrade_machines(record: &SwarmRecord, spec: &SwarmSpec) -> Vec<Machine> {
@@ -853,10 +886,6 @@ async fn verify_bucket_with(
             )
         })
 }
-#[cfg(not(feature = "remote"))]
-fn verify_bucket(_spec: &SwarmSpec, _record: &SwarmRecord) -> impl Future<Output = Result<()>> {
-    std::future::ready(Err(Error::other(NO_S3)))
-}
 #[cfg(feature = "remote")]
 async fn ensure_bucket_with(
     cloud: &impl crate::Cloud,
@@ -871,10 +900,6 @@ async fn ensure_bucket_with(
             &bucket.region,
         ))
         .await
-}
-#[cfg(not(feature = "remote"))]
-fn ensure_bucket(_spec: &SwarmSpec, _record: &SwarmRecord) -> impl Future<Output = Result<()>> {
-    std::future::ready(Err(Error::other(NO_S3)))
 }
 #[cfg(feature = "remote")]
 async fn delete_bucket(spec: &SwarmSpec, record: &SwarmRecord) -> Result<()> {

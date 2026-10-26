@@ -687,7 +687,7 @@ async fn run_host_observation(
                     "upgrade applies to swarms on hosts; a local swarm runs this client's binaries"
                 );
             };
-            let summaries = swarmy_cloud::provision::upgrade_swarm(
+            swarmy_cloud::provision::upgrade_swarm_with(
                 registry,
                 &spec,
                 swarmy_cloud::provision::UpgradeOptions {
@@ -697,13 +697,15 @@ async fn run_host_observation(
                     json: json_output,
                     cache: registry.dirs().cache.join("core"),
                 },
+                |summary| {
+                    if json_output {
+                        println!("{}", serde_json::to_string(summary)?);
+                        std::io::Write::flush(&mut std::io::stdout())?;
+                    }
+                    Ok(())
+                },
             )
             .await?;
-            if json_output {
-                for summary in summaries {
-                    println!("{}", serde_json::to_string(&summary)?);
-                }
-            }
         }
         _ => unreachable!("host observation dispatch"),
     }

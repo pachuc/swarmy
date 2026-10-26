@@ -885,9 +885,6 @@ impl Settings {
             tracing::warn!(path = %path.display(), "ignoring the removed [remote] section; delete it (swarms are described in ~/.config/swarmy/swarms/NAME.toml)");
         }
         let settings: Self = table.try_into()?;
-        // An absent service user predates the setting; configuration files
-        // take the new default while saved node records keep the empty value
-        // so they fall back to the SSH login they were provisioned with.
         settings.validate()?;
         settings.catalog()?;
         Ok(settings)

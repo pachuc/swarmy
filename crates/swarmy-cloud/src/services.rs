@@ -1,8 +1,5 @@
 //! Configure control-plane services without implicitly exporting provider credentials.
-use std::{
-    path::{Path, PathBuf},
-    process::Stdio,
-};
+use std::{path::PathBuf, process::Stdio};
 
 use crate::Result;
 use crate::provision::Machine;
@@ -13,18 +10,6 @@ pub(crate) struct Options {
     pub keyring: Option<PathBuf>,
     config: String,
     fake_script: Option<Vec<u8>>,
-}
-
-#[cfg(test)]
-impl From<Option<&Path>> for Options {
-    fn from(_recipe: Option<&Path>) -> Self {
-        Self {
-            credential: None,
-            keyring: None,
-            config: String::new(),
-            fake_script: None,
-        }
-    }
 }
 
 impl Options {
@@ -55,14 +40,13 @@ impl Options {
         services: bool,
         service_user: &str,
         copy: bool,
-        recipe: Option<&Path>,
     ) -> Result<Self> {
         let keyring = if copy {
             Some(swarmy_config::Keyring::path()?)
         } else {
             None
         };
-        Self::with_keyring(settings, services, service_user, copy, recipe, keyring)
+        Self::with_keyring(settings, services, service_user, copy, keyring)
     }
 
     pub(super) fn with_keyring(
@@ -70,7 +54,6 @@ impl Options {
         services: bool,
         service_user: &str,
         copy: bool,
-        _recipe: Option<&Path>,
         keyring: Option<PathBuf>,
     ) -> Result<Self> {
         crate::Error::ensure(
@@ -303,7 +286,7 @@ mod tests {
         let mut settings = Settings::default();
         settings.selection.provider = "fake".into();
         settings.api.token = "test-token".into();
-        let options = Options::with_keyring(&settings, true, "swarmy", false, None, None)
+        let options = Options::with_keyring(&settings, true, "swarmy", false, None)
             .unwrap()
             .with_default_image("base-ubuntu:test")
             .unwrap();

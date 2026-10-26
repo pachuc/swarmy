@@ -90,7 +90,6 @@ pub struct SshTarget {
     /// Host keys accepted by this identity.
     pub known_hosts: PathBuf,
 }
-impl SshTarget {}
 /// Everything needed to open or reuse one swarm's tunnel.
 pub struct Request<'a> {
     /// The swarm's private state directory, holding the record, lock, and log.

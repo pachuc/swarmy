@@ -131,18 +131,6 @@ pub(crate) async fn first_reachable(
     Err(crate::Error::SshUnavailable)
 }
 
-/// The interactive login command to print after provisioning.
-///
-/// # Errors
-///
-/// Rejects node records with an invalid SSH user.
-pub fn command_line(node: &Machine, address: &str) -> Result<String> {
-    let mut args = vec!["ssh".to_owned()];
-    args.extend(arguments(node)?);
-    args.push(address.to_owned());
-    Ok(shell_words::join(args))
-}
-
 pub(crate) async fn control_socket(
     program: &OsStr,
     socket: &Path,
@@ -892,13 +880,6 @@ pub async fn build_image_tagged(
         "build and register remote image",
     )
     .await
-}
-
-/// Build an image tagged with the node name for legacy remotes.
-/// # Errors
-/// Reports SSH or image build failures.
-pub async fn build_image(node: &Machine, address: &str, recipe: &Path) -> Result<()> {
-    build_image_tagged(node, address, recipe, &node.name).await
 }
 
 /// Read the installed services token rather than assuming the uploaded value.

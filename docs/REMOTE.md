@@ -27,12 +27,62 @@ The primary is provisioned first; upgrade and teardown visit nodes first.
 
 ## Up, authenticate, and chat
 
-Client commands reach the API through the on-demand tunnel.
+On the first `swarmy swarm up demo`, optionally pass `--copy-credential` to
+copy the configured provider credential to the control host over SSH.
+Ordinary node hosts need no provider credential. After provisioning, client
+commands such as `swarmy --swarm demo doctor` and `swarmy --swarm demo chat`
+reach the API through the on-demand tunnel. Run `swarmy swarm use demo` to
+make it the default. `swarmy swarm status demo` reports the hosts and tunnel;
+`swarmy swarm logs demo --unit swarmyd` follows the node journal. Once the
+primary is provisioned, another `up --copy-credential` skips it and does not
+copy a credential; decide whether to copy it before the first up.
+
+## Spec and host layout
+
+A spec may describe multiple existing hosts. The stack and services share a
+group; `placement.nodes` names groups that run sandboxes. For example:
+
+```toml
+name = "demo"
+lifecycle = "persistent"
+service_user = "swarmy"
+[groups.box]
+module = "existing"
+sandboxes = 64
+local_storage = "dir:/srv/swarmy-local"
+hosts = [{ address = "203.0.113.10", ssh_user = "root", ssh_key = "/home/me/.ssh/id_ed25519" }]
+[placement]
+stack = "box"
+services = "box"
+nodes = ["box"]
+```
+
+`sandboxes` defaults to 64 on node hosts; set it to zero for a control-only
+host. `private_address` defaults to `address`. SSH key paths must be absolute.
+`swarmy swarm up demo` can be re-run after a partial failure: it skips hosts
+already marked provisioned in the record. `swarmy swarm node add demo box
+--host 203.0.113.11 --ssh-key <bootstrap-key>` writes the new host to the
+spec (discarding comments), then provisions it. `swarmy swarm down demo
+--destroy` keeps the spec so the swarm can be provisioned again.
 
 ## Node directory and installed services
 
 The provisioner installs under `~<service-user>/swarmy`, with the service
-configuration at `.swarmy/config.toml`. The node's binaries and scripts are
+configuration at `.swarmy/config.toml`:
+
+```
+~<service-user>/swarmy/
+  scripts/           provisioning, upgrade, services, decommission, dev-stack
+  images/            carried image recipes
+  .swarmy/release/   uploaded release binaries
+  source/            development checkout copy and its target/
+  .swarmy/config.toml, .swarmy/node/, .swarmy/volumes,
+  .swarmy/tunnel-key*, .dev/   persistent node state; uploads do not overwrite it
+```
+
+Scripts match the client binary. Rebuild a development client after editing a
+script. Do not delete `.swarmy/` or `.dev/` when clearing unused checkout files.
+The node's binaries and scripts are
 copied from a checkout for development builds, or fetched from the matching
 release for release builds. `SWARMY_RELEASE_BASE_URL` overrides the release
 archive source. The provisioner keeps the SSH tunnel key and systemd unit
@@ -76,17 +126,66 @@ swarmy swarm up demo --s3-access-key KEY --s3-secret-stdin
 
 Keys are stored in the private swarm record and uploaded to nodes; they are
 never in the spec, process arguments, or status output. Up checks access
-before recording the keys and creates an ownership marker under the prefix.
+before recording the keys. Ownership is recorded as `managed-by=swarmy` and
+`swarmy-remote=NAME` bucket tags where supported, or as a marker under the
+prefix otherwise.
 An owned bucket's swarm prefix is removed on down; an unmanaged bucket is
 left untouched. Persistent swarms require `--destroy` for down. The bucket
 client is an opt-in build feature (`make install-client`).
 
-The static keys need S3 permissions for bucket inspection, creation if
-absent, ownership tags or marker objects, listing objects and versions,
-reading and writing data, and deletion of objects in the swarm's prefix.
+The static keys need `HeadBucket`, `CreateBucket`, `GetBucketTagging`,
+`PutBucketTagging`, `GetObject`, `PutObject`, `ListObjectsV2`,
+`ListObjectVersions`, `DeleteObjects`, and `DeleteBucket` permissions on the
+bucket and objects. The node's ordinary object-store operations use the same
+keys. There is no IAM role or instance profile for an existing-host swarm.
 If conditional PUT is unsupported, set `conditional_create = false` in the
 spec. The object storage compatibility probe in the volume tests exercises
 these operations against a test bucket before using it for agent disks.
+
+### Object storage compatibility probe
+
+Before depending on a provider, run the probe against a test bucket. It checks
+bucket existence with `HeadBucket`, PUT, create-only PUT on new and existing
+keys, GET, HEAD, prefixed pagination, and DELETE. It writes under a temporary
+`probe-<id>/` prefix and removes it afterward. Ranged GET is not needed for
+chunks, manifests, or blobs, which are always read whole. The output has one
+JSON line per check, without endpoint, bucket, prefix, or key material.
+
+```sh
+cargo run --locked -p swarmy-volume --example s3-compat-probe -- \
+  --endpoint https://objects.example.invalid --region eu-west-1 \
+  --bucket NAME --access-key KEY --secret-file ~/.local/share/swarmy/demo-s3-secret
+```
+
+Coordinates can instead come from `SWARMY_S3_ENDPOINT`, `SWARMY_S3_REGION`,
+`SWARMY_S3_BUCKET`, `SWARMY_S3_ACCESS_KEY`, and `SWARMY_S3_SECRET_KEY`.
+The secret may come from a private `--secret-file`, `--secret-stdin`, or the
+environment. For a provider without conditional PUT, run the probe again with
+`--conditional-create=false` and set `conditional_create = false` in the spec.
+
+| Check | SeaweedFS | Hetzner Object Storage |
+|---|---|---|
+| `bucket_exists` (`HeadBucket`) | pass | pending operator run |
+| `put` | pass | pending operator run |
+| `create_new` (`If-None-Match: *` on a new key) | pass | pending operator run |
+| `create_existing` (second create rejected) | pass | pending operator run |
+| `get` | pass | pending operator run |
+| `head` | pass | pending operator run |
+| `list_prefix` | pass | pending operator run |
+| `list_pagination` (two keys per page, continuation tokens) | pass | pending operator run |
+| `delete` | pass | pending operator run |
+| `conditional_create` stays on | yes | pending operator run |
+
+SeaweedFS supports conditional PUT in the development stack. If a provider
+fails `create_existing` by overwriting, disable conditional create and rerun
+the probe. `scripts/test-s3-compat-probe.sh` runs both modes against the
+development stack in CI.
+
+In-place static-key rotation is not supported: a subsequent `swarmy swarm up`
+refuses different keys because provisioned hosts keep the old ones. There is
+no `--keep-bucket` for `swarmy swarm down`; `down --destroy` deletes owned
+bucket data. Do not use it to rotate keys unless that deletion is intended.
+Plan a separate data-preserving rotation or migration with the operator.
 
 ## Upgrades and credentials
 
@@ -106,17 +205,64 @@ services on the host and copy the configured credential explicitly, run
 normal provisioning never copies it. Named agent memory files remain on
 agent disks and follow their snapshots, not the client tunnel.
 
+### Upgrading a host provisioned before swarmy-core
+
+Run a full `swarmy swarm upgrade NAME` without `--services-only` from a
+matching client. The `units` list should include `swarmyd.service` and the
+installed service units. Check `systemctl cat swarmyd.service` for
+`ExecStart=/usr/local/bin/swarmy-core node`, and inspect
+`ls /usr/local/bin`. Old binaries are removed once no installed unit refers
+to them. Do not use down to fix an upgrade: down removes the backing stack's
+data. If installed service settings do not match, inspect
+`/etc/swarmy/units.env` and the installed units before reprovisioning.
+
+### Node scripts and joining hosts
+
+On the host, `sudo systemctl status swarmy-stack swarmyd` checks the installed
+services; `sudo journalctl -u swarmyd -f` follows node logs. Provisioning
+writes `/etc/swarmy/node.env`, enables services at boot, and uses
+`Restart=always` for swarmyd. To rerun the low-level provisioning script
+manually, first inspect the saved spec and node environment, then on the
+primary use:
+
+```sh
+cd ~/swarmy && bash scripts/remote-provision.sh stack PRIVATE_IP BUCKET REGION ENDPOINT PREFIX CONDITIONAL_CREATE STATIC_KEYS SANDBOXES SERVICE_USER LOCAL_STORAGE PREBUILT
+```
+
+`PREBUILT` is true for an uploaded release bundle; the service user defaults
+to `swarmy`. A joining host uses `node FIRST_HOST_PRIVATE_IP` followed by the
+same bucket and storage arguments. Its cluster file is copied from the
+primary, preserving cluster identity and loopback coordinator address. Node
+add generates a dedicated tunnel key on the joining host, authorizes only
+service forwards on the primary, and pins the primary's host key through the
+authenticated provisioning connection. The key allows no interactive shell.
+The tunnel forwards local 4500 and 4222 to the primary's loopback ports and
+8333 when SeaweedFS is used. It starts before swarmyd and restarts after SSH
+failure; inspect it with `sudo journalctl -u swarmy-tunnel`. Tunnel identity
+and pinned host key live under `/etc/swarmy/`, readable only by the service
+user. Binaries install to `/usr/local/bin`.
+
 ## Stop, down, and recovery
 
 `swarmy swarm stop demo` stops services but retains data;
 `swarmy swarm start demo` restarts them. `swarmy swarm down demo --destroy`
-removes swarmy units and data on hosts and deletes owned bucket scope. The
+removes swarmy units and the node checkout, and deletes owned bucket scope. The
 machines keep running. The service user, fstab entry, sandbox data on local
 storage, and tunnel authorization keys may remain; inspect and remove these
 by hand before repurposing a host. A broken node directory with installed
 units can be restored with `swarmy swarm upgrade demo`, or its units removed
 by hand. `swarmy swarm rm demo --force` forgets the local registration; it
 does not decommission hosts.
+
+## Agent memory files
+
+Named-agent memory files are read from `[memory] dir`
+(`SWARMY_MEMORY_DIR`, default `/home/agent/memory`), bounded by
+`[memory] max_bytes` (`SWARMY_MEMORY_MAX_BYTES`, default 32768). The node
+reads regular files in filename order, skipping directories, symlinks, and
+special files; it notes when the byte budget truncates content. Use an
+absolute directory without symlink components. See
+[worker memory handling](../crates/swarmy-worker/src/worker.rs).
 
 ## Fleet-specific operations
 
@@ -127,7 +273,8 @@ for it. Do not run the new client against hz before that conversion.
 
 ## Root suites and maintainer acceptance
 
-The host and sandbox root suites require a real node with `/dev/nbd0`, sudo,
+Use [`scripts/node-suites/`](../scripts/node-suites/) for the manual root
+suites; record results in the pull request. The host and sandbox root suites require a real node with `/dev/nbd0`, sudo,
 and the dev stack. Run them on the suite node, not inside an agent sandbox.
 `scripts/test-remote.sh` checks the on-demand SSH tunnel against localhost
 sshd with an authorized test key. It skips without `SWARMY_REMOTE_TEST_KEY`.

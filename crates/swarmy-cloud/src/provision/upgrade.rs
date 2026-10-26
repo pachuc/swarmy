@@ -1,4 +1,4 @@
-//! In-place upgrades keep the remote state and all instance identities intact.
+//! In-place upgrades keep swarm records and host identities intact.
 use std::time::{Duration, Instant};
 
 use super::Machine;
@@ -107,10 +107,20 @@ fn print_version(message: &str, json: bool) {
     }
 }
 
+#[cfg(test)]
 pub(super) async fn run(
     host: &impl UpgradeHost,
     nodes: &[Machine],
     options: Options,
+) -> Result<Vec<Summary>> {
+    run_with(host, nodes, options, |_| Ok(())).await
+}
+
+pub(super) async fn run_with(
+    host: &impl UpgradeHost,
+    nodes: &[Machine],
+    options: Options,
+    mut on_summary: impl FnMut(&Summary) -> Result<()>,
 ) -> Result<Vec<Summary>> {
     crate::Error::ensure(
         options.dirty_paths.is_empty() || options.allow_dirty,
@@ -154,6 +164,7 @@ pub(super) async fn run(
                 summary.elapsed_seconds
             );
         }
+        on_summary(&summary)?;
         summaries.push(summary);
     }
     Ok(summaries)

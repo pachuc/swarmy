@@ -217,8 +217,8 @@ services and scheduler, worker, gateway and API processes; the sandbox node
 runs `swarmyd`, runc containers and the volume/NBD path
 ([remote-provision.sh](../scripts/remote-provision.sh),
 [swarmyd main](../crates/swarmyd/src/role.rs)). One machine can perform both
-roles. A client reaches a remote swarm's API through an on-demand SSH tunnel; provisioning and upgrade are in
-upgrade are CLI operations, not a Kubernetes controller
+roles. A client reaches a remote swarm's API through an on-demand SSH tunnel;
+provisioning and upgrade are CLI operations, not a Kubernetes controller
 ([REMOTE.md](REMOTE.md), [cloud source](../crates/swarmy-cloud/src/lib.rs)).
 
 The worker advances events and yields tool execution to placed sandboxes;
