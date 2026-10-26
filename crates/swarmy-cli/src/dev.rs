@@ -220,11 +220,7 @@ async fn up(
     crate::local::ensure_stack(&layout.stack).await?;
     let settings = prepare_settings(layout)?;
     let mut pid = crate::local::launch(&layout.state, &layout.root, &core.path, &settings).await?;
-    let api_url = settings
-        .api
-        .url
-        .clone()
-        .unwrap_or_else(|| format!("http://{}", settings.api.listen));
+    let api_url = crate::local::api_url(&settings);
     crate::swarm_command::register_dev(
         swarmy_config::paths::Dirs::from_env(&layout.environment)?,
         &api_url,
@@ -301,21 +297,7 @@ fn prepare_settings(layout: &Layout) -> Result<Settings> {
     swarmy_config::write_private(&layout.config, settings.to_toml()?.as_bytes())?;
     // Load again so environment overrides win, without persisting those overrides.
     settings = Settings::load()?.settings;
-    if settings.selection.provider == "fake" {
-        let script = &settings.fake.script;
-        if let Some(parent) = script.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if !script.exists() {
-            swarmy_config::write_private(
-                script,
-                r#"{"request_based":{"steps":1,"tool_steps":[],"final_answer":"Hello from swarmy!"}}"#.as_bytes(),
-            )?;
-        }
-        if let Some(parent) = Path::new(&settings.fake.call_log).parent() {
-            fs::create_dir_all(parent)?;
-        }
-    }
+    crate::local::prepare_fake(&settings)?;
     Ok(settings)
 }
 

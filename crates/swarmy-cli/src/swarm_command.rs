@@ -19,10 +19,13 @@ pub(crate) enum Command {
     Create {
         #[arg(value_parser = parse_name)]
         name: String,
+        /// Run the backing stack and the services on this machine (the only kind so far)
         #[arg(long, required = true)]
         local: bool,
+        /// Keep data on down unless --destroy is given (local swarms default to ephemeral)
         #[arg(long)]
         persistent: bool,
+        /// Backing stack directory (default: the checkout's .dev inside a checkout, else the swarm's data directory)
         #[arg(long, value_name = "PATH")]
         stack_dir: Option<PathBuf>,
     },
@@ -30,8 +33,10 @@ pub(crate) enum Command {
     Up {
         #[arg(value_parser = parse_name)]
         name: String,
+        /// Run this swarmy-core instead of the matching release
         #[arg(long, env = "SWARMY_CORE_BIN", value_name = "PATH")]
         core_bin: Option<PathBuf>,
+        /// Do not download and register the release base image when no default image is configured
         #[arg(long)]
         no_image: bool,
     },
@@ -39,6 +44,7 @@ pub(crate) enum Command {
     Start {
         #[arg(value_parser = parse_name)]
         name: String,
+        /// Run this swarmy-core instead of the matching release
         #[arg(long, env = "SWARMY_CORE_BIN", value_name = "PATH")]
         core_bin: Option<PathBuf>,
     },
@@ -51,10 +57,11 @@ pub(crate) enum Command {
     Down {
         #[arg(value_parser = parse_name)]
         name: String,
+        /// Delete a persistent swarm's data
         #[arg(long)]
         destroy: bool,
     },
-    /// Show local process status
+    /// Show a swarm's processes and uptime
     Status {
         #[arg(value_parser = parse_name)]
         name: String,

@@ -1,19 +1,29 @@
-//! Local swarms: the backing stack and four control services on this machine.
-//! Local swarms share fixed ports, so one runs at a time.
+//! Local swarms: the backing stack and four control services on this
+//! machine, supervised by a background `swarmy swarm supervise` process.
+//! Local swarms share the stack's fixed ports, so one runs at a time.
+/// Process identities and graceful stopping for the local engine.
 pub(crate) mod process;
 use anyhow::{Context, Result, bail, ensure};
+use fs2::FileExt;
 use process::Identity;
 use std::{
-    fs::{self, File},
+    collections::BTreeMap,
+    fs::{self, File, OpenOptions},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
 };
-use swarmy_config::Settings;
+use swarmy_config::{
+    Settings, create_private_dir,
+    paths::Dirs,
+    swarm::{Lifecycle, Registry, SwarmSpec},
+};
 use tokio::{
     process::{Child, Command as Process},
     time::{sleep, timeout},
 };
+/// Service names and readiness messages for the four control services.
 pub(crate) const SERVICES: [(&str, &str); 4] = [
     ("scheduler", "scheduler started"),
     ("worker", "worker ready"),
@@ -39,6 +49,7 @@ pub(crate) fn embedded(script: &str, name: &str) -> Process {
     command
 }
 
+/// Run the compiled-in backing stack script with `swarmy local stack` as $0.
 pub(crate) async fn stack(dir: &Path, action: &str) -> Result<String> {
     // The same compiled-in script is used by the node and local dev stack.
     let output = embedded(swarmy_cloud::node_files::DEV_STACK, "swarmy local stack")
@@ -59,6 +70,7 @@ pub(crate) async fn stack(dir: &Path, action: &str) -> Result<String> {
     Ok(String::from_utf8(output.stdout)?)
 }
 
+/// Create the shared local cluster keyring if it does not exist.
 pub(crate) fn ensure_keyring() -> Result<()> {
     let keyring_path = swarmy_config::Keyring::path()?;
     match swarmy_config::Keyring::read(&keyring_path) {
@@ -82,6 +94,7 @@ pub(crate) fn ensure_keyring() -> Result<()> {
     Ok(())
 }
 
+/// Spawn `current_exe swarm supervise STATE CORE` in `root` and wait for `ready`.
 pub(crate) async fn launch(
     state: &Path,
     root: &Path,
@@ -146,6 +159,7 @@ pub(crate) async fn launch(
     Ok(pid)
 }
 
+/// Start the stack unless all three processes are up and its env file exists.
 pub(crate) async fn ensure_stack(dir: &Path) -> Result<()> {
     let running = stack(dir, "status").await?;
     if running
@@ -160,6 +174,7 @@ pub(crate) async fn ensure_stack(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Stop the supervisor and all four control services.
 pub(crate) async fn stop_services(state: &Path) -> Result<()> {
     process::stop(&state.join("supervisor.pid"), Duration::from_secs(40)).await?;
     for (name, _) in SERVICES.into_iter().rev() {
@@ -172,6 +187,7 @@ pub(crate) async fn stop_services(state: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Run and monitor the services until shutdown or a child exits.
 pub(crate) async fn supervise(state: &Path, core: &Path) -> Result<()> {
     // Register signal handlers before spawning so down during startup also cleans up.
     let stop = swarmy_config::shutdown_signal();
@@ -245,6 +261,7 @@ fn check_children(children: &mut [(&str, Child)]) -> Result<()> {
     Ok(())
 }
 
+/// Print the backing stack and supervised service statuses and uptimes.
 pub(crate) async fn status(stack_dir: &Path, state: &Path) -> Result<()> {
     let ticks = process::clock_ticks().await?;
     let stack = ["fdb", "nats", "seaweed"]
@@ -280,6 +297,7 @@ pub(crate) async fn status(stack_dir: &Path, state: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Follow all service logs or one named service log.
 pub(crate) async fn logs(state: &Path, service: Option<Service>) -> Result<()> {
     let service = service.map(|s| crate::cost_command::value_name(&s));
     let names = service.map_or_else(
@@ -306,12 +324,14 @@ pub(crate) async fn logs(state: &Path, service: Option<Service>) -> Result<()> {
     Ok(())
 }
 
+/// Services with a live recorded pid, for the replacement message.
 pub(crate) fn survivors(state: &Path) -> Vec<&'static str> {
     ["supervisor", "scheduler", "worker", "gateway", "api"]
         .into_iter()
         .filter(|name| Identity::read(&state.join(format!("{name}.pid"))).is_some())
         .collect()
 }
+/// Print the stack and service readiness lines and the supervisor pid.
 pub(crate) fn print_started(stack: &Path, state: &Path, pid: u32) -> Result<()> {
     let pids = ["fdb", "nats", "seaweed"]
         .into_iter()
@@ -332,16 +352,6 @@ pub(crate) fn print_started(stack: &Path, state: &Path, pid: u32) -> Result<()> 
     );
     Ok(())
 }
-
-use fs2::FileExt;
-use std::collections::BTreeMap;
-use std::fs::OpenOptions;
-use std::os::unix::fs::OpenOptionsExt;
-use swarmy_config::{
-    create_private_dir,
-    paths::Dirs,
-    swarm::{Lifecycle, Registry, SwarmSpec},
-};
 
 pub(crate) struct LocalSwarm {
     pub(crate) name: String,
@@ -461,14 +471,16 @@ fn service_settings(
     }
     Ok(settings)
 }
-fn api_url(settings: &Settings) -> String {
+/// Use the configured API URL or derive one from the listen address.
+pub(crate) fn api_url(settings: &Settings) -> String {
     settings
         .api
         .url
         .clone()
         .unwrap_or_else(|| format!("http://{}", settings.api.listen))
 }
-fn prepare_fake(settings: &Settings) -> Result<()> {
+/// Write the default fake script only when the fake provider is selected.
+pub(crate) fn prepare_fake(settings: &Settings) -> Result<()> {
     if settings.selection.provider == "fake" {
         if let Some(parent) = settings.fake.script.parent() {
             fs::create_dir_all(parent)?;
@@ -507,16 +519,21 @@ fn ensure_only_running(registry: &Registry, swarm: &LocalSwarm) -> Result<()> {
         if name == swarm.name {
             continue;
         }
-        if let Some(other) = registry
-            .read_spec(&name)?
-            .and_then(|s| LocalSwarm::new(registry, &s).ok())
-        {
-            let (services, stack) = other.running();
-            if services || (other.stack != swarm.stack && stack) {
-                bail!(
-                    "local swarm \"{name}\" is running; stop it first with swarmy swarm stop {name} (local swarms share fixed ports, so one runs at a time)"
-                );
-            }
+        let Some(spec) = registry.read_spec(&name).with_context(|| {
+            format!("cannot inspect swarm spec \"{name}\" while checking local processes")
+        })?
+        else {
+            continue;
+        };
+        if spec.local_group().is_none() {
+            continue;
+        }
+        let other = LocalSwarm::new(registry, &spec)?;
+        let (services, stack) = other.running();
+        if services || (other.stack != swarm.stack && stack) {
+            bail!(
+                "local swarm \"{name}\" is running; stop it first with swarmy swarm stop {name} (local swarms share fixed ports, so one runs at a time)"
+            );
         }
     }
     Ok(())
@@ -853,6 +870,23 @@ mod tests {
         let settings = service_settings(&tuning, &state, &exports, &env, None).unwrap();
         assert_eq!(settings.state_dir, state);
         assert_eq!(settings.api.token, "file");
+    }
+    #[test]
+    fn unreadable_other_spec_names_the_swarm() {
+        let temp = tempfile::tempdir().unwrap();
+        let dirs = Dirs {
+            config: temp.path().join("config"),
+            data: temp.path().join("data"),
+            state: temp.path().join("state"),
+            cache: temp.path().join("cache"),
+        };
+        let registry = Registry::new(dirs);
+        let spec = SwarmSpec::local("demo", Lifecycle::Ephemeral, None).unwrap();
+        registry.write_spec(&spec).unwrap();
+        fs::write(registry.spec_path("broken").unwrap(), "not valid TOML").unwrap();
+        let swarm = LocalSwarm::new(&registry, &spec).unwrap();
+        let error = ensure_only_running(&registry, &swarm).unwrap_err();
+        assert!(format!("{error:#}").contains("cannot inspect swarm spec \"broken\""));
     }
     #[test]
     fn api_url_prefers_the_configured_url() {

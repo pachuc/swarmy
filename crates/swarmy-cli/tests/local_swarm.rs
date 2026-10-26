@@ -34,15 +34,13 @@ impl Fixture {
     fn path(&self, p: &str) -> PathBuf {
         self.root.path().join(p)
     }
-    fn run(&self, cwd: &Path, args: &[&str]) -> Output {
-        let mut cmd = Command::new(CLI);
+    fn isolated(&self, cmd: &mut Command, cwd: &Path) {
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("SWARMY_") {
                 cmd.env_remove(key);
             }
         }
-        cmd.args(args)
-            .current_dir(cwd)
+        cmd.current_dir(cwd)
             .env("HOME", self.path("home"))
             .env("XDG_CONFIG_HOME", self.path("config"))
             .env("XDG_DATA_HOME", self.path("data"))
@@ -51,9 +49,12 @@ impl Fixture {
             .env(
                 "PATH",
                 format!("{}:/usr/bin:/bin", self.path("bin").display()),
-            )
-            .output()
-            .unwrap()
+            );
+    }
+    fn run(&self, cwd: &Path, args: &[&str]) -> Output {
+        let mut cmd = Command::new(CLI);
+        self.isolated(&mut cmd, cwd);
+        cmd.args(args).output().unwrap()
     }
     fn ok(&self, cwd: &Path, args: &[&str]) -> String {
         let out = self.run(cwd, args);
@@ -109,9 +110,11 @@ fn create_writes_a_local_spec_and_selects_it() {
         "demo\n"
     );
     assert!(
-        !f.run(&f.path("work"), &["swarm", "create", "demo", "--local"])
-            .status
-            .success()
+        String::from_utf8_lossy(
+            &f.run(&f.path("work"), &["swarm", "create", "demo", "--local"])
+                .stderr
+        )
+        .contains("already exists")
     );
     f.create("p", &["--persistent", "--stack-dir", "rel"]);
     let p = f.registry().read_spec("p").unwrap().unwrap();
@@ -169,6 +172,14 @@ fn verify_files(f: &Fixture, dir: &Path) -> swarmy_config::swarm::SwarmRecord {
             & 0o777,
         0o700
     );
+    assert_eq!(
+        fs::metadata(f.path("data/swarmy/keyring"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
     assert!(f.path("state/swarmy/swarms/demo/supervisor.pid").exists());
     assert!(!f.path("work/.swarmy").exists());
     assert_eq!(fs::read_dir(f.path("home")).unwrap().count(), 0);
@@ -207,14 +218,10 @@ fn lifecycle_without_a_checkout() {
             && status.contains("stack: fdb pid")
             && status.contains("api: up")
     );
-    let logs = Command::new("timeout")
+    let mut log_command = Command::new("timeout");
+    f.isolated(&mut log_command, &f.path("work"));
+    let logs = log_command
         .args(["-s", "INT", "2", CLI, "swarm", "logs", "demo", "api"])
-        .current_dir(f.path("work"))
-        .env("HOME", f.path("home"))
-        .env("XDG_CONFIG_HOME", f.path("config"))
-        .env("XDG_DATA_HOME", f.path("data"))
-        .env("XDG_STATE_HOME", f.path("state"))
-        .env("XDG_CACHE_HOME", f.path("cache"))
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&logs.stdout).contains("api ready"));
@@ -281,7 +288,11 @@ fn checkout_uses_its_dev_stack() {
     let mut f = Fixture::new();
     fs::create_dir_all(f.path("repo/scripts")).unwrap();
     fs::create_dir_all(f.path("repo/sub")).unwrap();
-    fs::write(f.path("repo/scripts/dev-stack.sh"), "marker").unwrap();
+    fs::write(
+        f.path("repo/scripts/dev-stack.sh"),
+        format!("#!/bin/sh\ntouch {}\n", f.path("repo/marker-ran").display()),
+    )
+    .unwrap();
     let out = f.ok(&f.path("repo/sub"), &["swarm", "create", "co", "--local"]);
     f.names.push("co".into());
     assert!(out.contains("the checkout's .dev"));

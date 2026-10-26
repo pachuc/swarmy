@@ -139,13 +139,13 @@ node. Ephemeral swarms delete their data on `down`; persistent swarms require
 `down --destroy` to delete data. `stop` and `start` preserve data.
 
 ```sh
-swarmy swarm create dev --local
-swarmy swarm up dev
-swarmy swarm status dev
-swarmy swarm logs dev worker
-swarmy swarm stop dev
-swarmy swarm start dev
-swarmy swarm down dev
+swarmy swarm create demo --local
+swarmy swarm up demo
+swarmy swarm status demo
+swarmy swarm logs demo worker
+swarmy swarm stop demo
+swarmy swarm start demo
+swarmy swarm down demo
 ```
 
 The files follow XDG directories (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and
@@ -173,8 +173,9 @@ uses a sibling `target/*/swarmy-core` or one on PATH. Use `--core-bin PATH`
 to choose explicitly. Service tuning is read on every up/start from the first
 project `.swarmy/config.toml` found from the current directory, otherwise
 `~/.config/swarmy/config.toml`. Only the default image is saved to this file;
-`services.toml` is rebuilt each time. Shell `SWARMY_*` variables do not reach
-the local services. Fixed ports allow only one local swarm to run at a time.
+`services.toml` is rebuilt each time. Shell `SWARMY_*` variables do not
+change the local services' settings; put overrides in the tuning file. Fixed
+ports allow only one local swarm to run at a time.
 `swarmy swarm rm` refuses to forget a running local swarm; stop it first.
 
 ## Ephemeral sessions and named agents

@@ -1,6 +1,12 @@
+use anyhow::{Context, Result, bail, ensure};
 use clap::Subcommand;
-use std::path::PathBuf;
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 use swarmy_cloud::release::Target;
+use tokio::{process::Command as Process, time::timeout};
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
@@ -51,9 +57,6 @@ pub(crate) async fn run(command: Command, json: bool, allow_version_mismatch: bo
     Ok(())
 }
 
-use anyhow::{Context, Result, bail, ensure};
-use std::{path::Path, process::Stdio, time::Duration};
-use tokio::{process::Command as Process, time::timeout};
 pub(crate) enum CoreSource {
     Explicit(PathBuf),
     Release(swarmy_cloud::release::Release),
