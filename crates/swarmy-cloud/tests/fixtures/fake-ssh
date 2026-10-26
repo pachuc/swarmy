@@ -1,0 +1,66 @@
+#!/bin/bash
+printf '%s\n' "$*" >> "$(dirname "$0")/ssh-calls"
+socket=''
+action=''
+master=0
+args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+    case "${args[i]}" in
+        -S) socket=${args[i+1]} ;;
+        -O) action=${args[i+1]} ;;
+        -M) master=1 ;;
+    esac
+done
+if [[ "$action" == check ]]; then
+    [[ -S "$socket" && -f "$socket.pid" ]] && kill -0 "$(cat "$socket.pid")" 2>/dev/null
+    exit $?
+fi
+if [[ "$action" == exit ]]; then
+    if [[ -f "$socket.pid" ]]; then
+        pid=$(cat "$socket.pid")
+        kill "$pid" 2>/dev/null || true
+        for ((n=0; n<100; n++)); do
+            [[ ! -f "/proc/$pid/stat" ]] && break
+            [[ $(cut -d ' ' -f 3 "/proc/$pid/stat") == Z ]] && break
+            sleep 0.01
+        done
+    fi
+    rm -f "$socket" "$socket.pid"
+    exit 0
+fi
+if ((master)) && [[ -f "$(dirname "$0")/fail-start" ]]; then
+    echo boom >&2
+    exit 255
+fi
+if ((master)); then
+    printf '%s\n' "$*" >> "$(dirname "$0")/ssh-masters"
+    exec python3 -c '
+import os, signal, socket, sys
+args = sys.argv[1:]
+listeners = []
+for i, arg in enumerate(args):
+    if arg == "-L":
+        host, local, remote_host, remote = args[i+1].split(":")
+        listener = socket.socket()
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            listener.bind((host, int(local)))
+            listener.listen()
+        except OSError:
+            sys.exit(255)
+        listeners.append(listener)
+path = args[args.index("-S")+1]
+with open(path + ".pid", "w") as file:
+    file.write(str(os.getpid()))
+control = socket.socket(socket.AF_UNIX)
+control.bind(path)
+control.listen()
+while True:
+    signal.pause()
+' "$@"
+fi
+case "${args[-1]}" in
+    *config.toml*) printf '[api]\ntoken = "fake-token"\n' ;;
+    *fdb.cluster*) printf 'fake:id@127.0.0.1:4500\n' ;;
+esac
+exit 0
