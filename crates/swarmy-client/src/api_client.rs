@@ -203,6 +203,7 @@ mod tests {
                 [(
                     "box".into(),
                     vec![swarmy_config::swarm::RecordedHost {
+                        provisioned: false,
                         name: "box".into(),
                         public_address: "203.0.113.10".into(),
                         private_address: None,

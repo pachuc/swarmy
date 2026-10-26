@@ -30,6 +30,7 @@ macro_rules! cloud_err {
 
 mod command;
 pub mod node_files;
+pub mod provision;
 pub mod release;
 pub mod ssh;
 pub mod tunnel;

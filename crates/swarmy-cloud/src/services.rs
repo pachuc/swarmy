@@ -29,6 +29,16 @@ impl<'a> From<Option<&'a Path>> for Options<'a> {
 }
 
 impl<'a> Options<'a> {
+    /// Point the node API at the swarm's default image.
+    /// # Errors
+    /// Reports invalid configuration.
+    pub(crate) fn with_default_image(mut self, image: &str) -> Result<Self> {
+        let mut settings: Settings = toml::from_str(&self.config)?;
+        settings.selection.default_image = Some(image.to_owned());
+        self.config = settings.to_toml()?;
+        Ok(self)
+    }
+
     /// The TOML uploaded to the node's `.swarmy/config.toml`.
     #[cfg(all(test, feature = "remote"))]
     pub(crate) fn config_toml(&self) -> &str {
@@ -195,6 +205,7 @@ pub(crate) async fn install(node: &RemoteNode, address: &str, options: &Options<
             crate::node_files::SERVICES,
             shell_words::quote(&user),
         ))
+        .stdout(std::io::stderr())
         .status()
         .await
         .map_err(crate::Error::ssh("start node services"))?;
@@ -286,6 +297,23 @@ async fn upload_with(node: &RemoteNode, address: &str, script: &str, bytes: &[u8
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+    #[test]
+    fn default_image_keeps_token() {
+        let mut settings = Settings::default();
+        settings.selection.provider = "fake".into();
+        settings.remote.services = RemoteServices::Node;
+        settings.api.token = "test-token".into();
+        let options = Options::with_keyring(&settings, false, None, None)
+            .unwrap()
+            .with_default_image("base-ubuntu:test")
+            .unwrap();
+        let rendered: Settings = toml::from_str(&options.config).unwrap();
+        assert_eq!(rendered.api.token, "test-token");
+        assert_eq!(
+            rendered.selection.default_image.as_deref(),
+            Some("base-ubuntu:test")
+        );
+    }
     #[test]
     fn keyring_goes_to_the_service_users_xdg_data_directory() {
         let script = keyring_script("swarmy", "~swarmy");

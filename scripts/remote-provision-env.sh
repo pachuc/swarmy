@@ -592,6 +592,37 @@ decommission_probe() {
     fi
 }
 
+# Installed units in dependency order; an empty list is valid.
+installed_swarmy_units() {
+    local units unit installed
+    read_shared_list units swarmy_unit_names || return 1
+    installed=$(systemctl list-unit-files --no-legend --no-pager | awk '{ print $1 }') || return 1
+    for unit in "${units[@]}"; do
+        if grep -qxF -- "$unit" <<< "$installed"; then printf '%s\n' "$unit"; fi
+    done
+}
+
+# Disable dependents before backing units so they stay stopped across reboot.
+stop_installed_units() {
+    local units i text
+    text=$(installed_swarmy_units) || return 1
+    [[ -n $text ]] || { echo 'no swarmy units installed'; return 0; }
+    mapfile -t units <<< "$text"
+    for (( i = ${#units[@]} - 1; i >= 0; i-- )); do
+        sudo systemctl disable --now "${units[i]}"
+    done
+}
+
+start_installed_units() {
+    local units unit text
+    text=$(installed_swarmy_units) || return 1
+    [[ -n $text ]] || { echo 'no swarmy units installed'; return 0; }
+    mapfile -t units <<< "$text"
+    for unit in "${units[@]}"; do
+        sudo systemctl enable --now "$unit"
+    done
+}
+
 node_disk_bytes() {
     local sandboxes=$1 mount=$2
     if (( sandboxes == 0 )); then

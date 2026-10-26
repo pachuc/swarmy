@@ -341,6 +341,7 @@ fn rm_refuses_machines_without_force() {
         hosts: [(
             "box".into(),
             vec![RecordedHost {
+                provisioned: false,
                 name: "box".into(),
                 public_address: "203.0.113.10".into(),
                 private_address: None,

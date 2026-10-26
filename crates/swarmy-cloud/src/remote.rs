@@ -242,25 +242,7 @@ fn resolve_recipe(no_image: bool, image_recipe: &Path) -> Result<Option<PathBuf>
 
 /// The SSH host for provisioning, carrying the matching release when this client has one.
 fn provisioning_host(cache: &Path) -> Result<ssh::Ssh> {
-    let binaries = if let Some(release) = crate::release::Release::for_client()? {
-        cloud_out!(
-            "Using swarmy {} release binaries; nothing is built on the node",
-            release.tag()
-        );
-        ssh::Binaries::Release {
-            release,
-            cache: cache.to_owned(),
-        }
-    } else {
-        let checkout = ssh::find_checkout(&std::env::current_dir()?)?;
-        cloud_out!(
-            "Development client {}: the node builds swarmy-core from {} (copied to <node dir>/source)",
-            swarmy_version::IDENTITY,
-            checkout.display()
-        );
-        ssh::Binaries::Build { checkout }
-    };
-    Ok(ssh::Ssh::new(binaries))
+    ssh::Ssh::for_client(cache)
 }
 
 /// Provision an existing SSH-reachable machine as the first node of a

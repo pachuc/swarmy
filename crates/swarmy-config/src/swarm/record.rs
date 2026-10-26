@@ -45,6 +45,9 @@ pub struct RecordedHost {
     pub private_address: Option<String>,
     pub ssh_user: String,
     pub ssh_key: PathBuf,
+    /// Set when provisioning this host completes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub provisioned: bool,
 }
 impl SwarmRecord {
     /// # Errors
@@ -71,6 +74,17 @@ mod tests {
     use super::*;
     #[test]
     fn record_round_trip_and_redaction() {
+        let host = RecordedHost {
+            name: "test".into(),
+            public_address: "203.0.113.10".into(),
+            private_address: None,
+            ssh_user: "root".into(),
+            ssh_key: "/test".into(),
+            provisioned: false,
+        };
+        let text = toml::to_string(&host).unwrap();
+        assert!(!text.contains("provisioned"));
+        assert!(!toml::from_str::<RecordedHost>(&text).unwrap().provisioned);
         let record = SwarmRecord {
             name: "demo".into(),
             created_at: "2026-10-26T00:00:00Z".parse().unwrap(),
@@ -81,6 +95,7 @@ mod tests {
             hosts: BTreeMap::from([(
                 "workers".into(),
                 vec![RecordedHost {
+                    provisioned: false,
                     name: "box".into(),
                     public_address: "203.0.113.10".into(),
                     private_address: None,
