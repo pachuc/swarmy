@@ -963,8 +963,8 @@ pub async fn drain_node(node: &Machine, timeout: Duration, force: bool) -> Resul
     let address = wait_ssh_for(node, 6).await?;
     let script = piped_env()
         + &format!(
-            "set -euo pipefail\ndrain_node_agent '{}' {} {}\n",
-            service_user(node)?,
+            "set -euo pipefail\ndrain_node_agent {} {} {}\n",
+            shell_words::quote(&service_user(node)?),
             timeout.as_secs(),
             if force { "force" } else { "wait" }
         );

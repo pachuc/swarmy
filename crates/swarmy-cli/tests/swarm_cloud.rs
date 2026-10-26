@@ -615,7 +615,7 @@ fn scale_workers_up_then_down() {
     assert!(
         piped
             .iter()
-            .any(|s| s.contains("drain_node_agent 'swarmy' 600 wait"))
+            .any(|s| s.contains("drain_node_agent swarmy 600 wait"))
     );
     let ssh = fs::read_to_string(f.path().join("ssh-commands")).unwrap();
     assert!(ssh.contains("grep -vxF"));
@@ -680,7 +680,7 @@ fn scale_flags_reach_the_node() {
     assert!(
         piped
             .iter()
-            .any(|s| s.contains("drain_node_agent 'swarmy' 5 force")),
+            .any(|s| s.contains("drain_node_agent swarmy 5 force")),
         "{piped:?}"
     );
 }
