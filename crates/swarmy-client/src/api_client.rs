@@ -67,9 +67,12 @@ pub fn select_api(
     let Some(spec) = swarm.spec else {
         return Err(Error::SwarmIncomplete { swarm: name });
     };
-    if url.is_some() || token.is_none() {
+    if url.is_some() {
         return Err(Error::SwarmNotUp { swarm: name });
     }
+    let Some(token) = token else {
+        return Err(Error::SwarmNotUp { swarm: name });
+    };
     let group = spec.placement.services;
     let host = swarm
         .record
@@ -84,7 +87,7 @@ pub fn select_api(
         dir: registry.swarm_dir(&name)?.join("tunnel"),
         swarm: name,
         host: Box::new(host.clone()),
-        token: token.expect("checked above"),
+        token,
     })
 }
 /// Connect to an explicit API.
