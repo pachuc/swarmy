@@ -365,6 +365,46 @@ services = "local"
 nodes = ["box"]
 "#;
     #[test]
+    fn new_fields_round_trip_and_defaults() {
+        let mut spec = SwarmSpec::parse(EXISTING).unwrap();
+        assert_eq!(spec.service_user, None);
+        assert_eq!(spec.groups["box"].sandboxes, None);
+        assert_eq!(spec.groups["box"].hosts[0].private_address, None);
+        spec.service_user = Some("swarmy-user".into());
+        let group = spec.groups.get_mut("box").unwrap();
+        group.sandboxes = Some(2);
+        group.local_storage = Some("dir:/scratch".into());
+        group.hosts[0].private_address = Some("203.0.113.11".into());
+        assert_eq!(SwarmSpec::parse(&spec.to_toml().unwrap()).unwrap(), spec);
+    }
+    #[test]
+    fn new_field_validation() {
+        let mut spec = SwarmSpec::local("dev", Lifecycle::Ephemeral, None).unwrap();
+        spec.groups.get_mut("local").unwrap().sandboxes = Some(2);
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("local group takes no count")
+        );
+        let mut spec = SwarmSpec::parse(CLOUD).unwrap();
+        spec.groups.get_mut("control").unwrap().sandboxes = Some(2);
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("does not run nodes; remove sandboxes")
+        );
+        spec.groups.get_mut("control").unwrap().sandboxes = None;
+        spec.service_user = Some("a b".into());
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("service_user:")
+        );
+    }
+    #[test]
     fn local_spec_round_trips() {
         let spec = SwarmSpec::local("dev", Lifecycle::Ephemeral, None).unwrap();
         let text = spec.to_toml().unwrap();

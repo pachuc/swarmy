@@ -297,6 +297,23 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     #[test]
+    fn default_image_keeps_token() {
+        let mut settings = Settings::default();
+        settings.selection.provider = "fake".into();
+        settings.remote.services = RemoteServices::Node;
+        settings.api.token = "test-token".into();
+        let options = Options::with_keyring(&settings, false, None, None)
+            .unwrap()
+            .with_default_image("base-ubuntu:test")
+            .unwrap();
+        let rendered: Settings = toml::from_str(&options.config).unwrap();
+        assert_eq!(rendered.api.token, "test-token");
+        assert_eq!(
+            rendered.selection.default_image.as_deref(),
+            Some("base-ubuntu:test")
+        );
+    }
+    #[test]
     fn keyring_goes_to_the_service_users_xdg_data_directory() {
         let script = keyring_script("swarmy", "~swarmy");
         assert!(script.contains("sudo -u swarmy mkdir -p ~swarmy/.local/share/swarmy && chmod 700 ~swarmy/.local/share/swarmy"));

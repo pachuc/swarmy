@@ -1,5 +1,52 @@
 # Remote development nodes
 
+## Swarms on existing hosts
+
+`module = "existing"` adopts SSH-reachable machines you already own. The stack
+and services must share a group; separate or local services are refused for now.
+The first host of the stack group runs the backing stack and services. Other
+hosts run sandbox nodes when their group is listed in `placement.nodes`.
+
+```toml
+name = "box"
+lifecycle = "persistent"
+service_user = "swarmy"
+[groups.box]
+module = "existing"
+sandboxes = 64
+local_storage = "dir:/srv/swarmy-local"
+hosts = [{ address = "203.0.113.10", private_address = "203.0.113.10", ssh_user = "root", ssh_key = "/home/me/.ssh/id_ed25519" }]
+[placement]
+stack = "box"
+services = "box"
+nodes = ["box"]
+```
+
+The `service_user` owns the node installation. `sandboxes` defaults to 64 for
+node hosts and requires `local_storage`; set it to zero for a volume-only node.
+`private_address` defaults to `address` and is used between hosts. SSH keys
+must be absolute paths; swarmy copies them into its private swarm directory.
+
+```sh
+swarmy swarm create box --host 203.0.113.10 --ssh-key /home/me/.ssh/id_ed25519 --local-storage dir:/srv/swarmy-local
+swarmy swarm up box --copy-credential
+swarmy --swarm box chat
+swarmy swarm node add box box --host 203.0.113.11 --ssh-key /home/me/.ssh/id_ed25519
+swarmy swarm status box
+swarmy swarm stop box
+swarmy swarm start box
+swarmy swarm down box --destroy
+```
+
+`up` can be re-run: hosts marked provisioned are skipped. `node add` writes
+back the spec, losing its comments. Stop disables units until start enables
+them; both preserve data. A persistent swarm requires `--destroy` for down,
+because down removes its database and files from every host, but never deletes
+machines. Ephemeral swarms go down without that flag. The spec remains after
+down for a later up or `swarmy swarm rm box`. External buckets, host swarm
+upgrade, and host swarm logs will arrive when `swarmy remote` is removed.
+
+
 The laptop-services layout (`dev up` with a remote profile) has been removed;
 adopt remotes with `--services node`; remotes adopted with the default laptop
 services are no longer usable from client commands. `swarmy remote connect NAME`
