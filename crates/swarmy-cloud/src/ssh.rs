@@ -1476,6 +1476,19 @@ mod provisioning_command_tests {
     }
 
     #[test]
+    fn revoke_only_moves_authorized_keys_after_a_successful_grep() {
+        let command =
+            super::authorized_keys_command(&node(), "ssh-ed25519 AAAA test", true).unwrap();
+        let words = shell_words::split(&command).unwrap();
+        assert_eq!(&words[..4], &["sudo", "-u", "swarmy", "sh"]);
+        let inner = words.last().unwrap();
+        assert!(inner.starts_with("umask 077; grep -vxF"));
+        assert!(inner.contains("status=$?; if [ \"$status\" -le 1 ]; then mv"));
+        assert!(inner.contains("else rm -f"));
+        assert!(inner.contains("~swarmy/.ssh/authorized_keys"));
+    }
+
+    #[test]
     fn sandbox_limit_is_passed_to_both_node_modes() {
         let ip = "10.0.0.1".parse().unwrap();
         assert_eq!(

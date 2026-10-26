@@ -357,6 +357,7 @@ async fn failed_grow_apply_keeps_the_record_and_resumes() {
     );
     std::fs::remove_file(f.temp.path().join("fail-apply-workers")).unwrap();
     let spec = f.registry.read_spec("fleet").unwrap().unwrap();
+    let spec_before_retry = std::fs::read(f.registry.spec_path("fleet").unwrap()).unwrap();
     let report = scale_swarm_with(
         &host,
         ScaleRequest {
@@ -366,6 +367,10 @@ async fn failed_grow_apply_keeps_the_record_and_resumes() {
     )
     .await
     .unwrap();
+    assert_eq!(
+        std::fs::read(f.registry.spec_path("fleet").unwrap()).unwrap(),
+        spec_before_retry
+    );
     assert_eq!(report.added, ["fleet-workers-2"]);
     assert_eq!(
         f.registry.read_record("fleet").unwrap().unwrap().hosts["workers"].len(),
