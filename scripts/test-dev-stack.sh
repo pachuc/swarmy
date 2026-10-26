@@ -2,6 +2,8 @@
 set -euo pipefail
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# The caller may have sourced .dev/env; only the override scenario sets this.
+unset SWARMY_DEV_FDB_PORT
 test_dir=$(mktemp -d)
 dummy_pid=
 
