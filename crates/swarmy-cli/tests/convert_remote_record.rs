@@ -27,9 +27,13 @@ struct Fixture {
 impl Fixture {
     fn new() -> Option<Self> {
         let path = std::env::var_os("PATH")?;
-        let python = std::env::split_paths(&path)
+        let Some(python) = std::env::split_paths(&path)
             .map(|p| p.join("python3"))
-            .find(|p| p.is_file())?;
+            .find(|p| p.is_file())
+        else {
+            println!("skip: python3 is missing");
+            return None;
+        };
         if !Command::new(&python)
             .args(["-c", "import tomllib"])
             .status()
@@ -281,6 +285,15 @@ fn converts_into_a_spec_and_record_the_new_client_reads() {
         .collect::<Vec<_>>();
     entries.sort();
     assert_eq!(entries, ["bin", "config", "data", "old", "ssh.log"]);
+    for parent in [registry.dirs().specs(), registry.dirs().records()] {
+        assert!(fs::read_dir(parent).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".hz.")
+        }));
+    }
     let output = f
         .cmd(Path::new(env!("CARGO_BIN_EXE_swarmy")))
         .args(["--json", "swarm", "show", "hz"])
