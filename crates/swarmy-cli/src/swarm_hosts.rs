@@ -59,9 +59,8 @@ async fn machines_for(registry: &Registry, need: bool) -> Result<Option<(Tofu, C
     let runner = tofu(registry).await?;
     Ok(Some((runner, creds)))
 }
-fn machine_refs(pair: &Option<(Tofu, CloudCredentials)>) -> Option<MachineGroups<'_>> {
-    pair.as_ref()
-        .map(|(tofu, credentials)| MachineGroups { tofu, credentials })
+fn machine_refs(pair: Option<&(Tofu, CloudCredentials)>) -> Option<MachineGroups<'_>> {
+    pair.map(|(tofu, credentials)| MachineGroups { tofu, credentials })
 }
 
 pub(crate) fn cloud_spec(name: &str, args: &CreateCloud) -> Result<SwarmSpec> {
@@ -252,7 +251,7 @@ pub(crate) async fn up(
         copy_credential: args.copy_credential,
         recipe: recipe.as_deref(),
         cache: &registry.dirs().cache.join("core"),
-        machines: machine_refs(&pair),
+        machines: machine_refs(pair.as_ref()),
         bucket_keys: args.bucket_keys.clone(),
     })
     .await?;
@@ -313,7 +312,8 @@ pub(crate) async fn down(
         groups::has_module_groups(spec) || tofu_dir.exists(),
     )
     .await?;
-    let removed = provision::decommission_swarm(registry, spec, machine_refs(&pair)).await?;
+    let removed =
+        provision::decommission_swarm(registry, spec, machine_refs(pair.as_ref())).await?;
     if json_output {
         println!(
             "{}",

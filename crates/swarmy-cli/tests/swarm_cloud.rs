@@ -209,6 +209,27 @@ fn create_on_rejects_existing_and_local() {
     assert!(!output.status.success());
 }
 
+fn check_files(dir: &std::path::Path, secrets: &[&str]) {
+    if !dir.exists() {
+        return;
+    }
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            check_files(&path, secrets);
+        } else if !path.ends_with("cloud-credentials.toml") {
+            let bytes = fs::read(&path).unwrap();
+            for secret in secrets {
+                assert!(
+                    !bytes.windows(secret.len()).any(|w| w == secret.as_bytes()),
+                    "{}",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn credentials_never_leave_the_store() {
     let f = setup();
@@ -238,26 +259,6 @@ fn credentials_never_leave_the_store() {
             .unwrap()
             .contains("HCLOUD_TOKEN=hcloud-secret-5f2b9c")
     );
-    fn check_files(dir: &std::path::Path, secrets: &[&str]) {
-        if !dir.exists() {
-            return;
-        }
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                check_files(&path, secrets);
-            } else if !path.ends_with("cloud-credentials.toml") {
-                let bytes = fs::read(&path).unwrap();
-                for secret in secrets {
-                    assert!(
-                        !bytes.windows(secret.len()).any(|w| w == secret.as_bytes()),
-                        "{}",
-                        path.display()
-                    );
-                }
-            }
-        }
-    }
     for name in ["config", "data", "state", "cache"] {
         check_files(&f.path().join(name), &secrets);
     }

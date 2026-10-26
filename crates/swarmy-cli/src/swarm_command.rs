@@ -26,7 +26,7 @@ pub(crate) enum Command {
         /// Adopt a host at this IPv4 address
         #[arg(long, requires = "ssh_key")]
         host: Option<String>,
-        /// Create machines with an OpenTofu module
+        /// Create machines with an `OpenTofu` module
         #[arg(long)]
         on: Option<String>,
         /// Machine size (required with --on)
@@ -95,7 +95,7 @@ pub(crate) enum Command {
         #[arg(long)]
         s3_secret_stdin: bool,
     },
-    /// Show what OpenTofu would create or change for a swarm's machine groups, without applying it
+    /// Show what `OpenTofu` would create or change for a swarm's machine groups, without applying it
     Plan {
         #[arg(value_parser = parse_name)]
         name: String,
