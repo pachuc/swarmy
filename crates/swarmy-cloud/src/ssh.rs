@@ -332,6 +332,30 @@ pub fn find_checkout(cwd: &Path) -> Result<PathBuf> {
 }
 
 impl Ssh {
+    /// Select matching release binaries, or build from a checkout.
+    /// # Errors
+    /// Returns release discovery and checkout failures.
+    pub fn for_client(cache: &Path) -> Result<Self> {
+        let binaries = if let Some(release) = crate::release::Release::for_client()? {
+            cloud_out!(
+                "Using swarmy {} release binaries; nothing is built on the node",
+                release.tag()
+            );
+            Binaries::Release {
+                release,
+                cache: cache.to_owned(),
+            }
+        } else {
+            let checkout = find_checkout(&std::env::current_dir()?)?;
+            cloud_out!(
+                "Development client {}: the node builds swarmy-core from {} (copied to <node dir>/source)",
+                swarmy_version::IDENTITY,
+                checkout.display()
+            );
+            Binaries::Build { checkout }
+        };
+        Ok(Self::new(binaries))
+    }
     /// Open a provisioning handle.
     #[must_use]
     pub const fn new(binaries: Binaries) -> Self {
@@ -876,16 +900,72 @@ fn provisioning_command(
 /// # Errors
 ///
 /// Reports SSH failures and image build failures on the node.
-pub async fn build_image(node: &RemoteNode, address: &str, recipe: &Path) -> Result<()> {
+pub async fn build_image_tagged(
+    node: &RemoteNode,
+    address: &str,
+    recipe: &Path,
+    tag: &str,
+) -> Result<()> {
     checked(
-        base(node)?.arg(address).arg(image_build_command(
-            &service_user(node)?,
-            recipe,
-            &node.name,
-        )?),
+        base(node)?
+            .arg(address)
+            .arg(image_build_command(&service_user(node)?, recipe, tag)?),
         "build and register remote image",
     )
     .await
+}
+
+/// Build an image tagged with the node name for legacy remotes.
+/// # Errors
+/// Reports SSH or image build failures.
+pub async fn build_image(node: &RemoteNode, address: &str, recipe: &Path) -> Result<()> {
+    build_image_tagged(node, address, recipe, &node.name).await
+}
+
+/// Read the installed services token rather than assuming the uploaded value.
+/// # Errors
+/// Reports SSH and configuration failures.
+pub async fn api_token(node: &RemoteNode, address: &str) -> Result<String> {
+    let user = service_user(node)?;
+    let output = run_output(
+        base(node)?
+            .arg(address)
+            .arg(format!("cat ~{user}/swarmy/.swarmy/config.toml")),
+        "read the swarm API token",
+    )
+    .await?;
+    let config: toml::Value = toml::from_str(&String::from_utf8(output.stdout)?)?;
+    config
+        .get("api")
+        .and_then(|api| api.get("token"))
+        .and_then(toml::Value::as_str)
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            crate::Error::other("the services host has no API token in its configuration")
+        })
+}
+
+async fn run_piped(node: &RemoteNode, action: &str, call: &str) -> Result<()> {
+    let address = wait_ssh_for(node, 6).await?;
+    let mut script = piped_env();
+    script.push_str("set -euo pipefail\n");
+    script.push_str(call);
+    script.push('\n');
+    pipe_script(node, &address, action, &script).await?;
+    Ok(())
+}
+/// Stop and disable installed units.
+/// # Errors
+/// Reports SSH and unit failures.
+pub async fn stop_units(node: &RemoteNode) -> Result<()> {
+    run_piped(node, "stop swarmy units", "stop_installed_units").await
+}
+/// Enable and start installed units.
+/// # Errors
+/// Reports SSH and unit failures.
+pub async fn start_units(node: &RemoteNode) -> Result<()> {
+    run_piped(node, "start swarmy units", "start_installed_units").await
 }
 
 fn image_build_command(user: &str, recipe: &Path, tag: &str) -> Result<String> {

@@ -21,6 +21,7 @@ mod provider_report;
 mod selection_command;
 mod session_command;
 mod swarm_command;
+mod swarm_hosts;
 mod target;
 mod tools;
 mod version_guard;
@@ -141,17 +142,15 @@ enum Command {
     },
 }
 
-fn json_core_ensure(cli: &Cli) -> bool {
-    cli.json && matches!(cli.command, Command::Core { .. })
+fn json_progress_on_stderr(cli: &Cli) -> bool {
+    cli.json && matches!(cli.command, Command::Core { .. } | Command::Swarm { .. })
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = swarmy_version::parse::<Cli>("swarmy")?;
-    if json_core_ensure(&cli) {
-        swarmy_cloud::set_output_sink(|message, stderr| {
-            if stderr {
-                eprintln!("{message}");
-            }
+    if json_progress_on_stderr(&cli) {
+        swarmy_cloud::set_output_sink(|message, _stderr| {
+            eprintln!("{message}");
         });
     } else {
         swarmy_cloud::set_output_sink(|message, stderr| {

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use swarmy_cloud::tunnel::Tunnels;
 use swarmy_config::{
     paths::Dirs,
-    swarm::{self, Registry, Swarm, Target},
+    swarm::{self, Lifecycle, Registry, Swarm, Target},
 };
 
 pub(crate) fn parse_name(value: &str) -> Result<String, swarmy_config::Error> {
@@ -20,8 +20,25 @@ pub(crate) enum Command {
         #[arg(value_parser = parse_name)]
         name: String,
         /// Run the backing stack and the services on this machine (the only kind so far)
-        #[arg(long, required = true)]
+        #[arg(long, conflicts_with = "host")]
         local: bool,
+        /// Adopt a host at this IPv4 address
+        #[arg(long, requires = "ssh_key")]
+        host: Option<String>,
+        #[arg(long, default_value = "root")]
+        ssh_user: String,
+        #[arg(long)]
+        ssh_key: Option<PathBuf>,
+        #[arg(long)]
+        private_address: Option<String>,
+        #[arg(long)]
+        sandboxes: Option<u32>,
+        #[arg(long)]
+        local_storage: Option<String>,
+        #[arg(long)]
+        service_user: Option<String>,
+        #[arg(long, value_enum)]
+        lifecycle: Option<LifecycleArg>,
         /// Keep data on down unless --destroy is given (local swarms default to ephemeral)
         #[arg(long)]
         persistent: bool,
@@ -39,6 +56,12 @@ pub(crate) enum Command {
         /// Do not download and register the release base image when no default image is configured
         #[arg(long)]
         no_image: bool,
+        /// Acknowledge copying the credential and keyring onto host services
+        #[arg(long)]
+        copy_credential: bool,
+        /// Image recipe carried by this client
+        #[arg(long, default_value = "images/base-ubuntu")]
+        image_recipe: PathBuf,
     },
     /// Start a stopped swarm again
     Start {
@@ -65,6 +88,11 @@ pub(crate) enum Command {
     Status {
         #[arg(value_parser = parse_name)]
         name: String,
+    },
+    /// Add hosts to an existing-host node group
+    Node {
+        #[command(subcommand)]
+        command: NodeCommand,
     },
     /// Follow service logs
     Logs {
@@ -105,6 +133,59 @@ pub(crate) enum Command {
         #[arg(long, required = true)]
         token_stdin: bool,
     },
+}
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub(crate) enum LifecycleArg {
+    Persistent,
+    Ephemeral,
+}
+impl From<LifecycleArg> for Lifecycle {
+    fn from(value: LifecycleArg) -> Self {
+        match value {
+            LifecycleArg::Persistent => Self::Persistent,
+            LifecycleArg::Ephemeral => Self::Ephemeral,
+        }
+    }
+}
+#[derive(Subcommand)]
+pub(crate) enum NodeCommand {
+    /// List HOST in GROUP of swarm NAME, then provision it
+    Add {
+        #[arg(value_parser = parse_name)]
+        name: String,
+        group: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long, default_value = "root")]
+        ssh_user: String,
+        #[arg(long)]
+        ssh_key: PathBuf,
+        #[arg(long)]
+        private_address: Option<String>,
+    },
+}
+fn managed_spec(registry: &Registry, name: &str) -> Result<swarm::SwarmSpec> {
+    registry.read_spec(name)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "swarm \"{name}\" has no spec; it is an attached API, which swarmy does not provision"
+        )
+    })
+}
+fn host_spec(registry: &Registry, name: &str) -> Result<Option<swarm::SwarmSpec>> {
+    let spec = managed_spec(registry, name)?;
+    if swarmy_cloud::provision::is_host_swarm(&spec) {
+        return Ok(Some(spec));
+    }
+    if spec.local_group().is_some() {
+        return Ok(None);
+    }
+    let modules = spec
+        .groups
+        .values()
+        .map(|g| String::from(g.module.clone()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    bail!("swarm \"{name}\" uses module groups ({modules}); swarmy cannot create machines yet")
 }
 fn kind(s: &Swarm) -> &'static str {
     if s.spec.is_some() {
@@ -304,7 +385,8 @@ pub(crate) async fn run(
     if let Command::Supervise { state, core } = command {
         return crate::local::supervise(&state, &core).await;
     }
-    if json_output
+    if false
+        && json_output
         && matches!(
             command,
             Command::Up { .. }
@@ -324,43 +406,162 @@ pub(crate) async fn run(
         Command::Supervise { .. } => unreachable!("supervisor dispatched above"),
         Command::Create {
             name,
-            local: _,
+            local,
+            host,
+            ssh_user,
+            ssh_key,
+            private_address,
+            sandboxes,
+            local_storage,
+            service_user,
+            lifecycle,
             persistent,
             stack_dir,
-        } => crate::local::create(&registry, &name, persistent, stack_dir, json_output)?,
+        } => {
+            if let Some(address) = host {
+                let path = registry.spec_path(&name)?;
+                if path.exists() {
+                    bail!("swarm \"{name}\" already has a spec at {}", path.display());
+                }
+                let spec = crate::swarm_hosts::host_spec(
+                    &name,
+                    &crate::swarm_hosts::CreateHost {
+                        address,
+                        ssh_user,
+                        ssh_key: ssh_key.context("--host requires --ssh-key")?,
+                        private_address,
+                        sandboxes,
+                        local_storage,
+                        service_user,
+                        lifecycle: lifecycle.map(Into::into),
+                    },
+                )?;
+                registry.write_spec(&spec)?;
+                print_value(
+                    &json!({"created":name}),
+                    format!("created swarm {name}"),
+                    json_output,
+                );
+            } else if local {
+                crate::local::create(&registry, &name, persistent, stack_dir, json_output)?;
+            } else {
+                bail!("choose --local or --host ADDRESS");
+            }
+        }
         Command::Up {
             name,
             core_bin,
             no_image,
+            copy_credential,
+            image_recipe,
         } => {
-            crate::local::up(
-                &registry,
-                &name,
-                crate::local::Start {
-                    core_bin,
-                    register_image: !no_image,
-                    require_record: false,
-                    allow_version_mismatch,
-                },
-            )
-            .await?;
+            if let Some(spec) = host_spec(&registry, &name)? {
+                crate::swarm_hosts::up(
+                    &registry,
+                    &spec,
+                    &crate::swarm_hosts::UpArgs {
+                        copy_credential,
+                        no_image,
+                        image_recipe,
+                    },
+                    json_output,
+                )
+                .await?;
+            } else {
+                if json_output {
+                    bail!("--json is not supported for local swarm up");
+                }
+                if copy_credential {
+                    bail!("--copy-credential applies only to swarms on hosts");
+                }
+                crate::local::up(
+                    &registry,
+                    &name,
+                    crate::local::Start {
+                        core_bin,
+                        register_image: !no_image,
+                        require_record: false,
+                        allow_version_mismatch,
+                    },
+                )
+                .await?;
+            }
         }
         Command::Start { name, core_bin } => {
-            crate::local::up(
+            if let Some(spec) = host_spec(&registry, &name)? {
+                crate::swarm_hosts::start(&registry, &spec, json_output).await?;
+            } else {
+                if json_output {
+                    bail!("--json is not supported for local swarm start");
+                }
+                crate::local::up(
+                    &registry,
+                    &name,
+                    crate::local::Start {
+                        core_bin,
+                        register_image: false,
+                        require_record: true,
+                        allow_version_mismatch,
+                    },
+                )
+                .await?;
+            }
+        }
+        Command::Stop { name } => {
+            if let Some(spec) = host_spec(&registry, &name)? {
+                crate::swarm_hosts::stop(&registry, &spec, json_output).await?;
+            } else {
+                if json_output {
+                    bail!("--json is not supported for local swarm stop");
+                }
+                crate::local::stop(&registry, &name).await?;
+            }
+        }
+        Command::Down { name, destroy } => {
+            if let Some(spec) = host_spec(&registry, &name)? {
+                crate::swarm_hosts::down(&registry, &spec, destroy, json_output).await?;
+            } else {
+                if json_output {
+                    bail!("--json is not supported for local swarm down");
+                }
+                crate::local::down(&registry, &name, destroy).await?;
+            }
+        }
+        Command::Status { name } => {
+            if let Some(spec) = host_spec(&registry, &name)? {
+                crate::swarm_hosts::status(&registry, &spec, json_output).await?;
+            } else {
+                if json_output {
+                    bail!("--json is not supported for local swarm status");
+                }
+                crate::local::show_status(&registry, &name).await?;
+            }
+        }
+        Command::Node {
+            command:
+                NodeCommand::Add {
+                    name,
+                    group,
+                    host,
+                    ssh_user,
+                    ssh_key,
+                    private_address,
+                },
+        } => {
+            crate::swarm_hosts::node_add(
                 &registry,
                 &name,
-                crate::local::Start {
-                    core_bin,
-                    register_image: false,
-                    require_record: true,
-                    allow_version_mismatch,
+                crate::swarm_hosts::NodeAdd {
+                    group,
+                    address: host,
+                    ssh_user,
+                    ssh_key,
+                    private_address,
                 },
+                json_output,
             )
             .await?;
         }
-        Command::Stop { name } => crate::local::stop(&registry, &name).await?,
-        Command::Down { name, destroy } => crate::local::down(&registry, &name, destroy).await?,
-        Command::Status { name } => crate::local::show_status(&registry, &name).await?,
         Command::Logs { name, service } => {
             crate::local::follow_logs(&registry, &name, service).await?;
         }

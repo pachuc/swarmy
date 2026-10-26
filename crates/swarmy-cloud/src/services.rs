@@ -29,6 +29,16 @@ impl<'a> From<Option<&'a Path>> for Options<'a> {
 }
 
 impl<'a> Options<'a> {
+    /// Point the node API at the swarm's default image.
+    /// # Errors
+    /// Reports invalid configuration.
+    pub(crate) fn with_default_image(mut self, image: &str) -> Result<Self> {
+        let mut settings: Settings = toml::from_str(&self.config)?;
+        settings.selection.default_image = Some(image.to_owned());
+        self.config = settings.to_toml()?;
+        Ok(self)
+    }
+
     /// The TOML uploaded to the node's `.swarmy/config.toml`.
     #[cfg(all(test, feature = "remote"))]
     pub(crate) fn config_toml(&self) -> &str {
