@@ -203,7 +203,7 @@ unaltered historical record.
 | First-token p50 | not measured | not measured | n/a |
 | First-token p95 | not measured | not measured | n/a |
 
-The opt-in benchmark (`SWARMY_TEST_IMAGE=base-ubuntu:dev SWARMY_API_FAKE_BENCH=1 cargo test --locked -p swarmy-api --test latency -- --test-threads=1 --nocapture`) needs root, NBD, a registered image, and the fake development stack, so the operator ran it on the suite node with `dev up` (the former swarmy CLI command). It produced no numbers at either revision. At `350ec17`, `fake_turn_records_first_token_metrics` passed but the benchmark itself failed with "fake provider did not emit a token" (around `latency.rs` line 369): it never saw a token delta for its turn on the live feed. At `380adde`, both tests failed while loading settings (`latency.rs` line 58). The benchmark has not produced a number since pull request 123 added it. Making it run is tasky task 01M3KY8ER5133GQHNGWC0Q3QWT.
+The opt-in benchmark (`SWARMY_TEST_IMAGE=base-ubuntu:dev SWARMY_API_FAKE_BENCH=1 cargo test --locked -p swarmy-api --test latency -- --test-threads=1 --nocapture`) needs root, NBD, a registered image, and the fake development stack, so the operator ran it on the suite node with `swarmy dev up`. It produced no numbers at either revision. At `350ec17`, `fake_turn_records_first_token_metrics` passed but the benchmark itself failed with "fake provider did not emit a token" (around `latency.rs` line 369): it never saw a token delta for its turn on the live feed. At `380adde`, both tests failed while loading settings (`latency.rs` line 58). The benchmark has not produced a number since pull request 123 added it. Making it run is tasky task 01M3KY8ER5133GQHNGWC0Q3QWT.
 
 ## Master CI history
 

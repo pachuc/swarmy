@@ -111,7 +111,7 @@ install prefix, set it to that prefix's `lib` directory at build time.
 ```
 
 `status` shows the backing stack, services, and supervisor with pids and uptime.
-`down` stops them all and preserves data. Repeating `up` reports and replaces
+`stop` stops them all and preserves data. Repeating `up` reports and replaces
 recorded processes, including survivors of a supervisor killed with SIGKILL.
 It reloads configuration, so edits take effect on the next `up`. An unexpected
 service exit stops the other services; inspect the logs and run `up` again.
@@ -252,15 +252,14 @@ Relative filesystem paths in a project file are relative to the directory
 containing `.swarmy`; paths in the user file are relative to its directory.
 Relative environment paths remain relative to the invoking directory.
 
-`swarm up` creates a project file in a checkout or a user file outside one,
-imports connection settings from the stack's `env` file as data, and saves the
-file with private permissions. It updates stack connection fields on each start
-and preserves other settings. Environment overrides are passed to children but
-are not saved. Service logs and pid records live under `<state_dir>/dev/`,
-and so do the default fake script and call log. `state_dir` defaults to
-`<project>/.swarmy` for a project file and `~/.local/state/swarmy` otherwise.
+Local swarms read tuning from the project file or the user file, and never
+write their token there; `swarm up` merges it with the stack's `env` file into
+`services.toml` (see [Local swarms](#local-swarms)). Their logs, pid records,
+and default fake files live in the swarm's state directory. `state_dir`
+defaults to `<project>/.swarmy` for a project file and `~/.local/state/swarmy`
+otherwise.
 
-The generated file contains every setting. This partial example shows the
+This partial example shows the
 common choices (store directories are FoundationDB directory names):
 
 ```toml
@@ -285,8 +284,8 @@ partitions = "0-255"
 partitions = "0-255"
 
 [fake]
-script = "~/.local/state/swarmy/swarms/NAME/fake.json"
-call_log = "~/.local/state/swarmy/swarms/NAME/calls.log"
+script = ".swarmy/fake.json"
+call_log = ".swarmy/calls.log"
 ```
 
 Every new ephemeral session needs a registered image, including sessions that only use
@@ -410,8 +409,7 @@ is found in a system directory.
 Cargo puts all executables in `~/.cargo/bin` by default. Reinstall all of them
 together after pulling: `swarmy swarm up dev` refuses to start a scheduler, worker, or
 gateway whose version differs from the CLI. Use `swarmy` after
-rustup's normal shell setup, or `~/.cargo/bin/swarmy` directly. Keep the checkout
-because a local swarm can share its `scripts/dev-stack.sh` stack.
+rustup's normal shell setup, or `~/.cargo/bin/swarmy` directly. The CLI embeds the backing-stack script, so a checkout is not required to run a local swarm.
 
 ### Service binary
 

@@ -5,6 +5,13 @@ use swarmy_client::api_client::{self, Api};
 use swarmy_cloud::tunnel::{self, Request, SshTarget, Tunnels};
 use swarmy_config::swarm::RecordedHost;
 
+pub(crate) fn xdg_environment() -> std::collections::BTreeMap<String, String> {
+    swarmy_config::paths::XDG_KEYS
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok().map(|value| (key.into(), value)))
+        .collect()
+}
+
 static FLAG: OnceLock<Option<String>> = OnceLock::new();
 
 pub(crate) fn select(flag: Option<String>) -> anyhow::Result<()> {

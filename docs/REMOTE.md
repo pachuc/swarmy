@@ -1,6 +1,6 @@
 # Remote development nodes
 
-The laptop-services layout (`swarm up` with a remote profile) has been removed;
+The laptop-services layout (the former `dev up` with a remote profile) has been removed;
 adopt remotes with `--services node`; remotes adopted with the default laptop
 services are no longer usable from client commands. `swarmy remote connect NAME`
 registers the node's API as swarm NAME, so client commands take `--swarm NAME`.
