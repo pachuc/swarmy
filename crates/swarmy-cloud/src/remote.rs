@@ -1,14 +1,10 @@
 //! Remote provisioning, compiled only with the remote feature.
-use super::{
-    Cloud, Command, Host, Machine, MachineSpec, ObjectBucket, Ownership, RemoteNode,
-    RemoteSettings, Result, services, ssh,
-};
+use super::{Cloud, Command, ObjectBucket, RemoteNode, RemoteSettings, Result, services, ssh};
 
 use state::State;
 use std::{
     future::Future,
     path::{Path, PathBuf},
-    time::Duration,
 };
 use swarmy_config::Settings;
 
@@ -16,7 +12,6 @@ use crate::BucketRemoval;
 
 mod add_node;
 mod adopt;
-mod aws;
 mod bucket;
 mod buckets;
 mod connect;
@@ -27,111 +22,20 @@ mod state;
 mod status;
 #[cfg(test)]
 mod tests;
-mod up;
 mod upgrade;
 
 pub use super::services::Options as ServiceOptions;
-pub use aws::Aws;
 pub use down::DeletionPlan;
 
-/// The cloud substrate for a remote. Bucket lifecycle always goes through
-/// object-storage APIs (the same calls `remote up` uses, including
-/// S3-compatible endpoints with static keys). Machine operations delegate
-/// to AWS, or fail for existing-host remotes, which have no cloud machines:
-/// the provisioning paths never call them, so a failure is a programming
-/// mistake. One `Cloud` implementation; the provider enum is read where
-/// behavior must differ: [`for_settings`] records it in the substrate
-/// (whose `machines` gate refuses machine calls for existing hosts), `run`
-/// picks host decommissioning over instance termination,
-/// `add_node::resolve_existing` validates join flags per provider, and
-/// `display_instance_type` hides the cloud shape for existing hosts.
-/// Nothing else branches on it.
-struct Substrate {
-    aws: Aws,
-    provider: swarmy_config::Provider,
-}
-
-fn no_machines() -> crate::Error {
-    crate::Error::other(
-        "existing-host remotes have no cloud machines; decommission the server itself",
-    )
-}
-
-impl Substrate {
-    /// The AWS implementation for machine operations, or an error for
-    /// existing-host remotes, which have no cloud machines. The one place
-    /// machine calls are gated; bucket calls delegate unconditionally.
-    fn machines(&self) -> Result<&Aws> {
-        if self.provider == swarmy_config::Provider::Existing {
-            Err(no_machines())
-        } else {
-            Ok(&self.aws)
-        }
-    }
-}
-
-impl Cloud for Substrate {
-    async fn ensure_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
-        self.aws.ensure_bucket(bucket).await
-    }
-    async fn verify_bucket_access(&self, bucket: &ObjectBucket) -> Result<()> {
-        self.aws.verify_bucket_access(bucket).await
-    }
-    async fn base_image(&self) -> Result<String> {
-        self.machines()?.base_image().await
-    }
-    async fn import_ssh_key(&self, name: &str, public_key: Vec<u8>, owner: &str) -> Result<()> {
-        self.machines()?
-            .import_ssh_key(name, public_key, owner)
-            .await
-    }
-    async fn create(&self, spec: &MachineSpec) -> Result<String> {
-        self.machines()?.create(spec).await
-    }
-    async fn get(&self, id: &str) -> Result<Option<Machine>> {
-        self.machines()?.get(id).await
-    }
-    async fn find_by_tag(&self, token: &str) -> Result<Option<String>> {
-        self.machines()?.find_by_tag(token).await
-    }
-    async fn destroy(&self, id: &str) -> Result<()> {
-        self.machines()?.destroy(id).await
-    }
-    async fn bucket_ownership(&self, bucket: &ObjectBucket) -> Result<Ownership> {
-        self.aws.bucket_ownership(bucket).await
-    }
-    async fn role_ownership(&self, name: &str, owner: &str) -> Result<(Ownership, Ownership)> {
-        self.aws.role_ownership(name, owner).await
-    }
-    async fn tag_bucket(&self, bucket: &ObjectBucket) -> Result<()> {
-        self.aws.tag_bucket(bucket).await
-    }
-    async fn tag_node_role(&self, name: &str, owner: &str) -> Result<()> {
-        self.aws.tag_node_role(name, owner).await
-    }
-    async fn delete_bucket(&self, bucket: &ObjectBucket) -> Result<BucketRemoval> {
-        self.aws.delete_bucket(bucket).await
-    }
-    async fn delete_node_role(&self, name: &str, owner: &str) -> Result<(bool, bool)> {
-        self.aws.delete_node_role(name, owner).await
-    }
-    async fn delete_ssh_key(&self, name: &str) -> Result<()> {
-        self.machines()?.delete_ssh_key(name).await
-    }
-}
-
-/// Build the substrate for the remote settings: AWS machines, or the
-/// existing-host substrate that only manages buckets. The concrete type
-/// stays private; callers use the [`Cloud`] interface.
-pub async fn for_settings(settings: &RemoteSettings) -> impl Cloud {
-    Substrate {
-        aws: Aws::new(&settings.region).await,
-        provider: settings.provider,
-    }
+/// Records launched on EC2 predate removal of that provider.
+fn launched_on_ec2(name: &str) -> crate::Error {
+    crate::Error::other(format!(
+        "remote {name} was launched on EC2, which swarmy no longer manages; remove its instances, key pairs, bucket, IAM role, and instance profile in the AWS console, then delete its record under <state directory>/remote"
+    ))
 }
 
 /// Require a configured region before any state or host changes. Shared by
-/// `up` and `adopt` so the message never drifts.
+/// `adopt` before state changes.
 pub(super) fn validate_region(settings: &RemoteSettings, command: &str) -> Result<()> {
     crate::Error::ensure(
         !settings.region.is_empty(),
@@ -151,12 +55,8 @@ pub(super) fn parse_ipv4(field: &str, value: &str) -> Result<std::net::Ipv4Addr>
 /// Check the bucket binding before any state or host changes. Shared by
 /// `up` and `adopt`: the IAM role name bounds the remote name and the
 /// bucket name must be valid.
-pub(super) fn validate_bucket_binding(settings: &RemoteSettings, name: &str) -> Result<()> {
+pub(super) fn validate_bucket_binding(settings: &RemoteSettings, _name: &str) -> Result<()> {
     if let Some(spec) = &settings.bucket {
-        crate::Error::ensure(
-            name.len() <= 57,
-            "bucket-backed remote name must be at most 57 characters to fit the IAM role name",
-        )?;
         spec.validate_name()?;
     }
     Ok(())
@@ -178,9 +78,7 @@ pub(super) fn validate_sandbox_storage(
     )
 }
 
-/// Set the bucket up through object-storage APIs. Shared by `up` (create a
-/// machine, then provision it) and `adopt` (provision an existing machine)
-/// so the bucket options never drift apart.
+/// Set the bucket up through object-storage APIs for adoption.
 pub(super) async fn ensure_remote_bucket(
     cloud: &impl Cloud,
     settings: &RemoteSettings,
@@ -188,12 +86,7 @@ pub(super) async fn ensure_remote_bucket(
 ) -> Result<()> {
     if let Some(spec) = &settings.bucket {
         cloud
-            .ensure_bucket(&ObjectBucket::from_spec(
-                name,
-                spec,
-                &settings.region,
-                settings.instance_profile(name),
-            ))
+            .ensure_bucket(&ObjectBucket::from_spec(name, spec, &settings.region))
             .await?;
     }
     Ok(())
@@ -212,13 +105,7 @@ pub(crate) fn display_instance_type(node: &RemoteNode) -> Option<String> {
 /// `confirmed: bool` instead of rebuilding state from a saved command.
 pub enum RunOutcome {
     Completed,
-    NeedsConfirmation {
-        plan: DeletionPlan,
-    },
-    NeedsTagConfirmation {
-        node: String,
-        targets: Vec<(String, String)>,
-    },
+    NeedsConfirmation { plan: DeletionPlan },
 }
 
 /// Run the `swarmy remote` subcommand.
@@ -234,10 +121,6 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
     let cache = state_dir.join("core");
     let state = State::open(&state_dir.join("remote"))?;
     match command {
-        Command::Up { .. } => {
-            Box::pin(run_up(&state, loaded.settings, command, &cache)).await?;
-            Ok(RunOutcome::Completed)
-        }
         Command::Adopt { .. } => {
             Box::pin(run_adopt(&state, loaded.settings, command, &cache)).await?;
             Ok(RunOutcome::Completed)
@@ -271,9 +154,10 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
                 cloud_out!("No remote node named {name}");
                 return Ok(RunOutcome::Completed);
             };
-            let mut cloud_settings = node.cloud_settings();
-            cloud_settings.region.clone_from(&node.region);
-            let cloud = for_settings(&cloud_settings).await;
+            if node.cloud_settings().provider != swarmy_config::Provider::Existing {
+                return Err(launched_on_ec2(&name));
+            }
+            let cloud = buckets::S3Buckets;
             if !keep_bucket
                 && !yes
                 && !confirmed
@@ -281,31 +165,7 @@ pub async fn run(command: Command, json: bool, confirmed: bool) -> Result<RunOut
             {
                 return Ok(RunOutcome::NeedsConfirmation { plan });
             }
-            // The one provider branch for teardown: existing-host remotes
-            // need SSH for host decommissioning, while teardown needs neither a
-            // checkout nor binaries. Cloud calls never branch:
-            // the substrate refuses machine operations for existing hosts.
-            if node.cloud_settings().provider == swarmy_config::Provider::Existing {
-                let host = ssh::Ssh::teardown();
-                down::run_existing(&cloud, &host, &state, &node, keep_bucket).await?;
-            } else {
-                down::run(&cloud, &state, &node, Duration::from_secs(5), keep_bucket).await?;
-            }
-            Ok(RunOutcome::Completed)
-        }
-        Command::Tag { name } => {
-            let _lock = state.lock()?;
-            let node = state.require(&name)?;
-            let targets = down::adoption_targets(&state, &node)?;
-            if !confirmed {
-                return Ok(RunOutcome::NeedsTagConfirmation {
-                    node: name,
-                    targets,
-                });
-            }
-            let mut settings = node.cloud_settings();
-            settings.region.clone_from(&node.region);
-            down::apply_tag(&for_settings(&settings).await, &node).await?;
+            down::run_existing(&cloud, &ssh::Ssh::teardown(), &state, &node, keep_bucket).await?;
             Ok(RunOutcome::Completed)
         }
         Command::Connect { name } => {
@@ -391,60 +251,6 @@ fn provisioning_host(cache: &Path) -> Result<ssh::Ssh> {
     Ok(ssh::Ssh::new(binaries))
 }
 
-/// Launch and provision the first node of a remote.
-async fn run_up(
-    state: &State,
-    mut settings: Settings,
-    command: Command,
-    cache: &Path,
-) -> Result<()> {
-    let Command::Up {
-        name,
-        bucket,
-        sandboxes,
-        instance_type,
-        disk_gb,
-        no_image,
-        image_recipe,
-        services,
-        copy_credential,
-    } = command
-    else {
-        unreachable!("run_up handles remote up");
-    };
-    let _lock = state.lock()?;
-    swarmy_config::validate_remote_name(&name)?;
-    let recipe = resolve_recipe(no_image, &image_recipe)?;
-    let host = provisioning_host(cache)?;
-    if let Some(services) = services {
-        settings.remote.services = services;
-    }
-    resolve_bucket(&mut settings.remote, &bucket)?;
-    NodeShape {
-        instance_type,
-        disk_gb,
-    }
-    .apply(&mut settings.remote)?;
-    let options = services::Options::new(&settings, copy_credential, recipe.as_deref())?;
-    let cloud = for_settings(&settings.remote).await;
-    guard(
-        &name,
-        up::run(
-            &cloud,
-            &host,
-            state,
-            &settings.remote,
-            up::NewNode {
-                name: &name,
-                sandboxes: sandboxes.unwrap_or_else(swarmy_config::default_sandboxes),
-            },
-            options,
-            Duration::from_secs(5),
-        ),
-    )
-    .await
-}
-
 /// Provision an existing SSH-reachable machine as the first node of a
 /// remote. The machine is recorded with the existing-host provider, then the
 /// shared provisioning `up` runs after its machine is ready (services,
@@ -491,7 +297,7 @@ async fn run_adopt(
     settings.remote.provider = swarmy_config::Provider::Existing;
     resolve_bucket(&mut settings.remote, &bucket)?;
     let options = services::Options::new(&settings, copy_credential, recipe.as_deref())?;
-    let cloud = for_settings(&settings.remote).await;
+    let cloud = buckets::S3Buckets;
     guard(
         &name,
         adopt::run(
@@ -522,8 +328,6 @@ async fn run_add_node(
     let Command::AddNode {
         name,
         sandboxes,
-        instance_type,
-        disk_gb,
         host: join_host,
         ssh_user,
         ssh_key,
@@ -546,23 +350,20 @@ async fn run_add_node(
     let _lock = state.lock()?;
     let node = state.require(&name)?;
     let host = provisioning_host(cache)?;
-    let launch = node.launch_settings.clone().ok_or_else(|| {
+    let launch = node.launch_settings.as_ref().ok_or_else(|| {
         crate::Error::other(
-            "remote has no saved launch configuration; recreate it with remote up before adding nodes",
+            "remote has no saved launch configuration; adopt it again before adding nodes",
         )
     })?;
-    let cloud = for_settings(&launch).await;
-    // The provider dispatch for joins lives in the add-node module, so this
-    // call site never branches on the provider itself.
-    let existing = add_node::resolve_existing(
+    if launch.provider != swarmy_config::Provider::Existing {
+        return Err(launched_on_ec2(&name));
+    }
+    let existing = add_node::resolve_join(
         &name,
-        launch.provider,
         join_host.as_deref(),
         ssh_user.as_deref(),
         ssh_key.as_deref(),
         primary_address.as_deref(),
-        instance_type.as_deref(),
-        disk_gb,
     )?;
     // Box the join future: it holds saved launch state across awaits and
     // would otherwise exceed the large-future budget.
@@ -571,22 +372,14 @@ async fn run_add_node(
         // Pin the join so service-user paths and disk state do not inflate
         // the guarded future past the pedantic size limit.
         Box::pin(add_node::run(
-            &cloud,
             &host,
             state,
             add_node::NewNode {
                 name: &name,
                 sandboxes: sandboxes.unwrap_or_else(swarmy_config::default_sandboxes),
-                shape: NodeShape {
-                    instance_type,
-                    disk_gb,
-                },
-                // The saved primary settings may carry its resolved device;
-                // the join starts from the explicit configuration instead.
                 local_storage: settings.remote.local_storage.clone(),
                 existing,
             },
-            Duration::from_secs(5),
             options.as_ref(),
         )),
     )
@@ -604,105 +397,4 @@ async fn guard(name: &str, task: impl Future<Output = Result<()>>) -> Result<()>
             )))
         }
     }
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct NodeShape {
-    instance_type: Option<String>,
-    disk_gb: Option<u32>,
-}
-
-impl NodeShape {
-    pub(crate) fn apply(self, settings: &mut RemoteSettings) -> Result<()> {
-        if let Some(instance_type) = self.instance_type {
-            settings.aws.instance_type = instance_type;
-        }
-        if let Some(disk_gb) = self.disk_gb {
-            settings.disk_gb = disk_gb;
-        }
-        crate::Error::ensure(
-            !settings.aws.instance_type.is_empty(),
-            "instance type must not be empty",
-        )?;
-        crate::Error::ensure(settings.disk_gb != 0, "root disk size must be positive")?;
-        Ok(())
-    }
-}
-
-/// Retry an attempt while it fails with a not-yet-propagated identity error.
-///
-/// A role or instance profile is visible to the compute API only after the
-/// identity system has propagated it. Launching sooner can bind the machine
-/// to stale identity data whose credentials are then rejected.
-pub(crate) async fn retry_profile_propagation<T, F, Fut>(
-    mut attempt: F,
-    profile: bool,
-    pause: Duration,
-) -> Result<T>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T>>,
-{
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-    loop {
-        match attempt().await {
-            Ok(value) => return Ok(value),
-            Err(error)
-                if profile
-                    && profile_not_propagated(&error)
-                    && tokio::time::Instant::now() < deadline =>
-            {
-                tracing::info!("waiting for IAM instance profile to propagate to EC2");
-                tokio::time::sleep(
-                    pause.min(deadline.saturating_duration_since(tokio::time::Instant::now())),
-                )
-                .await;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-fn profile_not_propagated(error: &crate::Error) -> bool {
-    // Only the not-yet-propagated identity case retries: the compute API
-    // rejects the launch with InvalidParameterValue naming the instance
-    // profile until the identity system has propagated it.
-    matches!(
-        error,
-        crate::Error::Aws {
-            operation,
-            code,
-            message,
-        } if operation == "ec2:RunInstances"
-            && code == "InvalidParameterValue"
-            && message.contains("Invalid IAM Instance Profile")
-    )
-}
-
-pub(crate) async fn wait_running(cloud: &impl Cloud, id: &str, delay: Duration) -> Result<Machine> {
-    for _ in 0..120 {
-        if let Some(machine) = cloud.get(id).await? {
-            crate::Error::ensure(machine.id == id, "provider returned a different machine")?;
-            let state = machine.state.as_str();
-            if state == "running" && !machine.public_ip.is_empty() && !machine.private_ip.is_empty()
-            {
-                return Ok(machine);
-            }
-            crate::Error::ensure(
-                state == "pending" || state == "running",
-                format!("machine {id} entered {state} while waiting for running"),
-            )?;
-        }
-        tokio::time::sleep(delay).await;
-    }
-    Err(crate::Error::other(format!(
-        "timed out waiting for machine {id} to run with an IP address"
-    )))
-}
-
-pub(crate) fn key_name(node: &RemoteNode) -> Result<&str> {
-    node.key_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| crate::Error::other("invalid key path in remote state"))
 }

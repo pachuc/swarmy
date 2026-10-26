@@ -1,7 +1,7 @@
 //! Provision an existing SSH-reachable machine as a remote's first node.
 //!
 //! `adopt` records the machine with the existing-host provider, then runs
-//! the shared provisioning tail from [`super::up`] (services, image build)
+//! the provisioning tail below (services, image build)
 //! against its address. No machine is created and no cloud machine call
 //! happens: only the bucket setup touches object-storage APIs.
 use std::{path::Path, time::Instant};
@@ -42,7 +42,6 @@ pub(super) async fn run(
                 name,
                 spec,
                 &settings.region,
-                settings.instance_profile(name),
             ))
             .await
             .map_err(|source| {
@@ -66,8 +65,7 @@ pub(super) async fn run(
         state.save(&node)?;
         host.adopt_key(&node, request.ssh_key).await?;
         let address = host.provision(&node, None).await?;
-        super::up::provision_stack(host, state, settings, &mut node, &address, options, started)
-            .await?;
+        provision_stack(host, state, settings, &mut node, &address, options, started).await?;
         Ok::<_, crate::Error>(())
     }
     .await;
@@ -78,6 +76,44 @@ pub(super) async fn run(
             Err(error)
         }
     }
+}
+
+/// Install node services and build the registered image once an address is
+/// known. Used by `adopt` after its
+/// host is recorded): one implementation, no second copy of these steps.
+pub(super) async fn provision_stack(
+    host: &impl Host,
+    state: &State,
+    settings: &RemoteSettings,
+    node: &mut RemoteNode,
+    address: &str,
+    options: super::services::Options<'_>,
+    started: Instant,
+) -> Result<()> {
+    if settings.services == swarmy_config::RemoteServices::Node {
+        host.services(node, address, &options).await?;
+    }
+    if let Some(recipe) = options.recipe {
+        let name = node.name.clone();
+        cloud_out!("Building base-ubuntu:{name} (this takes several minutes)");
+        let build_started = Instant::now();
+        host.build_image(node, address, recipe).await?;
+        node.default_image = Some(format!("base-ubuntu:{name}"));
+        state.save(node)?;
+        cloud_out!(
+            "Image base-ubuntu:{name} built and registered in {:.1}s",
+            build_started.elapsed().as_secs_f64()
+        );
+    } else {
+        cloud_out!("Skipping image build (--no-image)");
+    }
+    cloud_out!(
+        "Remote node {} ready in {:.1}s",
+        node.name,
+        started.elapsed().as_secs_f64()
+    );
+    cloud_out!("{}", super::ssh::command_line(node, address)?);
+    Ok(())
 }
 
 /// Build the first node record for an adopted machine. Both addresses are

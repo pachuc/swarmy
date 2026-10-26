@@ -307,15 +307,12 @@ async fn run_doctor(json: bool) -> anyhow::Result<()> {
 }
 
 /// Run a `swarmy remote` subcommand. The library reports what `remote down`
-/// would delete and what `remote tag` would adopt; only the CLI prints the
+/// would delete; only the CLI prints the
 /// confirmation wording and prompts.
 #[cfg(feature = "remote")]
 async fn remote(command: swarmy_cloud::Command, json: bool) -> anyhow::Result<()> {
     let name = remote_name(&command);
-    let advises = matches!(
-        &command,
-        swarmy_cloud::Command::Down { .. } | swarmy_cloud::Command::Tag { .. }
-    );
+    let advises = matches!(&command, swarmy_cloud::Command::Down { .. });
     let retry = command.clone();
     let outcome = run_once(command, json, false, name, advises).await?;
     match outcome {
@@ -325,16 +322,11 @@ async fn remote(command: swarmy_cloud::Command, json: bool) -> anyhow::Result<()
             run_once(retry, json, true, name, advises).await?;
             Ok(())
         }
-        swarmy_cloud::RunOutcome::NeedsTagConfirmation { node, targets } => {
-            confirm_tag(&targets, &node)?;
-            run_once(retry, json, true, name, advises).await?;
-            Ok(())
-        }
     }
 }
 
 /// One `swarmy remote` attempt: the library error plus the command context.
-/// Permission advice prints only for `down` and `tag`, on every attempt.
+/// Permission advice prints only for `down`, on every attempt.
 #[cfg(feature = "remote")]
 async fn run_once(
     command: swarmy_cloud::Command,
@@ -349,7 +341,7 @@ async fn run_once(
         .map_err(|error| {
             if advises && matches!(error, swarmy_cloud::Error::MissingPermission { .. }) {
                 eprintln!(
-                    "AWS denied the named permission; nothing was deleted by this operation. Grant it and retry; local remote state is retained"
+                    "The object store denied the named permission; nothing was deleted by this operation. Grant it and retry; local remote state is retained"
                 );
             }
             error
@@ -361,12 +353,10 @@ async fn run_once(
 #[cfg(feature = "remote")]
 fn remote_name(command: &swarmy_cloud::Command) -> &'static str {
     match command {
-        swarmy_cloud::Command::Up { .. } => "up",
         swarmy_cloud::Command::Adopt { .. } => "adopt",
         swarmy_cloud::Command::AddNode { .. } => "add-node",
         swarmy_cloud::Command::Upgrade { .. } => "upgrade",
         swarmy_cloud::Command::Down { .. } => "down",
-        swarmy_cloud::Command::Tag { .. } => "tag",
         swarmy_cloud::Command::Connect { .. } => "connect",
         swarmy_cloud::Command::Disconnect { .. } => "disconnect",
         swarmy_cloud::Command::Logs { .. } => "logs",
@@ -386,37 +376,10 @@ fn confirm_deletion(plan: &swarmy_cloud::DeletionPlan, json: bool) -> anyhow::Re
         anyhow::bail!("remote down requires --yes without a terminal");
     }
     println!("Permanently delete these owned resources and their data:");
-    if let Some(bucket) = &plan.bucket {
-        println!("  bucket {bucket} (all objects and versions)");
-    }
-    if let Some(profile) = &plan.profile {
-        println!("  instance profile {profile}");
-    }
-    if let Some(role) = &plan.role {
-        println!("  role {role}");
-    }
+    println!("  bucket {} (all objects and versions)", plan.bucket);
     let answer = read_confirmation("Continue? [y/N] ")?;
     if answer.trim() != "y" && answer.trim() != "yes" {
         anyhow::bail!("remote down cancelled");
-    }
-    Ok(())
-}
-
-/// Adoption is deliberately interactive and requires typing every exact
-/// resource name. Shares the confirmation reader with `remote down`.
-#[cfg(feature = "remote")]
-fn confirm_tag(targets: &[(String, String)], node: &str) -> anyhow::Result<()> {
-    use std::io::IsTerminal;
-    if !std::io::stdin().is_terminal() {
-        anyhow::bail!("remote tag requires a terminal");
-    }
-    for (kind, name) in targets {
-        let answer = read_confirmation(&format!(
-            "Type the exact {kind} name {name} to adopt it for remote {node}: "
-        ))?;
-        if answer.trim() != name {
-            anyhow::bail!("remote tag cancelled");
-        }
     }
     Ok(())
 }

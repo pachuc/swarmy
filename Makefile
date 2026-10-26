@@ -57,7 +57,7 @@ fdb-check:
 	@echo "Using FoundationDB client library from $(FDB_LIB_DIR)"
 
 # The client links no database library and installs without libfdb_c. The
-# `remote` feature compiles the EC2, SSM, S3, and IAM SDKs for provisioning;
+# `remote` feature compiles the S3 client used for bucket setup;
 # plain cargo builds leave it off for the slimmer node binary.
 install-client:
 	@echo "==> swarmy-cli"

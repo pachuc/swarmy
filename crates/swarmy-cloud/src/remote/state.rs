@@ -82,16 +82,6 @@ impl State {
         self.shared(owner, |other| other.bucket() == Some(bucket))
     }
 
-    pub(super) fn role_shared(&self, owner: &str, role: &str) -> Result<bool> {
-        self.shared(owner, |other| {
-            other
-                .cloud_settings()
-                .instance_profile(&other.name)
-                .as_deref()
-                == Some(role)
-        })
-    }
-
     pub(super) fn save(&self, node: &RemoteNode) -> Result<()> {
         let path = self.path(&node.name, "json")?;
         let mut bytes = serde_json::to_vec_pretty(node)?;

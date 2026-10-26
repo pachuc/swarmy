@@ -30,6 +30,15 @@ variables {
   location       = "eu-central-1"
   ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBswarmyTestKeyNotARealKey0000000000000 swarmy-test"
 }
+run "explicit_ami_skips_the_lookup" {
+  # Plan before the first apply because running instances ignore AMI changes.
+  command = plan
+  variables { image = "ami-0fedcba9876543210" }
+  assert {
+    condition     = length(data.aws_ssm_parameter.ubuntu) == 0 && alltrue([for instance in aws_instance.this : instance.ami == "ami-0fedcba9876543210"])
+    error_message = "An AMI id is used as given."
+  }
+}
 run "creates_the_group" {
   assert {
     condition     = [for machine in output.machines : machine.name] == ["fleet-workers-1", "fleet-workers-2"]
@@ -136,15 +145,6 @@ run "arm_instance_types_get_the_arm_image" {
   assert {
     condition     = data.aws_ssm_parameter.ubuntu[0].name == "/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id"
     error_message = "arm64 instance types must get arm64 image."
-  }
-}
-run "explicit_ami_skips_the_lookup" {
-  # This must start from a fresh state: running instances deliberately ignore AMI changes.
-  state_key = "explicit-ami"
-  variables { image = "ami-0fedcba9876543210" }
-  assert {
-    condition     = length(data.aws_ssm_parameter.ubuntu) == 0 && alltrue([for instance in aws_instance.this : instance.ami == "ami-0fedcba9876543210"])
-    error_message = "An AMI id is used as given."
   }
 }
 run "scales_to_zero" {
