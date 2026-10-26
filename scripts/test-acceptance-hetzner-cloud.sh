@@ -144,7 +144,7 @@ cat > "$fake/signal-harness.sh" <<'HARNESS'
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ACCEPTANCE_SCRIPT"
-deadline=$((SECONDS + 60))
+deadline=$((SECONDS + 5))
 step_pid=''
 created=1 dry_run=1 name=acc-signal bucket='' location=fsn1
 work="$SIGNAL_DIR/work"
@@ -167,7 +167,8 @@ for signal in INT HUP; do
     kill -s "$signal" "$signal_pid"
     for _ in {1..100}; do ! kill -0 "$signal_pid" 2>/dev/null && break; sleep 0.02; done
     if kill -0 "$signal_pid" 2>/dev/null; then
-        kill -KILL "$signal_pid" 2>/dev/null || :
+        kill -TERM -- "-$signal_pid" 2>/dev/null || :
+        kill -KILL -- "-$signal_pid" 2>/dev/null || :
         echo "$signal did not promptly interrupt the step" >&2
         exit 1
     fi
