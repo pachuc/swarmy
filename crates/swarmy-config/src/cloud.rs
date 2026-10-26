@@ -344,3 +344,196 @@ fn file_error(path: &Path, source: Error) -> Error {
         source: Box::new(source),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    const TOKEN: &str = "hcloud-test-token-5f2b9c";
+    const S3_ACCESS: &str = "s3-access-7c1d";
+    const S3_SECRET: &str = "s3-secret-9e4a";
+    const AWS_ACCESS: &str = "aws-akid-3b8f";
+    const AWS_SECRET: &str = "aws-secret-6d2e";
+    fn entry(p: CloudProvider, secrets: &[&str], option: Option<&str>) -> CloudCredential {
+        CloudCredential::new(
+            p,
+            secrets.iter().map(|s| (*s).into()).collect(),
+            option.map(str::to_owned),
+        )
+        .unwrap()
+    }
+    #[test]
+    fn round_trip_and_modes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("data/swarmy/cloud-credentials.toml");
+        let mut store = CloudCredentials::default();
+        store.set(entry(CloudProvider::HetznerCloud, &[TOKEN], None));
+        store.set(entry(
+            CloudProvider::HetznerS3,
+            &[S3_ACCESS, S3_SECRET],
+            None,
+        ));
+        store.set(entry(
+            CloudProvider::Aws,
+            &[AWS_ACCESS, AWS_SECRET],
+            Some("eu-central-1"),
+        ));
+        store.save(&path).unwrap();
+        assert_eq!(CloudCredentials::load(&path).unwrap(), store);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            CloudCredentials::load(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("chmod 600")
+        );
+        store.save(&path).unwrap();
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    #[test]
+    fn missing_and_bad_contents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("missing/store");
+        assert_eq!(
+            CloudCredentials::load(&path).unwrap(),
+            CloudCredentials::default()
+        );
+        assert!(!path.parent().unwrap().exists());
+        for (contents, decode) in [
+            ("[digitalocean]\nkey = 'x'", true),
+            ("[aws]\nregion2 = 'x'", true),
+            ("[hetzner-cloud]\ntoken = ''", false),
+        ] {
+            let path = tmp.path().join("bad");
+            fs::write(&path, contents).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            match CloudCredentials::load(&path).unwrap_err() {
+                Error::File { source, .. } => {
+                    assert_eq!(matches!(*source, Error::Decode(_)), decode)
+                }
+                e => panic!("unexpected error: {e}"),
+            }
+        }
+    }
+    #[test]
+    fn validation_and_mapping() {
+        let hc = entry(CloudProvider::HetznerCloud, &[TOKEN], None);
+        let s3 = entry(CloudProvider::HetznerS3, &[S3_ACCESS, S3_SECRET], None);
+        let aws = entry(
+            CloudProvider::Aws,
+            &[AWS_ACCESS, AWS_SECRET],
+            Some("eu-central-1"),
+        );
+        assert_eq!(
+            hc.env().iter().collect::<Vec<_>>(),
+            vec![("HCLOUD_TOKEN", TOKEN)]
+        );
+        assert_eq!(
+            s3.env().iter().collect::<Vec<_>>(),
+            vec![("MINIO_USER", S3_ACCESS), ("MINIO_PASSWORD", S3_SECRET)]
+        );
+        assert_eq!(
+            aws.env().iter().collect::<Vec<_>>(),
+            vec![
+                ("AWS_ACCESS_KEY_ID", AWS_ACCESS),
+                ("AWS_SECRET_ACCESS_KEY", AWS_SECRET),
+                ("AWS_REGION", "eu-central-1")
+            ]
+        );
+        for (p, secret, field) in [
+            (CloudProvider::HetznerCloud, "", "token"),
+            (CloudProvider::HetznerCloud, "a b", "token"),
+            (CloudProvider::HetznerCloud, "a\tb", "token"),
+        ] {
+            assert_eq!(
+                CloudCredential::new(p, vec![secret.into()], None)
+                    .unwrap_err()
+                    .to_string(),
+                format!(
+                    "cloud credentials: {p} {field} must be non-empty with no spaces or control characters"
+                )
+            );
+        }
+        assert_eq!(
+            CloudCredential::new(
+                CloudProvider::Aws,
+                vec![AWS_ACCESS.into(), AWS_SECRET.into()],
+                Some("EU Central".into())
+            )
+            .unwrap_err()
+            .to_string(),
+            "cloud credentials: aws region must be lowercase letters, digits, and hyphens, like eu-central-1"
+        );
+        assert!(
+            CloudCredential::new(
+                CloudProvider::HetznerCloud,
+                vec![TOKEN.into()],
+                Some("x".into())
+            )
+            .is_err()
+        );
+        assert!(
+            CloudCredential::new(CloudProvider::HetznerS3, vec![S3_ACCESS.into()], None).is_err()
+        );
+        for c in [hc, s3, aws] {
+            let debug = format!("{c:?}");
+            for secret in [TOKEN, S3_ACCESS, S3_SECRET, AWS_ACCESS, AWS_SECRET] {
+                assert!(!debug.contains(secret));
+            }
+            assert!(debug.contains("..redacted.."));
+        }
+    }
+    #[test]
+    fn names_replace_and_remove() {
+        let mut store = CloudCredentials::default();
+        assert!(matches!(
+            store.env(CloudProvider::Aws),
+            Err(Error::CloudNotLoggedIn("aws"))
+        ));
+        for p in CloudProvider::ALL {
+            assert_eq!(p.name().parse::<CloudProvider>().unwrap(), p);
+            assert_eq!(p.to_string(), p.name());
+        }
+        assert_eq!(
+            "digitalocean"
+                .parse::<CloudProvider>()
+                .unwrap_err()
+                .to_string(),
+            "unknown cloud provider \"digitalocean\"; expected one of hetzner-cloud, hetzner-s3, aws"
+        );
+        store.set(entry(CloudProvider::HetznerCloud, &[TOKEN], None));
+        store.set(entry(
+            CloudProvider::Aws,
+            &[AWS_ACCESS, AWS_SECRET],
+            Some("eu-central-1"),
+        ));
+        store.set(entry(CloudProvider::Aws, &[AWS_ACCESS, AWS_SECRET], None));
+        assert_eq!(
+            store.get(CloudProvider::Aws).unwrap().set_fields(),
+            ["access_key_id", "secret_access_key"]
+        );
+        assert!(store.remove(CloudProvider::Aws));
+        assert!(!store.remove(CloudProvider::Aws));
+        assert!(store.get(CloudProvider::HetznerCloud).is_some());
+        assert!(
+            format!("{:?}", store.env(CloudProvider::HetznerCloud).unwrap())
+                .contains("HCLOUD_TOKEN")
+        );
+    }
+}
