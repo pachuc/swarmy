@@ -167,10 +167,25 @@ fn doctor_reports_each_identity_and_flags_stale_service() {
     assert!(stdout.contains("fix swarmy-core:"), "{stdout}");
 }
 
+fn isolated_cli_command(path: &str, root: &Path) -> Command {
+    let mut command = Command::new(path);
+    command
+        .env("HOME", root)
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("XDG_CACHE_HOME", root.join("cache"));
+    command
+}
+
 #[test]
 fn cli_reports_identity_in_text_and_json() {
+    let root = tempfile::tempdir().unwrap();
     for (name, path) in [("swarmy", CLI)] {
-        let output = Command::new(path).arg("--version").output().unwrap();
+        let output = isolated_cli_command(path, root.path())
+            .arg("--version")
+            .output()
+            .unwrap();
         assert!(output.status.success());
         assert_eq!(
             String::from_utf8(output.stdout).unwrap().trim(),
@@ -181,7 +196,10 @@ fn cli_reports_identity_in_text_and_json() {
             ["--json", "--version"],
             ["-V", "--json"],
         ] {
-            let output = Command::new(path).args(args).output().unwrap();
+            let output = isolated_cli_command(path, root.path())
+                .args(args)
+                .output()
+                .unwrap();
             assert!(output.status.success());
             let version: Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(version["binary"], name);
@@ -228,7 +246,8 @@ fn mismatch_keeps_existing_supervisor_running() {
 
 #[test]
 fn version_release_prints_the_matching_tag() {
-    let output = Command::new(CLI)
+    let root = tempfile::tempdir().unwrap();
+    let output = isolated_cli_command(CLI, root.path())
         .args(["version", "--release"])
         .output()
         .unwrap();
@@ -237,7 +256,7 @@ fn version_release_prints_the_matching_tag() {
         String::from_utf8(output.stdout).unwrap().trim(),
         format!("v{}", swarmy_version::VERSION)
     );
-    let output = Command::new(CLI)
+    let output = isolated_cli_command(CLI, root.path())
         .args(["--json", "version", "--release"])
         .output()
         .unwrap();
