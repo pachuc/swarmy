@@ -22,8 +22,9 @@ script. Do not delete `.swarmy/` or `.dev/` when clearing unused checkout files.
 The node's binaries and scripts are
 copied from a checkout for development builds, or fetched from the matching
 release for release builds. `SWARMY_RELEASE_BASE_URL` overrides the release
-archive source. The provisioner keeps the SSH tunnel key and systemd unit
-files in private node state. On a stack+services host, the units are:
+archive source. Systemd is the Linux service manager that starts and
+restarts the installed services. The provisioner keeps the SSH tunnel key
+and systemd unit files in private node state. On a stack+services host, the units are:
 
 | Unit | Purpose |
 | --- | --- |
@@ -34,8 +35,6 @@ files in private node state. On a stack+services host, the units are:
 | `swarmy-worker` | Step execution |
 | `swarmy-gateway` | Inference gateway |
 | `swarmy-tunnel` | Host tunnel endpoint |
-
-`swarmy swarm logs demo --unit swarmyd` follows the primary journal; `--host NAME` selects a recorded host.
 
 ## Object storage permissions
 
@@ -91,11 +90,21 @@ The S3 client is an opt-in build feature (`make install-client`).
 
 ## What down leaves on a host
 
-Down removes swarmy units and the node checkout, but the service user, fstab entry, sandbox data on local storage, and tunnel authorization keys may remain. Inspect and remove these by hand before repurposing a host. A broken node directory with installed units can be restored with `swarmy swarm upgrade demo`, or its units removed by hand. `swarmy swarm rm demo --force` forgets the local registration; it does not decommission hosts.
+Down removes swarmy units and the node checkout. The service user, fstab
+entry, sandbox data on local storage and tunnel authorization keys may remain.
+Inspect and remove these by hand before repurposing a host. A broken node
+directory with installed units can be restored with
+`swarmy swarm upgrade demo`, or its units removed by hand.
+`swarmy swarm rm demo --force` forgets the local registration; it does not
+decommission hosts.
 
 ## Draining a node
 
-Before stopping a node, swarmy checks for running sandbox commands and turns. It waits for them to finish, then stops the node agent cleanly so computers checkpoint and release. There is no cordon operation; see [scaling](swarms.md#scaling-node-groups) for timeouts and force.
+Before stopping a node, swarmy checks for running sandbox commands and
+turns. It waits for them to finish, then stops the node agent cleanly so
+computers checkpoint and release. Swarmy does not cordon the node (mark it
+unavailable for new work) before draining. See
+[scaling](swarms.md#scaling-node-groups) for timeouts and force.
 
 ## Host repair
 
@@ -140,6 +149,7 @@ See [infra/README.md](../infra/README.md) for OpenTofu working directories.
 
 Use [`scripts/node-suites/`](../scripts/node-suites/) for the manual root
 suites; record results in the pull request. The host and sandbox root suites
-require a real node with `/dev/nbd0`, sudo, and the dev stack. Run them on the suite node, not inside an agent sandbox.
+require a real node with `/dev/nbd0`, sudo and the dev stack. Run them on
+the suite node, not inside an agent sandbox.
 `scripts/test-remote.sh` checks the on-demand SSH tunnel against localhost
 sshd with an authorized test key. It skips without `SWARMY_REMOTE_TEST_KEY`.

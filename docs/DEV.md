@@ -47,8 +47,8 @@ in `fleet.toml`, or 60 seconds if unset; `--timeout-seconds` overrides it.
 
 ### Choosing the target swarm
 
-See [Choosing the target swarm](swarms.md#choosing-the-target-swarm) for selection precedence, registration and defaults.
-
+See [Choosing the target swarm](swarms.md#choosing-the-target-swarm) for
+selection precedence, registration and defaults.
 
 Install the pinned backing services using the instructions below. With Rust and
 those binaries installed, run these commands from a clean checkout. The commands
@@ -104,9 +104,19 @@ To run the backing services and swarmyd on another machine, see [swarms on other
 
 ## Local swarms
 
-See [Swarms on this machine](swarms.md#swarms-on-this-machine) for creation, lifecycle and files. Inside a checkout, creation finds the first ancestor with `scripts/dev-stack.sh` and sets `stack_dir` to its `.dev`. This shares the stack with `scripts/dev-stack.sh` and `make check`. `--stack-dir PATH` overrides it; relative paths resolve against the current directory. Down stops but never deletes an explicit or detected `stack_dir`.
+See [Swarms on this machine](swarms.md#swarms-on-this-machine) for
+creation, lifecycle and files. Inside a checkout, creation finds the first
+ancestor with `scripts/dev-stack.sh` and sets `stack_dir` to its `.dev`.
+This shares the stack with `scripts/dev-stack.sh` and `make check`.
+`--stack-dir PATH` overrides it; relative paths resolve against the current
+directory. Down stops but never deletes an explicit or detected `stack_dir`.
 
-A development client uses a sibling `target/*/swarmy-core` or one on PATH. Service tuning is read on every up/start from the first project `.swarmy/config.toml` found from the current directory, otherwise `~/.config/swarmy/config.toml`. Only the default image is saved to this file; `services.toml` is rebuilt each time. Shell `SWARMY_*` variables do not change local service settings; put overrides in the tuning file.
+A development client uses a sibling `target/*/swarmy-core` or one on PATH.
+Service tuning is read on every up/start from the first project
+`.swarmy/config.toml` found from the current directory, otherwise
+`~/.config/swarmy/config.toml`. Only the default image is saved to this file;
+`services.toml` is rebuilt each time. Shell `SWARMY_*` variables do not change
+local service settings; put overrides in the tuning file.
 
 ## Ephemeral sessions and named agents
 
@@ -705,7 +715,9 @@ count and environment at startup. Restart and health checks remain shared.
 
 ## Swarms on other machines
 
-For creation, cloud credentials and lifecycle see [swarms.md](swarms.md). For installed units and recovery see [REMOTE.md](REMOTE.md); for fleet-driver operations see [fleet-runbook.md](fleet-runbook.md).
+For creation, cloud credentials and lifecycle, see [swarms.md](swarms.md).
+For installed units and recovery, see [REMOTE.md](REMOTE.md). For
+fleet-driver operations, see [fleet-runbook.md](fleet-runbook.md).
 
 ### Conversation summaries and memory
 

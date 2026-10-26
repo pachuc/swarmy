@@ -32,7 +32,14 @@ ANTHROPIC_API_KEY=... swarmy auth set anthropic --from-env
 swarmy chat --provider anthropic
 ```
 
-`swarmy install-tools` supports Linux x86-64. Up uses the fake provider by default; configure credentials after up, then run `swarmy doctor` to check dependencies and connectivity. ChatGPT login needs the `swarmy-auth` helper from a source install; see [docs/providers.md](docs/providers.md).
+`swarmy install-tools` supports Linux x86-64. The first local up downloads
+and registers the base image on Linux x86-64; see
+[DEV.md](docs/DEV.md#local-swarms) for development setup and
+[docs/swarms.md](docs/swarms.md#swarms-on-this-machine) for `--no-image` and
+`swarmy image pull base-ubuntu --set-default`. Up uses the fake provider by
+default; configure credentials after up. Run `swarmy doctor` to check
+connectivity. ChatGPT login needs the `swarmy-auth` helper from a source
+install; see [docs/providers.md](docs/providers.md).
 
 ### On a server you own
 
@@ -48,7 +55,7 @@ swarmy --swarm box chat
 swarmy cloud login hetzner-cloud
 swarmy cloud login hetzner-s3
 swarmy swarm create fleet --on hetzner-cloud --size cpx41 --nodes 1
-swarmy swarm up fleet --copy-credential
+swarmy swarm up fleet
 swarmy --swarm fleet chat
 swarmy swarm down fleet --destroy
 ```

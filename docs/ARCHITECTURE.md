@@ -216,9 +216,11 @@ A local checkout starts FoundationDB, NATS and SeaweedFS with
 services and scheduler, worker, gateway and API processes; the sandbox node
 runs `swarmyd`, runc containers and the volume/NBD path
 ([remote-provision.sh](../scripts/remote-provision.sh),
-[swarmyd main](../crates/swarmyd/src/role.rs)). One machine can perform both roles. Groups supply machines: local, existing
-hosts, or OpenTofu modules run by `swarmy-infra`. Placement assigns stack,
-services and node roles. Provisioning uses the same SSH path for every group.
+[swarmyd main](../crates/swarmyd/src/role.rs)). One machine can perform both
+roles. Groups supply machines: local, existing hosts, or OpenTofu modules
+run by `swarmy-infra`. Placement assigns stack, services and node roles.
+Existing hosts and OpenTofu machines are provisioned over the same SSH path;
+a local group runs the stack and services as processes on this machine.
 Clients reach a remote API through an on-demand per-swarm SSH tunnel
 ([swarms.md](swarms.md), [cloud source](../crates/swarmy-cloud/src/lib.rs)).
 
