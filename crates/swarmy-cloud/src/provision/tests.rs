@@ -539,6 +539,9 @@ fn reconcile_refuses_removed_or_moved_hosts() {
         api: SwarmApi::default(),
         hosts: BTreeMap::from([("workers".into(), vec![planned[2].host.clone()])]),
         tofu_state: None,
+        tofu_bucket: None,
+        tofu_bucket_endpoint: None,
+        tofu_bucket_region: None,
     };
     assert!(
         reconcile(&planned[..2], &record)
@@ -645,6 +648,9 @@ mod bucket_lifecycle {
             api: SwarmApi::default(),
             hosts: BTreeMap::new(),
             tofu_state: None,
+            tofu_bucket: None,
+            tofu_bucket_endpoint: None,
+            tofu_bucket_region: None,
             bucket_keys: Some(StaticKeys {
                 access_key: "access-secret".into(),
                 secret_key: "value-secret".into(),

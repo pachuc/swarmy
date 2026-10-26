@@ -313,6 +313,9 @@ async fn provision_swarm_with_backend(
             api: SwarmApi::default(),
             hosts: BTreeMap::new(),
             tofu_state: None,
+            tofu_bucket: None,
+            tofu_bucket_endpoint: None,
+            tofu_bucket_region: None,
         });
     reconcile(&planned, &record)?;
     prepare_bucket(

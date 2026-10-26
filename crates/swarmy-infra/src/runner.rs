@@ -139,7 +139,6 @@ impl Workspace<'_> {
         module: &[ModuleFile<'_>],
         variables: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<()> {
-        let bytes = serde_json::to_vec_pretty(variables).map_err(Error::Variables)?;
         for file in module {
             let path = Path::new(file.path);
             if path.components().next().is_none()
@@ -151,11 +150,10 @@ impl Workspace<'_> {
                 return Err(Error::ModulePath(file.path.into()));
             }
         }
-        if let Some(name) = self.credentials.found_in(&bytes).or_else(|| {
-            module
-                .iter()
-                .find_map(|file| self.credentials.found_in(file.contents))
-        }) {
+        if let Some(name) = module
+            .iter()
+            .find_map(|file| self.credentials.found_in(file.contents))
+        {
             return Err(Error::SecretInFiles { name: name.into() });
         }
         fs::create_dir_all(&self.dir)
@@ -203,6 +201,19 @@ impl Workspace<'_> {
                 .await
                 .map_err(|e| io("writing", &path, e))?;
         }
+        self.set_variables(variables).await
+    }
+    /// Rewrite only the variables file, checking that it contains no credentials.
+    /// # Errors
+    /// Returns embedded credentials, serialization or filesystem failures.
+    pub async fn set_variables(
+        &self,
+        variables: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<()> {
+        let bytes = serde_json::to_vec_pretty(variables).map_err(Error::Variables)?;
+        if let Some(name) = self.credentials.found_in(&bytes) {
+            return Err(Error::SecretInFiles { name: name.into() });
+        }
         let path = self.dir.join(VARIABLES_FILE);
         fs::write(&path, bytes)
             .await
@@ -217,12 +228,22 @@ impl Workspace<'_> {
     /// # Errors
     /// Returns process failures.
     pub async fn plan(&self) -> Result<PlanOutcome> {
-        let (_, code) = self.run(Subcommand::Plan).await?;
-        Ok(if code == Some(2) {
+        self.plan_text().await.map(|(outcome, _)| outcome)
+    }
+    /// Plan and return OpenTofu's human-readable plan with credential values redacted.
+    /// # Errors
+    /// Returns process failures.
+    pub async fn plan_text(&self) -> Result<(PlanOutcome, String)> {
+        let (text, code) = self.run(Subcommand::Plan).await?;
+        let outcome = if code == Some(2) {
             PlanOutcome::Changes
         } else {
             PlanOutcome::NoChanges
-        })
+        };
+        Ok((
+            outcome,
+            self.credentials.redact(&String::from_utf8_lossy(&text)),
+        ))
     }
     /// # Errors
     /// Returns process failures.

@@ -352,6 +352,9 @@ fn rm_refuses_machines_without_force() {
         )]
         .into(),
         tofu_state: None,
+        tofu_bucket: None,
+        tofu_bucket_endpoint: None,
+        tofu_bucket_region: None,
     })
     .unwrap();
     let output = f.command().args(["swarm", "rm", "m"]).output().unwrap();
