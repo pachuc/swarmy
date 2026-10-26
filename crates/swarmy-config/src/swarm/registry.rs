@@ -166,7 +166,7 @@ impl Registry {
                 url: Some(url.to_owned()),
                 token: Some(token.to_owned()),
             },
-            hosts: Default::default(),
+            hosts: std::collections::BTreeMap::default(),
             tofu_state: None,
         })
     }

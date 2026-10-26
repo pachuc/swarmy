@@ -161,7 +161,10 @@ fn dev_up_in_a_checkout_keeps_repo_files() {
     assert!(repo.join(".swarmy/dev/supervisor.pid").exists());
     assert!(!f.path("config/swarmy").exists());
     assert!(!f.path("data/swarmy/stack").exists());
-    assert!(!f.path("state/swarmy").exists());
+    assert_eq!(
+        fs::read_to_string(f.path("state/swarmy/current")).unwrap(),
+        "dev\n"
+    );
     assert!(!repo.join("marker-ran").exists());
     f.ok(&repo.join("sub"), &["dev", "down"], None);
     assert!(!stack.running());
