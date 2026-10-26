@@ -76,7 +76,7 @@ the durable ones are repeated below.
 ## The fleet driver
 
 `scripts/fleet/fleet` (Python, tests in `scripts/fleet/test_fleet.py`).
-Config `scripts/fleet/fleet.toml` (gitignored, mode 600): remote `hz`,
+Config `scripts/fleet/fleet.toml` (gitignored, mode 600): swarm `hz`,
 provider `openrouter`, model `meta/muse-spark-1.3-contributor`, effort
 medium, four workers, `memory_mib = 24576`, image `swarmy-dev:hz`,
 `state_dir` `.dev/fleet-hz`, and the GitHub token. Get the token for `gh` with

@@ -3,10 +3,9 @@
 ## Task fleet
 
 The Python driver at `scripts/fleet/fleet` runs tasky work on a pool of
-long-lived worker agents in a connected Swarmy remote. It uses the `swarmy`
+long-lived worker agents in a Swarmy swarm. It uses the `swarmy`
 CLI and needs `tasky` and `git` on `PATH`. Copy
-`scripts/fleet/fleet.example.toml` to `scripts/fleet/fleet.toml`, set the
-remote, repository, provider defaults, pool size, and GitHub token, then run
+`scripts/fleet/fleet.example.toml` to `scripts/fleet/fleet.toml`, set the swarm (`swarm = "NAME"`), repository, provider defaults, pool size, and GitHub token, then run
 `chmod 600 scripts/fleet/fleet.toml`. The driver refuses a config readable by
 other users. The token is piped to `swarmy agent create --github-token-stdin`;
 it never appears in command arguments or the session log. The config file is
@@ -22,7 +21,7 @@ scripts/fleet/fleet kill EWR2HD --timeout-seconds 60
 scripts/fleet/fleet reset worker-2
 ```
 
-`launch` picks an idle worker, or creates `worker-N` from the remote's
+`launch` picks an idle worker, or creates `worker-N` from the swarm's
 default image (or the configured `image`) while the pool is below `workers`,
 sends the task on the worker's main conversation, and marks the task in
 progress in tasky. The prompt carries `AGENTS.md`, the task text, and the

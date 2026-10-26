@@ -421,3 +421,90 @@ fn text_doctor_renders_ok_warn_fix_and_providers() {
     assert!(text.contains("fix scheduler:"), "{text}");
     assert!(text.contains("Providers:"), "{text}");
 }
+
+#[test]
+fn attached_swarm_skips_backing_stack_checks() {
+    use std::{io::Write, process::Stdio};
+    let fixture = Fixture::new();
+    let mut attach = Command::new(env!("CARGO_BIN_EXE_swarmy"))
+        .args([
+            "swarm",
+            "attach",
+            "node",
+            "--url",
+            "http://127.0.0.1:1",
+            "--token-stdin",
+        ])
+        .current_dir(fixture.0.path())
+        .envs(swarmy_testkit::isolated_home(fixture.0.path()))
+        .env("PATH", fixture.0.path().join("bin"))
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    attach.stdin.take().unwrap().write_all(b"t\n").unwrap();
+    assert!(attach.wait().unwrap().success());
+    let output = Command::new(env!("CARGO_BIN_EXE_swarmy"))
+        .args(["--swarm", "node", "doctor", "--json"])
+        .current_dir(fixture.0.path())
+        .envs(swarmy_testkit::isolated_home(fixture.0.path()))
+        .env("PATH", fixture.0.path().join("bin"))
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    for name in ["fdbserver", "fdbcli", "nats-server", "weed"] {
+        assert!(
+            report["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["name"] != name)
+        );
+    }
+    assert_eq!(check(&report, "remote S3")["status"], "warn");
+    assert!(
+        check(&report, "target")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("http://127.0.0.1:1")
+    );
+}
+
+#[test]
+fn local_swarm_runs_backing_stack_checks() {
+    let fixture = Fixture::new();
+    let created = Command::new(env!("CARGO_BIN_EXE_swarmy"))
+        .args(["swarm", "create", "dev", "--local"])
+        .current_dir(fixture.0.path())
+        .envs(swarmy_testkit::isolated_home(fixture.0.path()))
+        .env("PATH", fixture.0.path().join("bin"))
+        .output()
+        .unwrap();
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let report: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
+    assert_eq!(check(&report, "fdbserver")["status"], "fail");
+    assert!(
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["name"] == "dev stack S3")
+    );
+}
+
+#[test]
+fn endpoint_target_skips_backing_stack_checks() {
+    let fixture = Fixture::new();
+    fixture.config("[api]\nurl = 'http://127.0.0.1:1'\ntoken = 'fixture'");
+    let report: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
+    assert!(
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["name"] != "fdbserver")
+    );
+}

@@ -50,7 +50,10 @@ def load_file():
         raise RuntimeError(f"create {CONFIG} from fleet.example.toml")
     if CONFIG.stat().st_mode & 0o077:
         raise RuntimeError(f"{CONFIG} must have owner-only permissions (chmod 600)")
-    return tomllib.loads(CONFIG.read_text())
+    data = tomllib.loads(CONFIG.read_text())
+    if "remote" in data:
+        raise RuntimeError(f'{CONFIG}: the remote key was renamed: replace remote = "..." with swarm = "..." (a swarm from swarmy swarm ls, or "local" on a swarm\'s control node)')
+    return data
 
 
 def load():
@@ -58,25 +61,23 @@ def load():
     for key in ("github_token", "repo"):
         if not data.get(key):
             raise RuntimeError(f"{CONFIG}: missing {key}")
-    # An empty or absent remote means the local API configuration, which is
-    # how the driver runs on a swarm's own control node without a tunnel.
-    data.setdefault("remote", "")
+    data.setdefault("swarm", "")
     data.setdefault("workers", 4)
     return data
 
 
-def load_reporting(remote):
+def load_reporting(swarm):
     """Settings for the read-only report and benchmark actions.
 
     Reporting reads only session metrics and never touches GitHub, so it
     needs no token: a missing config file means the local API with default
-    state, and --remote overrides the file when both are present.
+    state, and --swarm overrides the file when both are present.
     """
     data = load_file() if CONFIG.exists() else {}
-    data.setdefault("remote", "")
+    data.setdefault("swarm", "")
     data.setdefault("workers", 4)
-    if remote is not None:
-        data["remote"] = "" if remote == "local" else remote
+    if swarm is not None:
+        data["swarm"] = swarm
     return data
 
 
@@ -134,9 +135,39 @@ Read the repository's AGENTS.md and docs/ARCHITECTURE.md before changing files. 
 """
 
 
+def target_swarm(config):
+    name = config.get("swarm") or ""
+    return None if name in ("", "local") else name
+
+
 def swarmy(config, *args):
-    remote = config.get("remote")
-    return ["swarmy", *(["--remote", remote] if remote else []), *args]
+    name = target_swarm(config)
+    return ["swarmy", *(["--swarm", name] if name else []), *args]
+
+
+def use_target(config):
+    if target_swarm(config):
+        return
+    path = os.environ.get("FLEET_NODE_CONFIG") or config.get("node_config")
+    path = Path(path) if path else ROOT / ".swarmy" / "config.toml"
+    if not path.is_absolute():
+        path = ROOT / path
+    hint = 'run the driver on the swarm\'s control node, or set swarm = "NAME" in fleet.toml'
+    if not path.is_file():
+        raise RuntimeError(f"{path} does not exist: {hint}")
+    api = tomllib.loads(path.read_text()).get("api", {})
+    token = api.get("token")
+    if not isinstance(token, str) or not token:
+        raise RuntimeError(f"{path} has no [api] token: {hint}")
+    url = api.get("url")
+    if not url:
+        host, port = api.get("listen", "127.0.0.1:8742").rsplit(":", 1)
+        if host in ("", "0.0.0.0", "::", "[::]"):
+            host = "127.0.0.1"
+        url = f"http://{host}:{port}"
+    os.environ.pop("SWARMY_SWARM", None)
+    os.environ["SWARMY_API_URL"] = url
+    os.environ["SWARMY_API_TOKEN"] = token
 
 
 def tasky(*args, json_output=False):
@@ -701,7 +732,7 @@ def parse_report_argv(tokens):
     Everything after `--label NAME` belongs to that label until the next
     --label. argparse cannot preserve that grouping, so the report entry
     point re-scans the raw tokens instead of using the parsed namespace.
-    --remote and --wall come from the parsed namespace instead; the scan
+    --swarm and --wall come from the parsed namespace instead; the scan
     only skips over them and their values.
     """
     as_json = False
@@ -727,9 +758,9 @@ def parse_report_argv(tokens):
                 raise RuntimeError("report --since requires a time value")
             since = tokens[index + 1]
             index += 2
-        elif token == "--remote":
+        elif token == "--swarm":
             if index + 1 >= len(tokens):
-                raise RuntimeError("report --remote requires a remote name")
+                raise RuntimeError("report --swarm requires a swarm name")
             index += 2
         elif token == "--wall":
             if index + 1 >= len(tokens):
@@ -1090,18 +1121,14 @@ def report_command(tokens, config, walls=None):
     return 0
 
 
-def benchmark(args):
+def benchmark(args, config):
     """Run one isolated benchmark session without tasky or a persistent worker."""
     if not args.prompt_file.is_file():
         raise RuntimeError(f"missing benchmark prompt: {args.prompt_file}")
-    # An empty or "local" remote uses the node's own API configuration, the
-    # same rule as the fleet.toml remote, so the benchmark runs on a control
-    # node without a tunnel.
-    remote = [] if args.remote in ("", "local") else ["--remote", args.remote]
     image = ["--image", args.image] if args.image else []
-    cmd = ["swarmy", *remote, "run", "--json", *image,
+    cmd = swarmy(config, "run", "--json", *image,
            "--provider", args.provider, "--model", args.model,
-           "--effort", args.effort, args.prompt_file.read_text()]
+           "--effort", args.effort, args.prompt_file.read_text())
     result = subprocess.run(cmd, text=True, stdout=sys.stdout, stderr=sys.stderr, check=False)
     return result.returncode
 
@@ -1161,7 +1188,7 @@ def main():
     launch_parser.add_argument("--provider")
     launch_parser.add_argument("--model")
     launch_parser.add_argument("--effort")
-    launch_parser.add_argument("--image", help="registered image as NAME:TAG for a newly created worker; default is the remote's default image")
+    launch_parser.add_argument("--image", help="registered image as NAME:TAG for a newly created worker; default is the swarm's default image")
     launch_parser.add_argument("--worker", help="run on this idle worker instead of the first free one, for example to reuse files on its disk")
     sub.add_parser("status", help="one line per worker: task, provider, model, state age, elapsed, cost; exits 2 on a stall")
     sub.add_parser("collect", help="check the worker's pushed branch, link its head in tasky, move the task to testing, and print the worker's report").add_argument("task_id")
@@ -1185,16 +1212,16 @@ def main():
     switch_parser.add_argument("--route", default="default", help="failover route name; default clears the agent's route")
     switch_parser.add_argument("--default", action="store_true", help="also make this the fleet.toml default for new workers")
     switch_parser.add_argument("--include-busy", action="store_true", help="also switch workers that are running a task")
-    bench = sub.add_parser("benchmark", help="run one isolated benchmark prompt on a remote (use --remote local on a control node)")
-    bench.add_argument("--remote", default="local")
+    bench = sub.add_parser("benchmark", help="run one isolated benchmark prompt on a registered swarm or this control node")
+    bench.add_argument("--swarm", default=None, help="registered swarm, or local for this control node's API (default: the fleet.toml swarm, else local)")
     bench.add_argument("--provider", required=True)
     bench.add_argument("--model", required=True)
     bench.add_argument("--effort", required=True)
     bench.add_argument("--prompt-file", required=True, type=Path)
-    bench.add_argument("--image", help="registered image as NAME:TAG for the isolated session; default is the remote's default image")
+    bench.add_argument("--image", help="registered image as NAME:TAG for the isolated session; default is the swarm's default image")
     report_parser = sub.add_parser("report", help="aggregate per-turn session metrics into a comparison table")
     report_parser.add_argument("--json", action="store_true", help="emit JSON instead of Markdown")
-    report_parser.add_argument("--remote", default=None, help="tunnel profile, or local for the node's own API configuration (default: the fleet.toml remote, else local)")
+    report_parser.add_argument("--swarm", default=None, help="registered swarm, or local for this control node's API (default: the fleet.toml swarm, else local)")
     report_parser.add_argument("--wall", action="append", default=[], dest="walls", help="runner-measured wall seconds for a session as SESSION=SECONDS; may repeat")
     report_parser.add_argument("--since", default=None, help="include every task launched at or after this ISO 8601 time")
     report_parser.add_argument("--label", action="append", default=[], help="start a labeled group; repeat for side-by-side tables")
@@ -1203,13 +1230,18 @@ def main():
     args = parser.parse_args()
     try:
         if args.action == "benchmark":
-            return benchmark(args)
+            config = load_reporting(args.swarm)
+            use_target(config)
+            return benchmark(args, config)
         if args.action == "report":
             # argparse cannot keep the order of repeated --label groups, so the
             # report re-scans the raw tokens to know which ids belong together.
             raw = sys.argv[sys.argv.index("report") + 1:]
-            return report_command(raw, load_reporting(args.remote), parse_wall_args(args.walls))
+            config = load_reporting(args.swarm)
+            use_target(config)
+            return report_command(raw, config, parse_wall_args(args.walls))
         config = load()
+        use_target(config)
         if args.action == "launch":
             launch(args, config)
         elif args.action == "status":

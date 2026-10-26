@@ -10,24 +10,24 @@ For node sizing, provisioning, upgrades, recovery, teardown and costs, use
 [REMOTE.md](REMOTE.md). Configure the driver from
 `scripts/fleet/fleet.example.toml` into the ignored `scripts/fleet/fleet.toml`;
 set the pool size and provider choices and restrict file permissions. Run
-`swarmy doctor --swarm NAME` before launching work.
+`swarmy --swarm NAME doctor` before launching work.
 
 ## Running the driver on a control node
 
-`scripts/fleet/fleet` normally talks to a swarm through a saved tunnel profile
-(`remote = "dev"` in `fleet.toml`). The laptop holds one tunnel at a time, so a
-benchmark against a second swarm would blind the driver for the fleet it is
-operating. Leave `remote` empty in a `fleet.toml` on the swarm's own control
-node instead: the driver then calls `swarmy` with the node's local API
-configuration and no tunnel, which is how `benchmarks/run-swarm.sh` runs for
-each environment during the perf baseline.
+`swarm = "NAME"` in `fleet.toml` passes `--swarm NAME` to the client.
+Tunnels open on demand, and several swarms can be used at once. On the
+swarm's control node, `swarm = "local"` (or no key) exports that node's
+`[api]` URL and token from `.swarmy/config.toml`. Override the path with
+`node_config` (relative to the checkout) or `FLEET_NODE_CONFIG`. The driver
+reserves `local`: a registered swarm literally named `local` cannot be
+selected through the fleet.
 
 ## Perf baseline runners
 
-`benchmarks/run-swarm.sh REMOTE LABEL` runs the three fixed tasks twice each
+`benchmarks/run-swarm.sh SWARM LABEL` runs the three fixed tasks twice each
 through `fleet benchmark`, records each invocation's wall time, and writes
 `.dev/benchmarks/LABEL-*`; run it on each
-swarm's control node with an empty `remote` (previous section).
+swarm's control node with `swarm = "local"` (previous section).
 `benchmarks/run-daytona.py LABEL` runs the same prompts through codex-daytona
 in disposable remote sandboxes with `--no-publish`; Codex never runs on the
 laptop. Both read `BENCH_PROVIDER`, `BENCH_MODEL`, and `BENCH_EFFORT`. The
@@ -37,10 +37,10 @@ BENCH_MODEL=meta/muse-spark-1.3-contributor BENCH_EFFORT=medium`. The
 codex-daytona leg needs `OPENROUTER_API_KEY` in the launcher's `.env` (it is
 placed in the sandbox as a private file) and `CODEX_DAYTONA_DIR` when the
 launcher is not at `~/code/codex-daytona`. The runner closes by invoking
-`scripts/fleet/fleet report --remote REMOTE --label LABEL --session ID
+`scripts/fleet/fleet report --swarm SWARM --label LABEL --session ID
 --wall ID=SECONDS ...`, which prints each run's wall time as `wall_s` next to
 `duration_s`; `benchmark` and `report` need no `fleet.toml` and can also run
-ad hoc against the local API with `--remote local`.
+ad hoc against the local API with `--swarm local`.
 
 ## Daily operation
 

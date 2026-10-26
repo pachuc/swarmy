@@ -21,7 +21,7 @@ it accepts the `chatgpt` and `openrouter` providers. Set `DAYTONA_LANE_CMD`
 for another lane or installation. Do not silently substitute a different
 provider or effort.
 
-From a laptop connected to one remote at a time:
+From a laptop:
 
 ```sh
 benchmarks/run-swarm.sh dev baseline-dev --dry-run
@@ -33,8 +33,8 @@ python3 -m unittest discover -s benchmarks -p 'test_*.py'
 
 The swarm runner calls the fleet driver's `benchmark` action for each isolated
 session, waits for completion, and invokes `scripts/fleet/fleet report
---remote REMOTE --label LABEL --session ID --wall ID=SECONDS ...` on the six
-session IDs with each run's wall time. The runner passes the remote through,
+--swarm SWARM --label LABEL --session ID --wall ID=SECONDS ...` on the six
+session IDs with each run's wall time. The runner passes the swarm through,
 so `benchmark` and `report` need no `scripts/fleet/fleet.toml`. The driver uses ephemeral
 sessions rather than tasky assignments, so benchmark branches do not consume
 real task IDs or workers.
