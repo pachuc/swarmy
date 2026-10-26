@@ -153,7 +153,7 @@ fn refusals_are_ordered() {
         check_scalable(&f.spec, "workers").unwrap(),
         GroupKind::Module
     );
-    let mut spec = f.spec.clone();
+    let mut spec = f.spec;
     spec.groups
         .insert("services".into(), spec.groups["control"].clone());
     spec.placement.services = "services".into();
