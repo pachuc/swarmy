@@ -576,15 +576,14 @@ pub(crate) async fn run(
     }
     // Preserve the local command's early JSON rejection when there is no swarm
     // to dispatch, while host swarms may return structured status.
-    if json_output {
-        if let Command::Status { name } = &command {
-            let registry = Registry::new(Dirs::from_process()?);
-            if registry.read_spec(name)?.is_none() && registry.read_record(name)?.is_none() {
-                bail!("--json is not supported for swarm status without a managed spec");
-            }
-        }
-    }
     let registry = Registry::new(Dirs::from_process()?);
+    if json_output
+        && let Command::Status { name } = &command
+        && registry.read_spec(name)?.is_none()
+        && registry.read_record(name)?.is_none()
+    {
+        bail!("--json is not supported for swarm status without a managed spec");
+    }
     match command {
         Command::Supervise { .. } => unreachable!("supervisor dispatched above"),
         command @ Command::Create { .. } => run_create(&registry, command, json_output)?,
