@@ -59,6 +59,10 @@ elif cmd == 'doctor':
     assert any('sandbox' in n['roles'] for n in load(args[0])['nodes'])
 elif cmd == 'session-id':
     print(next(e['session_id'] for e in map(json.loads, Path(args[0]).read_text().splitlines()) if e.get('event') in ('session_created', 'session_opened')))
+elif cmd == 'session-node':
+    session = json.loads(Path(args[0]).read_text().splitlines()[0])
+    node = (session.get('placement') or session.get('scratch') or {}).get('node_id')
+    if node: print('agent node after shrink: ' + node)
 elif cmd == 'tool-output-contains':
     records = [json.loads(line) for line in Path(args[0]).read_text().splitlines()[1:]]
     calls = {}
@@ -145,6 +149,8 @@ on_exit() {
         if [[ -f $work/tofu.log ]] && grep -Eq ' (apply|destroy|output)$' "$work/tofu.log"; then echo 'fake tofu ran a forbidden operation' >&2; result=1; fi
         rm -rf "$work"
         ((result != 0)) || echo 'dry run complete: create and plan work; nothing was created'
+    elif ((result == 0 && created)); then
+        echo "acceptance passed in $(((SECONDS - started + 59) / 60)) minutes"
     fi
     exit "$result"
 }
@@ -181,7 +187,7 @@ local_preconditions() {
     if (( ! dry_run )); then
         [[ -n $provider && -n $model ]] || { fail 'pass --provider ID and --model ID'; return 1; }
         if [[ $provider != chatgpt ]]; then
-            [[ -f $api_key_file && -s $api_key_file && $(stat -c %a "$api_key_file") == 600 ]] || fail 'pass --api-key-file FILE: nonempty regular file with mode 0600'
+            [[ -f $api_key_file && ! -L $api_key_file && -s $api_key_file && $(stat -c %a "$api_key_file") == 600 ]] || fail 'pass --api-key-file FILE: nonempty regular file with mode 0600'
         fi
         [[ -z ${SWARMY_TOFU_BIN:-} ]] || echo 'warning: SWARMY_TOFU_BIN set; real run should use pinned OpenTofu download' >&2
         "$swarmy" swarm scale --help >/dev/null 2>&1 || echo 'warning: swarm scale is not available yet; the run will fail at scaling' >&2
@@ -256,8 +262,7 @@ main() {
     file=$(mktemp)
     step volume-read "$swarmy" --swarm "$name" --json run --agent acceptance 'Use the bash tool to run exactly: cat /home/agent/acceptance.txt' > "$file"
     session_id=$(py session-id "$file"); rm -f "$file"
-    file=$(mktemp); step show-read "$swarmy" --swarm "$name" session show "$session_id" --json > "$file"; py tool-output-contains "$file" "$nonce"; rm -f "$file"
-    echo "acceptance passed in $(((SECONDS - started + 59) / 60)) minutes"
+    file=$(mktemp); step show-read "$swarmy" --swarm "$name" session show "$session_id" --json > "$file"; py tool-output-contains "$file" "$nonce"; py session-node "$file"; rm -f "$file"
 }
 check_hosts() {
     local file; file=$(mktemp)

@@ -55,6 +55,12 @@ p=sys.argv[1]; data=json.load(open(p)); data['server_types'][0]['architecture']=
 PY
 if py server-type "$fake/bad.json" fsn1 cpx31 > "$fake/out" 2> "$fake/err"; then exit 1; fi
 grep -q cpx41 "$fake/err"
+python3 - "$fake/bad.json" <<'PY'
+import json,sys
+p=sys.argv[1]; data=json.load(open(p)); data['server_types'][0]['architecture']='x86'; data['server_types'][0]['deprecation']={'announced':'fixture'}; open(p,'w').write(json.dumps(data))
+PY
+if py server-type "$fake/bad.json" fsn1 cpx31 > "$fake/out" 2> "$fake/err"; then exit 1; fi
+grep -q cpx41 "$fake/err"
 verify_clean
 printf '{"servers":[{"id":1,"name":"acc-test-control-1"}]}\n' > "$fake/servers.json"
 if verify_clean 2> "$fake/err"; then exit 1; fi
