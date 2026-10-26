@@ -38,6 +38,7 @@ mod command;
 pub mod node_files;
 pub mod release;
 pub mod ssh;
+pub mod tunnel;
 pub use command::{BucketArgs, Command, select};
 #[cfg(feature = "remote")]
 mod remote;
