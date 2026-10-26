@@ -38,11 +38,20 @@ fn setup(
     let home = tempfile::tempdir().unwrap();
     let (address, requests) = fake_api::serve(registered);
     fs::create_dir_all(home.path().join(".swarmy")).unwrap();
-    fs::write(
-        home.path().join(".swarmy/config.toml"),
-        format!("[api]\nurl = \"http://{address}\"\ntoken = \"x\"\n"),
+    fs::write(home.path().join(".swarmy/config.toml"), "").unwrap();
+    let environment = swarmy_testkit::isolated_home(home.path());
+    let dirs = swarmy_config::paths::Dirs::from_env(
+        &environment
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.to_string_lossy().into_owned()))
+            .collect(),
     )
     .unwrap();
+    let registry = swarmy_config::swarm::Registry::new(dirs);
+    registry
+        .attach("fixture", &format!("http://{address}"), "x")
+        .unwrap();
+    registry.set_current("fixture").unwrap();
     let tag = swarmy_version::RELEASE_TAG;
     let top = format!("swarmy-image-base-ubuntu-{}", host_target());
     let asset = format!("{top}.tar.gz");

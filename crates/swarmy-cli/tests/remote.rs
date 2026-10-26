@@ -8,6 +8,9 @@ use std::{
 struct Kill(String);
 impl Drop for Kill {
     fn drop(&mut self) {
+        if self.0.parse::<i32>().ok().is_none_or(|pid| pid <= 1) {
+            return;
+        }
         swarmy_core::ignore_best_effort(
             Command::new("kill").arg(&self.0).status(),
             "kill test SSH master",
@@ -25,7 +28,7 @@ fn cli_command(root: &Path, args: &[&str]) -> Command {
         .env("XDG_STATE_HOME", root.join("state"))
         .env("XDG_CACHE_HOME", root.join("cache"))
         .env("SWARMY_STATE_DIR", root.join(".swarmy"))
-        .env_remove("SWARMY_REMOTE")
+        .env_remove("SWARMY_SWARM")
         .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
         .args(args);
     command
@@ -172,38 +175,6 @@ fn failed_ssh_startup_never_publishes_a_profile() {
 }
 
 #[test]
-fn doctor_reports_a_missing_profile_as_disconnected_without_checking_local_services() {
-    let root = tempfile::tempdir().unwrap();
-    fixture(root.path());
-    std::fs::write(root.path().join(".swarmy/config.toml"), "").unwrap();
-    let output = cli(root.path(), &["doctor", "--remote", "test", "--json"]);
-    assert!(!output.status.success());
-    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let checks = report["checks"].as_array().unwrap();
-    assert!(
-        checks
-            .iter()
-            .any(|check| check["name"] == "config" && check["ok"] == true)
-    );
-    let tunnel = checks
-        .iter()
-        .find(|check| check["name"] == "remote tunnel")
-        .unwrap();
-    assert_eq!(tunnel["ok"], false);
-    assert!(
-        tunnel["fix"]
-            .as_str()
-            .unwrap()
-            .contains("remote connect test")
-    );
-    assert!(
-        !checks
-            .iter()
-            .any(|check| check["name"] == "remote FoundationDB")
-    );
-}
-
-#[test]
 fn status_uses_private_ssh_when_public_address_is_unreachable() {
     let root = tempfile::tempdir().unwrap();
     fixture(root.path());
@@ -326,6 +297,15 @@ fn connect_opens_an_api_only_tunnel_for_node_services_and_disconnect_removes_it(
     )
     .unwrap();
     assert_eq!(saved["api_token"], "fake-token");
+    let shown = cli(root.path(), &["swarm", "show", "test", "--json"]);
+    assert!(
+        shown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(shown["kind"], "attached");
+    assert_eq!(shown["api_url"], profile["api_url"]);
     let masters = std::fs::read_to_string(root.path().join("ssh-masters")).unwrap();
     assert!(masters.contains(&format!("-L 127.0.0.1:{port}:127.0.0.1:8742")));
     assert!(masters.contains("BatchMode=yes"));
@@ -359,43 +339,6 @@ fn connect_opens_an_api_only_tunnel_for_node_services_and_disconnect_removes_it(
             .exists()
     );
     assert!(!Path::new(record["socket"].as_str().unwrap()).exists());
-}
-
-#[test]
-fn node_services_dev_up_needs_no_local_binaries_and_preserves_remote_on_down() {
-    let root = tempfile::tempdir().unwrap();
-    fixture(root.path());
-    let path = root.path().join(".swarmy/remote/test.json");
-    let mut node: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    node["launch_settings"] = serde_json::json!({"services": "node"});
-    std::fs::write(path, serde_json::to_vec(&node).unwrap()).unwrap();
-    std::fs::write(root.path().join(".swarmy/config.toml"), "").unwrap();
-    std::fs::write(root.path().join(".swarmy/remote/test.profile.json"), serde_json::to_vec(&serde_json::json!({
-        "name": "test", "socket_path": "test.socket", "pid": 1, "ports": {},
-        "fdb_cluster_file": "test.cluster", "nats_url": "nats://localhost:4222", "s3_endpoint": "http://localhost:8333"
-    })).unwrap()).unwrap();
-    let ssh = root.path().join("ssh");
-    std::fs::write(&ssh, "#!/bin/sh\nexit 0\n").unwrap();
-    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let output = cli(root.path(), &["dev", "up", "--remote", "test"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("no local services started"));
-    for service in ["supervisor", "worker", "gateway", "scheduler"] {
-        assert!(
-            !root
-                .path()
-                .join(format!(".swarmy/dev/{service}.pid"))
-                .exists()
-        );
-    }
-    let down = cli(root.path(), &["dev", "down"]);
-    assert!(down.status.success());
-    assert!(String::from_utf8_lossy(&down.stdout).contains("remote stack preserved"));
 }
 
 fn fake_upgrade_host(root: &Path) {

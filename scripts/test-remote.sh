@@ -84,70 +84,7 @@ assert str(p['ports']['nats']) in p['nats_url']
 assert str(p['ports']['s3']) in p['s3_endpoint']
 assert str(p['ports']['fdb']) in open(p['fdb_cluster_file']).read()
 PY
-if [[ ${SWARMY_REMOTE_TEST_HOST:-127.0.0.1} != 127.0.0.1 ]]; then
-"$cli" dev up --remote local
-for service in fdb nats seaweed; do cmp "$repo/.dev/$service.pid" "$work/$service.pid"; done
-"$cli" doctor --remote local --json > doctor.json
-python3 - <<'PY'
-import json
-result = json.load(open('doctor.json'))
-assert result['ok'], result
-checks = {c['name']: c for c in result['checks']}
-assert checks['remote tunnel']['ok']
-for name in ['API', 'scheduler', 'worker', 'gateway', 'remote S3']:
-    assert checks[name]['ok'], checks[name]
-assert 'fdbserver' not in checks
-PY
-# This fake-provider session never materializes a computer, but still needs a registered image.
-mkdir -p "$work/remote-fixture/rootfs"
-cat > "$work/remote-fixture/recipe.toml" <<'EOF'
-disk_size = 16777216
-source_date_epoch = 1714003200
-[source]
-kind = "directory"
-path = "rootfs"
-EOF
-"$cli" image build --remote local "$work/remote-fixture" --tag test
-export SWARMY_DEFAULT_IMAGE=remote-fixture:test
-timeout 45 "$cli" run --remote local 'what time is it' > run.log
-cat run.log
-grep -q 'Hello from swarmy!' run.log
-SWARMY_REMOTE=local "$repo/target/debug/swarmy-core" node > swarmyd.log 2>&1 &
-daemon=$!
-for attempt in {1..100}; do
-    if grep -q 'node registered and ready' swarmyd.log; then break; fi
-    kill -0 "$daemon"
-    sleep .1
-done
-grep -q 'node registered and ready' swarmyd.log
-"$cli" remote ls --json > status.json
-python3 - <<'PYTHON'
-import json
-status = json.load(open('status.json'))[0]
-assert status['tunnel'], status
-assert status['registrations'], status
-assert any(r['heartbeating'] for r in status['registrations']), status
-print(status)
-PYTHON
-kill "$daemon"
-wait "$daemon"
-daemon=
-"$cli" dev down
-for service in fdb nats seaweed; do cmp "$repo/.dev/$service.pid" "$work/$service.pid"; done
-else
-    if "$cli" dev up --remote local > rejected.log 2>&1; then
-        echo 'Expected remapped FoundationDB profile to reject service startup.' >&2
-        exit 1
-    fi
-    grep -q 'FoundationDB cannot use a remapped port' rejected.log
-    if "$cli" doctor --remote local --json > doctor.json; then exit 1; fi
-    python3 - <<'PYTHON'
-import json
-checks = {c['name']: c for c in json.load(open('doctor.json'))['checks']}
-assert checks['remote tunnel']['ok']
-assert not checks['remote FoundationDB port']['ok']
-PYTHON
-fi
+# The laptop-services checks return with swarm placement; see the goal plan.
 "$cli" remote disconnect local
 "$cli" remote disconnect local
 python3 - <<'PY'

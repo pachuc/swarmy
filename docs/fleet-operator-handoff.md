@@ -51,7 +51,7 @@ the durable ones are repeated below.
   images were decommissioned on 2026-10-01.
 - Tunnel: `swarmy remote connect hz`. Local ports are fixed, so only one
   swarm can be connected at a time. Plain `swarmy` commands that need the API
-  take `--remote hz`. `swarmy remote ls` shows nodes, services, images.
+  take `--swarm hz` (`remote connect hz` registers it). `swarmy remote ls` shows nodes, services, images.
 - SSH: the laptop's `~/.ssh/config` has an alias for each server, using the
   key registered in Robot as `swarmy-fleet`; `swarmy remote` keeps its own
   keys under `.swarmy/remote/`. Long commands on a server run detached:
@@ -100,22 +100,22 @@ export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | hea
   `launch` matches an idle worker on provider and model).
 - The `hz` cluster's credential store holds only the OpenRouter key. Before
   workers can use the ChatGPT subscription, import the owner's credential
-  (`swarmy auth import --remote hz`; `adopt --copy-credential` put the file
+  (`swarmy auth import --swarm hz`; `adopt --copy-credential` put the file
   on the server) and create a route `subscription` that tries
   `chatgpt/default=gpt-6-sol` then `openrouter/default=meta/muse-spark-1.3-contributor`
   (`swarmy auth routes`), so workers fail over to Muse when the subscription
-  depletes. Then re-point idle workers with `swarmy --remote hz agent set
+  depletes. Then re-point idle workers with `swarmy --swarm hz agent set
   worker-N --provider chatgpt --model gpt-6-sol --route subscription` and
   edit each meta file to provider `chatgpt`, model `gpt-6-sol`.
-- ChatGPT login expires; when `swarmy --remote hz auth ls` shows
-  `needs_login`, the owner runs `swarmy --remote hz auth login chatgpt`
+- ChatGPT login expires; when `swarmy --swarm hz auth ls` shows
+  `needs_login`, the owner runs `swarmy --swarm hz auth login chatgpt`
   (device code in a browser).
-- Steering a busy worker: `swarmy --remote hz --json session interrupt ID`,
+- Steering a busy worker: `swarmy --swarm hz --json session interrupt ID`,
   wait for `fleet status` to show idle, then
-  `swarmy --remote hz --json run --session ID "message"`. The interrupt
+  `swarmy --swarm hz --json run --session ID "message"`. The interrupt
   drops only the in-flight tool call. `fleet kill` removes the launch record,
   so use it only when abandoning a task. Session logs:
-  `swarmy --remote hz --json session show ID` (one JSON event per line).
+  `swarmy --swarm hz --json session show ID` (one JSON event per line).
 - `fleet status` follows the current session after compaction.
   Workers poll long builds with one inference per minute; that is normal and
   cheap on Muse, less so on the subscription.

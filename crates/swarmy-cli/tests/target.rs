@@ -23,12 +23,29 @@ impl Fixture {
     }
     fn dirs(&self) -> Dirs {
         let root = self.0.path();
-        Dirs {
-            config: root.join("config"),
-            data: root.join("data"),
-            state: root.join("state"),
-            cache: root.join("cache"),
-        }
+        Dirs::from_env(
+            &[
+                ("HOME".into(), root.join("home").display().to_string()),
+                (
+                    "XDG_CONFIG_HOME".into(),
+                    root.join("config").display().to_string(),
+                ),
+                (
+                    "XDG_DATA_HOME".into(),
+                    root.join("data").display().to_string(),
+                ),
+                (
+                    "XDG_STATE_HOME".into(),
+                    root.join("state").display().to_string(),
+                ),
+                (
+                    "XDG_CACHE_HOME".into(),
+                    root.join("cache").display().to_string(),
+                ),
+            ]
+            .into(),
+        )
+        .unwrap()
     }
     fn registry(&self) -> Registry {
         Registry::new(self.dirs())

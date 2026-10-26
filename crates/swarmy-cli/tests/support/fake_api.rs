@@ -38,7 +38,7 @@ pub(crate) fn serve(registered: bool) -> (SocketAddr, Arc<Mutex<Vec<Request>>>) 
             let Some(header_end) = header_end else {
                 continue;
             };
-            let header = String::from_utf8_lossy(&bytes[..header_end]);
+            let header = String::from_utf8_lossy(&bytes[..header_end]).into_owned();
             let mut parts = header.lines().next().unwrap().split_whitespace();
             let method = parts.next().unwrap().to_owned();
             let path_and_query = parts.next().unwrap().to_owned();

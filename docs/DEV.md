@@ -44,6 +44,28 @@ worker as `release --force` would. The tasky task stays in progress for an
 operator to relaunch or cancel. The wait defaults to `kill_timeout_seconds`
 in `fleet.toml`, or 60 seconds if unset; `--timeout-seconds` overrides it.
 
+### Choosing the target swarm
+
+Client commands choose their API in order: `--swarm NAME`, `SWARMY_SWARM`,
+the `SWARMY_API_URL` and `SWARMY_API_TOKEN` pair, then the current swarm.
+Without any target, the client explains how to list, use, or create a swarm.
+Configuration files never choose the client's API: `[api] url` and `token`
+configure the services started by `swarmy dev up`. That command registers its
+API as swarm `dev` and makes it current when none is selected.
+
+Specs live under `$XDG_CONFIG_HOME/swarmy/swarms`, records under
+`$XDG_STATE_HOME/swarmy/swarms`, and the `current` file under
+`$XDG_STATE_HOME/swarmy` (with standard HOME-based XDG defaults).
+
+```sh
+swarmy swarm ls
+swarmy swarm show
+swarmy swarm use dev
+printf '%s' "$TOKEN" | swarmy swarm attach staging --url https://swarmy.example.test --token-stdin
+swarmy --swarm staging session ls
+swarmy swarm rm staging
+```
+
 ## Quick start
 
 Install the pinned backing services using the instructions below. With Rust and
@@ -150,7 +172,7 @@ notices remain attributable when several chats share a computer. `--agent` skips
 the recent-session picker. `chat --json` reads one prompt per stdin line and
 emits the run event protocol, waiting for idle between prompts; EOF closes the
 client. The other agent and session commands also support `--json`, and all of
-these commands accept `--remote NAME` before or after the subcommand.
+these commands accept `--swarm NAME` before or after the subcommand.
 
 Each named agent can override the stack's system prompt, model, and reasoning
 effort. For example:

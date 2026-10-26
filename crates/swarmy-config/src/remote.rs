@@ -637,7 +637,6 @@ pub(crate) fn is_valid_name(name: &str) -> bool {
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
-    use std::collections::BTreeMap;
 
     #[test]
     fn aws_sub_table_rejects_flat_keys() {
@@ -837,7 +836,9 @@ mod tests {
 
     #[test]
     fn remote_profile_key_is_rejected_with_the_fix() {
-        let error = toml::from_str::<Settings>("[remote]\nprofile = 'x'").unwrap_err();
+        let error = toml::from_str::<Settings>("[remote]\nprofile = 'x'")
+            .err()
+            .unwrap();
         assert!(error.to_string().contains("swarmy swarm use"));
     }
 

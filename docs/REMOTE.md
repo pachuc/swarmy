@@ -1,5 +1,10 @@
 # Remote development nodes
 
+The laptop-services layout (`dev up` with a remote profile) has been removed;
+create remotes with `--services node`. `swarmy remote connect NAME` registers
+the node's API as swarm NAME, so client commands take `--swarm NAME`.
+This guide is rewritten for `swarmy swarm` in a later change.
+
 This is the operations guide for provisioning, upgrades, recovery and teardown.
 For fleet-driver commands see [fleet-runbook.md](fleet-runbook.md).
 
@@ -109,9 +114,8 @@ swarmy remote up demo --services node --instance-type m6i.large --disk-gb 40 --s
 swarmy remote add-node demo --instance-type m6id.4xlarge --disk-gb 100
 swarmy remote connect demo
 # connect reports total, address probing, and tunnel startup seconds
-swarmy doctor --remote demo
-swarmy dev up --remote demo
-swarmy chat --remote demo        # ask it to run pwd; no image flag needed
+swarmy doctor --swarm demo
+swarmy chat --swarm demo        # ask it to run pwd; no image flag needed
 swarmy remote ls
 swarmy dev down
 swarmy remote disconnect demo
@@ -172,7 +176,7 @@ after this is not supported.
 
 `--image-recipe` accepts the carried recipes `images/base-ubuntu`,
 `images/base-desktop`, and `images/swarmy-dev`. For a custom recipe, use
-`swarmy image build --remote NAME DIR`. The selected recipe still registers
+`swarmy image build --swarm NAME DIR`. The selected recipe still registers
 as `base-ubuntu:NAME`. Use `--no-image` to skip the build; the two options
 cannot be combined.
 `add-node` reuses the stack's registry and does not rebuild the image.
@@ -186,12 +190,8 @@ hosting sandboxes must have local NVMe.
 After a successful build, the node record stores `default_image`.
 `connect` copies it into `<state directory>/remote/<name>.profile.json` alongside
 the service endpoints; `<state_dir>/remote/NAME.tunnel/` holds its SSH record
-and log. Selecting that profile with `--remote NAME`,
-`SWARMY_REMOTE`, or `[remote] profile` applies the stack's default to local
-commands, overriding a local configuration or environment default.
-An explicit session `--image NAME:TAG` still takes precedence. Older profiles
-and remotes created with `--no-image` preserve any locally configured default;
-otherwise a new session requires an explicit registered image.
+and log. The node's API uses its recorded `default_image` for new sessions;
+an explicit `--image` still wins.
 
 The instance, root volume, and imported ed25519 key pair receive `Name` and
 `managed-by` tags at creation. IAM needs EC2 `DescribeImages`,
@@ -544,11 +544,10 @@ remote; the provisioning and tunnel contracts above still apply.
 ```bash
 chmod 600 .swarmy/config.toml
 swarmy dev down                 # stop any local stack before reserving port 4500
-swarmy remote up demo           # builds binaries and base-ubuntu:demo; prints build times and SSH command
+swarmy remote up demo --services node           # builds binaries and base-ubuntu:demo; prints build times and SSH command
 swarmy remote connect demo
 swarmy auth login              # dedicated ChatGPT login, on the laptop
-swarmy dev up --remote demo
-swarmy doctor --remote demo
+swarmy doctor --swarm demo
 swarmy remote ls
 ```
 
@@ -567,14 +566,14 @@ configuration. Image construction needs node root; it never needs laptop root.
 Start a chat on the laptop and ask the agent to run `pwd` in its sandbox:
 
 ```bash
-swarmy chat --remote demo
+swarmy chat --swarm demo
 # Alternatively, start a session and resume its printed id:
-swarmy run --remote demo 'Run pwd in the sandbox, then wait for my next instruction.'
-swarmy chat --remote demo SESSION_ID
+swarmy run --swarm demo 'Run pwd in the sandbox, then wait for my next instruction.'
+swarmy chat --swarm demo SESSION_ID
 ```
 
 Use `--image-recipe images/base-desktop` to select another carried recipe.
-For a custom directory use `swarmy image build --remote NAME DIR`. The registered
+For a custom directory use `swarmy image build --swarm NAME DIR`. The registered
 name remains `base-ubuntu:demo`. `--no-image` skips the build and leaves the remote
 without a saved default; provide an already registered image through `--image`
 or `default_image` before starting a new session. The two options cannot be
@@ -604,13 +603,13 @@ run requires no ChatGPT credential; see the dated benchmark evidence.
 Without `--agent`, each new conversation gets its own computer and writable disk:
 
 ```bash
-swarmy chat --remote demo
+swarmy chat --swarm demo
 # In another terminal, create a separate ephemeral conversation:
-swarmy chat --remote demo
-swarmy session ls --remote demo
-swarmy chat --remote demo SESSION_ID   # resume an existing conversation
-swarmy session close SESSION_ID --remote demo
-swarmy session show SESSION_ID --remote demo --json
+swarmy chat --swarm demo
+swarmy session ls --swarm demo
+swarmy chat --swarm demo SESSION_ID   # resume an existing conversation
+swarmy session close SESSION_ID --swarm demo
+swarmy session show SESSION_ID --swarm demo --json
 ```
 
 Escape, Ctrl-C, or EOF in `chat --json` closes the client only. The session
@@ -621,7 +620,6 @@ retention test, set the interval on the scheduler before starting services:
 
 ```bash
 swarmy dev down
-SWARMY_EPHEMERAL_RETENTION_SECONDS=90 swarmy dev up --remote demo
 ```
 
 This override applies to local services in the default laptop mode. Node services
@@ -632,13 +630,13 @@ strictly older than the cutoff qualify; active sessions and named agents do not.
 Create a named agent to keep a computer independently of any one conversation:
 
 ```bash
-swarmy agent create tommy --remote demo --description 'Shared development computer'
-swarmy chat --agent tommy --remote demo
+swarmy agent create tommy --swarm demo --description 'Shared development computer'
+swarmy chat --agent tommy --swarm demo
 # In a second terminal, open another session on the same computer:
-swarmy chat --agent tommy --new --remote demo
-swarmy agent ls --remote demo
-swarmy agent show tommy --remote demo --json
-swarmy run --agent tommy --remote demo 'Read the files created in the other chat'
+swarmy chat --agent tommy --new --swarm demo
+swarmy agent ls --swarm demo
+swarmy agent show tommy --swarm demo --json
+swarmy run --agent tommy --swarm demo 'Read the files created in the other chat'
 ```
 
 Ask the first chat to write a file and use `process_start` to start
@@ -664,10 +662,10 @@ at the snapshot boundary, while background processes and memory are lost.
 Then delete the shared computer:
 
 ```bash
-swarmy agent delete tommy --remote demo            # interactive confirmation
+swarmy agent delete tommy --swarm demo            # interactive confirmation
 # For scripts, use --yes on the same command.
-swarmy session show FIRST_SESSION_ID --remote demo --json
-swarmy session show SECOND_SESSION_ID --remote demo --json
+swarmy session show FIRST_SESSION_ID --swarm demo --json
+swarmy session show SECOND_SESSION_ID --swarm demo --json
 ```
 
 `session close` refuses the main session and points to `agent delete` instead.
@@ -687,9 +685,9 @@ client's environment. For this disposable-stack procedure, set the short grace
 in the API service's environment and restart it first:
 
 ```bash
-swarmy gc --remote demo --dry-run --json
-swarmy gc --remote demo --json
-swarmy gc --remote demo --dry-run --json
+swarmy gc --swarm demo --dry-run --json
+swarmy gc --swarm demo --json
+swarmy gc --swarm demo --dry-run --json
 ```
 
 Use the normal six-hour grace for ongoing work. Images, other volumes, and
@@ -864,23 +862,16 @@ delete the directory used when its contents are no longer needed.
 
 ```sh
 swarmy remote connect test
-swarmy dev up --remote test
-swarmy doctor --remote test
-swarmy run --remote test 'what time is it'
-swarmy chat --remote test
+swarmy doctor --swarm test
+swarmy run --swarm test 'what time is it'
+swarmy chat --swarm test
 swarmy remote ls
 swarmy remote logs test
-swarmy dev down
 swarmy remote disconnect test
 ```
 
-Selection also works with `export SWARMY_REMOTE=test` or `profile = "test"`
-in the config's `[remote]` table. The flag takes precedence over the variable,
-which takes precedence over the config setting. The selected profile overrides
-the FoundationDB cluster file, NATS URL, and S3 endpoint after other environment
-overrides. Credentials, bucket, object prefix, and store directory retain their
-normal configuration. Scheduler, worker, and gateway binaries honor the same
-variable and config setting without additional flags.
+Selection also works with `export SWARMY_SWARM=test` or `swarmy swarm use test`;
+see docs/DEV.md, Choosing the target swarm.
 
 Remote `dev up` starts scheduler, gateway, and worker locally only for a
 remote created with laptop services. A remote created with node services starts
@@ -985,8 +976,7 @@ store:
 # With provider = "fake", no credential is copied.
 swarmy remote up demo --services node
 swarmy remote connect demo
-swarmy dev up --remote demo
-swarmy chat --remote demo
+swarmy chat --swarm demo
 ```
 
 Alternatively set `services = "node"` in `[remote]` before `remote up`.
@@ -1008,9 +998,8 @@ fails before creating resources. Do not run a laptop gateway that refreshes the
 same account concurrently. Stopping the services does not erase the copied file;
 `remote down` terminates the node and its root disk.
 
-`dev up --remote demo` stops any recorded local control-plane processes, checks
-the tunnel, and starts nothing locally in node mode. The services continue when
-the laptop disconnects. `dev down` stops only local processes; use SSH and
+`remote connect demo` registers the node's API as swarm `demo`; the services
+keep running when the laptop disconnects. Use SSH and
 `sudo systemctl stop swarmy-{scheduler,worker,gateway}` to pause node services.
 Inspect their logs with `sudo journalctl -u swarmy-worker -u swarmy-gateway
 -u swarmy-scheduler`. `remote logs` continues to follow the execution node log.
@@ -1097,12 +1086,12 @@ until scratch lands.
 4. Connect: `swarmy remote connect dev`. FoundationDB and NATS use tunnels;
    Only provisioning uses the laptop AWS identity; node services use the instance role for S3.
 5. Credentials go into the swarm's encrypted store, not into files:
-   `swarmy auth import --remote dev` for the ChatGPT login,
-   `swarmy auth set openrouter --file <key-file> --remote dev` for OpenRouter.
+   `swarmy auth import --swarm dev` for the ChatGPT login,
+   `swarmy auth set openrouter --file <key-file> --swarm dev` for OpenRouter.
    The gateway watches the credential store; no manual restart is needed.
-6. Check: `swarmy doctor --remote dev` shows each provider as
+6. Check: `swarmy doctor --swarm dev` shows each provider as
    `gateway=served`; `swarmy remote ls` shows the node heartbeat and the
-   image. A live turn: `swarmy --remote dev run --provider openrouter --model
+   image. A live turn: `swarmy --swarm dev run --provider openrouter --model
    openai/gpt-6-sol "reply with the word ready"`.
 7. Fleet config: copy `scripts/fleet/fleet.example.toml` to
    `scripts/fleet/fleet.toml`, set the GitHub token and pool size, `chmod

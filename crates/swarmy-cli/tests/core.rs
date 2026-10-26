@@ -28,6 +28,15 @@ impl Fixture {
         Self { root, stack }
     }
     fn run(&self, args: &[&str], release: Option<&str>, core: Option<&Path>) -> Output {
+        self.run_env(args, release, core, &[])
+    }
+    fn run_env(
+        &self,
+        args: &[&str],
+        release: Option<&str>,
+        core: Option<&Path>,
+        env: &[(&str, &str)],
+    ) -> Output {
         let mut command = Command::new(CLI);
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("SWARMY_") {
@@ -45,6 +54,7 @@ impl Fixture {
             command.env("SWARMY_CORE_BIN", path);
         }
         command
+            .envs(env.iter().copied())
             .args(args)
             .current_dir(self.root.path())
             .envs(swarmy_testkit::isolated_home(self.root.path()))
@@ -327,7 +337,15 @@ fn run_refuses_a_mismatched_api_core() {
         format!("[api]\nurl = 'http://{address}'\ntoken = 'x'\n"),
     )
     .unwrap();
-    let output = fixture.run(&["run", "hello"], None, None);
+    let output = fixture.run_env(
+        &["run", "hello"],
+        None,
+        None,
+        &[
+            ("SWARMY_API_URL", &format!("http://{address}")),
+            ("SWARMY_API_TOKEN", "x"),
+        ],
+    );
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     for needle in [
@@ -337,7 +355,15 @@ fn run_refuses_a_mismatched_api_core() {
     ] {
         assert!(stderr.contains(needle), "{stderr}");
     }
-    let output = fixture.run(&["--allow-version-mismatch", "run", "hello"], None, None);
+    let output = fixture.run_env(
+        &["--allow-version-mismatch", "run", "hello"],
+        None,
+        None,
+        &[
+            ("SWARMY_API_URL", &format!("http://{address}")),
+            ("SWARMY_API_TOKEN", "x"),
+        ],
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("warning:") && stderr.contains("(--allow-version-mismatch)"),
@@ -375,6 +401,7 @@ fn run_reports_missing_gateway_before_creating_a_session() {
     let mut child = Command::new(CLI)
         .args(["--json", "run", "hello"])
         .envs(swarmy_testkit::isolated_home(root.path()))
+        .env_remove("SWARMY_SWARM")
         .env("SWARMY_API_URL", format!("http://{address}"))
         .env("SWARMY_API_TOKEN", "test-token")
         .stderr(Stdio::piped())

@@ -8,6 +8,7 @@ use swarmy_core::ignore_best_effort;
 
 struct Fixture {
     dir: tempfile::TempDir,
+    endpoint: String,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     server: Option<std::thread::JoinHandle<()>>,
     // Held for its Drop: removes the test keys and streams even on panic.
@@ -38,7 +39,7 @@ impl Fixture {
                 directory: stack.prefix.clone(),
             },
             api: swarmy_config::ApiSettings {
-                url: Some(endpoint),
+                url: Some(endpoint.clone()),
                 token: "auth-test-token".into(),
                 ..Default::default()
             },
@@ -101,6 +102,7 @@ impl Fixture {
             .unwrap();
         Some(Self {
             dir,
+            endpoint,
             shutdown: Some(shutdown),
             server: Some(server),
             // Held for its Drop: removes the test keys and streams even on panic.
@@ -117,6 +119,9 @@ impl Fixture {
         command
             .current_dir(self.dir.path())
             .envs(swarmy_testkit::isolated_home(self.dir.path()))
+            .env_remove("SWARMY_SWARM")
+            .env("SWARMY_API_URL", &self.endpoint)
+            .env("SWARMY_API_TOKEN", "auth-test-token")
             .args(args);
         command
     }

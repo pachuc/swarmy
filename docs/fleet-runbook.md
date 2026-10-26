@@ -10,7 +10,7 @@ For node sizing, provisioning, upgrades, recovery, teardown and costs, use
 [REMOTE.md](REMOTE.md). Configure the driver from
 `scripts/fleet/fleet.example.toml` into the ignored `scripts/fleet/fleet.toml`;
 set the pool size and provider choices and restrict file permissions. Run
-`swarmy doctor --remote NAME` before launching work.
+`swarmy doctor --swarm NAME` before launching work.
 
 ## Running the driver on a control node
 
@@ -79,8 +79,8 @@ ad hoc against the local API with `--remote local`.
   not continue, including a parked one.
 - Review every pull request before merging. Medium-reasoning workers do what
   the task text says; the task text and the review are the quality control.
-- Cost: `swarmy agent show worker-N --remote dev` totals a worker's spend;
-  `swarmy cost --agent worker-N --remote dev` shows the same spend by day.
+- Cost: `swarmy agent show worker-N --swarm dev` totals a worker's spend;
+  `swarmy cost --agent worker-N --swarm dev` shows the same spend by day.
 
 ## Subscription limits
 
