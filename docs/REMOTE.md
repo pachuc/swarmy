@@ -30,6 +30,25 @@ until scaling exists. Cloud and existing-host groups may coexist in a mixed
 swarm. `SWARMY_TOFU_BIN` is a development and test override for the pinned,
 checksum-verified OpenTofu download.
 
+### Acceptance run on Hetzner Cloud
+
+Only the owner runs the approved acceptance test. The script creates a control
+and a workers group (three machines at peak), checks a model turn and durable
+sandbox file, scales the workers, and verifies teardown against Hetzner Cloud
+and Object Storage. It prints a maximum cost estimate before the `--yes` gate,
+bounds the run to 90 minutes by default, and allows 30 more minutes for teardown.
+If leftovers remain, follow the printed manual cleanup instructions in the
+Hetzner console before attempting another run. The dry run uses fake OpenTofu
+and needs no cloud access. Provide a nonempty 0600 model API key file; for
+ChatGPT, omit the key file and use its configured credential instead.
+
+```sh
+printf '%s\n' "$HCLOUD_TOKEN" | swarmy cloud login hetzner-cloud
+swarmy cloud login hetzner-s3
+scripts/acceptance-hetzner-cloud.sh --dry-run
+scripts/acceptance-hetzner-cloud.sh --provider PROVIDER --model MODEL --api-key-file /path/to/key --yes
+```
+
 ## Swarms on existing hosts
 
 An existing-host swarm provisions machines you already own over SSH. Swarmy

@@ -60,7 +60,7 @@ elif cmd == 'doctor':
 elif cmd == 'session-id':
     print(next(e['session_id'] for e in map(json.loads, Path(args[0]).read_text().splitlines()) if e.get('event') in ('session_created', 'session_opened')))
 elif cmd == 'tool-output-contains':
-    records = [json.loads(line) for line in Path(args[0]).read_text().splitlines()]
+    records = [json.loads(line) for line in Path(args[0]).read_text().splitlines()[1:]]
     calls = {}
     results = {}
     for row in records:
@@ -90,7 +90,7 @@ s3_status() { py s3-config "$location" | curl -K - --fail-with-body --silent --s
 s3_list_ok() { py s3-config "$location" | curl -K - --fail-with-body --silent --show-error --max-time 30 --retry 3 -o /dev/null "https://$location.your-objectstorage.com/"; }
 step() {
     local label=$1 remaining; shift
-    echo "== $label"
+    echo "== $label" >&2
     remaining=$((deadline - SECONDS))
     ((remaining > 0)) || fail "max runtime reached before $label"
     timeout --signal=INT --kill-after=60 "$remaining" "$@"
@@ -113,7 +113,7 @@ verify_clean() {
         rm -f "$file"
     done
     if [[ -n $bucket ]]; then
-        code=$(s3_status "$bucket") || [[ $code == 404 ]] || leftovers=1
+        code=$(s3_status "$bucket") || :
         [[ $code == 404 ]] || { echo "bucket remains: $bucket (HTTP $code)" >&2; leftovers=1; }
     else
         echo 'bucket unknown; verify object storage manually' >&2; leftovers=1
@@ -149,7 +149,7 @@ on_exit() {
     exit "$result"
 }
 parse_args() {
-    yes=0 dry_run=0 provider= model= api_key_file= server_type=cpx31 location=fsn1 max_minutes=90 swarmy=
+    yes=0 dry_run=0 provider='' model='' api_key_file='' server_type=cpx31 location=fsn1 max_minutes=90 swarmy=''
     while (($#)); do
         case $1 in
             --yes) yes=1;; --dry-run) dry_run=1;;
@@ -165,7 +165,7 @@ parse_args() {
         shift
     done
     [[ $location =~ ^(fsn1|nbg1|hel1)$ ]] || fail 'choose --location fsn1, nbg1, or hel1'
-    [[ $max_minutes =~ ^[0-9]+$ ]] && ((max_minutes >= 20 && max_minutes <= 240)) || fail 'choose --max-minutes between 20 and 240'
+    if ! [[ $max_minutes =~ ^[0-9]+$ ]] || ((max_minutes < 20 || max_minutes > 240)); then fail 'choose --max-minutes between 20 and 240'; fi
 }
 local_preconditions() {
     ((BASH_VERSINFO[0] >= 4)) || fail 'install bash 4 or newer'
@@ -176,7 +176,7 @@ local_preconditions() {
     python3 -c 'import sys; sys.exit(tuple(map(int, sys.argv[1].split(".")[:2])) < (7,75))' "$version" || fail 'install curl 7.75 or newer'
     [[ -x $swarmy ]] || fail 'install swarmy or pass --swarmy PATH to an executable'
     local cloud_file; cloud_file=$(mktemp)
-    "$swarmy" --json cloud ls > "$cloud_file" && py cloud-ready "$cloud_file" || { rm -f "$cloud_file"; fail 'run: printf '\''%s\n'\'' "$TOKEN" | swarmy cloud login hetzner-cloud; swarmy cloud login hetzner-s3'; }
+    if ! "$swarmy" --json cloud ls > "$cloud_file" || ! py cloud-ready "$cloud_file"; then rm -f "$cloud_file"; fail "run: printf '%s\\n' \"\$TOKEN\" | swarmy cloud login hetzner-cloud; swarmy cloud login hetzner-s3"; fi
     rm -f "$cloud_file"
     if (( ! dry_run )); then
         [[ -n $provider && -n $model ]] || fail 'pass --provider ID and --model ID'
@@ -207,7 +207,7 @@ TOFU
     export ACCEPTANCE_TOFU_LOG="$work/tofu.log" SWARMY_TOFU_BIN="$work/bin/tofu"
 }
 main() {
-    local yes dry_run provider model api_key_file server_type location max_minutes swarmy name bucket= work= created=0 deadline nonce plan_file file session_id rate started=$SECONDS
+    yes=0 dry_run=0 provider='' model='' api_key_file='' server_type='' location='' max_minutes='' swarmy='' name='' bucket='' work='' created=0 deadline=0 nonce='' plan_file='' file='' session_id='' rate='' started=$SECONDS
     parse_args "$@"
     [[ -n $swarmy ]] || swarmy=$(command -v swarmy || :)
     trap on_exit EXIT
