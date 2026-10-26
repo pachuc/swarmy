@@ -82,6 +82,35 @@ port_in_use() {
     (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
 }
 
+service_ports() {
+    case $1 in
+        fdb) ports=("$fdb_port") ;;
+        nats) ports=(4222 8222) ;;
+        seaweed) ports=(8080 8333 8888 9333 18080 18333 18888 19333) ;;
+    esac
+}
+
+# A process can exit before its listening sockets disappear. Wait for the
+# actual ports before another stack (or the script tests) tries to bind them.
+wait_ports_down() {
+    local deadline=$((SECONDS + 60)) port
+    local -a listening=()
+    while :; do
+        listening=()
+        for port in "${stopped_ports[@]}"; do
+            if ss -H -ltn "( sport = :$port )" | grep -q .; then
+                listening+=("$port")
+            fi
+        done
+        (( ${#listening[@]} == 0 )) && return 0
+        if (( SECONDS >= deadline )); then
+            printf 'Ports still listening after 60 seconds: %s\n' "${listening[*]}" >&2
+            return 1
+        fi
+        sleep 0.2
+    done
+}
+
 cleanup() {
     local result=$? service
     trap - EXIT INT TERM
@@ -175,11 +204,7 @@ start() {
     # Refuse occupied ports before launching, including SeaweedFS internal APIs.
     for service in "${services[@]}"; do
         running "$service" && continue
-        case $service in
-            fdb) ports=("$fdb_port") ;;
-            nats) ports=(4222 8222) ;;
-            seaweed) ports=(8080 8333 8888 9333 18080 18333 18888 19333) ;;
-        esac
+        service_ports "$service"
         for port in "${ports[@]}"; do
             if port_in_use "$port"; then
                 fail "Port $port is already in use by an unmanaged process; stop it before starting the stack."
@@ -306,8 +331,17 @@ if [[ $1 == start ]]; then
     start
 else
     result=0
+    stopped_ports=()
     for service in seaweed nats fdb; do
+        if running "$service"; then
+            if [[ $service == fdb ]]; then read_fdb_port; fi
+            service_ports "$service"
+            stopped_ports+=("${ports[@]}")
+        fi
         stop_service "$service" || result=1
     done
+    if (( ${#stopped_ports[@]} > 0 )); then
+        wait_ports_down || result=1
+    fi
     exit "$result"
 fi
