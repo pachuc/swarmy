@@ -28,6 +28,13 @@ fn main() {
     {
         println!("cargo:rerun-if-changed={path}");
     }
-    let commit = git(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".into());
+    // A remote node builds from a copy of the client's checkout without .git;
+    // the client records the copied commit and the build scripts pass it here.
+    println!("cargo:rerun-if-env-changed=SWARMY_GIT_COMMIT");
+    let commit = std::env::var("SWARMY_GIT_COMMIT")
+        .ok()
+        .filter(|commit| !commit.is_empty())
+        .or_else(|| git(&["rev-parse", "--short", "HEAD"]))
+        .unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=SWARMY_GIT_COMMIT={commit}");
 }

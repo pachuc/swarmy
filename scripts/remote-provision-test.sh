@@ -231,4 +231,11 @@ printf 'UNKNOWN=value\n' > "$bundle/units.env"
 if load_unit_inputs "$bundle/units.env" 2>/dev/null; then echo 'accepted unknown unit setting' >&2; exit 1; fi
 if render_unit nothing.service 2>/dev/null; then echo 'accepted unknown unit' >&2; exit 1; fi
 printf 'unit renderers and settings: ok\n'
+commit_dir=$(mktemp -d)
+[[ -z $(source_git_commit "$commit_dir") ]]
+printf 'b09dbe0\n' > "$commit_dir/.swarmy-source-commit"
+[[ $(source_git_commit "$commit_dir") == b09dbe0 ]]
+printf 'not a commit\n' > "$commit_dir/.swarmy-source-commit"
+[[ -z $(source_git_commit "$commit_dir") ]]
+rm -rf "$commit_dir"
 echo 'remote provision argument and environment tests passed'

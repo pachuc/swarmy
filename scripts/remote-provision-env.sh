@@ -24,6 +24,15 @@ parse_provision_args() {
 release_bundle_dir() { printf '%s/.swarmy/release\n' "${1:?node directory}"; }
 # Where a development client copies its checkout for the on-node build.
 node_source_dir() { printf '%s/source\n' "${1:?node directory}"; }
+# The commit a development client recorded for its copied checkout (which has
+# no .git), or nothing when the file is missing or malformed.
+source_git_commit() {
+    local file=${1:?source directory}/.swarmy-source-commit commit
+    [[ -f $file ]] || return 0
+    commit=$(<"$file")
+    [[ $commit =~ ^[0-9a-f]{7,40}$ ]] && printf '%s\n' "$commit"
+    return 0
+}
 
 # Validate all binaries for a mode before installing any of them.
 check_release_bundle() {
