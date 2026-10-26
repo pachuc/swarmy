@@ -83,7 +83,8 @@ if parse_args --location ash 2>/dev/null; then exit 1; fi
 if parse_args --max-minutes 5 2>/dev/null; then exit 1; fi
 [[ $( (parse_args --unknown) 2>/dev/null; echo $? ) == 2 ]]
 yes=0
-[[ $(confirm_cost 2>&1 || :) == 're-run with --yes to create these machines' ]]
+if confirm_cost > "$fake/out" 2>&1; then exit 1; fi
+grep -qx 're-run with --yes to create these machines' "$fake/out"
 yes=1
 confirm_cost
 cat > "$fake/bin/swarmy" <<'STUB'
