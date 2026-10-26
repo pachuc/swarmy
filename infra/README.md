@@ -103,3 +103,26 @@ gateway and security groups, including `ec2:DescribeInstanceTypes`;
 creation, tagging, `s3:PutBucketPublicAccessBlock`, and deletion.
 This module has only been checked by `tofu validate` and offline mock tests.
 It has not been run against real AWS.
+
+## How swarmy runs these modules
+
+Swarmy keeps one OpenTofu working directory per machine group beneath the
+swarm's record directory. It writes the swarm and group names, machine count,
+optional size and location, one group SSH public key, SSH CIDRs, bucket name,
+force-destroy flag, and network ID to the variables file. Each group has its
+own private SSH key pair. The stack group is applied first, followed by the
+services group when distinct and the node groups in placement order. A
+`network_id` output is passed only to later groups using the same module;
+custom path modules may omit it. Custom module paths must be absolute.
+
+Only a hetzner-cloud stack group without a spec bucket creates an object
+bucket. Its name is chosen once; swarmy retrieves the S3 keys from the cloud
+credential store instead of copying them into the record. AWS groups create
+no bucket until instance-role access is supported, and custom modules create
+none because swarmy does not know their provider's bucket credentials.
+Hetzner groups get their cloud credentials and, when stored, S3 credentials;
+AWS groups get AWS credentials. Custom modules get all stored provider
+credentials. OpenTofu receives these only through its environment, never
+through variables or module files. On teardown, swarmy destroys machine
+groups in reverse placement order, applying the force-destroy flag first for
+a bucket-owning group.

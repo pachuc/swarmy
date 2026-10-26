@@ -245,15 +245,16 @@ pub(crate) async fn feed_and_wait(
 /// # Errors
 ///
 /// Reports `ssh-keygen` failures.
-pub async fn generate_key(node: &Machine) -> Result<Vec<u8>> {
+pub async fn generate_key(key_path: &Path, comment: &str) -> Result<Vec<u8>> {
     checked(
         Command::new("ssh-keygen")
             .args(["-q", "-t", "ed25519", "-N", "", "-f"])
-            .arg(&node.key_path),
+            .arg(key_path)
+            .args(["-C", comment]),
         "generate SSH key",
     )
     .await?;
-    Ok(std::fs::read(node.key_path.with_extension("pub"))?)
+    Ok(std::fs::read(key_path.with_extension("pub"))?)
 }
 
 /// Copy an operator-owned bootstrap private key into remote state for
@@ -1538,4 +1539,13 @@ mod provisioning_command_tests {
             expected.stdout
         );
     }
+}
+
+/// Wait for SSH and cloud-init to finish on a fresh machine.
+/// # Errors
+/// Returns SSH and cloud-init failures.
+pub async fn wait_boot(node: &Machine) -> Result<()> {
+    let address = wait_ssh(node).await?;
+    run_output(base(node)?.arg(address).arg("command -v cloud-init >/dev/null 2>&1 || exit 0; cloud-init status --wait >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 2 ]"), "wait for cloud-init").await?;
+    Ok(())
 }

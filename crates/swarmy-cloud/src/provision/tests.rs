@@ -3,14 +3,14 @@ use super::*;
 use std::future::Future;
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::Mutex;
-struct FakeHost {
+pub(super) struct FakeHost {
     calls: Mutex<Vec<String>>,
     configs: Mutex<Vec<String>>,
     fail_provision: Mutex<Option<String>>,
     fail_decommission: Mutex<Option<String>>,
 }
 impl FakeHost {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             calls: Mutex::new(Vec::new()),
             configs: Mutex::new(Vec::new()),
@@ -21,7 +21,7 @@ impl FakeHost {
     fn configs(&self) -> Vec<String> {
         self.configs.lock().unwrap().clone()
     }
-    fn calls(&self) -> Vec<String> {
+    pub(super) fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
     fn push(&self, message: String) {
@@ -29,6 +29,12 @@ impl FakeHost {
     }
 }
 impl SwarmHost for FakeHost {
+    fn wait_ready(&self, node: &Machine) -> impl Future<Output = Result<()>> {
+        std::future::ready({
+            self.push(format!("ready {}", node.name));
+            Ok(())
+        })
+    }
     fn adopt_key(&self, node: &Machine, source: &Path) -> impl Future<Output = Result<()>> {
         std::future::ready((|| {
             self.push(format!("adopt {}", node.name));
@@ -43,9 +49,10 @@ impl SwarmHost for FakeHost {
     ) -> impl Future<Output = Result<String>> {
         std::future::ready((|| {
             self.push(format!(
-                "provision {} primary={}",
+                "provision {} primary={} bucket={}",
                 node.name,
-                primary.map_or("none", |p| &p.name)
+                primary.map_or("none", |p| &p.name),
+                node.bucket.as_ref().map_or("none", |b| b.bucket.as_str())
             ));
             if self.fail_provision.lock().unwrap().as_deref() == Some(&node.name) {
                 return Err(Error::other("provision failed"));
@@ -167,6 +174,7 @@ fn request<'a>(
         recipe,
         cache: Path::new("/tmp/cache"),
         bucket_keys: None,
+        machines: None,
     }
 }
 fn settings() -> Settings {
@@ -274,14 +282,14 @@ fn plan_refuses_unsupported_layouts_and_bad_hosts() {
     );
 }
 #[test]
-fn existing_sources_rejects_module_groups() {
+fn existing_sources_skips_module_groups() {
     let (_tmp, registry, mut spec) = fixture();
     spec.groups.get_mut("workers").unwrap().module = Module::HetznerCloud;
     assert!(
         existing_sources(&spec, &registry.swarm_dir("fleet").unwrap())
-            .unwrap_err()
-            .to_string()
-            .contains("only existing-host groups")
+            .unwrap()
+            .iter()
+            .all(|source| source.group != "workers")
     );
 }
 #[tokio::test]
@@ -296,14 +304,14 @@ async fn up_provisions_in_order_and_records_the_token() {
         fake.calls(),
         [
             "adopt fleet-control-1",
-            "provision fleet-control-1 primary=none",
+            "provision fleet-control-1 primary=none bucket=none",
             "services fleet-control-1",
             "token fleet-control-1",
             "image fleet-control-1 fleet",
             "adopt fleet-workers-1",
-            "provision fleet-workers-1 primary=fleet-control-1",
+            "provision fleet-workers-1 primary=fleet-control-1 bucket=none",
             "adopt fleet-workers-2",
-            "provision fleet-workers-2 primary=fleet-control-1"
+            "provision fleet-workers-2 primary=fleet-control-1 bucket=none"
         ]
     );
     let record = registry.read_record("fleet").unwrap().unwrap();
@@ -348,7 +356,7 @@ async fn up_rerun_skips_provisioned_hosts_and_node_add_provisions_only_the_new_o
         &fake.calls()[old..],
         [
             "adopt fleet-workers-3",
-            "provision fleet-workers-3 primary=fleet-control-1"
+            "provision fleet-workers-3 primary=fleet-control-1 bucket=none"
         ]
     );
 }
@@ -389,7 +397,7 @@ async fn failed_host_stays_unprovisioned_and_resumes() {
         &fake.calls()[old..],
         [
             "adopt fleet-workers-2",
-            "provision fleet-workers-2 primary=fleet-control-1"
+            "provision fleet-workers-2 primary=fleet-control-1 bucket=none"
         ]
     );
 }
@@ -402,7 +410,7 @@ async fn decommission_goes_nodes_first_and_keeps_failed_hosts() {
         .unwrap();
     *fake.fail_decommission.lock().unwrap() = Some("fleet-workers-1".into());
     assert!(
-        decommission_swarm_with(&fake, &registry, &spec)
+        decommission_swarm_with(&fake, &registry, &spec, None)
             .await
             .is_err()
     );
@@ -419,7 +427,7 @@ async fn decommission_goes_nodes_first_and_keeps_failed_hosts() {
     assert_eq!(record.hosts["workers"].len(), 1);
     assert_eq!(record.hosts["workers"][0].name, "fleet-workers-1");
     *fake.fail_decommission.lock().unwrap() = None;
-    decommission_swarm_with(&fake, &registry, &spec)
+    decommission_swarm_with(&fake, &registry, &spec, None)
         .await
         .unwrap();
     assert!(!registry.swarm_dir("fleet").unwrap().exists());
@@ -457,7 +465,7 @@ async fn down_removes_hosts_missing_from_spec() {
     spec.groups.get_mut("workers").unwrap().hosts.pop();
     registry.write_spec(&spec).unwrap();
     let before = fake.calls().len();
-    decommission_swarm_with(&fake, &registry, &spec)
+    decommission_swarm_with(&fake, &registry, &spec, None)
         .await
         .unwrap();
     assert_eq!(
@@ -484,7 +492,7 @@ async fn broken_spec_does_not_block_recorded_host_cleanup() {
     start_swarm_with(&fake, &registry, &spec).await.unwrap();
     let status = status_with(&fake, &registry, &spec).await.unwrap();
     assert_eq!(status.hosts.len(), 3);
-    decommission_swarm_with(&fake, &registry, &spec)
+    decommission_swarm_with(&fake, &registry, &spec, None)
         .await
         .unwrap();
     assert!(fake.calls()[before..].contains(&"decommission fleet-workers-2".to_owned()));
@@ -590,7 +598,7 @@ async fn bucket_swarm_needs_the_s3_client() {
     assert!(error.to_string().contains("built without the S3 client"));
     assert!(host.calls().is_empty());
     assert!(registry.read_record(&spec.name).unwrap().is_none());
-    let error = decommission_swarm_with(&host, &registry, &spec)
+    let error = decommission_swarm_with(&host, &registry, &spec, None)
         .await
         .unwrap_err();
     assert!(error.to_string().contains("built without the S3 client"));
@@ -807,7 +815,7 @@ mod bucket_lifecycle {
             mode, 0o600,
             "record containing bucket keys must stay private"
         );
-        let primary = upgrade_machines(&record, &spec).pop().unwrap();
+        let primary = upgrade_machines(&record, &spec, None).pop().unwrap();
         assert!(primary.bucket_spec().unwrap().needs_static_keys());
         delete_bucket_with(&cloud, &spec, &record).await.unwrap();
         let lines = OUTPUT_LINES.lock().unwrap().join("\n");
@@ -937,7 +945,7 @@ async fn upgrade_fixture() -> (tempfile::TempDir, Registry, SwarmSpec, Vec<Machi
     .await
     .unwrap();
     let record = registry.read_record(&spec.name).unwrap().unwrap();
-    let machines = upgrade_machines(&record, &spec);
+    let machines = upgrade_machines(&record, &spec, None);
     (dir, registry, spec, machines)
 }
 #[tokio::test]

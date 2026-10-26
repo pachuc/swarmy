@@ -42,8 +42,11 @@ impl CredentialEnv {
     fn found_in(&self, bytes: &[u8]) -> Option<&str> {
         self.vars
             .iter()
-            .find(|(_, value)| {
-                !value.is_empty()
+            .find(|(name, value)| {
+                !matches!(
+                    name.as_str(),
+                    "AWS_SHARED_CREDENTIALS_FILE" | "AWS_CONFIG_FILE" | "AWS_EC2_METADATA_DISABLED"
+                ) && !value.is_empty()
                     && bytes
                         .windows(value.len())
                         .any(|window| window == value.as_bytes())
@@ -156,6 +159,7 @@ impl Workspace<'_> {
         {
             return Err(Error::SecretInFiles { name: name.into() });
         }
+        self.variable_bytes(variables)?;
         fs::create_dir_all(&self.dir)
             .await
             .map_err(|e| io("creating", &self.dir, e))?;
@@ -210,15 +214,22 @@ impl Workspace<'_> {
         &self,
         variables: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<()> {
-        let bytes = serde_json::to_vec_pretty(variables).map_err(Error::Variables)?;
-        if let Some(name) = self.credentials.found_in(&bytes) {
-            return Err(Error::SecretInFiles { name: name.into() });
-        }
+        let bytes = self.variable_bytes(variables)?;
         let path = self.dir.join(VARIABLES_FILE);
         fs::write(&path, bytes)
             .await
             .map_err(|e| io("writing", &path, e))?;
         Ok(())
+    }
+    fn variable_bytes(
+        &self,
+        variables: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Vec<u8>> {
+        let bytes = serde_json::to_vec_pretty(variables).map_err(Error::Variables)?;
+        if let Some(name) = self.credentials.found_in(&bytes) {
+            return Err(Error::SecretInFiles { name: name.into() });
+        }
+        Ok(bytes)
     }
     /// # Errors
     /// Returns process failures.

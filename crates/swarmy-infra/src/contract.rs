@@ -196,6 +196,25 @@ mod tests {
         assert_eq!(outputs.bucket.unwrap().name, "fleet-data");
     }
     #[test]
+    fn optional_network_id() {
+        let base = r#"{"machines":{"value":[]}}"#;
+        assert_eq!(parse_outputs(base).unwrap().network_id, None);
+        for (value, expected) in [(r#""4711""#, Some("4711")), ("null", None), (r#""""#, None)] {
+            let json = format!(r#"{{"machines":{{"value":[]}},"network_id":{{"value":{value}}}}}"#);
+            assert_eq!(
+                parse_outputs(&json).unwrap().network_id.as_deref(),
+                expected
+            );
+        }
+        assert!(matches!(
+            parse_outputs(r#"{"machines":{"value":[]},"network_id":{"value":12}}"#),
+            Err(OutputError::Shape {
+                output: "network_id",
+                ..
+            })
+        ));
+    }
+    #[test]
     fn optional_and_invalid() {
         for json in [
             r#"{"machines":{"value":[]}}"#,
