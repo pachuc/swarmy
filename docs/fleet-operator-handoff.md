@@ -40,7 +40,7 @@ For the one-time conversion of hz from the old client, see "Converting hz to a s
 
 - `hz` (since 2026-10-02): one dedicated server rented from Hetzner's server
   auction (16-core i9-12900K, 128 GB, two NVMe drives mirrored, Ubuntu 24.04),
-  adopted as an existing host (REMOTE.md, "Swarms on existing hosts"). The same
+  adopted as an existing host (swarms.md, "Swarms on hosts you own"). The same
   machine runs the control plane and the node, with four
   sandboxes on local storage `dir:/srv/swarmy-local`. The bucket is Hetzner
   Object Storage with static keys. Images `base-ubuntu:hz` and

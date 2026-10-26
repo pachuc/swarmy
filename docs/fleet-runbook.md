@@ -6,8 +6,7 @@ Hetzner dedicated server, a pool of worker agents, and the driver in
 is the manual version of what the swarm-model and cloud-topology goals will
 automate; every step here is a plain command.
 
-For node sizing, provisioning, upgrades, recovery, teardown and costs, use
-[REMOTE.md](REMOTE.md). Configure the driver from
+For provisioning, upgrades, recovery and teardown use [swarms.md](swarms.md); host internals are in [REMOTE.md](REMOTE.md). Configure the driver from
 `scripts/fleet/fleet.example.toml` into the ignored `scripts/fleet/fleet.toml`;
 set the pool size and provider choices and restrict file permissions. Run
 `swarmy --swarm NAME doctor` before launching work.
