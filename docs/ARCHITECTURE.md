@@ -6,7 +6,7 @@ and [REMOTE.md](REMOTE.md). Each section names its implementation entry points.
 
 ## Crate map and dependency direction
 
-The workspace holds twenty-eight crates (`members = ["crates/*"]` in
+The workspace holds twenty-nine crates (`members = ["crates/*"]` in
 [Cargo.toml](../Cargo.toml)). These are descriptive tiers, not strict acyclic
 boundaries: sandbox uses store and volume; chat and devtools use the HTTP
 client. The individual manifests in `crates/*/Cargo.toml` are the
@@ -77,6 +77,7 @@ crate in a tier depends on every lower tier.
 - **swarmy-cloud** handles EC2 provisioning and adopting existing hosts for
   the opt-in remote feature; it is not a server dependency
   ([source](../crates/swarmy-cloud/src/lib.rs)).
+- **swarmy-infra** fetches a pinned, checksum-verified OpenTofu release, runs it in a per-swarm working directory with cloud credentials only in the environment, and owns the module output contract and the verified-download helper the swarmy release cache shares ([source](../crates/swarmy-infra/src/lib.rs)).
 
 Services share one bootstrap from `swarmy-config`: `Settings::load` for
 configuration, `init_tracing` for stderr logging, `Store::open_store` for the

@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpListener},
+    path::Path,
     process::Command,
 };
 
@@ -64,16 +65,7 @@ pub fn archive(top: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
     let temp = tempfile::tempdir().expect("fixture directory");
     let dir = temp.path().join(top);
     std::fs::create_dir(&dir).expect("archive directory");
-    for (name, bytes) in files {
-        let path = dir.join(name);
-        std::fs::write(&path, bytes).expect("archive member");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                .expect("member mode");
-        }
-    }
+    write_members(&dir, files);
     let output = Command::new("tar")
         .arg("-czf")
         .arg("-")
@@ -84,6 +76,50 @@ pub fn archive(top: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
         .expect("tar runs");
     assert!(output.status.success(), "tar succeeds");
     output.stdout
+}
+fn write_members(dir: &Path, files: &[(&str, &[u8])]) {
+    for (name, bytes) in files {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).expect("archive member");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("member mode");
+        }
+    }
+}
+/// Package archive members at the root.
+/// # Panics
+/// Panics if temporary files or tar fail.
+#[must_use]
+pub fn flat_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let temp = tempfile::tempdir().expect("fixture directory");
+    write_members(temp.path(), files);
+    let output = Command::new("tar")
+        .args(["-czf", "-", "-C"])
+        .arg(temp.path())
+        .args(files.iter().map(|(name, _)| name))
+        .output()
+        .expect("tar runs");
+    assert!(output.status.success(), "tar succeeds");
+    output.stdout
+}
+/// Serve a flat OpenTofu release fixture.
+/// # Panics
+/// Panics if temporary files or tar fail.
+#[must_use]
+pub fn tofu_release(version: &str, platform: &str, tofu_script: &str) -> Vec<(String, Vec<u8>)> {
+    let asset = format!("tofu_{version}_{platform}.tar.gz");
+    let archive = flat_archive(&[("tofu", tofu_script.as_bytes()), ("LICENSE", b"fixture")]);
+    let sums = sha256sums(&[(&asset, &archive)]);
+    vec![
+        (format!("/v{version}/{asset}"), archive),
+        (
+            format!("/v{version}/tofu_{version}_SHA256SUMS"),
+            sums.into_bytes(),
+        ),
+    ]
 }
 #[must_use]
 pub fn sha256sums(assets: &[(&str, &[u8])]) -> String {

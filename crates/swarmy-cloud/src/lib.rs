@@ -177,6 +177,7 @@ macro_rules! other_from {
 other_from!(
     std::io::Error,
     reqwest::Error,
+    swarmy_infra::download::Error,
     url::ParseError,
     serde_json::Error,
     toml::de::Error,

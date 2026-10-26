@@ -4,7 +4,7 @@ swarmy is infrastructure for running very large numbers of long-lived coding
 agents on ordinary cloud compute. The promise: no single machine failure loses
 an agent, its conversation, or its disk; turns feel immediate; agents keep
 working for weeks with memory, timers, and a persistent computer; any model
-provider can serve them. Written in Rust, organized as twenty-eight crates in one
+provider can serve them. Written in Rust, organized as twenty-nine crates in one
 workspace.
 
 Read `docs/ARCHITECTURE.md` before changing anything: it explains the concepts, the
