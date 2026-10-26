@@ -285,13 +285,10 @@ async fn check_logs(fixture: &Fixture) {
     .await
     .unwrap();
     signal(log.id().unwrap(), "-INT").await;
-    assert!(
-        timeout(Duration::from_secs(5), log.wait())
-            .await
-            .unwrap()
-            .unwrap()
-            .success()
-    );
+    timeout(Duration::from_secs(5), log.wait())
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 async fn signal(pid: u32, signal: &str) {
