@@ -191,7 +191,7 @@ pub(crate) async fn node_add(
     args: NodeAdd,
     json_output: bool,
 ) -> Result<()> {
-    let _lock = provision::lock(registry, name)?;
+    let lock = provision::lock(registry, name)?;
     let mut spec = registry.read_spec(name)?.ok_or_else(|| {
         anyhow::anyhow!(
             "swarm \"{name}\" has no spec; it is an attached API, which swarmy does not provision"
@@ -239,7 +239,7 @@ pub(crate) async fn node_add(
         "note: swarmy rewrote {}; comments in it are not kept",
         registry.spec_path(name)?.display()
     );
-    drop(_lock);
+    drop(lock);
     up(
         registry,
         &spec,

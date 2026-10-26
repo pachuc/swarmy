@@ -377,33 +377,8 @@ fn attach(registry: &Registry, name: &str, url: &str, json_output: bool) -> Resu
     );
     Ok(())
 }
-pub(crate) async fn run(
-    command: Command,
-    json_output: bool,
-    allow_version_mismatch: bool,
-) -> Result<()> {
-    if let Command::Supervise { state, core } = command {
-        return crate::local::supervise(&state, &core).await;
-    }
-    if false
-        && json_output
-        && matches!(
-            command,
-            Command::Up { .. }
-                | Command::Start { .. }
-                | Command::Stop { .. }
-                | Command::Down { .. }
-                | Command::Status { .. }
-                | Command::Logs { .. }
-        )
-    {
-        bail!(
-            "--json is not supported for swarm up, start, stop, down, status, or logs; run without it for human-readable output"
-        );
-    }
-    let registry = Registry::new(Dirs::from_process()?);
+fn run_create(registry: &Registry, command: Command, json_output: bool) -> Result<()> {
     match command {
-        Command::Supervise { .. } => unreachable!("supervisor dispatched above"),
         Command::Create {
             name,
             local,
@@ -443,11 +418,22 @@ pub(crate) async fn run(
                     json_output,
                 );
             } else if local {
-                crate::local::create(&registry, &name, persistent, stack_dir, json_output)?;
+                crate::local::create(registry, &name, persistent, stack_dir, json_output)?;
             } else {
                 bail!("choose --local or --host ADDRESS");
             }
         }
+        _ => unreachable!("create dispatch"),
+    }
+    Ok(())
+}
+async fn run_up_start(
+    registry: &Registry,
+    command: Command,
+    json_output: bool,
+    allow_version_mismatch: bool,
+) -> Result<()> {
+    match command {
         Command::Up {
             name,
             core_bin,
@@ -455,9 +441,9 @@ pub(crate) async fn run(
             copy_credential,
             image_recipe,
         } => {
-            if let Some(spec) = host_spec(&registry, &name)? {
+            if let Some(spec) = host_spec(registry, &name)? {
                 crate::swarm_hosts::up(
-                    &registry,
+                    registry,
                     &spec,
                     &crate::swarm_hosts::UpArgs {
                         copy_credential,
@@ -475,7 +461,7 @@ pub(crate) async fn run(
                     bail!("--copy-credential applies only to swarms on hosts");
                 }
                 crate::local::up(
-                    &registry,
+                    registry,
                     &name,
                     crate::local::Start {
                         core_bin,
@@ -488,14 +474,14 @@ pub(crate) async fn run(
             }
         }
         Command::Start { name, core_bin } => {
-            if let Some(spec) = host_spec(&registry, &name)? {
-                crate::swarm_hosts::start(&registry, &spec, json_output).await?;
+            if let Some(spec) = host_spec(registry, &name)? {
+                crate::swarm_hosts::start(registry, &spec, json_output).await?;
             } else {
                 if json_output {
                     bail!("--json is not supported for local swarm start");
                 }
                 crate::local::up(
-                    &registry,
+                    registry,
                     &name,
                     crate::local::Start {
                         core_bin,
@@ -507,34 +493,44 @@ pub(crate) async fn run(
                 .await?;
             }
         }
+        _ => unreachable!("up/start dispatch"),
+    }
+    Ok(())
+}
+async fn run_host_lifecycle(
+    registry: &Registry,
+    command: Command,
+    json_output: bool,
+) -> Result<()> {
+    match command {
         Command::Stop { name } => {
-            if let Some(spec) = host_spec(&registry, &name)? {
-                crate::swarm_hosts::stop(&registry, &spec, json_output).await?;
+            if let Some(spec) = host_spec(registry, &name)? {
+                crate::swarm_hosts::stop(registry, &spec, json_output).await?;
             } else {
                 if json_output {
                     bail!("--json is not supported for local swarm stop");
                 }
-                crate::local::stop(&registry, &name).await?;
+                crate::local::stop(registry, &name).await?;
             }
         }
         Command::Down { name, destroy } => {
-            if let Some(spec) = host_spec(&registry, &name)? {
-                crate::swarm_hosts::down(&registry, &spec, destroy, json_output).await?;
+            if let Some(spec) = host_spec(registry, &name)? {
+                crate::swarm_hosts::down(registry, &spec, destroy, json_output).await?;
             } else {
                 if json_output {
                     bail!("--json is not supported for local swarm down");
                 }
-                crate::local::down(&registry, &name, destroy).await?;
+                crate::local::down(registry, &name, destroy).await?;
             }
         }
         Command::Status { name } => {
-            if let Some(spec) = host_spec(&registry, &name)? {
-                crate::swarm_hosts::status(&registry, &spec, json_output).await?;
+            if let Some(spec) = host_spec(registry, &name)? {
+                crate::swarm_hosts::status(registry, &spec, json_output).await?;
             } else {
                 if json_output {
                     bail!("--json is not supported for local swarm status");
                 }
-                crate::local::show_status(&registry, &name).await?;
+                crate::local::show_status(registry, &name).await?;
             }
         }
         Command::Node {
@@ -549,7 +545,7 @@ pub(crate) async fn run(
                 },
         } => {
             crate::swarm_hosts::node_add(
-                &registry,
+                registry,
                 &name,
                 crate::swarm_hosts::NodeAdd {
                     group,
@@ -561,6 +557,34 @@ pub(crate) async fn run(
                 json_output,
             )
             .await?;
+        }
+        _ => unreachable!("lifecycle dispatch"),
+    }
+    Ok(())
+}
+pub(crate) async fn run(
+    command: Command,
+    json_output: bool,
+    allow_version_mismatch: bool,
+) -> Result<()> {
+    if let Command::Supervise { state, core } = command {
+        return crate::local::supervise(&state, &core).await;
+    }
+    if json_output && matches!(command, Command::Logs { .. }) {
+        bail!("--json is not supported for swarm logs; run without it for human-readable output");
+    }
+    let registry = Registry::new(Dirs::from_process()?);
+    match command {
+        Command::Supervise { .. } => unreachable!("supervisor dispatched above"),
+        command @ Command::Create { .. } => run_create(&registry, command, json_output)?,
+        command @ (Command::Up { .. } | Command::Start { .. }) => {
+            run_up_start(&registry, command, json_output, allow_version_mismatch).await?;
+        }
+        command @ (Command::Stop { .. }
+        | Command::Down { .. }
+        | Command::Status { .. }
+        | Command::Node { .. }) => {
+            run_host_lifecycle(&registry, command, json_output).await?;
         }
         Command::Logs { name, service } => {
             crate::local::follow_logs(&registry, &name, service).await?;
