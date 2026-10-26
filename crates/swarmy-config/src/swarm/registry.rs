@@ -229,9 +229,11 @@ impl Registry {
         Ok(Some(name.to_owned()))
     }
     /// # Errors
-    /// Returns `UnknownSwarm` or filesystem errors.
+    /// Returns `UnknownSwarm` when neither spec nor record directory exists, or filesystem errors.
     pub fn set_current(&self, name: &str) -> Result<(), Error> {
-        self.read(name)?;
+        if !self.spec_path(name)?.exists() && !self.swarm_dir(name)?.exists() {
+            return Err(Error::UnknownSwarm(name.to_owned()));
+        }
         create_private_dir(&self.dirs.state)?;
         write_private(&self.dirs.current(), format!("{name}\n").as_bytes())
     }

@@ -30,7 +30,6 @@ cleanup() {
     fi
     if [[ -n $daemon ]]; then kill "$daemon" 2>/dev/null || true; wait "$daemon" 2>/dev/null || true; fi
     cd "$work"
-    if [[ -f .swarmy/dev/remote ]]; then "$cli" dev down >/dev/null 2>&1 || true; fi
     "$cli" remote disconnect local >/dev/null 2>&1 || true
     rm -rf -- "$work"
 }

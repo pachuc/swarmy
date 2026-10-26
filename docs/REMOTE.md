@@ -957,20 +957,18 @@ sudo ip netns exec swarmy-remote-test sudo -u ubuntu env \
 sudo ip netns delete swarmy-remote-test
 ```
 
-That run uses an isolated project, starts the three local services, runs the
-fake provider end to end, checks doctor and a live swarmyd registration, and
-verifies that backing process IDs remain unchanged. The script removes its
-services and tunnel on exit. Without `SWARMY_REMOTE_TEST_KEY` it skips cleanly.
+That run checks the tunnel's forwards and disconnect from an isolated client.
+The laptop-services checks it used to run were removed with that layout.
+Without `SWARMY_REMOTE_TEST_KEY` it skips cleanly.
 Remove the temporary authorized key and network namespace after testing.
 
 
 ### Running control-plane services on the node
 
 
-Laptop services are the default. They keep ChatGPT credentials local and make
-worker/gateway development convenient, but every store transaction crosses the
-tunnel. For lower turn latency, run the control plane under systemd beside the
-store:
+Node services are required for newly created remotes. The control plane runs
+under systemd beside the store. Connect to register its API with the swarm
+registry before issuing client commands.
 
 ```sh
 # With provider = "fake", no credential is copied.
