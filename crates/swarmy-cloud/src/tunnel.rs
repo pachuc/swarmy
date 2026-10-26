@@ -457,7 +457,7 @@ mod tests {
             fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
             Self { root, program }
         }
-        fn request<'a>(&self, dir: &'a Path, placement: Placement) -> Request<'a> {
+        fn request(dir: &Path, placement: Placement) -> Request<'_> {
             Request {
                 dir,
                 target: SshTarget {
@@ -537,7 +537,7 @@ mod tests {
         let fixture = Fixture::new();
         let tunnels = Tunnels::with_program(fixture.program.clone());
         let dir = fixture.root.path().join("one");
-        let request = fixture.request(&dir, Placement::Remote);
+        let request = Fixture::request(&dir, Placement::Remote);
         let opened = tunnels.open(&request).await.unwrap();
         assert!(!opened.reused);
         let port = opened.record.local_port(Service::Api).unwrap();
@@ -583,7 +583,7 @@ mod tests {
         let fixture = Fixture::new();
         let tunnels = Tunnels::with_program(fixture.program.clone());
         let dir = fixture.root.path().join("one");
-        let request = fixture.request(&dir, Placement::Remote);
+        let request = Fixture::request(&dir, Placement::Remote);
         let first = tunnels.open(&request).await.unwrap();
         let second = tunnels.open(&request).await.unwrap();
         assert!(second.reused);
@@ -615,7 +615,7 @@ mod tests {
         let fixture = Fixture::new();
         let tunnels = Tunnels::with_program(fixture.program.clone());
         let dir = fixture.root.path().join("one");
-        let request = fixture.request(&dir, Placement::Remote);
+        let request = Fixture::request(&dir, Placement::Remote);
         let (first, second) = tokio::join!(tunnels.open(&request), tunnels.open(&request));
         let first = first.unwrap();
         let second = second.unwrap();
@@ -647,7 +647,7 @@ mod tests {
         .unwrap();
         let tunnels = Tunnels::with_program(fixture.program.clone());
         let dir = fixture.root.path().join("one");
-        let request = fixture.request(&dir, Placement::Remote);
+        let request = Fixture::request(&dir, Placement::Remote);
         let error = tunnels.open(&request).await.err().unwrap();
         assert!(error.to_string().contains("ssh.log"));
         assert!(!request.dir.join(RECORD_FILE).exists());
