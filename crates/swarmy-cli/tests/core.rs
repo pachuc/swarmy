@@ -20,8 +20,11 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::at("data/swarmy/stack")
+    }
+    fn at(stack: &str) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let stack = FakeStack::start(&root.path().join(".swarmy/stack"));
+        let stack = FakeStack::start(&root.path().join(stack));
         Self { root, stack }
     }
     fn run(&self, args: &[&str], release: Option<&str>, core: Option<&Path>) -> Output {
@@ -44,8 +47,7 @@ impl Fixture {
         command
             .args(args)
             .current_dir(self.root.path())
-            .env("HOME", self.root.path())
-            .env("XDG_CONFIG_HOME", self.root.path().join("config"))
+            .envs(swarmy_testkit::isolated_home(self.root.path()))
             .env("PATH", "/usr/bin:/bin")
             .output()
             .unwrap()
@@ -86,7 +88,7 @@ fn core_ensure_fetches_verifies_and_reuses_the_release() {
     );
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     let path = fixture.root.path().join(format!(
-        ".swarmy/core/{}/swarmy-core-{}/swarmy-core",
+        "cache/swarmy/core/{}/swarmy-core-{}/swarmy-core",
         swarmy_version::RELEASE_TAG,
         host_target()
     ));
@@ -96,6 +98,7 @@ fn core_ensure_fetches_verifies_and_reuses_the_release() {
     assert_eq!(value["tag"], swarmy_version::RELEASE_TAG);
     assert_eq!(value["target"], host_target());
     assert!(path.exists());
+    assert!(!fixture.root.path().join(".swarmy").exists());
     assert!(fixture.run(&args, Some(&url), None).status.success());
 }
 #[test]
@@ -157,13 +160,14 @@ fn dev_up_launches_the_downloaded_core() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let state = fixture.root.path().join(".swarmy/dev");
+    let state = fixture.root.path().join("state/swarmy/dev");
     assert!(state.join("supervisor.pid").is_file());
+    assert!(!fixture.root.path().join(".swarmy").exists());
     let pid = fs::read_to_string(state.join("supervisor.pid")).unwrap();
     let pid = pid.split_whitespace().next().unwrap();
     let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
     let path = fixture.root.path().join(format!(
-        ".swarmy/core/{}/swarmy-core-{}/swarmy-core",
+        "cache/swarmy/core/{}/swarmy-core-{}/swarmy-core",
         swarmy_version::RELEASE_TAG,
         host_target()
     ));
@@ -175,7 +179,7 @@ fn dev_up_launches_the_downloaded_core() {
 }
 #[test]
 fn dev_up_registers_the_release_image() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::at(".swarmy/stack");
     let (api, requests) = fake_api::serve(false);
     fs::create_dir_all(fixture.root.path().join(".swarmy")).unwrap();
     fs::write(
@@ -230,6 +234,8 @@ fn dev_up_registers_the_release_image() {
         settings.selection.default_image.as_deref(),
         Some(format!("base-ubuntu:{tag}").as_str())
     );
+    assert!(fixture.root.path().join("cache/swarmy/images").is_dir());
+    assert!(!fixture.root.path().join(".swarmy").join("images").exists());
     let images = fs::read_to_string(fixture.root.path().join("default-images")).unwrap();
     assert_eq!(
         images.lines().last(),
@@ -268,7 +274,8 @@ fn dev_up_uses_core_bin_flag_and_env() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let pid = fs::read_to_string(fixture.root.path().join(".swarmy/dev/supervisor.pid")).unwrap();
+    let pid =
+        fs::read_to_string(fixture.root.path().join("state/swarmy/dev/supervisor.pid")).unwrap();
     let pid = pid.split_whitespace().next().unwrap();
     let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap();
     assert!(String::from_utf8_lossy(&command).contains(path.to_str().unwrap()));
@@ -278,7 +285,8 @@ fn dev_up_uses_core_bin_flag_and_env() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let pid = fs::read_to_string(fixture.root.path().join(".swarmy/dev/supervisor.pid")).unwrap();
+    let pid =
+        fs::read_to_string(fixture.root.path().join("state/swarmy/dev/supervisor.pid")).unwrap();
     let pid = pid.split_whitespace().next().unwrap();
     let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap();
     assert!(String::from_utf8_lossy(&command).contains(path.to_str().unwrap()));
@@ -304,7 +312,7 @@ fn downloaded_core_with_other_identity_is_refused() {
         !fixture
             .root
             .path()
-            .join(".swarmy/dev/supervisor.pid")
+            .join("state/swarmy/dev/supervisor.pid")
             .exists()
     );
 }
@@ -366,8 +374,7 @@ fn run_reports_missing_gateway_before_creating_a_session() {
     .unwrap();
     let mut child = Command::new(CLI)
         .args(["--json", "run", "hello"])
-        .env("HOME", root.path())
-        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .envs(swarmy_testkit::isolated_home(root.path()))
         .env("SWARMY_API_URL", format!("http://{address}"))
         .env("SWARMY_API_TOKEN", "test-token")
         .stderr(Stdio::piped())

@@ -29,7 +29,7 @@ impl Fixture {
         let mut command = AsyncCommand::new(CLI);
         command
             .current_dir(self.files.path())
-            .env("HOME", self.files.path())
+            .envs(swarmy_testkit::isolated_home(self.files.path()))
             .args(args)
             .kill_on_drop(true);
         for (key, _) in std::env::vars_os() {
@@ -63,7 +63,10 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let mut command = Command::new(CLI);
-        command.current_dir(self.files.path()).args(["dev", "down"]);
+        command
+            .current_dir(self.files.path())
+            .envs(swarmy_testkit::isolated_home(self.files.path()))
+            .args(["dev", "down"]);
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("SWARMY_") {
                 command.env_remove(key);
@@ -188,7 +191,7 @@ fn json_dev_status_is_rejected_without_touching_the_stack() {
     let files = tempfile::tempdir().unwrap();
     let output = Command::new(CLI)
         .current_dir(files.path())
-        .env("HOME", files.path())
+        .envs(swarmy_testkit::isolated_home(files.path()))
         .args(["--json", "dev", "status"])
         .output()
         .unwrap();
@@ -228,7 +231,7 @@ async fn check_startup(fixture: &Fixture) {
             previous
         );
     }
-    let keyring = fixture.files.path().join(".swarmy/keyring");
+    let keyring = fixture.files.path().join("data/swarmy/keyring");
     swarmy_config::Keyring::read(&keyring).unwrap();
     let doctor = fixture
         .command(&["doctor", "--json"])

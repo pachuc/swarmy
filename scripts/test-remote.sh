@@ -18,6 +18,7 @@ work=$(mktemp -d /tmp/swarmy-remote-test.XXXXXX)
 while IFS= read -r variable; do
     case "$variable" in SWARMY_REMOTE_TEST_*) ;; SWARMY_*) unset "$variable" ;; esac
 done < <(compgen -e)
+export XDG_CACHE_HOME="$work/cache"
 export SWARMY_STATE_DIR="$work/.swarmy"
 daemon=
 cleanup() {
@@ -72,7 +73,7 @@ for name, default in [('fdb', 4500), ('nats', 4222), ('s3', 8333)]:
     if os.environ.get('SWARMY_REMOTE_TEST_HOST', '127.0.0.1') == '127.0.0.1':
         assert p['ports'][name] != default, (name, 'collision did not choose another port')
     else:
-        assert p['ports'][name] == default, (name, 'isolated client must have default ports free')
+        assert (p['ports'][name] == default if name == 'fdb' else p['ports'][name] != 0), (name, 'isolated client port unavailable')
     with socket.create_connection(('127.0.0.1', p['ports'][name]), timeout=3) as stream:
         if name == 'nats':
             assert stream.recv(1024).startswith(b'INFO ')

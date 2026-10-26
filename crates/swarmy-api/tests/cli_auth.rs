@@ -53,8 +53,7 @@ impl Fixture {
             settings.to_toml().unwrap(),
         )
         .unwrap();
-        let keyring =
-            swarmy_config::Keyring::generate_at(&dir.path().join(".swarmy/keyring")).unwrap();
+        let keyring = swarmy_config::Keyring::generate_at(&dir.path().join("keyring")).unwrap();
         fs::write(
             dir.path().join("auth.json"),
             include_bytes!("../../swarmy-llm/tests/fixtures/auth.json"),
@@ -117,8 +116,7 @@ impl Fixture {
         }
         command
             .current_dir(self.dir.path())
-            .env("HOME", self.dir.path())
-            .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
+            .envs(swarmy_testkit::isolated_home(self.dir.path()))
             .args(args);
         command
     }

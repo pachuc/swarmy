@@ -1,5 +1,6 @@
 //! SSH helpers shared by provisioning, tunnel, log, and status commands.
 use std::{
+    ffi::OsStr,
     fmt::Write as _,
     path::{Path, PathBuf},
     process::Stdio,
@@ -14,11 +15,18 @@ use tokio::{process::Command, time::timeout};
 /// Options shared by every SSH and rsync invocation for a node. The host key
 /// learned while provisioning lives next to the key so later commands verify it.
 fn arguments(node: &RemoteNode) -> Result<Vec<String>> {
+    options(
+        &node.ssh_user,
+        &node.key_path,
+        &node.key_path.with_extension("known_hosts"),
+    )
+}
+
+pub(crate) fn options(user: &str, key: &Path, known_hosts: &Path) -> Result<Vec<String>> {
     // SSH passes remote commands to a shell; the user and destination must be data only.
     crate::Error::ensure(
-        !node.ssh_user.is_empty()
-            && node
-                .ssh_user
+        !user.is_empty()
+            && user
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
         "invalid ssh_user",
@@ -37,14 +45,11 @@ fn arguments(node: &RemoteNode) -> Result<Vec<String>> {
         "-o".into(),
         "IdentitiesOnly=yes".into(),
         "-o".into(),
-        format!(
-            "UserKnownHostsFile={}",
-            node.key_path.with_extension("known_hosts").display()
-        ),
+        format!("UserKnownHostsFile={}", known_hosts.display()),
         "-i".into(),
-        node.key_path.to_string_lossy().into_owned(),
+        key.to_string_lossy().into_owned(),
         "-l".into(),
-        node.ssh_user.clone(),
+        user.to_owned(),
     ])
 }
 
@@ -63,13 +68,17 @@ fn tilde_repo(user: &str) -> String {
     format!("~{user}/swarmy")
 }
 
-fn base(node: &RemoteNode) -> Result<Command> {
-    let mut command = Command::new("ssh");
+fn ssh_with(program: &OsStr, options: &[String]) -> Command {
+    let mut command = Command::new(program);
     command
-        .args(arguments(node)?)
+        .args(options)
         .stdin(Stdio::null())
         .kill_on_drop(true);
-    Ok(command)
+    command
+}
+
+fn base(node: &RemoteNode) -> Result<Command> {
+    Ok(ssh_with(OsStr::new("ssh"), &arguments(node)?))
 }
 
 /// A configured `ssh` command; callers append the public address and remote command.
@@ -93,13 +102,26 @@ pub fn command(node: &RemoteNode) -> Result<Command> {
 ///
 /// Rejects malformed instance addresses and reports when neither address answers over SSH.
 pub async fn reachable_address(node: &RemoteNode) -> Result<String> {
-    for address in [&node.public_ip, &node.private_ip] {
+    first_reachable(
+        OsStr::new("ssh"),
+        &arguments(node)?,
+        &[node.public_ip.clone(), node.private_ip.clone()],
+    )
+    .await
+}
+
+pub(crate) async fn first_reachable(
+    program: &OsStr,
+    options: &[String],
+    addresses: &[String],
+) -> Result<String> {
+    for address in addresses {
         let _: std::net::IpAddr = address
             .parse()
             .map_err(|source| crate::Error::context(source, "invalid instance IP"))?;
         let result = timeout(
             Duration::from_secs(7),
-            base(node)?.arg(address).arg("true").output(),
+            ssh_with(program, options).arg(address).arg("true").output(),
         )
         .await;
         if result.is_ok_and(|output| output.is_ok_and(|output| output.status.success())) {
@@ -127,11 +149,19 @@ pub fn command_line(node: &RemoteNode, address: &str) -> Result<String> {
 ///
 /// Reports a missing control socket and commands that time out after five seconds.
 pub async fn control(profile: &RemoteProfile, action: &str) -> Result<std::process::Output> {
+    control_socket(OsStr::new("ssh"), &profile.socket_path, action).await
+}
+
+pub(crate) async fn control_socket(
+    program: &OsStr,
+    socket: &Path,
+    action: &str,
+) -> Result<std::process::Output> {
     let output = timeout(
         Duration::from_secs(5),
-        Command::new("ssh")
+        Command::new(program)
             .arg("-S")
-            .arg(&profile.socket_path)
+            .arg(socket)
             .args(["-O", action, "localhost"])
             .stdin(Stdio::null())
             .kill_on_drop(true)
@@ -144,7 +174,11 @@ pub async fn control(profile: &RemoteProfile, action: &str) -> Result<std::proce
 }
 
 pub async fn healthy(profile: &RemoteProfile) -> bool {
-    control(profile, "check")
+    alive(OsStr::new("ssh"), &profile.socket_path).await
+}
+
+pub(crate) async fn alive(program: &OsStr, socket: &Path) -> bool {
+    control_socket(program, socket, "check")
         .await
         .is_ok_and(|output| output.status.success())
 }

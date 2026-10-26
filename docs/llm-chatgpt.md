@@ -140,7 +140,7 @@ verification URL and code; with `--json` it prints a `device_code` event and
 then a `saved` event. Import reads the file without changing it, checks it,
 and prints `imported`. Both upload the record to the cluster through the API
 and never print tokens. Without `--file`, import reads
-`[selection] credential_file` (normally `~/.swarmy/auth.json`; `--auth-file` or
+`[selection] credential_file` (normally `~/.local/share/swarmy/auth.json`; `--auth-file` or
 `SWARMY_CHATGPT_AUTH` override it).
 
 The ignored live test reads a Codex-format credential file directly and never
