@@ -337,4 +337,3 @@ scripts/acceptance-hetzner-cloud.sh --provider PROVIDER --model MODEL --api-key-
 ## Further reading
 
 [REMOTE.md](REMOTE.md) covers host internals; [infra/README.md](../infra/README.md) covers modules; [cloud-substrate.md](cloud-substrate.md) describes cloud boundaries; [fleet-runbook.md](fleet-runbook.md) covers the fleet; [DEV.md](DEV.md) covers checkout development.
-

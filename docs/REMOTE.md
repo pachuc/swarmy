@@ -143,4 +143,3 @@ suites; record results in the pull request. The host and sandbox root suites
 require a real node with `/dev/nbd0`, sudo, and the dev stack. Run them on the suite node, not inside an agent sandbox.
 `scripts/test-remote.sh` checks the on-demand SSH tunnel against localhost
 sshd with an authorized test key. It skips without `SWARMY_REMOTE_TEST_KEY`.
-
