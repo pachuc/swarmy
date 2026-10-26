@@ -176,8 +176,8 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
     // One match owns every command and calls into its module. Each arm
-    // connects on its own path, except the local `dev` supervisor and the
-    // `swarmy-auth` helpers and cloud credentials which never touch the API.
+    // connects on its own path, except the local swarm supervisor, dev commands,
+    // auth helpers, and cloud credentials which never touch the API.
     let runtime = tokio::runtime::Runtime::new()?;
     let json = cli.json;
     match cli.command {
