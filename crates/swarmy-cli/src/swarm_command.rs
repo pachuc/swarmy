@@ -16,6 +16,7 @@ pub(crate) fn parse_name(value: &str) -> Result<String, swarmy_config::Error> {
 #[derive(Subcommand)]
 pub(crate) enum Command {
     /// Write a new swarm spec; --local runs the stack and services on this machine
+    #[command(group(clap::ArgGroup::new("kind").required(true).args(["local", "host"])))]
     Create {
         #[arg(value_parser = parse_name)]
         name: String,
@@ -572,6 +573,16 @@ pub(crate) async fn run(
     }
     if json_output && matches!(command, Command::Logs { .. }) {
         bail!("--json is not supported for swarm logs; run without it for human-readable output");
+    }
+    // Preserve the local command's early JSON rejection when there is no swarm
+    // to dispatch, while host swarms may return structured status.
+    if json_output {
+        if let Command::Status { name } = &command {
+            let registry = Registry::new(Dirs::from_process()?);
+            if registry.read_spec(name)?.is_none() && registry.read_record(name)?.is_none() {
+                bail!("--json is not supported for swarm status without a managed spec");
+            }
+        }
     }
     let registry = Registry::new(Dirs::from_process()?);
     match command {

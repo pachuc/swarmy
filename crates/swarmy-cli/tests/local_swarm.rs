@@ -339,9 +339,14 @@ nodes = ["box"]
         } else {
             vec!["swarm", command, "box"]
         };
+        let error = String::from_utf8_lossy(&f.run(&f.path("work"), &args).stderr).into_owned();
         assert!(
-            String::from_utf8_lossy(&f.run(&f.path("work"), &args).stderr)
-                .contains("is not a local swarm")
+            error.contains(if command == "up" {
+                "no release binaries"
+            } else {
+                "has no hosts recorded"
+            }),
+            "{error}"
         );
     }
 }
