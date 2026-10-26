@@ -7,6 +7,7 @@ use std::{
 #[derive(Debug)]
 pub(crate) struct Request {
     pub method: String,
+    pub authorization: Option<String>,
     pub path_and_query: String,
     pub body_len: usize,
     pub first_offset: Option<u64>,
@@ -59,7 +60,14 @@ pub(crate) fn serve(registered: bool) -> (SocketAddr, Arc<Mutex<Vec<Request>>>) 
             let body = &bytes[header_end..];
             let first_offset = (method == "POST" && body.len() >= 8)
                 .then(|| u64::from_le_bytes(body[..8].try_into().unwrap()));
+            let authorization = header.lines().find_map(|line| {
+                line.split_once(':').and_then(|(key, value)| {
+                    key.eq_ignore_ascii_case("authorization")
+                        .then(|| value.trim().to_owned())
+                })
+            });
             recorded.lock().unwrap().push(Request {
+                authorization,
                 method: method.clone(),
                 path_and_query: path_and_query.clone(),
                 body_len: body.len(),
