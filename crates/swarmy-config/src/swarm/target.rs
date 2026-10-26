@@ -59,50 +59,20 @@ pub fn resolve(
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
-    use crate::{
-        paths::Dirs,
-        swarm::{GroupSpec, HostSpec, Lifecycle, Module, Placement, SwarmSpec},
-    };
+    use crate::swarm::registry::tests::{setup, spec};
     fn assert_redacted(registry: &Registry, env: &BTreeMap<String, String>) {
         assert!(!format!("{:?}", resolve(registry, None, env).unwrap()).contains("secret"));
     }
+    fn assert_no_swarm_hints() {
+        for hint in ["swarmy swarm ls", "swarmy swarm use", "swarmy swarm create"] {
+            assert!(Error::NoSwarm.to_string().contains(hint));
+        }
+    }
     #[test]
     fn precedence_and_errors() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        let registry = Registry::new(Dirs {
-            config: root.join("config"),
-            data: root.join("data"),
-            state: root.join("state"),
-            cache: root.join("cache"),
-        });
+        let (_temp, registry) = setup();
         for name in ["flag", "env", "cur"] {
-            registry
-                .write_spec(&SwarmSpec {
-                    name: name.into(),
-                    lifecycle: Lifecycle::Ephemeral,
-                    groups: [(
-                        "box".into(),
-                        GroupSpec {
-                            module: Module::Existing,
-                            size: None,
-                            location: None,
-                            count: None,
-                            hosts: vec![HostSpec {
-                                address: "203.0.113.10".into(),
-                                ssh_user: "root".into(),
-                                ssh_key: "/keys/box".into(),
-                            }],
-                        },
-                    )]
-                    .into(),
-                    placement: Placement {
-                        stack: "box".into(),
-                        services: "box".into(),
-                        nodes: vec!["box".into()],
-                    },
-                })
-                .unwrap();
+            registry.write_spec(&spec(name)).unwrap();
         }
         registry.set_current("cur").unwrap();
         let mut env = BTreeMap::from([
@@ -145,7 +115,7 @@ mod tests {
             resolve(&registry, None, &env),
             Err(Error::NoSwarm)
         ));
-        assert!(Error::NoSwarm.to_string().contains("swarmy swarm create"));
+        assert_no_swarm_hints();
         crate::write_private(&registry.dirs().current(), b"missing\n").unwrap();
         assert!(matches!(
             resolve(&registry, None, &env),

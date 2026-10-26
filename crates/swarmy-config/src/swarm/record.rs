@@ -10,16 +10,21 @@ pub struct SwarmRecord {
     pub created_at: jiff::Timestamp,
     #[serde(default)]
     pub api: SwarmApi,
+    /// Machines per group, as created or adopted.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub hosts: BTreeMap<String, Vec<RecordedHost>>,
+    /// Directory holding this swarm's `OpenTofu` working directories and state
+    /// (normally `<record dir>/tofu`); unset until a module group is applied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tofu_state: Option<PathBuf>,
 }
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SwarmApi {
+    /// Unset until `up` generates it (local) or reads it from the node (remote).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// Set for local and attached APIs; absent when an SSH tunnel decides the address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }

@@ -4,6 +4,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
+/// Swarmy's four base directories, each already ending in `swarmy`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dirs {
     pub config: PathBuf,
@@ -108,5 +109,40 @@ mod tests {
             Dirs::from_env(&env).unwrap().cache,
             Path::new("/tmp/XDG_CACHE_HOME/swarmy")
         );
+    }
+    #[test]
+    fn ignores_relative_or_empty_values() {
+        let mut env = BTreeMap::from([("HOME".to_owned(), "/home/test".to_owned())]);
+        for (i, key) in [
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+            "XDG_CACHE_HOME",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            env.insert(
+                key.into(),
+                if i % 2 == 0 {
+                    "relative/dir".into()
+                } else {
+                    String::new()
+                },
+            );
+        }
+        assert_eq!(
+            Dirs::from_env(&env).unwrap(),
+            Dirs {
+                config: "/home/test/.config/swarmy".into(),
+                data: "/home/test/.local/share/swarmy".into(),
+                state: "/home/test/.local/state/swarmy".into(),
+                cache: "/home/test/.cache/swarmy".into(),
+            }
+        );
+        for home in ["relative", ""] {
+            env.insert("HOME".into(), home.into());
+            assert!(matches!(Dirs::from_env(&env), Err(Error::Directories(_))));
+        }
     }
 }
