@@ -274,6 +274,28 @@ pub(crate) async fn pull_release_image(
     Ok(Some(true))
 }
 
+/// `images/` in swarmy's XDG cache directory: release base-image downloads.
+pub(crate) fn image_cache() -> Result<PathBuf> {
+    Ok(swarmy_config::paths::Dirs::from_process()?
+        .cache
+        .join("images"))
+}
+/// Set `selection.default_image` in CONFIG, keeping the rest of the file.
+pub(crate) fn set_default_image(config: &Path, image: &str) -> Result<()> {
+    if !config.exists() {
+        if let Some(parent) = config.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let encoded = format!("[selection]\ndefault_image = {image:?}\n");
+        swarmy_config::write_private(config, encoded.as_bytes())?;
+        return Ok(());
+    }
+    let mut settings = swarmy_config::Settings::read(config)?;
+    settings.selection.default_image = Some(image.to_owned());
+    swarmy_config::write_private(config, settings.to_toml()?.as_bytes())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
@@ -290,26 +312,4 @@ mod tests {
             assert!(!other_release_image(&name));
         }
     }
-}
-
-/// `images/` in swarmy's XDG cache directory: release base-image downloads.
-pub(crate) fn image_cache() -> Result<PathBuf> {
-    Ok(swarmy_config::paths::Dirs::from_process()?
-        .cache
-        .join("images"))
-}
-/// Set `selection.default_image` in CONFIG, keeping the rest of the file.
-pub(crate) fn set_default_image(config: &Path, image: &str) -> Result<()> {
-    if !config.exists() {
-        if let Some(parent) = config.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let encoded = format!("[selection]\ndefault_image = {}\n", format!("{image:?}"));
-        swarmy_config::write_private(config, encoded.as_bytes())?;
-        return Ok(());
-    }
-    let mut settings = swarmy_config::Settings::read(config)?;
-    settings.selection.default_image = Some(image.to_owned());
-    swarmy_config::write_private(config, settings.to_toml()?.as_bytes())?;
-    Ok(())
 }

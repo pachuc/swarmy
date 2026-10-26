@@ -336,7 +336,7 @@ pub(crate) async fn run(
                     allow_version_mismatch,
                 },
             )
-            .await?
+            .await?;
         }
         Command::Start { name, core_bin } => {
             crate::local::up(
@@ -349,13 +349,13 @@ pub(crate) async fn run(
                     allow_version_mismatch,
                 },
             )
-            .await?
+            .await?;
         }
         Command::Stop { name } => crate::local::stop(&registry, &name).await?,
         Command::Down { name, destroy } => crate::local::down(&registry, &name, destroy).await?,
         Command::Status { name } => crate::local::show_status(&registry, &name).await?,
         Command::Logs { name, service } => {
-            crate::local::follow_logs(&registry, &name, service).await?
+            crate::local::follow_logs(&registry, &name, service).await?;
         }
         Command::Ls => list(&registry, json_output)?,
         Command::Show { name } => {

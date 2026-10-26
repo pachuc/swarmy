@@ -374,7 +374,7 @@ impl LocalSwarm {
     }
     fn running(&self) -> (bool, bool) {
         (
-            survivors(&self.state).len() > 0,
+            !survivors(&self.state).is_empty(),
             ["fdb", "nats", "seaweed"]
                 .iter()
                 .any(|name| Identity::read(&self.stack.join(format!("{name}.pid"))).is_some()),
@@ -695,8 +695,8 @@ pub(crate) async fn up(registry: &Registry, name: &str, start: Start) -> Result<
         &settings,
     )
     .await?;
-    if start.register_image {
-        if let Some(new_pid) = register_default_image(
+    if start.register_image
+        && let Some(new_pid) = register_default_image(
             registry,
             &swarm,
             &tuning,
@@ -706,9 +706,8 @@ pub(crate) async fn up(registry: &Registry, name: &str, start: Start) -> Result<
             &environment,
         )
         .await?
-        {
-            pid = new_pid;
-        }
+    {
+        pid = new_pid;
     }
     print_started(&swarm.stack, &swarm.state, pid)?;
     let current = registry.current()?.is_none();

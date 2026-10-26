@@ -188,7 +188,7 @@ impl Registry {
             name: name.into(),
             created_at: jiff::Timestamp::now(),
             api: SwarmApi::default(),
-            hosts: Default::default(),
+            hosts: std::collections::BTreeMap::default(),
             tofu_state: None,
         });
         record.api.url = Some(url.into());

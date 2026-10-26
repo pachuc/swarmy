@@ -134,26 +134,7 @@ fn create_writes_a_local_spec_and_selects_it() {
     );
     f.names.push("j".into());
 }
-#[test]
-fn lifecycle_without_a_checkout() {
-    let mut f = Fixture::new();
-    f.create("demo", &[]);
-    let dir = f.path("data/swarmy/swarms/demo/stack");
-    let mut stack = FakeStack::start(&dir);
-    let up = f.ok(&f.path("work"), &["swarm", "up", "demo", "--no-image"]);
-    assert!(
-        up.contains(&format!(
-            "stack: ready (fdb={}, nats={}, seaweed={})",
-            stack.pid("fdb"),
-            stack.pid("nats"),
-            stack.pid("seaweed")
-        )),
-        "{up}"
-    );
-    assert!(
-        up.contains("api: ready") && up.contains("swarm demo: API http://127.0.0.1:8742"),
-        "{up}"
-    );
+fn verify_files(f: &Fixture, dir: &Path) -> swarmy_config::swarm::SwarmRecord {
     let settings = Settings::read(&f.path("data/swarmy/swarms/demo/services.toml")).unwrap();
     assert_eq!(settings.state_dir, f.path("state/swarmy/swarms/demo"));
     assert_eq!(settings.store.cluster_file, dir.join("fdb.cluster"));
@@ -197,6 +178,29 @@ fn lifecycle_without_a_checkout() {
         "http://127.0.0.1:8742"
     );
     assert!(!show.contains(&settings.api.token));
+    record
+}
+#[test]
+fn lifecycle_without_a_checkout() {
+    let mut f = Fixture::new();
+    f.create("demo", &[]);
+    let dir = f.path("data/swarmy/swarms/demo/stack");
+    let mut stack = FakeStack::start(&dir);
+    let up = f.ok(&f.path("work"), &["swarm", "up", "demo", "--no-image"]);
+    assert!(
+        up.contains(&format!(
+            "stack: ready (fdb={}, nats={}, seaweed={})",
+            stack.pid("fdb"),
+            stack.pid("nats"),
+            stack.pid("seaweed")
+        )),
+        "{up}"
+    );
+    assert!(
+        up.contains("api: ready") && up.contains("swarm demo: API http://127.0.0.1:8742"),
+        "{up}"
+    );
+    let record = verify_files(&f, &dir);
     let status = f.ok(&f.path("home"), &["swarm", "status", "demo"]);
     assert!(
         status.contains("swarm: demo (local, ephemeral)")
@@ -299,4 +303,34 @@ fn checkout_uses_its_dev_stack() {
     assert!(!stack.running());
     assert!(f.path("repo/.dev").exists());
     assert!(out.contains("stack directory"));
+}
+#[test]
+fn non_local_swarm_is_refused() {
+    let f = Fixture::new();
+    let spec = SwarmSpec::parse(
+        r#"
+name = "box"
+lifecycle = "ephemeral"
+[groups.box]
+module = "existing"
+hosts = [{ address = "203.0.113.10", ssh_user = "root", ssh_key = "/keys/box" }]
+[placement]
+stack = "box"
+services = "box"
+nodes = ["box"]
+"#,
+    )
+    .unwrap();
+    f.registry().write_spec(&spec).unwrap();
+    for command in ["up", "status"] {
+        let args = if command == "up" {
+            vec!["swarm", command, "box", "--no-image"]
+        } else {
+            vec!["swarm", command, "box"]
+        };
+        assert!(
+            String::from_utf8_lossy(&f.run(&f.path("work"), &args).stderr)
+                .contains("is not a local swarm")
+        );
+    }
 }
