@@ -3,7 +3,7 @@ use crate::{Error, Result};
 use std::{collections::BTreeMap, net::Ipv4Addr, path::Path};
 use swarmy_config::swarm::{Module, RecordedHost, SwarmSpec};
 
-pub(super) fn existing_sources(spec: &SwarmSpec, swarm_dir: &Path) -> Result<Vec<HostSource>> {
+pub(super) fn existing_sources(spec: &SwarmSpec, swarm_dir: &Path) -> Vec<HostSource> {
     let mut sources = Vec::new();
     for (group, entry) in &spec.groups {
         if entry.module != Module::Existing {
@@ -26,7 +26,7 @@ pub(super) fn existing_sources(spec: &SwarmSpec, swarm_dir: &Path) -> Result<Vec
             });
         }
     }
-    Ok(sources)
+    sources
 }
 
 pub(super) fn plan(spec: &SwarmSpec, sources: Vec<HostSource>) -> Result<Vec<Planned>> {

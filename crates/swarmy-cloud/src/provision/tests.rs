@@ -703,7 +703,11 @@ mod bucket_lifecycle {
         let bucket = bucket_spec(&spec, &record).unwrap();
         assert!(bucket.needs_static_keys());
         let planned = plan(&spec, source_list(&registry, &spec)).unwrap();
-        let primary = node(&planned[0], user(&spec), &spec, &record);
+        let primary = node(
+            &planned[0],
+            user(&spec),
+            bucket_spec(&spec, &record).as_ref(),
+        );
         assert!(primary.bucket.unwrap().needs_static_keys());
     }
     #[tokio::test]

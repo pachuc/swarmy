@@ -1,5 +1,5 @@
-//! Machine groups created by OpenTofu: render each group's working directory and variables, apply it in placement order, and turn its outputs into hosts for the shared provisioning path.
-//! Credentials reach OpenTofu only through its environment; down destroys the groups in reverse order.
+//! Machine groups created by `OpenTofu`: render each group's working directory and variables, apply it in placement order, and turn its outputs into hosts for the shared provisioning path.
+//! Credentials reach `OpenTofu` only through its environment; down destroys the groups in reverse order.
 #[cfg(test)]
 mod tests;
 use super::{HostSource, Locked, lock, plan};
@@ -157,13 +157,13 @@ fn preflight(
                 "group \"{name}\": OpenTofu groups need a group name of 1-20 lowercase letters, digits and hyphens that starts with a letter and does not end with a hyphen"
             )));
         }
-        if let Module::Path(path) = &group.module {
-            if !path.is_absolute() {
-                return Err(Error::other(format!(
-                    "group \"{name}\": module path {} must be absolute",
-                    path.display()
-                )));
-            }
+        if let Module::Path(path) = &group.module
+            && !path.is_absolute()
+        {
+            return Err(Error::other(format!(
+                "group \"{name}\": module path {} must be absolute",
+                path.display()
+            )));
         }
         let _ = module_files(&name, group)?;
         let bucket = name == spec.placement.stack
@@ -178,19 +178,7 @@ fn preflight(
             )));
         }
         if previous > 0 {
-            if let Some(last) = last_variables(&group_dir(dir, &name)) {
-                for (field, current) in [("size", &group.size), ("location", &group.location)] {
-                    if let Some(old) = last.get(field).and_then(Value::as_str) {
-                        if current.as_deref() != Some(old) {
-                            return Err(Error::other(format!(
-                                "group \"{name}\": {field} changed from {old} to {} since its machines were created; that would rebuild them. Restore it, or run swarmy swarm down {} first",
-                                current.as_deref().unwrap_or("<unset>"),
-                                spec.name
-                            )));
-                        }
-                    }
-                }
-            }
+            check_immutable_fields(spec, &name, group, dir)?;
         }
     }
     if record.tofu_bucket.is_some()
@@ -205,6 +193,28 @@ fn preflight(
             "swarm {}: OpenTofu bucket changed after its hosts were provisioned",
             spec.name
         )));
+    }
+    Ok(())
+}
+fn check_immutable_fields(
+    spec: &SwarmSpec,
+    name: &str,
+    group: &GroupSpec,
+    dir: &Path,
+) -> Result<()> {
+    let Some(last) = last_variables(&group_dir(dir, name)) else {
+        return Ok(());
+    };
+    for (field, current) in [("size", &group.size), ("location", &group.location)] {
+        if let Some(old) = last.get(field).and_then(Value::as_str)
+            && current.as_deref() != Some(old)
+        {
+            return Err(Error::other(format!(
+                "group \"{name}\": {field} changed from {old} to {} since its machines were created; that would rebuild them. Restore it, or run swarmy swarm down {} first",
+                current.as_deref().unwrap_or("<unset>"),
+                spec.name
+            )));
+        }
     }
     Ok(())
 }
@@ -271,7 +281,7 @@ fn module_files(name: &str, group: &GroupSpec) -> Result<ModuleSet> {
             let entry = entry?;
             let filename = entry.file_name().to_string_lossy().into_owned();
             if entry.file_type()?.is_file()
-                && (filename.ends_with(".tf")
+                && (Path::new(&filename).extension().is_some_and(|e| e == "tf")
                     || filename.ends_with(".tf.json")
                     || filename == ".terraform.lock.hcl")
             {
@@ -279,10 +289,9 @@ fn module_files(name: &str, group: &GroupSpec) -> Result<ModuleSet> {
             }
         }
         files.sort_by(|a, b| a.0.cmp(&b.0));
-        if !files
-            .iter()
-            .any(|(name, _)| name.ends_with(".tf") || name.ends_with(".tf.json"))
-        {
+        if !files.iter().any(|(name, _)| {
+            Path::new(name).extension().is_some_and(|e| e == "tf") || name.ends_with(".tf.json")
+        }) {
             return Err(Error::other(format!(
                 "group \"{name}\": {} has no .tf files",
                 path.display()
@@ -341,7 +350,7 @@ pub fn recorded_bucket(record: &SwarmRecord, credentials: &CloudCredentials) -> 
 }
 /// Apply groups in placement order and record each output before provisioning hosts.
 /// # Errors
-/// Returns validation, OpenTofu, output and filesystem failures.
+/// Returns validation, `OpenTofu`, output and filesystem failures.
 pub(crate) async fn apply(
     machines: &MachineGroups<'_>,
     registry: &Registry,
@@ -402,16 +411,26 @@ pub(crate) async fn apply(
         if let Some(id) = outputs.network_id.clone() {
             networks.push((group.module.clone(), id));
         }
-        if name == spec.placement.stack {
-            if let Some(out) = outputs.bucket.as_ref() {
-                if bucket.is_some() {
-                    record.tofu_bucket_endpoint = Some(out.endpoint.clone());
-                    record.tofu_bucket_region = Some(out.region.clone());
-                } else {
-                    cloud_err!(
-                        "group {name}: ignoring the bucket output; swarmy creates buckets only for hetzner-cloud stack groups"
-                    );
+        if name == spec.placement.stack && bucket.is_some() && outputs.bucket.is_none() {
+            return Err(Error::other(format!(
+                "group {name}: expected a bucket output for the OpenTofu bucket"
+            )));
+        }
+        if name == spec.placement.stack
+            && let Some(out) = outputs.bucket.as_ref()
+        {
+            if let Some(expected) = bucket.as_ref() {
+                if out.name != *expected {
+                    return Err(Error::other(format!(
+                        "group {name}: bucket output name does not match the recorded bucket"
+                    )));
                 }
+                record.tofu_bucket_endpoint = Some(out.endpoint.clone());
+                record.tofu_bucket_region = Some(out.region.clone());
+            } else {
+                cloud_err!(
+                    "group {name}: ignoring the bucket output; swarmy creates buckets only for hetzner-cloud stack groups"
+                );
             }
         }
         let key = dir.join("keys/groups").join(&name);
@@ -437,7 +456,7 @@ pub(crate) async fn apply(
 }
 /// Plan each group without applying or marking state as created.
 /// # Errors
-/// Returns validation, OpenTofu, output and filesystem failures.
+/// Returns validation, `OpenTofu`, output and filesystem failures.
 pub async fn plan_groups(
     registry: &Registry,
     spec: &SwarmSpec,
@@ -498,19 +517,44 @@ pub async fn plan_groups(
             changes: outcome == PlanOutcome::Changes,
             plan: text,
         });
-        if workspace.dir().join("terraform.tfstate").is_file() {
-            if let Ok(outputs) = workspace.outputs().await {
-                if let Some(id) = outputs.network_id.clone() {
-                    networks.push((group.module.clone(), id));
-                }
-            }
+        if workspace.dir().join("terraform.tfstate").is_file()
+            && let Ok(outputs) = workspace.outputs().await
+            && let Some(id) = outputs.network_id
+        {
+            networks.push((group.module.clone(), id));
         }
     }
     Ok(result)
 }
-/// Destroy recorded OpenTofu working directories, including groups removed from the spec.
+fn destroy_env(
+    credentials: &CloudCredentials,
+    group: Option<&GroupSpec>,
+    work: &Path,
+) -> Result<CredentialEnv> {
+    if let Some(group) = group {
+        let bucket = last_variables(work)
+            .and_then(|v| {
+                v.get("bucket_name")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .is_some_and(|s| !s.is_empty());
+        return credential_env(credentials, group, bucket);
+    }
+    let mut env = CredentialEnv::new()
+        .with("AWS_SHARED_CREDENTIALS_FILE", "/dev/null")
+        .with("AWS_CONFIG_FILE", "/dev/null")
+        .with("AWS_EC2_METADATA_DISABLED", "true");
+    for provider in CloudProvider::ALL {
+        if let Some(c) = credentials.get(provider) {
+            env = c.env().iter().fold(env, |env, (n, v)| env.with(n, v));
+        }
+    }
+    Ok(env)
+}
+/// Destroy recorded `OpenTofu` working directories, including groups removed from the spec.
 /// # Errors
-/// Returns credentials, filesystem or OpenTofu failures, preserving unfinished groups.
+/// Returns credentials, filesystem or `OpenTofu` failures, preserving unfinished groups.
 pub(crate) async fn destroy(
     machines: Option<&MachineGroups<'_>>,
     registry: &Registry,
@@ -523,7 +567,7 @@ pub(crate) async fn destroy(
         return Ok(0);
     }
     let mut names: Vec<String> = fs::read_dir(&root)?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| e.path().is_dir())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
@@ -551,35 +595,7 @@ pub(crate) async fn destroy(
         let work = group_dir(&dir, &name);
         let attempt: Result<()> = async {
             if work.join("terraform.tfstate").is_file() {
-                let group = spec.groups.get(&name);
-                let env = if let Some(group) = group {
-                    credential_env(
-                        machines.credentials,
-                        group,
-                        last_variables(&work)
-                            .and_then(|v| {
-                                v.get("bucket_name")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_owned)
-                            })
-                            .is_some_and(|s| !s.is_empty()),
-                    )?
-                } else {
-                    CloudProvider::ALL.iter().fold(
-                        CredentialEnv::new()
-                            .with("AWS_SHARED_CREDENTIALS_FILE", "/dev/null")
-                            .with("AWS_CONFIG_FILE", "/dev/null")
-                            .with("AWS_EC2_METADATA_DISABLED", "true"),
-                        |env, provider| {
-                            machines
-                                .credentials
-                                .get(*provider)
-                                .map_or(env.clone(), |c| {
-                                    c.env().iter().fold(env, |env, (n, v)| env.with(n, v))
-                                })
-                        },
-                    )
-                };
+                let env = destroy_env(machines.credentials, spec.groups.get(&name), &work)?;
                 let workspace = machines.tofu.workspace(&work, env);
                 let mut vars = last_variables(&work).ok_or_else(|| {
                     Error::other(format!("group {name}: missing last applied variables"))

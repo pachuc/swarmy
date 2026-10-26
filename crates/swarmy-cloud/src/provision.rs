@@ -68,7 +68,7 @@ pub fn is_host_swarm(spec: &SwarmSpec) -> bool {
 /// # Errors
 /// Rejects groups that do not provide existing hosts.
 pub fn existing_sources(spec: &SwarmSpec, swarm_dir: &Path) -> Result<Vec<HostSource>> {
-    plan::existing_sources(spec, swarm_dir)
+    Ok(plan::existing_sources(spec, swarm_dir))
 }
 /// Assign roles and validate all sources before any SSH work.
 /// # Errors
@@ -385,9 +385,34 @@ async fn provision_swarm_with_backend(
     let options = service_options(&request, &record, primary_done, bucket.as_ref())?;
     create_private_dir(&swarm_dir.join("keys"))?;
     let primary_node = node(primary, user(spec), bucket.as_ref());
+    let reports = provision_planned(
+        host,
+        &request,
+        &mut record,
+        &planned,
+        &primary_node,
+        options.as_ref(),
+        bucket.as_ref(),
+    )
+    .await?;
+    if request.registry.current()?.is_none() {
+        request.registry.set_current(&spec.name)?;
+    }
+    Ok(reports)
+}
+async fn provision_planned(
+    host: &impl SwarmHost,
+    request: &UpRequest<'_>,
+    record: &mut SwarmRecord,
+    planned: &[Planned],
+    primary_node: &Machine,
+    options: Option<&services::Options>,
+    bucket: Option<&swarmy_config::BucketSpec>,
+) -> Result<Vec<HostReport>> {
+    let spec = request.spec;
     let mut reports = Vec::new();
-    for p in &planned {
-        if recorded(&record, p).is_some_and(|h| h.provisioned) {
+    for p in planned {
+        if recorded(record, p).is_some_and(|h| h.provisioned) {
             cloud_out!("{}: already provisioned", p.host.name);
             reports.push(HostReport {
                 provisioned: true,
@@ -395,16 +420,7 @@ async fn provision_swarm_with_backend(
             });
             continue;
         }
-        let result = provision_one(
-            host,
-            &request,
-            &mut record,
-            p,
-            &primary_node,
-            options.as_ref(),
-            bucket.as_ref(),
-        )
-        .await;
+        let result = provision_one(host, request, record, p, primary_node, options, bucket).await;
         if let Err(error) = result {
             cloud_err!(
                 "swarm up {} stopped at host {}; fix the cause and run swarmy swarm up {} again (provisioned hosts are skipped), or swarmy swarm down {} --destroy to remove swarmy from the hosts",
@@ -416,9 +432,6 @@ async fn provision_swarm_with_backend(
             return Err(error);
         }
         reports.push(report(p, true));
-    }
-    if request.registry.current()?.is_none() {
-        request.registry.set_current(&spec.name)?;
     }
     Ok(reports)
 }

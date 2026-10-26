@@ -241,7 +241,7 @@ impl Workspace<'_> {
     pub async fn plan(&self) -> Result<PlanOutcome> {
         self.plan_text().await.map(|(outcome, _)| outcome)
     }
-    /// Plan and return OpenTofu's human-readable plan with credential values redacted.
+    /// Plan and return `OpenTofu`'s human-readable plan with credential values redacted.
     /// # Errors
     /// Returns process failures.
     pub async fn plan_text(&self) -> Result<(PlanOutcome, String)> {
