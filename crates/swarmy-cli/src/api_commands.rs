@@ -22,7 +22,7 @@ fn print<T: serde::Serialize>(value: &T, text: &str, json: bool) {
 /// Run one control-plane API command. Each entry connects on its own so the
 /// top-level dispatch owns every CLI variant without a shared dispatcher.
 pub(crate) async fn session_command(command: session_command::Command, json: bool) -> Result<()> {
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    let (client, endpoint) = crate::target::connect().await?;
     session(&client, &endpoint, command, json).await
 }
 
@@ -50,13 +50,13 @@ pub(crate) async fn agent_command(command: agent_command::Command, json: bool) -
                   --route, --memory, --gpu, --github-token, or --clear-github-token"
         );
     }
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    let (client, endpoint) = crate::target::connect().await?;
     agent(&client, &endpoint, command, json).await
 }
 
 /// Run one cost API command.
 pub(crate) async fn cost_command(args: cost_command::Args, json: bool) -> Result<()> {
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    let (client, endpoint) = crate::target::connect().await?;
     cost(&client, &endpoint, args, json).await
 }
 

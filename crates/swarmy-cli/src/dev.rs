@@ -1,4 +1,3 @@
-use swarmy_cloud::ssh as remote_ssh;
 mod process;
 
 use std::{
@@ -202,14 +201,8 @@ pub(crate) async fn run(command: Command, json: bool, allow_version_mismatch: bo
             let layout = local(json)?;
             let _lock = layout.lock()?;
             stop_services(&layout.state).await?;
-            let remote = layout.state.join("remote").exists()
-                || Settings::load_base()?.settings.remote.profile.is_some();
-            if remote {
-                println!("services: down; remote stack preserved");
-            } else {
-                stack(&layout, "stop").await?;
-                println!("services and stack: down");
-            }
+            stack(&layout, "stop").await?;
+            println!("services and stack: down");
             Ok(())
         }
         Command::Status => status(&local(json)?).await,
@@ -380,26 +373,6 @@ pub(crate) async fn check_versions(
     Ok(())
 }
 
-async fn node_services(layout: &Layout) -> Result<bool> {
-    let base = Settings::load_base()?.settings;
-    if let Some(name) = &base.remote.profile {
-        let node: swarmy_config::RemoteNode = serde_json::from_slice(&fs::read(
-            swarmy_config::remote_path(Path::new(&base.state_dir), name, "json")?,
-        )?)?;
-        if node
-            .launch_settings
-            .as_ref()
-            .is_some_and(|settings| settings.services == swarmy_config::RemoteServices::Node)
-        {
-            stop_services(&layout.state).await?;
-            prepare_stack(layout, Some(name)).await?;
-            println!("services: running on node {name}; no local services started");
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 fn ensure_keyring() -> Result<()> {
     let keyring_path = swarmy_config::Keyring::path()?;
     match swarmy_config::Keyring::read(&keyring_path) {
@@ -429,9 +402,6 @@ async fn up(
     core_bin: Option<PathBuf>,
     no_image: bool,
 ) -> Result<()> {
-    if node_services(layout).await? {
-        return Ok(());
-    }
     ensure_keyring()?;
     let core = resolve_core(core_bin, None).await?;
     check_versions(&core, allow_version_mismatch).await?;
@@ -444,13 +414,23 @@ async fn up(
         println!("replacing recorded processes: {}", survivors.join(", "));
     }
     stop_services(&layout.state).await?;
-    let remote = Settings::load_base()?.settings.remote.profile;
-    prepare_stack(layout, remote.as_deref()).await?;
-    let settings = prepare_settings(layout, remote.is_some())?;
+    prepare_stack(layout).await?;
+    let settings = prepare_settings(layout)?;
     let mut pid = launch(layout, &core.path, &settings).await?;
-    if remote.is_none() && !no_image {
+    let api_url = settings
+        .api
+        .url
+        .clone()
+        .unwrap_or_else(|| format!("http://{}", settings.api.listen));
+    crate::swarm_command::register_dev(
+        swarmy_config::paths::Dirs::from_env(&layout.environment)?,
+        &api_url,
+        &settings.api.token,
+    )?;
+    if !no_image {
         match settings.selection.default_image.as_deref() {
             None => match crate::image::pull_release_image(
+                Some((&api_url, &settings.api.token)),
                 &image_cache()?,
                 swarmy_version::RELEASE_TAG,
                 swarmy_cloud::release::Target::host()?,
@@ -562,47 +542,28 @@ async fn launch(layout: &Layout, core: &Path, settings: &Settings) -> Result<u32
     Ok(pid)
 }
 
-async fn prepare_stack(layout: &Layout, remote: Option<&str>) -> Result<()> {
-    if remote.is_none() {
-        // CI and manual users may already have started the backing stack.
-        let running = stack(layout, "status").await?;
-        if running
-            .lines()
-            .filter(|line| line.contains(": up (pid "))
-            .count()
-            != 3
-            || !layout.stack.join("env").is_file()
-        {
-            stack(layout, "start").await?;
-        }
-    }
-    let marker = layout.state.join("remote");
-    if let Some(name) = remote {
-        let profile = swarmy_config::RemoteProfile::read(
-            Path::new(&Settings::load_base()?.settings.state_dir),
-            name,
-        )?;
-        ensure!(
-            remote_ssh::healthy(&profile).await,
-            "remote tunnel is down; run swarmy remote connect {name}"
-        );
-        swarmy_config::write_private(&marker, name.as_bytes())?;
-    } else if marker.exists() {
-        fs::remove_file(&marker)?;
+async fn prepare_stack(layout: &Layout) -> Result<()> {
+    let running = stack(layout, "status").await?;
+    if running
+        .lines()
+        .filter(|line| line.contains(": up (pid "))
+        .count()
+        != 3
+        || !layout.stack.join("env").is_file()
+    {
+        stack(layout, "start").await?;
     }
     Ok(())
 }
 
-fn prepare_settings(layout: &Layout, remote: bool) -> Result<Settings> {
+fn prepare_settings(layout: &Layout) -> Result<Settings> {
     let mut settings = if layout.config.exists() {
         Settings::read(&layout.config)?
     } else {
         Settings::default()
     };
-    if !remote {
-        let exports = swarmy_config::parse_exports(&fs::read_to_string(layout.stack.join("env"))?)?;
-        settings.apply_environment(&exports)?;
-    }
+    let exports = swarmy_config::parse_exports(&fs::read_to_string(layout.stack.join("env"))?)?;
+    settings.apply_environment(&exports)?;
     settings.fill_default_locations(
         &layout.root,
         swarmy_config::project_root(&layout.config).is_some(),

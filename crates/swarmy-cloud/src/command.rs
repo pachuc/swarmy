@@ -161,26 +161,6 @@ pub enum Command {
     Logs { name: String },
 }
 
-/// Re-exec before starting threads instead of mutating the process environment.
-///
-/// # Errors
-///
-/// Rejects invalid remote names and reports failures to re-exec the process.
-pub fn select(name: Option<&str>) -> crate::Result<()> {
-    if let Some(name) = name {
-        swarmy_config::validate_remote_name(name)?;
-        if std::env::var("SWARMY_REMOTE").as_deref() != Ok(name) {
-            use std::os::unix::process::CommandExt;
-            return Err(std::process::Command::new(std::env::current_exe()?)
-                .args(std::env::args_os().skip(1))
-                .env("SWARMY_REMOTE", name)
-                .exec()
-                .into());
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]

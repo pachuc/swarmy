@@ -133,7 +133,11 @@ impl Registry {
         if spec.is_none() && record.is_none() {
             return Err(Error::UnknownSwarm(name.to_owned()));
         }
-        Ok(Swarm { name: name.to_owned(), spec, record })
+        Ok(Swarm {
+            name: name.to_owned(),
+            spec,
+            record,
+        })
     }
     /// Register an API swarmy does not manage. Re-attaching keeps `created_at`.
     /// # Errors
@@ -141,16 +145,27 @@ impl Registry {
     pub fn attach(&self, name: &str, url: &str, token: &str) -> Result<(), Error> {
         let path = self.spec_path(name)?;
         if self.read_spec(name)?.is_some() {
-            return Err(Error::Registry(format!("swarm \"{name}\" is managed by swarmy (spec {}); attach registers only APIs swarmy does not manage", path.display())));
+            return Err(Error::Registry(format!(
+                "swarm \"{name}\" is managed by swarmy (spec {}); attach registers only APIs swarmy does not manage",
+                path.display()
+            )));
         }
         let old = self.read_record(name)?;
-        if old.as_ref().is_some_and(|r| !r.hosts.is_empty() || r.tofu_state.is_some()) {
-            return Err(Error::Registry(format!("swarm \"{name}\" has machines recorded; attach registers only APIs swarmy does not manage")));
+        if old
+            .as_ref()
+            .is_some_and(|r| !r.hosts.is_empty() || r.tofu_state.is_some())
+        {
+            return Err(Error::Registry(format!(
+                "swarm \"{name}\" has machines recorded; attach registers only APIs swarmy does not manage"
+            )));
         }
         self.write_record(&SwarmRecord {
             name: name.to_owned(),
             created_at: old.map_or_else(jiff::Timestamp::now, |r| r.created_at),
-            api: SwarmApi { url: Some(url.to_owned()), token: Some(token.to_owned()) },
+            api: SwarmApi {
+                url: Some(url.to_owned()),
+                token: Some(token.to_owned()),
+            },
             hosts: Default::default(),
             tofu_state: None,
         })

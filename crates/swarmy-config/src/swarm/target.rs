@@ -60,8 +60,17 @@ pub fn resolve(
 /// Returns resolution, environment, or directory errors.
 pub fn resolve_process(flag: Option<&str>) -> Result<(Registry, Target), Error> {
     let environment = crate::process_environment(|key| {
-        matches!(key, "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_STATE_HOME"
-            | "XDG_CACHE_HOME" | "SWARMY_SWARM" | "SWARMY_API_URL" | "SWARMY_API_TOKEN")
+        matches!(
+            key,
+            "HOME"
+                | "XDG_CONFIG_HOME"
+                | "XDG_DATA_HOME"
+                | "XDG_STATE_HOME"
+                | "XDG_CACHE_HOME"
+                | "SWARMY_SWARM"
+                | "SWARMY_API_URL"
+                | "SWARMY_API_TOKEN"
+        )
     })?;
     let registry = Registry::new(crate::paths::Dirs::from_env(&environment)?);
     let target = resolve(&registry, flag, &environment)?;
@@ -95,9 +104,7 @@ mod tests {
         assert!(
             matches!(resolve(&registry,Some("flag"),&env).unwrap(),Target::Swarm(s) if s.name=="flag")
         );
-        assert!(
-            matches!(resolve(&registry,None,&env).unwrap(),Target::Swarm(s) if s.name=="env")
-        );
+        assert!(matches!(resolve(&registry,None,&env).unwrap(),Target::Swarm(s) if s.name=="env"));
         env.insert("SWARMY_SWARM".into(), String::new());
         assert!(
             matches!(resolve(&registry,None,&env).unwrap(),Target::Endpoint{url,token} if url=="http://localhost" && token=="secret")
@@ -115,9 +122,7 @@ mod tests {
         ));
         env.insert("SWARMY_API_URL".into(), String::new());
         env.insert("SWARMY_API_TOKEN".into(), "secret".into());
-        assert!(
-            matches!(resolve(&registry,None,&env).unwrap(),Target::Swarm(s) if s.name=="cur")
-        );
+        assert!(matches!(resolve(&registry,None,&env).unwrap(),Target::Swarm(s) if s.name=="cur"));
         assert!(matches!(
             resolve(&registry, Some("missing"), &env),
             Err(Error::UnknownSwarm(_))

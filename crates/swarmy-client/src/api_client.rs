@@ -3,14 +3,32 @@ use crate::{Client, Error};
 
 /// The selected API, either directly reachable or requiring an SSH tunnel.
 pub enum Api {
-    Direct { url: String, token: String },
-    Tunnel { swarm: String, dir: std::path::PathBuf, host: Box<swarmy_config::swarm::RecordedHost>, token: String },
+    Direct {
+        url: String,
+        token: String,
+    },
+    Tunnel {
+        swarm: String,
+        dir: std::path::PathBuf,
+        host: Box<swarmy_config::swarm::RecordedHost>,
+        token: String,
+    },
 }
 impl std::fmt::Debug for Api {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Direct { url, .. } => f.debug_struct("Direct").field("url", url).finish_non_exhaustive(),
-            Self::Tunnel { swarm, dir, host, .. } => f.debug_struct("Tunnel").field("swarm", swarm).field("dir", dir).field("host", host).finish_non_exhaustive(),
+            Self::Direct { url, .. } => f
+                .debug_struct("Direct")
+                .field("url", url)
+                .finish_non_exhaustive(),
+            Self::Tunnel {
+                swarm, dir, host, ..
+            } => f
+                .debug_struct("Tunnel")
+                .field("swarm", swarm)
+                .field("dir", dir)
+                .field("host", host)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -22,35 +40,65 @@ pub fn resolve(flag: Option<&str>) -> Result<Api, Error> {
 }
 /// # Errors
 /// Returns errors for incomplete swarm records and missing services hosts.
-pub fn select_api(registry: &swarmy_config::swarm::Registry, target: swarmy_config::swarm::Target) -> Result<Api, Error> {
+pub fn select_api(
+    registry: &swarmy_config::swarm::Registry,
+    target: swarmy_config::swarm::Target,
+) -> Result<Api, Error> {
     use swarmy_config::swarm::Target;
     let Target::Swarm(swarm) = target else {
-        let Target::Endpoint { url, token } = target else { unreachable!() };
+        let Target::Endpoint { url, token } = target else {
+            unreachable!()
+        };
         return Ok(Api::Direct { url, token });
     };
     let name = swarm.name;
-    let (url, token) = swarm.record.as_ref().map_or((None, None), |record| (
-        record.api.url.as_ref().filter(|s| !s.is_empty()).cloned(),
-        record.api.token.as_ref().filter(|s| !s.is_empty()).cloned(),
-    ));
+    let (url, token) = swarm.record.as_ref().map_or((None, None), |record| {
+        (
+            record.api.url.as_ref().filter(|s| !s.is_empty()).cloned(),
+            record.api.token.as_ref().filter(|s| !s.is_empty()).cloned(),
+        )
+    });
     if let (Some(url), Some(token)) = (&url, &token) {
-        return Ok(Api::Direct { url: url.clone(), token: token.clone() });
+        return Ok(Api::Direct {
+            url: url.clone(),
+            token: token.clone(),
+        });
     }
-    let Some(spec) = swarm.spec else { return Err(Error::SwarmIncomplete { swarm: name }); };
+    let Some(spec) = swarm.spec else {
+        return Err(Error::SwarmIncomplete { swarm: name });
+    };
     if url.is_some() || token.is_none() {
         return Err(Error::SwarmNotUp { swarm: name });
     }
     let group = spec.placement.services;
-    let host = swarm.record.as_ref().and_then(|record| record.hosts.get(&group)).and_then(|hosts| hosts.first()).ok_or_else(|| Error::SwarmNoHost { swarm: name.clone(), group: group.clone() })?;
-    Ok(Api::Tunnel { dir: registry.swarm_dir(&name)?.join("tunnel"), swarm: name, host: Box::new(host.clone()), token: token.expect("checked above") })
+    let host = swarm
+        .record
+        .as_ref()
+        .and_then(|record| record.hosts.get(&group))
+        .and_then(|hosts| hosts.first())
+        .ok_or_else(|| Error::SwarmNoHost {
+            swarm: name.clone(),
+            group: group.clone(),
+        })?;
+    Ok(Api::Tunnel {
+        dir: registry.swarm_dir(&name)?.join("tunnel"),
+        swarm: name,
+        host: Box::new(host.clone()),
+        token: token.expect("checked above"),
+    })
 }
 /// Connect to an explicit API.
 /// # Errors
 /// Returns `MissingToken` or `InvalidEndpoint` for invalid credentials or URL.
 pub fn connect_to(url: &str, token: String) -> Result<(Client, String), Error> {
-    if token.is_empty() { return Err(Error::MissingToken); }
+    if token.is_empty() {
+        return Err(Error::MissingToken);
+    }
     let client = Client::new(url, token).map_err(|error| match error {
-        Error::Url(source) => Error::InvalidEndpoint { endpoint: url.into(), source },
+        Error::Url(source) => Error::InvalidEndpoint {
+            endpoint: url.into(),
+            source,
+        },
         error => error,
     })?;
     Ok((client, url.into()))

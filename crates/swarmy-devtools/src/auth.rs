@@ -7,7 +7,7 @@ use swarmy_llm::auth::{CredentialStore as _, FileCredentialStore};
 
 pub(crate) async fn run(command: Command, auth_file: Option<PathBuf>, json: bool) -> Result<()> {
     let settings = Settings::load()?.settings;
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    let (client, endpoint) = swarmy_client::api_client::connect(None)?;
     match command {
         Command::Import { file, label } => {
             let path = file

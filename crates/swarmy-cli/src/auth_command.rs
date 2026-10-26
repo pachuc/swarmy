@@ -161,14 +161,14 @@ pub(crate) async fn run(command: Command, auth_file: Option<PathBuf>, json: bool
             helper(auth_file, json, &argv)
         }
         Command::Set(args) => {
-            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            let (client, endpoint) = crate::target::connect().await?;
             crate::api_commands::auth_set(&client, &endpoint, args, json).await
         }
         Command::Ls => list(json).await,
         Command::Check { provider, label } => check(provider, label, json).await,
         Command::Rm { provider, label } => remove(provider, label, json).await,
         Command::Routes { command } => {
-            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            let (client, endpoint) = crate::target::connect().await?;
             crate::api_commands::routes(&client, &endpoint, command, json).await
         }
         Command::Quota {
@@ -177,7 +177,7 @@ pub(crate) async fn run(command: Command, auth_file: Option<PathBuf>, json: bool
             since,
             until,
         } => {
-            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            let (client, endpoint) = crate::target::connect().await?;
             crate::api_commands::quota(
                 &client,
                 &endpoint,
@@ -194,7 +194,7 @@ pub(crate) async fn run(command: Command, auth_file: Option<PathBuf>, json: bool
 
 /// List credential metadata without printing secrets.
 async fn list(json: bool) -> Result<()> {
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    let (client, endpoint) = crate::target::connect().await?;
     for summary in swarmy_client::api_client::call(&endpoint, client.credentials()).await? {
         crate::api_commands::auth_display(&summary, json, false);
     }
@@ -203,7 +203,7 @@ async fn list(json: bool) -> Result<()> {
 
 /// Decrypt and inspect one or all credentials, failing when none is ready.
 async fn check(provider: Option<String>, label: Option<String>, json: bool) -> Result<()> {
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    let (client, endpoint) = crate::target::connect().await?;
     let rows: Vec<_> = swarmy_client::api_client::call(&endpoint, client.credentials())
         .await?
         .into_iter()
@@ -238,7 +238,7 @@ async fn check(provider: Option<String>, label: Option<String>, json: bool) -> R
 
 /// Remove one labelled credential.
 async fn remove(provider: String, label: String, json: bool) -> Result<()> {
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    let (client, endpoint) = crate::target::connect().await?;
     swarmy_client::api_client::call(
         &endpoint,
         client.remove_credential_entry(&provider, &label, &ulid::Ulid::generate().to_string()),

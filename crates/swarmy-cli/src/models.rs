@@ -29,7 +29,7 @@ pub(crate) async fn run(command: Command, json: bool) -> anyhow::Result<()> {
             provider,
             reasoning,
         } => {
-            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            let (client, endpoint) = crate::target::connect().await?;
             if let Some(id) = &provider {
                 known_provider(&client, &endpoint, id).await?;
             }
@@ -41,7 +41,7 @@ pub(crate) async fn run(command: Command, json: bool) -> anyhow::Result<()> {
             print_models(&rows, json)
         }
         Command::Show { model } => {
-            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            let (client, endpoint) = crate::target::connect().await?;
             let (provider, id) = model.split_once('/').context("expected PROVIDER/MODEL")?;
             known_provider(&client, &endpoint, provider).await?;
             let rows = swarmy_client::api_client::call(
@@ -59,7 +59,7 @@ pub(crate) async fn run(command: Command, json: bool) -> anyhow::Result<()> {
             Ok(())
         }
         Command::Search { pattern } => {
-            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            let (client, endpoint) = crate::target::connect().await?;
             let rows = swarmy_client::api_client::call(
                 &endpoint,
                 client.models_filtered(Some(&pattern), None, false),
@@ -69,7 +69,7 @@ pub(crate) async fn run(command: Command, json: bool) -> anyhow::Result<()> {
             print_models(&rows, json)
         }
         Command::Providers => {
-            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            let (client, endpoint) = crate::target::connect().await?;
             let rows = swarmy_client::api_client::call(&endpoint, client.providers()).await?;
             if json {
                 println!("{}", serde_json::to_string(&rows)?);

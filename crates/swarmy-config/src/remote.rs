@@ -356,7 +356,9 @@ impl<'de> Deserialize<'de> for RemoteSettings {
     {
         let helper = RemoteSettingsHelper::deserialize(deserializer)?;
         if helper.profile.is_some() {
-            return Err(serde::de::Error::custom("[remote] profile was removed; select a swarm with --swarm NAME, SWARMY_SWARM, or swarmy swarm use NAME"));
+            return Err(serde::de::Error::custom(
+                "[remote] profile was removed; select a swarm with --swarm NAME, SWARMY_SWARM, or swarmy swarm use NAME",
+            ));
         }
         // Keep an absent service user empty so saved node records fall back to
         // the SSH login they were provisioned with. Configuration files fill
@@ -636,7 +638,6 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use std::collections::BTreeMap;
-
 
     #[test]
     fn aws_sub_table_rejects_flat_keys() {

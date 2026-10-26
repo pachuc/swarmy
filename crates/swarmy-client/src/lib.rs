@@ -33,15 +33,25 @@ pub enum Error {
     Timeout,
     #[error("API configuration error: {0}")]
     Config(#[from] swarmy_config::Error),
-    #[error("the selected API has an empty token; set SWARMY_API_TOKEN or re-attach the swarm with --token-stdin")]
+    #[error(
+        "the selected API has an empty token; set SWARMY_API_TOKEN or re-attach the swarm with --token-stdin"
+    )]
     MissingToken,
-    #[error("swarm \"{swarm}\" has no API recorded yet: bring it up first, or register a running API with `swarmy swarm attach {swarm} --url URL --token-stdin`")]
+    #[error(
+        "swarm \"{swarm}\" has no API recorded yet: bring it up first, or register a running API with `swarmy swarm attach {swarm} --url URL --token-stdin`"
+    )]
     SwarmNotUp { swarm: String },
-    #[error("swarm \"{swarm}\" records no machine in its services group \"{group}\"; bring it up first")]
+    #[error(
+        "swarm \"{swarm}\" records no machine in its services group \"{group}\"; bring it up first"
+    )]
     SwarmNoHost { swarm: String, group: String },
-    #[error("swarm \"{swarm}\" has no spec and no API URL; forget it with `swarmy swarm rm {swarm}`")]
+    #[error(
+        "swarm \"{swarm}\" has no spec and no API URL; forget it with `swarmy swarm rm {swarm}`"
+    )]
     SwarmIncomplete { swarm: String },
-    #[error("swarm \"{swarm}\" serves its API over SSH; use the swarmy CLI, which opens the tunnel")]
+    #[error(
+        "swarm \"{swarm}\" serves its API over SSH; use the swarmy CLI, which opens the tunnel"
+    )]
     NeedsTunnel { swarm: String },
     #[error("invalid API endpoint {endpoint}: {source}")]
     InvalidEndpoint {

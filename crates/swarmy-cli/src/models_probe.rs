@@ -6,7 +6,7 @@ pub(crate) async fn run(args: Args, json: bool) -> anyhow::Result<()> {
         .model
         .split_once('/')
         .context("expected PROVIDER/MODEL")?;
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    let (client, endpoint) = crate::target::connect().await?;
     server_probe(&client, &endpoint, provider, model, &args, json).await
 }
 
