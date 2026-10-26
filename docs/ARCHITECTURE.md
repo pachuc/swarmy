@@ -20,7 +20,7 @@ crate in a tier depends on every lower tier.
   types shared across processes ([source](../crates/swarmy-core/src/lib.rs)).
 - **swarmy-api-types** owns the JSON request and response contracts rather
   than database access ([source](../crates/swarmy-api-types/src/lib.rs)).
-- **swarmy-config** parses settings, including remote profile, object-store configuration, and the client-side cloud credential store ([source](../crates/swarmy-config/src/lib.rs)).
+- **swarmy-config** parses settings, the swarm registry and target resolution, and object-store configuration, including the client-side cloud credential store ([source](../crates/swarmy-config/src/lib.rs)).
 - **swarmy-version** stamps binary compatibility at build time
   ([source](../crates/swarmy-version/src/lib.rs)).
 - **swarmy-aws** builds the one HTTPS client (hyper 1, rustls on ring) that every AWS SDK configuration uses ([source](../crates/swarmy-aws/src/lib.rs)).

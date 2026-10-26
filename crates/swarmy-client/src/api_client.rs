@@ -45,11 +45,9 @@ pub fn select_api(
     target: swarmy_config::swarm::Target,
 ) -> Result<Api, Error> {
     use swarmy_config::swarm::Target;
-    let Target::Swarm(swarm) = target else {
-        let Target::Endpoint { url, token } = target else {
-            unreachable!()
-        };
-        return Ok(Api::Direct { url, token });
+    let swarm = match target {
+        Target::Endpoint { url, token } => return Ok(Api::Direct { url, token }),
+        Target::Swarm(swarm) => swarm,
     };
     let name = swarm.name;
     let (url, token) = swarm.record.as_ref().map_or((None, None), |record| {

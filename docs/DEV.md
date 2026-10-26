@@ -44,6 +44,8 @@ worker as `release --force` would. The tasky task stays in progress for an
 operator to relaunch or cancel. The wait defaults to `kill_timeout_seconds`
 in `fleet.toml`, or 60 seconds if unset; `--timeout-seconds` overrides it.
 
+## Quick start
+
 ### Choosing the target swarm
 
 Client commands choose their API in order: `--swarm NAME`, `SWARMY_SWARM`,
@@ -66,7 +68,6 @@ swarmy --swarm staging session ls
 swarmy swarm rm staging
 ```
 
-## Quick start
 
 Install the pinned backing services using the instructions below. With Rust and
 those binaries installed, run these commands from a clean checkout. The commands
