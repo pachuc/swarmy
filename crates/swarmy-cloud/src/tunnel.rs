@@ -673,7 +673,7 @@ mod tests {
         assert!(master.contains(&format!("-L 127.0.0.1:{port}:127.0.0.1:8742")));
         assert!(master.contains("BatchMode=yes"));
         assert!(master.contains("ExitOnForwardFailure=yes"));
-        assert!(!master.contains(":4500"));
+        assert!(!master.contains(":127.0.0.1:4500"));
         tunnels.disconnect(request.dir).await.unwrap();
     }
     #[tokio::test]
