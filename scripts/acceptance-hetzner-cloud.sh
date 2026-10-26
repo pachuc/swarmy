@@ -115,6 +115,7 @@ step() {
     echo "== $label" >&2
     remaining=$((deadline - SECONDS))
     ((remaining > 0)) || fail "max runtime reached before $label"
+    # Background steps may ignore INT; TERM reaches both swarmy and OpenTofu.
     timeout --signal=TERM --kill-after=60 "$remaining" "$@" &
     step_pid=$!
     wait "$step_pid" || status=$?
