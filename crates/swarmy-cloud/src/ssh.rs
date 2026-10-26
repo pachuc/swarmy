@@ -929,6 +929,78 @@ pub async fn start_units(node: &Machine) -> Result<()> {
     run_piped(node, "start swarmy units", "start_installed_units").await
 }
 
+/// Remove a destroyed machine's address from the group's shared known-hosts file.
+/// `ssh-keygen -R` also removes hashed entries, which a text filter cannot find.
+/// # Errors
+/// Reports a failed `ssh-keygen` invocation; callers may handle it as best effort.
+pub fn forget_host_key(address: &str, key: &Path) -> Result<()> {
+    let known_hosts = key.with_extension("known_hosts");
+    if !known_hosts.is_file() {
+        return Ok(());
+    }
+    let status = std::process::Command::new("ssh-keygen")
+        .args(["-R", address, "-f"])
+        .arg(&known_hosts)
+        .status()?;
+    crate::Error::ensure(
+        status.success(),
+        format!("ssh-keygen -R failed with {status}"),
+    )
+}
+
+/// Result of waiting for a node and stopping its agent.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct Drain {
+    pub stopped: bool,
+    pub busy: Vec<String>,
+    pub unreleased: Vec<String>,
+}
+
+/// Drain a node, then cleanly stop its agent.
+/// # Errors
+/// SSH failures, a non-zero helper exit, or a missing or invalid drain line.
+pub async fn drain_node(node: &Machine, timeout: Duration, force: bool) -> Result<Drain> {
+    let address = wait_ssh_for(node, 6).await?;
+    let script = piped_env()
+        + &format!(
+            "set -euo pipefail\ndrain_node_agent {} {} {}\n",
+            shell_words::quote(&service_user(node)?),
+            timeout.as_secs(),
+            if force { "force" } else { "wait" }
+        );
+    let output = pipe_script(node, &address, "drain node", &script).await?;
+    let text = String::from_utf8(output.stdout)?;
+    let line = text
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("drain "))
+        .ok_or_else(|| crate::Error::other("drain node returned no drain line"))?;
+    Ok(serde_json::from_str(line)?)
+}
+
+/// Remove a node's tunnel key from the primary's service-user `authorized_keys`.
+/// # Errors
+/// SSH failures, or a node without a tunnel key.
+pub async fn revoke_tunnel(node: &Machine, primary: &Machine) -> Result<()> {
+    let user = service_user(node)?;
+    let key = run_output(
+        base(node)?
+            .arg(wait_ssh_for(node, 6).await?)
+            .arg(format!("cat {}/.swarmy/tunnel-key.pub", tilde_repo(&user))),
+        "read joining node tunnel key",
+    )
+    .await?;
+    let authorization = tunnel_authorization(&String::from_utf8(key.stdout)?)?;
+    let command = authorized_keys_command(primary, &authorization, true)?;
+    checked(
+        base(primary)?
+            .arg(wait_ssh_for(primary, 6).await?)
+            .arg(command),
+        "revoke joining node tunnel key",
+    )
+    .await
+}
+
 fn image_build_command(user: &str, recipe: &Path, tag: &str) -> Result<String> {
     let recipe = recipe
         .to_str()
@@ -987,6 +1059,29 @@ fn pin_primary_key_command(node: &Machine, known_host: &str) -> Result<String> {
     ))
 }
 
+// The service user's authorized_keys lives at its account home, not at the
+// bootstrap login's home. Both installation and revocation use this path.
+fn authorized_keys_command(primary: &Machine, authorization: &str, revoke: bool) -> Result<String> {
+    let user = service_user(primary)?;
+    let home = format!("~{user}");
+    let file = format!("{home}/.ssh/authorized_keys");
+    let line = shell_words::quote(authorization);
+    if revoke {
+        // Grep exit 1 means no matching line; exit 2 must never replace the file.
+        let inner = format!(
+            "umask 077; grep -vxF -- {line} {file} > {file}.tmp; status=$?; if [ \"$status\" -le 1 ]; then mv {file}.tmp {file}; else rm -f {file}.tmp; exit \"$status\"; fi"
+        );
+        Ok(format!(
+            "sudo -u {user} sh -c {}",
+            shell_words::quote(&inner)
+        ))
+    } else {
+        Ok(format!(
+            "service_user={user}; service_home={home}; umask 077; sudo -u $service_user mkdir -p $service_home/.ssh && sudo -u $service_user touch $service_home/.ssh/authorized_keys && (sudo -u $service_user grep -qxF -- {line} $service_home/.ssh/authorized_keys || printf '%s\\n' {line} | sudo -u $service_user tee -a $service_home/.ssh/authorized_keys >/dev/null)"
+        ))
+    }
+}
+
 // Generate the forwarding key on its owner; the primary login key never leaves the client.
 async fn install_tunnel(
     node: &Machine,
@@ -1003,11 +1098,13 @@ async fn install_tunnel(
     let authorization = tunnel_authorization(&key)?;
     // The tunnel unit connects as the service user, so its key belongs in the
     // service user's authorized_keys, not the bootstrap login's.
-    let primary_user = service_user(primary)?;
-    checked(base(primary)?.arg(source).arg(format!(
-        "service_user={primary_user}; service_home=~{primary_user}; umask 077; sudo -u $service_user mkdir -p $service_home/.ssh && sudo -u $service_user touch $service_home/.ssh/authorized_keys && (sudo -u $service_user grep -qxF -- {0} $service_home/.ssh/authorized_keys || printf '%s\\n' {0} | sudo -u $service_user tee -a $service_home/.ssh/authorized_keys >/dev/null)",
-        shell_words::quote(&authorization)
-    )), "authorize joining node tunnel").await?;
+    checked(
+        base(primary)?
+            .arg(source)
+            .arg(authorized_keys_command(primary, &authorization, false)?),
+        "authorize joining node tunnel",
+    )
+    .await?;
     // Obtain the host key over the already authenticated provisioning connection.
     let host_key = run_output(
         base(primary)?
@@ -1376,6 +1473,19 @@ mod provisioning_command_tests {
             bucket: None,
             services: true,
         }
+    }
+
+    #[test]
+    fn revoke_only_moves_authorized_keys_after_a_successful_grep() {
+        let command =
+            super::authorized_keys_command(&node(), "ssh-ed25519 AAAA test", true).unwrap();
+        let words = shell_words::split(&command).unwrap();
+        assert_eq!(&words[..4], &["sudo", "-u", "swarmy", "sh"]);
+        let inner = words.last().unwrap();
+        assert!(inner.starts_with("umask 077; grep -vxF"));
+        assert!(inner.contains("status=$?; if [ \"$status\" -le 1 ]; then mv"));
+        assert!(inner.contains("else rm -f"));
+        assert!(inner.contains("~swarmy/.ssh/authorized_keys"));
     }
 
     #[test]
