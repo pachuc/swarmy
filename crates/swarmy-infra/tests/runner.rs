@@ -377,6 +377,8 @@ async fn missing_binary_and_bad_output() {
     let tofu = Tofu::from_binary(
         fake_tofu(
             fixture.path(),
+            // Emit malformed output directly so this checks the output parser,
+            // not a file read from the fake runner's auxiliary JSON fixture.
             r#"case "$1" in output) printf '{}' ;; esac"#,
             "{}",
         ),

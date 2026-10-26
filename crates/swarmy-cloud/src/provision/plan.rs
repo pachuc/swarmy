@@ -54,7 +54,7 @@ pub(super) fn plan(spec: &SwarmSpec, sources: Vec<HostSource>) -> Result<Vec<Pla
         let group = &spec.groups[&source.group];
         let primary = source.group == *stack && index == 0;
         let sandboxes = if primary && !stack_nodes { 0 } else { group.sandboxes.unwrap_or(swarmy_config::default_sandboxes()) };
-        let local_storage = group.local_storage.clone().unwrap_or_else(|| if group.module == Module::Existing { String::new() } else { "dir:/srv/swarmy-local".into() });
+        let local_storage = storage(group);
         if sandboxes > 0 && local_storage.is_empty() {
             return Err(Error::other(format!("group \"{}\": hosts that run sandboxes need local_storage (a block device or dir:/path), or set sandboxes = 0", source.group)));
         }

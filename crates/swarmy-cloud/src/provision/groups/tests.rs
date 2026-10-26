@@ -65,6 +65,8 @@ case "$1" in
     bucket=$(python3 -c 'import json; print(json.load(open("swarmy.tfvars.json"))["bucket_name"])')
     if test "${{AWS_ACCESS_KEY_ID:-}}" != ""; then
       printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":"10.0.0.10","ssh_user":"ubuntu"}}]}}}}\n'
+    elif test "$group" = control && test "$bucket" = "" && test -f '{fixture}/control-no-bucket-private'; then
+      printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":"10.0.0.10","ssh_user":"root"}}]}}}}\n'
     elif test "$group" = control && test "$bucket" = ""; then
       printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":null,"ssh_user":"root"}}]}}}}\n'
     elif test "$group" = control; then
@@ -136,33 +138,26 @@ esac
             credentials: &self.credentials,
         }
     }
+    fn request<'a>(&'a self, settings: &'a Settings) -> Result<UpRequest<'a>> {
+        Ok(UpRequest {
+            registry: &self.registry,
+            spec: &self.spec,
+            sources: existing_sources(&self.spec, &self.registry.swarm_dir(&self.spec.name)?)?,
+            settings,
+            copy_credential: false,
+            recipe: None,
+            cache: self.temp.path(),
+            bucket_keys: None,
+            machines: Some(self.machines()),
+        })
+    }
     fn up<'a>(
         &'a self,
         host: &'a FakeHost,
     ) -> impl Future<Output = Result<Vec<crate::provision::HostReport>>> + 'a {
         let mut settings = Settings::default();
         settings.selection.provider = "fake".into();
-        // Settings is owned by the returned future, keeping its borrow alive.
-        async move {
-            provision_swarm_with(
-                host,
-                UpRequest {
-                    registry: &self.registry,
-                    spec: &self.spec,
-                    sources: existing_sources(
-                        &self.spec,
-                        &self.registry.swarm_dir(&self.spec.name)?,
-                    )?,
-                    settings: &settings,
-                    copy_credential: false,
-                    recipe: None,
-                    cache: self.temp.path(),
-                    bucket_keys: None,
-                    machines: Some(self.machines()),
-                },
-            )
-            .await
-        }
+        async move { provision_swarm_with(host, self.request(&settings)?).await }
     }
     fn log(&self) -> String {
         fs::read_to_string(self.temp.path().join("tofu.log")).unwrap_or_default()
@@ -193,13 +188,41 @@ async fn cloud_swarm_applies_in_order_and_provisions_through_the_shared_path() {
     );
     let record = f.registry.read_record("fleet").unwrap().unwrap();
     let bucket = record.tofu_bucket.as_deref().unwrap();
-    assert!(bucket.starts_with("swarmy-fleet-") && bucket.len() == 25);
+    let suffix = bucket.strip_prefix("swarmy-fleet-").unwrap();
+    assert_eq!(suffix.len(), 12);
+    assert!(
+        suffix
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+    );
     let control: Value =
         serde_json::from_slice(&fs::read(f.temp.path().join("applied-control-1.json")).unwrap())
             .unwrap();
     let workers: Value =
         serde_json::from_slice(&fs::read(f.temp.path().join("applied-workers-1.json")).unwrap())
             .unwrap();
+    let expected_keys = [
+        "swarm",
+        "group",
+        "machine_count",
+        "size",
+        "location",
+        "ssh_public_key",
+        "ssh_allowed_cidrs",
+        "bucket_name",
+        "bucket_force_destroy",
+        "network_id",
+    ];
+    for vars in [&control, &workers] {
+        let keys: std::collections::BTreeSet<_> = vars
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, expected_keys.into_iter().collect());
+    }
+    assert_eq!(control["network_id"], "");
     assert_eq!(control["bucket_name"], bucket);
     assert_eq!(workers["bucket_name"], "");
     assert_eq!(workers["network_id"], "4711");
@@ -212,18 +235,42 @@ async fn cloud_swarm_applies_in_order_and_provisions_through_the_shared_path() {
     assert_eq!(record.hosts.values().map(Vec::len).sum::<usize>(), 3);
     assert!(record.hosts.values().flatten().all(|h| h.provisioned));
     assert_eq!(
-        record.tofu_state.unwrap(),
-        f.registry.swarm_dir("fleet").unwrap().join("tofu")
+        record.tofu_state.as_ref().unwrap(),
+        &f.registry.swarm_dir("fleet").unwrap().join("tofu")
     );
     assert!(record.bucket_keys.is_none());
     assert_eq!(
-        host.calls()
-            .iter()
-            .filter(|s| s.starts_with("ready "))
-            .count(),
-        3
+        host.calls(),
+        [
+            "ready fleet-control-1".to_owned(),
+            format!("provision fleet-control-1 primary=none bucket={bucket}"),
+            "services fleet-control-1".to_owned(),
+            "token fleet-control-1".to_owned(),
+            "ready fleet-workers-1".to_owned(),
+            format!("provision fleet-workers-1 primary=fleet-control-1 bucket={bucket}"),
+            "ready fleet-workers-2".to_owned(),
+            format!("provision fleet-workers-2 primary=fleet-control-1 bucket={bucket}"),
+        ]
+    );
+    assert_group_keys_and_environment(&f, &record);
+}
+
+fn assert_group_keys_and_environment(f: &Fixture, record: &SwarmRecord) {
+    let swarm_dir = f.registry.swarm_dir("fleet").unwrap();
+    assert_eq!(
+        fs::metadata(swarm_dir.join("keys/groups"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
     );
     for group in ["control", "workers"] {
+        assert!(
+            record.hosts[group]
+                .iter()
+                .all(|h| h.ssh_key == swarm_dir.join("keys/groups").join(group))
+        );
         let key = f
             .registry
             .swarm_dir("fleet")
@@ -235,8 +282,98 @@ async fn cloud_swarm_applies_in_order_and_provisions_through_the_shared_path() {
             0o600
         );
     }
-    assert!(!f.log().contains("env fake"));
-    assert!(f.log().contains("AWS_SHARED_CREDENTIALS_FILE=/dev/null"));
+    for call in f.log().split("call ").skip(1) {
+        assert!(call.contains("HCLOUD_TOKEN=hcloud-secret-5f2b9c"));
+        assert!(call.contains("MINIO_PASSWORD=s3-secret-91d0"));
+        assert!(call.contains("AWS_SHARED_CREDENTIALS_FILE=/dev/null"));
+    }
+}
+
+#[tokio::test]
+async fn second_up_reapplies_both_groups_without_reprovisioning() {
+    let f = Fixture::new();
+    let host = FakeHost::new();
+    f.up(&host).await.unwrap();
+    let bucket = f
+        .registry
+        .read_record("fleet")
+        .unwrap()
+        .unwrap()
+        .tofu_bucket
+        .unwrap();
+    let before = host.calls();
+    f.up(&host).await.unwrap();
+    assert_eq!(host.calls(), before);
+    assert_eq!(
+        f.registry
+            .read_record("fleet")
+            .unwrap()
+            .unwrap()
+            .tofu_bucket
+            .as_deref(),
+        Some(bucket.as_str())
+    );
+    assert_eq!(
+        f.log()
+            .lines()
+            .filter(|line| *line == "call control apply")
+            .count(),
+        2
+    );
+    assert_eq!(
+        f.log()
+            .lines()
+            .filter(|line| *line == "call workers apply")
+            .count(),
+        2
+    );
+    assert!(f.temp.path().join("applied-control-2.json").is_file());
+    assert!(f.temp.path().join("applied-workers-2.json").is_file());
+}
+
+#[tokio::test]
+async fn incompatible_network_locations_fail_before_any_tofu_call() {
+    let mut f = Fixture::new();
+    f.spec.groups.get_mut("workers").unwrap().location = Some("ash".into());
+    let error = f.up(&FakeHost::new()).await.unwrap_err();
+    let text = error.to_string();
+    assert!(
+        text.contains("control")
+            && text.contains("workers")
+            && text.contains("fsn1")
+            && text.contains("ash"),
+        "{text}"
+    );
+    assert!(f.log().is_empty());
+    assert!(f.registry.read_record("fleet").unwrap().is_none());
+    // fsn1 and nbg1 are in the same Hetzner network zone.
+    f.spec.groups.get_mut("workers").unwrap().location = Some("nbg1".into());
+    f.up(&FakeHost::new()).await.unwrap();
+    let mut aws = Fixture::new();
+    aws.credentials.set(
+        CloudCredential::new(
+            CloudProvider::Aws,
+            vec!["aws-access-example".into(), "aws-secret-example".into()],
+            None,
+        )
+        .unwrap(),
+    );
+    for group in aws.spec.groups.values_mut() {
+        group.module = Module::Aws;
+    }
+    aws.spec.groups.get_mut("control").unwrap().location = Some("eu-west-1".into());
+    aws.spec.groups.get_mut("workers").unwrap().location = Some("us-east-1".into());
+    let error = aws.up(&FakeHost::new()).await.unwrap_err();
+    let text = error.to_string();
+    assert!(
+        text.contains("control")
+            && text.contains("workers")
+            && text.contains("eu-west-1")
+            && text.contains("us-east-1"),
+        "{text}"
+    );
+    assert!(aws.log().is_empty());
+    assert!(aws.registry.read_record("fleet").unwrap().is_none());
 }
 
 #[tokio::test]
@@ -257,19 +394,23 @@ async fn mixed_cloud_stack_with_existing_nodes() {
             "call control output"
         ]
     );
-    let calls = host.calls();
-    assert!(calls.contains(&"ready fleet-control-1".into()));
-    assert!(!calls.contains(&"ready fleet-workers-1".into()));
-    assert!(calls.contains(&"adopt fleet-workers-1".into()));
-    assert!(
-        calls
-            .iter()
-            .any(|call| call.starts_with("provision fleet-control-1 "))
-    );
-    assert!(
-        calls
-            .iter()
-            .any(|call| call.starts_with("provision fleet-workers-1 "))
+    let bucket = f
+        .registry
+        .read_record("fleet")
+        .unwrap()
+        .unwrap()
+        .tofu_bucket
+        .unwrap();
+    assert_eq!(
+        host.calls(),
+        [
+            "ready fleet-control-1".to_owned(),
+            format!("provision fleet-control-1 primary=none bucket={bucket}"),
+            "services fleet-control-1".to_owned(),
+            "token fleet-control-1".to_owned(),
+            "adopt fleet-workers-1".to_owned(),
+            format!("provision fleet-workers-1 primary=fleet-control-1 bucket={bucket}"),
+        ]
     );
     let record = f.registry.read_record("fleet").unwrap().unwrap();
     assert!(record.hosts["control"][0].provisioned);
@@ -319,6 +460,28 @@ async fn down_cleans_existing_hosts_and_destroys_groups_in_reverse() {
     );
     assert!(f.registry.read_record("fleet").unwrap().is_none());
     assert!(!f.registry.swarm_dir("fleet").unwrap().exists());
+    assert!(f.registry.spec_path("fleet").unwrap().is_file());
+    let log = f.log();
+    let tofu_calls: Vec<_> = log
+        .lines()
+        .filter(|line| line.starts_with("call "))
+        .collect();
+    assert_eq!(
+        tofu_calls,
+        [
+            "call control init",
+            "call control apply",
+            "call control output",
+            "call workers init",
+            "call workers apply",
+            "call workers output",
+            "call workers init",
+            "call workers destroy",
+            "call control init",
+            "call control apply",
+            "call control destroy",
+        ]
+    );
 }
 
 #[tokio::test]
@@ -354,16 +517,103 @@ async fn down_destroys_orphan_group_before_groups_in_the_spec() {
 }
 
 #[tokio::test]
+async fn empty_tofu_root_needs_no_runner_to_decommission_existing_hosts() {
+    let mut f = Fixture::new();
+    f.add_existing_group("control");
+    f.add_existing_group("workers");
+    fs::create_dir_all(f.registry.swarm_dir("fleet").unwrap().join("tofu")).unwrap();
+    let host = FakeHost::new();
+    f.up(&host).await.unwrap();
+    decommission_swarm_with(&host, &f.registry, &f.spec, None)
+        .await
+        .unwrap();
+    assert!(
+        host.calls()
+            .contains(&"decommission fleet-control-1".into())
+    );
+    assert!(
+        host.calls()
+            .contains(&"decommission fleet-workers-1".into())
+    );
+    assert!(f.registry.read_record("fleet").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn plan_only_directory_does_not_hide_an_existing_host_from_down() {
+    let mut f = Fixture::new();
+    f.add_existing_group("workers");
+    let host = FakeHost::new();
+    f.up(&host).await.unwrap();
+    fs::create_dir(f.registry.swarm_dir("fleet").unwrap().join("tofu/workers")).unwrap();
+    decommission_swarm_with(&host, &f.registry, &f.spec, Some(f.machines()))
+        .await
+        .unwrap();
+    assert!(
+        host.calls()
+            .contains(&"decommission fleet-workers-1".into())
+    );
+    assert_eq!(
+        f.log()
+            .lines()
+            .filter(|line| line.contains(" destroy"))
+            .collect::<Vec<_>>(),
+        ["call control destroy"]
+    );
+}
+
+#[tokio::test]
+async fn state_free_directories_do_not_count_as_destroyed_machine_groups() {
+    let f = Fixture::new();
+    f.up(&FakeHost::new()).await.unwrap();
+    fs::create_dir(
+        f.registry
+            .swarm_dir("fleet")
+            .unwrap()
+            .join("tofu/plan-only"),
+    )
+    .unwrap();
+    let mut record = f.registry.read_record("fleet").unwrap().unwrap();
+    let machines = f.machines();
+    assert_eq!(
+        destroy(Some(&machines), &f.registry, &f.spec, &mut record)
+            .await
+            .unwrap(),
+        2
+    );
+    assert!(
+        !f.registry
+            .swarm_dir("fleet")
+            .unwrap()
+            .join("tofu/plan-only")
+            .exists()
+    );
+}
+
+#[tokio::test]
 async fn plan_and_destroy_use_recorded_state() {
     let f = Fixture::new();
     let plans = plan_groups(&f.registry, &f.spec, f.machines())
         .await
         .unwrap();
     assert_eq!(plans.len(), 2);
-    assert!(
+    assert_eq!(
         plans
             .iter()
-            .all(|p| p.changes && p.plan.contains("plan for"))
+            .map(|p| (p.group.as_str(), p.plan.as_str(), p.changes))
+            .collect::<Vec<_>>(),
+        [
+            ("control", "plan for control\n", true),
+            ("workers", "plan for workers\n", true),
+        ]
+    );
+    assert!(!f.log().lines().any(|line| line.contains(" apply")));
+    assert!(
+        f.registry
+            .read_record("fleet")
+            .unwrap()
+            .unwrap()
+            .hosts
+            .is_empty()
     );
     assert!(
         f.registry
@@ -379,6 +629,7 @@ async fn plan_and_destroy_use_recorded_state() {
         .unwrap()
         .unwrap()
         .tofu_bucket;
+    assert!(bucket.is_some());
     let host = FakeHost::new();
     f.up(&host).await.unwrap();
     assert_eq!(
@@ -471,6 +722,67 @@ async fn guards_run_before_any_tofu_call() {
 }
 
 #[tokio::test]
+async fn invalid_names_layout_and_chatgpt_credential_refuse_before_apply() {
+    let mut swarm = Fixture::new();
+    swarm.spec.name = "Fleet_1".into();
+    let error = swarm.up(&FakeHost::new()).await.unwrap_err();
+    assert!(error.to_string().contains("swarm name"), "{error}");
+    assert!(swarm.log().is_empty());
+    assert!(swarm.registry.read_record("Fleet_1").unwrap().is_none());
+
+    let mut group = Fixture::new();
+    let workers = group.spec.groups.remove("workers").unwrap();
+    group.spec.groups.insert("Workers".into(), workers);
+    group.spec.placement.nodes = vec!["Workers".into()];
+    let error = group.up(&FakeHost::new()).await.unwrap_err();
+    assert!(error.to_string().contains("group name"), "{error}");
+    assert!(group.log().is_empty());
+    assert!(group.registry.read_record("fleet").unwrap().is_none());
+
+    let mut layout = Fixture::new();
+    layout.spec.placement.services = "workers".into();
+    let error = layout.up(&FakeHost::new()).await.unwrap_err();
+    assert!(error.to_string().contains("placement.services"), "{error}");
+    assert!(layout.log().is_empty());
+    assert!(layout.registry.read_record("fleet").unwrap().is_none());
+
+    let f = Fixture::new();
+    let mut settings = Settings::default();
+    settings.selection.provider = "chatgpt".into();
+    let error = provision_swarm_with(&FakeHost::new(), f.request(&settings).unwrap())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("credential"), "{error}");
+    assert!(f.log().is_empty());
+    assert!(f.registry.read_record("fleet").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn builtin_size_change_refuses_before_reapplying() {
+    let mut f = Fixture::new();
+    let host = FakeHost::new();
+    f.up(&host).await.unwrap();
+    let prior = f
+        .log()
+        .lines()
+        .filter(|line| line.contains(" apply"))
+        .count();
+    f.spec.groups.get_mut("workers").unwrap().size = Some("cx32".into());
+    let error = f.up(&host).await.unwrap_err();
+    assert!(
+        error.to_string().contains("size changed from cx22 to cx32"),
+        "{error}"
+    );
+    assert_eq!(
+        f.log()
+            .lines()
+            .filter(|line| line.contains(" apply"))
+            .count(),
+        prior
+    );
+}
+
+#[tokio::test]
 async fn failed_apply_can_be_destroyed() {
     let f = Fixture::new();
     fs::write(f.temp.path().join("fail-apply-workers"), "").unwrap();
@@ -490,6 +802,13 @@ async fn failed_apply_can_be_destroyed() {
     decommission_swarm_with(&host, &f.registry, &f.spec, Some(f.machines()))
         .await
         .unwrap();
+    assert_eq!(
+        f.log()
+            .lines()
+            .filter(|line| line.contains(" destroy"))
+            .collect::<Vec<_>>(),
+        ["call workers destroy", "call control destroy"]
+    );
     assert!(f.registry.read_record("fleet").unwrap().is_none());
 }
 
@@ -676,4 +995,159 @@ async fn adding_a_path_module_size_after_provisioning_is_refused() {
         f.log().lines().filter(|s| s.contains(" apply")).count(),
         prior
     );
+}
+
+#[cfg(feature = "remote")]
+mod remote_bucket_precedence {
+    use super::*;
+    use crate::{BucketRemoval, Cloud, ObjectBucket, Ownership};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use swarmy_config::{
+        ObjectPrefix,
+        swarm::{StaticKeys, SwarmBucket},
+    };
+
+    struct FakeCloud {
+        verified: AtomicUsize,
+        ensured: AtomicUsize,
+    }
+    impl FakeCloud {
+        fn new() -> Self {
+            Self {
+                verified: AtomicUsize::new(0),
+                ensured: AtomicUsize::new(0),
+            }
+        }
+    }
+    impl Cloud for FakeCloud {
+        fn verify_bucket_access(&self, _: &ObjectBucket) -> impl Future<Output = Result<()>> {
+            self.verified.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Ok(()))
+        }
+        fn ensure_bucket(&self, _: &ObjectBucket) -> impl Future<Output = Result<()>> {
+            self.ensured.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Ok(()))
+        }
+        fn bucket_ownership(&self, _: &ObjectBucket) -> impl Future<Output = Result<Ownership>> {
+            std::future::ready(Ok(Ownership::Owned))
+        }
+        fn delete_bucket(&self, _: &ObjectBucket) -> impl Future<Output = Result<BucketRemoval>> {
+            std::future::ready(Ok(BucketRemoval::Removed))
+        }
+    }
+    fn explicit_bucket(f: &mut Fixture) {
+        f.spec.bucket = Some(SwarmBucket {
+            name: "explicit-bucket".into(),
+            endpoint: "https://objects.example.com".into(),
+            region: "eu-central".into(),
+            prefix: ObjectPrefix::default(),
+            conditional_create: true,
+        });
+    }
+    fn keys() -> StaticKeys {
+        StaticKeys {
+            access_key: "static-access".into(),
+            secret_key: "static-secret".into(),
+        }
+    }
+    #[tokio::test]
+    async fn spec_bucket_replaces_stale_tofu_bucket_before_provisioning() {
+        let mut f = Fixture::new();
+        fs::write(f.temp.path().join("fail-apply-workers"), "").unwrap();
+        let host = FakeHost::new();
+        assert!(f.up(&host).await.is_err());
+        let mut record = f.registry.read_record("fleet").unwrap().unwrap();
+        assert!(record.tofu_bucket.is_some());
+        assert!(!record.hosts["control"][0].provisioned);
+        explicit_bucket(&mut f);
+        record.bucket_keys = Some(keys());
+        f.registry.write_record(&record).unwrap();
+        fs::remove_file(f.temp.path().join("fail-apply-workers")).unwrap();
+        fs::write(f.temp.path().join("control-no-bucket-private"), "").unwrap();
+        let cloud = FakeCloud::new();
+        let mut settings = Settings::default();
+        settings.selection.provider = "fake".into();
+        crate::provision::provision_swarm_with_backend(
+            &host,
+            &cloud,
+            f.request(&settings).unwrap(),
+        )
+        .await
+        .unwrap();
+        let record = f.registry.read_record("fleet").unwrap().unwrap();
+        assert!(record.tofu_bucket.is_none());
+        assert!(record.tofu_bucket_endpoint.is_none());
+        assert!(record.tofu_bucket_region.is_none());
+        assert_eq!(cloud.verified.load(Ordering::Relaxed), 1);
+        assert_eq!(cloud.ensured.load(Ordering::Relaxed), 1);
+        assert!(host.calls().iter().any(|call| call == "provision fleet-control-1 primary=none bucket=explicit-bucket"));
+        assert!(host.calls().iter().any(|call| call
+            == "provision fleet-workers-1 primary=fleet-control-1 bucket=explicit-bucket"));
+        assert_eq!(
+            crate::provision::effective_bucket(&f.registry, &f.spec, &record, None)
+                .unwrap()
+                .unwrap()
+                .bucket,
+            "explicit-bucket"
+        );
+        let applied: Value = serde_json::from_slice(
+            &fs::read(f.temp.path().join("applied-control-2.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(applied["bucket_name"], "");
+    }
+
+    #[tokio::test]
+    async fn planning_with_spec_bucket_clears_unprovisioned_tofu_bucket() {
+        let mut f = Fixture::new();
+        fs::write(f.temp.path().join("fail-apply-workers"), "").unwrap();
+        assert!(f.up(&FakeHost::new()).await.is_err());
+        assert!(
+            f.registry
+                .read_record("fleet")
+                .unwrap()
+                .unwrap()
+                .tofu_bucket
+                .is_some()
+        );
+        explicit_bucket(&mut f);
+        let plans = plan_groups(&f.registry, &f.spec, f.machines())
+            .await
+            .unwrap();
+        assert_eq!(plans.len(), 2);
+        let record = f.registry.read_record("fleet").unwrap().unwrap();
+        assert!(record.tofu_bucket.is_none());
+        assert!(record.tofu_bucket_endpoint.is_none());
+        assert!(record.tofu_bucket_region.is_none());
+        assert_eq!(
+            f.log()
+                .lines()
+                .filter(|line| *line == "call control apply")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn bad_group_is_refused_before_spec_bucket_is_prepared() {
+        let mut f = Fixture::new();
+        explicit_bucket(&mut f);
+        let workers = f.spec.groups.remove("workers").unwrap();
+        f.spec.groups.insert("Workers".into(), workers);
+        f.spec.placement.nodes = vec!["Workers".into()];
+        let mut settings = Settings::default();
+        settings.selection.provider = "fake".into();
+        let mut request = f.request(&settings).unwrap();
+        request.bucket_keys = Some(keys());
+        let cloud = FakeCloud::new();
+        let error =
+            crate::provision::provision_swarm_with_backend(&FakeHost::new(), &cloud, request)
+                .await
+                .unwrap_err();
+        assert!(error.to_string().contains("group name"), "{error}");
+        assert_eq!(cloud.verified.load(Ordering::Relaxed), 0);
+        assert_eq!(cloud.ensured.load(Ordering::Relaxed), 0);
+        assert!(f.registry.read_record("fleet").unwrap().is_none());
+        assert!(f.log().is_empty());
+    }
 }

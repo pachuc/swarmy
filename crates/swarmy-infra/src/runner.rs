@@ -22,6 +22,11 @@ const PASSTHROUGH: &[&str] = &[
     "no_proxy",
 ];
 const LOCK_TIMEOUT: &str = "-lock-timeout=120s";
+const CLOSED_AWS: [(&str, &str); 3] = [
+    ("AWS_SHARED_CREDENTIALS_FILE", "/dev/null"),
+    ("AWS_CONFIG_FILE", "/dev/null"),
+    ("AWS_EC2_METADATA_DISABLED", "true"),
+];
 #[derive(Clone, Default)]
 pub struct CredentialEnv {
     vars: Vec<(String, String)>,
@@ -30,6 +35,13 @@ impl CredentialEnv {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+    /// Keep the AWS provider off shared files and instance metadata.
+    #[must_use]
+    pub fn closed() -> Self {
+        CLOSED_AWS
+            .iter()
+            .fold(Self::new(), |env, (name, value)| env.with(*name, *value))
     }
     #[must_use]
     pub fn with(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
@@ -61,10 +73,7 @@ impl CredentialEnv {
     }
 }
 fn secret_name(name: &str) -> bool {
-    !matches!(
-        name,
-        "AWS_SHARED_CREDENTIALS_FILE" | "AWS_CONFIG_FILE" | "AWS_EC2_METADATA_DISABLED"
-    )
+    !CLOSED_AWS.iter().any(|(closed, _)| *closed == name)
 }
 impl fmt::Debug for CredentialEnv {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

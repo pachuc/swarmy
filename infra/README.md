@@ -91,7 +91,7 @@ Supply `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally
 `AWS_SESSION_TOKEN` in the runner environment only. The region always comes
 from `location`, never the environment. Here `network_id` is an existing
 subnet id, whereas for hetzner-cloud it is a decimal network id. Swarmy
-treats it as opaque and passes it from the first group to later groups.
+treats it as opaque and passes it from the first group to later groups of the same module.
 An empty value creates a VPC and public subnet.
 
 Machines have `ssh_user` ubuntu, no public IPv6, and a fixed encrypted
@@ -123,6 +123,9 @@ none because swarmy does not know their provider's bucket credentials.
 Hetzner groups get their cloud credentials and, when stored, S3 credentials;
 AWS groups get AWS credentials. Custom modules get all stored provider
 credentials. OpenTofu receives these only through its environment, never
-through variables or module files. On teardown, swarmy destroys machine
-groups in reverse placement order, applying the force-destroy flag first for
-a bucket-owning group.
+through variables or module files. Every group also sets
+`AWS_SHARED_CREDENTIALS_FILE=/dev/null`, `AWS_CONFIG_FILE=/dev/null`, and
+`AWS_EC2_METADATA_DISABLED=true` to prevent fallback to local AWS credentials.
+On teardown, orphan group directories no longer named in the spec are destroyed
+first, then the remaining groups in reverse placement order. A bucket-owning
+group gets the force-destroy flag before destruction.

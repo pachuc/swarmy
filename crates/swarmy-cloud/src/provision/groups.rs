@@ -17,7 +17,9 @@ use swarmy_config::{
     create_private_dir,
     swarm::{GroupSpec, Module, RecordedHost, Registry, SwarmApi, SwarmRecord, SwarmSpec},
 };
-use swarmy_infra::{CredentialEnv, ModuleFile, ModuleOutputs, PlanOutcome, Tofu, VARIABLES_FILE};
+use swarmy_infra::{
+    CredentialEnv, ModuleFile, ModuleOutputs, PlanOutcome, Tofu, VARIABLES_FILE, Workspace,
+};
 
 /// Runner and credentials for machine groups.
 #[derive(Clone, Copy)]
@@ -77,28 +79,46 @@ fn valid_name(name: &str) -> bool {
 fn module_name(module: &Module) -> String {
     module.clone().into()
 }
-fn bucket_name(spec: &SwarmSpec, record: &mut SwarmRecord) -> Option<String> {
-    if spec.bucket.is_none()
+fn creates_bucket(spec: &SwarmSpec) -> bool {
+    spec.bucket.is_none()
         && spec
             .groups
             .get(&spec.placement.stack)
-            .is_some_and(|g| g.module == Module::HetznerCloud)
-    {
-        Some(
-            record
-                .tofu_bucket
-                .get_or_insert_with(|| {
-                    format!(
-                        "swarmy-{}-{:012x}",
-                        spec.name,
-                        ulid::Ulid::generate().random() & 0xffff_ffff_ffff
-                    )
-                })
-                .clone(),
-        )
-    } else {
-        None
+            .is_some_and(|group| group.module == Module::HetznerCloud)
+}
+fn bucket_name(spec: &SwarmSpec, record: &mut SwarmRecord) -> Option<String> {
+    creates_bucket(spec).then(|| {
+        record
+            .tofu_bucket
+            .get_or_insert_with(|| {
+                format!(
+                    "swarmy-{}-{:012x}",
+                    spec.name,
+                    ulid::Ulid::generate().random() & 0xffff_ffff_ffff
+                )
+            })
+            .clone()
+    })
+}
+fn provider_env(
+    credentials: &CloudCredentials,
+    providers: &[CloudProvider],
+    required: bool,
+) -> Result<CredentialEnv> {
+    let mut env = CredentialEnv::closed();
+    for provider in providers {
+        let credential = credentials.get(*provider);
+        if required && credential.is_none() {
+            return Err(swarmy_config::Error::CloudNotLoggedIn(provider.name()).into());
+        }
+        if let Some(credential) = credential {
+            env = credential
+                .env()
+                .iter()
+                .fold(env, |env, (name, value)| env.with(name, value));
+        }
     }
+    Ok(env)
 }
 fn credential_env(
     credentials: &CloudCredentials,
@@ -107,45 +127,68 @@ fn credential_env(
 ) -> Result<CredentialEnv> {
     let providers: Vec<_> = match group.module {
         Module::HetznerCloud => {
-            let mut p = vec![CloudProvider::HetznerCloud];
+            let mut providers = vec![CloudProvider::HetznerCloud];
             if bucket || credentials.get(CloudProvider::HetznerS3).is_some() {
-                p.push(CloudProvider::HetznerS3);
+                providers.push(CloudProvider::HetznerS3);
             }
-            p
+            providers
         }
         Module::Aws => vec![CloudProvider::Aws],
         // Custom modules receive all stored providers: their provider needs are unknown.
         Module::Path(_) => CloudProvider::ALL.to_vec(),
         _ => Vec::new(),
     };
-    let mut result = CredentialEnv::new()
-        .with("AWS_SHARED_CREDENTIALS_FILE", "/dev/null")
-        .with("AWS_CONFIG_FILE", "/dev/null")
-        .with("AWS_EC2_METADATA_DISABLED", "true");
-    for provider in providers {
-        let credential = if matches!(group.module, Module::Path(_)) {
-            credentials.get(provider)
-        } else {
-            Some(
-                credentials
-                    .get(provider)
-                    .ok_or(swarmy_config::Error::CloudNotLoggedIn(provider.name()))?,
-            )
-        };
-        if let Some(c) = credential {
-            result = c.env().iter().fold(result, |env, (n, v)| env.with(n, v));
-        }
-    }
-    Ok(result)
+    provider_env(
+        credentials,
+        &providers,
+        !matches!(group.module, Module::Path(_)),
+    )
 }
-fn preflight(
+fn network_zone(location: &str) -> Option<&'static str> {
+    match location {
+        "fsn1" | "nbg1" | "hel1" => Some("eu-central"),
+        "ash" => Some("us-east"),
+        "hil" => Some("us-west"),
+        "sin" => Some("ap-southeast"),
+        _ => None,
+    }
+}
+fn compatible_network(a: &GroupSpec, b: &GroupSpec) -> bool {
+    if a.location == b.location {
+        return true;
+    }
+    if a.module != Module::HetznerCloud {
+        return false;
+    }
+    match (
+        a.location.as_deref().and_then(network_zone),
+        b.location.as_deref().and_then(network_zone),
+    ) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+pub(crate) fn preflight(
     spec: &SwarmSpec,
     record: &SwarmRecord,
     machines: &MachineGroups<'_>,
     dir: &Path,
 ) -> Result<()> {
+    let mut seen: Vec<String> = Vec::new();
     for name in apply_order(spec) {
         let group = &spec.groups[&name];
+        if let Some(first) = seen.iter().find(|first| {
+            let other = &spec.groups[*first];
+            other.module == group.module && !compatible_network(other, group)
+        }) {
+            return Err(Error::other(format!(
+                "groups {first} and {name}: {} networks cannot span locations {} and {}; use groups in the same network zone or region",
+                module_name(&group.module),
+                spec.groups[first].location.as_deref().unwrap_or("<unset>"),
+                group.location.as_deref().unwrap_or("<unset>"),
+            )));
+        }
+        seen.push(name.clone());
         if !valid_name(&spec.name) {
             return Err(Error::other(format!(
                 "swarm \"{}\": OpenTofu groups need a swarm name of 1-20 lowercase letters, digits and hyphens that starts with a letter and does not end with a hyphen",
@@ -166,9 +209,7 @@ fn preflight(
             )));
         }
         let _ = module_files(&name, group)?;
-        let bucket = name == spec.placement.stack
-            && spec.bucket.is_none()
-            && group.module == Module::HetznerCloud;
+        let bucket = name == spec.placement.stack && creates_bucket(spec);
         let _ = credential_env(machines.credentials, group, bucket)?;
         let previous = record.hosts.get(&name).map_or(0, Vec::len);
         let count = group.count.unwrap_or_default();
@@ -183,11 +224,7 @@ fn preflight(
     }
     if record.tofu_bucket.is_some()
         && record.hosts.values().flatten().any(|h| h.provisioned)
-        && (spec.bucket.is_some()
-            || spec
-                .groups
-                .get(&spec.placement.stack)
-                .is_none_or(|g| g.module != Module::HetznerCloud))
+        && !creates_bucket(spec)
     {
         return Err(Error::other(format!(
             "swarm {}: OpenTofu bucket changed after its hosts were provisioned",
@@ -313,6 +350,7 @@ fn module_files(name: &str, group: &GroupSpec) -> Result<ModuleSet> {
 fn hosts_from(
     outputs: &ModuleOutputs,
     group: &str,
+    swarm: &str,
     key: &Path,
     previous: &[RecordedHost],
 ) -> Result<Vec<RecordedHost>> {
@@ -323,8 +361,8 @@ fn hosts_from(
             .any(|machine| machine.name == old.name)
         {
             return Err(Error::other(format!(
-                "group {group}: provisioned host {} disappeared from OpenTofu outputs; restore the previous machine before retrying",
-                old.name
+                "group {group}: provisioned host {} disappeared from OpenTofu outputs; run swarmy swarm down {} before changing the machines",
+                old.name, swarm
             )));
         }
     }
@@ -338,7 +376,10 @@ fn hosts_from(
         Ok(RecordedHost { name: m.name.clone(), public_address: public.to_string(), private_address, ssh_user: m.ssh_user.clone(), ssh_key: key.into(), provisioned: previous.iter().any(|h| h.name == m.name && h.provisioned) })
     }).collect()
 }
-fn bucket_from(record: &SwarmRecord, credentials: &CloudCredentials) -> Option<BucketSpec> {
+pub(crate) fn bucket_from(
+    record: &SwarmRecord,
+    credentials: &CloudCredentials,
+) -> Option<BucketSpec> {
     let keys = credentials.get(CloudProvider::HetznerS3)?;
     let swarmy_config::cloud::CloudCredential::HetznerS3(keys) = keys else {
         return None;
@@ -355,10 +396,32 @@ fn bucket_from(record: &SwarmRecord, credentials: &CloudCredentials) -> Option<B
         },
     })
 }
-/// Effective bucket from the record, with credentials loaded only at call time.
-#[must_use]
-pub fn recorded_bucket(record: &SwarmRecord, credentials: &CloudCredentials) -> Option<BucketSpec> {
-    bucket_from(record, credentials)
+async fn prepare_group<'a>(
+    machines: MachineGroups<'a>,
+    spec: &SwarmSpec,
+    dir: &Path,
+    name: &str,
+    key: &str,
+    bucket: Option<&str>,
+    networks: &[(Module, String)],
+) -> Result<Workspace<'a>> {
+    let group = &spec.groups[name];
+    let group_bucket = if name == spec.placement.stack {
+        bucket.unwrap_or("")
+    } else {
+        ""
+    };
+    let network = networks
+        .iter()
+        .find(|(kind, _)| kind == &group.module)
+        .map_or("", |(_, id)| id.as_str());
+    let vars = variables(spec, name, group, key, group_bucket, network);
+    let env = credential_env(machines.credentials, group, !group_bucket.is_empty())?;
+    let workspace = machines.tofu.workspace(group_dir(dir, name), env);
+    let module = module_files(name, group)?;
+    workspace.prepare(&module.borrowed(), &vars).await?;
+    workspace.init().await?;
+    Ok(workspace)
 }
 /// Apply groups in placement order and record each output before provisioning hosts.
 /// # Errors
@@ -378,6 +441,11 @@ pub(crate) async fn apply(
         keys.insert(name.clone(), group_key(&dir, &spec.name, name).await?);
     }
     let bucket = bucket_name(spec, record);
+    if bucket.is_none() {
+        record.tofu_bucket = None;
+        record.tofu_bucket_endpoint = None;
+        record.tofu_bucket_region = None;
+    }
     let root = root(&dir);
     create_private_dir(&root)?;
     record.tofu_state = Some(root);
@@ -386,25 +454,20 @@ pub(crate) async fn apply(
     let mut networks: Vec<(Module, String)> = Vec::new();
     for name in order {
         let group = &spec.groups[&name];
-        let group_bucket = if name == spec.placement.stack {
-            bucket.as_deref().unwrap_or("")
-        } else {
-            ""
-        };
-        let network = networks
-            .iter()
-            .find(|(kind, _)| kind == &group.module)
-            .map_or("", |(_, id)| id.as_str());
-        let vars = variables(spec, &name, group, &keys[&name], group_bucket, network);
-        let env = credential_env(machines.credentials, group, !group_bucket.is_empty())?;
-        let workspace = machines.tofu.workspace(group_dir(&dir, &name), env);
-        let module = module_files(&name, group)?;
         cloud_out!(
             "OpenTofu: applying group {name} ({})",
             module_name(&group.module)
         );
-        workspace.prepare(&module.borrowed(), &vars).await?;
-        workspace.init().await?;
+        let workspace = prepare_group(
+            *machines,
+            spec,
+            &dir,
+            &name,
+            &keys[&name],
+            bucket.as_deref(),
+            &networks,
+        )
+        .await?;
         workspace.apply().await?;
         let mut outputs = workspace.outputs().await?;
         if matches!(group.module, Module::HetznerCloud | Module::Aws)
@@ -448,6 +511,7 @@ pub(crate) async fn apply(
         let hosts = hosts_from(
             &outputs,
             &name,
+            &spec.name,
             &key,
             record.hosts.get(&name).map_or(&[], Vec::as_slice),
         )?;
@@ -462,7 +526,7 @@ pub(crate) async fn apply(
     }
     Ok(Applied {
         sources,
-        bucket: bucket_from(record, machines.credentials),
+        bucket: bucket.and_then(|_| bucket_from(record, machines.credentials)),
     })
 }
 /// Plan each group without applying or marking state as created.
@@ -492,36 +556,28 @@ pub async fn plan_groups(
         });
     preflight(spec, &record, &machines, &dir)?;
     let bucket = bucket_name(spec, &mut record);
+    if bucket.is_none() {
+        record.tofu_bucket = None;
+        record.tofu_bucket_endpoint = None;
+        record.tofu_bucket_region = None;
+    }
     create_private_dir(&root(&dir))?;
     registry.write_record(&record)?;
     let mut result = Vec::new();
     let mut networks: Vec<(Module, String)> = Vec::new();
     for name in apply_order(spec) {
         let group = &spec.groups[&name];
-        let group_bucket = if name == spec.placement.stack {
-            bucket.as_deref().unwrap_or("")
-        } else {
-            ""
-        };
-        let network = networks
-            .iter()
-            .find(|(kind, _)| kind == &group.module)
-            .map_or("", |(_, id)| id.as_str());
-        let vars = variables(
+        let key = group_key(&dir, &spec.name, &name).await?;
+        let workspace = prepare_group(
+            machines,
             spec,
+            &dir,
             &name,
-            group,
-            &group_key(&dir, &spec.name, &name).await?,
-            group_bucket,
-            network,
-        );
-        let workspace = machines.tofu.workspace(
-            group_dir(&dir, &name),
-            credential_env(machines.credentials, group, !group_bucket.is_empty())?,
-        );
-        let module = module_files(&name, group)?;
-        workspace.prepare(&module.borrowed(), &vars).await?;
-        workspace.init().await?;
+            &key,
+            bucket.as_deref(),
+            &networks,
+        )
+        .await?;
         let (outcome, text) = workspace.plan_text().await?;
         result.push(GroupPlan {
             group: name.clone(),
@@ -553,16 +609,7 @@ fn destroy_env(
             .is_some_and(|s| !s.is_empty());
         return credential_env(credentials, group, bucket);
     }
-    let mut env = CredentialEnv::new()
-        .with("AWS_SHARED_CREDENTIALS_FILE", "/dev/null")
-        .with("AWS_CONFIG_FILE", "/dev/null")
-        .with("AWS_EC2_METADATA_DISABLED", "true");
-    for provider in CloudProvider::ALL {
-        if let Some(c) = credentials.get(provider) {
-            env = c.env().iter().fold(env, |env, (n, v)| env.with(n, v));
-        }
-    }
-    Ok(env)
+    provider_env(credentials, &CloudProvider::ALL, false)
 }
 /// Destroy recorded `OpenTofu` working directories, including groups removed from the spec.
 /// # Errors
@@ -595,6 +642,9 @@ pub(crate) async fn destroy(
             (Some(a), Some(b)) => b.cmp(&a),
         }
     });
+    if names.is_empty() {
+        return Ok(0);
+    }
     let Some(machines) = machines else {
         return Err(Error::other(format!(
             "swarm {} has OpenTofu groups ({}); swarm down needs OpenTofu and the cloud credentials",
@@ -605,8 +655,9 @@ pub(crate) async fn destroy(
     let mut count = 0;
     for name in names {
         let work = group_dir(&dir, &name);
+        let had_state = work.join("terraform.tfstate").is_file();
         let attempt: Result<()> = async {
-            if work.join("terraform.tfstate").is_file() {
+            if had_state {
                 let env = destroy_env(machines.credentials, spec.groups.get(&name), &work)?;
                 let workspace = machines.tofu.workspace(&work, env);
                 let mut vars = last_variables(&work).ok_or_else(|| {
@@ -639,7 +690,7 @@ pub(crate) async fn destroy(
                 ),
             ));
         }
-        count += 1;
+        count += usize::from(had_state);
     }
     Ok(count)
 }

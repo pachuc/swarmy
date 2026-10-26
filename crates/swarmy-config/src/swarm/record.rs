@@ -23,8 +23,10 @@ pub struct SwarmRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tofu_bucket: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Endpoint returned for the stack group's OpenTofu-created bucket.
     pub tofu_bucket_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Region returned for the stack group's OpenTofu-created bucket.
     pub tofu_bucket_region: Option<String>,
 }
 /// Static S3 credentials kept in the private swarm record, never in the spec.
@@ -130,8 +132,8 @@ mod tests {
             )]),
             tofu_state: Some("/state/tofu".into()),
             tofu_bucket: Some("swarmy-demo-0123456789ab".into()),
-            tofu_bucket_endpoint: None,
-            tofu_bucket_region: None,
+            tofu_bucket_endpoint: Some("https://objects.example.com".into()),
+            tofu_bucket_region: Some("eu-central".into()),
         };
         assert_eq!(
             SwarmRecord::parse(&record.to_toml().unwrap()).unwrap(),
