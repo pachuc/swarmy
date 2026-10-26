@@ -51,8 +51,8 @@ For example:
 
 ```json
 {
-  "machines": {"sensitive": false, "type": ["list", "object"], "value": [{"name": "fleet-workers-1", "public_ipv4": "203.0.113.10", "public_ipv6": "2001:db8::1", "private_ip": "10.0.0.2", "ssh_user": "root"}]},
-  "bucket": {"sensitive": false, "type": ["object"], "value": {"endpoint": "https://fsn1.your-objectstorage.com", "name": "fleet-data-7f3a", "region": "fsn1"}},
+  "machines": {"sensitive": false, "type": ["tuple", [["object", {"name": "string", "private_ip": "string", "public_ipv4": "string", "public_ipv6": "string", "ssh_user": "string"}]]], "value": [{"name": "fleet-workers-1", "public_ipv4": "203.0.113.10", "public_ipv6": "2001:db8::1", "private_ip": "10.0.0.2", "ssh_user": "root"}]},
+  "bucket": {"sensitive": false, "type": ["object", {"endpoint": "string", "name": "string", "region": "string"}], "value": {"endpoint": "https://fsn1.your-objectstorage.com", "name": "fleet-data-7f3a", "region": "fsn1"}},
   "network_id": {"sensitive": false, "type": "string", "value": "1001"}
 }
 ```
