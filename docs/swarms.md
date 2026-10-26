@@ -62,8 +62,7 @@ nodes = ["box"]
 
 The XDG defaults are `~/.config`, `~/.local/share`, `~/.local/state`, and `~/.cache`; their respective `XDG_*_HOME` variables override them. Specs and records are private.
 
-(`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and
-`XDG_STATE_HOME`, with HOME-based defaults):
+The local-swarm paths are:
 
 | Path under swarmy's XDG root | Contents |
 |---|---|
@@ -75,7 +74,7 @@ The XDG defaults are `~/.config`, `~/.local/share`, `~/.local/state`, and `~/.ca
 | state/local.lock | Machine-wide local lifecycle lock |
 | data/keyring | Shared local cluster keyring |
 
-The config root holds `swarms/NAME.toml`; the data root holds `swarms/NAME/record.toml`, `keys/`, `keys/groups/`, `tofu/<group>/`, `tunnel/`, and for local swarms `services.toml` and `stack/`. The state root holds `swarms/NAME/` with pids and logs, plus `current` and `local.lock`. The cache holds the matching `swarmy-core`, base images, and OpenTofu.
+The config root holds swarm specs; the data root holds `record.toml`, `keys/`, `keys/groups/`, `tofu/<group>/`, `tunnel/`, and for local swarms `services.toml` and `stack/`. The state root holds `swarms/NAME/` with pids and logs, plus `current` and `local.lock`. The cache holds the matching `swarmy-core`, base images, and OpenTofu.
 
 ## Choosing the target swarm
 

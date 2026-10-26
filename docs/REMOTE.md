@@ -39,7 +39,7 @@ files in private node state. On a stack+services host, the units are:
 
 ## Object storage permissions
 
-The static keys need`HeadBucket`, `CreateBucket`, `GetBucketTagging`,
+The static keys need `HeadBucket`, `CreateBucket`, `GetBucketTagging`,
 `PutBucketTagging`, `GetObject`, `PutObject`, `ListObjectsV2`,
 `ListObjectVersions`, `DeleteObjects`, and `DeleteBucket` permissions on the
 bucket and objects. The node's ordinary object-store operations use the same
