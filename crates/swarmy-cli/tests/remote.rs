@@ -352,7 +352,7 @@ fn connect_opens_an_api_only_tunnel_for_node_services_and_disconnect_removes_it(
             .join(".swarmy/remote/test.profile.json")
             .exists()
     );
-    assert!(!std::path::Path::new(record["socket"].as_str().unwrap()).exists());
+    assert!(!Path::new(record["socket"].as_str().unwrap()).exists());
 }
 
 #[test]

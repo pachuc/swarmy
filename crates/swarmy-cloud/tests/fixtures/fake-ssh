@@ -16,7 +16,15 @@ if [[ "$action" == check ]]; then
     exit $?
 fi
 if [[ "$action" == exit ]]; then
-    if [[ -f "$socket.pid" ]]; then kill "$(cat "$socket.pid")" 2>/dev/null || true; fi
+    if [[ -f "$socket.pid" ]]; then
+        pid=$(cat "$socket.pid")
+        kill "$pid" 2>/dev/null || true
+        for ((n=0; n<100; n++)); do
+            [[ ! -f "/proc/$pid/stat" ]] && break
+            [[ $(cut -d ' ' -f 3 "/proc/$pid/stat") == Z ]] && break
+            sleep 0.01
+        done
+    fi
     rm -f "$socket" "$socket.pid"
     exit 0
 fi
