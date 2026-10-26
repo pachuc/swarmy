@@ -474,9 +474,14 @@ SWARMY_RELEASE_BASE_URL=http://127.0.0.1:8765 swarmy dev up
 ```
 
 `swarmy doctor` checks `core version`. `run`, `chat`, and `bench` refuse an API
-core built from a different version or commit. Upgrade the core (`swarmy dev up`
-locally or `swarmy remote upgrade NAME`) or pass the global
-`--allow-version-mismatch` flag to proceed with a warning.
+core that is incompatible: a different package version, or a different major
+API version. Upgrade the core (`swarmy dev up` locally or
+`swarmy remote upgrade NAME`) or pass the global `--allow-version-mismatch` flag
+to proceed with a warning. A core built from another commit of the same version
+is only reported (a note from `run` and `chat`, a warning in `doctor`): every
+development build shares one version, and most commits change nothing the
+client depends on. On-node builds of a development client record the copied
+checkout's commit, so the node reports it rather than `unknown`.
 
 ## Manual reference
 

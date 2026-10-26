@@ -809,7 +809,7 @@ async fn source_commit(checkout: &Path) -> Result<String> {
         Command::new("git")
             .arg("-C")
             .arg(checkout)
-            .args(["rev-parse", "--short", "HEAD"]),
+            .args(["rev-parse", "--short=12", "HEAD"]),
         "read checkout commit",
     )
     .await?;
