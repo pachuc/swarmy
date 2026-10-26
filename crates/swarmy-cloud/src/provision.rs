@@ -282,6 +282,20 @@ pub async fn provision_swarm(request: UpRequest<'_>) -> Result<Vec<HostReport>> 
 }
 async fn provision_swarm_with(
     host: &impl SwarmHost,
+    request: UpRequest<'_>,
+) -> Result<Vec<HostReport>> {
+    #[cfg(feature = "remote")]
+    {
+        provision_swarm_with_backend(host, &crate::buckets::S3Buckets, request).await
+    }
+    #[cfg(not(feature = "remote"))]
+    {
+        provision_swarm_with_backend(host, request).await
+    }
+}
+async fn provision_swarm_with_backend(
+    host: &impl SwarmHost,
+    #[cfg(feature = "remote")] cloud: &impl crate::Cloud,
     mut request: UpRequest<'_>,
 ) -> Result<Vec<HostReport>> {
     let spec = request.spec;
@@ -301,7 +315,13 @@ async fn provision_swarm_with(
             tofu_state: None,
         });
     reconcile(&planned, &record)?;
-    prepare_bucket(&mut request, &mut record).await?;
+    prepare_bucket(
+        #[cfg(feature = "remote")]
+        cloud,
+        &mut request,
+        &mut record,
+    )
+    .await?;
     let primary = planned
         .first()
         .ok_or_else(|| Error::other("no primary host"))?;
@@ -356,7 +376,11 @@ async fn provision_swarm_with(
     }
     Ok(reports)
 }
-async fn prepare_bucket(request: &mut UpRequest<'_>, record: &mut SwarmRecord) -> Result<()> {
+async fn prepare_bucket(
+    #[cfg(feature = "remote")] cloud: &impl crate::Cloud,
+    request: &mut UpRequest<'_>,
+    record: &mut SwarmRecord,
+) -> Result<()> {
     let spec = request.spec;
     if let Some(keys) = request.bucket_keys.take() {
         record.bucket_keys = Some(keys);
@@ -368,8 +392,14 @@ async fn prepare_bucket(request: &mut UpRequest<'_>, record: &mut SwarmRecord) -
                 spec.name, bucket.name
             )));
         }
+        #[cfg(feature = "remote")]
+        verify_bucket_with(cloud, spec, record).await?;
+        #[cfg(not(feature = "remote"))]
         verify_bucket(spec, record).await?;
         request.registry.write_record(record)?;
+        #[cfg(feature = "remote")]
+        ensure_bucket_with(cloud, spec, record).await?;
+        #[cfg(not(feature = "remote"))]
         ensure_bucket(spec, record).await?;
     }
     Ok(())
@@ -383,11 +413,13 @@ fn service_options(
     Ok(if primary_done {
         None
     } else {
-        let token = record
-            .api
-            .token
-            .clone()
-            .unwrap_or_else(|| ulid::Ulid::generate().to_string());
+        let token = record.api.token.clone().unwrap_or_else(|| {
+            if request.settings.api.token.is_empty() {
+                ulid::Ulid::generate().to_string()
+            } else {
+                request.settings.api.token.clone()
+            }
+        });
         let mut settings = request.settings.clone();
         if let Some(bucket) = bucket_spec(spec, record) {
             bucket.apply_to_settings(&mut settings);
@@ -700,7 +732,7 @@ pub async fn upgrade_swarm(
     options: UpgradeOptions,
 ) -> Result<Vec<Summary>> {
     let _lock = Locked(lock(registry, &spec.name)?);
-    let (record, planned) = recorded_plan(registry, spec)?;
+    let (record, _) = recorded_plan(registry, spec)?;
     let host = ssh::Ssh::for_client(&options.cache)?;
     let mut policy = upgrade::Options::new(
         options.allow_dirty,
@@ -709,13 +741,17 @@ pub async fn upgrade_swarm(
         options.json,
     );
     policy.dirty_paths = host.checkout_changes()?;
-    let machines = planned
+    let machines = upgrade_machines(&record, spec);
+    upgrade::run(&host, &machines, policy).await
+}
+
+fn upgrade_machines(record: &SwarmRecord, spec: &SwarmSpec) -> Vec<Machine> {
+    record_plan(record, &spec.placement.stack)
         .iter()
         .rev()
-        .filter(|p| recorded(&record, p).is_some_and(|h| h.provisioned))
-        .map(|p| node(p, user(spec), spec, &record))
-        .collect::<Vec<_>>();
-    upgrade::run(&host, &machines, policy).await
+        .filter(|p| recorded(record, p).is_some_and(|h| h.provisioned))
+        .map(|p| node(p, user(spec), spec, record))
+        .collect()
 }
 
 /// Follow one service journal on a named host or the primary host.
@@ -794,10 +830,6 @@ fn check_bucket_support(spec: &SwarmSpec) -> Result<()> {
     Ok(())
 }
 #[cfg(feature = "remote")]
-async fn verify_bucket(spec: &SwarmSpec, record: &SwarmRecord) -> Result<()> {
-    verify_bucket_with(&crate::buckets::S3Buckets, spec, record).await
-}
-#[cfg(feature = "remote")]
 async fn verify_bucket_with(
     cloud: &impl crate::Cloud,
     spec: &SwarmSpec,
@@ -824,10 +856,6 @@ async fn verify_bucket_with(
 #[cfg(not(feature = "remote"))]
 fn verify_bucket(_spec: &SwarmSpec, _record: &SwarmRecord) -> impl Future<Output = Result<()>> {
     std::future::ready(Err(Error::other(NO_S3)))
-}
-#[cfg(feature = "remote")]
-async fn ensure_bucket(spec: &SwarmSpec, record: &SwarmRecord) -> Result<()> {
-    ensure_bucket_with(&crate::buckets::S3Buckets, spec, record).await
 }
 #[cfg(feature = "remote")]
 async fn ensure_bucket_with(

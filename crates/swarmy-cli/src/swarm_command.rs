@@ -746,7 +746,7 @@ pub(crate) async fn run(
         | Command::Down { .. }
         | Command::Status { .. }
         | Command::Node { .. }) => {
-            run_host_lifecycle(&registry, command, json_output).await?;
+            Box::pin(run_host_lifecycle(&registry, command, json_output)).await?;
         }
         command @ (Command::Logs { .. } | Command::Upgrade { .. }) => {
             run_host_observation(&registry, command, json_output).await?;

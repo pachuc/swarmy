@@ -28,6 +28,11 @@ impl From<Option<&Path>> for Options {
 }
 
 impl Options {
+    #[cfg(test)]
+    pub(crate) fn config_toml(&self) -> &str {
+        &self.config
+    }
+
     /// Point the node API at the swarm's default image.
     /// # Errors
     /// Reports invalid configuration.
