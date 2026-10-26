@@ -714,3 +714,26 @@ fn same_count_scale_resumes_an_unprovisioned_worker() {
     assert_eq!(after, before + 1);
     assert!(registry.read_record("fleet").unwrap().unwrap().hosts["workers"][1].provisioned);
 }
+
+#[test]
+fn scale_requires_a_provisioned_stack_before_cloud_login() {
+    let f = Fixture::new();
+    f.ok(&[
+        "swarm",
+        "create",
+        "fleet",
+        "--on",
+        "hetzner-cloud",
+        "--size",
+        "cpx41",
+        "--nodes",
+        "1",
+    ]);
+    let output = f.run(&["swarm", "scale", "fleet", "workers", "2"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("swarm fleet is not up; run swarmy swarm up fleet first")
+    );
+    assert!(!f.path().join("cache/swarmy/tofu").exists());
+}

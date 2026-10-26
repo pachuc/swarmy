@@ -458,6 +458,23 @@ pub(crate) async fn scale(
 ) -> Result<()> {
     use swarmy_cloud::provision::scale::{ScaleRequest, check_scalable, scale_swarm};
     let _ = check_scalable(spec, group)?;
+    if !registry
+        .read_record(&spec.name)?
+        .and_then(|record| {
+            record
+                .hosts
+                .get(&spec.placement.stack)
+                .and_then(|hosts| hosts.first())
+                .map(|host| host.provisioned)
+        })
+        .unwrap_or(false)
+    {
+        bail!(
+            "swarm {} is not up; run swarmy swarm up {} first",
+            spec.name,
+            spec.name
+        );
+    }
     let pair = machines_for(registry, spec, groups::has_module_groups(spec)).await?;
     let settings = swarmy_config::Settings::load_base()?.settings;
     let report = scale_swarm(ScaleRequest {
