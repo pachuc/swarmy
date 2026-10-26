@@ -130,7 +130,14 @@ fn create_plan_up_status_down_on_hetzner_cloud() {
         fs::metadata(&record).unwrap().permissions().mode() & 0o777,
         0o600
     );
-    assert!(fs::read_to_string(&record).unwrap().contains("tofu_state"));
+    let record_text = fs::read_to_string(&record).unwrap();
+    assert!(record_text.contains("tofu_state"));
+    let bucket = record_text
+        .lines()
+        .find_map(|line| line.strip_prefix("tofu_bucket = "))
+        .unwrap()
+        .trim_matches('"');
+    assert!(ssh.contains(bucket));
     assert_eq!(
         fs::metadata(dir.join("keys/groups/control"))
             .unwrap()
@@ -307,4 +314,15 @@ fn mixed_cloud_stack_and_existing_nodes() {
     let log = fs::read_to_string(f.path().join("tofu.log")).unwrap();
     assert!(log.contains("control destroy"));
     assert!(!log.contains("box destroy"));
+    let probes = fs::read_dir(f.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("piped-"))
+        .filter_map(|entry| fs::read_to_string(entry.path()).ok())
+        .filter(|text| {
+            text.lines()
+                .any(|line| line.starts_with("decommission_probe "))
+        })
+        .count();
+    assert_eq!(probes, 1);
 }

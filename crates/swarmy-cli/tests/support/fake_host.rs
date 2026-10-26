@@ -94,6 +94,7 @@ esac
             .env("XDG_CACHE_HOME", self.path().join("cache"))
             .env("SWARMY_RELEASE_BASE_URL", &self.release_url)
             .env("SWARMY_TOFU_BIN", self.path().join("bin/tofu"))
+            .env("RUST_LOG", "trace")
             .args(args)
             .output()
             .unwrap()
