@@ -180,6 +180,7 @@ Cancelled: channels (slice 5, see `backlog/chaty.md`), sandbox-pause-resume
 ## Building and testing
 
 The toolchain is pinned in `rust-toolchain.toml`; `rustup show` installs it.
+`make check-infra` needs the pinned OpenTofu from `scripts/install-opentofu.sh`.
 The root `Makefile` holds the only list of CI commands. Each pull-request CI
 job runs exactly one `make check-<job>` target, and `make check` runs all of
 them in CI order; `make help` lists the targets. Workers run
