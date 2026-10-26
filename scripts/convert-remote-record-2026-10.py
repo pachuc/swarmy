@@ -70,6 +70,8 @@ def host(value, old_dir, swarm_dir, group, index):
     address = value["public_ip"]
     private = private if private and private != address else None
     target = swarm_dir / "keys" / name
+    # Plan checks this copy on each up; adopt_key reads it before writing it.
+    # The spec can safely point at the record's copy instead of the old key.
     spec = dict(address=address, ssh_user=value["ssh_user"], ssh_key=str(target))
     record = dict(name=name, public_address=address, ssh_user=value["ssh_user"],
                   ssh_key=str(target), provisioned=True)
@@ -255,9 +257,16 @@ def publish(spec, hosts, keys, copies, spec_path, swarm_dir, token):
     temp_dir = swarm_dir.parent / f".{swarm_dir.name}.convert-{os.getpid()}"
     temp_spec = spec_path.parent / f".{swarm_dir.name}.toml.tmp-{os.getpid()}"
     renamed = False
-    for path in (spec_path.parent.parent, spec_path.parent,
-                 swarm_dir.parent.parent, swarm_dir.parent):
-        private_dir(path)
+    for root in (spec_path.parent.parent, swarm_dir.parent.parent):
+        missing = []
+        parent = root
+        while not parent.exists():
+            missing.append(parent)
+            parent = parent.parent
+        for path in reversed(missing):
+            private_dir(path)
+        private_dir(root)
+        private_dir(root / "swarms")
     try:
         private_dir(temp_dir)
         private_dir(temp_dir / "keys")

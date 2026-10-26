@@ -158,7 +158,7 @@ fn converted(f: &Fixture, node: bool) {
         String::from_utf8_lossy(&output.stderr)
     );
     let registry = f.registry();
-    let swarm = registry.load("hz").unwrap();
+    let swarm = registry.read("hz").unwrap();
     let spec = swarm.spec.unwrap();
     let record = swarm.record.unwrap();
     let dir = registry.swarm_dir("hz").unwrap();
@@ -186,7 +186,7 @@ fn converted(f: &Fixture, node: bool) {
             vec!["main"]
         }
     );
-    let bucket = spec.bucket.unwrap();
+    let bucket = spec.bucket.as_ref().unwrap();
     assert_eq!(bucket.name, "swarmy-hz-fixture");
     assert_eq!(bucket.endpoint, "https://fsn1.your-objectstorage.com");
     assert_eq!(bucket.region, "fsn1");
@@ -381,7 +381,7 @@ fn joined_nodes_become_a_node_group() {
     f.value["nodes"] = json!([{"public_ip":"203.0.113.11", "private_ip":"10.0.0.3", "ssh_user":"root", "key_path":key, "sandboxes":8, "launch_settings":null}]);
     f.save();
     converted(&f, true);
-    let swarm = f.registry().load("hz").unwrap();
+    let swarm = f.registry().read("hz").unwrap();
     let spec = swarm.spec.unwrap();
     let record = swarm.record.unwrap();
     assert_eq!(spec.groups["nodes"].sandboxes, Some(8));
