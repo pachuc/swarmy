@@ -51,8 +51,12 @@ async fn tofu(registry: &Registry) -> Result<Tofu> {
     )
     .await?)
 }
-async fn machines_for(registry: &Registry, need: bool) -> Result<Option<(Tofu, CloudCredentials)>> {
-    if !need {
+async fn machines_for(
+    registry: &Registry,
+    spec: &SwarmSpec,
+    need: bool,
+) -> Result<Option<(Tofu, CloudCredentials)>> {
+    if !need && !groups::has_module_groups(spec) {
         return Ok(None);
     }
     let creds = CloudCredentials::load(&CloudCredentials::path(registry.dirs()))?;
@@ -157,7 +161,7 @@ pub(crate) async fn plan(registry: &Registry, spec: &SwarmSpec, json_output: boo
             spec.name
         );
     }
-    let pair = machines_for(registry, true)
+    let pair = machines_for(registry, spec, false)
         .await?
         .expect("module group needs tofu");
     let plans = groups::plan_groups(
@@ -241,7 +245,7 @@ pub(crate) async fn up(
         .transpose()?;
     let settings = swarmy_config::Settings::load_base()?.settings;
     let sources = provision::existing_sources(spec, &registry.swarm_dir(&spec.name)?)?;
-    let pair = machines_for(registry, groups::has_module_groups(spec)).await?;
+    let pair = machines_for(registry, spec, false).await?;
     let applied = groups::apply_order(spec);
     let reports = provision::provision_swarm(UpRequest {
         registry,
@@ -302,16 +306,12 @@ pub(crate) async fn down(
     let destroyed_groups = if tofu_dir.is_dir() {
         std::fs::read_dir(&tofu_dir)?
             .filter_map(std::result::Result::ok)
-            .filter(|e| e.path().is_dir())
+            .filter(|e| e.path().join("terraform.tfstate").is_file())
             .count()
     } else {
         0
     };
-    let pair = machines_for(
-        registry,
-        groups::has_module_groups(spec) || tofu_dir.exists(),
-    )
-    .await?;
+    let pair = machines_for(registry, spec, tofu_dir.exists()).await?;
     let removed =
         provision::decommission_swarm(registry, spec, machine_refs(pair.as_ref())).await?;
     if json_output {
