@@ -29,8 +29,7 @@ impl Fixture {
         }
         command
             .current_dir(self.0.path())
-            .env("HOME", self.0.path())
-            .env("XDG_CONFIG_HOME", self.0.path().join("config"))
+            .envs(swarmy_testkit::isolated_home(self.0.path()))
             .env("PATH", self.0.path().join("bin"))
             .arg("doctor");
         if json {
@@ -179,10 +178,16 @@ fn reports_keyring_presence_and_permissions() {
             .unwrap()
             .contains("absent")
     );
-    let path = fixture.0.path().join(".swarmy/keyring");
+    let path = fixture.0.path().join("data/swarmy/keyring");
     swarmy_config::Keyring::generate_at(&path).unwrap();
     let present: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
     assert_eq!(check(&present, "keyring")["ok"], true);
+    assert!(
+        check(&present, "keyring")["detail"]
+            .as_str()
+            .unwrap()
+            .contains(path.to_str().unwrap())
+    );
     assert!(
         check(&present, "keyring")["detail"]
             .as_str()

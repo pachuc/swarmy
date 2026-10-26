@@ -63,9 +63,14 @@ sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev
 **Where dev keeps its files.** Inside a checkout, `swarmy dev up` creates
 `<checkout>/.swarmy/config.toml`, keeps supervised service state under
 `<checkout>/.swarmy/dev/`, and uses `<checkout>/.dev/` for the backing stack.
-Outside a checkout it creates `$XDG_CONFIG_HOME/swarmy/config.toml` (with an
-absolute XDG path) or `$HOME/.config/swarmy/config.toml`, keeps service state
-under `$HOME/.swarmy/dev/`, and uses `$HOME/.swarmy/stack/` for the stack.
+A directory with its own `.swarmy/config.toml` works the same way, with the
+stack in the project state directory's `stack/`. Outside both, swarmy follows the XDG Base Directory
+layout: `~/.config/swarmy/config.toml`, the stack in
+`~/.local/share/swarmy/stack/`, and service logs, pids, the fake script and
+its call log in `~/.local/state/swarmy/dev/`. Absolute `XDG_CONFIG_HOME`,
+`XDG_DATA_HOME` and `XDG_STATE_HOME` move them. The keyring and default
+`auth.json` live in `~/.local/share/swarmy/` in every layout. Downloaded cores
+and images go to `~/.cache/swarmy/` (`XDG_CACHE_HOME`) in every layout.
 An existing configuration file wins; `SWARMY_STATE_DIR` changes the service
 state root, and `SWARMY_DEV_DIR` overrides the stack directory. The CLI runs a
 compiled-in copy of the backing script, so it needs no checkout. The fixed
@@ -192,8 +197,9 @@ Relative environment paths remain relative to the invoking directory.
 imports connection settings from the stack's `env` file as data, and saves the
 file with private permissions. It updates stack connection fields on each start
 and preserves other settings. Environment overrides are passed to children but
-are not saved. Service logs and pid records live under `<state_dir>/dev/`; the
-default fake script and call log live under `<root>/.swarmy/dev/`.
+are not saved. Service logs and pid records live under `<state_dir>/dev/`,
+and so do the default fake script and call log. `state_dir` defaults to
+`<project>/.swarmy` for a project file and `~/.local/state/swarmy` otherwise.
 
 The generated file contains every setting. This partial example shows the
 common choices (store directories are FoundationDB directory names):
@@ -211,7 +217,7 @@ provider = "fake"
 model = "gpt-5"
 default_image = "base-ubuntu:dev"
 effort = "medium"
-credential_file = "/home/me/.swarmy/auth.json"
+credential_file = "/home/me/.local/share/swarmy/auth.json"
 
 [worker]
 partitions = "0-255"
@@ -442,7 +448,7 @@ fake releases in `make check-scripts`.
 image through the sparse upload path, then sets `selection.default_image`.
 Restart with `swarmy dev up` to apply it. `dev up` does this automatically when
 there is no default image; `--no-image` skips it. The download is temporarily
-cached in `<state_dir>/images` and removed after upload. For local fake releases,
+cached in `~/.cache/swarmy/images` and removed after upload. For local fake releases,
 set `SWARMY_RELEASE_BASE_URL` and include the image archive in SHA256SUMS.
 
 ## The core binary
@@ -455,7 +461,8 @@ and verify the matching release next; development builds instead find
 dev up` still works. Set `SWARMY_RELEASE_BASE_URL` to force release selection
 in development; it accepts HTTPS, or HTTP on loopback only.
 
-Archives live under the configured state directory's `core/<tag>/` cache.
+Archives live in swarmy's cache directory under `core/<tag>/`
+(`$XDG_CACHE_HOME/swarmy`, default `~/.cache/swarmy`).
 Every ensure checks the release-wide SHA256SUMS and replaces a changed archive;
 when the server cannot be reached, a complete verified cache is reused with a
 warning. SHA-256 checksums protect integrity, but releases are not signed.
