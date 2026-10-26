@@ -12,6 +12,9 @@ use std::{
 pub struct SwarmSpec {
     pub name: String,
     pub lifecycle: Lifecycle,
+    /// Login that owns the node directory and units on every host (default `swarmy`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_user: Option<String>,
     pub groups: BTreeMap<String, GroupSpec>,
     pub placement: Placement,
 }
@@ -36,6 +39,12 @@ pub struct GroupSpec {
     /// Local groups only: an absolute directory for the backing stack.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack_dir: Option<PathBuf>,
+    /// Sandboxes per host for groups in placement.nodes (default 64).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandboxes: Option<u32>,
+    /// Sandbox scratch: a block device or `dir:/path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_storage: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,6 +52,9 @@ pub struct HostSpec {
     pub address: String,
     pub ssh_user: String,
     pub ssh_key: PathBuf,
+    /// Address other hosts use to reach this one (default: address).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_address: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -151,6 +163,8 @@ fn group_failure(g: &str, group: &GroupSpec) -> Option<String> {
                 Some(format!(
                     "group \"{g}\": size and location apply only to groups that create machines"
                 ))
+            } else if group.hosts.iter().any(|h| h.private_address.as_deref() == Some("")) {
+                Some(format!("group \"{g}\": host private_address must not be empty"))
             } else if group.hosts.iter().any(|h| h.address.is_empty()) {
                 Some(format!("group \"{g}\": host address must not be empty"))
             } else {
@@ -160,8 +174,10 @@ fn group_failure(g: &str, group: &GroupSpec) -> Option<String> {
         Module::Local => (group.count.is_some()
             || group.size.is_some()
             || group.location.is_some()
-            || !group.hosts.is_empty())
-        .then(|| format!("group \"{g}\": a local group takes no count, size, location, or hosts"))
+            || !group.hosts.is_empty()
+            || group.sandboxes.is_some()
+            || group.local_storage.is_some())
+        .then(|| format!("group \"{g}\": a local group takes no count, size, location, hosts, sandboxes, or local_storage"))
         .or_else(|| {
             group
                 .stack_dir
@@ -191,6 +207,7 @@ impl SwarmSpec {
         let spec = Self {
             name: name.into(),
             lifecycle,
+            service_user: None,
             groups: [(
                 "local".into(),
                 GroupSpec {
@@ -200,6 +217,8 @@ impl SwarmSpec {
                     count: None,
                     hosts: vec![],
                     stack_dir,
+                    sandboxes: None,
+                    local_storage: None,
                 },
             )]
             .into(),
@@ -277,6 +296,17 @@ impl SwarmSpec {
                     "placement.nodes: group \"{g}\" is local; this machine can run the stack or the services, not nodes"
                 )));
             }
+        }
+        for (g, group) in &self.groups {
+            if group.sandboxes.is_some_and(|n| n > 0) && !seen.contains(g) {
+                return Err(Error::Spec(format!(
+                    "group \"{g}\" does not run nodes; remove sandboxes"
+                )));
+            }
+        }
+        if let Some(user) = &self.service_user {
+            crate::validate_service_user(user)
+                .map_err(|e| Error::Spec(format!("service_user: {e}")))?;
         }
         for g in self.groups.keys() {
             if g != &self.placement.stack && g != &self.placement.services && !seen.contains(g) {
@@ -441,6 +471,7 @@ nodes = ["box"]
             (
                 Box::new(|s| {
                     s.groups.get_mut("control").unwrap().hosts.push(HostSpec {
+                        private_address: None,
                         address: "x".into(),
                         ssh_user: "root".into(),
                         ssh_key: "x".into(),
@@ -512,7 +543,7 @@ nodes = ["box"]
             (
                 LOCAL,
                 "local fields",
-                "group \"local\": a local group takes no count, size, location, or hosts",
+                "group \"local\": a local group takes no count, size, location, hosts, sandboxes, or local_storage",
             ),
             (
                 LOCAL,

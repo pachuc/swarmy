@@ -297,17 +297,21 @@ pub(super) mod tests {
     }
     pub(crate) fn spec(name: &str) -> SwarmSpec {
         SwarmSpec {
+            service_user: None,
             name: name.into(),
             lifecycle: Lifecycle::Persistent,
             groups: [(
                 "box".into(),
                 GroupSpec {
+                    local_storage: None,
+                    sandboxes: None,
                     module: Module::Existing,
                     size: None,
                     location: None,
                     count: None,
                     stack_dir: None,
                     hosts: vec![crate::swarm::HostSpec {
+                        private_address: None,
                         address: "203.0.113.10".into(),
                         ssh_user: "root".into(),
                         ssh_key: "/keys/box".into(),

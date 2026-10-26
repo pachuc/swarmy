@@ -45,6 +45,9 @@ pub struct RecordedHost {
     pub private_address: Option<String>,
     pub ssh_user: String,
     pub ssh_key: PathBuf,
+    /// Set when provisioning this host completes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub provisioned: bool,
 }
 impl SwarmRecord {
     /// # Errors
@@ -81,6 +84,7 @@ mod tests {
             hosts: BTreeMap::from([(
                 "workers".into(),
                 vec![RecordedHost {
+                    provisioned: false,
                     name: "box".into(),
                     public_address: "203.0.113.10".into(),
                     private_address: None,

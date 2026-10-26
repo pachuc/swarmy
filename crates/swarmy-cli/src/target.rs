@@ -109,6 +109,7 @@ mod tests {
         let dir = tmp.path().join("tunnel");
         let _kill = Kill(dir.clone());
         let host = RecordedHost {
+            provisioned: false,
             name: "box".into(),
             public_address: "127.0.0.1".into(),
             private_address: None,
@@ -129,6 +130,7 @@ mod tests {
     #[test]
     fn target_address_order_and_known_hosts() {
         let host = RecordedHost {
+            provisioned: false,
             name: "box".into(),
             public_address: "203.0.113.10".into(),
             private_address: Some("203.0.113.11".into()),
