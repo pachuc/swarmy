@@ -822,10 +822,7 @@ async fn verify_bucket_with(
         })
 }
 #[cfg(not(feature = "remote"))]
-fn verify_bucket(
-    _spec: &SwarmSpec,
-    _record: &SwarmRecord,
-) -> impl std::future::Future<Output = Result<()>> {
+fn verify_bucket(_spec: &SwarmSpec, _record: &SwarmRecord) -> impl Future<Output = Result<()>> {
     std::future::ready(Err(Error::other(NO_S3)))
 }
 #[cfg(feature = "remote")]
@@ -848,10 +845,7 @@ async fn ensure_bucket_with(
         .await
 }
 #[cfg(not(feature = "remote"))]
-fn ensure_bucket(
-    _spec: &SwarmSpec,
-    _record: &SwarmRecord,
-) -> impl std::future::Future<Output = Result<()>> {
+fn ensure_bucket(_spec: &SwarmSpec, _record: &SwarmRecord) -> impl Future<Output = Result<()>> {
     std::future::ready(Err(Error::other(NO_S3)))
 }
 #[cfg(feature = "remote")]
@@ -883,9 +877,6 @@ async fn delete_bucket_with(
     Ok(())
 }
 #[cfg(not(feature = "remote"))]
-fn delete_bucket(
-    spec: &SwarmSpec,
-    _record: &SwarmRecord,
-) -> impl std::future::Future<Output = Result<()>> {
+fn delete_bucket(spec: &SwarmSpec, _record: &SwarmRecord) -> impl Future<Output = Result<()>> {
     std::future::ready(check_bucket_support(spec))
 }
