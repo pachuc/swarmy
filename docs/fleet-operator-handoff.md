@@ -40,8 +40,8 @@ hz still runs on the old client until task 13 converts its record.
 
 - `hz` (since 2026-10-02): one dedicated server rented from Hetzner's server
   auction (16-core i9-12900K, 128 GB, two NVMe drives mirrored, Ubuntu 24.04),
-  adopted with `swarmy swarm create` (REMOTE.md, "Existing hosts"). The same
-  machine runs the control plane (`--services node`) and the node, with four
+  adopted as an existing host (REMOTE.md, "Swarms on existing hosts"). The same
+  machine runs the control plane and the node, with four
   sandboxes on local storage `dir:/srv/swarmy-local`. The bucket is Hetzner
   Object Storage with static keys. Images `base-ubuntu:hz` and
   `swarmy-dev:hz`. Addresses, server numbers, the bucket name and every
@@ -51,15 +51,14 @@ hz still runs on the old client until task 13 converts its record.
   swarm; it runs the root suites and the local CI ("The suite node").
 - AWS is gone: the `dev2` swarm, the earlier `dev` swarm, their buckets and
   images were decommissioned on 2026-10-01.
-- Tunnel: `swarmy --swarm hz doctor`. Local ports are fixed, so only one
-  swarm can be connected at a time. Plain `swarmy` commands that need the API
-  take `--swarm hz` (`remote connect hz` registers it). `swarmy swarm status hz` shows nodes, services, images.
+- Tunnel: commands with `--swarm hz` open one on-demand tunnel for the swarm
+  on free local ports. `swarmy swarm status hz` shows SSH and tunnel status.
 - SSH: the laptop's `~/.ssh/config` has an alias for each server, using the
   key registered in Robot as `swarmy-fleet`; `swarmy swarm` keeps its own
   keys under `~/.local/share/swarmy/swarms/hz/keys/`. Long commands on a server run detached:
   `setsid nohup bash script.sh > log 2>&1 < /dev/null &`.
 - Images: `swarmy image build` builds on the machine it runs on and needs
-  root, so build on the server the way `adopt` builds the base image: as root
+  root, so build on the server the way provisioning builds the base image: as root
   in the service user's checkout, with `/etc/swarmy/node.env` sourced, run
   `/usr/local/bin/swarmy image build images/swarmy-dev --name swarmy-dev --tag hz`.
 - Upgrade: `git merge --ff-only origin/master` locally first (upgrade ships
@@ -320,9 +319,9 @@ in the style CLAUDE.md asks for.
 
 ## Rebuilding the laptop CLI
 
-On the Hetzner server, as root in `/root/cli-build` (a plain clone of the
+On the server, as root in `/root/cli-build` (a plain clone of the
 repository): `git fetch` and check out `origin/master`, then `cargo build
---release --locked -p swarmy-cli --features remote` (about two minutes).
+--release --locked -p swarmy-cli --features remote` (about two minutes). The feature supplies the S3 client for swarm buckets.
 Copy `target/release/swarmy` back and replace the running binary by copying
 to `swarmy.new` and renaming (`cp` onto a busy binary fails). The CLI does
 not link the FoundationDB client, so it needs no library-path fix. Keep a
