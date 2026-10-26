@@ -7,7 +7,7 @@ state changes hourly and is not here: read it from tasky (`tasky goal list` and
 owner's standing decisions are in the auto-memory notes for this repository;
 the durable ones are repeated below.
 
-hz still runs on the old client until task 13 converts its record.
+For the one-time conversion of hz from the old client, see "Converting hz to a swarm (one time)" below.
 
 ## Ground rules from the owner
 
@@ -73,6 +73,29 @@ hz still runs on the old client until task 13 converts its record.
   orders go to manual review, and the API answers 412 meanwhile. Install
   Ubuntu from the rescue system with `bash -ic "installimage -a -c FILE"`, and
   reboot the rescue system first if an address was added after it booted.
+
+## Converting hz to a swarm (one time)
+
+With the old client, disconnect hz to close its old SSH master. Install the new
+laptop client. Run the one-shot converter with the old record path first in dry
+run mode and review its plan, then run it without dry run. It reads the API token
+from the server over SSH; it does not change the server and will not overwrite
+an existing swarm. Keep its output private even though secrets are redacted.
+
+```sh
+scripts/convert-remote-record-2026-10.py --old-record <checkout>/.swarmy/remote/hz.json --dry-run
+scripts/convert-remote-record-2026-10.py --old-record <checkout>/.swarmy/remote/hz.json
+swarmy swarm show hz
+swarmy --swarm hz doctor
+swarmy swarm use hz
+swarmy swarm status hz
+```
+
+Do not run `swarmy swarm up hz` as a test, and do not rely on
+`--copy-credential`. Later, `swarmy swarm upgrade hz` installs a
+`swarmy-core` that ignores hz's old `[remote]` table. To undo, run
+`swarmy swarm rm hz --force`: it forgets the spec, record and state and leaves
+the server untouched.
 
 ## The fleet driver
 
