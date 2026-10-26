@@ -173,7 +173,7 @@ fn create_up_status_stop_start_down_on_one_host() {
     f.ok(&["swarm", "start", "box"]);
     let scripts = fs::read_dir(f.path())
         .unwrap()
-        .filter_map(|entry| entry.ok())
+        .filter_map(Result::ok)
         .filter_map(|entry| {
             entry
                 .file_name()
