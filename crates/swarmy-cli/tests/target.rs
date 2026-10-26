@@ -70,6 +70,8 @@ impl Fixture {
             .command()
             .args(["swarm", "attach", name, "--url", url, "--token-stdin"])
             .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         child
