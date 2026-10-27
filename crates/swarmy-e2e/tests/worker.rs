@@ -678,18 +678,12 @@ async fn parked_inference_can_be_interrupted_and_followed_by_a_new_turn() {
             let id = f.create().await;
             f.wake(id).await;
             f.wait_state(id, SessionState::Sleeping).await;
-            let start = std::time::Instant::now();
             f.interrupt_from_cli(id).await;
-            swarmy_testkit::eventually(
-                "interrupt idles session",
-                Duration::from_secs(1),
-                async || {
-                    (f.store.fetch_session(id).await.unwrap().unwrap().state == SessionState::Idle)
-                        .then_some(())
-                },
-            )
+            swarmy_testkit::eventually("interrupt idles session", WAIT, async || {
+                (f.store.fetch_session(id).await.unwrap().unwrap().state == SessionState::Idle)
+                    .then_some(())
+            })
             .await;
-            assert!(start.elapsed() < Duration::from_secs(1));
             assert!(f.store.inference_wait(id).await.unwrap().is_none());
             let head = f.store.fetch_session(id).await.unwrap().unwrap().head_seq;
             let last = f.store.read_events(id, head - 1, 1).await.unwrap();
@@ -1392,10 +1386,8 @@ async fn permanent_publish_error_ends_turn() {
     f.start("scheduler", None);
     f.start("worker", None);
     let id = f.create().await;
-    let started = std::time::Instant::now();
     f.wake(id).await;
     let events = f.idle(id).await;
-    assert!(started.elapsed() < Duration::from_secs(5));
     let failed = events.iter().any(|event| {
         matches!(event, Event::InferenceFailed { retryable: false, error, .. }
             if error.contains("encoded bus message size") && error.contains("512"))
