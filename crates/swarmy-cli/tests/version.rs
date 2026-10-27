@@ -1,7 +1,6 @@
 #![deny(clippy::disallowed_methods)]
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
     path::Path,
     process::{Command, Output},
 };
@@ -17,9 +16,16 @@ const SERVICES: [(&str, &str); 4] = [
     ("api", "api ready"),
 ];
 
-fn script(path: &Path, body: &str) {
-    fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+fn script(path: &Path, identity: &str) {
+    fs::write(
+        path.parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("core-identity"),
+        identity,
+    )
+    .unwrap();
 }
 
 struct Fixture {
@@ -33,6 +39,11 @@ impl Fixture {
         fs::create_dir(root.path().join("bin")).unwrap();
         let stack = FakeStack::start(&root.path().join("data/swarmy/swarms/demo/stack"));
         let fixture = Self { root, stack };
+        std::os::unix::fs::symlink(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/version-core"),
+            fixture.root.path().join("bin/swarmy-core"),
+        )
+        .unwrap();
         fixture.core(swarmy_version::IDENTITY);
         assert!(
             fixture
@@ -44,19 +55,7 @@ impl Fixture {
     }
 
     fn core(&self, identity: &str) {
-        script(
-            &self.root.path().join("bin/swarmy-core"),
-            &format!(
-                "if [ \"$1\" = --version ]; then echo 'swarmy-core {identity}'; exit 0; fi
-case \"$1\" in
-  scheduler) echo 'scheduler started';;
-  worker) echo 'worker ready';;
-  gateway) echo 'gateway ready';;
-  api) echo 'api ready';;
-esac
-exec /bin/sleep 600"
-            ),
-        );
+        script(&self.root.path().join("bin/swarmy-core"), identity);
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -69,6 +68,10 @@ exec /bin/sleep 600"
         command
             .args(args)
             .current_dir(self.root.path())
+            .env(
+                "SWARMY_CORE_TEST_IDENTITY",
+                fs::read_to_string(self.root.path().join("core-identity")).unwrap(),
+            )
             .envs(swarmy_testkit::isolated_home(self.root.path()))
             .env(
                 "PATH",
@@ -210,10 +213,7 @@ fn cli_reports_identity_in_text_and_json() {
 #[test]
 fn failed_version_probe_is_refused() {
     let mut fixture = Fixture::new();
-    script(
-        &fixture.root.path().join("bin/swarmy-core"),
-        "echo 'old worker does not understand --version' >&2\nexit 2",
-    );
+    script(&fixture.root.path().join("bin/swarmy-core"), "probe-fails");
     let output = fixture.run(&["swarm", "up", "demo"]);
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();

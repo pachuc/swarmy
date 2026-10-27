@@ -23,9 +23,12 @@ impl Fixture {
         for dir in ["home", "config", "data", "state", "cache", "bin", "work"] {
             fs::create_dir(root.path().join(dir)).unwrap();
         }
-        let core = root.path().join("bin/swarmy-core");
-        fs::write(&core, format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'swarmy-core {}'; exit 0; fi\ncase \"$1\" in scheduler) echo 'scheduler started';; worker) echo 'worker ready';; gateway) echo 'gateway ready';; api) echo 'api ready';; esac\nexec /bin/sleep 600\n", swarmy_version::IDENTITY)).unwrap();
-        fs::set_permissions(core, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(root.path().join("core-identity"), swarmy_version::IDENTITY).unwrap();
+        std::os::unix::fs::symlink(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/local-core"),
+            root.path().join("bin/swarmy-core"),
+        )
+        .unwrap();
         Self {
             root,
             names: vec![],
@@ -46,6 +49,7 @@ impl Fixture {
             .env("XDG_DATA_HOME", self.path("data"))
             .env("XDG_STATE_HOME", self.path("state"))
             .env("XDG_CACHE_HOME", self.path("cache"))
+            .env("SWARMY_CORE_TEST_IDENTITY", swarmy_version::IDENTITY)
             .env(
                 "PATH",
                 format!("{}:/usr/bin:/bin", self.path("bin").display()),
