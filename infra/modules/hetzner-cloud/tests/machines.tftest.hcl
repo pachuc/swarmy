@@ -9,7 +9,7 @@ mock_provider "hcloud" {
       id           = "2002"
       ipv4_address = "203.0.113.10"
       ipv6_address = "2001:db8::1"
-      network      = [{ network_id = 1001, ip = "10.0.0.2", alias_ips = [], mac_address = "86:00:00:00:00:01" }]
+      network      = { ip = "10.0.0.2", mac_address = "86:00:00:00:00:01" }
     }
   }
 }
