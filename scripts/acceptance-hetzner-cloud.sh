@@ -279,6 +279,8 @@ main() {
     fi
     deadline=$((SECONDS + max_minutes * 60))
     created=1
+    # The swarm's services default to the test's provider, whatever the local config selects.
+    export SWARMY_PROVIDER=$provider SWARMY_MODEL=$model
     step create "$swarmy" swarm create "$name" --on hetzner-cloud --size "$server_type" --location "$location" --nodes 1 --lifecycle ephemeral
     plan_file=$(mktemp)
     step plan "$swarmy" --json swarm plan "$name" > "$plan_file"

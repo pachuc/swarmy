@@ -73,8 +73,10 @@ impl Options {
         } else {
             None
         };
+        // Only ChatGPT authenticates from a credential file; API-key providers
+        // keep their key in the swarm's own store (swarmy auth set after up).
         crate::Error::ensure(
-            !services || settings.selection.provider == "fake" || credential.is_some(),
+            !services || settings.selection.provider != "chatgpt" || credential.is_some(),
             "node gateway requires --copy-credential for ChatGPT; this explicitly acknowledges the credential leaves the laptop",
         )?;
         // Copy only service options. Local paths, cloud secrets, endpoints, and
@@ -281,6 +283,19 @@ async fn upload_with(node: &Machine, address: &str, script: &str, bytes: &[u8]) 
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+    #[test]
+    fn only_chatgpt_requires_a_copied_credential() {
+        let mut settings = Settings::default();
+        for provider in ["fake", "openrouter", "anthropic"] {
+            settings.selection.provider = provider.into();
+            assert!(Options::with_keyring(&settings, true, "swarmy", false, None).is_ok());
+        }
+        settings.selection.provider = "chatgpt".into();
+        let error = Options::with_keyring(&settings, true, "swarmy", false, None)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("--copy-credential for ChatGPT"));
+    }
     #[test]
     fn default_image_keeps_token() {
         let mut settings = Settings::default();

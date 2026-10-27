@@ -377,8 +377,9 @@ See [REMOTE.md](REMOTE.md#draining-a-node) for how draining works on a node.
 On the first `swarmy swarm up NAME`, `--copy-credential` copies the ChatGPT
 credential file (`selection.credential_file`, by default
 `~/.local/share/swarmy/auth.json`) and the local cluster keyring to the
-control host over SSH. Up refuses without it when your configuration selects a
-provider other than `fake`, and refuses with it when that file does not exist.
+control host over SSH. Up refuses without it when your configuration selects
+ChatGPT, and refuses with it when that file does not exist. Other providers need
+no copied file.
 A later up skips an already-provisioned primary and copies nothing, so decide
 before the first up. Node hosts need no provider credential.
 
