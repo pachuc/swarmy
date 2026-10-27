@@ -395,7 +395,9 @@ sandbox file, scales the workers group to two and back to one using the
 `swarmy swarm scale` command, and verifies teardown against Hetzner Cloud and
 Object Storage. It prints a maximum cost estimate before the `--yes` gate,
 bounds the run to 90 minutes by default, and allows 30 more minutes for
-teardown. If leftovers remain, follow the printed manual cleanup instructions
+teardown. The default server type, cpx32, keeps the three machines at 12
+shared vCPUs, under the limit new Hetzner accounts start with; pass
+`--server-type` for another type that is available in the location. If leftovers remain, follow the printed manual cleanup instructions
 in the Hetzner console before attempting another run. The dry run uses fake
 OpenTofu and needs no cloud access. The real run needs a configured swarmy
 `config.toml` so doctor can verify the configuration. Provide a nonempty 0600
