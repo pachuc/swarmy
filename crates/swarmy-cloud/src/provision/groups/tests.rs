@@ -1030,7 +1030,7 @@ mod remote_bucket_precedence {
 
 #[tokio::test]
 async fn failed_server_apply_does_not_block_bucket_teardown() {
-    let mut f = Fixture::new();
+    let f = Fixture::new();
     fs::write(f.temp.path().join("fail-apply-control"), "").unwrap();
     let host = FakeHost::new();
     assert!(f.up(&host).await.is_err());
