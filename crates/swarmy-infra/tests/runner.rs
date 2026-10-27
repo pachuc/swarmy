@@ -10,35 +10,18 @@ const SECRET: &str = "hcloud-test-token-5f2b9c";
 const OUTPUTS: &str = r#"{"machines":{"value":[{"name":"worker","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":null,"ssh_user":"root"}]}}"#;
 fn fake_tofu(fixture: &Path, behaviour: &str, outputs: &str) -> PathBuf {
     let script = fixture.join("tofu");
-    let record = fixture.join("record");
-    let json = fixture.join("outputs.json");
-    std::fs::write(&json, outputs).unwrap();
-    let body = format!(
-        r#"#!/bin/sh
-{{
-  printf 'cwd=%s\n' "$(pwd -P)"
-  for a in "$@"; do printf 'arg=%s\n' "$a"; done
-  env | sed 's/^/env=/'
-  printf 'end\n'
-}} >> '{}'
-{}
-"#,
-        record.display(),
-        behaviour.replace("{outputs}", &json.display().to_string())
-    );
-    std::fs::write(&script, body).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    std::fs::write(fixture.join("outputs.json"), outputs).unwrap();
+    std::fs::write(fixture.join("behaviour"), behaviour).unwrap();
+    std::os::unix::fs::symlink(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-tofu"),
+        &script,
+    )
+    .unwrap_or_else(|error| {
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    });
     script
 }
-const DEFAULT: &str = r#"case "$1" in
-output) cat '{outputs}' ;;
-apply) echo 'state' > terraform.tfstate ;;
-plan) exit 2 ;;
-esac"#;
+const DEFAULT: &str = "default";
 #[derive(Debug)]
 struct Invocation {
     cwd: String,
@@ -193,11 +176,7 @@ async fn argument_sequence_and_environment_passing() {
     }
     assert!(cache.path().join("tofu/plugins").is_dir());
     let plan0 = Tofu::from_binary(
-        fake_tofu(
-            fixture.path(),
-            "case \"$1\" in plan) exit 0;; esac",
-            OUTPUTS,
-        ),
+        fake_tofu(fixture.path(), "no-changes", OUTPUTS),
         cache.path(),
     );
     assert_eq!(
@@ -291,11 +270,7 @@ async fn failure_is_structured_and_redacted() {
     let work = tempfile::tempdir().unwrap();
     let cache = tempfile::tempdir().unwrap();
     let tofu = Tofu::from_binary(
-        fake_tofu(
-            fixture.path(),
-            "case \"$1\" in apply) echo 'Error: boom' >&2; echo \"$HCLOUD_TOKEN\" >&2; exit 1;; esac",
-            OUTPUTS,
-        ),
+        fake_tofu(fixture.path(), "fail-apply", OUTPUTS),
         cache.path(),
     );
     let error = tofu
@@ -379,7 +354,7 @@ async fn missing_binary_and_bad_output() {
             fixture.path(),
             // Emit malformed output directly so this checks the output parser,
             // not a file read from the fake runner's auxiliary JSON fixture.
-            r#"case "$1" in output) printf '{}' ;; esac"#,
+            "bad-output",
             "{}",
         ),
         cache.path(),
@@ -431,11 +406,7 @@ async fn stale_module_files_removed() {
 #[tokio::test]
 async fn plan_text_redacts_credentials() {
     let temp = tempfile::tempdir().unwrap();
-    let script = fake_tofu(
-        temp.path(),
-        "if [ \"$1\" = plan ]; then echo 'hcloud-test-token-5f2b9c'; exit 2; fi",
-        OUTPUTS,
-    );
+    let script = fake_tofu(temp.path(), "secret-plan", OUTPUTS);
     let tofu = Tofu::from_binary(script, &temp.path().join("cache"));
     let workspace = tofu.workspace(
         temp.path().join("work"),
