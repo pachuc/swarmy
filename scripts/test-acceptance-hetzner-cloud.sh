@@ -162,7 +162,13 @@ for signal in INT TERM HUP; do
     export SIGNAL_DIR="$fake/$signal"
     mkdir -p "$SIGNAL_DIR"
     mkfifo "$SIGNAL_DIR/ready"
-    bash "$fake/signal-harness.sh" > "$SIGNAL_DIR/out" 2> "$SIGNAL_DIR/err" &
+    # Signals ignored when a shell starts cannot be trapped, and nohup or a
+    # background job in a non-interactive shell (as CI runners do) starts the
+    # harness with HUP or INT ignored. Restore the defaults, as a terminal has.
+    python3 -c 'import os, signal, sys
+for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signal.signal(s, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])' bash "$fake/signal-harness.sh" > "$SIGNAL_DIR/out" 2> "$SIGNAL_DIR/err" &
     signal_pid=$!
     # A FIFO handshake ensures the step is running before sending the signal.
     if ! timeout 3 cat "$SIGNAL_DIR/ready" > "$SIGNAL_DIR/started"; then
