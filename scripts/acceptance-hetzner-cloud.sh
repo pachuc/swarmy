@@ -304,10 +304,15 @@ main() {
     local up_args=(); [[ $provider != chatgpt ]] || up_args+=(--copy-credential)
     step up "$swarmy" swarm up "$name" "${up_args[@]}"
     if [[ $provider != chatgpt ]]; then step auth "$swarmy" --swarm "$name" auth set "$provider" --file "$api_key_file"; fi
+    # The gateway re-reads its providers every 30 seconds, so a key stored a
+    # moment ago may not be served yet. Give doctor up to three refreshes.
     file=$(mktemp)
-    if ! step doctor "$swarmy" --swarm "$name" --json doctor > "$file"; then
-        py doctor-failures "$file"; rm -f "$file"; fail 'doctor reported failures'
-    fi
+    for attempt in 1 2 3 4; do
+        if step doctor "$swarmy" --swarm "$name" --json doctor > "$file"; then break; fi
+        if ((attempt == 4)); then py doctor-failures "$file"; rm -f "$file"; fail 'doctor reported failures'; fi
+        echo "doctor not clean yet; waiting for the gateway to refresh ($attempt/4)" >&2
+        sleep 30
+    done
     py doctor "$file"; rm -f "$file"
     step agent "$swarmy" --swarm "$name" agent create acceptance --provider "$provider" --model "$model"
     nonce="swarmy-acceptance-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
