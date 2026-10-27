@@ -2,7 +2,8 @@
 fixture=$(dirname "$0")
 set -eu
 group=$(basename "$PWD")
-printf 'call %s %s\n' "$group" "$1" >> "$fixture/tofu.log"
+printf 'call %s %s\n' "$group" "$1"
+case " $* " in *" -target="*) printf 'target %s %s\n' "$group" "$*" >> "$fixture/tofu.log";; esac >> "$fixture/tofu.log"
 env | grep -E '^(HCLOUD_TOKEN|MINIO_USER|MINIO_PASSWORD|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SHARED_CREDENTIALS_FILE|AWS_CONFIG_FILE|AWS_EC2_METADATA_DISABLED)=' >> "$fixture/tofu.log" || true
 case "$1" in
   init) exit 0 ;;
@@ -12,7 +13,8 @@ case "$1" in
     while test -f "$fixture/applied-$group-$i.json"; do i=$((i+1)); done
     cp swarmy.tfvars.json "$fixture/applied-$group-$i.json"
     echo state > terraform.tfstate
-    if test -f "$fixture/fail-apply-$group"; then echo 'Error: apply failed' >&2; exit 1; fi ;;
+    # A bucket-targeted apply cannot create the missing server that makes full apply fail.
+    if test -f "$fixture/fail-apply-$group" && ! printf '%s\n' "$*" | grep -q -- '-target='; then echo 'Error: apply failed' >&2; exit 1; fi ;;
   output)
     bucket=$(python3 -c 'import json; print(json.load(open("swarmy.tfvars.json"))["bucket_name"])')
     if test "${AWS_ACCESS_KEY_ID:-}" != ""; then

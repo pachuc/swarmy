@@ -14,9 +14,13 @@ def items(body, key):
     return body[key]
 def priced(entry, location):
     return Decimal(next(p['price_hourly']['gross'] for p in entry['prices'] if p['location'] == location))
+def orderable(entry, location):
+    return any(loc['name'] == location and loc.get('available') is True
+               and loc.get('deprecation') is None for loc in entry.get('locations', []))
 def types(body, location):
     return sorted(((priced(t, location), t['name']) for t in body['server_types']
                    if t.get('deprecation') is None and t.get('architecture') == 'x86'
+                   and orderable(t, location)
                    and any(p['location'] == location for p in t['prices'])), key=lambda pair: pair[0])
 if cmd in ('hcloud-config', 's3-config'):
     credentials = tomllib.loads((Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local/share')) /
@@ -37,7 +41,7 @@ elif cmd == 'cloud-ready':
 elif cmd == 'server-type':
     body, location, name = load(args[0]), args[1], args[2]
     found = [t for t in body['server_types'] if t['name'] == name]
-    if len(found) != 1 or found[0].get('deprecation') is not None or found[0].get('architecture') != 'x86' or not any(p['location'] == location for p in found[0]['prices']):
+    if len(found) != 1 or found[0].get('deprecation') is not None or found[0].get('architecture') != 'x86' or not orderable(found[0], location) or not any(p['location'] == location for p in found[0]['prices']):
         print('server type unavailable; pass --server-type with one of the listed alternatives', file=sys.stderr)
         sys.exit(1)
     print(priced(found[0], location))
@@ -186,7 +190,7 @@ on_exit() {
     exit "$result"
 }
 parse_args() {
-    yes=0 dry_run=0 provider='' model='' api_key_file='' server_type=cpx31 location=fsn1 max_minutes=90 swarmy=''
+    yes=0 dry_run=0 provider='' model='' api_key_file='' server_type=cx43 location=fsn1 max_minutes=90 swarmy=''
     while (($#)); do
         case $1 in
             --yes) yes=1;; --dry-run) dry_run=1;;
