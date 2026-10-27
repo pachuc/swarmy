@@ -189,7 +189,7 @@ pub(crate) async fn install(node: &Machine, address: &str, options: &Options) ->
         let status = super::ssh::command(node)?
             .arg(address)
             .arg(new_keyring_script(&user, &home))
-            .stdin(std::process::Stdio::null())
+            .stdin(Stdio::null())
             .stdout(std::io::stderr())
             .status()
             .await

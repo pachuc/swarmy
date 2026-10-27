@@ -713,7 +713,7 @@ pub(crate) async fn destroy(
 /// Hetzner object storage can still report a bucket "not empty" for a short
 /// while after the provider deleted its objects, so retry destroy on that
 /// error only, a bounded number of times.
-async fn destroy_settling(workspace: &swarmy_infra::Workspace<'_>) -> Result<()> {
+async fn destroy_settling(workspace: &Workspace<'_>) -> Result<()> {
     let mut attempt = 1;
     loop {
         match workspace.destroy().await {
