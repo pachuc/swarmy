@@ -293,7 +293,7 @@ impl Workspace<'_> {
         let (bytes, _) = self.run(Subcommand::Output).await?;
         Ok(parse_outputs(&String::from_utf8_lossy(&bytes))?)
     }
-    async fn run(&self, sub: Subcommand) -> Result<(Vec<u8>, Option<i32>)> {
+    async fn run(&self, sub: Subcommand<'_>) -> Result<(Vec<u8>, Option<i32>)> {
         fs::create_dir_all(&self.tofu.plugin_cache)
             .await
             .map_err(|e| io("creating", &self.tofu.plugin_cache, e))?;
