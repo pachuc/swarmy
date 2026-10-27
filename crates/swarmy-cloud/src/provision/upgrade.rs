@@ -1,0 +1,171 @@
+//! In-place upgrades keep swarm records and host identities intact.
+use std::time::{Duration, Instant};
+
+use super::Machine;
+use crate::Result;
+use serde::{Deserialize, Serialize};
+
+use crate::ssh;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Scope {
+    All,
+    ServicesOnly,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Format {
+    Human,
+    Json,
+}
+
+pub(super) struct Options {
+    pub dirty_paths: Vec<String>,
+    pub allow_dirty: bool,
+    pub scope: Scope,
+    pub drain_timeout: Duration,
+    pub format: Format,
+}
+
+impl Options {
+    pub(super) fn new(
+        allow_dirty: bool,
+        services_only: bool,
+        drain_timeout: u64,
+        json: bool,
+    ) -> Self {
+        Self {
+            dirty_paths: Vec::new(),
+            allow_dirty,
+            scope: if services_only {
+                Scope::ServicesOnly
+            } else {
+                Scope::All
+            },
+            drain_timeout: Duration::from_secs(drain_timeout),
+            format: if json { Format::Json } else { Format::Human },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct Summary {
+    pub node: String,
+    pub changed: Vec<String>,
+    #[serde(default)]
+    pub units: Vec<String>,
+    pub restarted: Vec<String>,
+    pub elapsed_seconds: f64,
+}
+
+pub(super) trait UpgradeHost {
+    async fn version(&self, node: &Machine) -> Result<String>;
+    async fn has_service_units(&self, node: &Machine) -> Result<bool>;
+    async fn upgrade(
+        &self,
+        node: &Machine,
+        services_only: bool,
+        drain_timeout: Duration,
+        stack: bool,
+    ) -> Result<Summary>;
+}
+
+impl UpgradeHost for ssh::Ssh {
+    async fn has_service_units(&self, node: &Machine) -> Result<bool> {
+        let address = ssh::reachable_address(node).await?;
+        self.has_service_units(node, &address).await
+    }
+
+    async fn version(&self, node: &Machine) -> Result<String> {
+        let address = ssh::reachable_address(node).await?;
+        self.node_version(node, &address).await
+    }
+
+    async fn upgrade(
+        &self,
+        node: &Machine,
+        services_only: bool,
+        drain_timeout: Duration,
+        stack: bool,
+    ) -> Result<Summary> {
+        let address = ssh::reachable_address(node).await?;
+        let started = Instant::now();
+        let value = self
+            .upgrade(node, &address, services_only, drain_timeout, stack)
+            .await?;
+        let mut summary: Summary = serde_json::from_value(value)?;
+        summary.node.clone_from(&node.name);
+        summary.elapsed_seconds = started.elapsed().as_secs_f64();
+        Ok(summary)
+    }
+}
+
+fn print_version(message: &str, json: bool) {
+    if json {
+        cloud_err!("{message}");
+    } else {
+        cloud_out!("{message}");
+    }
+}
+
+#[cfg(test)]
+pub(super) async fn run(
+    host: &impl UpgradeHost,
+    nodes: &[Machine],
+    options: Options,
+) -> Result<Vec<Summary>> {
+    run_with(host, nodes, options, |_| Ok(())).await
+}
+
+pub(super) async fn run_with(
+    host: &impl UpgradeHost,
+    nodes: &[Machine],
+    options: Options,
+    mut on_summary: impl FnMut(&Summary) -> Result<()>,
+) -> Result<Vec<Summary>> {
+    crate::Error::ensure(
+        options.dirty_paths.is_empty() || options.allow_dirty,
+        format!(
+            "development checkout has uncommitted paths ({}); commit or ignore them, or pass --allow-dirty",
+            options.dirty_paths.join(", ")
+        ),
+    )?;
+    print_version(
+        &format!("Local CLI: swarmy {}", swarmy_version::IDENTITY),
+        options.format == Format::Json,
+    );
+    for node in nodes {
+        print_version(
+            &format!("{}: {}", node.name, host.version(node).await?),
+            options.format == Format::Json,
+        );
+    }
+    let mut summaries = Vec::new();
+    for node in nodes {
+        print_version(
+            &format!("Upgrading {}", node.name),
+            options.format == Format::Json,
+        );
+        let stack = host.has_service_units(node).await?;
+        let summary = host
+            .upgrade(
+                node,
+                options.scope == Scope::ServicesOnly,
+                options.drain_timeout,
+                stack,
+            )
+            .await?;
+        if options.format != Format::Json {
+            cloud_out!(
+                "{}: changed={} units={} restarted={} elapsed={:.1}s",
+                summary.node,
+                summary.changed.join(","),
+                summary.units.join(","),
+                summary.restarted.join(","),
+                summary.elapsed_seconds
+            );
+        }
+        on_summary(&summary)?;
+        summaries.push(summary);
+    }
+    Ok(summaries)
+}

@@ -27,7 +27,7 @@ pub(crate) enum Command {
         /// Linux target triple of the image; defaults to this machine
         #[arg(long)]
         target: Option<String>,
-        /// Also write `selection.default_image` to the configuration file (restart with swarmy dev up to apply)
+        /// Also write `selection.default_image` to the configuration file (restart with swarmy swarm up NAME to apply)
         #[arg(long)]
         set_default: bool,
     },

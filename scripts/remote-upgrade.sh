@@ -129,7 +129,7 @@ if unit_restart_wanted "$node_unit" "$node_binary_path" "${restart_units[@]}"; t
     else
         deadline=$((SECONDS + drain_timeout))
         while true; do
-            busy=$(sudo -n sh -c "cd $repo_dir && set -a && . /etc/swarmy/node.env && set +a && exec $bin_dir/$(swarmy_core_binary) $node_role --upgrade-processes")
+            busy=$(swarmy_busy_sandboxes "$repo_dir" "$bin_dir/$(swarmy_core_binary)")
             [[ $busy == '[]' ]] && break
             echo "Waiting for running sandbox commands: $busy" >&2
             if (( SECONDS >= deadline )); then

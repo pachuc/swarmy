@@ -99,7 +99,7 @@ pub(crate) struct CreateArgs {
 }
 
 fn agent_name(name: &str) -> Result<String, String> {
-    swarmy_config::validate_remote_name(name).map_err(|_| {
+    swarmy_config::validate_name(name).map_err(|_| {
         "agent names must contain 1-64 letters, digits, hyphens, or underscores".to_owned()
     })?;
     Ok(name.to_owned())

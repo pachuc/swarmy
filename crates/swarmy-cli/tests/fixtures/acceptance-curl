@@ -1,0 +1,4 @@
+#!/bin/sh
+if [ "$1" = --version ]; then echo 'curl 8.0.0'; exit 0; fi
+touch "$(dirname "$(dirname "$0")")/curl-marker"
+exit 1

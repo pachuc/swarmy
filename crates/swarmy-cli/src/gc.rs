@@ -3,7 +3,7 @@ pub(crate) async fn run(
     grace_seconds: Option<u64>,
     json: bool,
 ) -> anyhow::Result<()> {
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    let (client, endpoint) = crate::target::connect().await?;
     if let Some(grace) = grace_seconds {
         anyhow::ensure!(grace > 0, "grace window must be positive");
     }

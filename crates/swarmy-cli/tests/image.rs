@@ -169,6 +169,7 @@ fn image_json(api: &ApiService, arguments: &[&str]) -> serde_json::Value {
         .arg("--json")
         .arg("image")
         .args(arguments)
+        .env_remove("SWARMY_SWARM")
         .env("SWARMY_API_URL", &api.url)
         .env("SWARMY_API_TOKEN", &api.token)
         .output()
@@ -305,6 +306,7 @@ fn check_registration(api: &ApiService, reference: &str, tag: &str, first: &serd
     assert_eq!(shown["manifest_id"], first["manifest_id"]);
     let listed = Command::new(env!("CARGO_BIN_EXE_swarmy"))
         .args(["--json", "image", "ls"])
+        .env_remove("SWARMY_SWARM")
         .env("SWARMY_API_URL", &api.url)
         .env("SWARMY_API_TOKEN", &api.token)
         .output()

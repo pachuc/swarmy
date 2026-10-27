@@ -30,13 +30,12 @@ inputs are not sent yet.
 
 ## Credentials and auth commands
 
-Start a local cluster with `swarmy dev up`. It creates a base64 32-byte keyring
-at `~/.swarmy/keyring` with mode 600, or uses `SWARMY_KEYRING`. The key encrypts
+Start a local cluster with `swarmy swarm up dev`. It creates a base64 32-byte keyring
+at `~/.local/share/swarmy/keyring` (`$XDG_DATA_HOME/swarmy/keyring`) with mode 600, or uses `SWARMY_KEYRING`. The key encrypts
 FoundationDB credential records with XChaCha20-Poly1305. Keep a separate backup:
 replacing the key cannot decrypt existing records. CLI and gateway hosts need
-the same key. `remote up --services node --copy-credential` and
-`remote add-node --copy-credential` explicitly copy it over SSH; ordinary node
-hosts need no provider credentials.
+the same key. `swarmy swarm up NAME --copy-credential` explicitly copies it over SSH on
+the swarm's first up; ordinary node hosts need no provider credentials.
 
 ```sh
 swarmy auth set anthropic --from-env
@@ -96,7 +95,7 @@ for a Foundry resource; the URL is stored with the key.
 All logins write the cluster store directly. `auth import` copies an existing
 ChatGPT file without changing it; without `--file`, it reads
 `[selection] credential_file`
-(normally `~/.swarmy/auth.json`, also overridden by `--auth-file` or
+(normally `~/.local/share/swarmy/auth.json`, also overridden by `--auth-file` or
 `SWARMY_CHATGPT_AUTH`). Stop other refresh owners before importing. Gateways do
 not fall back to that file.
 

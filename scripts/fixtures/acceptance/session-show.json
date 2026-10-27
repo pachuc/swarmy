@@ -1,0 +1,6 @@
+{"id":"01ARZ3NDEKTSV4RRFFQ69G5FAV"}
+{"tool_call_requested":{"seq":1,"request_id":"fixture","call":{"call_id":"call-1","tool":"bash","arguments":{},"result":null}}}
+{"tool_call_completed":{"seq":2,"request_id":"fixture","call_id":"call-1","result":{"completed":{"output":"swarmy-acceptance-abcdef123456","title":"shell","metadata":{}}}}}
+{"tool_call_requested":{"seq":3,"request_id":"fixture","call":{"call_id":"call-2","tool":"checkpoint","arguments":{},"result":null}}}
+{"tool_call_completed":{"seq":4,"request_id":"fixture","call_id":"call-2","result":{"completed":{"output":"saved","title":"checkpoint","metadata":{}}}}}
+{"message_appended":{"seq":5,"message":{"role":"assistant","parts":[{"text":{"text":"assistant-only-nonce"}}]}}}

@@ -22,7 +22,7 @@ pub(crate) async fn run(command: crate::image_command::Command, json: bool) -> R
             set_default,
         } => pull(tag, target, set_default, json).await,
         Command::Ls => {
-            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            let (client, endpoint) = crate::target::connect().await?;
             let mut after = None;
             loop {
                 let page = swarmy_client::api_client::call(
@@ -48,7 +48,7 @@ pub(crate) async fn run(command: crate::image_command::Command, json: bool) -> R
             let (name, tag) = image.split_once(':').context("expected NAME:TAG")?;
             validate_label(name)?;
             validate_label(tag)?;
-            let (client, endpoint) = swarmy_client::api_client::connect()?;
+            let (client, endpoint) = crate::target::connect().await?;
             let value = client.image(name, tag).await.map_err(|error| {
                 if matches!(&error, swarmy_client::Error::Api { body, .. } if body.code == "image_not_found") {
                     anyhow::anyhow!("image not found")
@@ -88,7 +88,7 @@ async fn pull(
     let tag = tag.as_deref().unwrap_or(swarmy_version::RELEASE_TAG);
     let target = target.as_deref().map_or_else(Target::host, Target::parse)?;
     let image = release_image(tag);
-    if pull_release_image(&crate::dev::image_cache()?, tag, target, json)
+    if pull_release_image(None, &image_cache()?, tag, target, json)
         .await?
         .is_none()
     {
@@ -98,10 +98,15 @@ async fn pull(
     }
     if set_default {
         let loaded = swarmy_config::Settings::load_base()?;
-        let path = loaded.path.context(
-            "no configuration file to update; run swarmy dev up first or set SWARMY_DEFAULT_IMAGE",
-        )?;
-        crate::dev::set_default_image(&path, &image)?;
+        let path = loaded
+            .path
+            .or_else(|| {
+                swarmy_config::paths::Dirs::from_process()
+                    .ok()
+                    .map(|dirs| dirs.config.join("config.toml"))
+            })
+            .context("set HOME or XDG_CONFIG_HOME to save the default image")?;
+        set_default_image(&path, &image)?;
         if json {
             println!(
                 "{}",
@@ -109,7 +114,7 @@ async fn pull(
             );
         } else {
             println!(
-                "default_image = {image} in {}; run swarmy dev up to restart the API with it",
+                "default_image = {image} in {}; run swarmy swarm up NAME to restart the API with it",
                 path.display()
             );
             if std::env::var_os("SWARMY_DEFAULT_IMAGE").is_some() {
@@ -142,7 +147,7 @@ pub(crate) async fn build(
     })
     .await??;
     if !no_register {
-        register(&name, &tag, image.path(), &sandbox, json).await?;
+        register(None, &name, &tag, image.path(), &sandbox, json).await?;
     }
     if let Some(ref output) = output {
         // Refuse to overwrite an existing image, including through a symlink.
@@ -184,6 +189,7 @@ fn validate_sandbox(sandbox: &swarmy_image::SandboxRecipe) -> Result<()> {
 
 /// Publish a local sparse ext4 through the control plane and print the result.
 async fn register(
+    api: Option<(&str, &str)>,
     name: &str,
     tag: &str,
     file: &Path,
@@ -191,7 +197,7 @@ async fn register(
     json: bool,
 ) -> Result<swarmy_api_types::ImageUpload> {
     validate_sandbox(sandbox)?;
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    let (client, endpoint) = crate::target::connect_with(api).await?;
     let uploaded = swarmy_client::api_client::call_upload(
         &endpoint,
         file,
@@ -233,6 +239,7 @@ pub(crate) fn other_release_image(default: &str) -> bool {
 }
 /// Register the release's base image; None for development clients.
 pub(crate) async fn pull_release_image(
+    api: Option<(&str, &str)>,
     cache: &Path,
     tag: &str,
     target: Target,
@@ -242,7 +249,7 @@ pub(crate) async fn pull_release_image(
     let Some(release) = Release::for_client()? else {
         return Ok(None);
     };
-    let (client, endpoint) = swarmy_client::api_client::connect()?;
+    let (client, endpoint) = crate::target::connect_with(api).await?;
     match client.image("base-ubuntu", tag).await {
         Ok(_) => {
             if json {
@@ -267,9 +274,31 @@ pub(crate) async fn pull_release_image(
         "disk.ext4 is {len} bytes but its recipe declares {}",
         recipe.disk_size
     );
-    register("base-ubuntu", tag, &disk, &recipe.sandbox, json).await?;
+    register(api, "base-ubuntu", tag, &disk, &recipe.sandbox, json).await?;
     std::fs::remove_dir_all(&dir)?;
     Ok(Some(true))
+}
+
+/// `images/` in swarmy's XDG cache directory: release base-image downloads.
+pub(crate) fn image_cache() -> Result<PathBuf> {
+    Ok(swarmy_config::paths::Dirs::from_process()?
+        .cache
+        .join("images"))
+}
+/// Set `selection.default_image` in CONFIG, keeping the rest of the file.
+pub(crate) fn set_default_image(config: &Path, image: &str) -> Result<()> {
+    if !config.exists() {
+        if let Some(parent) = config.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let encoded = format!("[selection]\ndefault_image = {image:?}\n");
+        swarmy_config::write_private(config, encoded.as_bytes())?;
+        return Ok(());
+    }
+    let mut settings = swarmy_config::Settings::read(config)?;
+    settings.selection.default_image = Some(image.to_owned());
+    swarmy_config::write_private(config, settings.to_toml()?.as_bytes())?;
+    Ok(())
 }
 
 #[cfg(test)]

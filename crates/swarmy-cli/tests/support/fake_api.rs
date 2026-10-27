@@ -5,8 +5,13 @@ use std::{
 };
 
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "each integration test uses different fields of this shared fake request"
+)]
 pub(crate) struct Request {
     pub method: String,
+    pub authorization: Option<String>,
     pub path_and_query: String,
     pub body_len: usize,
     pub first_offset: Option<u64>,
@@ -37,7 +42,7 @@ pub(crate) fn serve(registered: bool) -> (SocketAddr, Arc<Mutex<Vec<Request>>>) 
             let Some(header_end) = header_end else {
                 continue;
             };
-            let header = String::from_utf8_lossy(&bytes[..header_end]);
+            let header = String::from_utf8_lossy(&bytes[..header_end]).into_owned();
             let mut parts = header.lines().next().unwrap().split_whitespace();
             let method = parts.next().unwrap().to_owned();
             let path_and_query = parts.next().unwrap().to_owned();
@@ -59,7 +64,14 @@ pub(crate) fn serve(registered: bool) -> (SocketAddr, Arc<Mutex<Vec<Request>>>) 
             let body = &bytes[header_end..];
             let first_offset = (method == "POST" && body.len() >= 8)
                 .then(|| u64::from_le_bytes(body[..8].try_into().unwrap()));
+            let authorization = header.lines().find_map(|line| {
+                line.split_once(':').and_then(|(key, value)| {
+                    key.eq_ignore_ascii_case("authorization")
+                        .then(|| value.trim().to_owned())
+                })
+            });
             recorded.lock().unwrap().push(Request {
+                authorization,
                 method: method.clone(),
                 path_and_query: path_and_query.clone(),
                 body_len: body.len(),

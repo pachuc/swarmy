@@ -1,6 +1,11 @@
 #![deny(unreachable_pub)]
 //! Shared configuration for services and command-line programs.
+pub mod cloud;
+mod files;
+pub use files::{create_private, create_private_dir, write_private};
 pub mod keyring;
+pub mod paths;
+pub mod swarm;
 pub use keyring::Keyring;
 mod exports;
 mod models;
@@ -8,14 +13,12 @@ mod object;
 mod partitions;
 pub use models::{CustomModel, CustomProvider};
 pub use partitions::{Partitions, PartitionsError};
-mod remote;
+mod bucket;
+mod names;
+pub use bucket::{BucketCredentials, BucketSpec, ownership_marker_key};
 pub use exports::parse_exports;
+pub use names::{default_sandboxes, validate_name, validate_service_user};
 pub use object::ObjectPrefix;
-pub use remote::{
-    AwsSettings, BucketCredentials, BucketSpec, Provider, RemoteNode, RemotePorts, RemoteProfile,
-    RemoteServices, RemoteSettings, default_sandboxes, ownership_marker_key, remote_path,
-    validate_remote_name, validate_service_user,
-};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -25,6 +28,40 @@ use std::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("unknown cloud provider \"{0}\"; expected one of hetzner-cloud, hetzner-s3, aws")]
+    UnknownCloudProvider(String),
+    #[error("cloud credentials: {0}")]
+    CloudCredential(String),
+    #[error("no {0} credentials stored; run `swarmy cloud login {0}`")]
+    CloudNotLoggedIn(&'static str),
+    #[error("invalid swarm spec: {0}")]
+    Spec(String),
+    #[error("swarm registry: {0}")]
+    Registry(String),
+    #[error(
+        "no swarm named \"{0}\"; run `swarmy swarm ls` to list swarms or `swarmy swarm create {0}` to make one"
+    )]
+    UnknownSwarm(String),
+    #[error(
+        "the current swarm \"{0}\" no longer exists; run `swarmy swarm use NAME` to choose another (`swarmy swarm ls` lists them)"
+    )]
+    StaleCurrent(String),
+    #[error(
+        "no swarm selected: run `swarmy swarm ls` to list swarms, `swarmy swarm use NAME` to choose one, or `swarmy swarm create NAME` to make one; --swarm NAME or SWARMY_SWARM selects one for a single command"
+    )]
+    NoSwarm,
+    #[error(
+        "SWARMY_API_URL is set but SWARMY_API_TOKEN is empty; set both to use an unregistered API, or unset SWARMY_API_URL"
+    )]
+    IncompleteEndpoint,
+    #[error("cannot find swarmy's directories: {0}")]
+    Directories(&'static str),
+    #[error("in {}", path.display())]
+    File {
+        path: PathBuf,
+        #[source]
+        source: Box<Error>,
+    },
     #[error("invalid model catalog configuration: {0}")]
     Catalog(String),
     #[error("keyring: {0}")]
@@ -36,9 +73,9 @@ pub enum Error {
     KeyringRandomness(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("a new session requires --image NAME:TAG or default_image (SWARMY_DEFAULT_IMAGE)")]
     MissingImage,
-    #[error("remote configuration: {0}")]
-    Remote(&'static str),
-    #[error("invalid remote JSON: {0}")]
+    #[error("invalid value: {0}")]
+    Invalid(&'static str),
+    #[error("invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
     #[error("invalid S3 namespace: {0}")]
     S3Namespace(&'static str),
@@ -533,8 +570,9 @@ impl Default for StoreSettings {
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub api: ApiSettings,
+    /// Service state: remote records, the API's upload staging, and `dev`'s pids
+    /// and logs. Empty means the default; see `Settings::fill_default_locations`.
     pub state_dir: PathBuf,
-    pub remote: RemoteSettings,
     pub volume_snapshots: VolumeSnapshots,
     pub sandbox: SandboxSettings,
     pub gc: GarbageCollection,
@@ -584,17 +622,16 @@ pub struct Fake {
 impl Default for Fake {
     fn default() -> Self {
         Self {
-            script: ".swarmy/dev/fake.json".into(),
-            call_log: ".swarmy/dev/calls.log".into(),
+            script: ".swarmy/fake.json".into(),
+            call_log: ".swarmy/calls.log".into(),
         }
     }
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            state_dir: ".swarmy".into(),
+            state_dir: PathBuf::new(),
             api: ApiSettings::default(),
-            remote: RemoteSettings::default(),
             volume_snapshots: VolumeSnapshots::default(),
             sandbox: SandboxSettings::default(),
             gc: GarbageCollection::default(),
@@ -711,7 +748,46 @@ pub fn service_hostname() -> String {
     std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into())
 }
 
+/// The project directory of a project configuration file
+/// (`<project>/.swarmy/config.toml`), or `None` for any other file, such as
+/// the user file in the XDG config directory.
+#[must_use]
+pub fn project_root(config: &Path) -> Option<&Path> {
+    let directory = config.parent()?;
+    (directory.file_name()? == ".swarmy")
+        .then(|| directory.parent())
+        .flatten()
+}
+
 impl Settings {
+    /// Fill the paths whose defaults depend on where configuration lives. An
+    /// empty `state_dir` becomes `<root>/.swarmy` for a project file and swarmy's
+    /// XDG state directory otherwise (`$XDG_STATE_HOME/swarmy`, default
+    /// `~/.local/state/swarmy`). An empty `selection.credential_file` becomes
+    /// `auth.json` in swarmy's XDG data directory (`$XDG_DATA_HOME/swarmy`,
+    /// default `~/.local/share/swarmy`). Without an absolute HOME or XDG value
+    /// both fall back under `<root>/.swarmy`.
+    pub fn fill_default_locations(
+        &mut self,
+        root: &Path,
+        project: bool,
+        environment: &BTreeMap<String, String>,
+    ) {
+        let fallback = root.join(".swarmy");
+        if self.state_dir.as_os_str().is_empty() {
+            self.state_dir = if project {
+                fallback.clone()
+            } else {
+                paths::state(environment).unwrap_or_else(|| fallback.clone())
+            };
+        }
+        if self.selection.credential_file.as_os_str().is_empty() {
+            self.selection.credential_file = paths::data(environment)
+                .unwrap_or(fallback)
+                .join("auth.json");
+        }
+    }
+
     /// Select the image for a new session, giving an explicit flag precedence.
     /// # Errors
     /// Requires a configured default or an explicit image.
@@ -734,70 +810,41 @@ impl Settings {
     }
 
     /// Discover configuration and apply the current process's environment.
+    /// Same as [`Settings::load_base`]; services call this name.
     /// # Errors
     /// Fails for unreadable files, invalid TOML, or invalid overrides.
     pub fn load() -> Result<Loaded, Error> {
-        let mut loaded = Self::load_base()?;
-        loaded.settings.apply_remote()?;
-        Ok(loaded)
+        Self::load_base()
     }
 
-    /// Load configuration without opening the selected tunnel profile.
+    /// Discover configuration and apply the current process environment.
     /// # Errors
     /// Returns invalid configuration or filesystem errors.
     pub fn load_base() -> Result<Loaded, Error> {
         let cwd = std::env::current_dir()?;
-        let environment = std::env::vars_os()
-            .map(|(key, value)| {
-                let key = key.to_string_lossy().into_owned();
-                let value = value
-                    .into_string()
-                    .map_err(|_| Error::Environment(key.clone()));
-                (key, value)
-            })
-            .filter(|(key, _)| {
-                key.starts_with("SWARMY_") || key == "HOME" || key == "XDG_CONFIG_HOME"
-            })
-            .map(|(key, value)| value.map(|value| (key, value)))
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let environment = process_environment(|key| {
+            key.starts_with("SWARMY_")
+                || matches!(
+                    key,
+                    "HOME" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_STATE_HOME"
+                )
+        })?;
         Self::load_base_from(&cwd, &environment)
-    }
-
-    /// Apply the selected profile after environment overrides.
-    /// # Errors
-    /// Returns errors for missing or invalid profiles.
-    pub fn apply_remote(&mut self) -> Result<(), Error> {
-        if let Some(name) = &self.remote.profile {
-            let profile = RemoteProfile::read(&self.state_dir, name)?;
-            profile.validate_fdb_port()?;
-            profile.apply(self);
-        }
-        Ok(())
     }
 
     fn load_base_from(cwd: &Path, environment: &BTreeMap<String, String>) -> Result<Loaded, Error> {
         let path = Self::discover_from(cwd, environment);
-        let root = path.as_ref().and_then(|path| path.parent()).map_or_else(
-            || cwd.to_owned(),
-            |dir| {
-                if dir.file_name().is_some_and(|name| name == ".swarmy") {
-                    dir.parent().unwrap_or(dir).to_owned()
-                } else {
-                    dir.to_owned()
-                }
-            },
-        );
+        let project = path.as_deref().and_then(project_root).map(Path::to_owned);
+        let root = project
+            .clone()
+            .or_else(|| path.as_deref().and_then(Path::parent).map(Path::to_owned))
+            .unwrap_or_else(|| cwd.to_owned());
         let mut settings = if let Some(path) = &path {
             Self::read(path)?
         } else {
             Self::default()
         };
-        if settings.selection.credential_file.as_os_str().is_empty() {
-            settings.selection.credential_file = environment
-                .get("HOME")
-                .map_or_else(|| root.clone(), PathBuf::from)
-                .join(".swarmy/auth.json");
-        }
+        settings.fill_default_locations(&root, project.is_some(), environment);
         settings.resolve_paths(&root);
         settings.apply_environment(environment)?;
         // Relative environment paths retain their historical meaning: the invoking directory.
@@ -823,29 +870,21 @@ impl Settings {
 
     /// The user configuration file, `$XDG_CONFIG_HOME/swarmy/config.toml` (absolute
     /// XDG only) or `$HOME/.config/swarmy/config.toml`, whether or not it exists.
+    /// Empty or relative HOME is treated as unset.
     #[must_use]
     pub fn user_config_path(environment: &BTreeMap<String, String>) -> Option<PathBuf> {
-        environment
-            .get("XDG_CONFIG_HOME")
-            .filter(|value| Path::new(value).is_absolute())
-            .map(PathBuf::from)
-            .or_else(|| {
-                environment
-                    .get("HOME")
-                    .map(|home| PathBuf::from(home).join(".config"))
-            })
-            .map(|dir| dir.join("swarmy/config.toml"))
+        paths::config(environment).map(|dir| dir.join("config.toml"))
     }
 
     /// Read a file without environment overrides or path resolution.
     /// # Errors
     /// Fails if the file cannot be read or decoded.
     pub fn read(path: &Path) -> Result<Self, Error> {
-        let mut settings: Self = toml::from_str(&std::fs::read_to_string(path)?)?;
-        // An absent service user predates the setting; configuration files
-        // take the new default while saved node records keep the empty value
-        // so they fall back to the SSH login they were provisioned with.
-        settings.remote.normalize_service_user();
+        let mut table: toml::Table = toml::from_str(&std::fs::read_to_string(path)?)?;
+        if table.remove("remote").is_some() {
+            tracing::warn!(path = %path.display(), "ignoring the removed [remote] section; delete it (swarms are described in ~/.config/swarmy/swarms/NAME.toml)");
+        }
+        let settings: Self = table.try_into()?;
         settings.validate()?;
         settings.catalog()?;
         Ok(settings)
@@ -948,7 +987,6 @@ macro_rules! e {
 #[rustfmt::skip]
 static ENV_TABLE: &[EnvEntry] = &[
     e!("SWARMY_STATE_DIR", |s, v, _| assign(&mut s.state_dir, v), |s| Some(s.state_dir.to_string_lossy().into_owned())),
-    e!("SWARMY_REMOTE", |s, v, _| { s.remote.profile = Some(v.into()); Ok(()) }, |s| s.remote.profile.clone()),
     e!("SWARMY_FDB_CLUSTER_FILE", |s, v, _| assign(&mut s.store.cluster_file, v), |s| Some(s.store.cluster_file.to_string_lossy().into_owned())),
     e!("SWARMY_NATS_URL", |s, v, _| assign(&mut s.bus.nats_url, v), |s| Some(s.bus.nats_url.clone())),
     e!("SWARMY_S3_ENDPOINT", |s, v, _| assign(&mut s.s3.endpoint, v), |s| Some(s.s3.endpoint.clone())),
@@ -1154,13 +1192,11 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
 
-    pub(crate) fn load_with_remote(
+    pub(crate) fn load_from(
         cwd: &Path,
         environment: &BTreeMap<String, String>,
     ) -> Result<Loaded, Error> {
-        let mut loaded = Settings::load_base_from(cwd, environment)?;
-        loaded.settings.apply_remote()?;
-        Ok(loaded)
+        Settings::load_base_from(cwd, environment)
     }
 
     #[test]
@@ -1294,12 +1330,12 @@ mod tests {
     #[test]
     fn node_identity_persists_and_environment_can_select_another_node() {
         let dir = tempfile::tempdir().unwrap();
-        let loaded = load_with_remote(dir.path(), &BTreeMap::new()).unwrap();
+        let loaded = load_from(dir.path(), &BTreeMap::new()).unwrap();
         let first = loaded.node_id().unwrap();
         assert_eq!(loaded.node_id().unwrap(), first);
         let second = swarmy_core::NodeId::from_ulid(ulid::Ulid::generate());
         let environment = BTreeMap::from([("SWARMY_NODE_ID".into(), second.to_string())]);
-        let loaded = load_with_remote(dir.path(), &environment).unwrap();
+        let loaded = load_from(dir.path(), &environment).unwrap();
         assert_eq!(loaded.node_id().unwrap(), second);
         assert_eq!(
             loaded.settings.environment()["SWARMY_NODE_ID"],
@@ -1345,7 +1381,7 @@ mod tests {
             "XDG_CONFIG_HOME".into(),
             temp.path().join("xdg").display().to_string(),
         );
-        let loaded = load_with_remote(&nested, &environment).unwrap();
+        let loaded = load_from(&nested, &environment).unwrap();
         assert_eq!(loaded.path, Some(config.clone()));
         assert_eq!(loaded.settings.store.directory, "project");
         assert_eq!(loaded.settings.selection.model, "custom");
@@ -1359,13 +1395,13 @@ mod tests {
         );
         environment.insert("SWARMY_STORE_DIRECTORY".into(), "override".into());
         environment.insert("SWARMY_GATEWAY_CONCURRENCY".into(), "7".into());
-        let loaded = load_with_remote(&nested, &environment).unwrap();
+        let loaded = load_from(&nested, &environment).unwrap();
         assert_eq!(loaded.settings.store.directory, "override");
         assert_eq!(loaded.settings.gateway.concurrency, 7);
         environment.remove("SWARMY_STORE_DIRECTORY");
         std::fs::remove_file(config).unwrap();
         assert_eq!(
-            load_with_remote(&nested, &environment)
+            load_from(&nested, &environment)
                 .unwrap()
                 .settings
                 .store
@@ -1373,7 +1409,7 @@ mod tests {
             "user"
         );
         environment.insert("SWARMY_GATEWAY_CONCURRENCY".into(), "bad".into());
-        assert!(load_with_remote(&nested, &environment).is_err());
+        assert!(load_from(&nested, &environment).is_err());
     }
 
     #[test]
@@ -1394,11 +1430,12 @@ mod tests {
             ("XDG_CONFIG_HOME".into(), String::new()),
             ("SWARMY_FDB_CLUSTER_FILE".into(), "custom.cluster".into()),
         ]);
-        let loaded = load_with_remote(&cwd, &environment).unwrap();
+        let loaded = load_from(&cwd, &environment).unwrap();
         assert_eq!(loaded.settings.selection.model, "user-model");
+        assert_eq!(loaded.settings.state_dir, home.join(".local/state/swarmy"));
         assert_eq!(
             loaded.settings.selection.credential_file,
-            home.join(".swarmy/auth.json")
+            home.join(".local/share/swarmy/auth.json")
         );
         assert_eq!(
             loaded.settings.store.cluster_file,
@@ -1406,16 +1443,83 @@ mod tests {
         );
         std::fs::write(
             user.join("config.toml"),
-            "[selection]\ncredential_file = '.swarmy/auth.json'",
+            "[selection]\ncredential_file = 'credentials/auth.json'",
         )
         .unwrap();
-        let loaded = load_with_remote(&cwd, &environment).unwrap();
+        let loaded = load_from(&cwd, &environment).unwrap();
         assert_eq!(
             loaded.settings.selection.credential_file,
-            user.join(".swarmy/auth.json")
+            user.join("credentials/auth.json")
         );
         std::fs::write(user.join("config.toml"), "bad toml").unwrap();
-        assert!(load_with_remote(&cwd, &environment).is_err());
+        assert!(load_from(&cwd, &environment).is_err());
+    }
+
+    #[test]
+    fn project_root_names_only_dot_swarmy_files() {
+        assert_eq!(
+            project_root(Path::new("/p/.swarmy/config.toml")),
+            Some(Path::new("/p"))
+        );
+        assert_eq!(project_root(Path::new("/x/swarmy/config.toml")), None);
+        assert_eq!(project_root(Path::new("config.toml")), None);
+    }
+
+    #[test]
+    fn default_locations_follow_projects_and_xdg() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let nested = project.join("nested");
+        std::fs::create_dir_all(project.join(".swarmy")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        let config = project.join(".swarmy/config.toml");
+        std::fs::write(&config, "").unwrap();
+        let mut env = BTreeMap::from([
+            (
+                "HOME".into(),
+                temp.path().join("home").display().to_string(),
+            ),
+            (
+                "XDG_DATA_HOME".into(),
+                temp.path().join("data").display().to_string(),
+            ),
+            (
+                "XDG_STATE_HOME".into(),
+                temp.path().join("state").display().to_string(),
+            ),
+        ]);
+        let loaded = load_from(&nested, &env).unwrap();
+        assert_eq!(loaded.settings.state_dir, project.join(".swarmy"));
+        assert_eq!(
+            loaded.settings.selection.credential_file,
+            temp.path().join("data/swarmy/auth.json")
+        );
+        std::fs::remove_file(&config).unwrap();
+        assert_eq!(
+            load_from(&nested, &env).unwrap().settings.state_dir,
+            temp.path().join("state/swarmy")
+        );
+        env.clear();
+        let loaded = load_from(&nested, &env).unwrap();
+        assert_eq!(loaded.settings.state_dir, nested.join(".swarmy"));
+        assert_eq!(
+            loaded.settings.selection.credential_file,
+            nested.join(".swarmy").join("auth.json")
+        );
+        env.insert("SWARMY_STATE_DIR".into(), "/abs/state".into());
+        env.insert("SWARMY_CHATGPT_AUTH".into(), "/abs/auth.json".into());
+        let loaded = load_from(&nested, &env).unwrap();
+        assert_eq!(loaded.settings.state_dir, Path::new("/abs/state"));
+        assert_eq!(
+            loaded.settings.selection.credential_file,
+            Path::new("/abs/auth.json")
+        );
+        env.clear();
+        std::fs::write(&config, "state_dir = 'custom'").unwrap();
+        assert_eq!(
+            load_from(&nested, &env).unwrap().settings.state_dir,
+            project.join("custom")
+        );
     }
 
     #[test]
@@ -1458,7 +1562,6 @@ mod tests {
         // wrong field fails the round trip instead of passing on defaults.
         let distinct: &[(&str, &str)] = &[
             ("SWARMY_STATE_DIR", "/tmp/test-state"),
-            ("SWARMY_REMOTE", "profile-test"),
             ("SWARMY_FDB_CLUSTER_FILE", "/tmp/test.cluster"),
             ("SWARMY_NATS_URL", "nats://127.0.0.1:4333"),
             ("SWARMY_S3_ENDPOINT", "http://127.0.0.1:8334"),
@@ -1649,5 +1752,41 @@ mod provider_settings_tests {
                 )]))
                 .is_err()
         );
+    }
+}
+
+/// Collect selected UTF-8 process variables without mutating the environment.
+pub(crate) fn process_environment(
+    keep: impl Fn(&str) -> bool,
+) -> Result<BTreeMap<String, String>, Error> {
+    std::env::vars_os()
+        .filter_map(|(key, value)| {
+            let key = key.to_string_lossy().into_owned();
+            keep(&key).then(|| {
+                value
+                    .into_string()
+                    .map(|value| (key.clone(), value))
+                    .map_err(|_| Error::Environment(key))
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod removed_remote_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+
+    #[test]
+    fn removed_remote_section_is_ignored_with_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[remote]\nprovider = \"existing\"\n[selection]\nprovider = \"fake\"\n",
+        )
+        .unwrap();
+        let settings = Settings::read(&path).unwrap();
+        assert_eq!(settings.selection.provider, "fake");
     }
 }

@@ -1,0 +1,26 @@
+#!/bin/sh
+fixture=$(dirname "$0")
+{
+  printf 'cwd=%s\n' "$(pwd -P)"
+  for a in "$@"; do printf 'arg=%s\n' "$a"; done
+  env | sed 's/^/env=/'
+  printf 'end\n'
+} >> "$fixture/record"
+behaviour=$(cat "$fixture/behaviour")
+case "$1" in
+  output)
+    if [ "$behaviour" = bad-output ]; then printf '{}'; else cat "$fixture/outputs.json"; fi ;;
+  apply)
+    if [ "$behaviour" = fail-apply ]; then
+      echo 'Error: boom' >&2
+      echo "$HCLOUD_TOKEN" >&2
+      exit 1
+    fi
+    echo state > terraform.tfstate ;;
+  plan)
+    case "$behaviour" in
+      no-changes) exit 0 ;;
+      secret-plan) echo 'hcloud-test-token-5f2b9c' ;;
+    esac
+    exit 2 ;;
+esac

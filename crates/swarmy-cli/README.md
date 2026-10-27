@@ -56,7 +56,7 @@ calls. Missing, expired, or replaced-placement observations report `unknown`.
 Samples expire after three node heartbeat intervals. This is call occupancy, not
 a health probe or execution authority.
 
-Every agent and session command supports global `--json` and `--remote NAME`.
+Every agent and session command supports global `--json` and `--swarm NAME`.
 JSON create returns an agent record; ls emits one summary record per line
 with the identity fields only (agents omit `node_id`, `session_count`,
 `sessions`, `usage`, and placement until hydrated; sessions carry the fleet
@@ -238,4 +238,4 @@ sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(cargo test -p swarmy-e2e --test
 It skips without root or `SWARMY_TEST_IMAGE`. Drop guards stop the node, destroy
 containers, unmount filesystems, and detach NBD devices even if an assertion fails.
 
-Release clients can run `swarmy image pull base-ubuntu --set-default` to register the verified base image and select it for new sessions after `swarmy dev up`.
+Release clients can run `swarmy image pull base-ubuntu --set-default` to register the verified base image and select it for new sessions after `swarmy swarm up dev`.

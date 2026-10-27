@@ -1,12 +1,12 @@
 # Architecture
 
 This describes the shipped system, not a deployment promise. For planned work
-see [ROADMAP.md](ROADMAP.md); for local and remote operation see [DEV.md](DEV.md)
-and [REMOTE.md](REMOTE.md). Each section names its implementation entry points.
+see [ROADMAP.md](ROADMAP.md); for operating swarms see [swarms.md](swarms.md)
+and for checkout development see [DEV.md](DEV.md). Each section names its implementation entry points.
 
 ## Crate map and dependency direction
 
-The workspace holds twenty-eight crates (`members = ["crates/*"]` in
+The workspace holds twenty-nine crates (`members = ["crates/*"]` in
 [Cargo.toml](../Cargo.toml)). These are descriptive tiers, not strict acyclic
 boundaries: sandbox uses store and volume; chat and devtools use the HTTP
 client. The individual manifests in `crates/*/Cargo.toml` are the
@@ -20,8 +20,7 @@ crate in a tier depends on every lower tier.
   types shared across processes ([source](../crates/swarmy-core/src/lib.rs)).
 - **swarmy-api-types** owns the JSON request and response contracts rather
   than database access ([source](../crates/swarmy-api-types/src/lib.rs)).
-- **swarmy-config** parses settings, including remote profile and object-store
-  configuration ([source](../crates/swarmy-config/src/lib.rs)).
+- **swarmy-config** parses settings, the swarm registry and target resolution, and object-store configuration, including the client-side cloud credential store ([source](../crates/swarmy-config/src/lib.rs)).
 - **swarmy-version** stamps binary compatibility at build time
   ([source](../crates/swarmy-version/src/lib.rs)).
 - **swarmy-aws** builds the one HTTPS client (hyper 1, rustls on ring) that every AWS SDK configuration uses ([source](../crates/swarmy-aws/src/lib.rs)).
@@ -74,9 +73,9 @@ crate in a tier depends on every lower tier.
 - **swarmy-devtools** is a binary for standalone provider login and credential
   import over the HTTP client
   ([source](../crates/swarmy-devtools/src/main.rs)).
-- **swarmy-cloud** handles EC2 provisioning and adopting existing hosts for
-  the opt-in remote feature; it is not a server dependency
+- **swarmy-cloud** provisions SSH-reachable hosts as swarms, upgrades them, opens per-swarm tunnels, and, with the opt-in remote feature, manages a static-key bucket; it is not a server dependency
   ([source](../crates/swarmy-cloud/src/lib.rs)).
+- **swarmy-infra** fetches a pinned, checksum-verified OpenTofu release, runs it in a per-swarm working directory with cloud credentials only in the environment, and owns the module output contract and the verified-download helper the swarmy release cache shares ([source](../crates/swarmy-infra/src/lib.rs)), and carries the OpenTofu machine-group modules from infra/modules ([modules](../crates/swarmy-infra/src/modules.rs)).
 
 Services share one bootstrap from `swarmy-config`: `Settings::load` for
 configuration, `init_tracing` for stderr logging, `Store::open_store` for the
@@ -218,9 +217,12 @@ services and scheduler, worker, gateway and API processes; the sandbox node
 runs `swarmyd`, runc containers and the volume/NBD path
 ([remote-provision.sh](../scripts/remote-provision.sh),
 [swarmyd main](../crates/swarmyd/src/role.rs)). One machine can perform both
-roles. A remote client uses the HTTP API and SSH tunnels; EC2 launch and
-upgrade are CLI operations, not a Kubernetes controller
-([REMOTE.md](REMOTE.md), [cloud source](../crates/swarmy-cloud/src/lib.rs)).
+roles. Groups supply machines: local, existing hosts, or OpenTofu modules
+run by `swarmy-infra`. Placement assigns stack, services and node roles.
+Existing hosts and OpenTofu machines are provisioned over the same SSH path;
+a local group runs the stack and services as processes on this machine.
+Clients reach a remote API through an on-demand per-swarm SSH tunnel
+([swarms.md](swarms.md), [cloud source](../crates/swarmy-cloud/src/lib.rs)).
 
 The worker advances events and yields tool execution to placed sandboxes;
 the gateway resolves inference separately. The scheduler uses durable runnable

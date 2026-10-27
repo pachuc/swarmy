@@ -27,10 +27,17 @@ impl Fixture {
                 command.env_remove(key);
             }
         }
+        if let Ok(settings) =
+            swarmy_config::Settings::read(&self.0.path().join(".swarmy/config.toml"))
+            && let Some(url) = settings.api.url
+        {
+            command
+                .env("SWARMY_API_URL", url)
+                .env("SWARMY_API_TOKEN", settings.api.token);
+        }
         command
             .current_dir(self.0.path())
-            .env("HOME", self.0.path())
-            .env("XDG_CONFIG_HOME", self.0.path().join("config"))
+            .envs(swarmy_testkit::isolated_home(self.0.path()))
             .env("PATH", self.0.path().join("bin"))
             .arg("doctor");
         if json {
@@ -60,7 +67,7 @@ fn reports_missing_and_invalid_config_without_leaking_values() {
         check(&report, "config")["fix"]
             .as_str()
             .unwrap()
-            .contains("swarmy dev up")
+            .contains("config.toml")
     );
     fixture.config("[s3]\nsecret_key = 'DO_NOT_PRINT'\n[gateway]\nconcurrency = 'DO_NOT_PRINT'");
     let output = fixture.doctor(false);
@@ -121,51 +128,32 @@ fn doctor_reports_no_client_library_check() {
     assert_eq!(check(&report, "config")["ok"], true);
 }
 
-fn remote_fixture(cluster: &str, nats_url: &str) -> Fixture {
-    let fixture = Fixture::new();
-    fixture.config("[selection]\nprovider = 'fake'");
-    let remote = fixture.0.path().join(".swarmy/remote");
-    fs::create_dir_all(&remote).unwrap();
-    let cluster_path = remote.join("test.cluster");
-    fs::write(&cluster_path, cluster).unwrap();
-    let profile = swarmy_config::RemoteProfile {
-        name: "test".into(),
-        socket_path: remote.join("socket"),
-        pid: 123,
-        ports: swarmy_config::RemotePorts::default(),
-        remote_ports: swarmy_config::RemotePorts::default(),
-        fdb_cluster_file: cluster_path,
-        nats_url: nats_url.into(),
-        s3_endpoint: "http://127.0.0.1:8333".into(),
-        api_url: None,
-        api_token: None,
-        bucket: None,
-        default_image: None,
-    };
-    fs::write(
-        remote.join("test.profile.json"),
-        serde_json::to_vec(&profile).unwrap(),
-    )
-    .unwrap();
-    let bin = fixture.0.path().join("bin");
-    fs::create_dir(&bin).unwrap();
-    fs::write(bin.join("ssh"), "#!/bin/sh\nexit 0\n").unwrap();
-    fs::set_permissions(bin.join("ssh"), fs::Permissions::from_mode(0o700)).unwrap();
-    fixture
-}
-
 #[test]
-fn remote_doctor_requires_api_even_with_healthy_tunnel() {
-    let fixture = remote_fixture("test:test@127.0.0.1:4500", "nats://127.0.0.1:1");
+fn doctor_reports_the_target() {
+    let fixture = Fixture::new();
+    let report: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
+    assert_eq!(check(&report, "target")["ok"], false);
+    assert!(
+        check(&report, "target")["fix"]
+            .as_str()
+            .unwrap()
+            .contains("swarmy swarm ls")
+    );
     let output = fixture
         .command(true)
-        .args(["--remote", "test"])
+        .env("SWARMY_API_URL", "http://127.0.0.1:1")
+        .env("SWARMY_API_TOKEN", "fixture")
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(check(&report, "remote tunnel")["ok"], true);
-    assert_eq!(check(&report, "API")["status"], "fail");
+    assert_eq!(check(&report, "target")["ok"], true);
+    assert!(
+        check(&report, "target")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("http://127.0.0.1:1")
+    );
+    assert_eq!(check(&report, "API")["ok"], false);
 }
 
 #[test]
@@ -179,10 +167,16 @@ fn reports_keyring_presence_and_permissions() {
             .unwrap()
             .contains("absent")
     );
-    let path = fixture.0.path().join(".swarmy/keyring");
+    let path = fixture.0.path().join("data/swarmy/keyring");
     swarmy_config::Keyring::generate_at(&path).unwrap();
     let present: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
     assert_eq!(check(&present, "keyring")["ok"], true);
+    assert!(
+        check(&present, "keyring")["detail"]
+            .as_str()
+            .unwrap()
+            .contains(path.to_str().unwrap())
+    );
     assert!(
         check(&present, "keyring")["detail"]
             .as_str()
@@ -426,4 +420,104 @@ fn text_doctor_renders_ok_warn_fix_and_providers() {
     assert!(text.contains("warn nodes:"), "{text}");
     assert!(text.contains("fix scheduler:"), "{text}");
     assert!(text.contains("Providers:"), "{text}");
+}
+
+#[test]
+fn attached_swarm_skips_backing_stack_checks() {
+    use std::{io::Write, process::Stdio};
+    let fixture = Fixture::new();
+    let mut attach = Command::new(env!("CARGO_BIN_EXE_swarmy"))
+        .args([
+            "swarm",
+            "attach",
+            "node",
+            "--url",
+            "http://127.0.0.1:1",
+            "--token-stdin",
+        ])
+        .current_dir(fixture.0.path())
+        .env_clear()
+        .envs(swarmy_testkit::isolated_home(fixture.0.path()))
+        .env("PATH", fixture.0.path().join("bin"))
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    attach.stdin.take().unwrap().write_all(b"t\n").unwrap();
+    assert!(attach.wait().unwrap().success());
+    let output = Command::new(env!("CARGO_BIN_EXE_swarmy"))
+        .args(["--swarm", "node", "doctor", "--json"])
+        .current_dir(fixture.0.path())
+        .env_clear()
+        .envs(swarmy_testkit::isolated_home(fixture.0.path()))
+        .env("PATH", fixture.0.path().join("bin"))
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    for name in ["fdbserver", "fdbcli", "nats-server", "weed"] {
+        assert!(
+            report["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["name"] != name)
+        );
+    }
+    assert_eq!(check(&report, "remote S3")["status"], "warn");
+    assert!(
+        check(&report, "target")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("http://127.0.0.1:1")
+    );
+}
+
+#[test]
+fn local_swarm_runs_backing_stack_checks() {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.0.path().join("bin")).unwrap();
+    let binary = fixture.0.path().join("bin/fdbserver");
+    std::os::unix::fs::symlink(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/failing-fdbserver"
+        ),
+        &binary,
+    )
+    .unwrap();
+    let created = Command::new(env!("CARGO_BIN_EXE_swarmy"))
+        .args(["swarm", "create", "dev", "--local"])
+        .current_dir(fixture.0.path())
+        .env_clear()
+        .envs(swarmy_testkit::isolated_home(fixture.0.path()))
+        .env("PATH", fixture.0.path().join("bin"))
+        .output()
+        .unwrap();
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let report: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
+    assert_eq!(check(&report, "fdbserver")["status"], "fail");
+    assert!(
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["name"] == "dev stack S3")
+    );
+}
+
+#[test]
+fn endpoint_target_skips_backing_stack_checks() {
+    let fixture = Fixture::new();
+    fixture.config("[api]\nurl = 'http://127.0.0.1:1'\ntoken = 'fixture'");
+    let report: Value = serde_json::from_slice(&fixture.doctor(true).stdout).unwrap();
+    assert!(
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["name"] != "fdbserver")
+    );
 }

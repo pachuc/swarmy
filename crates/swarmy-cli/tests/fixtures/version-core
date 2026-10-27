@@ -1,0 +1,11 @@
+#!/bin/sh
+identity=${SWARMY_CORE_TEST_IDENTITY:-$(cat "$(dirname "$(dirname "$0")")/core-identity")}
+if [ "$identity" = probe-fails ]; then echo 'old worker does not understand --version' >&2; exit 2; fi
+if [ "$1" = --version ]; then echo "swarmy-core $identity"; exit 0; fi
+case "$1" in
+  scheduler) echo 'scheduler started';;
+  worker) echo 'worker ready';;
+  gateway) echo 'gateway ready';;
+  api) echo 'api ready';;
+esac
+exec /bin/sleep 600

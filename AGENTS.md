@@ -4,7 +4,7 @@ swarmy is infrastructure for running very large numbers of long-lived coding
 agents on ordinary cloud compute. The promise: no single machine failure loses
 an agent, its conversation, or its disk; turns feel immediate; agents keep
 working for weeks with memory, timers, and a persistent computer; any model
-provider can serve them. Written in Rust, organized as twenty-eight crates in one
+provider can serve them. Written in Rust, organized as twenty-nine crates in one
 workspace.
 
 Read `docs/ARCHITECTURE.md` before changing anything: it explains the concepts, the
@@ -57,11 +57,13 @@ measured numbers with raw samples.
   `--effort` everywhere; usage and cost recorded per completion. Verified
   live on 2026-09-21: anthropic, openai, chatgpt, xai, meta, openrouter,
   azure, amazon-bedrock, google, google-vertex (Gemini).
-- **Operating it.** `make dev-tools` and `swarmy dev up` run the stack under
-  the checkout with no root (`docs/DEV.md`). `swarmy remote up NAME` launches
-  one EC2 node, `swarmy remote adopt NAME` builds on machines already owned
-  (Hetzner dedicated servers) with any S3-compatible bucket and static keys,
-  and `remote connect` tunnels to either (`docs/REMOTE.md`). CI runs fmt, workspace tests
+- **Operating it.** `make dev-tools` and `swarmy swarm up dev` run the stack under
+  the checkout with no root (`docs/DEV.md`). `swarmy swarm create NAME --host …` and `swarmy swarm up NAME` provision
+  machines already owned (Hetzner dedicated servers), optionally with an
+  S3-compatible bucket and static keys; client commands reach them with
+  `--swarm NAME` through an on-demand SSH tunnel (`docs/swarms.md` covers local, host and cloud swarms).
+  EC2 launching was removed; cloud machines come from the OpenTofu modules in
+  `infra/modules`. CI runs fmt, workspace tests
   against a live dev stack, pedantic clippy, and reduced chaos; root-only
   suites run with sudo on real nodes.
 
@@ -180,6 +182,7 @@ Cancelled: channels (slice 5, see `backlog/chaty.md`), sandbox-pause-resume
 ## Building and testing
 
 The toolchain is pinned in `rust-toolchain.toml`; `rustup show` installs it.
+`make check-infra` needs the pinned OpenTofu from `scripts/install-opentofu.sh`.
 The root `Makefile` holds the only list of CI commands. Each pull-request CI
 job runs exactly one `make check-<job>` target, and `make check` runs all of
 them in CI order; `make help` lists the targets. Workers run
@@ -454,7 +457,7 @@ master. The operator's method is in `docs/fleet-operator-handoff.md`
   infrastructure: credentials and tokens of any kind, IP addresses and host
   names of real machines, cloud account ids, instance, volume, subnet, and
   security-group ids, ARNs, bucket names, SSH keys or known-hosts entries, and
-  the contents of `.swarmy/`, `scripts/fleet/fleet.toml`, or `/etc/swarmy/`.
+  the contents of `.swarmy/`, `~/.local/share/swarmy/`, `scripts/fleet/fleet.toml`, or `/etc/swarmy/`.
   Benchmark and proof records use placeholders such as `<account-id>`,
   `<swarm-bucket>`, and `i-<redacted>`, and name machines by their role
   (`dev2-3`, "the suite node"). Public identifiers that are not ours, such as
@@ -481,7 +484,5 @@ master. The operator's method is in `docs/fleet-operator-handoff.md`
 
 1. Read this file and the relevant section of `docs/ARCHITECTURE.md`.
 2. Pick up work from the plan ([Where the plan lives](#where-the-plan-lives)).
-3. Local bring-up, remotes, and provider checks live in `docs/DEV.md`,
-   `docs/REMOTE.md`, and `docs/providers.md` and are not repeated here.
-   (Those commands change under the swarm-model goal; its docs task updates
-   those documents.)
+3. Swarm operation, checkout development and provider checks live in
+   `docs/swarms.md`, `docs/DEV.md` and `docs/providers.md`.

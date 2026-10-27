@@ -3,10 +3,9 @@
 ## Task fleet
 
 The Python driver at `scripts/fleet/fleet` runs tasky work on a pool of
-long-lived worker agents in a connected Swarmy remote. It uses the `swarmy`
+long-lived worker agents in a Swarmy swarm. It uses the `swarmy`
 CLI and needs `tasky` and `git` on `PATH`. Copy
-`scripts/fleet/fleet.example.toml` to `scripts/fleet/fleet.toml`, set the
-remote, repository, provider defaults, pool size, and GitHub token, then run
+`scripts/fleet/fleet.example.toml` to `scripts/fleet/fleet.toml`, set the swarm (`swarm = "NAME"`), repository, provider defaults, pool size, and GitHub token, then run
 `chmod 600 scripts/fleet/fleet.toml`. The driver refuses a config readable by
 other users. The token is piped to `swarmy agent create --github-token-stdin`;
 it never appears in command arguments or the session log. The config file is
@@ -22,7 +21,7 @@ scripts/fleet/fleet kill EWR2HD --timeout-seconds 60
 scripts/fleet/fleet reset worker-2
 ```
 
-`launch` picks an idle worker, or creates `worker-N` from the remote's
+`launch` picks an idle worker, or creates `worker-N` from the swarm's
 default image (or the configured `image`) while the pool is below `workers`,
 sends the task on the worker's main conversation, and marks the task in
 progress in tasky. The prompt carries `AGENTS.md`, the task text, and the
@@ -46,30 +45,30 @@ in `fleet.toml`, or 60 seconds if unset; `--timeout-seconds` overrides it.
 
 ## Quick start
 
+### Choosing the target swarm
+
+See [Choosing the target swarm](swarms.md#choosing-the-target-swarm) for
+selection precedence, registration and defaults.
+
 Install the pinned backing services using the instructions below. With Rust and
 those binaries installed, run these commands from a clean checkout. The commands
 work in Bash and fish without sourcing an environment file.
 
 ```sh
 SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --workspace --locked
-./target/debug/swarmy dev up
+./target/debug/swarmy swarm create dev --local
+./target/debug/swarmy swarm up dev
 ./target/debug/swarmy doctor
-sudo -E ./target/debug/swarmy image build images/base-ubuntu --tag dev
+sudo -E env HOME="$HOME" ./target/debug/swarmy --swarm dev image build images/base-ubuntu --tag dev
 ./target/debug/swarmy run --image base-ubuntu:dev "hello"
-./target/debug/swarmy dev status
-./target/debug/swarmy dev down
+./target/debug/swarmy swarm status dev
+./target/debug/swarmy swarm stop dev
 ```
 
-**Where dev keeps its files.** Inside a checkout, `swarmy dev up` creates
-`<checkout>/.swarmy/config.toml`, keeps supervised service state under
-`<checkout>/.swarmy/dev/`, and uses `<checkout>/.dev/` for the backing stack.
-Outside a checkout it creates `$XDG_CONFIG_HOME/swarmy/config.toml` (with an
-absolute XDG path) or `$HOME/.config/swarmy/config.toml`, keeps service state
-under `$HOME/.swarmy/dev/`, and uses `$HOME/.swarmy/stack/` for the stack.
-An existing configuration file wins; `SWARMY_STATE_DIR` changes the service
-state root, and `SWARMY_DEV_DIR` overrides the stack directory. The CLI runs a
-compiled-in copy of the backing script, so it needs no checkout. The fixed
-NATS and SeaweedFS ports allow only one stack per host.
+**Where local swarms keep their files.** See [Local swarms](#local-swarms).
+In a checkout, creation records `<checkout>/.dev` as `stack_dir` and reads
+`.swarmy/config.toml` only for tuning. Swarmy writes neither its token nor
+its state there. The fixed NATS and SeaweedFS ports allow only one stack per host.
 
 On one fleet worker, a clean `cargo test --workspace --no-run --locked` build
 used 28,860,925,523 bytes of target space and took 404 seconds before the
@@ -89,19 +88,35 @@ search path to use `swarmy` directly. When using a system client library, omit `
 install prefix, set it to that prefix's `lib` directory at build time.
 
 ```sh
-./target/debug/swarmy dev logs           # follow all four service logs
-./target/debug/swarmy dev logs worker    # follow one service; Ctrl-C ends tailing
-./target/debug/swarmy dev logs supervisor
+./target/debug/swarmy swarm logs dev           # follow all four service logs
+./target/debug/swarmy swarm logs dev worker    # follow one service; Ctrl-C ends tailing
+./target/debug/swarmy swarm logs dev supervisor
 ```
 
 `status` shows the backing stack, services, and supervisor with pids and uptime.
-`down` stops them all and preserves data. Repeating `up` reports and replaces
+`stop` stops them all and preserves data. Repeating `up` reports and replaces
 recorded processes, including survivors of a supervisor killed with SIGKILL.
 It reloads configuration, so edits take effect on the next `up`. An unexpected
 service exit stops the other services; inspect the logs and run `up` again.
 PID records contain Linux process start times to guard against PID reuse.
 
-To run the backing services and swarmyd on EC2, see [remote node workflow](#remote-node-workflow).
+To run the backing services and swarmyd on another machine, see [swarms on other machines](#swarms-on-other-machines).
+
+## Local swarms
+
+See [Swarms on this machine](swarms.md#swarms-on-this-machine) for
+creation, lifecycle and files. Inside a checkout, creation finds the first
+ancestor with `scripts/dev-stack.sh` and sets `stack_dir` to its `.dev`.
+This shares the stack with `scripts/dev-stack.sh` and `make check`.
+`--stack-dir PATH` overrides it; relative paths resolve against the current
+directory. Down stops but never deletes an explicit or detected `stack_dir`.
+
+A development client uses a sibling `target/*/swarmy-core` or one on PATH.
+Service tuning is read on every up/start from the first project
+`.swarmy/config.toml` found from the current directory, otherwise
+`~/.config/swarmy/config.toml`. Only the default image is saved to this file;
+`services.toml` is rebuilt each time. Shell `SWARMY_*` variables do not change
+local service settings; put overrides in the tuning file.
 
 ## Ephemeral sessions and named agents
 
@@ -145,7 +160,7 @@ notices remain attributable when several chats share a computer. `--agent` skips
 the recent-session picker. `chat --json` reads one prompt per stdin line and
 emits the run event protocol, waiting for idle between prompts; EOF closes the
 client. The other agent and session commands also support `--json`, and all of
-these commands accept `--remote NAME` before or after the subcommand.
+these commands accept `--swarm NAME` before or after the subcommand.
 
 Each named agent can override the stack's system prompt, model, and reasoning
 effort. For example:
@@ -188,14 +203,14 @@ Relative filesystem paths in a project file are relative to the directory
 containing `.swarmy`; paths in the user file are relative to its directory.
 Relative environment paths remain relative to the invoking directory.
 
-`dev up` creates a project file in a checkout or a user file outside one,
-imports connection settings from the stack's `env` file as data, and saves the
-file with private permissions. It updates stack connection fields on each start
-and preserves other settings. Environment overrides are passed to children but
-are not saved. Service logs and pid records live under `<state_dir>/dev/`; the
-default fake script and call log live under `<root>/.swarmy/dev/`.
+Local swarms read tuning from the project file or the user file, and never
+write their token there; `swarm up` merges it with the stack's `env` file into
+`services.toml` (see [Local swarms](#local-swarms)). Their logs, pid records,
+and default fake files live in the swarm's state directory. `state_dir`
+defaults to `<project>/.swarmy` for a project file and `~/.local/state/swarmy`
+otherwise.
 
-The generated file contains every setting. This partial example shows the
+This partial example shows the
 common choices (store directories are FoundationDB directory names):
 
 ```toml
@@ -211,7 +226,7 @@ provider = "fake"
 model = "gpt-5"
 default_image = "base-ubuntu:dev"
 effort = "medium"
-credential_file = "/home/me/.swarmy/auth.json"
+credential_file = "/home/me/.local/share/swarmy/auth.json"
 
 [worker]
 partitions = "0-255"
@@ -220,8 +235,8 @@ partitions = "0-255"
 partitions = "0-255"
 
 [fake]
-script = ".swarmy/dev/fake.json"
-call_log = ".swarmy/dev/calls.log"
+script = ".swarmy/fake.json"
+call_log = ".swarmy/calls.log"
 ```
 
 Every new ephemeral session needs a registered image, including sessions that only use
@@ -278,7 +293,7 @@ libclang-dev ca-certificates curl tar git`. Clone the repository with
 When pinned backing tools and the FoundationDB library are already installed
 system-wide, `make install` finds them in `/usr/local/lib` or `/usr/lib`.
 
-Without a checkout, `swarmy dev install-tools` runs the same compiled-in script.
+Without a checkout, `swarmy install-tools` runs the same compiled-in script.
 It accepts `--prefix DIRECTORY` to select another installation root.
 
 From the checkout:
@@ -299,11 +314,10 @@ make install
 `make install` is `make install-client` plus `make install-core`. The client
 links no database library and needs no `libfdb_c`; `swarmy-core` (scheduler, worker, gateway, API, node, and vol) still links it. Install only the client with
 `make install-client` when the services live elsewhere. `make install-client`
-builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs `swarmy-core`. The `remote` feature compiles the EC2, SSM, S3,
-and IAM SDKs behind the `swarmy remote` provisioning commands. A plain
+builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs `swarmy-core`. The `remote` feature compiles the S3 client for swarm buckets. A plain
 `cargo build -p swarmy-cli` leaves that feature off for the slimmer node
-binary; add `--features remote` to a plain cargo invocation when the
-provisioning commands are needed.
+binary; add `--features remote` to a plain cargo invocation when a swarm uses
+a `[bucket]`.
 
 The Makefile looks for the client library in `~/.local/lib`, `/usr/local/lib`,
 `/usr/lib`, and `/usr/lib/x86_64-linux-gnu`, in that order, and passes the first
@@ -343,10 +357,9 @@ Ubuntu runner, the same `make install` needs no variable because the library
 is found in a system directory.
 
 Cargo puts all executables in `~/.cargo/bin` by default. Reinstall all of them
-together after pulling: `swarmy dev up` refuses to start a scheduler, worker, or
+together after pulling: `swarmy swarm up dev` refuses to start a scheduler, worker, or
 gateway whose version differs from the CLI. Use `swarmy` after
-rustup's normal shell setup, or `~/.cargo/bin/swarmy` directly. Keep the checkout
-because `swarmy dev` uses `scripts/dev-stack.sh` from it.
+rustup's normal shell setup, or `~/.cargo/bin/swarmy` directly. The CLI embeds the backing-stack script, so a checkout is not required to run a local swarm.
 
 ### Service binary
 
@@ -355,7 +368,7 @@ because `swarmy dev` uses `scripts/dev-stack.sh` from it.
 ### Diagnose an installation
 
 ```sh
-swarmy dev up
+swarmy swarm up dev
 swarmy doctor
 swarmy doctor --json
 ```
@@ -370,7 +383,7 @@ The object-store check is a TCP connection to the configured S3 endpoint;
 there is no FoundationDB or NATS port probe. Database and bus liveness for a
 running stack come from the API snapshot: reaching the API and reading its
 service heartbeats proves the store path. TCP connectivity does not verify
-database or S3 permissions. A stopped stack reports a fix pointing to `swarmy dev up`.
+database or S3 permissions. A stopped stack reports a fix pointing to `swarmy swarm up dev`.
 Before initialization, doctor asks for the missing config and tells you that the
 stack has not been initialized. Each failure includes a fix and causes exit 1.
 JSON output is one object containing `ok`, a `checks` array, and a
@@ -440,22 +453,23 @@ fake releases in `make check-scripts`.
 
 `swarmy image pull base-ubuntu --set-default` verifies and uploads the release
 image through the sparse upload path, then sets `selection.default_image`.
-Restart with `swarmy dev up` to apply it. `dev up` does this automatically when
+Restart with `swarmy swarm up dev` to apply it. `swarm up` does this automatically when
 there is no default image; `--no-image` skips it. The download is temporarily
-cached in `<state_dir>/images` and removed after upload. For local fake releases,
+cached in `~/.cache/swarmy/images` and removed after upload. For local fake releases,
 set `SWARMY_RELEASE_BASE_URL` and include the image archive in SHA256SUMS.
 
 ## The core binary
 
 `swarmy core ensure [--core-bin PATH] [--target TRIPLE]` locates the matching
-Linux core and prints its path. `swarmy dev up --core-bin PATH` or
+Linux core and prints its path. `swarmy swarm up dev --core-bin PATH` or
 `SWARMY_CORE_BIN` selects an explicit executable first. Release builds fetch
 and verify the matching release next; development builds instead find
 `swarmy-core` beside the CLI (or on PATH), so `cargo build && target/debug/swarmy
-dev up` still works. Set `SWARMY_RELEASE_BASE_URL` to force release selection
+swarm up` still works. Set `SWARMY_RELEASE_BASE_URL` to force release selection
 in development; it accepts HTTPS, or HTTP on loopback only.
 
-Archives live under the configured state directory's `core/<tag>/` cache.
+Archives live in swarmy's cache directory under `core/<tag>/`
+(`$XDG_CACHE_HOME/swarmy`, default `~/.cache/swarmy`).
 Every ensure checks the release-wide SHA256SUMS and replaces a changed archive;
 when the server cannot be reached, a complete verified cache is reused with a
 warning. SHA-256 checksums protect integrity, but releases are not signed.
@@ -470,13 +484,13 @@ make release-package RELEASE_COMPONENT=client RELEASE_DIR=target/fake-release/v0
 make release-package RELEASE_COMPONENT=image RELEASE_DIR=target/fake-release/v0.1.0
 scripts/release.sh checksums target/fake-release/v0.1.0
 python3 -m http.server --bind 127.0.0.1 --directory target/fake-release 8765
-SWARMY_RELEASE_BASE_URL=http://127.0.0.1:8765 swarmy dev up
+SWARMY_RELEASE_BASE_URL=http://127.0.0.1:8765 swarmy swarm up dev
 ```
 
 `swarmy doctor` checks `core version`. `run`, `chat`, and `bench` refuse an API
 core that is incompatible: a different package version, or a different major
-API version. Upgrade the core (`swarmy dev up` locally or
-`swarmy remote upgrade NAME`) or pass the global `--allow-version-mismatch` flag
+API version. Upgrade the core (`swarmy swarm up dev` locally or
+`swarmy swarm upgrade NAME`) or pass the global `--allow-version-mismatch` flag
 to proceed with a warning. A core built from another commit of the same version
 is only reported (a note from `run` and `chat`, a warning in `doctor`): every
 development build shares one version, and most commits change nothing the
@@ -583,7 +597,7 @@ cargo test --locked -p swarmy-e2e --test cli_session -- --test-threads=1
 cargo test --locked -p swarmy-e2e --test gateway --test scheduler --test worker -- --test-threads=1
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --locked -p swarmy-cloud --features remote
-cargo test --locked -p swarmy-cli --features remote -- --skip dev_up_run_recover_reconfigure_and_down
+cargo test --locked -p swarmy-cli --features remote -- --skip local_swarm_run_recover_reconfigure_and_down
 cargo clippy --locked -p swarmy-cloud --features remote --all-targets -- -D warnings
 cargo clippy --locked -p swarmy-cli --features remote --all-targets -- -D warnings
 cargo test --locked -p swarmy-llm --no-default-features
@@ -699,11 +713,11 @@ To add another killable service in a later slice, add its `Kind` variant and
 binary name in `crates/swarmy-chaos/src/process.rs`, then register its process
 count and environment at startup. Restart and health checks remain shared.
 
-## Remote node workflow
+## Swarms on other machines
 
-Use [REMOTE.md](REMOTE.md) for remote bring-up, upgrade, recovery, teardown,
-costs and node troubleshooting. For fleet-driver commands see
-[fleet-runbook.md](fleet-runbook.md).
+For creation, cloud credentials and lifecycle, see [swarms.md](swarms.md).
+For installed units and recovery, see [REMOTE.md](REMOTE.md). For
+fleet-driver operations, see [fleet-runbook.md](fleet-runbook.md).
 
 ### Conversation summaries and memory
 

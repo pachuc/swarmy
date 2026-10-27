@@ -1,0 +1,13 @@
+#!/bin/sh
+if [ "$1" = --version ]; then echo "swarmy-core $SWARMY_CORE_TEST_IDENTITY"; exit 0; fi
+case "$1" in
+  scheduler) echo 'scheduler started';;
+  worker) echo 'worker ready';;
+  gateway) echo 'gateway ready';;
+  api)
+    if [ -n "$SWARMY_CORE_TEST_DEFAULT_IMAGE_LOG" ]; then
+      printf '%s\n' "$SWARMY_DEFAULT_IMAGE" >> "$SWARMY_CORE_TEST_DEFAULT_IMAGE_LOG"
+    fi
+    echo 'api ready';;
+esac
+exec /bin/sleep 600

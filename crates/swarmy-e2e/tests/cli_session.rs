@@ -168,6 +168,7 @@ impl Fixture {
             .env("SWARMY_STORE_DIRECTORY", &self.directory)
             .env("SWARMY_BUS_PREFIX", &self.prefix)
             .env("SWARMY_DEFAULT_IMAGE", "fixture:test")
+            .env_remove("SWARMY_SWARM")
             .env("SWARMY_API_URL", &self.api_url)
             .env("SWARMY_API_TOKEN", &self.api_token)
             .env("TOKIO_WORKER_THREADS", "2")
@@ -1103,6 +1104,7 @@ async fn unavailable_api_reports_endpoint_before_creating_a_session() {
             WAIT,
             fixture
                 .command(&["run", "hello", "--image", "fixture:test"])
+                .env_remove("SWARMY_SWARM")
                 .env("SWARMY_API_URL", &endpoint)
                 .output(),
         )

@@ -8,7 +8,7 @@ fail() {
     exit 1
 }
 
-# swarmy dev runs a compiled-in copy and passes the stack directory in
+# swarmy runs a compiled-in copy for local swarms and passes the stack directory in
 # SWARMY_DEV_DIR; run from a checkout, the default is <checkout>/.dev.
 if [[ -n ${SWARMY_DEV_DIR:-} ]]; then
     dev_dir=$SWARMY_DEV_DIR
@@ -82,6 +82,58 @@ port_in_use() {
     (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
 }
 
+service_ports() {
+    case $1 in
+        fdb) ports=("$fdb_port") ;;
+        nats) ports=(4222 8222) ;;
+        seaweed) ports=(8080 8333 8888 9333 18080 18333 18888 19333) ;;
+    esac
+}
+
+# CLI tests use PID-backed /bin/sleep fixtures with no listeners. Only wait
+# for ports of services this script actually launched, not unrelated listeners.
+stack_service_process() {
+    local expected comm
+    case $1 in
+        fdb) expected=fdbserver ;;
+        nats) expected=nats-server ;;
+        seaweed) expected=weed ;;
+    esac
+    [[ -r /proc/$pid/comm ]] || return 1
+    read -r comm < "/proc/$pid/comm"
+    [[ $comm == "$expected" ]]
+}
+
+# A process can exit before its sockets can be rebound. Check the actual
+# bind operation rather than probing connections to closing listeners.
+ports_bindable() {
+    python3 - "${stopped_ports[@]}" <<'PYTHON'
+import socket
+import sys
+
+for port in sys.argv[1:]:
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("127.0.0.1", int(port)))
+    except OSError:
+        sys.exit(1)
+    finally:
+        sock.close()
+PYTHON
+}
+
+wait_ports_down() {
+    local deadline=$((SECONDS + 60))
+    until ports_bindable; do
+        if (( SECONDS >= deadline )); then
+            printf 'Stack ports still cannot be bound after 60 seconds: %s\n' "${stopped_ports[*]}" >&2
+            return 1
+        fi
+        sleep 0.2
+    done
+}
+
 cleanup() {
     local result=$? service
     trap - EXIT INT TERM
@@ -141,9 +193,9 @@ start() {
     local binary service port requested_port
     local -a ports
     for binary in fdbserver fdbcli nats-server curl; do
-        command -v "$binary" >/dev/null || fail "Missing $binary; run swarmy dev install-tools or see docs/DEV.md."
+        command -v "$binary" >/dev/null || fail "Missing $binary; run swarmy install-tools or see docs/DEV.md."
     done
-    if [[ ${SWARMY_DEV_SKIP_S3:-0} != 1 ]]; then command -v weed >/dev/null || fail 'Missing weed; run swarmy dev install-tools or see docs/DEV.md.'; fi
+    if [[ ${SWARMY_DEV_SKIP_S3:-0} != 1 ]]; then command -v weed >/dev/null || fail 'Missing weed; run swarmy install-tools or see docs/DEV.md.'; fi
     [[ $(curl --help all) == *'--aws-sigv4'* ]] || fail 'curl 7.75 or newer is required for S3 authentication.'
     mkdir -p -- "$dev_dir/fdb/data" "$dev_dir/fdb/logs" "$dev_dir/nats" "$dev_dir/seaweed" "$dev_dir/logs"
 
@@ -175,11 +227,7 @@ start() {
     # Refuse occupied ports before launching, including SeaweedFS internal APIs.
     for service in "${services[@]}"; do
         running "$service" && continue
-        case $service in
-            fdb) ports=("$fdb_port") ;;
-            nats) ports=(4222 8222) ;;
-            seaweed) ports=(8080 8333 8888 9333 18080 18333 18888 19333) ;;
-        esac
+        service_ports "$service"
         for port in "${ports[@]}"; do
             if port_in_use "$port"; then
                 fail "Port $port is already in use by an unmanaged process; stop it before starting the stack."
@@ -306,8 +354,19 @@ if [[ $1 == start ]]; then
     start
 else
     result=0
+    stopped_ports=()
     for service in seaweed nats fdb; do
+        if running "$service"; then
+            if [[ $service == fdb ]]; then read_fdb_port; fi
+            if stack_service_process "$service"; then
+                service_ports "$service"
+                stopped_ports+=("${ports[@]}")
+            fi
+        fi
         stop_service "$service" || result=1
     done
+    if (( ${#stopped_ports[@]} > 0 )); then
+        wait_ports_down || result=1
+    fi
     exit "$result"
 fi

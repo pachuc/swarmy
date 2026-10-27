@@ -8,6 +8,7 @@ use swarmy_core::ignore_best_effort;
 
 struct Fixture {
     dir: tempfile::TempDir,
+    endpoint: String,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     server: Option<std::thread::JoinHandle<()>>,
     // Held for its Drop: removes the test keys and streams even on panic.
@@ -38,7 +39,7 @@ impl Fixture {
                 directory: stack.prefix.clone(),
             },
             api: swarmy_config::ApiSettings {
-                url: Some(endpoint),
+                url: Some(endpoint.clone()),
                 token: "auth-test-token".into(),
                 ..Default::default()
             },
@@ -53,8 +54,7 @@ impl Fixture {
             settings.to_toml().unwrap(),
         )
         .unwrap();
-        let keyring =
-            swarmy_config::Keyring::generate_at(&dir.path().join(".swarmy/keyring")).unwrap();
+        let keyring = swarmy_config::Keyring::generate_at(&dir.path().join("keyring")).unwrap();
         fs::write(
             dir.path().join("auth.json"),
             include_bytes!("../../swarmy-llm/tests/fixtures/auth.json"),
@@ -102,6 +102,7 @@ impl Fixture {
             .unwrap();
         Some(Self {
             dir,
+            endpoint,
             shutdown: Some(shutdown),
             server: Some(server),
             // Held for its Drop: removes the test keys and streams even on panic.
@@ -117,8 +118,10 @@ impl Fixture {
         }
         command
             .current_dir(self.dir.path())
-            .env("HOME", self.dir.path())
-            .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
+            .envs(swarmy_testkit::isolated_home(self.dir.path()))
+            .env_remove("SWARMY_SWARM")
+            .env("SWARMY_API_URL", &self.endpoint)
+            .env("SWARMY_API_TOKEN", "auth-test-token")
             .args(args);
         command
     }
@@ -217,18 +220,17 @@ fn key_sources_are_exclusive_and_support_files_and_environment() {
 #[test]
 #[cfg(unix)]
 fn azure_login_saves_to_cluster_and_missing_cli_reports_login_needed() {
-    use std::os::unix::fs::PermissionsExt;
     let Some(f) = Fixture::new() else {
         return;
     };
     let bin = f.dir.path().join("bin");
     fs::create_dir(&bin).unwrap();
     let az = bin.join("az");
-    fs::write(&az, r#"#!/bin/sh
-[ "$*" = 'account get-access-token --scope https://cognitiveservices.azure.com/.default --output json' ] || exit 1
-printf '%s\n' '{"accessToken":"secret-azure-fixture","expiresOn":"2099-01-02T03:04:05Z"}'
-"#).unwrap();
-    fs::set_permissions(&az, fs::Permissions::from_mode(0o700)).unwrap();
+    std::os::unix::fs::symlink(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-az"),
+        &az,
+    )
+    .unwrap();
     let original = fs::read(f.dir.path().join("auth.json")).unwrap();
     let result = f
         .command(&["auth", "login", "azure", "--resource", "fixture", "--json"])

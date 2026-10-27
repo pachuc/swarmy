@@ -23,6 +23,9 @@ bash scripts/test-dev-stack.sh
 bash scripts/test-s3-compat-probe.sh
 bash scripts/remote-provision-test.sh
 bash scripts/test-remote-decommission.sh
+bash scripts/test-remote-drain.sh
+bash scripts/test-acceptance-hetzner-cloud.sh
+bash scripts/test-remote-stop-start.sh
 bash scripts/test-node-suites.sh
 # test-bash.sh needs root and NBD; test-remote.sh needs an SSH fixture.
 # Both remain manual acceptance tests, not hosted-runner script tests.

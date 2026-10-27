@@ -29,8 +29,8 @@ class BenchmarkTests(unittest.TestCase):
         output = subprocess.check_output([str(ROOT / "run-swarm.sh"), "dev", "trial", "--dry-run"], text=True)
         self.assertEqual(output.count("--prompt-file"), 6)
         report = output.splitlines()[-1]
-        self.assertIn("scripts/fleet/fleet report --remote dev --label trial", report)
-        self.assertIn("--remote dev", output.splitlines()[0])
+        self.assertIn("scripts/fleet/fleet report --swarm dev --label trial", report)
+        self.assertIn("--swarm dev", output.splitlines()[0])
         self.assertIn("--provider chatgpt --model gpt-6-sol", output)
 
     def test_fleet_benchmark_dispatch(self):
@@ -41,9 +41,10 @@ class BenchmarkTests(unittest.TestCase):
             stub.chmod(0o755)
             prompt = root / "prompt.txt"
             prompt.write_text("Benchmark prompt")
-            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"])
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
+                       FLEET_CONFIG=str(root / "absent.toml"))
             output = subprocess.check_output([sys.executable, str(ROOT.parent / "scripts/fleet/fleet"),
-                                              "benchmark", "--remote", "dev", "--provider", "openrouter",
+                                              "benchmark", "--swarm", "dev", "--provider", "openrouter",
                                               "--model", "model", "--effort", "medium",
                                               "--prompt-file", str(prompt)], env=env, text=True)
             self.assertIn("fixture", output)
@@ -76,10 +77,10 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(set(run), {"label", "environment", "task", "run",
                                         "session_id", "wall_seconds", "cold"})
             self.assertGreaterEqual(run["wall_seconds"], 0)
-        # The closing report reuses the runner remote and carries each wall.
+        # The closing report reuses the runner swarm and carries each wall.
         self.assertEqual(len(reported), 1)
         command = reported[0]
-        self.assertEqual(command[command.index("--remote") + 1], "local")
+        self.assertEqual(command[command.index("--swarm") + 1], "local")
         walls = [part for part in command if "=" in part and not part.startswith("--")]
         self.assertEqual(len(walls), 6)
         for wall in walls:

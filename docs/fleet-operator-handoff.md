@@ -7,6 +7,8 @@ state changes hourly and is not here: read it from tasky (`tasky goal list` and
 owner's standing decisions are in the auto-memory notes for this repository;
 the durable ones are repeated below.
 
+For the one-time conversion of hz from the old client, see "Converting hz to a swarm (one time)" below.
+
 ## Ground rules from the owner
 
 - The laptop is a personal gaming machine and a control plane only. Run only
@@ -38,30 +40,29 @@ the durable ones are repeated below.
 
 - `hz` (since 2026-10-02): one dedicated server rented from Hetzner's server
   auction (16-core i9-12900K, 128 GB, two NVMe drives mirrored, Ubuntu 24.04),
-  adopted with `swarmy remote adopt` (REMOTE.md, "Existing hosts"). The same
-  machine runs the control plane (`--services node`) and the node, with four
+  adopted as an existing host (swarms.md, "Swarms on hosts you own"). The same
+  machine runs the control plane and the node, with four
   sandboxes on local storage `dir:/srv/swarmy-local`. The bucket is Hetzner
   Object Storage with static keys. Images `base-ubuntu:hz` and
   `swarmy-dev:hz`. Addresses, server numbers, the bucket name and every
   credential live outside the repository: `~/swarmy-infra.md` and
-  `~/api_keys.md` on the laptop, and `.swarmy/remote/`.
+  `~/api_keys.md` on the laptop, and `~/.local/share/swarmy/swarms/hz/keys/`.
 - The suite node is a second, smaller auction server that is not part of the
   swarm; it runs the root suites and the local CI ("The suite node").
 - AWS is gone: the `dev2` swarm, the earlier `dev` swarm, their buckets and
   images were decommissioned on 2026-10-01.
-- Tunnel: `swarmy remote connect hz`. Local ports are fixed, so only one
-  swarm can be connected at a time. Plain `swarmy` commands that need the API
-  take `--remote hz`. `swarmy remote ls` shows nodes, services, images.
+- Tunnel: commands with `--swarm hz` open one on-demand tunnel for the swarm
+  on free local ports. `swarmy swarm status hz` shows SSH and tunnel status.
 - SSH: the laptop's `~/.ssh/config` has an alias for each server, using the
-  key registered in Robot as `swarmy-fleet`; `swarmy remote` keeps its own
-  keys under `.swarmy/remote/`. Long commands on a server run detached:
+  key registered in Robot as `swarmy-fleet`; `swarmy swarm` keeps its own
+  keys under `~/.local/share/swarmy/swarms/hz/keys/`. Long commands on a server run detached:
   `setsid nohup bash script.sh > log 2>&1 < /dev/null &`.
 - Images: `swarmy image build` builds on the machine it runs on and needs
-  root, so build on the server the way `adopt` builds the base image: as root
+  root, so build on the server the way provisioning builds the base image: as root
   in the service user's checkout, with `/etc/swarmy/node.env` sourced, run
   `/usr/local/bin/swarmy image build images/swarmy-dev --name swarmy-dev --tag hz`.
 - Upgrade: `git merge --ff-only origin/master` locally first (upgrade ships
-  the local checkout), then `swarmy remote upgrade hz` detached with a log.
+  the local checkout), then `swarmy swarm upgrade hz` detached with a log.
   Do it when workers are idle.
 - Hetzner itself: dedicated servers are managed through the Robot webservice
   (order, SSH keys, rescue system, reset), with its login in `~/api_keys.md`;
@@ -73,10 +74,33 @@ the durable ones are repeated below.
   Ubuntu from the rescue system with `bash -ic "installimage -a -c FILE"`, and
   reboot the rescue system first if an address was added after it booted.
 
+## Converting hz to a swarm (one time)
+
+With the old client, disconnect hz to close its old SSH master. Install the new
+laptop client. Run the one-shot converter with the old record path first in dry
+run mode and review its plan, then run it without dry run. It reads the API token
+from the server over SSH; it does not change the server and will not overwrite
+an existing swarm. Keep its output private even though secrets are redacted.
+
+```sh
+scripts/convert-remote-record-2026-10.py --old-record <checkout>/.swarmy/remote/hz.json --dry-run
+scripts/convert-remote-record-2026-10.py --old-record <checkout>/.swarmy/remote/hz.json
+swarmy swarm show hz
+swarmy --swarm hz doctor
+swarmy swarm use hz
+swarmy swarm status hz
+```
+
+Do not run `swarmy swarm up hz` as a test, and do not rely on
+`--copy-credential`. Later, `swarmy swarm upgrade hz` installs a
+`swarmy-core` that ignores hz's old `[remote]` table. To undo, run
+`swarmy swarm rm hz --force`: it forgets the spec, record and state and leaves
+the server untouched.
+
 ## The fleet driver
 
 `scripts/fleet/fleet` (Python, tests in `scripts/fleet/test_fleet.py`).
-Config `scripts/fleet/fleet.toml` (gitignored, mode 600): remote `hz`,
+Config `scripts/fleet/fleet.toml` (gitignored, mode 600): swarm `hz`,
 provider `openrouter`, model `meta/muse-spark-1.3-contributor`, effort
 medium, four workers, `memory_mib = 24576`, image `swarmy-dev:hz`,
 `state_dir` `.dev/fleet-hz`, and the GitHub token. Get the token for `gh` with
@@ -100,22 +124,22 @@ export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | hea
   `launch` matches an idle worker on provider and model).
 - The `hz` cluster's credential store holds only the OpenRouter key. Before
   workers can use the ChatGPT subscription, import the owner's credential
-  (`swarmy auth import --remote hz`; `adopt --copy-credential` put the file
+  (`swarmy auth import --swarm hz`; `adopt --copy-credential` put the file
   on the server) and create a route `subscription` that tries
   `chatgpt/default=gpt-6-sol` then `openrouter/default=meta/muse-spark-1.3-contributor`
   (`swarmy auth routes`), so workers fail over to Muse when the subscription
-  depletes. Then re-point idle workers with `swarmy --remote hz agent set
+  depletes. Then re-point idle workers with `swarmy --swarm hz agent set
   worker-N --provider chatgpt --model gpt-6-sol --route subscription` and
   edit each meta file to provider `chatgpt`, model `gpt-6-sol`.
-- ChatGPT login expires; when `swarmy --remote hz auth ls` shows
-  `needs_login`, the owner runs `swarmy --remote hz auth login chatgpt`
+- ChatGPT login expires; when `swarmy --swarm hz auth ls` shows
+  `needs_login`, the owner runs `swarmy --swarm hz auth login chatgpt`
   (device code in a browser).
-- Steering a busy worker: `swarmy --remote hz --json session interrupt ID`,
+- Steering a busy worker: `swarmy --swarm hz --json session interrupt ID`,
   wait for `fleet status` to show idle, then
-  `swarmy --remote hz --json run --session ID "message"`. The interrupt
+  `swarmy --swarm hz --json run --session ID "message"`. The interrupt
   drops only the in-flight tool call. `fleet kill` removes the launch record,
   so use it only when abandoning a task. Session logs:
-  `swarmy --remote hz --json session show ID` (one JSON event per line).
+  `swarmy --swarm hz --json session show ID` (one JSON event per line).
 - `fleet status` follows the current session after compaction.
   Workers poll long builds with one inference per minute; that is normal and
   cheap on Muse, less so on the subscription.
@@ -318,9 +342,9 @@ in the style CLAUDE.md asks for.
 
 ## Rebuilding the laptop CLI
 
-On the Hetzner server, as root in `/root/cli-build` (a plain clone of the
+On the server, as root in `/root/cli-build` (a plain clone of the
 repository): `git fetch` and check out `origin/master`, then `cargo build
---release --locked -p swarmy-cli --features remote` (about two minutes).
+--release --locked -p swarmy-cli --features remote` (about two minutes). The feature supplies the S3 client for swarm buckets.
 Copy `target/release/swarmy` back and replace the running binary by copying
 to `swarmy.new` and renaming (`cp` onto a busy binary fails). The CLI does
 not link the FoundationDB client, so it needs no library-path fix. Keep a

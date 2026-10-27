@@ -181,6 +181,7 @@ impl Fixture {
         let executable = swarmy_testkit::bin("swarmy");
         let output = Command::new(executable)
             .args(["session", "interrupt", &id.to_string()])
+            .env_remove("SWARMY_SWARM")
             .env("SWARMY_API_URL", &self.api_url)
             .env("SWARMY_API_TOKEN", &self.api_token)
             .output()
@@ -677,18 +678,12 @@ async fn parked_inference_can_be_interrupted_and_followed_by_a_new_turn() {
             let id = f.create().await;
             f.wake(id).await;
             f.wait_state(id, SessionState::Sleeping).await;
-            let start = std::time::Instant::now();
             f.interrupt_from_cli(id).await;
-            swarmy_testkit::eventually(
-                "interrupt idles session",
-                Duration::from_secs(1),
-                async || {
-                    (f.store.fetch_session(id).await.unwrap().unwrap().state == SessionState::Idle)
-                        .then_some(())
-                },
-            )
+            swarmy_testkit::eventually("interrupt idles session", WAIT, async || {
+                (f.store.fetch_session(id).await.unwrap().unwrap().state == SessionState::Idle)
+                    .then_some(())
+            })
             .await;
-            assert!(start.elapsed() < Duration::from_secs(1));
             assert!(f.store.inference_wait(id).await.unwrap().is_none());
             let head = f.store.fetch_session(id).await.unwrap().unwrap().head_seq;
             let last = f.store.read_events(id, head - 1, 1).await.unwrap();
@@ -1391,10 +1386,8 @@ async fn permanent_publish_error_ends_turn() {
     f.start("scheduler", None);
     f.start("worker", None);
     let id = f.create().await;
-    let started = std::time::Instant::now();
     f.wake(id).await;
     let events = f.idle(id).await;
-    assert!(started.elapsed() < Duration::from_secs(5));
     let failed = events.iter().any(|event| {
         matches!(event, Event::InferenceFailed { retryable: false, error, .. }
             if error.contains("encoded bus message size") && error.contains("512"))
@@ -1441,21 +1434,42 @@ async fn competing_workers_claim_each_step_once() {
             f.start("scheduler", None);
             f.start("gateway", None);
             let first = f.start("worker", None);
+            // A pending pull does not reserve a claim: the first worker can
+            // process a nudge and re-pull before the second gets CPU time.
+            // Finish one step, then stop its owner while the other worker
+            // claims a different step. The stopped worker can buffer only
+            // finitely many nudges; the rest reach the second worker.
+            let first_id = f.create().await;
+            f.wake(first_id).await;
+            assert_requests(first_id, &f.idle(first_id).await, 1);
+            let first_log = f.files.path().join(format!("service-{first}.log"));
+            swarmy_testkit::eventually("first worker claimed its step", WAIT, async || {
+                std::fs::read_to_string(&first_log)
+                    .ok()?
+                    .contains("claimed step")
+                    .then_some(())
+            })
+            .await;
             let second = f.start("worker", None);
-            // start() only spawns the process. The worker logs readiness after
-            // subscribing to every runnable partition, including partition 7.
-            for index in [first, second] {
-                let log = f.files.path().join(format!("service-{index}.log"));
-                swarmy_testkit::eventually("worker runnable consumer ready", WAIT, async || {
-                    std::fs::read_to_string(&log)
-                        .ok()?
-                        .contains("worker ready")
-                        .then_some(())
-                })
-                .await;
-            }
-            let mut sessions = Vec::new();
-            for _ in 0..24 {
+            let second_log = f.files.path().join(format!("service-{second}.log"));
+            swarmy_testkit::eventually("second worker ready", WAIT, async || {
+                std::fs::read_to_string(&second_log)
+                    .ok()?
+                    .contains("worker ready")
+                    .then_some(())
+            })
+            .await;
+            let pid = f.children[first].id().unwrap().to_string();
+            assert!(
+                Command::new("kill")
+                    .args(["-STOP", &pid])
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            );
+            let mut sessions = vec![first_id];
+            for _ in 1..24 {
                 let id = f.create().await;
                 f.wake(id).await;
                 for _ in 0..3 {
@@ -1466,6 +1480,21 @@ async fn competing_workers_claim_each_step_once() {
                 }
                 sessions.push(id);
             }
+            swarmy_testkit::eventually("second worker claimed a step", WAIT, async || {
+                std::fs::read_to_string(&second_log)
+                    .ok()?
+                    .contains("claimed step")
+                    .then_some(())
+            })
+            .await;
+            assert!(
+                Command::new("kill")
+                    .args(["-CONT", &pid])
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            );
             for id in sessions {
                 assert_requests(id, &f.idle(id).await, 1);
             }

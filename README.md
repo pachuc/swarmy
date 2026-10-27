@@ -22,28 +22,45 @@ and aarch64 are supported. The archive is checked against the release's
 SHA256SUMS, but releases are not signed. The default destination is
 `~/.local/bin`; the installer prints a PATH line if needed.
 
+### On this machine
+
 ```sh
-swarmy dev install-tools
-swarmy dev up
+swarmy install-tools
+swarmy swarm create dev --local
+swarmy swarm up dev
 ANTHROPIC_API_KEY=... swarmy auth set anthropic --from-env
 swarmy chat --provider anthropic
 ```
 
-Outside a checkout, `swarmy dev up` writes `~/.config/swarmy/config.toml` and
-keeps stack, logs, and data under `~/.swarmy/`. `swarmy dev status`,
-`swarmy dev logs`, `swarmy dev down`, and `swarmy chat` then work from any
-directory. On Linux x86-64, `swarmy dev up` downloads the release's prebuilt
-base-ubuntu image (a few hundred MB), verifies it against SHA256SUMS, registers
-`base-ubuntu:<release tag>`, and sets `default_image`. Chat needs no `--image`. Plain chat works without a sandbox node, but local `swarmy dev up` has none, so turns that call tools need a node (see [docs/DEV.md](docs/DEV.md) and [docs/REMOTE.md](docs/REMOTE.md)).
-Use `--no-image` to skip the download, or retry with
-`swarmy image pull base-ubuntu --set-default` and `swarmy dev up`.
+`swarmy install-tools` supports Linux x86-64. The first local up downloads
+and registers the base image on Linux x86-64; see
+[DEV.md](docs/DEV.md#local-swarms) for development setup and
+[docs/swarms.md](docs/swarms.md#swarms-on-this-machine) for `--no-image` and
+`swarmy image pull base-ubuntu --set-default`. Up uses the fake provider by
+default; configure credentials after up. Run `swarmy doctor` to check
+connectivity. ChatGPT login needs the `swarmy-auth` helper from a source
+install; see [docs/providers.md](docs/providers.md).
 
-`swarmy dev install-tools` is Linux x86-64 only. `swarmy dev up` defaults to
-the fake provider without credentials. Run `swarmy auth set` after `dev up`:
-it stores the key in the cluster. ChatGPT sign-in (`swarmy auth login`) currently
-needs the `swarmy-auth` helper from a source install. See
-[docs/providers.md](docs/providers.md) for provider setup. Run `swarmy doctor`
-to check dependencies and connectivity.
+### On a server you own
+
+```sh
+swarmy swarm create box --host 203.0.113.10 --ssh-key ~/.ssh/id_ed25519 --local-storage dir:/srv/swarmy-local
+swarmy swarm up box
+swarmy --swarm box chat
+```
+
+### On Hetzner Cloud
+
+```sh
+swarmy cloud login hetzner-cloud
+swarmy cloud login hetzner-s3
+swarmy swarm create fleet --on hetzner-cloud --size cpx41 --nodes 1
+swarmy swarm up fleet
+swarmy --swarm fleet chat
+swarmy swarm down fleet --destroy
+```
+
+See [docs/swarms.md](docs/swarms.md) for swarm specs, target selection and lifecycle.
 
 ## Building from source
 

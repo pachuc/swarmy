@@ -64,16 +64,11 @@ aws-sdk-bedrockruntime = { version = "1", default-features = false, features = [
 aws-smithy-http-client = { version = "1", default-features = false, features = ["rustls-ring"] }
 aws-smithy-runtime-api = { version = "1", default-features = false, features = ["client"] }
 aws-smithy-types = { version = "1", default-features = false }
-# The provisioning SDKs stay out of the default build (swarmy-cli gates them
-# behind its opt-in `remote` feature). S3 keeps `http-1x` from its defaults
-# and drops `sigv4a`: swarmy never signs SigV4a requests, and that feature
-# pulls crypto-bigint 0.5 (RUSTSEC-2026-0387). The other three SDKs'
-# defaults add nothing beyond `rt-tokio` once the HTTP client features are
-# dropped.
-aws-sdk-ec2 = { version = "1", default-features = false, features = ["rt-tokio"] }
-aws-sdk-ssm = { version = "1", default-features = false, features = ["rt-tokio"] }
+# The provisioning S3 client stays out of the default build (swarmy-cli gates it
+# behind its opt-in `remote` feature). S3 keeps `http-1x` and drops `sigv4a`:
+# swarmy never signs SigV4a requests, and that feature pulls crypto-bigint 0.5
+# (RUSTSEC-2026-0387).
 aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "http-1x"] }
-aws-sdk-iam = { version = "1", default-features = false, features = ["rt-tokio"] }
 portable-pty = "0.9"
 vt100 = "0.16"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
@@ -119,7 +114,7 @@ utoipa-swagger-ui = { version = "10", features = ["axum"], default-features = fa
 thiserror = "2"
 toml = "0.8"
 shell-words = "1"
-rustix = { version = "1", features = ["time"] }
+rustix = { version = "1", features = ["termios", "time"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tracing = "0.1"
@@ -137,6 +132,7 @@ swarmy-core = { path = "crates/swarmy-core" }
 swarmy-image = { path = "crates/swarmy-image" }
 swarmy-bus = { path = "crates/swarmy-bus" }
 swarmy-cloud = { path = "crates/swarmy-cloud" }
+swarmy-infra = { path = "crates/swarmy-infra" }
 # Dependents get no swarmy-llm default features. swarmy-api and swarmy-gateway
 # turn the cloud providers back on through their own default features (for
 # direct model probes and inference); every other crate needs only model
@@ -159,21 +155,6 @@ incremental = false
 
 [profile.dev.package."*"]
 opt-level = 3
-
-# Generated AWS clients need substantial memory; omit their debug info and
-# optimization in development builds so local and CI builds remain practical.
-[profile.dev.package.aws-sdk-ec2]
-opt-level = 0
-debug = false
-
-[profile.dev.package.aws-sdk-ssm]
-opt-level = 0
-debug = false
-
-# EC2 calls are infrequent and network bound. Avoid optimizing its generated
-# client so release builds fit on the four-core development node too.
-[profile.release.package.aws-sdk-ec2]
-opt-level = 0
 
 # Bedrock is network bound; keep its generated client inexpensive to build.
 [profile.dev.package.aws-sdk-bedrockruntime]

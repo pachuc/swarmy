@@ -319,60 +319,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aws-sdk-ec2"
-version = "1.257.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d7d9973e96c7417d442226347013efe0205d2c3e196e7dc185325dd1802a136"
-dependencies = [
- "arc-swap",
- "aws-credential-types",
- "aws-runtime",
- "aws-smithy-async",
- "aws-smithy-http",
- "aws-smithy-json",
- "aws-smithy-observability",
- "aws-smithy-query",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-schema",
- "aws-smithy-types",
- "aws-smithy-xml",
- "aws-types",
- "fastrand",
- "http 0.2.12",
- "http 1.5.0",
- "regex-lite",
- "tracing",
-]
-
-[[package]]
-name = "aws-sdk-iam"
-version = "1.123.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fabfa8ac26d6684cd0a021cf775bafb972dfa0dcc8ab151354de5e806d4f7d8a"
-dependencies = [
- "arc-swap",
- "aws-credential-types",
- "aws-runtime",
- "aws-smithy-async",
- "aws-smithy-http",
- "aws-smithy-json",
- "aws-smithy-observability",
- "aws-smithy-query",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-schema",
- "aws-smithy-types",
- "aws-smithy-xml",
- "aws-types",
- "fastrand",
- "http 0.2.12",
- "http 1.5.0",
- "regex-lite",
- "tracing",
-]
-
-[[package]]
 name = "aws-sdk-s3"
 version = "1.146.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -407,32 +353,6 @@ dependencies = [
  "sha2 0.11.0",
  "tracing",
  "url",
-]
-
-[[package]]
-name = "aws-sdk-ssm"
-version = "1.122.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "400e5cea358fbcf6f971babbca13bd992a7077e527ac4f961c728c6a5a19ab9f"
-dependencies = [
- "arc-swap",
- "aws-credential-types",
- "aws-runtime",
- "aws-smithy-async",
- "aws-smithy-http",
- "aws-smithy-json",
- "aws-smithy-observability",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-schema",
- "aws-smithy-types",
- "aws-types",
- "bytes",
- "fastrand",
- "http 0.2.12",
- "http 1.5.0",
- "regex-lite",
- "tracing",
 ]
 
 [[package]]
@@ -3955,6 +3875,7 @@ dependencies = [
  "swarmy-config",
  "swarmy-core",
  "swarmy-image",
+ "swarmy-infra",
  "swarmy-testkit",
  "swarmy-version",
  "tempfile",
@@ -3993,24 +3914,18 @@ dependencies = [
 name = "swarmy-cloud"
 version = "0.1.0"
 dependencies = [
- "aws-config",
- "aws-sdk-ec2",
- "aws-sdk-iam",
  "aws-sdk-s3",
- "aws-sdk-ssm",
- "clap",
  "fs2",
  "jiff",
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "shell-words",
- "swarmy-api-types",
  "swarmy-aws",
  "swarmy-client",
  "swarmy-config",
  "swarmy-core",
+ "swarmy-infra",
  "swarmy-testkit",
  "swarmy-version",
  "tempfile",
@@ -4028,6 +3943,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "fs2",
+ "jiff",
  "rand 0.9.5",
  "serde",
  "serde_json",
@@ -4039,8 +3955,10 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "toml",
+ "tracing",
  "tracing-subscriber",
  "ulid",
+ "url",
 ]
 
 [[package]]
@@ -4174,6 +4092,23 @@ dependencies = [
  "thiserror 2.0.20",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "swarmy-infra"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "swarmy-testkit",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

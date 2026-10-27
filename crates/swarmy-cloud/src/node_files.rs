@@ -16,9 +16,9 @@ pub const SERVICES: &str = "scripts/remote-services.sh";
 pub const DECOMMISSION: &str = "scripts/remote-decommission.sh";
 /// Shared environment for remote scripts and SSH stdin.
 pub const REMOTE_PROVISION_ENV: &str = include_str!("../../../scripts/remote-provision-env.sh");
-/// Installer shared with `swarmy dev install-tools`.
+/// Installer shared with `swarmy install-tools`.
 pub const INSTALL_DEV_TOOLS: &str = include_str!("../../../scripts/install-dev-tools.sh");
-/// Backing stack shared with `swarmy dev`.
+/// Backing stack shared with local swarms.
 pub const DEV_STACK: &str = include_str!("../../../scripts/dev-stack.sh");
 
 /// Files uploaded to the node directory, sorted by path.
@@ -123,7 +123,7 @@ pub fn recipe(path: &Path) -> Result<PathBuf> {
         Ok(PathBuf::from(normalized))
     } else {
         Err(crate::Error::other(format!(
-            "image recipe {raw} is not carried by this client; choose one of {}, or build a custom recipe with swarmy image build --remote NAME DIR",
+            "image recipe {raw} is not carried by this client; choose one of {}, or build a custom recipe with swarmy image build --swarm NAME DIR",
             recipes().join(", ")
         )))
     }
@@ -289,7 +289,7 @@ mod tests {
                 error.contains("images/base-ubuntu")
                     && error.contains("images/base-desktop")
                     && error.contains("images/swarmy-dev")
-                    && error.contains("swarmy image build --remote")
+                    && error.contains("swarmy image build --swarm")
             );
         }
     }

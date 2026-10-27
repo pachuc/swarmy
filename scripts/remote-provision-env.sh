@@ -572,6 +572,46 @@ decommission_remove() {
     sudo rm -rf "$service_repo"
 }
 
+# Agents placed on this node whose sandboxes are busy, as a JSON array ('[]' when idle).
+# After the node agent stops, every placement it did not release counts as busy.
+swarmy_busy_sandboxes() {
+    local repo_dir=${1:?node directory} binary=${2:?core binary} role
+    role=$(swarmy_unit_role "$(swarmy_agent_unit)") || return 1
+    sudo -n sh -c "cd $repo_dir && set -a && . $(swarmy_etc_dir)/node.env && set +a && exec $binary $role --upgrade-processes"
+}
+
+# A clean stop checkpoints and releases every computer before removing a node.
+drain_node_agent() {
+    local service_user=${1-} timeout=${2:?seconds} mode=${3:?wait or force}
+    validate_service_user "$service_user" || return 1
+    [[ $mode == wait || $mode == force ]] || return 1
+    local repo unit binary deadline busy='[]' after
+    repo=$(service_repo_for "$service_user")
+    unit=$(swarmy_agent_unit)
+    binary=${SWARMY_BIN_DIR:-/usr/local/bin}/$(swarmy_core_binary)
+    deadline=$((SECONDS + timeout))
+    while sudo -n systemctl is-active --quiet "$unit"; do
+        busy=$(swarmy_busy_sandboxes "$repo" "$binary") || return 1
+        [[ $busy == '[]' ]] && break
+        if (( SECONDS >= deadline )); then
+            if [[ $mode == wait ]]; then
+                printf 'drain {"stopped":false,"busy":%s,"unreleased":[]}\n' "$busy"
+                return 0
+            fi
+            break
+        fi
+        echo "Waiting for running sandbox commands: $busy" >&2
+        sleep "${SWARMY_DRAIN_POLL_SECONDS:-5}"
+    done
+    if sudo -n systemctl is-active --quiet "$unit"; then
+        sudo -n systemctl disable --now "$unit" || return 1
+    else
+        busy='[]'
+    fi
+    after=$(swarmy_busy_sandboxes "$repo" "$binary") || return 1
+    printf 'drain {"stopped":true,"busy":%s,"unreleased":%s}\n' "$busy" "$after"
+}
+
 # Decommission entrypoint for piped use (no node directory needed): run the
 # shared removal when the node script file is present (proving the
 # node directory is intact), fail loudly when units remain without a node directory,
@@ -585,11 +625,42 @@ decommission_probe() {
     if [[ -f $repo/scripts/remote-decommission.sh ]]; then
         decommission_remove "$service_user"
     elif ls "${SWARMY_SYSTEMD_DIR:-/etc/systemd/system}"/swarmy*.service >/dev/null 2>&1; then
-        echo "swarmy node directory is missing from $repo but swarmy units are still installed; restore it with swarmy remote upgrade or remove the units by hand (see docs/REMOTE.md)" >&2
+        echo "swarmy node directory is missing from $repo but swarmy units are still installed; restore it with swarmy swarm upgrade or remove the units by hand (see docs/REMOTE.md)" >&2
         return 1
     else
         echo 'swarmy node directory already removed; nothing to tear down'
     fi
+}
+
+# Installed units in dependency order; an empty list is valid.
+installed_swarmy_units() {
+    local units unit installed
+    read_shared_list units swarmy_unit_names || return 1
+    installed=$(systemctl list-unit-files --no-legend --no-pager | awk '{ print $1 }') || return 1
+    for unit in "${units[@]}"; do
+        if grep -qxF -- "$unit" <<< "$installed"; then printf '%s\n' "$unit"; fi
+    done
+}
+
+# Disable dependents before backing units so they stay stopped across reboot.
+stop_installed_units() {
+    local units i text
+    text=$(installed_swarmy_units) || return 1
+    [[ -n $text ]] || { echo 'no swarmy units installed'; return 0; }
+    mapfile -t units <<< "$text"
+    for (( i = ${#units[@]} - 1; i >= 0; i-- )); do
+        sudo systemctl disable --now "${units[i]}"
+    done
+}
+
+start_installed_units() {
+    local units unit text
+    text=$(installed_swarmy_units) || return 1
+    [[ -n $text ]] || { echo 'no swarmy units installed'; return 0; }
+    mapfile -t units <<< "$text"
+    for unit in "${units[@]}"; do
+        sudo systemctl enable --now "$unit"
+    done
 }
 
 node_disk_bytes() {

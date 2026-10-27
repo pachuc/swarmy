@@ -1335,7 +1335,7 @@ node's SeaweedFS stack.
 The procedure used no `swarmyd vol` commands:
 
 ```bash
-swarmy remote up no-root-proof
+# remote up no-root-proof (EC2 launch command, removed 2026-10-26)
 swarmy remote connect no-root-proof
 SWARMY_FAKE_SCRIPT="$PWD/.dev/remote-fake.json" \
   SWARMY_FAKE_CALL_LOG=/tmp/swarmy-remote-proof/fake-calls.log \
@@ -1351,7 +1351,7 @@ swarmy chat --remote no-root-proof 01M2PBXXR5TCHDEST70BZ8QCJ0
 swarmy remote add-node no-root-proof
 ```
 
-The real ChatGPT flow is documented in [REMOTE.md](REMOTE.md#up-authenticate-and-chat).
+The real ChatGPT flow is documented in [swarms.md](swarms.md#model-provider-credentials).
 There was deliberately no ChatGPT credential in this run. The gateway used the
 existing scripted fake provider from `swarmy-gateway`, with `latency_ms = 30`
 and an indexed `responses` map in `.dev/remote-fake.json`. A response has the
@@ -2432,7 +2432,7 @@ cache and a 100 GB root disk. Provisioning used the launcher-tagged credentials
 and the supported command:
 
 ```sh
-swarmy remote up turn-roundtrips --services node --image-recipe images/turn-proof
+# remote up turn-roundtrips --services node --image-recipe images/turn-proof (EC2 launch command, removed 2026-10-26)
 swarmy remote connect turn-roundtrips --json
 swarmy dev up --remote turn-roundtrips
 swarmy bench turn --remote turn-roundtrips --turns 30 --image base-ubuntu:turn-roundtrips --output /tmp/swarmy-turn-node-final.json

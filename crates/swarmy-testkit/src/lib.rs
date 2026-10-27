@@ -43,3 +43,16 @@ pub use settings::{require_api_endpoint, stack_settings, test_settings};
 #[cfg(feature = "stack")]
 pub use stack::{Stack, StackGuard, boot_fdb, unique_prefix};
 pub use subscribers::nats_subscribers;
+
+/// Keep test commands away from the developer's own files. Pass these five
+/// environment variables to `Command::envs` for every CLI invocation.
+#[must_use]
+pub fn isolated_home(root: &std::path::Path) -> [(&'static str, std::path::PathBuf); 5] {
+    [
+        ("HOME", root.to_path_buf()),
+        ("XDG_CONFIG_HOME", root.join("config")),
+        ("XDG_DATA_HOME", root.join("data")),
+        ("XDG_STATE_HOME", root.join("state")),
+        ("XDG_CACHE_HOME", root.join("cache")),
+    ]
+}
