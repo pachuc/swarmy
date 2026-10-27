@@ -1015,14 +1015,26 @@ fn image_build_command(user: &str, recipe: &Path, tag: &str) -> Result<String> {
         "--tag",
         tag,
     ]);
+    // The client chooses its API from the environment, not from config files,
+    // so export the node's own API address and token. They are read on the
+    // host, so the token never appears in an SSH command line.
+    let api = shell_words::quote(NODE_API_ENV);
     Ok(format!(
         "cd {} && sudo -n bash -c {}",
         tilde_repo(user),
         shell_words::quote(&format!(
-            "set -e; set -a; . /etc/swarmy/node.env; set +a; exec {build}"
+            "set -e; set -a; . /etc/swarmy/node.env; set +a; eval \"$(python3 -c {api})\"; exec {build}"
         ))
     ))
 }
+
+/// Prints shell exports of the node's API URL and token from `.swarmy/config.toml`.
+const NODE_API_ENV: &str = "import shlex, tomllib\n\
+api = tomllib.load(open('.swarmy/config.toml', 'rb')).get('api', {})\n\
+host, port = api.get('listen', '127.0.0.1:8742').rsplit(':', 1)\n\
+host = '127.0.0.1' if host in ('', '0.0.0.0', '::', '[::]') else host\n\
+print('export SWARMY_API_URL=' + shlex.quote(api.get('url') or 'http://' + host + ':' + port))\n\
+print('export SWARMY_API_TOKEN=' + shlex.quote(api.get('token', '')))";
 
 /// Remote commands built synchronously so their temporaries never inflate
 /// the provisioning futures. Each validates the service user first and
@@ -1298,7 +1310,8 @@ mod tests {
             ["cd", "~swarmy/swarmy", "&&", "sudo", "-n", "bash", "-c"]
         );
         let script = &outer[7];
-        assert!(script.starts_with("set -e; set -a; . /etc/swarmy/node.env; set +a; exec "));
+        assert!(script.starts_with("set -e; set -a; . /etc/swarmy/node.env; set +a; eval "));
+        assert!(script.contains("SWARMY_API_TOKEN"));
         let args = shell_words::split(script.split("exec ").nth(1).unwrap()).unwrap();
         assert_eq!(
             args,

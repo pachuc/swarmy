@@ -129,7 +129,7 @@ echo '[{"provider":"hetzner-cloud","set":true},{"provider":"hetzner-s3","set":tr
 STUB
 chmod +x "$fake/bin/swarmy"
 parse_args --provider openai --swarmy "$fake/bin/swarmy"
-[[ $server_type == cx43 ]]
+[[ $server_type == cpx42 ]]
 if local_preconditions 2> "$fake/err"; then exit 1; fi
 grep -q -- '--model ID' "$fake/err"
 printf 'fixture-key' > "$fake/key"

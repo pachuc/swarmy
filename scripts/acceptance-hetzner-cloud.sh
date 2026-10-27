@@ -190,7 +190,7 @@ on_exit() {
     exit "$result"
 }
 parse_args() {
-    yes=0 dry_run=0 provider='' model='' api_key_file='' server_type=cx43 location=fsn1 max_minutes=90 swarmy=''
+    yes=0 dry_run=0 provider='' model='' api_key_file='' server_type=cpx42 location=fsn1 max_minutes=90 swarmy=''
     while (($#)); do
         case $1 in
             --yes) yes=1;; --dry-run) dry_run=1;;
