@@ -1,11 +1,11 @@
 output "machines" {
   description = "Ordered machines to provision over SSH."
   value = [
-    for index, server in hcloud_server.this : {
+    for server in hcloud_server.this : {
       name        = server.name
       public_ipv4 = server.ipv4_address == "" ? null : server.ipv4_address
       public_ipv6 = server.ipv6_address == "" ? null : server.ipv6_address
-      private_ip  = hcloud_server_network.this[index].ip == "" ? null : hcloud_server_network.this[index].ip
+      private_ip  = try(one([for n in server.network : n.ip if n.ip != ""]), null)
       ssh_user    = "root"
     }
   ]

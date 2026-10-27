@@ -64,16 +64,18 @@ resource "hcloud_server" "this" {
     ipv4_enabled = true
     ipv6_enabled = true
   }
+  # Attach the private network as part of creating the server. A separate
+  # hcloud_server_network attaches it after boot, and Ubuntu then leaves the
+  # hot-added interface unconfigured, so the machine has no private address.
+  network {
+    network_id = local.create_network ? hcloud_network.this[0].id : tonumber(var.network_id)
+  }
+  # The server can join the network only once its subnet exists.
+  depends_on = [hcloud_network_subnet.this]
   lifecycle {
     # Changing the group key must not replace running machines.
     ignore_changes = [ssh_keys]
   }
-}
-resource "hcloud_server_network" "this" {
-  count      = var.machine_count
-  server_id  = hcloud_server.this[count.index].id
-  subnet_id  = local.create_network ? hcloud_network_subnet.this[0].id : null
-  network_id = local.create_network ? null : var.network_id
 }
 resource "minio_s3_bucket" "this" {
   count         = var.bucket_name == "" ? 0 : 1
