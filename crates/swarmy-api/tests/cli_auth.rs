@@ -220,18 +220,17 @@ fn key_sources_are_exclusive_and_support_files_and_environment() {
 #[test]
 #[cfg(unix)]
 fn azure_login_saves_to_cluster_and_missing_cli_reports_login_needed() {
-    use std::os::unix::fs::PermissionsExt;
     let Some(f) = Fixture::new() else {
         return;
     };
     let bin = f.dir.path().join("bin");
     fs::create_dir(&bin).unwrap();
     let az = bin.join("az");
-    fs::write(&az, r#"#!/bin/sh
-[ "$*" = 'account get-access-token --scope https://cognitiveservices.azure.com/.default --output json' ] || exit 1
-printf '%s\n' '{"accessToken":"secret-azure-fixture","expiresOn":"2099-01-02T03:04:05Z"}'
-"#).unwrap();
-    fs::set_permissions(&az, fs::Permissions::from_mode(0o700)).unwrap();
+    std::os::unix::fs::symlink(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-az"),
+        &az,
+    )
+    .unwrap();
     let original = fs::read(f.dir.path().join("auth.json")).unwrap();
     let result = f
         .command(&["auth", "login", "azure", "--resource", "fixture", "--json"])

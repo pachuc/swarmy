@@ -1,0 +1,10 @@
+#!/bin/sh
+root=$(dirname "$(dirname "$0")")
+printf '%s\n' "$*" >> "$root/ssh.log"
+if test -e "$root/ssh-fail"; then
+ echo 'ssh: connect to host 203.0.113.10 port 22: Connection refused' >&2
+ exit 255
+fi
+case "$*" in
+ *'.swarmy/config.toml'*) printf '[api]\nlisten = "127.0.0.1:8742"\ntoken = "node-token-7c1f"\n' ;;
+esac
