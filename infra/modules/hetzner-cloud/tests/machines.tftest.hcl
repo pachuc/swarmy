@@ -9,10 +9,8 @@ mock_provider "hcloud" {
       id           = "2002"
       ipv4_address = "203.0.113.10"
       ipv6_address = "2001:db8::1"
+      network      = { ip = "10.0.0.2", mac_address = "86:00:00:00:00:01" }
     }
-  }
-  mock_resource "hcloud_server_network" {
-    defaults = { id = "2002-1001", ip = "10.0.0.2" }
   }
 }
 mock_provider "minio" {}
@@ -47,8 +45,8 @@ run "creates_the_group" {
     error_message = "The group must create a private cloud subnet."
   }
   assert {
-    condition     = length(hcloud_server_network.this) == 2 && alltrue([for attachment in hcloud_server_network.this : attachment.subnet_id == hcloud_network_subnet.this[0].id])
-    error_message = "Each machine must attach to the subnet."
+    condition     = alltrue([for server in hcloud_server.this : [for n in server.network : n.network_id] == [1001]])
+    error_message = "Each machine must join the group's network when it is created."
   }
   assert {
     condition     = output.machines[1] == { name = "fleet-workers-2", public_ipv4 = "203.0.113.10", public_ipv6 = "2001:db8::1", private_ip = "10.0.0.2", ssh_user = "root" }
@@ -86,14 +84,14 @@ run "caller_labels_cannot_replace_swarmy_labels" {
 run "joins_an_existing_network" {
   variables { network_id = "4242" }
   assert {
-    condition     = length(hcloud_network.this) == 0 && length(hcloud_network_subnet.this) == 0 && alltrue([for attachment in hcloud_server_network.this : attachment.network_id == 4242 && attachment.subnet_id == null]) && output.network_id == "4242"
+    condition     = length(hcloud_network.this) == 0 && length(hcloud_network_subnet.this) == 0 && alltrue([for server in hcloud_server.this : [for n in server.network : n.network_id] == [4242]]) && output.network_id == "4242"
     error_message = "Joining must not create a new network."
   }
 }
 run "scales_to_zero" {
   variables { machine_count = 0 }
   assert {
-    condition     = length(hcloud_server.this) == 0 && length(hcloud_server_network.this) == 0 && length(output.machines) == 0
+    condition     = length(hcloud_server.this) == 0 && length(output.machines) == 0
     error_message = "Zero machines must yield an empty list."
   }
 }

@@ -14,9 +14,13 @@ def items(body, key):
     return body[key]
 def priced(entry, location):
     return Decimal(next(p['price_hourly']['gross'] for p in entry['prices'] if p['location'] == location))
+def orderable(entry, location):
+    return any(loc['name'] == location and loc.get('available') is True
+               and loc.get('deprecation') is None for loc in entry.get('locations', []))
 def types(body, location):
     return sorted(((priced(t, location), t['name']) for t in body['server_types']
                    if t.get('deprecation') is None and t.get('architecture') == 'x86'
+                   and orderable(t, location)
                    and any(p['location'] == location for p in t['prices'])), key=lambda pair: pair[0])
 if cmd in ('hcloud-config', 's3-config'):
     credentials = tomllib.loads((Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local/share')) /
@@ -37,7 +41,7 @@ elif cmd == 'cloud-ready':
 elif cmd == 'server-type':
     body, location, name = load(args[0]), args[1], args[2]
     found = [t for t in body['server_types'] if t['name'] == name]
-    if len(found) != 1 or found[0].get('deprecation') is not None or found[0].get('architecture') != 'x86' or not any(p['location'] == location for p in found[0]['prices']):
+    if len(found) != 1 or found[0].get('deprecation') is not None or found[0].get('architecture') != 'x86' or not orderable(found[0], location) or not any(p['location'] == location for p in found[0]['prices']):
         print('server type unavailable; pass --server-type with one of the listed alternatives', file=sys.stderr)
         sys.exit(1)
     print(priced(found[0], location))
@@ -57,6 +61,15 @@ elif cmd == 'count':
 elif cmd == 'plan':
     groups = load(args[0])['groups']
     assert len(groups) == 2 and {g['group'] for g in groups} == {'control', 'workers'} and all(g['changes'] is True for g in groups)
+elif cmd == 'doctor-failures':
+    try:
+        body = load(args[0])
+    except (OSError, ValueError):
+        print('doctor printed no JSON report', file=sys.stderr)
+        sys.exit(0)
+    for c in body.get('checks', []):
+        if c.get('status') == 'fail':
+            print(f"doctor check {c['name']} failed: {c.get('detail', '')}" + (f" (fix: {c['fix']})" if c.get('fix') else ''), file=sys.stderr)
 elif cmd == 'doctor':
     body = load(args[0])
     assert body['ok'] is True, 'doctor reported failures'
@@ -186,7 +199,7 @@ on_exit() {
     exit "$result"
 }
 parse_args() {
-    yes=0 dry_run=0 provider='' model='' api_key_file='' server_type=cpx31 location=fsn1 max_minutes=90 swarmy=''
+    yes=0 dry_run=0 provider='' model='' api_key_file='' server_type=cpx32 location=fsn1 max_minutes=90 swarmy=''
     while (($#)); do
         case $1 in
             --yes) yes=1;; --dry-run) dry_run=1;;
@@ -279,6 +292,8 @@ main() {
     fi
     deadline=$((SECONDS + max_minutes * 60))
     created=1
+    # The swarm's services default to the test's provider, whatever the local config selects.
+    export SWARMY_PROVIDER=$provider SWARMY_MODEL=$model
     step create "$swarmy" swarm create "$name" --on hetzner-cloud --size "$server_type" --location "$location" --nodes 1 --lifecycle ephemeral
     plan_file=$(mktemp)
     step plan "$swarmy" --json swarm plan "$name" > "$plan_file"
@@ -289,7 +304,16 @@ main() {
     local up_args=(); [[ $provider != chatgpt ]] || up_args+=(--copy-credential)
     step up "$swarmy" swarm up "$name" "${up_args[@]}"
     if [[ $provider != chatgpt ]]; then step auth "$swarmy" --swarm "$name" auth set "$provider" --file "$api_key_file"; fi
-    file=$(mktemp); step doctor "$swarmy" --swarm "$name" --json doctor > "$file"; py doctor "$file"; rm -f "$file"
+    # The gateway re-reads its providers every 30 seconds, so a key stored a
+    # moment ago may not be served yet. Give doctor up to three refreshes.
+    file=$(mktemp)
+    for attempt in 1 2 3 4; do
+        if step doctor "$swarmy" --swarm "$name" --json doctor > "$file"; then break; fi
+        if ((attempt == 4)); then py doctor-failures "$file"; rm -f "$file"; fail 'doctor reported failures'; fi
+        echo "doctor not clean yet; waiting for the gateway to refresh ($attempt/4)" >&2
+        sleep 30
+    done
+    py doctor "$file"; rm -f "$file"
     step agent "$swarmy" --swarm "$name" agent create acceptance --provider "$provider" --model "$model"
     nonce="swarmy-acceptance-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
     file=$(mktemp)

@@ -68,6 +68,18 @@ PY
 if py server-type "$fake/bad.json" fsn1 cpx31 > "$fake/out" 2> "$fake/err"; then exit 1; fi
 py alternatives "$fake/bad.json" fsn1 2> "$fake/err"
 grep -q cpx41 "$fake/err"
+# A type can be active globally but retired at the chosen location.
+python3 - "$fake/bad.json" <<'PY'
+import json,sys
+p=sys.argv[1]; data=json.load(open(p)); data['server_types'][0]['deprecation']=None
+data['server_types'][0]['locations'][0]['available']=False
+data['server_types'][0]['locations'][0]['deprecation']={'announced':'fixture'}
+open(p,'w').write(json.dumps(data))
+PY
+if py server-type "$fake/bad.json" fsn1 cpx31 > "$fake/out" 2> "$fake/err"; then exit 1; fi
+py alternatives "$fake/bad.json" fsn1 2> "$fake/err"
+grep -q cpx41 "$fake/err"
+if grep -q cpx31 "$fake/err"; then exit 1; fi
 primary_ids=(1)
 verify_clean
 printf '{"servers":[{"id":1,"name":"acc-test-control-1","public_net":{"ipv4":{"id":1}}}]}\n' > "$fake/servers.json"
@@ -117,6 +129,7 @@ echo '[{"provider":"hetzner-cloud","set":true},{"provider":"hetzner-s3","set":tr
 STUB
 chmod +x "$fake/bin/swarmy"
 parse_args --provider openai --swarmy "$fake/bin/swarmy"
+[[ $server_type == cpx32 ]]
 if local_preconditions 2> "$fake/err"; then exit 1; fi
 grep -q -- '--model ID' "$fake/err"
 printf 'fixture-key' > "$fake/key"

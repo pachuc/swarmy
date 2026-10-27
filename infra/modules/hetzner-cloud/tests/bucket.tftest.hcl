@@ -9,10 +9,8 @@ mock_provider "hcloud" {
       id           = "2002"
       ipv4_address = "203.0.113.10"
       ipv6_address = "2001:db8::1"
+      network      = { ip = "10.0.0.2", mac_address = "86:00:00:00:00:01" }
     }
-  }
-  mock_resource "hcloud_server_network" {
-    defaults = { id = "2002-1001", ip = "10.0.0.2" }
   }
 }
 mock_provider "minio" {}

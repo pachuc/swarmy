@@ -274,6 +274,14 @@ impl Workspace<'_> {
     pub async fn apply(&self) -> Result<()> {
         self.run(Subcommand::Apply).await.map(|_| ())
     }
+    /// Apply only the named resources, without creating unrelated missing resources.
+    /// # Errors
+    /// Returns process failures.
+    pub async fn apply_targets(&self, targets: &[&str]) -> Result<()> {
+        self.run(Subcommand::ApplyTargets(targets))
+            .await
+            .map(|_| ())
+    }
     /// # Errors
     /// Returns process failures.
     pub async fn destroy(&self) -> Result<()> {
@@ -285,12 +293,17 @@ impl Workspace<'_> {
         let (bytes, _) = self.run(Subcommand::Output).await?;
         Ok(parse_outputs(&String::from_utf8_lossy(&bytes))?)
     }
-    async fn run(&self, sub: Subcommand) -> Result<(Vec<u8>, Option<i32>)> {
+    async fn run(&self, sub: Subcommand<'_>) -> Result<(Vec<u8>, Option<i32>)> {
         fs::create_dir_all(&self.tofu.plugin_cache)
             .await
             .map_err(|e| io("creating", &self.tofu.plugin_cache, e))?;
         let mut command = Command::new(&self.tofu.binary);
         command.args(sub.args()).current_dir(&self.dir).env_clear();
+        if let Subcommand::ApplyTargets(targets) = sub {
+            for target in targets {
+                command.arg(format!("-target={target}"));
+            }
+        }
         for key in PASSTHROUGH {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
@@ -327,19 +340,20 @@ impl Workspace<'_> {
     }
 }
 #[derive(Clone, Copy)]
-enum Subcommand {
+enum Subcommand<'a> {
     Init,
     Plan,
     Apply,
+    ApplyTargets(&'a [&'a str]),
     Destroy,
     Output,
 }
-impl Subcommand {
+impl Subcommand<'_> {
     const fn name(self) -> &'static str {
         match self {
             Self::Init => "init",
             Self::Plan => "plan",
-            Self::Apply => "apply",
+            Self::Apply | Self::ApplyTargets(_) => "apply",
             Self::Destroy => "destroy",
             Self::Output => "output",
         }
@@ -355,7 +369,7 @@ impl Subcommand {
                 LOCK_TIMEOUT,
                 "-var-file=swarmy.tfvars.json",
             ],
-            Self::Apply => &[
+            Self::Apply | Self::ApplyTargets(_) => &[
                 "apply",
                 "-input=false",
                 "-no-color",

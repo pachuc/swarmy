@@ -1027,3 +1027,45 @@ mod remote_bucket_precedence {
         assert!(f.log().is_empty());
     }
 }
+
+#[tokio::test]
+async fn failed_server_apply_does_not_block_bucket_teardown() {
+    let f = Fixture::new();
+    fs::write(f.temp.path().join("fail-apply-control"), "").unwrap();
+    let host = FakeHost::new();
+    assert!(f.up(&host).await.is_err());
+    assert!(
+        f.registry
+            .swarm_dir("fleet")
+            .unwrap()
+            .join("tofu/control/terraform.tfstate")
+            .exists()
+    );
+    decommission_swarm_with(&host, &f.registry, &f.spec, Some(f.machines()))
+        .await
+        .unwrap();
+    let log = f.log();
+    assert!(
+        log.lines().any(|line| line.contains("target control apply")
+            && line.contains("-target=minio_s3_bucket.this")),
+        "{log}"
+    );
+    assert!(
+        log.lines().any(|line| line == "call control destroy"),
+        "{log}"
+    );
+    assert!(f.registry.read_record("fleet").unwrap().is_none());
+}
+
+#[test]
+fn only_a_not_empty_bucket_retries_destroy() {
+    assert!(bucket_not_empty(
+        "Error: [FATAL] unable to remove bucket (b): The bucket that you tried to delete is not empty."
+    ));
+    assert!(bucket_not_empty(
+        "BucketNotEmpty: The bucket you tried to delete is not empty"
+    ));
+    assert!(!bucket_not_empty(
+        "Error: Server Type \"cpx41\" is unavailable"
+    ));
+}

@@ -73,8 +73,10 @@ impl Options {
         } else {
             None
         };
+        // Only ChatGPT authenticates from a credential file; API-key providers
+        // keep their key in the swarm's own store (swarmy auth set after up).
         crate::Error::ensure(
-            !services || settings.selection.provider == "fake" || credential.is_some(),
+            !services || settings.selection.provider != "chatgpt" || credential.is_some(),
             "node gateway requires --copy-credential for ChatGPT; this explicitly acknowledges the credential leaves the laptop",
         )?;
         // Copy only service options. Local paths, cloud secrets, endpoints, and
@@ -181,6 +183,23 @@ pub(crate) async fn install(node: &Machine, address: &str, options: &Options) ->
             &std::fs::read(path)?,
         )
         .await?;
+    } else {
+        // Without a copied keyring the API still needs one to store provider
+        // keys. Create it on the host, where it stays; never replace one.
+        let status = super::ssh::command(node)?
+            .arg(address)
+            .arg(new_keyring_script(&user, &home))
+            .stdin(Stdio::null())
+            .stdout(std::io::stderr())
+            .status()
+            .await
+            .map_err(crate::Error::ssh("create the cluster keyring"))?;
+        if !status.success() {
+            return Err(crate::Error::SshStatus {
+                command: "create the cluster keyring".to_owned(),
+                status,
+            });
+        }
     }
     let status = super::ssh::command(node)?
         .arg(address)
@@ -200,6 +219,16 @@ pub(crate) async fn install(node: &Machine, address: &str, options: &Options) ->
         });
     }
     Ok(())
+}
+
+/// Create a cluster keyring on the host (32 random bytes, base64, one line)
+/// unless one exists, in the same place and with the same modes as an
+/// installed one.
+fn new_keyring_script(user: &str, home: &str) -> String {
+    let directory = format!("{home}/.local/share/swarmy");
+    format!(
+        "umask 077; sudo -u {user} mkdir -p {directory} && chmod 700 {directory} && if [ ! -s {directory}/keyring ]; then head -c 32 /dev/urandom | base64 -w0 > {directory}/keyring.tmp && echo >> {directory}/keyring.tmp && chown {user}:{user} {directory}/keyring.tmp && chmod 600 {directory}/keyring.tmp && mv {directory}/keyring.tmp {directory}/keyring; fi"
+    )
 }
 
 /// Install the cluster keyring where the node's services look for it: the
@@ -282,6 +311,19 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     #[test]
+    fn only_chatgpt_requires_a_copied_credential() {
+        let mut settings = Settings::default();
+        for provider in ["fake", "openrouter", "anthropic"] {
+            settings.selection.provider = provider.into();
+            assert!(Options::with_keyring(&settings, true, "swarmy", false, None).is_ok());
+        }
+        settings.selection.provider = "chatgpt".into();
+        let error = Options::with_keyring(&settings, true, "swarmy", false, None)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("--copy-credential for ChatGPT"));
+    }
+    #[test]
     fn default_image_keeps_token() {
         let mut settings = Settings::default();
         settings.selection.provider = "fake".into();
@@ -296,6 +338,16 @@ mod tests {
             rendered.selection.default_image.as_deref(),
             Some("base-ubuntu:test")
         );
+    }
+    #[test]
+    fn new_keyring_is_created_only_when_missing() {
+        let script = new_keyring_script("swarmy", "~swarmy");
+        assert!(script.contains("if [ ! -s ~swarmy/.local/share/swarmy/keyring ]"));
+        assert!(script.contains("head -c 32 /dev/urandom | base64 -w0"));
+        assert!(script.contains("chmod 600 ~swarmy/.local/share/swarmy/keyring.tmp"));
+        assert!(script.ends_with(
+            "mv ~swarmy/.local/share/swarmy/keyring.tmp ~swarmy/.local/share/swarmy/keyring; fi"
+        ));
     }
     #[test]
     fn keyring_goes_to_the_service_users_xdg_data_directory() {

@@ -1015,14 +1015,26 @@ fn image_build_command(user: &str, recipe: &Path, tag: &str) -> Result<String> {
         "--tag",
         tag,
     ]);
+    // The client chooses its API from the environment, not from config files,
+    // so export the node's own API address and token. They are read on the
+    // host, so the token never appears in an SSH command line.
+    let api = shell_words::quote(NODE_API_ENV);
     Ok(format!(
         "cd {} && sudo -n bash -c {}",
         tilde_repo(user),
         shell_words::quote(&format!(
-            "set -e; set -a; . /etc/swarmy/node.env; set +a; exec {build}"
+            "set -e; set -a; . /etc/swarmy/node.env; set +a; eval \"$(python3 -c {api})\"; exec {build}"
         ))
     ))
 }
+
+/// Prints shell exports of the node's API URL and token from `.swarmy/config.toml`.
+const NODE_API_ENV: &str = "import shlex, tomllib\n\
+api = tomllib.load(open('.swarmy/config.toml', 'rb')).get('api', {})\n\
+host, port = api.get('listen', '127.0.0.1:8742').rsplit(':', 1)\n\
+host = '127.0.0.1' if host in ('', '0.0.0.0', '::', '[::]') else host\n\
+print('export SWARMY_API_URL=' + shlex.quote(api.get('url') or 'http://' + host + ':' + port))\n\
+print('export SWARMY_API_TOKEN=' + shlex.quote(api.get('token', '')))";
 
 /// Remote commands built synchronously so their temporaries never inflate
 /// the provisioning futures. Each validates the service user first and
@@ -1289,6 +1301,17 @@ mod tests {
     }
 
     #[test]
+    fn private_address_command_configures_only_unaddressed_interfaces() {
+        let command = super::private_address_command("10.0.0.2").unwrap();
+        let outer = shell_words::split(&command).unwrap();
+        assert_eq!(&outer[..3], ["sudo", "-n", "sh"]);
+        let script = &outer[4];
+        assert!(script.contains(r#"grep -q " inet 10.0.0.2/""#));
+        assert!(script.contains("grep -q inet && continue"));
+        assert!(script.contains("netplan apply"));
+        assert!(super::private_address_command("10.0.0.2; reboot").is_err());
+    }
+    #[test]
     fn image_command_sources_node_environment_and_quotes_recipe() {
         let path = std::path::Path::new("images/custom ' $(touch unwanted)");
         let command = image_build_command("swarmy", path, "demo").unwrap();
@@ -1298,7 +1321,8 @@ mod tests {
             ["cd", "~swarmy/swarmy", "&&", "sudo", "-n", "bash", "-c"]
         );
         let script = &outer[7];
-        assert!(script.starts_with("set -e; set -a; . /etc/swarmy/node.env; set +a; exec "));
+        assert!(script.starts_with("set -e; set -a; . /etc/swarmy/node.env; set +a; eval "));
+        assert!(script.contains("SWARMY_API_TOKEN"));
         let args = shell_words::split(script.split("exec ").nth(1).unwrap()).unwrap();
         assert_eq!(
             args,
@@ -1656,6 +1680,50 @@ mod provisioning_command_tests {
 /// Returns SSH and cloud-init failures.
 pub async fn wait_boot(node: &Machine) -> Result<()> {
     let address = wait_ssh(node).await?;
-    run_output(base(node)?.arg(address).arg("command -v cloud-init >/dev/null 2>&1 || exit 0; cloud-init status --wait >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 2 ]"), "wait for cloud-init").await?;
+    run_output(base(node)?.arg(&address).arg("command -v cloud-init >/dev/null 2>&1 || exit 0; cloud-init status --wait >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 2 ]"), "wait for cloud-init").await?;
+    if node.private_ip != node.public_ip {
+        run_output(
+            base(node)?
+                .arg(&address)
+                .arg(private_address_command(&node.private_ip)?),
+            "bring up the private network address",
+        )
+        .await?;
+    }
     Ok(())
+}
+
+/// Make sure a new machine holds its private address. A cloud network that
+/// attaches while the machine boots can miss both the boot-time network
+/// configuration and cloud-init's hotplug listener, leaving its interface
+/// down; give every unconfigured interface DHCP through netplan and wait.
+fn private_address_command(private_ip: &str) -> Result<String> {
+    let address: std::net::Ipv4Addr = private_ip
+        .parse()
+        .map_err(|_| crate::Error::other(format!("private address {private_ip} must be IPv4")))?;
+    let script = format!(
+        r#"set -eu
+have() {{ ip -4 -o addr show | grep -q " inet {address}/"; }}
+have && exit 0
+for dev in $(ls /sys/class/net); do
+    [ "$dev" = lo ] && continue
+    ip -4 -o addr show dev "$dev" | grep -q inet && continue
+    mac=$(cat "/sys/class/net/$dev/address")
+    file="/etc/netplan/60-swarmy-$dev.yaml"
+    printf 'network:
+  version: 2
+  ethernets:
+    swarmy-%s:
+      match:
+        macaddress: "%s"
+      dhcp4: true
+' "$dev" "$mac" > "$file"
+    chmod 600 "$file"
+done
+netplan apply
+for _ in $(seq 1 30); do have && exit 0; sleep 2; done
+echo "private address {address} did not come up" >&2
+exit 1"#
+    );
+    Ok(format!("sudo -n sh -c {}", shell_words::quote(&script)))
 }

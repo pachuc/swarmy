@@ -193,7 +193,17 @@ if [[ $mode == stack ]]; then
 else
     [[ -s .dev/fdb.cluster ]] || { echo 'Missing primary cluster file' >&2; exit 1; }
     sudo systemctl enable "$stack_dependency"
-    sudo systemctl restart "$stack_dependency"
+    # A new machine's first tunnel connection can fail while its private
+    # network or the primary's backing services are still coming up.
+    for attempt in 1 2 3 4 5 6; do
+        if sudo systemctl restart "$stack_dependency"; then break; fi
+        if ((attempt == 6)); then
+            sudo journalctl -u "$stack_dependency" --no-pager -n 20 >&2 || :
+            exit 1
+        fi
+        echo "the tunnel to the primary is not up yet; retrying ($attempt/6)" >&2
+        sleep 10
+    done
 fi
 sudo systemctl enable "$node_unit"
 sudo systemctl restart "$node_unit"
