@@ -131,13 +131,17 @@ async fn argument_sequence_and_environment_passing() {
     workspace.init().await.unwrap();
     assert_eq!(workspace.plan().await.unwrap(), PlanOutcome::Changes);
     workspace.apply().await.unwrap();
+    workspace
+        .apply_targets(&["minio_s3_bucket.this", "null_resource.x"])
+        .await
+        .unwrap();
     assert_eq!(
         workspace.outputs().await.unwrap(),
         parse_outputs(OUTPUTS).unwrap()
     );
     workspace.destroy().await.unwrap();
     let calls = invocations(&fixture.path().join("record"));
-    assert_eq!(calls.len(), 5);
+    assert_eq!(calls.len(), 6);
     let expected = [
         vec!["init", "-input=false", "-no-color"],
         vec![
@@ -155,6 +159,16 @@ async fn argument_sequence_and_environment_passing() {
             "-auto-approve",
             "-lock-timeout=120s",
             "-var-file=swarmy.tfvars.json",
+        ],
+        vec![
+            "apply",
+            "-input=false",
+            "-no-color",
+            "-auto-approve",
+            "-lock-timeout=120s",
+            "-var-file=swarmy.tfvars.json",
+            "-target=minio_s3_bucket.this",
+            "-target=null_resource.x",
         ],
         vec!["output", "-no-color", "-json"],
         vec![

@@ -682,7 +682,11 @@ pub(crate) async fn destroy(
                 {
                     vars.insert("bucket_force_destroy".into(), json!(true));
                     workspace.set_variables(&vars).await?;
-                    workspace.apply().await?;
+                    let bucket_target = match spec.groups.get(&name).map(|g| &g.module) {
+                        Some(Module::Aws) => "aws_s3_bucket.this",
+                        _ => "minio_s3_bucket.this",
+                    };
+                    workspace.apply_targets(&[bucket_target]).await?;
                 }
                 workspace.destroy().await?;
             }
