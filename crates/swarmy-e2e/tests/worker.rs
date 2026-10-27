@@ -1442,25 +1442,42 @@ async fn competing_workers_claim_each_step_once() {
             f.start("scheduler", None);
             f.start("gateway", None);
             let first = f.start("worker", None);
-            let second = f.start("worker", None);
-            // "worker ready" means the pull streams exist, but they do not
-            // request messages until polled. Wait for both outstanding pulls:
-            // each asks NATS for one message, so the first two nudges must
-            // go to different workers rather than one draining the queue.
-            let context =
-                async_nats::jetstream::new(async_nats::connect(&f.stack.nats_url).await.unwrap());
-            swarmy_testkit::eventually("both workers have pending pulls", WAIT, async || {
-                let stream = context
-                    .get_stream(format!("{}_SCHED_RUNNABLE", f.stack.prefix))
-                    .await
-                    .ok()?;
-                let mut consumer: async_nats::jetstream::consumer::PullConsumer =
-                    stream.get_consumer("runnable_7").await.ok()?;
-                (consumer.info().await.ok()?.num_waiting >= 2).then_some(())
+            // A pending pull does not reserve a claim: the first worker can
+            // process a nudge and re-pull before the second gets CPU time.
+            // Finish one step, then stop its owner while the other worker
+            // claims a different step. The stopped worker can buffer at most
+            // one pull; the remaining nudges must reach the second worker.
+            let first_id = f.create().await;
+            f.wake(first_id).await;
+            assert_requests(first_id, &f.idle(first_id).await, 1);
+            let first_log = f.files.path().join(format!("service-{first}.log"));
+            swarmy_testkit::eventually("first worker claimed its step", WAIT, async || {
+                std::fs::read_to_string(&first_log)
+                    .ok()?
+                    .contains("claimed step")
+                    .then_some(())
             })
             .await;
-            let mut sessions = Vec::new();
-            for _ in 0..24 {
+            let second = f.start("worker", None);
+            let second_log = f.files.path().join(format!("service-{second}.log"));
+            swarmy_testkit::eventually("second worker ready", WAIT, async || {
+                std::fs::read_to_string(&second_log)
+                    .ok()?
+                    .contains("worker ready")
+                    .then_some(())
+            })
+            .await;
+            let pid = f.children[first].id().unwrap().to_string();
+            assert!(
+                Command::new("kill")
+                    .args(["-STOP", &pid])
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            );
+            let mut sessions = vec![first_id];
+            for _ in 1..24 {
                 let id = f.create().await;
                 f.wake(id).await;
                 for _ in 0..3 {
@@ -1471,6 +1488,21 @@ async fn competing_workers_claim_each_step_once() {
                 }
                 sessions.push(id);
             }
+            swarmy_testkit::eventually("second worker claimed a step", WAIT, async || {
+                std::fs::read_to_string(&second_log)
+                    .ok()?
+                    .contains("claimed step")
+                    .then_some(())
+            })
+            .await;
+            assert!(
+                Command::new("kill")
+                    .args(["-CONT", &pid])
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            );
             for id in sessions {
                 assert_requests(id, &f.idle(id).await, 1);
             }
