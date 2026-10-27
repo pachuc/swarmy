@@ -61,6 +61,15 @@ elif cmd == 'count':
 elif cmd == 'plan':
     groups = load(args[0])['groups']
     assert len(groups) == 2 and {g['group'] for g in groups} == {'control', 'workers'} and all(g['changes'] is True for g in groups)
+elif cmd == 'doctor-failures':
+    try:
+        body = load(args[0])
+    except (OSError, ValueError):
+        print('doctor printed no JSON report', file=sys.stderr)
+        sys.exit(0)
+    for c in body.get('checks', []):
+        if c.get('status') == 'fail':
+            print(f"doctor check {c['name']} failed: {c.get('detail', '')}" + (f" (fix: {c['fix']})" if c.get('fix') else ''), file=sys.stderr)
 elif cmd == 'doctor':
     body = load(args[0])
     assert body['ok'] is True, 'doctor reported failures'
@@ -295,7 +304,11 @@ main() {
     local up_args=(); [[ $provider != chatgpt ]] || up_args+=(--copy-credential)
     step up "$swarmy" swarm up "$name" "${up_args[@]}"
     if [[ $provider != chatgpt ]]; then step auth "$swarmy" --swarm "$name" auth set "$provider" --file "$api_key_file"; fi
-    file=$(mktemp); step doctor "$swarmy" --swarm "$name" --json doctor > "$file"; py doctor "$file"; rm -f "$file"
+    file=$(mktemp)
+    if ! step doctor "$swarmy" --swarm "$name" --json doctor > "$file"; then
+        py doctor-failures "$file"; rm -f "$file"; fail 'doctor reported failures'
+    fi
+    py doctor "$file"; rm -f "$file"
     step agent "$swarmy" --swarm "$name" agent create acceptance --provider "$provider" --model "$model"
     nonce="swarmy-acceptance-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
     file=$(mktemp)
