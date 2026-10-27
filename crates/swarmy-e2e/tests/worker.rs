@@ -1445,8 +1445,8 @@ async fn competing_workers_claim_each_step_once() {
             // A pending pull does not reserve a claim: the first worker can
             // process a nudge and re-pull before the second gets CPU time.
             // Finish one step, then stop its owner while the other worker
-            // claims a different step. The stopped worker can buffer at most
-            // one pull; the remaining nudges must reach the second worker.
+            // claims a different step. The stopped worker can buffer only
+            // finitely many nudges; the rest reach the second worker.
             let first_id = f.create().await;
             f.wake(first_id).await;
             assert_requests(first_id, &f.idle(first_id).await, 1);
