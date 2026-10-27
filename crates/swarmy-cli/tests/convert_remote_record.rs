@@ -50,25 +50,12 @@ impl Fixture {
         let root = tempfile::Builder::new().prefix(prefix).tempdir().unwrap();
         let bin = root.path().join("bin");
         fs::create_dir(&bin).unwrap();
-        let log = root.path().join("ssh.log");
-        let fail = root.path().join("ssh-fail");
-        let script = format!(
-            r#"#!/bin/sh
-printf '%s\n' "$*" >> '{}'
-if test -e '{}'; then
- echo 'ssh: connect to host 203.0.113.10 port 22: Connection refused' >&2
- exit 255
-fi
-case "$*" in
- *'.swarmy/config.toml'*) printf '[api]\nlisten = "127.0.0.1:8742"\ntoken = "node-token-7c1f"\n' ;;
-esac
-"#,
-            log.display(),
-            fail.display()
-        );
         let ssh = bin.join("ssh");
-        fs::write(&ssh, script).unwrap();
-        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/convert-ssh"),
+            &ssh,
+        )
+        .unwrap();
         let old = root.path().join("old/.swarmy/remote");
         fs::create_dir_all(&old).unwrap();
         let key = old.join("swarmy-01TESTKEY");

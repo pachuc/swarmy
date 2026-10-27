@@ -3,7 +3,7 @@ use crate::Result;
 use crate::provision::{
     UpRequest, existing_sources, groups::MachineGroups, provision_swarm_with, tests::FakeHost,
 };
-use std::{fs, future::Future, os::unix::fs::PermissionsExt};
+use std::{fs, future::Future};
 use swarmy_config::{
     Settings,
     cloud::{CloudCredential, CloudCredentials, CloudProvider},
@@ -58,47 +58,11 @@ nodes = ["workers"]
         )
         .unwrap();
         let script = temp.path().join("fake-tofu");
-        let body = format!(
-            r#"#!/bin/sh
-set -eu
-group=$(basename "$PWD")
-printf 'call %s %s\n' "$group" "$1" >> '{fixture}/tofu.log'
-env | grep -E '^(HCLOUD_TOKEN|MINIO_USER|MINIO_PASSWORD|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SHARED_CREDENTIALS_FILE|AWS_CONFIG_FILE|AWS_EC2_METADATA_DISABLED)=' >> '{fixture}/tofu.log' || true
-case "$1" in
-  init) exit 0 ;;
-  plan) echo "plan for $group"; exit 2 ;;
-  apply)
-    i=1
-    while test -f '{fixture}/applied-'"$group"'-'"$i"'.json'; do i=$((i+1)); done
-    cp swarmy.tfvars.json '{fixture}/applied-'"$group"'-'"$i"'.json'
-    echo state > terraform.tfstate
-    if test -f '{fixture}/fail-apply-'"$group"; then echo 'Error: apply failed' >&2; exit 1; fi ;;
-  output)
-    bucket=$(python3 -c 'import json; print(json.load(open("swarmy.tfvars.json"))["bucket_name"])')
-    if test "${{AWS_ACCESS_KEY_ID:-}}" != ""; then
-      printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":"10.0.0.10","ssh_user":"ubuntu"}}]}}}}\n'
-    elif test "$group" = control && test "$bucket" = "" && test -f '{fixture}/control-no-bucket-private'; then
-      printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":"10.0.0.10","ssh_user":"root"}}]}}}}\n'
-    elif test "$group" = control && test "$bucket" = ""; then
-      printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":null,"ssh_user":"root"}}]}}}}\n'
-    elif test "$group" = control; then
-      printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":"10.0.0.10","ssh_user":"root"}}]}},"network_id":{{"value":"4711"}},"bucket":{{"value":{{"endpoint":"https://objects.example.com","name":"%s","region":"fsn1"}}}}}}\n' "$bucket"
-    elif test -f '{fixture}/workers-renamed'; then
-      printf '{{"machines":{{"value":[{{"name":"fleet-workers-renamed","public_ipv4":"203.0.113.11","public_ipv6":null,"private_ip":"10.0.0.11","ssh_user":"root"}},{{"name":"fleet-workers-2","public_ipv4":"203.0.113.12","public_ipv6":null,"private_ip":"10.0.0.12","ssh_user":"root"}}]}},"network_id":{{"value":null}}}}\n'
-    elif test -f '{fixture}/workers-no-private'; then
-      printf '{{"machines":{{"value":[{{"name":"fleet-workers-1","public_ipv4":"203.0.113.11","public_ipv6":null,"private_ip":null,"ssh_user":"root"}}]}}}}\n'
-    elif test -f '{fixture}/outputs-workers.json'; then
-      cat '{fixture}/outputs-workers.json'
-    else
-      printf '{{"machines":{{"value":[{{"name":"fleet-workers-1","public_ipv4":"203.0.113.11","public_ipv6":null,"private_ip":"10.0.0.11","ssh_user":"root"}},{{"name":"fleet-workers-2","public_ipv4":"203.0.113.12","public_ipv6":null,"private_ip":"10.0.0.12","ssh_user":"root"}}]}},"network_id":{{"value":null}}}}\n'
-    fi ;;
-  destroy) cp swarmy.tfvars.json '{fixture}/destroyed-'"$group"'.json'; if test -f '{fixture}/fail-destroy-'"$group"; then exit 1; fi; rm terraform.tfstate ;;
-esac
-"#,
-            fixture = temp.path().display()
-        );
-        fs::write(&script, body).unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/provision/tests/fake-tofu"),
+            &script,
+        )
+        .unwrap();
         let tofu = Tofu::from_binary(script, &temp.path().join("cache"));
         let credentials = fake_credentials();
         Self {

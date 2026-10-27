@@ -1,5 +1,5 @@
 #![deny(clippy::disallowed_methods)]
-use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+use std::{fs, process::Command};
 
 fn run(dry_run: bool) {
     if !Command::new("python3")
@@ -15,15 +15,14 @@ fn run(dry_run: bool) {
     let bin = tmp.path().join("bin");
     fs::create_dir(&bin).unwrap();
     let curl = bin.join("curl");
-    fs::write(
-        &curl,
-        format!(
-            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'curl 8.0.0'; exit 0; fi\ntouch '{}'\nexit 1\n",
-            tmp.path().join("curl-marker").display()
+    std::os::unix::fs::symlink(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/acceptance-curl"
         ),
+        &curl,
     )
     .unwrap();
-    fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).unwrap();
     let script = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../scripts/acceptance-hetzner-cloud.sh"

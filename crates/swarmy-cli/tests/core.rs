@@ -43,6 +43,7 @@ impl Fixture {
                 command.env_remove(key);
             }
         }
+        command.env("SWARMY_CORE_TEST_IDENTITY", swarmy_version::IDENTITY);
         command.env(
             "SWARMY_CORE_TEST_DEFAULT_IMAGE_LOG",
             self.root.path().join("default-images"),
@@ -68,9 +69,12 @@ impl Drop for Fixture {
         let _ = self.run(&["swarm", "down", "demo", "--destroy"], None, None);
     }
 }
-fn executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+fn local_core(path: &Path) {
+    std::os::unix::fs::symlink(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/flag-core"),
+        path,
+    )
+    .unwrap();
 }
 fn core_script(identity: &str) -> String {
     format!(
@@ -120,8 +124,7 @@ fn core_ensure_refuses_cross_target_local_core() {
         "x86_64-unknown-linux-gnu"
     };
     let path = fixture.root.path().join("core");
-    fs::write(&path, core_script(swarmy_version::IDENTITY)).unwrap();
-    executable(&path);
+    local_core(&path);
     for core in [Some(path.as_path()), None] {
         let output = fixture.run(&["core", "ensure", "--target", other], None, core);
         assert!(!output.status.success());
@@ -183,7 +186,7 @@ fn swarm_up_launches_the_downloaded_core() {
         host_target()
     ));
     assert!(
-        String::from_utf8_lossy(&command).contains(path.to_str().unwrap()),
+        String::from_utf8_lossy(&command).contains(path.canonicalize().unwrap().to_str().unwrap()),
         "{}",
         String::from_utf8_lossy(&command)
     );
@@ -288,8 +291,7 @@ fn swarm_up_uses_core_bin_flag_and_env() {
     let fixture = Fixture::at("data/swarmy/swarms/demo/stack");
     fixture.run(&["swarm", "create", "demo", "--local"], None, None);
     let path = fixture.root.path().join("core");
-    fs::write(&path, core_script(swarmy_version::IDENTITY)).unwrap();
-    executable(&path);
+    local_core(&path);
     let output = fixture.run(
         &[
             "swarm",
@@ -316,7 +318,9 @@ fn swarm_up_uses_core_bin_flag_and_env() {
     .unwrap();
     let pid = pid.split_whitespace().next().unwrap();
     let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap();
-    assert!(String::from_utf8_lossy(&command).contains(path.to_str().unwrap()));
+    assert!(
+        String::from_utf8_lossy(&command).contains(path.canonicalize().unwrap().to_str().unwrap())
+    );
     let output = fixture.run(&["swarm", "up", "demo", "--no-image"], None, Some(&path));
     assert!(
         output.status.success(),
@@ -332,7 +336,9 @@ fn swarm_up_uses_core_bin_flag_and_env() {
     .unwrap();
     let pid = pid.split_whitespace().next().unwrap();
     let command = fs::read(format!("/proc/{pid}/cmdline")).unwrap();
-    assert!(String::from_utf8_lossy(&command).contains(path.to_str().unwrap()));
+    assert!(
+        String::from_utf8_lossy(&command).contains(path.canonicalize().unwrap().to_str().unwrap())
+    );
 }
 
 #[test]

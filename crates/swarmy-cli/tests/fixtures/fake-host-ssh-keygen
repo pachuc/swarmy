@@ -1,0 +1,4 @@
+#!/bin/bash
+root=$(dirname "$(dirname "$0")")
+if [[ $1 == -R ]]; then printf '%s\n' "$*" >> "$root/ssh-keygen-commands"; exit 0; fi
+exec /usr/bin/ssh-keygen "$@"

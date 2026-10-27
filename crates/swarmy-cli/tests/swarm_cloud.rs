@@ -16,32 +16,11 @@ use swarmy_config::{
 fn setup() -> Fixture {
     let f = Fixture::new();
     let root = f.path();
-    let script = format!(
-        r#"#!/bin/sh
-set -eu
-group=$(basename "$PWD")
-printf '%s %s\n' "$group" "$1" >> '{root}/tofu.log'
-env | grep -E '^(HCLOUD_TOKEN|MINIO_USER|MINIO_PASSWORD)=' >> '{root}/env.log' || true
-case "$1" in
-init) ;;
-plan) echo "plan for $group token=$HCLOUD_TOKEN"; if test -f '{root}/no-changes'; then exit 0; fi; exit 2 ;;
-apply) echo state > terraform.tfstate ;;
-output)
- bucket=$(python3 -c 'import json; print(json.load(open("swarmy.tfvars.json"))["bucket_name"])')
- if test "$group" = control; then
- printf '{{"machines":{{"value":[{{"name":"fleet-control-1","public_ipv4":"203.0.113.10","public_ipv6":null,"private_ip":"10.0.0.10","ssh_user":"root"}}]}},"network_id":{{"value":"4711"}},"bucket":{{"value":{{"endpoint":"https://fsn1.your-objectstorage.com","name":"%s","region":"fsn1"}}}}}}\n' "$bucket"
- elif test -f '{root}/outputs-workers.json'; then
- cat '{root}/outputs-workers.json'
- else
- printf '{{"machines":{{"value":[{{"name":"fleet-workers-1","public_ipv4":"203.0.113.11","public_ipv6":null,"private_ip":"10.0.0.11","ssh_user":"root"}},{{"name":"fleet-workers-2","public_ipv4":"203.0.113.12","public_ipv6":null,"private_ip":"10.0.0.12","ssh_user":"root"}}]}}}}\n'
- fi ;;
-destroy) cp swarmy.tfvars.json '{root}/destroyed-'"$group"'.json'; rm terraform.tfstate ;;
-esac
-"#,
-        root = root.display()
-    );
-    fs::write(root.join("bin/tofu"), script).unwrap();
-    fs::set_permissions(root.join("bin/tofu"), fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-tofu"),
+        root.join("bin/tofu"),
+    )
+    .unwrap();
     f
 }
 fn login(f: &Fixture, provider: &str, input: &str) {
