@@ -830,10 +830,15 @@ async fn decommission_swarm_with(
     if destroyed > 0 {
         cloud_out!("destroyed the machines of {destroyed} OpenTofu group(s)");
     }
+    if !reports.is_empty() || destroyed == 0 {
+        cloud_out!(
+            "removed swarmy from {} existing host(s) of swarm {}; those machines keep running",
+            reports.len(),
+            spec.name
+        );
+    }
     cloud_out!(
-        "removed swarmy from {} host(s) of swarm {}; the machines keep running. The spec stays at {}; swarmy swarm rm {} forgets it",
-        reports.len(),
-        spec.name,
+        "the spec stays at {}; swarmy swarm rm {} forgets it",
         registry.spec_path(&spec.name)?.display(),
         spec.name
     );

@@ -688,7 +688,7 @@ pub(crate) async fn destroy(
                     };
                     workspace.apply_targets(&[bucket_target]).await?;
                 }
-                workspace.destroy().await?;
+                destroy_settling(&workspace).await?;
             }
             fs::remove_dir_all(&work)?;
             record.hosts.remove(&name);
@@ -708,4 +708,30 @@ pub(crate) async fn destroy(
         count += usize::from(had_state);
     }
     Ok(count)
+}
+
+/// Hetzner object storage can still report a bucket "not empty" for a short
+/// while after the provider deleted its objects, so retry destroy on that
+/// error only, a bounded number of times.
+async fn destroy_settling(workspace: &swarmy_infra::Workspace<'_>) -> Result<()> {
+    let mut attempt = 1;
+    loop {
+        match workspace.destroy().await {
+            Err(error) if attempt < DESTROY_ATTEMPTS && bucket_not_empty(&error.to_string()) => {
+                cloud_err!(
+                    "OpenTofu destroy: the bucket is not empty yet; retrying ({attempt}/{DESTROY_ATTEMPTS})"
+                );
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            }
+            result => return result.map_err(Into::into),
+        }
+    }
+}
+
+const DESTROY_ATTEMPTS: u32 = 5;
+
+fn bucket_not_empty(message: &str) -> bool {
+    message.contains("BucketNotEmpty")
+        || message.contains("bucket that you tried to delete is not empty")
 }

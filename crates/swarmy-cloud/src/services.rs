@@ -183,6 +183,23 @@ pub(crate) async fn install(node: &Machine, address: &str, options: &Options) ->
             &std::fs::read(path)?,
         )
         .await?;
+    } else {
+        // Without a copied keyring the API still needs one to store provider
+        // keys. Create it on the host, where it stays; never replace one.
+        let status = super::ssh::command(node)?
+            .arg(address)
+            .arg(new_keyring_script(&user, &home))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::io::stderr())
+            .status()
+            .await
+            .map_err(crate::Error::ssh("create the cluster keyring"))?;
+        if !status.success() {
+            return Err(crate::Error::SshStatus {
+                command: "create the cluster keyring".to_owned(),
+                status,
+            });
+        }
     }
     let status = super::ssh::command(node)?
         .arg(address)
@@ -202,6 +219,16 @@ pub(crate) async fn install(node: &Machine, address: &str, options: &Options) ->
         });
     }
     Ok(())
+}
+
+/// Create a cluster keyring on the host (32 random bytes, base64, one line)
+/// unless one exists, in the same place and with the same modes as an
+/// installed one.
+fn new_keyring_script(user: &str, home: &str) -> String {
+    let directory = format!("{home}/.local/share/swarmy");
+    format!(
+        "umask 077; sudo -u {user} mkdir -p {directory} && chmod 700 {directory} && if [ ! -s {directory}/keyring ]; then head -c 32 /dev/urandom | base64 -w0 > {directory}/keyring.tmp && echo >> {directory}/keyring.tmp && chown {user}:{user} {directory}/keyring.tmp && chmod 600 {directory}/keyring.tmp && mv {directory}/keyring.tmp {directory}/keyring; fi"
+    )
 }
 
 /// Install the cluster keyring where the node's services look for it: the
@@ -311,6 +338,16 @@ mod tests {
             rendered.selection.default_image.as_deref(),
             Some("base-ubuntu:test")
         );
+    }
+    #[test]
+    fn new_keyring_is_created_only_when_missing() {
+        let script = new_keyring_script("swarmy", "~swarmy");
+        assert!(script.contains("if [ ! -s ~swarmy/.local/share/swarmy/keyring ]"));
+        assert!(script.contains("head -c 32 /dev/urandom | base64 -w0"));
+        assert!(script.contains("chmod 600 ~swarmy/.local/share/swarmy/keyring.tmp"));
+        assert!(script.ends_with(
+            "mv ~swarmy/.local/share/swarmy/keyring.tmp ~swarmy/.local/share/swarmy/keyring; fi"
+        ));
     }
     #[test]
     fn keyring_goes_to_the_service_users_xdg_data_directory() {

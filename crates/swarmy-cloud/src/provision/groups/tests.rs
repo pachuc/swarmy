@@ -1056,3 +1056,16 @@ async fn failed_server_apply_does_not_block_bucket_teardown() {
     );
     assert!(f.registry.read_record("fleet").unwrap().is_none());
 }
+
+#[test]
+fn only_a_not_empty_bucket_retries_destroy() {
+    assert!(super::bucket_not_empty(
+        "Error: [FATAL] unable to remove bucket (b): The bucket that you tried to delete is not empty."
+    ));
+    assert!(super::bucket_not_empty(
+        "BucketNotEmpty: The bucket you tried to delete is not empty"
+    ));
+    assert!(!super::bucket_not_empty(
+        "Error: Server Type \"cpx41\" is unavailable"
+    ));
+}
