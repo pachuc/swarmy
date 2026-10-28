@@ -14,6 +14,8 @@ use swarmy_store::{Store, StoreError};
 use tokio::sync::mpsc;
 
 const LEASE: Duration = Duration::from_secs(30);
+/// Extra time for sandbox exec startup (cold image reads) and helper startup, not the command.
+const EXEC_STARTUP_ALLOWANCE_MS: u64 = 60_000;
 
 pub(crate) fn spawn(
     bus: Bus,
@@ -270,13 +272,14 @@ async fn require_display(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
 /// Move an inline base64 screenshot out of the result metadata into blob
 /// storage, replacing it with the object key the worker downloads.
 async fn extract_image_blob(store: &Store, result: &mut ToolResult) -> Result<()> {
-    if let ToolResult::Completed { metadata, .. } = result
-        && let Some(encoded) = metadata.remove("image_base64")
-    {
-        let encoded = encoded.as_str().context("image payload must be base64")?;
-        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
-        let key = store.put_tool_blob(bytes).await?;
-        metadata.insert("image_object_key".into(), serde_json::json!(key));
+    if let ToolResult::Completed { metadata, .. } = result {
+        metadata.remove("image_object_key");
+        if let Some(encoded) = metadata.remove("image_base64") {
+            let encoded = encoded.as_str().context("image payload must be base64")?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+            let key = store.put_tool_blob(bytes).await?;
+            metadata.insert("image_object_key".into(), serde_json::json!(key));
+        }
     }
     Ok(())
 }
@@ -357,6 +360,15 @@ async fn run_command(
     let started_wall = jiff::Timestamp::now();
     let started_ns = i64::try_from(started_wall.as_nanosecond()).ok();
     let started = Instant::now();
+    let process_id = match arguments {
+        SandboxArguments::Bash(_)
+        | SandboxArguments::ProcessStart(_)
+        | SandboxArguments::ProcessLog(_)
+        | SandboxArguments::ProcessStop(_)
+        | SandboxArguments::WriteStdin(_) => request.args.get(5).cloned(),
+        _ => None,
+    };
+    let guard_seconds = request.timeout_ms / 1_000;
     let (exit, stdout, stderr) = exec(runtime, sandbox, request).await?;
     let summary = ToolTiming {
         exit_status: Some(exit.exit_code),
@@ -366,9 +378,12 @@ async fn run_command(
     };
     let result = if exit.timed_out {
         ToolResult::Error {
-            error: format!(
-                "{} helper timed out; managed processes may still be running. stdout: {stdout} stderr: {stderr}",
-                arguments.name()
+            error: helper_timeout_error(
+                arguments.name(),
+                guard_seconds,
+                process_id.as_deref(),
+                &stdout,
+                &stderr,
             ),
         }
     } else if exit.exit_code != 0 {
@@ -570,6 +585,34 @@ async fn cap_output(
     swarmy_core::cap_tool_output(tool, call_id, output)
 }
 
+fn helper_timeout_error(
+    tool: &str,
+    seconds: u64,
+    id: Option<&str>,
+    stdout: &str,
+    stderr: &str,
+) -> String {
+    let process = id.map_or_else(String::new, |id| format!(" as process {id}"));
+    let recovery = if id.is_some() {
+        "; use process_log or process_list"
+    } else {
+        ""
+    };
+    format!(
+        "{tool} helper did not answer within {seconds} s; the command may still be running{process}{recovery}. stdout: {stdout} stderr: {stderr}"
+    )
+}
+
+fn exec_guard(arguments: &SandboxArguments) -> Duration {
+    let wait_ms = match arguments {
+        SandboxArguments::Bash(arguments) => {
+            (arguments.yield_seconds * 1_000).min(arguments.timeout_ms)
+        }
+        _ => 0,
+    };
+    Duration::from_millis(wait_ms + EXEC_STARTUP_ALLOWANCE_MS)
+}
+
 fn request(arguments: &SandboxArguments, epoch: u64, call_id: &str) -> ExecRequest {
     if arguments.is_file_tool() {
         // Install the embedded version on the agent disk, including older images.
@@ -596,7 +639,8 @@ fn request(arguments: &SandboxArguments, epoch: u64, call_id: &str) -> ExecReque
                 arguments.name().into(),
             ],
             stdin: arguments.parameters().to_string().into_bytes(),
-            timeout_ms: 40_000,
+            // CDP may need a cold Chromium start (up to 60 s) after sandbox exec startup.
+            timeout_ms: 120_000,
         };
     }
     if let SandboxArguments::WebFetch(arguments) = arguments {
@@ -625,12 +669,6 @@ fn request(arguments: &SandboxArguments, epoch: u64, call_id: &str) -> ExecReque
     };
     let mut options = arguments.parameters();
     options["call_id"] = serde_json::json!(call_id);
-    let wait_ms = match arguments {
-        SandboxArguments::Bash(arguments) => {
-            (arguments.yield_seconds * 1000).min(arguments.timeout_ms)
-        }
-        _ => 0,
-    };
     ExecRequest {
         args: vec![
             "/usr/bin/python3".into(),
@@ -644,7 +682,8 @@ fn request(arguments: &SandboxArguments, epoch: u64, call_id: &str) -> ExecReque
         ],
         // The helper enforces the command's wait limit. This guard is only for
         // a stalled helper; detached managed commands remain in their own group.
-        timeout_ms: wait_ms + 10_000,
+        timeout_ms: u64::try_from(exec_guard(arguments).as_millis())
+            .expect("exec guard is bounded by a u64 wait and startup allowance"),
         stdin: Vec::new(),
     }
 }
@@ -713,10 +752,29 @@ async fn heartbeat(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
-    use super::placement_refusal;
+    use super::{exec_guard, helper_timeout_error, placement_refusal};
     use swarmy_core::{
         AgentId, NodeId, PlacementChangeReason, PlacementRecord, ignore_best_effort,
     };
+
+    #[test]
+    fn bash_guard_reserves_startup_after_default_yield() {
+        let args = swarmy_core::SandboxArguments::Bash(swarmy_core::BashArguments {
+            command: "true".into(),
+            timeout_ms: 120_000,
+            yield_seconds: 10,
+            output_budget_bytes: 32_768,
+        });
+        assert_eq!(exec_guard(&args), std::time::Duration::from_secs(70));
+    }
+
+    #[test]
+    fn timed_out_helper_names_its_process() {
+        let error = helper_timeout_error("bash", 70, Some("process-123"), "partial", "warning");
+        assert!(error.contains("process process-123; use process_log or process_list"));
+        assert!(error.contains("within 70 s"));
+        assert!(error.contains("stdout: partial stderr: warning"));
+    }
 
     #[test]
     fn rejected_claim_explains_other_nodes_placement() {
@@ -1002,6 +1060,33 @@ mod display_tests {
     #![deny(clippy::disallowed_methods)]
     use super::display_result;
     use swarmy_core::ToolResult;
+
+    #[tokio::test]
+    async fn sandbox_supplied_image_key_is_removed() {
+        let Some(stack) = swarmy_testkit::Stack::load("node-image-key") else {
+            return;
+        };
+        let (store, _guard) = stack
+            .open_store(std::sync::Arc::new(
+                swarmy_store::blob::MemoryBlobStore::default(),
+            ))
+            .await;
+        let mut result = ToolResult::Completed {
+            output: String::new(),
+            title: String::new(),
+            metadata: std::collections::BTreeMap::from([(
+                "image_object_key".into(),
+                serde_json::json!("blobs/untrusted"),
+            )]),
+        };
+        super::extract_image_blob(&store, &mut result)
+            .await
+            .unwrap();
+        let ToolResult::Completed { metadata, .. } = result else {
+            panic!("completed result changed")
+        };
+        assert!(!metadata.contains_key("image_object_key"));
+    }
 
     #[test]
     fn screenshot_payload_becomes_image_metadata() {

@@ -12,6 +12,15 @@ curl --retry 3 -fsSL "https://storage.googleapis.com/chromium-browser-snapshots/
 printf '%s  %s\n' '3077c26bcc11b1e8abad762122a26698e3d620d97dd7d9620a22c52fa9eeb2fa' /tmp/chromium.zip | sha256sum -c -
 unzip -q /tmp/chromium.zip -d /opt
 rm /tmp/chromium.zip
+mkdir -p /etc/chromium/policies/managed
+cat > /etc/chromium/policies/managed/swarmy.json <<'JSON'
+{
+  "PasswordManagerEnabled": false,
+  "PasswordLeakDetectionEnabled": false,
+  "PromotionalTabsEnabled": false
+}
+JSON
+chmod 644 /etc/chromium/policies/managed/swarmy.json
 cat > /usr/local/bin/chromium <<'SH'
 #!/bin/sh
 set -eu
@@ -19,11 +28,12 @@ export DISPLAY=${DISPLAY:-:99}
 export LIBGL_ALWAYS_SOFTWARE=1
 export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 # The sandbox is already isolated by runc; Chromium's namespace sandbox is
-# unavailable there. Do not run the browser as root.
+# unavailable there. Do not run the browser as root. --test-type hides the
+# unsupported --no-sandbox infobar without changing the container boundary.
 if [ "$(id -u)" = 0 ]; then
     exec su -p -s /bin/sh agent -c 'exec /usr/local/bin/chromium "$@"' chromium "$@"
 fi
-exec /opt/chrome-linux/chrome --no-sandbox --no-first-run --no-default-browser-check \
+exec /opt/chrome-linux/chrome --no-sandbox --test-type --no-first-run --no-default-browser-check \
     --disable-background-networking --disable-component-update \
     --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
     --remote-allow-origins=http://127.0.0.1 \
@@ -74,6 +84,7 @@ cat > /usr/local/libexec/swarmy-browser <<'PY'
 #!/usr/bin/python3
 """Small local CDP client. Browser state lives in Chromium, not this process."""
 import base64
+import fcntl
 import json
 import os
 import socket
@@ -85,6 +96,9 @@ import time
 import urllib.request
 
 PORT = 'http://127.0.0.1:9222'
+# A cold first start can take longer than the usual connection-refused retry window.
+CHROMIUM_START_TIMEOUT = 60
+CHROMIUM_START_LOCK = '/tmp/swarmy-chromium-start.lock'
 REFS = '/tmp/swarmy-browser-refs.json'
 LIMIT = 32768
 IMAGE_LIMIT = 5 * 1024 * 1024
@@ -107,21 +121,44 @@ def image(data):
             'image_media_type': 'image/png', 'output': 'PNG screenshot'}
 
 
+def start_chromium_once():
+    # Serialize launch decisions and retain the launcher PID across helper calls.
+    # Without both, simultaneous cold calls can each launch a competing browser.
+    with open(CHROMIUM_START_LOCK, 'a+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        lock.seek(0)
+        try:
+            pid = int(lock.read().strip())
+            os.kill(pid, 0)
+            return
+        except (ValueError, ProcessLookupError):
+            pass
+        process = subprocess.Popen(['chromium', 'about:blank'], stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   start_new_session=True)
+        lock.seek(0)
+        lock.truncate()
+        lock.write(str(process.pid))
+        lock.flush()
+
+
 class CDP:
     def __init__(self):
         pages = None
-        for attempt in range(30):
+        deadline = time.monotonic() + CHROMIUM_START_TIMEOUT
+        launched = False
+        while time.monotonic() < deadline:
             try:
                 pages = json.load(urllib.request.urlopen(PORT + '/json', timeout=1))
                 break
             except (OSError, ValueError):
-                if attempt == 0:
-                    subprocess.Popen(['chromium', 'about:blank'], stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                     start_new_session=True)
-                time.sleep(0.2)
+                if not launched:
+                    start_chromium_once()
+                    launched = True
+                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
         if pages is None:
-            raise ValueError('Chromium debugging port 9222 is unavailable')
+            raise ValueError('Chromium debugging port 9222 is unavailable after %d s' %
+                             CHROMIUM_START_TIMEOUT)
         page = next((p for p in pages if p.get('type') == 'page'), None)
         if page is None:
             raise ValueError('Chromium has no page target')
@@ -310,7 +347,7 @@ def run(action, args):
         if args.get('submit', False):
             cdp.on_element(args['ref'], 'function() { if (this.form) this.form.requestSubmit(); }')
     elif action == 'browser_select':
-        cdp.on_element(args['ref'], 'function(value) { this.value = value; if (this.value !== value) throw new Error("selection failed"); this.dispatchEvent(new Event("change", {bubbles:true})); }', [args['value']])
+        cdp.on_element(args['ref'], 'function(value) { if (this.tagName !== "SELECT") throw new Error("element is not a dropdown"); const options = Array.from(this.options); const option = options.find(o => o.value === value) ?? options.find(o => o.label.trim() === value) ?? options.find(o => o.label.trim().toLowerCase() === value.toLowerCase()); if (!option) throw new Error("option not found; available options: " + options.slice(0, 20).map(o => o.value + " / " + o.label.trim()).join(", ")); this.value = option.value; this.dispatchEvent(new Event("input", {bubbles:true})); this.dispatchEvent(new Event("change", {bubbles:true})); }', [args['value']])
     elif action == 'browser_scroll':
         if args.get('ref'):
             cdp.on_element(args['ref'], 'function() { this.scrollIntoView({block:"center"}); }')

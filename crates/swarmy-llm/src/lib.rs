@@ -9,6 +9,7 @@ pub mod cost;
 pub(crate) mod error;
 #[cfg(feature = "fake")]
 pub mod fake;
+pub mod handoff;
 pub(crate) mod protocol;
 pub(crate) mod quota;
 pub mod reasoning;
@@ -176,6 +177,9 @@ pub struct InferenceJob {
     /// Whether this checkpoint is recovering a failed assistant attempt.
     #[serde(default, with = "swarmy_core::trailing")]
     pub summary_recovery: bool,
+    /// Set when this summary hands the session to a different model after a route move.
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub summary_handoff: Option<handoff::ModelHandoff>,
 }
 
 /// Small bus delivery for a request saved in the store under `request_id`.
@@ -384,9 +388,19 @@ pub enum Error {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ErrorClass {
     pub retryable: bool,
+    /// A 429 or a usage/rate-limit response: the gateway's per-entry breaker owns the wait, so protocol clients never retry it.
+    pub quota: bool,
     pub retry_after: Option<std::time::Duration>,
-    pub rate_limited: bool,
+    pub status: Option<reqwest::StatusCode>,
     pub permanent: bool,
+}
+
+impl ErrorClass {
+    /// A 429 or a response with Retry-After needs gateway pacing.
+    #[must_use]
+    pub fn rate_limited(self) -> bool {
+        self.status == Some(reqwest::StatusCode::TOO_MANY_REQUESTS) || self.retry_after.is_some()
+    }
 }
 
 impl Error {
@@ -409,9 +423,6 @@ impl Error {
         let retryable = status.is_some_and(retry::retryable)
             || quota
             || matches!(self, Self::Http(error) if error.is_connect() || error.is_timeout());
-        let rate_limited = status
-            .is_some_and(|status| status == reqwest::StatusCode::TOO_MANY_REQUESTS)
-            || retry_after.is_some();
         let permanent = !retryable
             && (matches!(
                 self,
@@ -424,9 +435,10 @@ impl Error {
                     | Self::MalformedStream(_)
             ));
         ErrorClass {
+            quota: status == Some(reqwest::StatusCode::TOO_MANY_REQUESTS) || quota,
             retryable,
             retry_after,
-            rate_limited,
+            status,
             permanent,
         }
     }
@@ -450,9 +462,10 @@ mod job_tests {
         assert_eq!(
             limited.classify(),
             ErrorClass {
+                quota: true,
                 retryable: true,
                 retry_after: Some(Duration::from_secs(2)),
-                rate_limited: true,
+                status: Some(StatusCode::TOO_MANY_REQUESTS),
                 permanent: false,
             }
         );
@@ -471,7 +484,7 @@ mod job_tests {
         ] {
             let class = Error::Status(status).classify();
             assert!(class.retryable);
-            assert!(!class.rate_limited);
+            assert!(!class.rate_limited());
         }
         for error in [
             Error::Authentication("auth".into()),
@@ -632,6 +645,40 @@ mod job_tests {
     }
 
     #[test]
+    fn summary_handoff_round_trips_as_a_trailing_field() {
+        let session_id = SessionId::from_ulid(ulid::Ulid::nil());
+        let job = InferenceJob {
+            session_id,
+            step: 1,
+            request_id: RequestId::for_step(session_id, 1),
+            request: Request {
+                system_prompt: String::new(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: GenerationSettings::default(),
+                no_cache: false,
+            },
+            provider: "fake-a".into(),
+            entry: None,
+            route: Some("ab".into()),
+            route_step: 1,
+            summary: true,
+            summary_prefix: false,
+            summary_cut: Some(3),
+            summary_recovery: false,
+            summary_handoff: Some(handoff::ModelHandoff {
+                from_provider: "fake-a".into(),
+                from_model: "old".into(),
+                to_provider: "fake-b".into(),
+                to_model: "new".into(),
+                reason: "quota".into(),
+            }),
+        };
+        let bytes = swarmy_core::encode(&job).unwrap();
+        assert_eq!(swarmy_core::decode::<InferenceJob>(&bytes).unwrap(), job);
+    }
+
+    #[test]
     fn round_two_job_without_cut_still_decodes() {
         #[derive(Serialize)]
         struct RoundTwoJob {
@@ -673,6 +720,7 @@ mod job_tests {
         assert!(!job.summary_prefix);
         assert_eq!(job.summary_cut, None);
         assert!(!job.summary_recovery);
+        assert_eq!(job.summary_handoff, None);
     }
 }
 

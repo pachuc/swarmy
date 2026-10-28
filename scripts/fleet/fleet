@@ -484,6 +484,17 @@ def age_label(seconds):
     return f"{seconds // 3600}h{(seconds % 3600) // 60}m"
 
 
+def model_handoff(events):
+    """First line of the newest model-handoff notice, or None."""
+    newest = None
+    for event in events:
+        for part in event.get("message_appended", {}).get("message", {}).get("parts", []):
+            notice = part.get("notice", {})
+            if notice.get("kind") == "model_handoff":
+                newest = notice.get("text", "").splitlines()
+    return newest[0] if newest else None
+
+
 def status(config):
     workers = load_workers(config)
     # session ls carries the state and transition time; session show supplies
@@ -518,6 +529,9 @@ def status(config):
             state_label = f"{state} {age_label(age)}"
         if reasons:
             state_label += "; " + reasons
+        handoff = model_handoff(events)
+        if handoff:
+            state_label += "; " + handoff
         started = data.get("started_at")
         elapsed = int((datetime.now(timezone.utc) - datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds()) if started else 0
         cost = (detail.get("usage") or {}).get("cost_dollars", "0")

@@ -3,10 +3,12 @@
 //! badlogic/pi-mono) so the cited line numbers stay checkable.
 
 use std::fmt::Write as _;
+use swarmy_llm::handoff::{Reasoning, keep_newest, render_transcript};
 
 use super::{
     Context, Event, HeldLease, InferenceJob, MessageId, Nudge, RequestId, Result, SessionId,
-    SessionRecord, Snapshot, Timestamp, Ulid, WorkQueue, Worker, runnable_partition,
+    SessionRecord, Snapshot, Timestamp, Ulid, WorkQueue, Worker, inference::Compaction,
+    runnable_partition,
 };
 
 impl Worker {
@@ -151,7 +153,7 @@ impl Worker {
         result: (&swarmy_llm::Response, Option<&swarmy_core::Message>),
     ) -> Result<bool> {
         let (response, message) = result;
-        if !job.summary_prefix {
+        if !job.summary_prefix && job.summary_handoff.is_none() {
             let history = self
                 .compaction_history(snapshot, events, job.summary_recovery)
                 .await?;
@@ -181,7 +183,11 @@ impl Worker {
                     &[],
                     request,
                     true,
-                    Some((cut, job.summary_recovery)),
+                    Some(Compaction {
+                        cut,
+                        recovery: job.summary_recovery,
+                        handoff: None,
+                    }),
                 )
                 .await?;
                 return Ok(true);
@@ -299,7 +305,11 @@ impl Worker {
             split_start.is_some_and(|start| {
                 start == 0 || (start == 1 && previous_summary(&history).is_some())
             }),
-            Some((cut, recovery)),
+            Some(Compaction {
+                cut,
+                recovery,
+                handoff: None,
+            }),
         )
         .await?;
         Ok(true)
@@ -341,16 +351,24 @@ impl Worker {
         let (text, history) = self
             .archived_history(snapshot, events, job, message, text)
             .await?;
-        let cut = job
-            .summary_cut
-            .map_or_else(
-                || raw_cut(&history),
-                |cut| usize::try_from(cut).unwrap_or(usize::MAX),
+        let (cut, tail) = if let Some(handoff) = &job.summary_handoff {
+            // The new model receives only the summary and notice, never the old transcript.
+            (
+                history.len(),
+                vec![super::handoff::handoff_notice(handoff, true)],
             )
-            .min(history.len());
+        } else {
+            let cut = job
+                .summary_cut
+                .map_or_else(
+                    || raw_cut(&history),
+                    |cut| usize::try_from(cut).unwrap_or(usize::MAX),
+                )
+                .min(history.len());
+            (cut, history[cut..].to_vec())
+        };
         let recovery = job.summary_recovery;
         let file_lists = file_lists(&history[..cut]);
-        let tail = history[cut..].to_vec();
         let opening = swarmy_core::Message {
             id: MessageId::from_ulid(Ulid::generate()),
             role: swarmy_core::MessageRole::User,
@@ -362,9 +380,10 @@ impl Worker {
                 ),
             }],
         };
-        let should_wake = tail
-            .last()
-            .is_some_and(|last| last.role == swarmy_core::MessageRole::Tool)
+        let should_wake = job.summary_handoff.is_some()
+            || tail
+                .last()
+                .is_some_and(|last| last.role == swarmy_core::MessageRole::Tool)
             || recovery;
         let mut token = lease.lock().await;
         let (successor, archived) = if is_main {
@@ -456,7 +475,7 @@ impl Worker {
 
     /// Compute the cut input once from the replay, excluding checkpoint replies
     /// and the abandoned length-stopped reply. All phases use this same view.
-    async fn compaction_history(
+    pub(super) async fn compaction_history(
         &self,
         snapshot: &Snapshot,
         events: &[Event],
@@ -597,7 +616,7 @@ fn valid_summary(
 /// Recent context retained in a side successor, in tokens.
 const SIDE_TAIL_BUDGET_TOKENS: u64 = 20_000;
 
-const SUMMARY_RESERVE_TOKENS: u64 = 16_384;
+pub(super) const SUMMARY_RESERVE_TOKENS: u64 = 16_384;
 
 /// Most recent completion's total usage from the in-memory event tail.
 pub(super) fn last_side_usage(events: &[Event]) -> Option<(String, String, u64)> {
@@ -675,6 +694,20 @@ pub(super) fn summary_request(
     config: &crate::config::Config,
     provider: &str,
     messages: &[swarmy_core::Message],
+    settings: swarmy_llm::GenerationSettings,
+) -> swarmy_llm::Request {
+    summary_request_with_prompt(
+        config,
+        provider,
+        summary_prompt(messages, Reasoning::Keep, None),
+        settings,
+    )
+}
+
+pub(super) fn summary_request_with_prompt(
+    config: &crate::config::Config,
+    provider: &str,
+    prompt: String,
     mut settings: swarmy_llm::GenerationSettings,
 ) -> swarmy_llm::Request {
     settings.max_output_tokens = Some(
@@ -685,7 +718,6 @@ pub(super) fn summary_request(
             .unwrap_or(u64::MAX)
             .min(SUMMARY_RESERVE_TOKENS * 4 / 5),
     );
-    let prompt = summary_prompt(messages);
     swarmy_llm::Request {
         system_prompt: swarmy_harness::SUMMARIZATION_SYSTEM_PROMPT.into(),
         messages: vec![swarmy_core::Message {
@@ -714,14 +746,18 @@ fn prefix_summary_request(
     request.messages[0].parts = vec![swarmy_core::Part::Text {
         text: format!(
             "# Conversation\n{}\n\n# Instructions\n{}",
-            serialize_conversation(messages),
+            render_transcript(messages, Reasoning::Keep),
             swarmy_harness::TURN_PREFIX_SUMMARIZATION_PROMPT
         ),
     }];
     request
 }
 
-fn summary_prompt(messages: &[swarmy_core::Message]) -> String {
+pub(super) fn summary_prompt(
+    messages: &[swarmy_core::Message],
+    reasoning: Reasoning,
+    max_chars: Option<usize>,
+) -> String {
     let previous = messages
         .first()
         .and_then(|message| message.parts.first())
@@ -737,11 +773,21 @@ fn summary_prompt(messages: &[swarmy_core::Message]) -> String {
                 }),
             _ => None,
         });
-    let conversation = serialize_conversation(if previous.is_some() {
-        &messages[1..]
+    let rendered = render_transcript(
+        if previous.is_some() {
+            &messages[1..]
+        } else {
+            messages
+        },
+        reasoning,
+    );
+    let budget = max_chars
+        .map(|limit| limit.saturating_sub(previous.map_or(0, |summary| summary.chars().count())));
+    let conversation = if let Some(limit) = budget {
+        keep_newest(&rendered, limit)
     } else {
-        messages
-    });
+        rendered
+    };
     let mut prompt = format!("<conversation>\n{conversation}\n</conversation>\n\n");
     if let Some(previous) = previous {
         write!(
@@ -756,89 +802,6 @@ fn summary_prompt(messages: &[swarmy_core::Message]) -> String {
         swarmy_harness::SUMMARIZATION_PROMPT
     });
     prompt
-}
-
-/// Pi packages/coding-agent/src/core/compaction/utils.ts@8eb2bcc:109-149: serialize old context as data, never as live chat turns.
-pub(super) fn serialize_conversation(messages: &[swarmy_core::Message]) -> String {
-    use swarmy_core::{MessageRole, Part, ToolResult};
-    let mut lines = Vec::new();
-    for message in messages {
-        let text = message
-            .parts
-            .iter()
-            .filter_map(|part| match part {
-                Part::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        match message.role {
-            MessageRole::User if !text.is_empty() => {
-                lines.push(format!("[User]: {}", text.join("")));
-            }
-            MessageRole::Assistant => {
-                let thinking = message
-                    .parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        Part::Reasoning { text, .. } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                if !thinking.is_empty() {
-                    lines.push(format!("[Assistant thinking]: {}", thinking.join("\n")));
-                }
-                if message
-                    .parts
-                    .iter()
-                    .any(|part| matches!(part, Part::Text { .. }))
-                {
-                    lines.push(format!("[Assistant]: {}", text.join("\n")));
-                }
-                let calls = message
-                    .parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        Part::ToolCall { tool, input, .. } => Some(format!(
-                            "{tool}({})",
-                            input
-                                .as_object()
-                                .map(|args| args
-                                    .iter()
-                                    .map(|(k, v)| format!("{k}={v}"))
-                                    .collect::<Vec<_>>()
-                                    .join(", "))
-                                .unwrap_or_default()
-                        )),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                if !calls.is_empty() {
-                    lines.push(format!("[Assistant tool calls]: {}", calls.join("; ")));
-                }
-            }
-            MessageRole::Tool => {
-                for part in &message.parts {
-                    if let Part::ToolResult { result, .. } = part {
-                        let output = match result {
-                            ToolResult::Completed { output, .. } => output,
-                            ToolResult::Error { error } => error,
-                        };
-                        let mut truncated: String = output.chars().take(2_000).collect();
-                        let omitted = output.chars().count().saturating_sub(2_000);
-                        if omitted > 0 {
-                            write!(truncated, "\n\n[... {omitted} more characters truncated]")
-                                .expect("write to String");
-                        }
-                        if !output.is_empty() {
-                            lines.push(format!("[Tool result]: {truncated}"));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    lines.join("\n\n")
 }
 
 /// Pi packages/coding-agent/src/core/compaction/utils.ts@8eb2bcc:25-94 and packages/coding-agent/src/core/compaction/compaction.ts@8eb2bcc:1079-1080 track explicit file-tool paths.
@@ -985,19 +948,21 @@ mod pi_compaction_tests {
             parts: vec![Part::ToolResult {
                 call_id: ToolCallId("read-1".into()),
                 result: swarmy_core::ToolResult::Completed {
-                    output: "x".repeat(2_100),
+                    output: "x".repeat(4_100),
                     title: String::new(),
                     metadata: BTreeMap::default(),
                 },
             }],
         };
-        let serialized =
-            serialize_conversation(&[text(MessageRole::User, "Start"), assistant, tool]);
+        let serialized = render_transcript(
+            &[text(MessageRole::User, "Start"), assistant, tool],
+            Reasoning::Keep,
+        );
         assert!(serialized.starts_with("[User]: Start\n\n[Assistant]: Working"));
-        assert!(serialized.contains("[Assistant tool calls]: read(path=\"src/main.rs\")"));
-        assert!(serialized.contains(&format!("[Tool result]: {}", "x".repeat(2_000))));
-        assert!(!serialized.contains(&"x".repeat(2_001)));
-        assert!(serialized.contains("[... 100 more characters truncated]"));
+        assert!(serialized.contains("[Tool call] read {\"path\":\"src/main.rs\"}"));
+        assert!(serialized.contains(&format!("[Tool result] read:\n{}", "x".repeat(1_500))));
+        assert!(!serialized.contains(&"x".repeat(3_001)));
+        assert!(serialized.contains("[... 1100 characters cut from this tool result ...]"));
     }
 
     #[test]
@@ -1073,11 +1038,35 @@ mod pi_compaction_tests {
             }],
         };
         assert_eq!(
-            serialize_conversation(&[assistant, empty_result]),
-            "[Assistant thinking]: first\nsecond\n\n[Assistant]: "
+            render_transcript(&[assistant, empty_result], Reasoning::Keep),
+            "[Assistant thinking]: first\nsecond\n\n[Tool result] unknown_tool: (empty)"
         );
     }
 
+    #[test]
+    fn handoff_trimming_preserves_previous_summary() {
+        let previous = text(
+            MessageRole::User,
+            &format!(
+                "{}## Goal\nKeep the objective{}",
+                swarmy_harness::COMPACTION_SUMMARY_PREFIX,
+                swarmy_harness::COMPACTION_SUMMARY_SUFFIX
+            ),
+        );
+        let prompt = summary_prompt(
+            &[previous, text(MessageRole::User, &"x".repeat(500))],
+            Reasoning::Drop,
+            Some(200),
+        );
+        assert!(
+            prompt.contains("<previous-summary>\n## Goal\nKeep the objective\n</previous-summary>")
+        );
+        assert!(prompt.contains(swarmy_harness::UPDATE_SUMMARIZATION_PROMPT));
+        assert!(prompt.contains(&format!(
+            "<conversation>\n{}",
+            swarmy_llm::handoff::TRIMMED_HISTORY_MARKER
+        )));
+    }
     #[test]
     fn update_prompt_carries_previous_checkpoint_without_replaying_it() {
         let previous = text(
@@ -1088,7 +1077,11 @@ mod pi_compaction_tests {
                 swarmy_harness::COMPACTION_SUMMARY_SUFFIX
             ),
         );
-        let prompt = summary_prompt(&[previous, text(MessageRole::User, "New task")]);
+        let prompt = summary_prompt(
+            &[previous, text(MessageRole::User, "New task")],
+            Reasoning::Keep,
+            None,
+        );
         assert!(prompt.contains("<conversation>\n[User]: New task\n</conversation>"));
         assert!(prompt.contains("<previous-summary>\n## Goal\nOld\n</previous-summary>"));
         assert!(prompt.contains(swarmy_harness::UPDATE_SUMMARIZATION_PROMPT));

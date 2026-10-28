@@ -118,7 +118,57 @@ pub(crate) fn open_state(
     (open_until, reason)
 }
 
+/// One session's parking and lease rows read together, so a checker sees no
+/// torn view of a park. Test-only, also available with `test-support`.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug)]
+pub struct LeaseAudit {
+    pub session_id: SessionId,
+    pub state: SessionState,
+    /// An `inference_wait` row exists. The row outlives a wake, so a parked
+    /// session is `state == Sleeping && waiting`.
+    pub waiting: bool,
+    /// A worker `lease` row exists.
+    pub leased: bool,
+}
+
 impl Store {
+    /// Read each session's state, inference wait, and lease in one transaction.
+    /// # Errors
+    /// Returns missing-session, decoding, or storage failures.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn lease_audit(&self, ids: &[SessionId]) -> Result<Vec<LeaseAudit>> {
+        self.transaction(|trx| async move {
+            let mut rows = Vec::with_capacity(ids.len());
+            for id in ids {
+                rows.push(LeaseAudit {
+                    session_id: *id,
+                    state: self.session(&trx, *id).await?.state,
+                    waiting: read::<InferenceWait>(&trx, &self.keys().inference_wait(*id))
+                        .await?
+                        .is_some(),
+                    leased: read::<Lease>(&trx, &self.keys().lease(*id))
+                        .await?
+                        .is_some(),
+                });
+            }
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// Remove both wait keys without reading them; callers already hold the wait.
+    pub(crate) fn clear_wait(
+        &self,
+        trx: &foundationdb::Transaction,
+        id: SessionId,
+        wait: &InferenceWait,
+    ) {
+        trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
+        trx.clear(&self.keys().inference_wait(id));
+    }
+
     /// Breaker records live under `(provider, label)`. The previous
     /// provider-only tuple is never read, so open provider-keyed breakers are
     /// dropped at upgrade; a stale one only costs one probe.
@@ -366,7 +416,7 @@ impl Store {
             .checked_add(max_wait)
             .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
         if wait.last_failure_seq != 0 {
-            trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
+            self.clear_wait(trx, id, &wait);
         }
         wait.last_failure_seq = failure.seq;
         wait.wake_at = if now >= limit {
@@ -416,7 +466,9 @@ impl Store {
             if wait.wake_at > now {
                 return Ok(false);
             }
-            trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
+            // Keep the wait history across this wake; only its due index expires.
+            self.clear_wait(&trx, id, &wait);
+            write(&trx, &key, &wait)?;
             let session = self.session(&trx, id).await?;
             if session.state == SessionState::Sleeping {
                 self.transition(&trx, session, SessionState::Runnable, now)
@@ -437,8 +489,7 @@ impl Store {
         self.transaction(|trx| async move {
             if let Some(wait) = read::<InferenceWait>(&trx, &self.keys().inference_wait(id)).await?
             {
-                trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
-                trx.clear(&self.keys().inference_wait(id));
+                self.clear_wait(&trx, id, &wait);
             }
             let mut session = self.session(&trx, id).await?;
             session.route_step = 0;

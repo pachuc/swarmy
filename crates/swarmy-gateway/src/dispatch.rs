@@ -411,6 +411,7 @@ impl Gateway {
             summary_prefix: job.summary_prefix,
             summary_cut: None,
             summary_recovery: false,
+            summary_handoff: None,
             session_id: job.session_id,
             step: job.step,
             request_id: job.request_id,

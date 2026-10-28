@@ -25,7 +25,9 @@ use idempotency::{IdempotencyKey, replay};
 use swarmy_api_types as api;
 use swarmy_bus::Bus;
 use swarmy_config::Keyring;
-use swarmy_core::{AgentId, AgentSettings, CredentialScope, ImageTag, SessionId};
+use swarmy_core::{
+    AgentId, AgentSettings, CredentialScope, Event, ImageTag, SessionId, ToolResult,
+};
 use swarmy_llm::catalog::Catalog;
 use swarmy_store::{CreateAgentOptions, MAX_SCAN_LIMIT, Store};
 use tokio::sync::Mutex;
@@ -219,6 +221,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions/{id}/wait-idle", get(conversation::wait_idle))
         .route("/v1/sessions/{id}/events", get(events))
         .route("/v1/sessions/{id}/metrics", get(session_metrics))
+        .route("/v1/sessions/{id}/tool-images/{call_id}", get(tool_image))
         .route("/v1/agents/{id}/metrics", get(agent_metrics))
         .route("/v1/events", get(stream::subscribe))
         .route(
@@ -618,6 +621,90 @@ async fn show_session(
     views::populate_session_detail(&state, &mut result, &record, agent).await?;
     Ok(Json(result))
 }
+async fn tool_image(
+    State(state): State<AppState>,
+    Path((text, call_id)): Path<(String, String)>,
+) -> Result<Response, ApiFailure> {
+    let session_id = id(&text, SessionId::from_ulid)?;
+    if state
+        .store
+        .fetch_session(session_id)
+        .await
+        .map_err(storage)?
+        .is_none()
+    {
+        return Err(ApiFailure::new(
+            StatusCode::NOT_FOUND,
+            "session_not_found",
+            "session not found",
+        ));
+    }
+    let mut after = 0;
+    loop {
+        let events = state
+            .store
+            .read_events(session_id, after, MAX_SCAN_LIMIT)
+            .await
+            .map_err(storage)?;
+        if events.is_empty() {
+            break;
+        }
+        for event in &events {
+            if let Event::ToolCallCompleted {
+                call_id: completed,
+                result: ToolResult::Completed { metadata, .. },
+                ..
+            } = event
+                && completed.0 == call_id
+                && let (Some(key), Some(media_type)) = (
+                    metadata
+                        .get("image_object_key")
+                        .and_then(serde_json::Value::as_str),
+                    metadata
+                        .get("image_media_type")
+                        .and_then(serde_json::Value::as_str),
+                )
+            {
+                if !matches!(
+                    media_type,
+                    "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+                ) {
+                    return Err(missing_tool_image());
+                }
+                let bytes = state.store.get_tool_blob(key).await.map_err(|error| {
+                    if matches!(
+                        error,
+                        swarmy_store::StoreError::Storage(swarmy_store::StorageError::Corrupt)
+                    ) {
+                        missing_tool_image()
+                    } else {
+                        storage(error)
+                    }
+                })?;
+                return Ok((
+                    [
+                        ("content-type", media_type),
+                        ("x-content-type-options", "nosniff"),
+                        ("content-disposition", "attachment"),
+                    ],
+                    bytes,
+                )
+                    .into_response());
+            }
+        }
+        after = events.last().map_or(after, Event::seq);
+    }
+    Err(missing_tool_image())
+}
+
+fn missing_tool_image() -> ApiFailure {
+    ApiFailure::new(
+        StatusCode::NOT_FOUND,
+        "image_not_found",
+        "no image for this tool call in this session",
+    )
+}
+
 async fn session_metrics(
     State(state): State<AppState>,
     Path(text): Path<String>,
@@ -1135,11 +1222,9 @@ struct UsageQuery {
 }
 
 /// Read a cost series from the metering rollups: one row per calendar
-/// group plus the total. Without `key` the series aggregates every key in
-/// the dimension, which is how `swarmy cost` shows the fleet-wide series.
-/// The span is capped at 400 days and the series at 500 groups; larger
-/// requests fail with `span_too_large` or `too_many_groups` instead of
-/// scanning unbounded history.
+/// group plus the total. The series covers `[from, to)` in whole hours.
+/// Without `key` it reads the fleet total. Both span and group caps are
+/// checked before any store read.
 async fn usage(
     State(state): State<AppState>,
     Query(query): Query<UsageQuery>,
@@ -1166,17 +1251,10 @@ async fn usage(
             .map_err(storage)?,
         None => state
             .store
-            .usage_aggregate(params.dimension, params.from, params.to, params.group_by)
+            .usage_aggregate(params.from, params.to, params.group_by)
             .await
             .map_err(storage)?,
     };
-    if groups.len() > MAX_USAGE_GROUPS {
-        return Err(ApiFailure::new(
-            StatusCode::BAD_REQUEST,
-            "too_many_groups",
-            "usage series exceeds 500 groups",
-        ));
-    }
     let mut total = swarmy_core::UsageTotals::default();
     let mut completions: u64 = 0;
     for group in &groups {
@@ -1282,6 +1360,7 @@ fn usage_params(query: &UsageQuery) -> Result<UsageParams, ApiFailure> {
             "usage span exceeds 400 days",
         ));
     }
+    ensure_group_count(from, to, group_by, MAX_USAGE_GROUPS)?;
     Ok(UsageParams {
         sent_by,
         dimension,
@@ -1291,10 +1370,28 @@ fn usage_params(query: &UsageQuery) -> Result<UsageParams, ApiFailure> {
     })
 }
 
+/// Called from `usage_params`, which takes no `AppState`, so rejection
+/// always precedes any store read.
+fn ensure_group_count(
+    from: Timestamp,
+    to: Timestamp,
+    group_by: swarmy_store::UsageGroupBy,
+    limit: usize,
+) -> Result<(), ApiFailure> {
+    if swarmy_store::metering::group_count(from, to, group_by) > limit {
+        return Err(ApiFailure::new(
+            StatusCode::BAD_REQUEST,
+            "too_many_groups",
+            format!("usage series exceeds {limit} groups"),
+        ));
+    }
+    Ok(())
+}
+
 /// Longest usage span the API serves: 400 days. Longer windows fail with
 /// `span_too_large` instead of scanning unbounded rollup history.
 const MAX_USAGE_SPAN_SECONDS: i64 = 400 * 86_400;
-/// Most calendar groups one usage response carries. The span cap keeps this
+/// Checked from the span before reading. The span cap keeps this
 /// unreachable for day groups today; it guards future groupings.
 const MAX_USAGE_GROUPS: usize = 500;
 
@@ -1514,5 +1611,37 @@ mod store_error_tests {
             swarmy_store::DomainError::InvalidTransition,
         ));
         assert_eq!(failure.body.code, "storage_error");
+    }
+}
+
+#[cfg(test)]
+mod usage_bounds_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+
+    #[test]
+    fn too_many_groups_is_rejected_before_any_store_read() {
+        let from: Timestamp = "2026-03-01T00:00:00Z".parse().unwrap();
+        let to: Timestamp = "2026-03-04T00:00:00Z".parse().unwrap();
+        let error = ensure_group_count(from, to, swarmy_store::UsageGroupBy::Day, 2).unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.body.code, "too_many_groups");
+        assert!(ensure_group_count(from, to, swarmy_store::UsageGroupBy::Day, 3).is_ok());
+    }
+
+    #[test]
+    fn longest_span_fits_the_group_cap() {
+        let from: Timestamp = "2025-01-01T00:00:00Z".parse().unwrap();
+        let to = from.checked_add(jiff::Span::new().hours(400 * 24)).unwrap();
+        assert!(
+            usage_params(&UsageQuery {
+                by: None,
+                key: None,
+                from: Some(from.to_string()),
+                to: Some(to.to_string()),
+                group: Some("day".into()),
+            })
+            .is_ok()
+        );
     }
 }

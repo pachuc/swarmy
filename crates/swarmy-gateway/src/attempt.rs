@@ -434,6 +434,7 @@ mod retry_tests {
             summary_prefix: false,
             summary_cut: None,
             summary_recovery: false,
+            summary_handoff: None,
             session_id,
             step,
             request_id: swarmy_core::RequestId::for_step(session_id, step),

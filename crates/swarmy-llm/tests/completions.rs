@@ -581,7 +581,7 @@ async fn errors_in_bodies_and_streams_are_classified_without_retrying_streams() 
 
 #[tokio::test]
 async fn transient_statuses_retry_and_exhaustion_preserves_the_provider_message() {
-    for status in [408, 409, 429, 500, 503] {
+    for status in [408, 409, 500, 503] {
         let server = MockServer::start().await;
         let attempts = Arc::new(AtomicUsize::new(0));
         let counter = attempts.clone();
@@ -619,8 +619,9 @@ async fn transient_statuses_retry_and_exhaustion_preserves_the_provider_message(
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(
-            ResponseTemplate::new(429)
-                .set_body_json(json!({"error": {"message": "quota exhausted"}})),
+            ResponseTemplate::new(503)
+                .insert_header("retry-after", "0")
+                .set_body_json(json!({"error": {"message": "upstream overloaded"}})),
         )
         .expect(2)
         .mount(&server)
@@ -644,9 +645,41 @@ async fn transient_statuses_retry_and_exhaustion_preserves_the_provider_message(
     assert!(matches!(
         error,
         Error::ProviderResponse {
+            status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            ref message, ..
+        } if message.contains("upstream overloaded")
+    ));
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .set_body_json(json!({"error": {"message": "quota exhausted"}})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut provider = CompletionsProvider::new(
+        &provider_info(&server),
+        &model(),
+        ClientAuth::ApiKey("fixture-key".into()),
+    )
+    .unwrap();
+    provider.retry_policy = RetryPolicy {
+        max_attempts: 2,
+        initial_delay: Duration::ZERO,
+        max_delay: Duration::ZERO,
+    };
+    let error = provider
+        .request(request(&model()))
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::ProviderResponse {
             status: reqwest::StatusCode::TOO_MANY_REQUESTS,
-            ..
-        }
+            ref message, ..
+        } if message.contains("quota exhausted")
     ));
 }
 

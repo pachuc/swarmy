@@ -42,6 +42,7 @@ EOF
 cat > "$tmp/.cargo/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 set -u
+[ -z "${FAKE_CARGO_LOG:-}" ] || printf '%s\n' "$*" >> "$FAKE_CARGO_LOG"
 if [ "${1:-}" = build ]; then
   [ "${FAKE_BUILD_FAIL:-0}" = 1 ] && exit 101
   exit 0
@@ -95,6 +96,9 @@ EOF
 # purpose, so the API blocks are skipped; they are not under test.
 cat > "$tmp/chaos/target/debug/swarmy" <<'EOF'
 #!/usr/bin/env bash
+for arg in "$@"; do
+  if [ "${FAKE_IMAGE_BUILD_FAIL:-}" = "${arg##*/}" ]; then exit 1; fi
+done
 echo "stub image build ok"
 exit 0
 EOF
@@ -157,6 +161,19 @@ check_exit_and_marker "plus base failure propagates" 1 "PLUS_EXIT=1"
 run_case env HOME="$tmp" FAKE_TEST_FAIL=vol bash "$node_suites/root-suites-plus.sh" b
 check_exit_and_marker "plus section failure base marker" 1 "SUITES_EXIT=0"
 check_exit_and_marker "plus section failure plus marker" 1 "PLUS_EXIT=1"
+
+# A desktop-only failure must propagate while base remains successful.
+run_case env HOME="$tmp" FAKE_TEST_FAIL=desktop bash "$node_suites/root-suites-plus.sh" b
+check_exit_and_marker "plus desktop failure" 1 "PLUS_EXIT=1"
+grep -q 'SUITES_EXIT=0' "$tmp/out.log"
+
+# A failed desktop image build skips only the dependent desktop test.
+: > "$tmp/cargo.log"
+run_case env HOME="$tmp" FAKE_IMAGE_BUILD_FAIL=base-desktop FAKE_CARGO_LOG="$tmp/cargo.log" bash "$node_suites/root-suites-plus.sh" b
+check_exit_and_marker "plus desktop image build failure" 1 "PLUS_EXIT=1"
+grep -q 'SUITES_EXIT=0' "$tmp/out.log"
+grep -q 'base-desktop build failed' "$tmp/out.log"
+! grep -q -- '--test desktop' "$tmp/cargo.log"
 
 # root-suites-plus.sh: a base checkout failure prints PLUS_EXIT and exits 2.
 run_case env HOME="$tmp" FAKE_FETCH_FAIL=1 bash "$node_suites/root-suites-plus.sh" b

@@ -10,7 +10,7 @@ use std::{
     },
     time::Duration,
 };
-use swarmy_core::{MessageRole, Part, ToolCallId};
+use swarmy_core::{Message, MessageRole, Part, ToolCallId, ToolResult};
 use tokio::io::AsyncWriteExt;
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -250,6 +250,74 @@ impl FileFake {
     }
 }
 
+/// Replace scripted element placeholders using only earlier tool-result text.
+fn resolve_refs(part: &mut Part, messages: &[Message]) -> Result<(), Error> {
+    if let Part::ToolCall { input, .. } = part {
+        resolve_value(input, messages)?;
+    }
+    Ok(())
+}
+
+fn resolve_value(value: &mut serde_json::Value, messages: &[Message]) -> Result<(), Error> {
+    match value {
+        serde_json::Value::String(text) => {
+            let mut resolved = String::new();
+            let mut rest = text.as_str();
+            while let Some((before, tail)) = rest.split_once("{{ref:") {
+                resolved.push_str(before);
+                let (label, after) = tail
+                    .split_once("}}")
+                    .ok_or_else(|| Error::Protocol("unterminated scripted ref".into()))?;
+                let reference = find_ref(label, messages).ok_or_else(|| {
+                    Error::Protocol(format!(
+                        "scripted ref {label:?} matches no earlier tool result"
+                    ))
+                })?;
+                resolved.push_str(&reference);
+                rest = after;
+            }
+            resolved.push_str(rest);
+            *text = resolved;
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                resolve_value(item, messages)?;
+            }
+        }
+        serde_json::Value::Object(items) => {
+            for item in items.values_mut() {
+                resolve_value(item, messages)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// A snapshot line is `[REF] LABEL`, optionally indented or followed by details.
+fn find_ref(label: &str, messages: &[Message]) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .flat_map(|message| message.parts.iter().rev())
+        .filter_map(|part| match part {
+            Part::ToolResult {
+                result: ToolResult::Completed { output, .. },
+                ..
+            } => Some(output.as_str()),
+            _ => None,
+        })
+        .flat_map(str::lines)
+        .filter_map(|line| line.trim_start().strip_prefix('[')?.split_once("] "))
+        .find(|(_, tail)| {
+            *tail == label
+                || tail
+                    .strip_prefix(label)
+                    .is_some_and(|suffix| suffix.starts_with(' '))
+        })
+        .map(|(reference, _)| reference.to_owned())
+}
+
 impl Provider for FileFake {
     fn request(&self, request: Request) -> ProviderStream {
         let provider = self.provider.clone();
@@ -257,6 +325,7 @@ impl Provider for FileFake {
         let fail = self.fail;
         let latency = self.latency;
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let messages = request.messages.clone();
         let prompt = request
             .messages
             .iter()
@@ -312,7 +381,15 @@ impl Provider for FileFake {
                 if !latency.is_zero() {
                     tokio::time::sleep(latency).await;
                 }
-                yield delta?;
+                let mut delta = delta?;
+                match &mut delta {
+                    Delta::PartDone { part, .. } => resolve_refs(part, &messages)?,
+                    Delta::Completed(response) => {
+                        for part in &mut response.parts { resolve_refs(part, &messages)?; }
+                    }
+                    _ => {}
+                }
+                yield delta;
             }
         })
     }
@@ -323,6 +400,34 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use futures::StreamExt;
+
+    #[test]
+    fn ref_placeholders_resolve_from_the_newest_tool_result() {
+        let result = |output: &str| Message {
+            id: swarmy_core::MessageId::from_ulid(ulid::Ulid::generate()),
+            role: MessageRole::Tool,
+            parts: vec![Part::ToolResult {
+                call_id: ToolCallId("snapshot".into()),
+                result: ToolResult::Completed {
+                    output: output.into(),
+                    title: String::new(),
+                    metadata: BTreeMap::new(),
+                },
+            }],
+        };
+        let messages = [
+            result("[e2] textbox \"Username\""),
+            result("  [e7] textbox \"Username\"\n[e9] button \"Log in now\""),
+        ];
+        let mut value = serde_json::json!({"refs": ["{{ref:textbox \"Username\"}}"]});
+        resolve_value(&mut value, &messages).unwrap();
+        assert_eq!(value["refs"][0], "e7");
+        let mut absent = serde_json::json!("{{ref:button \"Log in\"}}");
+        assert!(matches!(
+            resolve_value(&mut absent, &messages),
+            Err(Error::Protocol(_))
+        ));
+    }
 
     #[tokio::test]
     async fn scripted_failure_precedes_a_successful_second_call() {
@@ -367,6 +472,51 @@ mod tests {
 #[cfg(test)]
 mod file_tests {
     #![deny(clippy::disallowed_methods)]
+    #[tokio::test]
+    async fn responses_script_resolves_refs_in_tool_input() {
+        use futures::StreamExt;
+        let files = tempfile::tempdir().unwrap();
+        let script = serde_json::json!({"responses":{"0":{
+            "parts":[{"tool_call":{"call_id":"test","tool":"browser_click",
+                "input":{"ref":"{{ref:button \"Save\"}}"}}}],
+            "stop_reason":"tool_calls","usage":{"input_tokens":0,"cached_input_tokens":0,
+                "cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0}
+        }}});
+        std::fs::write(
+            files.path().join("script"),
+            serde_json::to_vec(&script).unwrap(),
+        )
+        .unwrap();
+        let fake = FileFake::from_files(&files.path().join("script"), &files.path().join("calls"))
+            .unwrap();
+        let request = Request {
+            system_prompt: String::new(),
+            messages: vec![Message {
+                id: MessageId::from_ulid(ulid::Ulid::generate()),
+                role: MessageRole::Tool,
+                parts: vec![Part::ToolResult {
+                    call_id: ToolCallId("snapshot".into()),
+                    result: ToolResult::Completed {
+                        output: "[e4] button \"Save\"".into(),
+                        title: String::new(),
+                        metadata: BTreeMap::default(),
+                    },
+                }],
+            }],
+            tools: vec![],
+            settings: crate::GenerationSettings::default(),
+            no_cache: false,
+        };
+        let deltas: Vec<_> = fake.request(request).collect().await;
+        let Delta::Completed(response) = deltas.last().unwrap().as_ref().unwrap() else {
+            panic!("missing completed response")
+        };
+        let Part::ToolCall { input, .. } = &response.parts[0] else {
+            panic!("missing tool call")
+        };
+        assert_eq!(input["ref"], "e4");
+    }
+
     use super::*;
     use futures::StreamExt;
     use swarmy_core::{Message, MessageId};

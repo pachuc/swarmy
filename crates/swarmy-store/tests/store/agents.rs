@@ -205,6 +205,44 @@ async fn ephemeral_creation_and_closure() {
 }
 
 #[tokio::test]
+async fn close_while_waiting_for_inference_clears_request_rows() {
+    use swarmy_store::{DomainError, FenceError};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let claim = waiting_with_retry(&test.store, id, GatewayClaim::Live).await;
+    assert_inference_rows(&test, claim.request_id, true).await;
+    test.store
+        .close_session(id, Timestamp::now())
+        .await
+        .unwrap();
+    assert_eq!(
+        test.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Completed
+    );
+    assert_inference_rows(&test, claim.request_id, false).await;
+    assert!(matches!(
+        test.store
+            .complete_inference(&failed_completion(claim.clone()), &"late")
+            .await,
+        Err(StoreError::Fence(FenceError::LeaseMismatch))
+    ));
+    let fresh = swarmy_store::InferenceClaim {
+        owner: owner(),
+        ..claim
+    };
+    assert!(matches!(
+        test.store.start_inference(&fresh, Timestamp::now()).await,
+        Err(StoreError::Domain(DomainError::UnexpectedSessionState))
+    ));
+    test.store
+        .close_session(id, Timestamp::now())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn sweep_rechecks_activity_and_protects_named_sessions() {
     let Some(test) = TestStore::memory() else {
         return;

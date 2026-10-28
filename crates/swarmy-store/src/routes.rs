@@ -7,7 +7,8 @@
 //! entries, so configurations without routes behave exactly as before: the
 //! wildcard expansion keeps the gateway pool's ready-first order.
 use jiff::Timestamp;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, time::Duration};
 use swarmy_core::{
     AgentId, AgentRecord, CredentialScope, ExpandedRouteStep, Lease, RouteRecord, SessionId,
     SessionKind,
@@ -87,6 +88,17 @@ pub struct RouteStepStatus {
     pub reason: Option<String>,
 }
 
+/// The entry and model behind a session's last completion, retained while its cache is warm.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheAffinity {
+    pub provider: String,
+    pub entry: String,
+    pub model: String,
+    /// Resolved route name at completion; `None` for the implicit chain.
+    pub route: Option<String>,
+    pub completed_at: Timestamp,
+}
+
 /// The resolved chain for one session: the named route, if any, the
 /// expanded steps with their breaker records, and the reasons for named
 /// steps skipped as missing or unready.
@@ -95,6 +107,7 @@ pub struct RouteSnapshot {
     pub name: Option<String>,
     pub steps: Vec<RouteStepStatus>,
     pub skipped: Vec<String>,
+    pub affinity: Option<CacheAffinity>,
 }
 
 /// One expansion without breaker states, shared by the worker's single
@@ -127,7 +140,7 @@ pub struct RouteFailure {
     pub failure_kind: swarmy_core::FailureKind,
     pub retry_at: Timestamp,
     pub route_step: u32,
-    pub max_wait: std::time::Duration,
+    pub max_wait: Duration,
 }
 
 /// The five route-selection inputs shared by every snapshot and failover
@@ -223,7 +236,34 @@ impl RouteSnapshot {
                 reason: None,
             }],
             skipped: Vec::new(),
+            affinity: None,
         }
+    }
+
+    /// Return to the last completed entry only at chain start while its cache
+    /// is warm; a changed resolved route name also prevents stale affinity.
+    #[must_use]
+    pub fn affine_step(
+        &self,
+        from: u32,
+        window: Duration,
+        default_model: &str,
+        now: Timestamp,
+    ) -> Option<usize> {
+        let affinity = self.affinity.as_ref()?;
+        if from != 0
+            || window.is_zero()
+            || affinity.route != self.name
+            || now >= affinity.completed_at.checked_add(window).ok()?
+        {
+            return None;
+        }
+        self.steps.iter().position(|step| {
+            step.provider == affinity.provider
+                && step.label.as_deref() == Some(affinity.entry.as_str())
+                && step.open_until.is_none()
+                && step.model.as_deref().unwrap_or(default_model) == affinity.model
+        })
     }
 
     /// First usable step at or after the session's attempt position, wrapping
@@ -410,19 +450,105 @@ impl Store {
         selection: RouteSelection<'_>,
     ) -> Result<(Option<AgentRecord>, RouteSnapshot)> {
         self.transaction(|trx| async move {
-            let agent = self.read_agent(&trx, agent).await?;
-            let (agent_route, agent_provider) = agent.as_ref().map_or((None, None), |record| {
-                (record.route.clone(), record.provider.clone())
-            });
-            let snapshot = self
-                .route_snapshot_in(
-                    &trx,
-                    agent_route.as_deref(),
-                    agent_provider.as_deref(),
-                    selection,
-                )
+            self.agent_and_route_snapshot_in(&trx, agent, selection)
+                .await
+        })
+        .await
+    }
+
+    async fn agent_and_route_snapshot_in(
+        &self,
+        trx: &foundationdb::Transaction,
+        agent: AgentId,
+        selection: RouteSelection<'_>,
+    ) -> Result<(Option<AgentRecord>, RouteSnapshot)> {
+        let agent = self.read_agent(trx, agent).await?;
+        let (agent_route, agent_provider) = agent.as_ref().map_or((None, None), |record| {
+            (record.route.clone(), record.provider.clone())
+        });
+        let snapshot = self
+            .route_snapshot_in(
+                trx,
+                agent_route.as_deref(),
+                agent_provider.as_deref(),
+                selection,
+            )
+            .await?;
+        Ok((agent, snapshot))
+    }
+
+    /// Resolve the agent, route, breaker state and session affinity atomically.
+    /// # Errors
+    /// Returns database or decoding errors.
+    pub async fn session_route_snapshot(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        selection: RouteSelection<'_>,
+    ) -> Result<(Option<AgentRecord>, RouteSnapshot)> {
+        self.transaction(|trx| async move {
+            let (agent, mut snapshot) = self
+                .agent_and_route_snapshot_in(&trx, agent, selection)
                 .await?;
+            snapshot.affinity =
+                read::<CacheAffinity>(&trx, &self.keys().cache_affinity(session)).await?;
             Ok((agent, snapshot))
+        })
+        .await
+    }
+
+    /// Record or clear affinity in the completion's transaction.
+    pub(crate) fn record_cache_affinity(
+        &self,
+        trx: &foundationdb::Transaction,
+        completion: &crate::InferenceCompletion,
+        now: Timestamp,
+    ) -> Result<()> {
+        let key = self.keys().cache_affinity(completion.claim.session_id);
+        if let (
+            swarmy_core::Event::InferenceCompleted {
+                completion: fields, ..
+            },
+            Some(entry),
+        ) = (&completion.event, &completion.entry)
+        {
+            write(
+                trx,
+                &key,
+                &CacheAffinity {
+                    provider: fields.provider.clone(),
+                    entry: entry.clone(),
+                    model: fields.model.clone(),
+                    route: fields.route.clone(),
+                    completed_at: now,
+                },
+            )?;
+        } else {
+            trx.clear(&key);
+        }
+        Ok(())
+    }
+
+    /// # Errors
+    /// Returns database or decoding errors.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn cache_affinity(&self, session: SessionId) -> Result<Option<CacheAffinity>> {
+        self.transaction(
+            |trx| async move { read(&trx, &self.keys().cache_affinity(session)).await },
+        )
+        .await
+    }
+
+    /// # Errors
+    /// Returns database or encoding errors.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn put_cache_affinity(
+        &self,
+        session: SessionId,
+        affinity: &CacheAffinity,
+    ) -> Result<()> {
+        self.transaction(|trx| async move {
+            write(&trx, &self.keys().cache_affinity(session), affinity)
         })
         .await
     }
@@ -517,6 +643,7 @@ impl Store {
             name: chain.name,
             steps,
             skipped: chain.skipped,
+            affinity: None,
         })
     }
 
@@ -700,6 +827,7 @@ impl Store {
             name: chain.name,
             steps,
             skipped: chain.skipped,
+            affinity: None,
         })
     }
 
@@ -717,6 +845,8 @@ impl Store {
             let mut session = self.session(&trx, id).await?;
             session.route = route.map(str::to_owned);
             session.route_step = 0;
+            // A route assignment invalidates the previous cache scope.
+            trx.clear(&self.keys().cache_affinity(id));
             self.write_session(&trx, &session)?;
             Ok(())
         })
@@ -736,6 +866,8 @@ impl Store {
     ) -> Result<()> {
         let mut session = self.session(trx, id).await?;
         session.route_step = step;
+        // A failed step must not be selected again through affinity.
+        trx.clear(&self.keys().cache_affinity(id));
         self.write_session(trx, &session)?;
         if !reasons.is_empty() {
             let wait_key = self.keys().inference_wait(id);
@@ -867,6 +999,8 @@ impl Store {
             .await?;
             let mut session = self.session(&trx, id).await?;
             session.route_step = 0;
+            // Parking an exhausted chain ends its cache affinity.
+            trx.clear(&self.keys().cache_affinity(id));
             self.write_session(&trx, &session)?;
             Ok(FailoverOutcome {
                 action: FailoverAction::Park,

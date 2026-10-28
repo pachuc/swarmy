@@ -1031,7 +1031,7 @@ budget table, which needs more samples and workloads than this installation run.
 
 ### Procedure and scope
 
-The persistent chaos scenario is `swarmy-chaos --persistent --image
+The persistent chaos scenario is `swarmy-chaos --scenario persistent --image
 base-ubuntu:persistent --sessions 2 --gateways 1 --kills 0`. Build without root,
 then run the prebuilt executable with `sudo -E`, `--no-start-stack`, and
 `--bin-dir` pointing at the built services. `scripts/test-bash.sh` also runs this
@@ -2100,7 +2100,7 @@ and a failed spill copy are covered; a spill failure abandons publication while
 allowing the live write to proceed.
 
 The existing `scripts/benchmarks/persistent-volume.py` workload ran twice through
-`swarmy-chaos --persistent --measurements`. Each run now keeps a separate 8 MiB
+`swarmy-chaos --scenario persistent --measurements`. Each run now keeps a separate 8 MiB
 random file changing during thirteen generation checkpoints. It then stops that
 writer and uses the unchanged timestamp/fsync loop for the pause measurement.
 The checkpointed generation marker and another 8 MiB random payload provide
@@ -2864,7 +2864,7 @@ has an 8 GiB disk and 3,299 nonzero chunks. One scheduler, worker, gateway, and
 `swarmyd` ran with the scripted fake provider in an isolated store directory
 and bus namespace.
 
-The reproducible fixture is `swarmy-chaos --continuity`, exercised by the root
+The reproducible fixture is `swarmy-chaos --scenario continuity`, exercised by the root
 integration test below. It creates Tommy, writes the fact through `write`,
 installs the previously absent `tree` package through `bash`, and acknowledges
 an explicit `checkpoint`. It then calls `set_timer` with `delay_seconds: 120`

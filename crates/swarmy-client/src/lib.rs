@@ -290,6 +290,32 @@ impl Client {
     pub async fn session(&self, id: &str) -> Result<api::Session, Error> {
         self.get(&format!("sessions/{id}"), &[]).await
     }
+    /// Download only an image referenced by this session's completed tool call.
+    /// # Errors
+    /// Returns an API or transport error when the image cannot be read.
+    pub async fn tool_image(
+        &self,
+        session_id: &str,
+        call_id: &str,
+    ) -> Result<(String, Vec<u8>), Error> {
+        let mut url = self.url(&format!("sessions/{session_id}/tool-images"));
+        url.path_segments_mut()
+            .map_err(|()| Error::Url(url::ParseError::RelativeUrlWithoutBase))?
+            .push(call_id);
+        let response = self.http.get(url).bearer_auth(&self.token).send().await?;
+        let media_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        let status = response.status();
+        let bytes = response.bytes().await?;
+        if !status.is_success() {
+            return Err(decode_error(status, &bytes));
+        }
+        Ok((media_type, bytes.to_vec()))
+    }
     /// Read a bounded page of durable turn metrics.
     /// # Errors
     /// Returns an API, transport, or response decoding error.
@@ -685,7 +711,7 @@ impl Client {
     }
     /// Read a cost series from the metering rollups: one row per calendar
     /// group plus the total. Times are absolute RFC 3339 bounds; without
-    /// `key` the series aggregates every key in the dimension. The server
+    /// `key` the series reads the fleet total. `to` is exclusive. The server
     /// echoes `by` as sent, defaults to `by=agent`, `group=day`, and the
     /// trailing 30 days, and caps the span at 400 days (`span_too_large`)
     /// with at most 500 groups (`too_many_groups`).
@@ -805,17 +831,20 @@ fn page(after: Option<&str>, limit: usize) -> Vec<(&'static str, String)> {
     }
     result
 }
+fn decode_error(status: StatusCode, bytes: &[u8]) -> Error {
+    match serde_json::from_slice(bytes) {
+        Ok(body) => Error::Api { status, body },
+        Err(_) => Error::Status {
+            status,
+            body: String::from_utf8_lossy(bytes).into_owned(),
+        },
+    }
+}
 async fn decode<T: DeserializeOwned>(response: Response) -> Result<T, Error> {
     let status = response.status();
     let bytes = response.bytes().await?;
     if !status.is_success() {
-        return Err(match serde_json::from_slice(&bytes) {
-            Ok(body) => Error::Api { status, body },
-            Err(_) => Error::Status {
-                status,
-                body: String::from_utf8_lossy(&bytes).into_owned(),
-            },
-        });
+        return Err(decode_error(status, &bytes));
     }
     Ok(serde_json::from_slice(&bytes)?)
 }

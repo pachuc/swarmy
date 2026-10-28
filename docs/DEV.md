@@ -702,12 +702,31 @@ source .dev/env
 scripts/chaos-ci.sh
 ```
 
-This runs five sessions, three steps, and four kills with seed 1. The GitHub
+This runs five sessions, three steps, and four kills with seed 1. It then
+runs the saturation scenario below. The GitHub
 Actions workflow runs it after the lint and test steps, with the stack already
 started. The script accepts additional runner arguments, such as `--latency-ms 200`.
 `--bin-dir PATH` uses prebuilt binaries without rebuilding, for experiments with
 instrumented services. Otherwise the runner builds services beside its own
 executable using the active Cargo target directory and debug or release profile.
+
+`--scenario desktop` runs the browser and screen proof on a root suite node with a display image.
+
+`--scenario saturation` runs the rate-limit acceptance instead of the kill
+schedule. One in-process HTTP fake speaks Chat Completions with two API keys,
+each allowing two requests per two-second window and answering 429 with
+Retry-After and `x-ratelimit-*` headers beyond that; route `sat` falls from
+the first key to the second; `--sessions` named agents each chat `--steps`
+turns. It needs no root:
+
+```sh
+cargo run --locked -p swarmy-chaos -- --no-start-stack --scenario saturation --sessions 10 --steps 3 --kills 0
+```
+
+It fails if a conversation shows a rate-limit error, a waiting session holds a
+worker lease, more requests reach a key while its breaker is open than one
+in-flight race per other gateway, a second request arrives while a probe is in
+flight, or the `/v1/usage` and `/v1/quotas` views disagree with the fakes' logs.
 
 To add another killable service in a later slice, add its `Kind` variant and
 binary name in `crates/swarmy-chaos/src/process.rs`, then register its process

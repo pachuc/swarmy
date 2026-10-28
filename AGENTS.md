@@ -357,6 +357,7 @@ code they cover, on a machine with root and the NBD module loaded, with sudo:
 | image recipes or `swarmy image` | `swarmy-cli --test image` (starts its own API against the dev stack), `swarmy-volume --test image` |
 | `swarmy-core vol` or the volume server | `swarmyd --test vol` |
 | `swarmyd`, `swarmy-sandbox`, `swarmy-tools`, or the tool helpers | `swarmyd --test node`, then the chaos suites below |
+| the browser or screen tools, `images/base-desktop`, or image inputs | `swarmy-chaos --test desktop` (built and run by `scripts/node-suites/root-suites-plus.sh`, with `SWARMY_TEST_DESKTOP_IMAGE=base-desktop:dev`) |
 | the worker, scheduler, gateway, store, or bus | `swarmy-chaos --test bash`, `--test continuity`, `--test coding`, and `scripts/chaos-ci.sh` |
 
 `swarmy image build` talks to the API, so register the test image through a

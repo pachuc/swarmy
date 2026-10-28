@@ -51,6 +51,44 @@ async fn placement_prefers_scratch_node_then_falls_back_when_full() {
 }
 
 #[tokio::test]
+async fn expired_placement_tries_another_node_before_old_scratch_host() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let _session = f.session().await;
+    let old = f
+        .store
+        .place(
+            f.agent,
+            f.nodes[0],
+            f.now().checked_add(Duration::from_secs(2)).unwrap(),
+        )
+        .await
+        .unwrap();
+    f.store.claim_placement(&old).await.unwrap();
+    f.store
+        .report_scratch(
+            f.agent,
+            &ScratchRecord {
+                node_id: f.nodes[0],
+                bytes: 12,
+            },
+        )
+        .await
+        .unwrap();
+    f.advance(Duration::from_millis(2100));
+    let replacement =
+        crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
+            .await
+            .unwrap();
+    assert_eq!(replacement.node_id, f.nodes[1]);
+    assert_eq!(
+        replacement.last_change_reason,
+        PlacementChangeReason::Failure
+    );
+}
+
+#[tokio::test]
 async fn unrouted_ephemeral_first_attempt_keeps_gateway_pool_selection() {
     let Some(f) = Fixture::new().await else {
         return;
@@ -1152,4 +1190,184 @@ async fn parked_route_clears_held_lease_before_heartbeat() {
         .unwrap();
     assert!(result.unwrap());
     assert!(!held.is_held().await);
+}
+
+fn fake_route(labels: &[&str]) -> Vec<swarmy_core::RouteStep> {
+    labels
+        .iter()
+        .map(|entry| swarmy_core::RouteStep {
+            provider: "fake".into(),
+            entry: (*entry).into(),
+            model: None,
+        })
+        .collect()
+}
+
+async fn affinity_entry(
+    f: &Fixture,
+    id: SessionId,
+    affinity: Option<swarmy_store::CacheAffinity>,
+    route_step: u32,
+) -> Option<String> {
+    if let Some(value) = affinity {
+        f.store.put_cache_affinity(id, &value).await.unwrap();
+    }
+    let mut session = f.store.fetch_session(id).await.unwrap().unwrap();
+    session.route_step = route_step;
+    let mut request = swarmy_llm::Request {
+        no_cache: false,
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+        settings: GenerationSettings {
+            model: "test-model".into(),
+            ..Default::default()
+        },
+    };
+    f.worker
+        .prepare_request(&session, &mut request, &mut Vec::new(), false)
+        .await
+        .unwrap()
+        .entry
+}
+
+async fn affinity_fixture(f: &Fixture) -> SessionId {
+    let id = f.session().await;
+    f.store
+        .put_route("ab", &fake_route(&["a", "b"]))
+        .await
+        .unwrap();
+    f.store.set_session_route(id, Some("ab")).await.unwrap();
+    id
+}
+fn affinity(f: &Fixture, seconds_old: u64) -> swarmy_store::CacheAffinity {
+    swarmy_store::CacheAffinity {
+        provider: "fake".into(),
+        entry: "b".into(),
+        model: "test-model".into(),
+        route: Some("ab".into()),
+        completed_at: f
+            .now()
+            .checked_sub(Duration::from_secs(seconds_old))
+            .unwrap(),
+    }
+}
+#[tokio::test]
+async fn cache_affinity_keeps_warm_entry_within_window() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let id = affinity_fixture(&f).await;
+    assert_eq!(affinity_entry(&f, id, None, 0).await.as_deref(), Some("a"));
+    assert_eq!(
+        affinity_entry(&f, id, Some(affinity(&f, 60)), 0)
+            .await
+            .as_deref(),
+        Some("b")
+    );
+}
+#[tokio::test]
+async fn cache_affinity_lapses_after_window() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let id = affinity_fixture(&f).await;
+    assert_eq!(
+        affinity_entry(&f, id, Some(affinity(&f, 301)), 0)
+            .await
+            .as_deref(),
+        Some("a")
+    );
+}
+#[tokio::test]
+async fn cache_affinity_skips_open_breaker() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let id = affinity_fixture(&f).await;
+    f.store
+        .entry_failure(
+            &swarmy_store::CredentialKey::entry("fake", "b"),
+            f.now().checked_add(Duration::from_secs(60)).unwrap(),
+            "fake/b: quota reached",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        affinity_entry(&f, id, Some(affinity(&f, 0)), 0)
+            .await
+            .as_deref(),
+        Some("a")
+    );
+}
+#[tokio::test]
+async fn cache_affinity_never_leaves_route() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let id = affinity_fixture(&f).await;
+    f.store
+        .put_route("ab", &fake_route(&["a", "c"]))
+        .await
+        .unwrap();
+    assert_eq!(
+        affinity_entry(&f, id, Some(affinity(&f, 0)), 0)
+            .await
+            .as_deref(),
+        Some("a")
+    );
+}
+#[tokio::test]
+async fn cache_affinity_yields_to_route_change() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let id = affinity_fixture(&f).await;
+    f.store
+        .put_route("ca", &fake_route(&["c", "b"]))
+        .await
+        .unwrap();
+    f.store.set_session_route(id, Some("ca")).await.unwrap();
+    assert_eq!(
+        affinity_entry(&f, id, Some(affinity(&f, 0)), 0)
+            .await
+            .as_deref(),
+        Some("c")
+    );
+    let mut matching = affinity(&f, 0);
+    matching.route = Some("ca".into());
+    assert_eq!(
+        affinity_entry(&f, id, Some(matching), 0).await.as_deref(),
+        Some("b")
+    );
+}
+#[tokio::test]
+async fn cache_affinity_waits_for_chain_start() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let id = affinity_fixture(&f).await;
+    f.store
+        .put_route("ab", &fake_route(&["a", "b", "c"]))
+        .await
+        .unwrap();
+    let mut value = affinity(&f, 0);
+    value.entry = "c".into();
+    assert_eq!(
+        affinity_entry(&f, id, Some(value), 1).await.as_deref(),
+        Some("b")
+    );
+}
+#[tokio::test]
+async fn cache_affinity_requires_same_model() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let id = affinity_fixture(&f).await;
+    let mut value = affinity(&f, 0);
+    value.model = "other-model".into();
+    assert_eq!(
+        affinity_entry(&f, id, Some(value), 0).await.as_deref(),
+        Some("a")
+    );
 }

@@ -1016,3 +1016,91 @@ async fn cached_scheduler_pick_matches_transactional_snapshot() {
         );
     }
 }
+
+fn affinity() -> swarmy_store::CacheAffinity {
+    swarmy_store::CacheAffinity {
+        provider: "openai".into(),
+        entry: "backup".into(),
+        model: "gpt-5.5".into(),
+        route: Some("fallback".into()),
+        completed_at: Timestamp::now(),
+    }
+}
+
+#[tokio::test]
+async fn session_route_snapshot_reads_cache_affinity() {
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    f.store.put_route("fallback", &route_pair()).await.unwrap();
+    let id = routed_session(&f).await;
+    let value = affinity();
+    f.store.put_cache_affinity(id, &value).await.unwrap();
+    let session = f.store.fetch_session(id).await.unwrap().unwrap();
+    let selection = swarmy_store::RouteSelection {
+        session_route: Some("fallback"),
+        session_provider: Some("openai"),
+        default_route: None,
+        default_provider: "openai",
+        now: Timestamp::now(),
+    };
+    let (_, snapshot) = f
+        .store
+        .session_route_snapshot(id, session.agent_id, selection)
+        .await
+        .unwrap();
+    assert_eq!(snapshot.affinity, Some(value));
+    assert!(
+        f.store
+            .route_snapshot(session.agent_id, selection)
+            .await
+            .unwrap()
+            .affinity
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn session_route_change_clears_cache_affinity() {
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    f.store.put_route("fallback", &route_pair()).await.unwrap();
+    let id = routed_session(&f).await;
+    f.store.put_cache_affinity(id, &affinity()).await.unwrap();
+    f.store
+        .set_session_route(id, Some("fallback"))
+        .await
+        .unwrap();
+    assert_eq!(f.store.cache_affinity(id).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn failover_clears_cache_affinity() {
+    use swarmy_store::FailoverAction;
+    let Some(f) = Fixture::new() else {
+        return;
+    };
+    f.store.put_route("fallback", &route_pair()).await.unwrap();
+    let id = routed_session(&f).await;
+    let lease = leased(&f, id).await;
+    let now = Timestamp::now();
+    let retry = now.checked_add(Duration::from_secs(60)).unwrap();
+    f.store.put_cache_affinity(id, &affinity()).await.unwrap();
+    assert_eq!(
+        failover(&f, &lease, id, 7, "failed", retry, 0, now)
+            .await
+            .action,
+        FailoverAction::AdvanceTo(1)
+    );
+    assert_eq!(f.store.cache_affinity(id).await.unwrap(), None);
+    f.store.put_cache_affinity(id, &affinity()).await.unwrap();
+    trip_pair_breakers(&f, now.checked_add(Duration::from_secs(3600)).unwrap()).await;
+    assert_eq!(
+        failover(&f, &lease, id, 8, "failed", retry, 1, now)
+            .await
+            .action,
+        FailoverAction::Park
+    );
+    assert_eq!(f.store.cache_affinity(id).await.unwrap(), None);
+}

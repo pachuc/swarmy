@@ -111,6 +111,9 @@ elif args[:2] == ['--swarm', 'dev'] or args[:1] in (['agent'], ['run'], ['sessio
                 text = os.environ.get('OLD_MESSAGE', 'Working, no link yet')
             else:
                 text = os.environ.get('LAST_MESSAGE', 'Branch swarmy/ewr2hd at 1111111; Done when output follows')
+            if os.environ.get('HANDOFF_NOTICE'):
+                print(json.dumps({'message_appended': {'seq': 2, 'message': {'role': 'system',
+                    'parts': [{'notice': {'kind': 'model_handoff', 'text': os.environ['HANDOFF_NOTICE']}}]}}}))
             print(json.dumps({'inference_completed': {'seq':1, 'message': {'role':'assistant',
                 'parts':[{'text':{'text':text}}]}}}))
     elif rest[:2] == ['session', 'metrics']:
@@ -739,6 +742,15 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(collect.returncode, 0, collect.stderr)
         self.assertIn("Final report from the successor", collect.stdout)
         self.assertNotIn("Working, no link yet", collect.stdout)
+
+    def test_status_shows_model_handoff(self):
+        launch = self.call("launch", "EWR2HD")
+        self.assertEqual(launch.returncode, 0, launch.stderr)
+        env = dict(self.env, HANDOFF_NOTICE="Model handoff from chatgpt/gpt-6-sol to openrouter/muse: quota reached\nContinue the task.")
+        status = self.call("status", env=env)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn("; Model handoff from chatgpt/gpt-6-sol to openrouter/muse: quota reached", status.stdout)
+        self.assertNotIn("Continue the task.", status.stdout)
 
     def test_resolve_helpers_follow_chain(self):
         import importlib.util

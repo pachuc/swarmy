@@ -25,8 +25,9 @@ cluster store or resolve from the gateway host. Builds never fetch model data.
 `env_keys` in the catalog also includes endpoint and cloud configuration. A
 project, region, or profile name is not itself a secret key. Clients identify
 swarmy as `swarmy/<version>`; they do not send another coding product's identity
-headers or system prompt prefixes. Images are catalog metadata only: image
-inputs are not sent yet.
+headers or system prompt prefixes. Image inputs are sent to models whose
+catalog entry lists `image` among its input modalities; for other models the
+worker replaces each image with a short text note saying it was omitted.
 
 ## Credentials and auth commands
 
@@ -138,15 +139,49 @@ the earliest retry time among them. A step naming an entry with no ready
 credential is skipped with a recorded reason; a route that selects nothing
 usable falls back to the implicit chain. Waits for a provider no gateway
 serves yet never consume a route step: the session retries its current step
-once a gateway advertises the provider. When the provider or model changes
-across a failover, the request builder does not replay reasoning blocks
-from the previous provider: reasoning signatures are provider- and
-model-specific, so the thinking text travels as plain text instead. Every
+once a gateway advertises the provider. For ephemeral sessions, and for an
+operator model change without a route move, the request builder downgrades
+foreign reasoning to plain text instead of replaying provider- and
+model-specific reasoning signatures. Every
 completion records the entry and route step used, so metering attributes
 cost to the entry that earned it. Those route fields are trailing bytes on
 the completion row, which older readers reject: when rolling this out,
 upgrade readers (workers, API servers, CLI clients, chaos checkers) before
 gateways.
+
+A 429, or a response naming a usage or rate limit, is never retried inside the
+protocol client: the gateway opens that entry's breaker at once until the
+provider's Retry-After, or an exponential backoff when none is sent, and the
+session fails over or waits as described above while its worker lease is
+released. Other transient statuses (408, 409, 5xx) still get up to three
+attempts within one request. While a breaker is open no request reaches the
+entry; afterwards one probe is let through, and its success closes the
+breaker. `swarmy-chaos --scenario saturation` checks this against two
+rate-limited keys (see [DEV.md](DEV.md#session-failure-injection)).
+
+### Model handoff on failover
+
+When a named session's route moves to a step whose provider or model differs
+from the one behind its last completion, it hands its history to the new model
+through a summary. A different key for the same provider and model does not
+trigger a handoff. The worker renders history to plain text deterministically:
+reasoning is dropped, each tool call occupies one line, tool results retain
+1,500 characters at each end, and arguments retain 500 characters at each end,
+with cut markers. It sends one summary request on the new step using the
+compaction prompt. If necessary, it trims the oldest conversation blocks and
+marks the trim, preserving an earlier compaction summary separately. The
+context budget uses the configured window, then the catalog window, or
+128,000 tokens. The successor holds only the summary and handoff notice and
+continues the turn. A `model_handoff` notice appears in both session logs,
+visible through `swarmy session show` and appended by `scripts/fleet/fleet
+status`.
+
+A rejected or failed handoff summary ends the turn; the next request tries the
+handoff again. Returning to the original step later also requires a handoff,
+so failover followed by recovery costs two summaries. Prompt-cache affinity
+keeps the successor on the backup step while its cache is warm; it returns to
+the primary only after that window lapses. There is no setting for this
+behavior.
 
 Three common shapes, from the design discussion:
 
@@ -180,6 +215,43 @@ instance role when the gateway runs in the cloud); SDK credentials can be
 rotated without storing a short-lived console key. An expired console key
 requires replacement, not refresh.
 
+### Prompt-cache affinity
+
+Anthropic and OpenAI keep the start of a recent prompt for a few minutes. When
+the next request repeats that start with the same credential and model, the
+cached part is billed at a lower rate and returns faster. Switching to another
+entry or model starts the cache from scratch.
+
+So at the start of each turn, and after a wait clears, a session goes back to
+the entry and model of its last successful completion when all of these hold:
+
+- that completion is younger than the provider's cache-affinity window (five
+  minutes unless configured);
+- the entry's breaker is closed;
+- the entry is still a step of the session's current route.
+
+Otherwise the session takes the route's first usable step as usual. Affinity
+never applies in the middle of a failover. A failover, or a new `--route` on the
+session, clears it. A change of route name (from the session, the agent, or the
+swarm default), provider or model also ends it. Editing a route's steps under
+the same name keeps it, as long as the entry is still in the route. Unrouted
+ephemeral sessions keep the gateway pool's choice.
+
+This has a cost side. On a `sub-then-key` route, a busy session that failed over
+to the paid key stays on that key for as long as it keeps completing within the
+window. To turn affinity off for a provider, set `cache_affinity_secs = 0` in
+its `[selection.custom_providers.PROVIDER]` table (see Custom providers and
+models).
+
+To measure the effect, an operator runs the script below twice, with entries
+from different Anthropic workspaces. Each run consumes real quota. Run
+`--mode without` after setting `cache_affinity_secs = 0` for `anthropic` and
+restarting the workers, then remove the setting.
+
+```sh
+scripts/measure-cache-affinity.sh --mode with --entries first,second --gap 180 --turns 8
+```
+
 ## Cost and quota views
 
 Every completion rolls into hourly metering buckets per session, agent,
@@ -195,9 +267,12 @@ series for scripts, and `GET /v1/usage` serves it over the API with `by`,
 `key`, `from`, `to`, and `group` filters. The API defaults to
 `by=agent`, `group=day`, and the trailing 30 days, echoes `by` as sent
 (`kind`, not `entry_kind`), and caps the span at 400 days with at most
-500 groups (`span_too_large`, `too_many_groups`). Hours are whole: the
-hour containing `to` is included, so `to` behaves as inclusive of its
-hour.
+500 groups (`span_too_large`, `too_many_groups`). Buckets are whole hours
+and the range is `[from, to)`. A `to` inside an hour includes that hour;
+a `to` exactly on an hour, such as a date or calendar word, stops before
+it, so `--until month` ends with last month. Without a key the series is
+the fleet total, the same for every `by`. Rollups are stored key first,
+so one key's series reads only that key's hours.
 
 ```sh
 # What did the coder agent cost each week this quarter?
@@ -286,7 +361,9 @@ process, without NATS, workers, or gateway routing. It streams text, reasoning,
 and tool deltas, then prints usage (including cache and reasoning tokens),
 catalog cost, effort used, and elapsed time. `--tools` requires exactly one
 `get_time` call, supplies the current UTC time, and requests the final answer.
-A provider or protocol failure exits nonzero with its error. `--json` emits
+A provider or protocol failure exits nonzero with its error. A 429 or
+usage-limit response is reported at once; probe does not wait out the
+provider's Retry-After. `--json` emits
 newline-delimited delta records followed by a `probe_summary`. Without an
 explicit effort, probe starts at `none` and clamps it to the model.
 
@@ -360,7 +437,14 @@ context_window = 128000
 Put these entries in `.swarmy/config.toml` or the discovered user configuration.
 Store private endpoint credentials with `swarmy auth set private --file PATH`.
 New provider tables require `api` and `base_url`; existing ones keep omitted
-fields. A `[selection] providers = [...]` restricts gateway discovery.
+fields. A `[selection] providers = [...]` restricts gateway discovery. Provider
+tables accept `api`, `base_url`, `summarize_at`, and `cache_affinity_secs`, where
+`0` turns cache affinity off for that provider. For example:
+
+```toml
+[selection.custom_providers.anthropic]
+cache_affinity_secs = 3600
+```
 
 Models require `provider` and `id`. Optional fields are `name`, `api`, `base_url`,
 `context_window`, `max_output_tokens`, `reasoning`, `cost`, and `compat`. New
@@ -431,5 +515,7 @@ not a new grant of vendor permission:
 | OpenRouter PKCE | Built as the documented public flow that mints an API key. |
 | Azure CLI Entra tokens | Built through the installed Azure CLI; no embedded Azure client identity. |
 
-Key pools, admission, affinity, image inputs, and expanding the
-models.dev provider allowlist remain future work; see the `provider-breadth-quota` goal in tasky.
+Admission control is deliberately not built: rate limits are retryable waits
+behind a per-entry circuit breaker (see Routes and failover). Widening the
+models.dev provider allowlist is tracked in
+[backlog/housekeeping.md](../backlog/housekeeping.md).

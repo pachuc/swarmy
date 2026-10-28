@@ -400,6 +400,7 @@ pub(crate) fn model(
         context_window: entry.limit.context,
         key: format!("{}/{}", provider.id, entry.id),
         name: entry.name.clone(),
+        input_modalities: entry.input_modalities.clone(),
         limit: api::ModelLimit {
             context: entry.limit.context,
             output: entry.limit.output,

@@ -384,6 +384,7 @@ pub struct Model {
     pub context_window: u64,
     pub key: String,
     pub name: String,
+    pub input_modalities: Vec<String>,
     pub limit: ModelLimit,
     pub cost: ModelCost,
     pub supported_efforts: Vec<ReasoningEffort>,
@@ -957,16 +958,16 @@ pub struct UsageGroupView {
 }
 
 /// A usage series over `[from, to)`: one row per calendar group plus the
-/// total across all groups. Without `key` the series aggregates every key
-/// in the dimension; with `key` it covers that session, agent, provider,
-/// entry, kind, or model only.
+/// total across all groups. Without `key` the series reads the fleet total,
+/// the same for every dimension; with `key` it covers that session,
+/// agent, provider, entry, kind, or model only.
 ///
 /// The response echoes the request bounds and the `by` value as sent
-/// (`kind`, not `entry_kind`). Buckets are whole hours: the hour containing
-/// `from` and the hour containing `to` are both included, so `to` behaves
-/// as inclusive of its hour. Defaults are `by=agent`, `group=day`, and the
-/// trailing 30 days; the span is capped at 400 days and the series at 500
-/// groups, rejected with `span_too_large` or `too_many_groups`. Bounds
+/// (`kind`, not `entry_kind`). Buckets are whole hours over `[from, to)`:
+/// a `to` inside an hour includes that hour, but an hour starting at `to`
+/// is excluded. Defaults are `by=agent`, `group=day`, and the trailing 30
+/// days; the 400-day span and 500-group caps are checked before reading,
+/// rejected with `span_too_large` or `too_many_groups`. Bounds
 /// accept RFC 3339 timestamps, calendar dates (`2026-09-01`, read as UTC
 /// midnight), `now`, relative spans (`7d`, `3mo`, `1y`), and
 /// calendar-aligned words (`day`, `2days`, `week`, `month`, `2months`,
@@ -1354,6 +1355,12 @@ pub mod api_paths {
         ),
         responses((status = 200, body = Vec<TurnMetrics>), (status = 404, body = ApiError)))]
     pub fn session_metrics() {}
+    #[utoipa::path(get, path = "/v1/sessions/{id}/tool-images/{call_id}",
+        params(("id" = String, Path, description = "Session id"),
+               ("call_id" = String, Path, description = "Tool call whose result carries an image")),
+        responses((status = 200, description = "Image bytes with the stored media type", content(("image/png"), ("image/jpeg"), ("image/gif"), ("image/webp"))),
+                  (status = 404, body = ApiError)))]
+    pub fn session_tool_image() {}
     #[utoipa::path(get, path = "/v1/agents/{id}/metrics",
         params(
             ("id" = String, Path, description = "Agent id or name"),
@@ -1395,9 +1402,9 @@ pub mod api_paths {
     #[utoipa::path(get, path = "/v1/usage",
         params(
             ("by" = Option<String>, Query, description = "Rollup dimension: session, agent, provider, entry, kind, or model; defaults to agent and echoes as sent"),
-            ("key" = Option<String>, Query, description = "One key in the dimension; without it the series aggregates every key"),
+            ("key" = Option<String>, Query, description = "One key in the dimension; without it the series is the fleet total"),
             ("from" = Option<String>, Query, description = "Range start: RFC 3339, calendar date, now, a span like 7d or 3mo, or a calendar word like month or 2months; defaults to 30 days before to"),
-            ("to" = Option<String>, Query, description = "Range end in the same forms; defaults to now; the hour containing it is included"),
+            ("to" = Option<String>, Query, description = "Range end in the same forms; defaults to now; exclusive: the hour starting at it is not included, while a `to` inside an hour includes that hour"),
             ("group" = Option<String>, Query, description = "Calendar grouping: day, week, month, or year; defaults to day. The span is capped at 400 days (span_too_large) and the series at 500 groups (too_many_groups)"),
         ),
         responses((status = 200, body = UsageResponse), (status = 400, body = ApiError)))]
@@ -1419,7 +1426,7 @@ pub mod api_paths {
         api_paths::update_agent, api_paths::delete_agent,
         api_paths::list_sessions, api_paths::create_session, api_paths::show_session,
         api_paths::close_session, api_paths::append_message, api_paths::interrupt_session,
-        api_paths::wait_idle, api_paths::session_events, api_paths::session_metrics,
+        api_paths::wait_idle, api_paths::session_events, api_paths::session_metrics, api_paths::session_tool_image,
         api_paths::agent_metrics,
         api_paths::subscribe, api_paths::update_subscription,
         api_paths::list_images, api_paths::upload_image, api_paths::show_image,
@@ -1520,7 +1527,7 @@ mod tests {
         ] {
             check!(ProviderApi, api);
         }
-        check!(Model, {"id":"m","provider":"p","context_window":100,"key":"p/m","name":"model","limit":{"context":100,"output":null},"cost":{"input":0.0,"output":0.0},"supported_efforts":[],"effective_api":"Fake","effective_base_url":"http://localhost:8000/v1","compat":{}});
+        check!(Model, {"id":"m","provider":"p","context_window":100,"key":"p/m","name":"model","input_modalities":["text","image"],"limit":{"context":100,"output":null},"cost":{"input":0.0,"output":0.0},"supported_efforts":[],"effective_api":"Fake","effective_base_url":"http://localhost:8000/v1","compat":{}});
         check!(Provider, {"id":"p","name":"provider","api":"Fake","auth_kinds":[],"env_keys":[],"credential_env_keys":[]});
         for kind in ["subscription", "api_key", "cloud"] {
             check!(CredentialKind, kind);

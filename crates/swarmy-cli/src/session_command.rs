@@ -1,10 +1,18 @@
 use clap::Subcommand;
+use std::path::PathBuf;
 use ulid::Ulid;
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
     /// Print the session's events in sequence order
     Show { session_id: Ulid },
+    /// Save the image a tool call returned (a browser or screen screenshot) to a file
+    Image {
+        session_id: Ulid,
+        call_id: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// List stored sessions in id order
     #[command(name = "ls", alias = "list")]
     List,

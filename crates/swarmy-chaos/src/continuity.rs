@@ -5,8 +5,8 @@ use anyhow::{Context, Result, ensure};
 use jiff::Timestamp;
 use serde_json::{Value, json};
 use swarmy_core::{
-    AgentId, Event, Message, MessageId, MessageRole, Part, SessionId, SessionState, TimerRecord,
-    TimerStatus, ToolResult,
+    AgentId, Event, MessageRole, Part, SessionId, SessionState, TimerRecord, TimerStatus,
+    ToolResult,
 };
 use swarmy_llm::InferenceJob;
 use tokio::time::{sleep, timeout};
@@ -52,21 +52,7 @@ async fn script(f: &mut Fixture, responses: Vec<Value>) -> Result<()> {
 }
 
 async fn send(f: &Fixture, id: SessionId, text: &str) -> Result<u64> {
-    let head = f
-        .store
-        .fetch_session(id)
-        .await?
-        .context("session missing")?
-        .head_seq;
-    let message = Message {
-        id: MessageId::from_ulid(ulid::Ulid::generate()),
-        role: MessageRole::User,
-        parts: vec![Part::Text { text: text.into() }],
-    };
-    let head = f.store.append_user_message(id, head, &message).await?;
-    f.bus
-        .nudge(id, head, Some(message.id), Duration::ZERO, true)
-        .await?;
+    let head = crate::send_user(&f.store, &f.bus, id, text).await?;
     tracing::info!(%id, user = text, "continuity transcript");
     Ok(head)
 }

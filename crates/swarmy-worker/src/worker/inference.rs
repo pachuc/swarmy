@@ -4,6 +4,30 @@ use super::{
     SessionState, SubjectToken, SubmitInferenceOptions, Timestamp, Ulid, WorkQueue, Worker, Write,
 };
 
+/// Screenshots contain small text; provider auto detail may downscale it before the model can read it.
+const SCREENSHOT_IMAGE_DETAIL: &str = "high";
+
+pub(super) fn tool_result_image(media_type: &str, bytes: Vec<u8>, key: &str) -> swarmy_core::Part {
+    swarmy_core::Part::Image {
+        media_type: media_type.to_owned(),
+        bytes,
+        object_key: Some(key.to_owned()),
+        detail: Some(SCREENSHOT_IMAGE_DETAIL.into()),
+    }
+}
+
+pub(super) struct Compaction {
+    pub(super) cut: usize,
+    pub(super) recovery: bool,
+    pub(super) handoff: Option<swarmy_llm::handoff::ModelHandoff>,
+}
+
+pub(super) struct PreparedInference {
+    pub(super) request: swarmy_llm::Request,
+    pub(super) preceding: Vec<Event>,
+    pub(super) attempt: ResolvedAttempt,
+}
+
 pub(super) enum StepFailure<'a> {
     Publication(&'a swarmy_bus::Error),
     Unserved { provider: &'a str, retryable: bool },
@@ -13,8 +37,8 @@ pub(super) enum StepFailure<'a> {
 pub(crate) struct ResolvedAttempt {
     pub(crate) provider: String,
     pub(crate) entry: Option<String>,
-    route: Option<String>,
-    route_step: u32,
+    pub(crate) route: Option<String>,
+    pub(crate) route_step: u32,
     snapshot: swarmy_store::RouteSnapshot,
 }
 
@@ -44,6 +68,29 @@ pub(super) fn warn_on_route_fallback(
 }
 
 impl Worker {
+    /// Keep the last entry while its prompt cache is warm, or use the normal step.
+    fn route_index(
+        &self,
+        session: &SessionRecord,
+        snapshot: &swarmy_store::RouteSnapshot,
+        model: &str,
+    ) -> usize {
+        let usual = snapshot.pick_or_earliest(session.route_step);
+        let window = snapshot
+            .affinity
+            .as_ref()
+            .map_or(std::time::Duration::ZERO, |a| {
+                self.config.catalog.cache_affinity_window(&a.provider)
+            });
+        let step = snapshot
+            .affine_step(session.route_step, window, model, self.now())
+            .unwrap_or(usual);
+        if step != usual {
+            tracing::debug!(session_id = %session.session_id, step, usual, "keeping the session on its cached entry");
+        }
+        step
+    }
+
     pub(crate) async fn prepare_request(
         &self,
         session: &SessionRecord,
@@ -67,7 +114,8 @@ impl Worker {
         if let swarmy_core::SessionKind::Named { agent_id } = session.kind {
             let (record, snapshot) = self
                 .store
-                .agent_and_route_snapshot(
+                .session_route_snapshot(
+                    session.session_id,
                     agent_id,
                     super::route_selection(session, &self.config, Timestamp::now()),
                 )
@@ -97,11 +145,13 @@ impl Worker {
         let snapshot = if session.needs_route_snapshot(self.config.default_route.as_deref()) {
             let snapshot = self
                 .store
-                .route_snapshot(
+                .session_route_snapshot(
+                    session.session_id,
                     session.agent_id,
                     super::route_selection(session, &self.config, Timestamp::now()),
                 )
-                .await?;
+                .await?
+                .1;
             warn_on_route_fallback(session, snapshot.name.as_deref(), &snapshot.skipped);
             snapshot
         } else {
@@ -137,7 +187,7 @@ impl Worker {
         if !summarizing {
             apply_display_tools(request, self.session_display(session).await?);
         }
-        let index = snapshot.pick_or_earliest(session.route_step);
+        let index = self.route_index(session, &snapshot, &selection.model);
         let step = snapshot.steps.get(index).context("empty route snapshot")?;
         let model_id = step
             .model
@@ -248,12 +298,11 @@ impl Worker {
                             .and_then(serde_json::Value::as_str),
                     )
                 {
-                    images.push(swarmy_core::Part::Image {
-                        media_type: media_type.to_owned(),
-                        bytes: self.blobs.get(key).await?.to_vec(),
-                        object_key: Some(key.to_owned()),
-                        detail: None,
-                    });
+                    images.push(tool_result_image(
+                        media_type,
+                        self.blobs.get(key).await?.to_vec(),
+                        key,
+                    ));
                 }
             }
             expanded.push(message);
@@ -273,11 +322,41 @@ impl Worker {
         &self,
         session: &mut SessionRecord,
         lease: &HeldLease,
-        preceding: &[Event],
-        request: swarmy_llm::Request,
+        history: (&swarmy_harness::Snapshot, &[Event]),
+        mut request: swarmy_llm::Request,
     ) -> Result<()> {
-        self.build_inference_with_prefix(session, lease, preceding, request, false, None)
-            .await
+        let mut preceding = Vec::new();
+        let attempt = self
+            .prepare_request(session, &mut request, &mut preceding, false)
+            .await?;
+        if matches!(session.kind, swarmy_core::SessionKind::Named { .. })
+            && let Some(handoff) = super::handoff::detect_model_handoff(
+                history.1,
+                &super::handoff::HandoffTarget {
+                    provider: &attempt.provider,
+                    model: &request.settings.model,
+                    route: attempt.route.as_deref(),
+                    route_step: attempt.route_step,
+                },
+            )
+            && self
+                .issue_handoff_summary(session, lease, history, handoff, request.settings.clone())
+                .await?
+        {
+            return Ok(());
+        }
+        self.submit_prepared(
+            session,
+            lease,
+            PreparedInference {
+                request,
+                preceding,
+                attempt,
+            },
+            false,
+            None,
+        )
+        .await
     }
 
     pub(super) async fn build_inference_with_prefix(
@@ -287,12 +366,39 @@ impl Worker {
         preceding: &[Event],
         mut request: swarmy_llm::Request,
         summary_prefix: bool,
-        compaction: Option<(usize, bool)>,
+        compaction: Option<Compaction>,
     ) -> Result<()> {
         let mut preceding = preceding.to_vec();
         let attempt = self
             .prepare_request(session, &mut request, &mut preceding, compaction.is_some())
             .await?;
+        self.submit_prepared(
+            session,
+            lease,
+            PreparedInference {
+                request,
+                preceding,
+                attempt,
+            },
+            summary_prefix,
+            compaction,
+        )
+        .await
+    }
+
+    pub(super) async fn submit_prepared(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        prepared: PreparedInference,
+        summary_prefix: bool,
+        compaction: Option<Compaction>,
+    ) -> Result<()> {
+        let PreparedInference {
+            request,
+            mut preceding,
+            attempt,
+        } = prepared;
         // Persist the picked step with the request so a retryable failure
         // advances from the attempt that actually ran, not from a stale
         // position. A wrap to a recovered earlier step carries no range.
@@ -334,8 +440,9 @@ impl Worker {
             request_id: RequestId::for_step(id, step),
             summary: compaction.is_some(),
             summary_prefix,
-            summary_cut: compaction.map(|(cut, _)| cut as u64),
-            summary_recovery: compaction.is_some_and(|(_, recovery)| recovery),
+            summary_cut: compaction.as_ref().map(|c| c.cut as u64),
+            summary_recovery: compaction.as_ref().is_some_and(|c| c.recovery),
+            summary_handoff: compaction.and_then(|c| c.handoff),
             request,
         };
         self.kill(KillPoint::BeforeRelease);

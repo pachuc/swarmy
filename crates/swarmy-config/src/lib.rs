@@ -1580,7 +1580,7 @@ mod tests {
             ("SWARMY_PROVIDERS", "openai,anthropic"),
             (
                 "SWARMY_CUSTOM_PROVIDERS",
-                r#"{"test":{"base_url":"https://example.com","api":null,"summarize_at":null}}"#,
+                r#"{"test":{"base_url":"https://example.com","api":null,"summarize_at":null,"cache_affinity_secs":null}}"#,
             ),
             (
                 "SWARMY_MODELS",

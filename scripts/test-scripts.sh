@@ -8,6 +8,8 @@ python3 -m unittest discover -s scripts/benchmarks -p 'test_*.py'
 python3 scripts/test_repo_metrics.py
 python3 -m unittest discover -s benchmarks -p 'test_*.py'
 python3 images/base-desktop/tests/browser-helper.py
+python3 -m unittest discover -s images/base-desktop/tests -p 'test_*.py'
+bash scripts/test-desktop-agent-check.sh
 python3 crates/swarmyd/tests/files_test.py
 bash scripts/test-check-openapi-compat.sh
 bash scripts/test-check-anyhow-in-libraries.sh

@@ -48,6 +48,15 @@ for job in check-lint check-openapi check-deps check-advisories check-remote; do
   run_target "$job"
 done
 
+# The infra-modules job: pinned OpenTofu, then fmt, validate and mock tests.
+if [ -x scripts/install-opentofu.sh ]; then
+  if scripts/install-opentofu.sh --prefix "$HOME/.local" >/dev/null; then
+    PATH="$HOME/.local/bin:$PATH" run_target check-infra
+  else
+    echo "CI_STEP_FAIL: install-opentofu"; rc=1
+  fi
+fi
+
 scripts/dev-stack.sh stop >/dev/null 2>&1 || true
 if ! scripts/dev-stack.sh start > ~/ci-local-stack.log 2>&1; then
   tail -5 ~/ci-local-stack.log; echo "CI_STEP_FAIL: dev stack did not start"; echo "SUITES_EXIT=1"; exit 1

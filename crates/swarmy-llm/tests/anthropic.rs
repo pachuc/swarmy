@@ -446,7 +446,7 @@ async fn openrouter_catalog_override_uses_bearer_and_messages_path() {
 
 #[tokio::test]
 async fn transient_statuses_retry_and_stop_after_three_attempts() {
-    for status in [408, 409, 429, 500, 529] {
+    for status in [408, 409, 500, 529] {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(status).insert_header("retry-after", "0"))
@@ -459,6 +459,17 @@ async fn transient_statuses_retry_and_stop_after_three_attempts() {
         send(&server, request("claude-sonnet-4-5")).await.unwrap();
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    assert!(matches!(
+        send(&server, request("claude-sonnet-4-5")).await,
+        Err(Error::ProviderResponse { .. })
+    ));
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(529).insert_header("retry-after", "0"))
@@ -581,9 +592,9 @@ async fn retry_policy_honors_server_delay_and_backoff_cap() {
     let result = with_retry(&policy, || async {
         if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
             Err(Error::ProviderResponse {
-                status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+                status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
                 message: "limited".into(),
-                reason: swarmy_llm::ProviderFailureReason::Quota,
+                reason: swarmy_llm::ProviderFailureReason::Other,
                 retry_after: Some(Duration::from_secs(10)),
             })
         } else {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: root-suites-plus.sh BRANCH — the standard root suites plus the image and vol suites.
+# Usage: root-suites-plus.sh BRANCH — root, image, volume, and base-desktop agent proof suites.
 set -uo pipefail
 branch=$1
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -62,6 +62,10 @@ echo "== image build swarmy-dev"
 # instead of recording rc=1 and running the dependent test anyway.
 full=~/suite-logs/$suffix-plus-image-build-swarmy-dev.log
 sudo -E ./target/debug/swarmy image build images/swarmy-dev --tag dev 2>&1 | tee "$full" | tail -2 || { [ -n "$api_pid" ] && { kill "$api_pid" 2>/dev/null; wait "$api_pid" 2>/dev/null; }; echo "PLUS_EXIT=1"; exit 1; }
+echo "== image build base-desktop"
+full=~/suite-logs/$suffix-plus-image-build-base-desktop.log
+desktop_built=1
+sudo -E ./target/debug/swarmy image build images/base-desktop --tag dev 2>&1 | tee "$full" | tail -2 || { desktop_built=0; echo "base-desktop build failed; see $full"; }
 [ -n "$api_pid" ] && { kill "$api_pid" 2>/dev/null; wait "$api_pid" 2>/dev/null; api_pid=""; }
 # The node acceptance and the chat tests refuse headless client binaries, so
 # rebuild default features once, before the sections that need them.
@@ -81,6 +85,10 @@ echo "== swarmy-e2e --test cli_session root chats"
 bash "$here/nbd-orphans.sh"
 full=~/suite-logs/$suffix-plus-e2e-cli-session-root-chats.log
 if sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked -p swarmy-e2e --test cli_session -- root_chat_default_image_executes_pwd root_named_chats_share_a_background_process_and_delete root_memory_written_by_tools_is_in_the_next_turn_and_capped --test-threads=1 2>&1 | tee "$full" | { grep -E "^test |test result|panicked" || true; } | tail -6; then :; else rc=1; fi
+echo "== swarmy-chaos --test desktop"
+bash "$here/nbd-orphans.sh"
+full=~/suite-logs/$suffix-plus-chaos-desktop.log
+if [ "$desktop_built" = 1 ] && sudo -E env SWARMY_TEST_DESKTOP_IMAGE=base-desktop:dev SWARMY_TEST_DESKTOP_OUTPUT="$HOME/suite-logs/$suffix-desktop-evidence" "$(command -v cargo)" test --locked -p swarmy-chaos --test desktop -- --test-threads=1 2>&1 | tee "$full" | { grep -E "^test |test result|panicked" || true; } | tail -4; then :; else rc=1; fi
 scripts/dev-stack.sh stop >/dev/null 2>&1 || true
 echo "PLUS_DONE"
 echo "PLUS_EXIT=$rc"

@@ -55,9 +55,11 @@ pub use quota::{EntryQuota, ObservedQuota, QuotaConfig, QuotaSource};
 mod gc;
 mod leases;
 mod routes;
+#[cfg(test)]
+mod routes_affinity_tests;
 pub use routes::{
-    ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteCache, RouteFailure,
-    RouteSelection, RouteSnapshot, RouteStepStatus,
+    CacheAffinity, ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteCache,
+    RouteFailure, RouteSelection, RouteSnapshot, RouteStepStatus,
 };
 mod nodes;
 pub mod objects;
@@ -74,6 +76,8 @@ pub use turns::{SubmitInferenceOptions, SubmitRouteStep};
 mod volumes;
 pub use volumes::PutImageOptions;
 
+#[cfg(any(test, feature = "test-support"))]
+pub use inference_wait::LeaseAudit;
 pub use inference_wait::{BreakerCandidate, CredentialKey, InferenceFailureWait, InferenceWait};
 pub use runnable::{RUNNABLE_PARTITIONS, runnable_partition};
 
@@ -161,6 +165,7 @@ pub struct Store {
     /// so tests can compare per-operation transaction costs.
     transactions: Arc<AtomicU64>,
     session_record_reads: Arc<AtomicU64>,
+    metering_rows_read: Arc<AtomicU64>,
     metrics_tx: tokio::sync::mpsc::Sender<metrics::MetricMsg>,
     /// Receiver held until the drain task starts. `open` starts the drain
     /// immediately; `with_subspace` may run without a runtime, in which case
@@ -220,6 +225,7 @@ impl Store {
             blobs,
             transactions: Arc::default(),
             session_record_reads: Arc::default(),
+            metering_rows_read: Arc::default(),
             metrics_tx,
             metrics_rx: Arc::new(std::sync::Mutex::new(Some(metrics_rx))),
             metrics_drain: Arc::new(std::sync::OnceLock::new()),
@@ -262,6 +268,7 @@ impl Store {
             images: Arc::default(),
             transactions: Arc::default(),
             session_record_reads: Arc::default(),
+            metering_rows_read: Arc::default(),
             metrics_tx,
             metrics_rx: Arc::new(std::sync::Mutex::new(Some(metrics_rx))),
             metrics_drain: Arc::new(std::sync::OnceLock::new()),
@@ -345,6 +352,14 @@ impl Store {
         self.session_record_reads.load(Ordering::Relaxed)
     }
 
+    /// Number of metering rows returned by range reads on this store instance.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn metering_rows_read_count(&self) -> u64 {
+        self.metering_rows_read.load(Ordering::Relaxed)
+    }
+
     async fn transaction<T, F, Fut>(&self, operation: F) -> Result<T>
     where
         F: Fn(RetryableTransaction) -> Fut,
@@ -393,6 +408,29 @@ impl Store {
         let key = format!("blobs/{}", blake3::hash(&bytes).to_hex());
         self.blobs.put(&key, bytes.into()).await?;
         Ok(key)
+    }
+
+    /// Read binary tool content written by `put_tool_blob`.
+    /// # Errors
+    /// Returns an error for a malformed, oversized, missing, or corrupt blob.
+    pub async fn get_tool_blob(&self, key: &str) -> Result<bytes::Bytes> {
+        let hash = key
+            .strip_prefix("blobs/")
+            .ok_or(StoreError::Storage(StorageError::Corrupt))?;
+        if hash.len() != 64
+            || !hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(StoreError::Storage(StorageError::Corrupt));
+        }
+        let bytes = self.blobs.get(key).await?;
+        if bytes.len() > 5 * 1024 * 1024
+            || key != format!("blobs/{}", blake3::hash(&bytes).to_hex())
+        {
+            return Err(StoreError::Storage(StorageError::Corrupt));
+        }
+        Ok(bytes)
     }
 
     async fn prepare<T: Serialize>(&self, value: &T) -> Result<Vec<u8>> {
@@ -872,6 +910,7 @@ impl Store {
         self.get_payload(self.keys().inflight(id)).await
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     async fn put_payload<T: Serialize>(&self, key: Vec<u8>, value: &T) -> Result<()> {
         let value = self.prepare(value).await?;
         self.transaction(|trx| {

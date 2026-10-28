@@ -21,7 +21,10 @@ impl Default for RetryPolicy {
     }
 }
 
-/// Retry transient HTTP statuses, preferring the server's delay to backoff.
+/// Retry transient HTTP statuses (408, 409, 5xx), preferring the server's delay to backoff.
+/// Rate limits return at once; see `ErrorClass::quota`. The gateway's per-entry
+/// circuit breaker owns the wait: retrying here spends an exhausted quota
+/// while the breaker cannot see it. Bedrock throttling maps to 429 too.
 ///
 /// # Errors
 /// Returns the final attempt's error, or a non-retryable error immediately.
@@ -36,7 +39,7 @@ where
         let retry_after = match &result {
             Err(error) => {
                 let class = error.classify();
-                if !class.retryable {
+                if !class.retryable || class.quota {
                     return result;
                 }
                 class.retry_after
@@ -87,6 +90,47 @@ pub(crate) fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option
 mod header_tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+    #[tokio::test]
+    async fn rate_limits_return_after_one_attempt() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            initial_delay: Duration::ZERO,
+            max_delay: Duration::ZERO,
+        };
+        for (status, reason, expected) in [
+            (
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                crate::ProviderFailureReason::Other,
+                1,
+            ),
+            (
+                reqwest::StatusCode::FORBIDDEN,
+                crate::ProviderFailureReason::Quota,
+                1,
+            ),
+            (
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                crate::ProviderFailureReason::Other,
+                3,
+            ),
+        ] {
+            let calls = AtomicUsize::new(0);
+            let result: Result<(), Error> = with_retry(&policy, || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Err(Error::ProviderResponse {
+                    status,
+                    reason,
+                    message: "busy".into(),
+                    retry_after: Some(Duration::from_secs(1)),
+                }))
+            })
+            .await;
+            assert!(result.is_err());
+            assert_eq!(calls.load(Ordering::SeqCst), expected);
+        }
+    }
+
     // Future-date and invalid Retry-After forms cannot go through the mocks
     // without sleeping, so they are pinned at the parser.
     #[test]

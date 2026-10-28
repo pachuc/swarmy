@@ -6,14 +6,18 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[command(about = "Verify durable sessions while killing and restarting services")]
 pub(crate) struct Config {
-    #[command(flatten)]
-    pub agent_checks: AgentChecks,
+    /// Select a named-agent acceptance scenario instead of the kill schedule.
+    #[arg(long, value_enum)]
+    pub scenario: Option<Scenario>,
     /// Executable controlling a remote first node: start, kill, and stop.
     /// Receives the node settings as environment variables. Used by cloud benchmarks.
-    #[arg(long, requires = "persistent")]
+    #[arg(long)]
     pub node_driver: Option<PathBuf>,
+    /// Directory for the desktop proof screenshots, app record, and summary.
+    #[arg(long)]
+    pub desktop_output: Option<PathBuf>,
     /// Run the root volume measurement script twice after persistent scenarios.
-    #[arg(long, requires = "persistent")]
+    #[arg(long)]
     pub measurements: Option<PathBuf>,
     #[arg(long, default_value_t = 20)]
     pub sessions: usize,
@@ -53,17 +57,18 @@ pub(crate) struct Config {
     pub bin_dir: Option<PathBuf>,
 }
 
-#[derive(Debug, clap::Args)]
-pub(crate) struct AgentChecks {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum Scenario {
     /// Exercise shared computers, background-process loss, and idle eviction.
-    #[arg(long)]
-    pub persistent: bool,
+    Persistent,
     /// Prove named-agent memory, tools, and timers survive summarization and a full restart.
-    #[arg(long, requires = "image", conflicts_with = "persistent")]
-    pub continuity: bool,
+    Continuity,
     /// Clone, repair a failing test, and push through one node kill using a local remote.
-    #[arg(long, requires = "image", conflicts_with_all = ["persistent", "continuity"])]
-    pub coding: bool,
+    Coding,
+    /// Log into a web app in the sandbox, change a setting, and take browser and screen screenshots with a scripted agent. Needs root and a display image.
+    Desktop,
+    /// Saturate two rate-limited API keys of one HTTP fake behind one route with named agents. Needs no root.
+    Saturation,
 }
 
 impl Config {
@@ -84,6 +89,38 @@ impl Config {
             self.session_timeout_secs > 0,
             "session timeout must be positive"
         );
+        ensure!(
+            (self.node_driver.is_none() && self.measurements.is_none())
+                || self.scenario == Some(Scenario::Persistent),
+            "--node-driver and --measurements require --scenario persistent"
+        );
+        ensure!(
+            self.desktop_output.is_none() || self.scenario == Some(Scenario::Desktop),
+            "--desktop-output requires --scenario desktop"
+        );
+        ensure!(
+            !matches!(
+                self.scenario,
+                Some(
+                    Scenario::Persistent
+                        | Scenario::Continuity
+                        | Scenario::Coding
+                        | Scenario::Desktop
+                )
+            ) || self.image.is_some(),
+            "--scenario persistent, continuity, coding, or desktop requires --image"
+        );
+        ensure!(
+            self.scenario != Some(Scenario::Saturation) || self.image.is_none(),
+            "--scenario saturation does not use --image"
+        );
+        if self.scenario == Some(Scenario::Saturation) {
+            ensure!(self.kills == 0, "--scenario saturation requires --kills 0");
+            ensure!(
+                self.sessions >= 4,
+                "--scenario saturation needs at least four agents to saturate two keys"
+            );
+        }
         if self.image.is_some() {
             ensure!(
                 Command::new("id").arg("-u").output()?.stdout == b"0\n",
@@ -97,17 +134,25 @@ impl Config {
                 "deterministic node kill requires --sessions 1 --steps 3 --kills 0"
             );
         }
-        if self.agent_checks.continuity || self.agent_checks.coding {
+        if matches!(
+            self.scenario,
+            Some(Scenario::Continuity | Scenario::Coding | Scenario::Desktop)
+        ) {
             ensure!(
                 self.gateways == 1 && self.kills == 0,
-                "--continuity and --coding require --gateways 1 --kills 0"
+                "--scenario continuity, coding, and desktop require --gateways 1 --kills 0"
             );
         }
-        if self.agent_checks.persistent {
-            ensure!(self.image.is_some(), "--persistent requires --image");
+        if self.scenario == Some(Scenario::Desktop) {
+            ensure!(
+                self.sessions == 1,
+                "--scenario desktop requires --sessions 1"
+            );
+        }
+        if self.scenario == Some(Scenario::Persistent) {
             ensure!(
                 self.sessions == 2 && self.gateways == 1 && self.kills == 0,
-                "--persistent requires --sessions 2 --gateways 1 --kills 0"
+                "--scenario persistent requires --sessions 2 --gateways 1 --kills 0"
             );
         }
         self.sessions

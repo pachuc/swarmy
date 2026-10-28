@@ -3820,19 +3820,23 @@ dependencies = [
  "rand 0.9.5",
  "rand_chacha 0.9.0",
  "serde_json",
+ "swarmy-api-types",
  "swarmy-bus",
+ "swarmy-client",
  "swarmy-config",
  "swarmy-core",
  "swarmy-llm",
  "swarmy-sandbox",
  "swarmy-store",
  "swarmy-testkit",
+ "swarmy-tools",
  "swarmy-version",
  "swarmy-volume",
  "tempfile",
  "tokio",
  "tracing",
  "ulid",
+ "wiremock",
 ]
 
 [[package]]

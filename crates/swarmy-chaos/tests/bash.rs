@@ -27,7 +27,8 @@ fn root_bash_disk_and_failure_acceptance() {
     for scenario in [
         vec!["--sessions", "1", "--steps", "2", "--kills", "0"],
         vec![
-            "--persistent",
+            "--scenario",
+            "persistent",
             "--sessions",
             "2",
             "--gateways",

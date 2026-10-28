@@ -40,6 +40,7 @@ struct Fixture {
     children: Vec<ChildGuard>,
     snapshots: Mutex<HashSet<String>>,
     keyring: Option<swarmy_config::Keyring>,
+    all_partitions: bool,
 }
 
 impl Fixture {
@@ -99,6 +100,7 @@ impl Fixture {
             children: Vec::new(),
             snapshots: Mutex::default(),
             keyring: None,
+            all_partitions: false,
         })
     }
 
@@ -140,20 +142,55 @@ impl Fixture {
 
     /// Store a named route over explicit `provider/label` steps.
     async fn put_route(&self, name: &str, steps: &[(&str, &str)]) {
+        self.put_route_models(
+            name,
+            &steps
+                .iter()
+                .map(|(p, e)| (*p, *e, None))
+                .collect::<Vec<_>>(),
+        )
+        .await;
+    }
+
+    async fn put_route_models(&self, name: &str, steps: &[(&str, &str, Option<&str>)]) {
         self.store
             .put_route(
                 name,
                 &steps
                     .iter()
-                    .map(|(provider, entry)| swarmy_core::RouteStep {
+                    .map(|(provider, entry, model)| swarmy_core::RouteStep {
                         provider: (*provider).into(),
                         entry: (*entry).into(),
-                        model: None,
+                        model: model.map(str::to_owned),
                     })
                     .collect::<Vec<_>>(),
             )
             .await
             .unwrap();
+    }
+
+    async fn create_named_with_route(&self, agent: &str, route: &str) -> SessionId {
+        let image = swarmy_testkit::image(&self.store).await;
+        let agent = self
+            .store
+            .create_agent(agent, image, "", Timestamp::now(), None)
+            .await
+            .unwrap();
+        let id = side_id();
+        self.store
+            .create_agent_session(
+                id,
+                Some(agent.agent_id),
+                Timestamp::now(),
+                Some(AgentSessionOptions {
+                    route: Some(route),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        self.user_message(id).await;
+        id
     }
 
     /// Serve two scripted fake providers instead of the default one, with a
@@ -232,7 +269,7 @@ impl Fixture {
         if pair {
             command.env(
                 "SWARMY_MODELS",
-                r#"[{"provider":"fake-a","id":"fake-model","api":"Fake"},{"provider":"fake-b","id":"fake-model","api":"Fake"}]"#,
+                r#"[{"provider":"fake-a","id":"fake-model","api":"Fake"},{"provider":"fake-a","id":"fake-other","api":"Fake"},{"provider":"fake-b","id":"fake-model","api":"Fake"}]"#,
             );
         } else {
             command.env_remove("SWARMY_MODELS");
@@ -244,8 +281,14 @@ impl Fixture {
             )
             .env("SWARMY_STORE_DIRECTORY", &self.stack.prefix)
             .env("SWARMY_BUS_PREFIX", &self.stack.prefix)
-            .env("SWARMY_WORKER_PARTITIONS", "7")
-            .env("SWARMY_SCHEDULER_PARTITIONS", "7")
+            .env(
+                "SWARMY_WORKER_PARTITIONS",
+                if self.all_partitions { "0-255" } else { "7" },
+            )
+            .env(
+                "SWARMY_SCHEDULER_PARTITIONS",
+                if self.all_partitions { "0-255" } else { "7" },
+            )
             .env("SWARMY_SCHEDULER_SCAN_INTERVAL_MS", "50")
             .env("SWARMY_SCHEDULER_RESEND_INTERVAL_MS", "100")
             .env("SWARMY_WORKER_LEASE_MS", "600")
@@ -2351,14 +2394,27 @@ Finish the task
             let new = wait_successor(f, id).await;
             assert_ne!(id, new);
             check_side_successor(f, &agent.agent_id, id, new, &summary).await;
+            // The successor continues the turn on its own; appending while
+            // it still runs would race its writes.
+            f.idle(new).await;
             f.user_message(new).await;
+            let asked = f.store.fetch_session(new).await.unwrap().unwrap().head_seq;
             f.wake(new).await;
-            let fresh_events = f.idle(new).await;
-            assert!(
-                fresh_events
-                    .iter()
-                    .any(|event| matches!(event, Event::InferenceCompleted { .. }))
-            );
+            let fresh_events =
+                swarmy_testkit::eventually("successor answers the new message", WAIT, async || {
+                    let session = f.store.fetch_session(new).await.unwrap().unwrap();
+                    if session.state != SessionState::Idle {
+                        return None;
+                    }
+                    let events = read_all_events(f, new).await;
+                    events
+                        .iter()
+                        .any(|event| {
+                            matches!(event, Event::InferenceCompleted { seq, .. } if *seq > asked)
+                        })
+                        .then_some(events)
+                })
+                .await;
             let request = fresh_events
                 .iter()
                 .rev()
@@ -2850,6 +2906,298 @@ async fn failover_survives_worker_restart_without_second_advance() {
                 SessionState::Idle,
                 "no park behind the failover"
             );
+        })
+    })
+    .await;
+}
+
+fn has_handoff_notice(message: &Message) -> bool {
+    message.role == MessageRole::System
+        && message.parts.iter().any(|part| {
+            matches!(part,
+            Part::Notice { kind: swarmy_core::NoticeKind::ModelHandoff, text }
+                if text.starts_with("Model handoff from fake-a/fake-model to fake-a/fake-other: "))
+        })
+}
+
+fn failed_reason(events: &[Event]) -> String {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            Event::InferenceFailed {
+                error,
+                retryable: true,
+                ..
+            } => Some(error.lines().next().unwrap().chars().take(200).collect()),
+            _ => None,
+        })
+        .expect("retryable failure before handoff")
+}
+
+fn requested_jobs(events: &[Event]) -> Vec<RequestId> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::InferenceRequested { request_id, .. } => Some(*request_id),
+            _ => None,
+        })
+        .collect()
+}
+
+fn write_handoff_script(f: &Fixture, summary: Option<&str>) {
+    let script = swarmy_testkit::Script::new("The turn is complete.")
+        .parts(
+            0,
+            vec![
+                Part::Reasoning {
+                    text: "**Testing the timeouts**".into(),
+                    metadata: BTreeMap::from([(
+                        "openai_responses".into(),
+                        serde_json::json!({"provider":"fake-a","model":"fake-model","item":{"type":"reasoning"}}),
+                    )]),
+                },
+                Part::ToolCall {
+                    call_id: ToolCallId("clock".into()),
+                    tool: "get_time".into(),
+                    input: serde_json::json!({}),
+                },
+            ],
+            StopReason::ToolCalls,
+        )
+        .failure(1, 429, "quota reached", Some(3600));
+    let script = if let Some(summary) = summary {
+        script.parts(
+            2,
+            vec![Part::Text {
+                text: summary.to_owned(),
+            }],
+            StopReason::EndTurn,
+        )
+    } else {
+        script
+    };
+    script.write_to(&f.files.path().join("script.json"));
+}
+
+#[tokio::test]
+async fn route_failover_to_another_model_hands_off_through_a_plain_text_summary() {
+    run(|f| {
+        Box::pin(async move {
+            f.fake_pair();
+            f.keyring();
+            f.put_entry_for("fake-a", "first").await;
+            f.put_entry_for("fake-a", "second").await;
+            f.put_route_models(
+                "ab",
+                &[
+                    ("fake-a", "first", None),
+                    ("fake-a", "second", Some("fake-other")),
+                ],
+            )
+            .await;
+            let summary = "## Goal\nTell the time\n\n## Next Steps\n1. Report the time";
+            write_handoff_script(f, Some(summary));
+            f.start("scheduler", None);
+            f.start("gateway", None);
+            f.start("worker", None);
+            f.gateway_serves("fake-a").await;
+            let id = f.create_named_with_route("handoff", "ab").await;
+            f.wake(id).await;
+            let new = wait_successor(f, id).await;
+            let fresh = f.idle(new).await;
+            assert_eq!(f.calls(), 4);
+            let histories = f.histories();
+            assert_eq!(histories[2].len(), 1);
+            let Part::Text { text: prompt } = &histories[2][0].parts[0] else {
+                panic!("summary prompt must be text")
+            };
+            for fragment in [
+                "<conversation>",
+                "[User]: What time is it?",
+                "[Tool call] get_time {}",
+                "[Tool result] get_time:",
+                swarmy_harness::SUMMARIZATION_PROMPT,
+            ] {
+                assert!(prompt.contains(fragment), "missing {fragment}");
+            }
+            for history in &histories[2..] {
+                assert!(
+                    !serde_json::to_string(history)
+                        .unwrap()
+                        .contains("Testing the timeouts")
+                );
+                assert!(
+                    !history
+                        .iter()
+                        .flat_map(|message| &message.parts)
+                        .any(|part| matches!(part, Part::Reasoning { .. }))
+                );
+            }
+            assert!(matches!(&histories[3][0].parts[0], Part::Text { text }
+            if text.starts_with(swarmy_harness::COMPACTION_SUMMARY_PREFIX)
+                && text.contains(summary)));
+            assert!(histories[3].iter().any(has_handoff_notice));
+            let old = read_all_events(f, id).await;
+            let mut summaries = 0;
+            for request_id in requested_jobs(&old) {
+                let job = f
+                    .store
+                    .get_inference_input::<swarmy_llm::InferenceJob>(request_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if job.summary {
+                    summaries += 1;
+                    assert_eq!(job.route_step, 1);
+                    assert_eq!(job.entry.as_deref(), Some("second"));
+                    assert_eq!(job.request.settings.model, "fake-other");
+                    let handoff = job.summary_handoff.unwrap();
+                    assert_eq!(handoff.from_model, "fake-model");
+                    assert_eq!(handoff.to_model, "fake-other");
+                    assert_eq!(handoff.reason, failed_reason(&old));
+                }
+            }
+            assert_eq!(summaries, 1);
+            assert_eq!(
+                old.iter()
+                    .filter(|event| matches!(event,
+            Event::MessageAppended { message, .. } if has_handoff_notice(message)))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                f.store.fetch_session(id).await.unwrap().unwrap().state,
+                SessionState::Completed
+            );
+            assert_eq!(f.store.previous_session(new).await.unwrap(), Some(id));
+            assert!(fresh.iter().any(|event| matches!(event,
+            Event::InferenceCompleted { completion, .. }
+                if completion.model == "fake-other"
+                    && completion.entry.as_deref() == Some("second")
+                    && completion.route_step == Some(1))));
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn same_model_failover_to_another_key_does_not_hand_off() {
+    run(|f| {
+        Box::pin(async move {
+            f.fake_pair();
+            f.keyring();
+            f.put_entry_for("fake-a", "first").await;
+            f.put_entry_for("fake-a", "second").await;
+            f.put_route_models(
+                "ab",
+                &[("fake-a", "first", None), ("fake-a", "second", None)],
+            )
+            .await;
+            write_handoff_script(f, None);
+            f.start("scheduler", None);
+            f.start("gateway", None);
+            f.start("worker", None);
+            f.gateway_serves("fake-a").await;
+            let id = f.create_named_with_route("same-model", "ab").await;
+            f.wake(id).await;
+            let events = f.idle(id).await;
+            assert_eq!(f.calls(), 3);
+            for request_id in requested_jobs(&events) {
+                let job = f
+                    .store
+                    .get_inference_input::<swarmy_llm::InferenceJob>(request_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(!job.summary);
+            }
+            assert!(!events.iter().any(|event| matches!(event,
+            Event::MessageAppended { message, .. } if has_handoff_notice(message))));
+            assert_eq!(f.store.next_session(id).await.unwrap(), None);
+            assert!(
+                f.histories()[2]
+                    .iter()
+                    .flat_map(|message| &message.parts)
+                    .any(|part| matches!(part, Part::Reasoning { .. }))
+            );
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn main_session_route_failover_hands_off_and_wakes_the_successor() {
+    run(|f| {
+        Box::pin(async move {
+            f.fake_pair();
+            f.keyring();
+            f.put_entry_for("fake-a", "first").await;
+            f.put_entry_for("fake-a", "second").await;
+            f.put_route_models(
+                "ab",
+                &[
+                    ("fake-a", "first", None),
+                    ("fake-a", "second", Some("fake-other")),
+                ],
+            )
+            .await;
+            let summary = "## Goal\nTell the time\n\n## Next Steps\n1. Report the time";
+            write_handoff_script(f, Some(summary));
+            let image = swarmy_testkit::image(&f.store).await;
+            let settings = swarmy_core::AgentSettings {
+                route: Some("ab".into()),
+                ..Default::default()
+            };
+            let agent = f
+                .store
+                .create_agent(
+                    "main-handoff",
+                    image,
+                    "",
+                    Timestamp::now(),
+                    Some(swarmy_store::CreateAgentOptions {
+                        settings: Some(&settings),
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .unwrap();
+            let (id, created) = f
+                .store
+                .open_main_session(agent.agent_id, Timestamp::now())
+                .await
+                .unwrap();
+            assert!(created);
+            f.user_message(id).await;
+            // Main successor ids are not pinned to the original partition.
+            f.all_partitions = true;
+            f.start("scheduler", None);
+            f.start("gateway", None);
+            f.start("worker", None);
+            f.gateway_serves("fake-a").await;
+            f.wake(id).await;
+            let successor = wait_successor(f, id).await;
+            let fresh = f.idle(successor).await;
+            assert_eq!(
+                f.store
+                    .get_agent(agent.agent_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .main_session,
+                Some(successor)
+            );
+            assert!(fresh.iter().any(|event| matches!(event,
+            Event::InferenceCompleted { completion, .. }
+                if completion.model == "fake-other"
+                    && completion.entry.as_deref() == Some("second")
+                    && completion.route_step == Some(1))));
+            let histories = f.histories();
+            assert!(matches!(&histories[3][0].parts[0], Part::Text { text }
+            if text.starts_with(swarmy_harness::COMPACTION_SUMMARY_PREFIX)
+                && text.contains(summary)));
+            assert!(histories[3].iter().any(has_handoff_notice));
         })
     })
     .await;
