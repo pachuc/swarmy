@@ -32,7 +32,8 @@ impl Store {
         ))
     }
 
-    /// Request the current turn to end, or finish a parked inference atomically.
+    /// Request the current turn to end, or finish a parked inference (asleep,
+    /// or between gateway retries) atomically.
     /// # Errors
     /// Returns an error when the session has no active turn or storage fails.
     pub async fn interrupt_session(&self, id: SessionId) -> Result<InterruptResult> {
@@ -55,16 +56,13 @@ impl Store {
                     };
                     self.append_interrupted(&trx, session, request_id, self.now())
                         .await?;
-                    trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
-                    trx.clear(&self.keys().inference_wait(id));
+                    self.clear_wait(&trx, id, &wait);
                     Ok(InterruptResult::Finished)
                 }
-                _ => {
-                    let mut session = session;
-                    session.interrupt_requested = true;
-                    self.write_session(&trx, &session)?;
-                    Ok(InterruptResult::Requested)
+                SessionState::WaitingInference => {
+                    self.interrupt_parked_inference(&trx, session).await
                 }
+                _ => self.mark_interrupt(&trx, session),
             }
         })
         .await
@@ -99,15 +97,51 @@ impl Store {
             };
             self.append_interrupted(&trx, session, request_id, self.now())
                 .await?;
-            if let Some(wait) =
-                read::<crate::InferenceWait>(&trx, &self.keys().inference_wait(id)).await?
-            {
-                trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
-                trx.clear(&self.keys().inference_wait(id));
-            }
+            self.clear_wait_in(&trx, id).await?;
             Ok(true)
         })
         .await
+    }
+
+    /// Finish a request parked between gateway retries, not one held by a live gateway.
+    async fn interrupt_parked_inference(
+        &self,
+        trx: &Transaction,
+        session: StoredSession,
+    ) -> Result<InterruptResult> {
+        let now = self.now();
+        let request_id = RequestId::for_step(session.session_id, session.head_seq);
+        if self
+            .inference_parked_for_retry(trx, request_id, now)
+            .await?
+        {
+            self.clear_inference_rows(trx, request_id);
+            self.clear_wait_in(trx, session.session_id).await?;
+            self.append_interrupted(trx, session, request_id, now)
+                .await?;
+            Ok(InterruptResult::Finished)
+        } else {
+            self.mark_interrupt(trx, session)
+        }
+    }
+
+    fn mark_interrupt(
+        &self,
+        trx: &Transaction,
+        mut session: StoredSession,
+    ) -> Result<InterruptResult> {
+        session.interrupt_requested = true;
+        self.write_session(trx, &session)?;
+        Ok(InterruptResult::Requested)
+    }
+
+    async fn clear_wait_in(&self, trx: &Transaction, id: SessionId) -> Result<()> {
+        if let Some(wait) =
+            read::<crate::InferenceWait>(trx, &self.keys().inference_wait(id)).await?
+        {
+            self.clear_wait(trx, id, &wait);
+        }
+        Ok(())
     }
 
     async fn request_from_event(

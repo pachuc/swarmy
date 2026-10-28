@@ -35,14 +35,18 @@ publication is logged and durable completion still proceeds. Partial deltas may
 repeat after a crash. Consumers treat the final durable event as authoritative.
 
 `Store::complete_inference` atomically writes the response, appends the success
-or failure event, clears inflight, the stored gateway request, and the claim,
-marks idempotency complete, and indexes the session as Runnable. Large values
+or failure event, clears inflight, the stored gateway request, the claim,
+and the retry counter, marks idempotency complete, and indexes the session
+as Runnable. Large values
 are uploaded to content-addressed blobs first. As with other store writes,
 failed transactions can leave blobs for later garbage collection. Full
 results, including usage and stop reason, are
 available through `Store::get_inference_result::<Result<Response, String>>`;
 success events also contain the assistant message. Acknowledgement follows the
 transaction. Replayed completed jobs are acknowledged without provider calls.
+Closing a session, or interrupting one parked between retries, clears the same
+rows in its own transaction, so a late completion fails its claim fence and a
+redelivery cannot claim the request again.
 
 The fake script uses zero-based response turns within each process:
 

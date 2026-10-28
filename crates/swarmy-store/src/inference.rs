@@ -54,17 +54,34 @@ struct PreparedCompletion {
 }
 
 impl Store {
-    /// Store the gateway payload for a request published before requests were
-    /// stored separately from their inputs, so a republished reference resolves.
-    /// # Errors
-    /// Returns storage or blob upload errors.
-    pub async fn put_inference_request<T: Serialize + Sync>(
+    /// Remove every per-request gateway row: the stored request, the claim, the
+    /// retry counter, and the inflight outbox record. Callers clear them in the
+    /// same transaction that ends the session's wait for this request, so no
+    /// gateway can claim it again and a late completion fails its claim fence.
+    pub(crate) fn clear_inference_rows(&self, trx: &foundationdb::Transaction, id: RequestId) {
+        let keys = self.keys();
+        trx.clear(&keys.inflight(id));
+        trx.clear(&keys.inference_request(id));
+        trx.clear(&keys.inference_claim(id));
+        trx.clear(&keys.inference_retry(id));
+    }
+
+    /// Whether the request is parked between gateway attempts: a retry is
+    /// recorded and no live claim holds it.
+    pub(crate) async fn inference_parked_for_retry(
         &self,
+        trx: &foundationdb::Transaction,
         id: RequestId,
-        request: &T,
-    ) -> Result<()> {
-        self.put_payload(self.keys().inference_request(id), request)
-            .await
+        now: Timestamp,
+    ) -> Result<bool> {
+        let keys = self.keys();
+        let retry_key = keys.inference_retry(id);
+        let claim_key = keys.inference_claim(id);
+        let (retry, claim) = futures::try_join!(
+            read::<InferenceRetry>(trx, &retry_key),
+            read::<InferenceClaim>(trx, &claim_key),
+        )?;
+        Ok(retry.is_some() && claim.is_none_or(|claim| claim.expires_at <= now))
     }
 
     /// Read the gateway payload by its request id.
@@ -196,8 +213,8 @@ impl Store {
         .await
     }
 
-    /// Store the full result, append its event, clear inflight, the request and
-    /// the claim, mark idempotency complete, and index Runnable in one
+    /// Store the full result, append its event, clear inflight, the request,
+    /// claim, and retry counter, mark idempotency complete, and index Runnable in one
     /// transaction. Large result and event values use the blob path first.
     /// Returns true only for a newly committed result. A duplicate returns false,
     /// so callers never fan out an event that lost to another completion.
@@ -351,12 +368,9 @@ impl Store {
             trx.set(&self.keys().event(claim.session_id, head), event);
             trx.set(&self.keys().inference_result(claim.request_id), response);
             trx.set(&idem_key, completed);
-            trx.clear(&self.keys().inflight(claim.request_id));
             // The completed request id is never retried. Retryable failures
             // create a new step after the worker's wait.
-            trx.clear(&self.keys().inference_request(claim.request_id));
-            trx.clear(&claim_key);
-            trx.clear(&self.keys().inference_retry(claim.request_id));
+            self.clear_inference_rows(&trx, claim.request_id);
             session.head_seq = head;
             let interrupt_requested =
                 session.interrupt_requested || self.has_queued_in(&trx, claim.session_id).await?;

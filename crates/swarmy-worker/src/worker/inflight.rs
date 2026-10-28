@@ -118,7 +118,17 @@ impl Worker {
             if self.fail_unserved(&job).await? {
                 return Ok(());
             }
-            self.store_missing_request(&job).await?;
+            // Submission writes the request with inflight. A missing payload
+            // means this recovery scan raced a completed or closed request.
+            if self
+                .store
+                .get_inference_request::<swarmy_llm::Request>(request_id)
+                .await?
+                .is_none()
+            {
+                tracing::warn!(%request_id, "request payload missing; skipping recovery publication");
+                return Ok(());
+            }
             let published = self
                 .bus
                 .publish_work(
@@ -135,34 +145,6 @@ impl Worker {
                 }
             }
         }
-        Ok(())
-    }
-}
-impl Worker {
-    /// Jobs published inline before requests were stored by reference have an
-    /// input but no request row. Store it so the gateway can resolve the
-    /// reference, unless the request already completed and was cleared.
-    pub(super) async fn store_missing_request(&self, job: &InferenceJob) -> Result<()> {
-        if self
-            .store
-            .get_inference_request::<swarmy_llm::Request>(job.request_id)
-            .await?
-            .is_some()
-        {
-            return Ok(());
-        }
-        let completed = self
-            .store
-            .get_idempotency(job.request_id)
-            .await?
-            .is_some_and(|record| record.state == swarmy_core::IdempotencyState::Completed);
-        if completed {
-            return Ok(());
-        }
-        tracing::info!(request_id = %job.request_id, "storing request for inline job");
-        self.store
-            .put_inference_request(job.request_id, &job.request)
-            .await?;
         Ok(())
     }
 }

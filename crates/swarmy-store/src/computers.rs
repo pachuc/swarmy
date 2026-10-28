@@ -59,7 +59,8 @@ impl Store {
         Ok(())
     }
 
-    /// Close a side or ephemeral session. Only ephemeral computers are deleted. Safe to repeat.
+    /// Close a side or ephemeral session and clear rows of an inference it was waiting for.
+    /// Only ephemeral computers are deleted. Safe to repeat.
     /// # Errors
     /// Rejects main sessions and returns storage or decoding failures.
     pub async fn close_session(&self, id: SessionId, now: Timestamp) -> Result<()> {
@@ -86,6 +87,8 @@ impl Store {
                 }
             }
         }
+        // While waiting, the head is the request step; in other states these clears are no-ops.
+        self.clear_inference_rows(trx, swarmy_core::RequestId::for_step(id, session.head_seq));
         self.transition(trx, session, SessionState::Completed, now)
             .await
     }

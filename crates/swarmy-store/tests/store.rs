@@ -1268,6 +1268,271 @@ async fn large_snapshot_metadata_survives_head_and_lease_updates() {
     assert_eq!(blobs.get(&key).await.unwrap().as_ref(), bytes);
 }
 
+async fn assert_inference_rows(test: &TestStore, id: RequestId, present: bool) {
+    assert_inference_rows_with_claim(test, id, present, present).await;
+}
+
+async fn assert_inference_rows_with_claim(
+    test: &TestStore,
+    id: RequestId,
+    present: bool,
+    claim_present: bool,
+) {
+    for name in [
+        "inference_request",
+        "inference_claim",
+        "inference_retry",
+        "inflight",
+    ] {
+        let key = test.root.pack(&(name, id.as_bytes().as_slice()));
+        let exists = test
+            .db
+            .run(|trx, _| {
+                let key = &key;
+                async move { Ok(trx.get(key, false).await?.is_some()) }
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            exists,
+            if name == "inference_claim" {
+                claim_present
+            } else {
+                present
+            },
+            "{name} presence"
+        );
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GatewayClaim {
+    Live,
+    Released,
+    Expired,
+}
+
+async fn live_lease(store: &Store, id: SessionId) -> swarmy_core::Lease {
+    store
+        .claim_lease(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn submit_request(
+    store: &Store,
+    id: SessionId,
+    lease: &swarmy_core::Lease,
+    head: u64,
+) -> RequestId {
+    let step = head + 1;
+    store
+        .submit_inference::<_, &str>(
+            head,
+            lease,
+            &InflightRecord {
+                session_id: id,
+                seq: step,
+                provider: "fake".into(),
+                key_id: String::new(),
+            },
+            &"input",
+            Some(swarmy_store::SubmitInferenceOptions {
+                request: Some(&"request"),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    RequestId::for_step(id, step)
+}
+
+async fn claim_with_retry(
+    store: &Store,
+    request_id: RequestId,
+    session_id: SessionId,
+    kind: GatewayClaim,
+) -> swarmy_store::InferenceClaim {
+    use std::time::Duration;
+    let expires_at = if kind == GatewayClaim::Expired {
+        Timestamp::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap()
+    } else {
+        Timestamp::now()
+            .checked_add(Duration::from_secs(60))
+            .unwrap()
+    };
+    let start = if kind == GatewayClaim::Expired {
+        expires_at.checked_sub(Duration::from_secs(1)).unwrap()
+    } else {
+        Timestamp::now()
+    };
+    let claim = swarmy_store::InferenceClaim {
+        session_id,
+        request_id,
+        owner: owner(),
+        expires_at,
+    };
+    assert!(store.start_inference(&claim, start).await.unwrap());
+    store.record_inference_retry(&claim, start).await.unwrap();
+    if kind == GatewayClaim::Released {
+        store.release_inference(&claim).await.unwrap();
+    }
+    claim
+}
+
+async fn waiting_with_retry(
+    store: &Store,
+    id: SessionId,
+    kind: GatewayClaim,
+) -> swarmy_store::InferenceClaim {
+    let lease = live_lease(store, id).await;
+    let request_id = submit_request(store, id, &lease, 0).await;
+    claim_with_retry(store, request_id, id, kind).await
+}
+
+fn failed_completion(claim: swarmy_store::InferenceClaim) -> swarmy_store::InferenceCompletion {
+    swarmy_store::InferenceCompletion {
+        expected_head: 1,
+        now: Timestamp::now(),
+        event: Event::InferenceFailed {
+            seq: 2,
+            request_id: claim.request_id,
+            error: "failed".into(),
+            retryable: false,
+            retry_at: None,
+            failure_kind: swarmy_core::FailureKind::Unknown,
+        },
+        claim,
+        entry: None,
+        entry_kind: None,
+        quota_remaining: std::collections::BTreeMap::default(),
+        quota_resets: std::collections::BTreeMap::default(),
+    }
+}
+
+#[tokio::test]
+async fn interrupt_between_gateway_retries_clears_request_rows_and_finishes() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    for kind in [GatewayClaim::Released, GatewayClaim::Expired] {
+        let id = test.create().await;
+        let claim = waiting_with_retry(&test.store, id, kind).await;
+        assert_inference_rows_with_claim(
+            &test,
+            claim.request_id,
+            true,
+            kind != GatewayClaim::Released,
+        )
+        .await;
+        assert_eq!(
+            test.store.interrupt_session(id).await.unwrap(),
+            InterruptResult::Finished
+        );
+        assert_inference_rows(&test, claim.request_id, false).await;
+        let session = test.store.fetch_session(id).await.unwrap().unwrap();
+        assert_eq!(
+            (session.state, session.head_seq, session.interrupt_requested),
+            (SessionState::Idle, 2, false)
+        );
+        assert!(
+            matches!(&test.store.read_events(id, 1, 1).await.unwrap()[0],
+            Event::InferenceFailed { request_id, failure_kind: swarmy_core::FailureKind::OperatorInterrupted, .. }
+            if *request_id == claim.request_id)
+        );
+    }
+}
+
+#[tokio::test]
+async fn late_completion_after_interrupt_is_fenced() {
+    use swarmy_store::{DomainError, FenceError};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let claim = waiting_with_retry(&test.store, id, GatewayClaim::Released).await;
+    assert_eq!(
+        test.store.interrupt_session(id).await.unwrap(),
+        InterruptResult::Finished
+    );
+    let events = test.store.read_events(id, 0, 10).await.unwrap();
+    assert!(matches!(
+        test.store
+            .complete_inference(&failed_completion(claim.clone()), &"result")
+            .await,
+        Err(StoreError::Fence(FenceError::LeaseMismatch))
+    ));
+    assert_eq!(test.store.read_events(id, 0, 10).await.unwrap(), events);
+    assert_eq!(
+        test.store
+            .fetch_session(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .head_seq,
+        2
+    );
+    let fresh = swarmy_store::InferenceClaim {
+        owner: owner(),
+        expires_at: Timestamp::now()
+            .checked_add(std::time::Duration::from_secs(60))
+            .unwrap(),
+        ..claim
+    };
+    assert!(matches!(
+        test.store.start_inference(&fresh, Timestamp::now()).await,
+        Err(StoreError::Domain(DomainError::UnexpectedSessionState))
+    ));
+    test.store.wake_session(id, Timestamp::now()).await.unwrap();
+    let lease = live_lease(&test.store, id).await;
+    let next = submit_request(&test.store, id, &lease, 2).await;
+    assert!(matches!(
+        test.store.start_inference(&fresh, Timestamp::now()).await,
+        Err(StoreError::Domain(DomainError::MissingInflight))
+    ));
+    assert!(test.store.get_inflight(next).await.unwrap().is_some());
+    assert!(
+        test.store
+            .get_inference_request::<String>(next)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn interrupt_with_live_gateway_claim_waits_for_commit() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let claim = waiting_with_retry(&test.store, id, GatewayClaim::Live).await;
+    assert_eq!(
+        test.store.interrupt_session(id).await.unwrap(),
+        InterruptResult::Requested
+    );
+    assert_inference_rows(&test, claim.request_id, true).await;
+    assert!(
+        test.store
+            .complete_inference(&failed_completion(claim.clone()), &"result")
+            .await
+            .unwrap()
+    );
+    assert_inference_rows(&test, claim.request_id, false).await;
+    assert_eq!(
+        test.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Runnable
+    );
+}
+
 #[tokio::test]
 async fn inference_completion_is_atomic_fenced_and_idempotent() {
     use swarmy_store::{FenceError, InferenceClaim, InferenceCompletion};

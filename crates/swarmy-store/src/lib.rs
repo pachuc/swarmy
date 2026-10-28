@@ -874,6 +874,7 @@ impl Store {
         self.get_payload(self.keys().inflight(id)).await
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     async fn put_payload<T: Serialize>(&self, key: Vec<u8>, value: &T) -> Result<()> {
         let value = self.prepare(value).await?;
         self.transaction(|trx| {

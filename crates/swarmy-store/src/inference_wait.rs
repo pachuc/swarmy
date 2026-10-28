@@ -119,6 +119,17 @@ pub(crate) fn open_state(
 }
 
 impl Store {
+    /// Remove both wait keys without reading them; callers already hold the wait.
+    pub(crate) fn clear_wait(
+        &self,
+        trx: &foundationdb::Transaction,
+        id: SessionId,
+        wait: &InferenceWait,
+    ) {
+        trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
+        trx.clear(&self.keys().inference_wait(id));
+    }
+
     /// Breaker records live under `(provider, label)`. The previous
     /// provider-only tuple is never read, so open provider-keyed breakers are
     /// dropped at upgrade; a stale one only costs one probe.
@@ -366,7 +377,7 @@ impl Store {
             .checked_add(max_wait)
             .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
         if wait.last_failure_seq != 0 {
-            trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
+            self.clear_wait(trx, id, &wait);
         }
         wait.last_failure_seq = failure.seq;
         wait.wake_at = if now >= limit {
@@ -416,7 +427,9 @@ impl Store {
             if wait.wake_at > now {
                 return Ok(false);
             }
-            trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
+            // Keep the wait history across this wake; only its due index expires.
+            self.clear_wait(&trx, id, &wait);
+            write(&trx, &key, &wait)?;
             let session = self.session(&trx, id).await?;
             if session.state == SessionState::Sleeping {
                 self.transition(&trx, session, SessionState::Runnable, now)
@@ -437,8 +450,7 @@ impl Store {
         self.transaction(|trx| async move {
             if let Some(wait) = read::<InferenceWait>(&trx, &self.keys().inference_wait(id)).await?
             {
-                trx.clear(&self.keys().inference_wait_due(wait.wake_at, id));
-                trx.clear(&self.keys().inference_wait(id));
+                self.clear_wait(&trx, id, &wait);
             }
             let mut session = self.session(&trx, id).await?;
             session.route_step = 0;
