@@ -131,7 +131,7 @@ impl Gateway {
             )
             .await?;
         if result.is_err() {
-            let kind = if class.is_some_and(|class| class.rate_limited) {
+            let kind = if class.is_some_and(swarmy_llm::ErrorClass::rate_limited) {
                 swarmy_store::WaitKind::RateLimit
             } else {
                 swarmy_store::WaitKind::ProviderFailure

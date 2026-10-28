@@ -76,6 +76,8 @@ pub use turns::{SubmitInferenceOptions, SubmitRouteStep};
 mod volumes;
 pub use volumes::PutImageOptions;
 
+#[cfg(any(test, feature = "test-support"))]
+pub use inference_wait::LeaseAudit;
 pub use inference_wait::{BreakerCandidate, CredentialKey, InferenceFailureWait, InferenceWait};
 pub use runnable::{RUNNABLE_PARTITIONS, runnable_partition};
 

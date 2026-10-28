@@ -94,8 +94,8 @@ control-plane services flush queued turn metrics before exit
   ([source](../crates/swarmy-testkit/src/lib.rs)).
 - **swarmy-e2e** owns the real-binary integration suites
   ([manifest](../crates/swarmy-e2e/Cargo.toml)).
-- **swarmy-chaos** is a binary that tests crashes and restart continuity
-  ([manifest](../crates/swarmy-chaos/Cargo.toml)).
+- **swarmy-chaos** is a binary that tests crashes, restart
+  continuity, and rate-limit saturation ([manifest](../crates/swarmy-chaos/Cargo.toml)).
 
 Dependency direction is an intention rather than a CI-enforced rule: most
 services consume storage and transport, while clients normally consume the
@@ -234,6 +234,22 @@ content-addressed chunks and manifests, with dirty periodic snapshots
 ([volume source](../crates/swarmy-volume/src/lib.rs)).
 
 ## Operational invariants
+
+- **Rate limits are retryable waits, not admission control.** Swarmy keeps
+  no token buckets in front of providers: subscription windows, spend-tiered
+  key limits, and cloud quotas are opaque and shift, so a local model of them
+  drifts from the provider's. A 429 or outage is instead a retryable failure
+  the system is durable to. The protocol client returns it at once, the
+  gateway records it and opens that auth entry's circuit breaker until the
+  provider's Retry-After or a backoff, and the worker fails over along the
+  route or parks the session in `inference_wait` with a wake time and releases
+  its lease. While the breaker is open neither the scheduler nor the gateway
+  sends work to the entry, so hundreds of waiting sessions cost the provider
+  nothing; one claimed probe tests it afterwards. Remaining-quota headers
+  feed the quota views as observed values
+  ([inference_wait.rs](../crates/swarmy-store/src/inference_wait.rs),
+  [attempt.rs](../crates/swarmy-gateway/src/attempt.rs),
+  [saturation scenario](../crates/swarmy-chaos/src/saturation.rs)).
 
 - **Fence every owner.** Session leases, inference claims, placement epochs
   and volume leases are checked in the transaction that changes durable state;

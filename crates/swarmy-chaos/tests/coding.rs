@@ -23,7 +23,8 @@ fn root_coding_recovery() {
     let status = Command::new(executable)
         .args([
             "--no-start-stack",
-            "--coding",
+            "--scenario",
+            "coding",
             "--sessions",
             "1",
             "--schedulers",

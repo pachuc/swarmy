@@ -134,7 +134,7 @@ sleep 3
 . /opt/swarmy/bench.env
 cd /mnt/swarmy/run
 swarmy --json image build /opt/swarmy/base-ubuntu --tag persistent > /opt/swarmy/image.json
-swarmy-chaos --no-start-stack --bin-dir /opt/swarmy --persistent --image base-ubuntu:persistent --sessions 2 --gateways 1 --kills 0 --node-driver /opt/swarmy/persistent-cloud-node.py --measurements /opt/swarmy/persistent-volume.py > /opt/swarmy/persistent.log 2>&1
+swarmy-chaos --no-start-stack --bin-dir /opt/swarmy --scenario persistent --image base-ubuntu:persistent --sessions 2 --gateways 1 --kills 0 --node-driver /opt/swarmy/persistent-cloud-node.py --measurements /opt/swarmy/persistent-volume.py > /opt/swarmy/persistent.log 2>&1
 ' ''')
         finally:
             for name in ("persistent.log", "image.json"):

@@ -352,7 +352,7 @@ async fn finish_reasons_errors_and_retry() {
     ));
     server.reset().await;
     Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+        .respond_with(ResponseTemplate::new(503).insert_header("retry-after", "0"))
         .up_to_n_times(1)
         .expect(1)
         .with_priority(1)

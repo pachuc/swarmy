@@ -25,8 +25,9 @@ cluster store or resolve from the gateway host. Builds never fetch model data.
 `env_keys` in the catalog also includes endpoint and cloud configuration. A
 project, region, or profile name is not itself a secret key. Clients identify
 swarmy as `swarmy/<version>`; they do not send another coding product's identity
-headers or system prompt prefixes. Images are catalog metadata only: image
-inputs are not sent yet.
+headers or system prompt prefixes. Image inputs are sent to models whose
+catalog entry lists `image` among its input modalities; for other models the
+worker replaces each image with a short text note saying it was omitted.
 
 ## Credentials and auth commands
 
@@ -147,6 +148,16 @@ cost to the entry that earned it. Those route fields are trailing bytes on
 the completion row, which older readers reject: when rolling this out,
 upgrade readers (workers, API servers, CLI clients, chaos checkers) before
 gateways.
+
+A 429, or a response naming a usage or rate limit, is never retried inside the
+protocol client: the gateway opens that entry's breaker at once until the
+provider's Retry-After, or an exponential backoff when none is sent, and the
+session fails over or waits as described above while its worker lease is
+released. Other transient statuses (408, 409, 5xx) still get up to three
+attempts within one request. While a breaker is open no request reaches the
+entry; afterwards one probe is let through, and its success closes the
+breaker. `swarmy-chaos --scenario saturation` checks this against two
+rate-limited keys (see [DEV.md](DEV.md#session-failure-injection)).
 
 ### Model handoff on failover
 
@@ -350,7 +361,9 @@ process, without NATS, workers, or gateway routing. It streams text, reasoning,
 and tool deltas, then prints usage (including cache and reasoning tokens),
 catalog cost, effort used, and elapsed time. `--tools` requires exactly one
 `get_time` call, supplies the current UTC time, and requests the final answer.
-A provider or protocol failure exits nonzero with its error. `--json` emits
+A provider or protocol failure exits nonzero with its error. A 429 or
+usage-limit response is reported at once; probe does not wait out the
+provider's Retry-After. `--json` emits
 newline-delimited delta records followed by a `probe_summary`. Without an
 explicit effort, probe starts at `none` and clamps it to the model.
 
@@ -502,5 +515,7 @@ not a new grant of vendor permission:
 | OpenRouter PKCE | Built as the documented public flow that mints an API key. |
 | Azure CLI Entra tokens | Built through the installed Azure CLI; no embedded Azure client identity. |
 
-Key pools, admission, affinity, image inputs, and expanding the
-models.dev provider allowlist remain future work; see the `provider-breadth-quota` goal in tasky.
+Admission control is deliberately not built: rate limits are retryable waits
+behind a per-entry circuit breaker (see Routes and failover). Widening the
+models.dev provider allowlist is tracked in
+[backlog/housekeeping.md](../backlog/housekeeping.md).

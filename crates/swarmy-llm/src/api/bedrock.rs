@@ -1455,7 +1455,7 @@ mod tests {
             initial_delay: std::time::Duration::ZERO,
             max_delay: std::time::Duration::ZERO,
         };
-        for error in [throttled, unavailable, not_ready] {
+        for (error, expected) in [(throttled, 1), (unavailable, 3), (not_ready, 1)] {
             let attempts = std::sync::atomic::AtomicUsize::new(0);
             let result: Result<(), Error> = with_retry(&policy, || {
                 attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1463,7 +1463,10 @@ mod tests {
             })
             .await;
             assert!(matches!(result, Err(Error::ProviderResponse { .. })));
-            assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 3);
+            assert_eq!(
+                attempts.load(std::sync::atomic::Ordering::Relaxed),
+                expected
+            );
         }
         let error = ConverseStreamError::ValidationException(
             sdk::error::ValidationException::builder()
@@ -1502,7 +1505,7 @@ mod tests {
             initial_delay: std::time::Duration::ZERO,
             max_delay: std::time::Duration::ZERO,
         };
-        for error in errors {
+        for (error, expected) in errors.into_iter().zip([1, 3]) {
             assert!(error.code().is_none());
             let attempts = std::sync::atomic::AtomicUsize::new(0);
             let result: Result<(), Error> = with_retry(&policy, || {
@@ -1511,7 +1514,10 @@ mod tests {
             })
             .await;
             assert!(matches!(result, Err(Error::ProviderResponse { .. })));
-            assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 3);
+            assert_eq!(
+                attempts.load(std::sync::atomic::Ordering::Relaxed),
+                expected
+            );
         }
         let error = E::ValidationException(
             sdk::error::ValidationException::builder()

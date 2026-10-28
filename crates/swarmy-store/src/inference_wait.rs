@@ -118,7 +118,46 @@ pub(crate) fn open_state(
     (open_until, reason)
 }
 
+/// One session's parking and lease rows read together, so a checker sees no
+/// torn view of a park. Test-only, also available with `test-support`.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug)]
+pub struct LeaseAudit {
+    pub session_id: SessionId,
+    pub state: SessionState,
+    /// An `inference_wait` row exists. The row outlives a wake, so a parked
+    /// session is `state == Sleeping && waiting`.
+    pub waiting: bool,
+    /// A worker `lease` row exists.
+    pub leased: bool,
+}
+
 impl Store {
+    /// Read each session's state, inference wait, and lease in one transaction.
+    /// # Errors
+    /// Returns missing-session, decoding, or storage failures.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn lease_audit(&self, ids: &[SessionId]) -> Result<Vec<LeaseAudit>> {
+        self.transaction(|trx| async move {
+            let mut rows = Vec::with_capacity(ids.len());
+            for id in ids {
+                rows.push(LeaseAudit {
+                    session_id: *id,
+                    state: self.session(&trx, *id).await?.state,
+                    waiting: read::<InferenceWait>(&trx, &self.keys().inference_wait(*id))
+                        .await?
+                        .is_some(),
+                    leased: read::<Lease>(&trx, &self.keys().lease(*id))
+                        .await?
+                        .is_some(),
+                });
+            }
+            Ok(rows)
+        })
+        .await
+    }
+
     /// Remove both wait keys without reading them; callers already hold the wait.
     pub(crate) fn clear_wait(
         &self,

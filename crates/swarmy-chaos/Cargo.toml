@@ -27,7 +27,10 @@ serde_json.workspace = true
 swarmy-bus.workspace = true
 swarmy-core.workspace = true
 swarmy-llm.workspace = true
-swarmy-store.workspace = true
+swarmy-store = { workspace = true, features = ["test-support"] }
+swarmy-client.workspace = true
+swarmy-api-types.workspace = true
+wiremock.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true

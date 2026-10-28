@@ -361,7 +361,7 @@ mod tests {
             .map(|(i, v)| (i, serde_json::from_value(v).unwrap()))
             .collect();
         // CI exercises the same provider script and real git commands. Privileged
-        // checkpoint rollback, tool dispatch, and node death are covered by --coding.
+        // checkpoint rollback, tool dispatch, and node death are covered by --scenario coding.
         for index in 0..10 {
             let request = swarmy_llm::Request {
                 no_cache: false,

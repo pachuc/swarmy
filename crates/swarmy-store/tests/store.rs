@@ -364,6 +364,9 @@ async fn leased_park_rejects_stale_leases_and_dedupes_the_same_sequence() {
         .claim_lease(id, owner(), timestamp(10_000))
         .await
         .unwrap();
+    let audit = test.store.lease_audit(&[id]).await.unwrap();
+    assert_eq!(audit[0].state, SessionState::Leased);
+    assert!(audit[0].leased && !audit[0].waiting);
     assert!(
         test.store
             .park_inference(
@@ -380,6 +383,9 @@ async fn leased_park_rejects_stale_leases_and_dedupes_the_same_sequence() {
         test.store.fetch_session(id).await.unwrap().unwrap().state,
         SessionState::Sleeping
     );
+    let audit = test.store.lease_audit(&[id]).await.unwrap();
+    assert_eq!(audit[0].state, SessionState::Sleeping);
+    assert!(audit[0].waiting && !audit[0].leased);
     let wait = test.store.inference_wait(id).await.unwrap().unwrap();
     assert_eq!(wait.attempts, 1);
     assert_eq!(wait.reasons, ["openai/primary: quota reached"]);

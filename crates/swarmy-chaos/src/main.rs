@@ -6,6 +6,7 @@ mod disk;
 mod measure;
 mod persistent;
 mod process;
+mod saturation;
 
 use std::{
     ffi::OsString,
@@ -34,7 +35,7 @@ use tempfile::TempDir;
 use tokio::time::{Instant, sleep, timeout};
 use ulid::Ulid;
 
-use config::Config;
+use config::{Config, Scenario};
 use process::{Kind, Process};
 
 fn main() -> Result<()> {
@@ -131,7 +132,7 @@ impl Fixture {
         Ok(())
     }
 
-    async fn start(&mut self, config: &Config, binaries: &Path) -> Result<()> {
+    async fn prepare(&mut self, config: &Config) -> Result<()> {
         self.bus.setup(&[]).await?;
         if let Some(image) = &config.image {
             self.import_image(image).await?;
@@ -160,6 +161,11 @@ impl Fixture {
         std::fs::create_dir_all(self.files.path().join(".swarmy"))?;
         std::fs::write(self.files.path().join(".swarmy/config.toml"), "")?;
         std::fs::write(self.files.path().join("calls"), "")?;
+        Ok(())
+    }
+
+    async fn start(&mut self, config: &Config, binaries: &Path) -> Result<()> {
+        self.prepare(config).await?;
         std::fs::write(
             self.files.path().join("script.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -177,7 +183,9 @@ impl Fixture {
             (Kind::Api, 1),
             (
                 Kind::Node,
-                usize::from(config.image.is_some() && !config.agent_checks.persistent),
+                usize::from(
+                    config.image.is_some() && config.scenario != Some(Scenario::Persistent),
+                ),
             ),
         ] {
             for index in 0..count {
@@ -192,8 +200,11 @@ impl Fixture {
         }
         self.ready().await?;
         self.environment = environment;
-        self.create_sessions(config.sessions, config.agent_checks.persistent)
-            .await
+        self.create_sessions(
+            config.sessions,
+            config.scenario == Some(Scenario::Persistent),
+        )
+        .await
     }
 
     fn service_environment(&self, config: &Config) -> Result<Vec<(OsString, OsString)>> {
@@ -224,21 +235,21 @@ impl Fixture {
             .collect::<Vec<(OsString, OsString)>>();
         shared.append(&mut environment);
         environment = shared;
-        if config.agent_checks.coding {
+        if config.scenario == Some(Scenario::Coding) {
             environment.extend([
                 ("SWARMY_WORKER_PARTITIONS".into(), "0-255".into()),
                 ("SWARMY_SCHEDULER_PARTITIONS".into(), "0-255".into()),
                 ("SWARMY_PLACEMENT_LEASE_SECONDS".into(), "3".into()),
             ]);
         }
-        if config.agent_checks.continuity {
+        if config.scenario == Some(Scenario::Continuity) {
             environment.extend([
                 ("SWARMY_WORKER_PARTITIONS".into(), "0-255".into()),
                 ("SWARMY_SCHEDULER_PARTITIONS".into(), "0-255".into()),
                 ("SWARMY_SUMMARIZE_AT_TOKENS".into(), "10".into()),
             ]);
         }
-        if config.agent_checks.persistent {
+        if config.scenario == Some(Scenario::Persistent) {
             environment.push(("SWARMY_PLACEMENT_LEASE_SECONDS".into(), "3".into()));
         }
         // The node must have room for one computer per session at once. The
@@ -488,23 +499,31 @@ async fn exercise_suite(
     seed: u64,
     fixture: &mut Fixture,
 ) -> Result<usize> {
+    if config.scenario == Some(Scenario::Saturation) {
+        saturation::exercise(fixture, config, binaries).await?;
+        return Ok(0);
+    }
     timeout(Duration::from_secs(60), fixture.start(config, binaries))
         .await
         .context("session setup timed out")??;
-    if config.agent_checks.coding {
-        coding::exercise(fixture).await?;
-        Ok(0)
-    } else if config.agent_checks.continuity {
-        continuity::exercise(fixture).await?;
-        Ok(0)
-    } else if config.agent_checks.persistent {
-        persistent::exercise(fixture, binaries, config.node_driver.as_deref()).await?;
-        if let Some(script) = &config.measurements {
-            measure::run(fixture, binaries, &script.canonicalize()?).await?;
+    match config.scenario {
+        Some(Scenario::Coding) => {
+            coding::exercise(fixture).await?;
+            Ok(0)
         }
-        Ok(0)
-    } else {
-        fixture.exercise(config, seed).await
+        Some(Scenario::Continuity) => {
+            continuity::exercise(fixture).await?;
+            Ok(0)
+        }
+        Some(Scenario::Persistent) => {
+            persistent::exercise(fixture, binaries, config.node_driver.as_deref()).await?;
+            if let Some(script) = &config.measurements {
+                measure::run(fixture, binaries, &script.canonicalize()?).await?;
+            }
+            Ok(0)
+        }
+        Some(Scenario::Saturation) => unreachable!("saturation starts its own services above"),
+        None => fixture.exercise(config, seed).await,
     }
 }
 
@@ -680,6 +699,24 @@ async fn read_through(
         );
     }
     Ok(())
+}
+
+/// Append a user message and nudge the scheduler; returns the new log head.
+pub(crate) async fn send_user(store: &Store, bus: &Bus, id: SessionId, text: &str) -> Result<u64> {
+    let head = store
+        .fetch_session(id)
+        .await?
+        .context("session missing")?
+        .head_seq;
+    let message = Message {
+        id: MessageId::from_ulid(Ulid::generate()),
+        role: MessageRole::User,
+        parts: vec![Part::Text { text: text.into() }],
+    };
+    let head = store.append_user_message(id, head, &message).await?;
+    bus.nudge(id, head, Some(message.id), Duration::ZERO, true)
+        .await?;
+    Ok(head)
 }
 
 impl Drop for Fixture {

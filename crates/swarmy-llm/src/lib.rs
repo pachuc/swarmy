@@ -388,9 +388,19 @@ pub enum Error {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ErrorClass {
     pub retryable: bool,
+    /// A 429 or a usage/rate-limit response: the gateway's per-entry breaker owns the wait, so protocol clients never retry it.
+    pub quota: bool,
     pub retry_after: Option<std::time::Duration>,
-    pub rate_limited: bool,
+    pub status: Option<reqwest::StatusCode>,
     pub permanent: bool,
+}
+
+impl ErrorClass {
+    /// A 429 or a response with Retry-After needs gateway pacing.
+    #[must_use]
+    pub fn rate_limited(self) -> bool {
+        self.status == Some(reqwest::StatusCode::TOO_MANY_REQUESTS) || self.retry_after.is_some()
+    }
 }
 
 impl Error {
@@ -413,9 +423,6 @@ impl Error {
         let retryable = status.is_some_and(retry::retryable)
             || quota
             || matches!(self, Self::Http(error) if error.is_connect() || error.is_timeout());
-        let rate_limited = status
-            .is_some_and(|status| status == reqwest::StatusCode::TOO_MANY_REQUESTS)
-            || retry_after.is_some();
         let permanent = !retryable
             && (matches!(
                 self,
@@ -428,9 +435,10 @@ impl Error {
                     | Self::MalformedStream(_)
             ));
         ErrorClass {
+            quota: status == Some(reqwest::StatusCode::TOO_MANY_REQUESTS) || quota,
             retryable,
             retry_after,
-            rate_limited,
+            status,
             permanent,
         }
     }
@@ -454,9 +462,10 @@ mod job_tests {
         assert_eq!(
             limited.classify(),
             ErrorClass {
+                quota: true,
                 retryable: true,
                 retry_after: Some(Duration::from_secs(2)),
-                rate_limited: true,
+                status: Some(StatusCode::TOO_MANY_REQUESTS),
                 permanent: false,
             }
         );
@@ -475,7 +484,7 @@ mod job_tests {
         ] {
             let class = Error::Status(status).classify();
             assert!(class.retryable);
-            assert!(!class.rate_limited);
+            assert!(!class.rate_limited());
         }
         for error in [
             Error::Authentication("auth".into()),

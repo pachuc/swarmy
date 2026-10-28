@@ -351,7 +351,7 @@ fn retry_client(server: &MockServer) -> ResponsesProvider {
 
 #[tokio::test]
 async fn transient_http_errors_retry_and_permanent_errors_do_not() {
-    for status in [408, 409, 429, 500, 503] {
+    for status in [408, 409, 500, 503] {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(status).insert_header("retry-after", "1000"))
@@ -364,7 +364,7 @@ async fn transient_http_errors_retry_and_permanent_errors_do_not() {
         response(&retry_client(&server), request("gpt-5.5")).await;
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
-    for (status, calls) in [(429, 3), (400, 1), (401, 1)] {
+    for (status, calls) in [(429, 1), (400, 1), (401, 1)] {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(

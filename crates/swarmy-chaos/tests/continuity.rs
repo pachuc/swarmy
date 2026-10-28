@@ -23,7 +23,8 @@ fn root_persistent_agent_continuity() {
     let status = Command::new(executable)
         .args([
             "--no-start-stack",
-            "--continuity",
+            "--scenario",
+            "continuity",
             "--sessions",
             "1",
             "--schedulers",
