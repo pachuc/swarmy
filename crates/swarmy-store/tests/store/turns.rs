@@ -1024,3 +1024,56 @@ async fn queued_message_survives_main_and_side_rollover_exactly_once() {
     ));
     drain_transferred_once(store, next_side, &side_waiting).await;
 }
+
+#[tokio::test]
+async fn summary_rollover_copies_cache_affinity_to_main_and_side_successors() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let image = swarmy_testkit::image(store).await;
+    let agent = store
+        .create_agent("affinity-rollover", image, "", timestamp(0), None)
+        .await
+        .unwrap()
+        .agent_id;
+    let (main, _) = store.open_main_session(agent, timestamp(1)).await.unwrap();
+    let side = SessionId::from_ulid(Ulid::generate());
+    store
+        .create_agent_session(side, Some(agent), timestamp(1), None)
+        .await
+        .unwrap();
+    let affinity = swarmy_store::CacheAffinity {
+        provider: "fake-a".into(),
+        entry: "second".into(),
+        model: "fake-other".into(),
+        route: Some("ab".into()),
+        completed_at: timestamp(1),
+    };
+    let Event::MessageAppended {
+        message: opening, ..
+    } = event("summary")
+    else {
+        unreachable!()
+    };
+    for (id, is_main) in [(main, true), (side, false)] {
+        store.put_cache_affinity(id, &affinity).await.unwrap();
+        store.wake_session(id, timestamp(2)).await.unwrap();
+        let lease = live_lease(store, id).await;
+        let (successor, _) = if is_main {
+            store
+                .summarize_main_session(id, 0, &lease, &opening, &[])
+                .await
+                .unwrap()
+        } else {
+            store
+                .summarize_side_session(id, 0, &lease, &opening, &[])
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            store.cache_affinity(successor).await.unwrap(),
+            Some(affinity.clone())
+        );
+    }
+}

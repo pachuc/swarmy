@@ -276,6 +276,7 @@ impl Worker {
     }
 }
 
+mod handoff;
 mod inference;
 mod inflight;
 mod overflow;

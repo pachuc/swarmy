@@ -72,8 +72,10 @@ pub enum Part {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Variant order is part of storage; append new kinds at the end.
 pub enum NoticeKind {
     EffortClamped,
+    ModelHandoff,
 }
 
 /// Tool success and failure remain distinct when replayed into a model prompt.
@@ -108,6 +110,19 @@ pub(crate) mod tests {
     use crate::encoding::tests::assert_round_trip;
     use serde_json::json;
     use ulid::Ulid;
+
+    #[test]
+    fn model_handoff_notice_has_a_snake_case_kind() {
+        let part = Part::Notice {
+            kind: NoticeKind::ModelHandoff,
+            text: "x".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&part).unwrap(),
+            json!({"notice":{"kind":"model_handoff","text":"x"}})
+        );
+        assert_round_trip(&part);
+    }
 
     pub(crate) fn tool_result() -> ToolResult {
         ToolResult::Completed {

@@ -235,6 +235,7 @@ impl Fixture {
             summary_prefix: false,
             summary_cut: None,
             summary_recovery: false,
+            summary_handoff: None,
             provider: "fake".into(),
             entry: None,
             route: None,

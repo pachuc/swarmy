@@ -4,6 +4,18 @@ use super::{
     SessionState, SubjectToken, SubmitInferenceOptions, Timestamp, Ulid, WorkQueue, Worker, Write,
 };
 
+pub(super) struct Compaction {
+    pub(super) cut: usize,
+    pub(super) recovery: bool,
+    pub(super) handoff: Option<swarmy_llm::handoff::ModelHandoff>,
+}
+
+pub(super) struct PreparedInference {
+    pub(super) request: swarmy_llm::Request,
+    pub(super) preceding: Vec<Event>,
+    pub(super) attempt: ResolvedAttempt,
+}
+
 pub(super) enum StepFailure<'a> {
     Publication(&'a swarmy_bus::Error),
     Unserved { provider: &'a str, retryable: bool },
@@ -13,8 +25,8 @@ pub(super) enum StepFailure<'a> {
 pub(crate) struct ResolvedAttempt {
     pub(crate) provider: String,
     pub(crate) entry: Option<String>,
-    route: Option<String>,
-    route_step: u32,
+    pub(crate) route: Option<String>,
+    pub(crate) route_step: u32,
     snapshot: swarmy_store::RouteSnapshot,
 }
 
@@ -299,11 +311,41 @@ impl Worker {
         &self,
         session: &mut SessionRecord,
         lease: &HeldLease,
-        preceding: &[Event],
-        request: swarmy_llm::Request,
+        history: (&swarmy_harness::Snapshot, &[Event]),
+        mut request: swarmy_llm::Request,
     ) -> Result<()> {
-        self.build_inference_with_prefix(session, lease, preceding, request, false, None)
-            .await
+        let mut preceding = Vec::new();
+        let attempt = self
+            .prepare_request(session, &mut request, &mut preceding, false)
+            .await?;
+        if matches!(session.kind, swarmy_core::SessionKind::Named { .. })
+            && let Some(handoff) = super::handoff::detect_model_handoff(
+                history.1,
+                &super::handoff::HandoffTarget {
+                    provider: &attempt.provider,
+                    model: &request.settings.model,
+                    route: attempt.route.as_deref(),
+                    route_step: attempt.route_step,
+                },
+            )
+            && self
+                .issue_handoff_summary(session, lease, history, handoff, request.settings.clone())
+                .await?
+        {
+            return Ok(());
+        }
+        self.submit_prepared(
+            session,
+            lease,
+            PreparedInference {
+                request,
+                preceding,
+                attempt,
+            },
+            false,
+            None,
+        )
+        .await
     }
 
     pub(super) async fn build_inference_with_prefix(
@@ -313,12 +355,39 @@ impl Worker {
         preceding: &[Event],
         mut request: swarmy_llm::Request,
         summary_prefix: bool,
-        compaction: Option<(usize, bool)>,
+        compaction: Option<Compaction>,
     ) -> Result<()> {
         let mut preceding = preceding.to_vec();
         let attempt = self
             .prepare_request(session, &mut request, &mut preceding, compaction.is_some())
             .await?;
+        self.submit_prepared(
+            session,
+            lease,
+            PreparedInference {
+                request,
+                preceding,
+                attempt,
+            },
+            summary_prefix,
+            compaction,
+        )
+        .await
+    }
+
+    pub(super) async fn submit_prepared(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        prepared: PreparedInference,
+        summary_prefix: bool,
+        compaction: Option<Compaction>,
+    ) -> Result<()> {
+        let PreparedInference {
+            request,
+            mut preceding,
+            attempt,
+        } = prepared;
         // Persist the picked step with the request so a retryable failure
         // advances from the attempt that actually ran, not from a stale
         // position. A wrap to a recovered earlier step carries no range.
@@ -360,8 +429,9 @@ impl Worker {
             request_id: RequestId::for_step(id, step),
             summary: compaction.is_some(),
             summary_prefix,
-            summary_cut: compaction.map(|(cut, _)| cut as u64),
-            summary_recovery: compaction.is_some_and(|(_, recovery)| recovery),
+            summary_cut: compaction.as_ref().map(|c| c.cut as u64),
+            summary_recovery: compaction.as_ref().is_some_and(|c| c.recovery),
+            summary_handoff: compaction.and_then(|c| c.handoff),
             request,
         };
         self.kill(KillPoint::BeforeRelease);

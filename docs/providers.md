@@ -138,15 +138,39 @@ the earliest retry time among them. A step naming an entry with no ready
 credential is skipped with a recorded reason; a route that selects nothing
 usable falls back to the implicit chain. Waits for a provider no gateway
 serves yet never consume a route step: the session retries its current step
-once a gateway advertises the provider. When the provider or model changes
-across a failover, the request builder does not replay reasoning blocks
-from the previous provider: reasoning signatures are provider- and
-model-specific, so the thinking text travels as plain text instead. Every
+once a gateway advertises the provider. For ephemeral sessions, and for an
+operator model change without a route move, the request builder downgrades
+foreign reasoning to plain text instead of replaying provider- and
+model-specific reasoning signatures. Every
 completion records the entry and route step used, so metering attributes
 cost to the entry that earned it. Those route fields are trailing bytes on
 the completion row, which older readers reject: when rolling this out,
 upgrade readers (workers, API servers, CLI clients, chaos checkers) before
 gateways.
+
+### Model handoff on failover
+
+When a named session's route moves to a step whose provider or model differs
+from the one behind its last completion, it hands its history to the new model
+through a summary. A different key for the same provider and model does not
+trigger a handoff. The worker renders history to plain text deterministically:
+reasoning is dropped, each tool call occupies one line, tool results retain
+1,500 characters at each end, and arguments retain 500 characters at each end,
+with cut markers. It sends one summary request on the new step using the
+compaction prompt. If necessary, it trims the oldest conversation blocks and
+marks the trim, preserving an earlier compaction summary separately. The
+context budget uses the configured window, then the catalog window, or
+128,000 tokens. The successor holds only the summary and handoff notice and
+continues the turn. A `model_handoff` notice appears in both session logs,
+visible through `swarmy session show` and appended by `scripts/fleet/fleet
+status`.
+
+A rejected or failed handoff summary ends the turn; the next request tries the
+handoff again. Returning to the original step later also requires a handoff,
+so failover followed by recovery costs two summaries. Prompt-cache affinity
+keeps the successor on the backup step while its cache is warm; it returns to
+the primary only after that window lapses. There is no setting for this
+behavior.
 
 Three common shapes, from the design discussion:
 

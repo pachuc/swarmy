@@ -572,6 +572,7 @@ impl Store {
                 );
                 self.create_session_in(&trx, &session, now, None).await?;
                 self.transfer_queued(&trx, old, id).await?;
+                self.copy_cache_affinity(&trx, old, id).await?;
                 let mut created = self.session(&trx, id).await?;
                 created.head_seq = rollover.new_head;
                 self.write_session(&trx, &created)?;
@@ -672,6 +673,7 @@ impl Store {
                 );
                 self.create_session_in(&trx, &session, now, None).await?;
                 self.transfer_queued(&trx, old, id).await?;
+                self.copy_cache_affinity(&trx, old, id).await?;
                 self.write_side_events(&trx, id, old, prepared, archived_value, new_head)
                     .await?;
                 if self.has_queued_in(&trx, id).await? {
@@ -689,6 +691,20 @@ impl Store {
         })
         .await?;
         Ok((id, rollover.archived))
+    }
+
+    /// Carry the completed summary's warm route entry across the session boundary.
+    /// The read and successor write share the fenced rollover transaction.
+    async fn copy_cache_affinity(
+        &self,
+        trx: &Transaction,
+        old: SessionId,
+        new: SessionId,
+    ) -> Result<()> {
+        if let Some(value) = trx.get(&self.keys().cache_affinity(old), false).await? {
+            trx.set(&self.keys().cache_affinity(new), value.as_ref());
+        }
+        Ok(())
     }
 
     async fn prepare_side_rollover(

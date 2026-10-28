@@ -9,6 +9,7 @@ pub mod cost;
 pub(crate) mod error;
 #[cfg(feature = "fake")]
 pub mod fake;
+pub mod handoff;
 pub(crate) mod protocol;
 pub(crate) mod quota;
 pub mod reasoning;
@@ -176,6 +177,9 @@ pub struct InferenceJob {
     /// Whether this checkpoint is recovering a failed assistant attempt.
     #[serde(default, with = "swarmy_core::trailing")]
     pub summary_recovery: bool,
+    /// Set when this summary hands the session to a different model after a route move.
+    #[serde(default, with = "swarmy_core::trailing")]
+    pub summary_handoff: Option<handoff::ModelHandoff>,
 }
 
 /// Small bus delivery for a request saved in the store under `request_id`.
@@ -632,6 +636,40 @@ mod job_tests {
     }
 
     #[test]
+    fn summary_handoff_round_trips_as_a_trailing_field() {
+        let session_id = SessionId::from_ulid(ulid::Ulid::nil());
+        let job = InferenceJob {
+            session_id,
+            step: 1,
+            request_id: RequestId::for_step(session_id, 1),
+            request: Request {
+                system_prompt: String::new(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+                settings: GenerationSettings::default(),
+                no_cache: false,
+            },
+            provider: "fake-a".into(),
+            entry: None,
+            route: Some("ab".into()),
+            route_step: 1,
+            summary: true,
+            summary_prefix: false,
+            summary_cut: Some(3),
+            summary_recovery: false,
+            summary_handoff: Some(handoff::ModelHandoff {
+                from_provider: "fake-a".into(),
+                from_model: "old".into(),
+                to_provider: "fake-b".into(),
+                to_model: "new".into(),
+                reason: "quota".into(),
+            }),
+        };
+        let bytes = swarmy_core::encode(&job).unwrap();
+        assert_eq!(swarmy_core::decode::<InferenceJob>(&bytes).unwrap(), job);
+    }
+
+    #[test]
     fn round_two_job_without_cut_still_decodes() {
         #[derive(Serialize)]
         struct RoundTwoJob {
@@ -673,6 +711,7 @@ mod job_tests {
         assert!(!job.summary_prefix);
         assert_eq!(job.summary_cut, None);
         assert!(!job.summary_recovery);
+        assert_eq!(job.summary_handoff, None);
     }
 }
 

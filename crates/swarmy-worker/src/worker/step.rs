@@ -219,7 +219,12 @@ impl Worker {
             match action {
                 Action::BuildInference(request) => {
                     return self
-                        .build_inference(&mut *session, lease, &[], request)
+                        .build_inference(
+                            &mut *session,
+                            lease,
+                            (snapshot, events.as_slice()),
+                            request,
+                        )
                         .await;
                 }
                 Action::DispatchTools(calls) => {
@@ -580,7 +585,8 @@ impl Worker {
         else {
             anyhow::bail!("folded tool results did not produce inference");
         };
-        self.build_inference(session, lease, &[], request).await
+        self.build_inference(session, lease, (snapshot, events.as_slice()), request)
+            .await
     }
 
     pub(super) fn can_dispatch_tool(&self, call: &ToolCallRecord, display: bool) -> bool {
@@ -734,7 +740,8 @@ impl Worker {
         else {
             anyhow::bail!("queued input did not start inference");
         };
-        self.build_inference(session, lease, &[], request).await
+        self.build_inference(session, lease, (snapshot, events.as_slice()), request)
+            .await
     }
 
     async fn finish_inner(
