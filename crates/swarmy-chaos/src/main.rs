@@ -2,6 +2,7 @@ mod check;
 mod coding;
 mod config;
 mod continuity;
+mod desktop;
 mod disk;
 mod measure;
 mod persistent;
@@ -68,6 +69,7 @@ struct Fixture {
     processes: Vec<Process>,
     sessions: Vec<SessionId>,
     image: Option<swarmy_core::ManifestId>,
+    image_memory_mib: Option<u64>,
     environment: Vec<(OsString, OsString)>,
 }
 
@@ -98,6 +100,7 @@ impl Fixture {
             processes: Vec::new(),
             sessions: Vec::new(),
             image: None,
+            image_memory_mib: None,
             environment: Vec::new(),
         })
     }
@@ -120,15 +123,27 @@ impl Fixture {
                     .context("image header missing")?,
             )
             .await?;
+        let source = swarmy_core::ImageRecord {
+            name: name.into(),
+            tag: swarmy_core::ImageTag(tag.into()),
+            manifest_id: manifest,
+        };
+        let memory_mib = images.image_memory(&source).await?;
+        let options = swarmy_store::PutImageOptions {
+            scratch: images.image_scratch(&source).await?,
+            memory_mib,
+            display: images.image_display(&source).await?,
+        };
         self.store
             .put_image(
                 "chaos",
                 &swarmy_core::ImageTag("test".into()),
                 manifest,
-                None,
+                Some(options),
             )
             .await?;
         self.image = Some(manifest);
+        self.image_memory_mib = memory_mib;
         Ok(())
     }
 
@@ -168,12 +183,16 @@ impl Fixture {
         self.prepare(config).await?;
         std::fs::write(
             self.files.path().join("script.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "latency_ms": config.latency_ms,
-                "request_based": {"steps": config.steps, "tool_steps": (0..config.steps-1).collect::<Vec<_>>(),
-                    "final_answer": check::ANSWER,
-                    "bash_command": config.image.as_ref().map(|_| "printf 'swarmy\\n' >> /root/swarmy-lines; sleep 2; cat /root/swarmy-lines") }
-            }))?,
+            serde_json::to_vec(&if config.scenario == Some(Scenario::Desktop) {
+                serde_json::json!({"responses": desktop::script()})
+            } else {
+                serde_json::json!({
+                    "latency_ms": config.latency_ms,
+                    "request_based": {"steps": config.steps, "tool_steps": (0..config.steps-1).collect::<Vec<_>>(),
+                        "final_answer": check::ANSWER,
+                        "bash_command": config.image.as_ref().map(|_| "printf 'swarmy\\n' >> /root/swarmy-lines; sleep 2; cat /root/swarmy-lines") }
+                })
+            })?,
         )?;
         let environment = self.service_environment(config)?;
         for (kind, count) in [
@@ -200,11 +219,15 @@ impl Fixture {
         }
         self.ready().await?;
         self.environment = environment;
-        self.create_sessions(
-            config.sessions,
-            config.scenario == Some(Scenario::Persistent),
-        )
-        .await
+        if config.scenario == Some(Scenario::Desktop) {
+            Ok(())
+        } else {
+            self.create_sessions(
+                config.sessions,
+                config.scenario == Some(Scenario::Persistent),
+            )
+            .await
+        }
     }
 
     fn service_environment(&self, config: &Config) -> Result<Vec<(OsString, OsString)>> {
@@ -242,6 +265,12 @@ impl Fixture {
                 ("SWARMY_PLACEMENT_LEASE_SECONDS".into(), "3".into()),
             ]);
         }
+        if config.scenario == Some(Scenario::Desktop) {
+            environment.extend([
+                ("SWARMY_WORKER_PARTITIONS".into(), "0-255".into()),
+                ("SWARMY_SCHEDULER_PARTITIONS".into(), "0-255".into()),
+            ]);
+        }
         if config.scenario == Some(Scenario::Continuity) {
             environment.extend([
                 ("SWARMY_WORKER_PARTITIONS".into(), "0-255".into()),
@@ -252,10 +281,23 @@ impl Fixture {
         if config.scenario == Some(Scenario::Persistent) {
             environment.push(("SWARMY_PLACEMENT_LEASE_SECONDS".into(), "3".into()));
         }
-        // The node must have room for one computer per session at once. The
-        // default budget of 1 GiB holds a single 768 MiB image, so size the
-        // budget from the session count with a little headroom.
-        let memory_bytes = (config.sessions as u64).max(1) * 1024 * 1024 * 1024;
+        // Account for the imported image's reservation and leave headroom for
+        // node processes. Desktop retains the 6 GiB cold-browser test budget.
+        let memory_mib = self
+            .image_memory_mib
+            .unwrap_or_else(|| swarmy_core::SandboxRequirements::default().memory_mib);
+        let memory_budget_mib = (config.sessions as u64)
+            .checked_mul(memory_mib)
+            .and_then(|total| total.checked_add(1024))
+            .context("node memory budget overflow")?
+            .max(if config.scenario == Some(Scenario::Desktop) {
+                6144
+            } else {
+                1024
+            });
+        let memory_bytes = memory_budget_mib
+            .checked_mul(1024 * 1024)
+            .context("node memory bytes overflow")?;
         environment.extend([
             (
                 "SWARMY_NODE_SANDBOXES".into(),
@@ -507,6 +549,10 @@ async fn exercise_suite(
         .await
         .context("session setup timed out")??;
     match config.scenario {
+        Some(Scenario::Desktop) => {
+            desktop::exercise(fixture, config.desktop_output.as_deref()).await?;
+            Ok(0)
+        }
         Some(Scenario::Coding) => {
             coding::exercise(fixture).await?;
             Ok(0)
@@ -699,6 +745,53 @@ async fn read_through(
         );
     }
     Ok(())
+}
+
+/// Scripted provider responses share one stable tool-call shape across proofs.
+pub(crate) fn scripted_tool(
+    prefix: &str,
+    index: usize,
+    name: &str,
+    input: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({"parts":[{"tool_call":{"call_id":format!("{prefix}-{index}"),"tool":name,"input":input}}],
+        "stop_reason":"tool_calls", "usage":{"input_tokens":0,"cached_input_tokens":0,
+        "cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0}})
+}
+
+pub(crate) fn scripted_text(text: &str) -> serde_json::Value {
+    serde_json::json!({"parts":[{"text":{"text":text}}], "stop_reason":"end_turn",
+        "usage":{"input_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0,
+        "output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0}})
+}
+
+/// Wait for the named session's durable idle state while checking every service.
+pub(crate) async fn wait_idle(
+    f: &mut Fixture,
+    session: SessionId,
+    budget: Duration,
+    what: &str,
+) -> Result<Vec<Event>> {
+    timeout(budget, async {
+        loop {
+            for process in &mut f.processes {
+                process.check()?;
+            }
+            let record = f
+                .store
+                .fetch_session(session)
+                .await?
+                .context("session missing")?;
+            if record.state == SessionState::Idle {
+                let mut events = Vec::new();
+                read_through(&f.store, session, &mut events, record.head_seq).await?;
+                return Ok::<_, anyhow::Error>(events);
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .with_context(|| format!("{what} timed out"))?
 }
 
 /// Append a user message and nudge the scheduler; returns the new log head.

@@ -710,6 +710,8 @@ started. The script accepts additional runner arguments, such as `--latency-ms 2
 instrumented services. Otherwise the runner builds services beside its own
 executable using the active Cargo target directory and debug or release profile.
 
+`--scenario desktop` runs the browser and screen proof on a root suite node with a display image.
+
 `--scenario saturation` runs the rate-limit acceptance instead of the kill
 schedule. One in-process HTTP fake speaks Chat Completions with two API keys,
 each allowing two requests per two-second window and answering 429 with

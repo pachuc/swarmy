@@ -31,6 +31,8 @@ append messages but never edit old ones.
 **Images** identify built computer roots by name and tag. Clients register
 already built images; they do not edit image manifests via this API. Uploads carry only the data extents of the sparse ext4 file plus its logical size, and `image.upload_max_bytes` (`SWARMY_IMAGE_UPLOAD_MAX_BYTES`, default 16 GiB) limits the data, not the virtual disk size.
 
+**Tool images** returned by browser and screen tools, or by `read` of an image file, are stored in object storage. The tool result names them with `image_object_key`. `GET /v1/sessions/{id}/tool-images/{call_id}` returns the bytes only when that session's completed tool call references the image.
+
 **Models** identify provider models and their context windows. Clients
 select them for inference but do not edit catalog records.
 

@@ -133,11 +133,12 @@ fn order_candidates(
     old: Option<&PlacementRecord>,
 ) {
     nodes.retain(|node| node.roles.contains(&NodeRole::Sandbox) && node.capacity.sandboxes > 0);
-    // Capacity admission remains transactional; affinity is only an ordering hint.
+    // Capacity admission remains transactional. An expired lease means the old
+    // node lost the computer, so try it last; otherwise prefer local scratch.
     nodes.sort_by_key(|node| {
         (
-            scratch_node != Some(node.node_id),
             old.is_some_and(|old| old.node_id == node.node_id),
+            scratch_node != Some(node.node_id),
             node.node_id,
         )
     });

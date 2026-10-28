@@ -1,0 +1,14 @@
+{"id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}
+{"tool_call_requested": {"seq": 1, "request_id": "fixture", "call": {"call_id": "setup", "tool": "bash", "arguments": {"command": "__SETUP__"}, "result": null}}}
+{"tool_call_completed": {"seq": 2, "request_id": "fixture", "call_id": "setup", "result": {"completed": {"output": "{\"stdout\": \"desktop-check app listening on 127.0.0.1:8765 pid 1\\n\", \"stderr\": \"\", \"exit_code\": 0, \"timed_out\": false, \"manifest_id\": \"01ARZ3NDEKTSV4RRFFQ69G5FAV\"}", "title": "bash", "metadata": {}}}}}
+{"tool_call_requested": {"seq": 3, "request_id": "fixture", "call": {"call_id": "navigate", "tool": "browser_navigate", "arguments": {"url": "http://127.0.0.1:8765/"}, "result": null}}}
+{"tool_call_completed": {"seq": 4, "request_id": "fixture", "call_id": "navigate", "result": {"completed": {"output": "Login", "title": "browser_navigate", "metadata": {}}}}}
+{"tool_call_requested": {"seq": 5, "request_id": "fixture", "call": {"call_id": "type", "tool": "browser_type", "arguments": {"ref": "e4", "text": "desk"}, "result": null}}}
+{"tool_call_completed": {"seq": 6, "request_id": "fixture", "call_id": "type", "result": {"completed": {"output": "typed", "title": "browser_type", "metadata": {}}}}}
+{"tool_call_requested": {"seq": 7, "request_id": "fixture", "call": {"call_id": "select", "tool": "browser_select", "arguments": {"ref": "e8", "value": "dark"}, "result": null}}}
+{"tool_call_completed": {"seq": 8, "request_id": "fixture", "call_id": "select", "result": {"completed": {"output": "selected", "title": "browser_select", "metadata": {}}}}}
+{"tool_call_requested": {"seq": 9, "request_id": "fixture", "call": {"call_id": "browser-image", "tool": "browser_screenshot", "arguments": {}, "result": null}}}
+{"tool_call_completed": {"seq": 10, "request_id": "fixture", "call_id": "browser-image", "result": {"completed": {"output": "Screenshot", "title": "browser_screenshot", "metadata": {"image_object_key": "blobs/browser", "image_media_type": "image/png"}}}}}
+{"tool_call_requested": {"seq": 11, "request_id": "fixture", "call": {"call_id": "screen-image", "tool": "screen_screenshot", "arguments": {}, "result": null}}}
+{"tool_call_completed": {"seq": 12, "request_id": "fixture", "call_id": "screen-image", "result": {"completed": {"output": "Screenshot", "title": "screen_screenshot", "metadata": {"image_object_key": "blobs/screen", "image_media_type": "image/png"}}}}}
+{"inference_completed": {"seq": 13, "request_id": "fixture", "completion": {"message": {"role": "assistant", "parts": [{"text": {"text": "CODE: K7MWX3"}}]}}}}

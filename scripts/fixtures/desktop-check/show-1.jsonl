@@ -1,0 +1,3 @@
+{"id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}
+{"tool_call_requested": {"seq": 1, "request_id": "fixture", "call": {"call_id": "setup", "tool": "bash", "arguments": {"command": "__SETUP__"}, "result": null}}}
+{"tool_call_completed": {"seq": 2, "request_id": "fixture", "call_id": "setup", "result": {"completed": {"output": "{\"stdout\": \"desktop-check app listening on 127.0.0.1:8765 pid 1\\n\", \"stderr\": \"\", \"exit_code\": 0, \"timed_out\": false, \"manifest_id\": \"01ARZ3NDEKTSV4RRFFQ69G5FAV\"}", "title": "bash", "metadata": {}}}}}

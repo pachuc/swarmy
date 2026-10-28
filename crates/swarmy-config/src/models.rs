@@ -175,6 +175,7 @@ impl CustomModel {
 }
 
 /// A scripted model accepts every effort so fixtures never see a clamp notice.
+/// Scripted models accept images so display-image scenarios receive image parts as a vision model would.
 fn fake_fixture_model(id: &str) -> ModelInfo {
     ModelInfo {
         id: id.into(),
@@ -193,7 +194,7 @@ fn fake_fixture_model(id: &str) -> ModelInfo {
         ])),
         tool_call: true,
         attachment: false,
-        input_modalities: vec!["text".into()],
+        input_modalities: vec!["text".into(), "image".into()],
         limit: Limit {
             context: 400_000,
             output: None,
@@ -209,6 +210,17 @@ fn fake_fixture_model(id: &str) -> ModelInfo {
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
+    #[test]
+    fn scripted_fixture_model_accepts_image_input() {
+        let catalog = Settings::default().catalog().unwrap();
+        assert!(
+            catalog
+                .model("fake", "")
+                .unwrap()
+                .input_modalities
+                .contains(&"image".to_owned())
+        );
+    }
     use super::*;
     use std::time::Duration;
 

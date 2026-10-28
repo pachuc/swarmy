@@ -641,3 +641,191 @@ async fn inference_routes_round_trip_through_resource_api() {
     assert_route_deletion(&client).await;
     task.abort();
 }
+
+#[tokio::test]
+async fn tool_image_route_returns_only_session_images() {
+    use swarmy_core::{RequestId, SessionId};
+    use swarmy_store::AgentSessionOptions;
+    let Some(stack) = swarmy_testkit::Stack::load("api-tool-image") else {
+        return;
+    };
+    let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    swarmy_testkit::image(&store).await;
+    let session = SessionId::from_ulid(Ulid::generate());
+    store
+        .create_agent_session(
+            session,
+            None,
+            jiff::Timestamp::now(),
+            Some(AgentSessionOptions {
+                image: Some("fixture:test"),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let png = b"image bytes".to_vec();
+    let key = store.put_tool_blob(png.clone()).await.unwrap();
+    let events = image_route_events(RequestId::for_step(session, 1), &key);
+    store.append_events(session, 0, &events).await.unwrap();
+    let bus = Bus::connect(&stack.nats_url, Config::default())
+        .await
+        .unwrap();
+    let state = AppState::new(
+        store,
+        bus,
+        "test-token".into(),
+        swarmy_llm::catalog::Catalog::get().clone(),
+        Arc::new(object_store::memory::InMemory::new()),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(axum::serve(listener, router(state)).into_future());
+    let client = reqwest::Client::new();
+    let url = |id: String, call: &str| format!("{base}/v1/sessions/{id}/tool-images/{call}");
+    let success = client
+        .get(url(session.to_string(), "screenshot"))
+        .bearer_auth("test-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(success.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        success.headers()[reqwest::header::CONTENT_TYPE],
+        "image/png"
+    );
+    assert_eq!(success.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(success.headers()["content-disposition"], "attachment");
+    assert_eq!(success.bytes().await.unwrap().as_ref(), png);
+    let api_client = swarmy_client::Client::new(&base, "test-token").unwrap();
+    let (media_type, downloaded) = api_client
+        .tool_image(&session.to_string(), "toolu/a%b c")
+        .await
+        .unwrap();
+    assert_eq!(media_type, "image/png");
+    assert_eq!(downloaded, png);
+    let missing = api_client.tool_image(&session.to_string(), "unknown").await;
+    assert!(
+        matches!(missing, Err(swarmy_client::Error::Api { body, .. }) if body.code == "image_not_found")
+    );
+    assert_image_route_errors(&client, &base, session).await;
+    task.abort();
+}
+
+/// Keep the metadata-forgery fixtures next to their storage shape; the test
+/// above focuses on the HTTP and client behavior.
+fn image_route_events(request_id: swarmy_core::RequestId, key: &str) -> [swarmy_core::Event; 6] {
+    use swarmy_core::{Event as StoreEvent, ToolCallId, ToolCallRecord, ToolResult};
+    [
+        StoreEvent::ToolCallRequested {
+            seq: 0,
+            request_id,
+            call: ToolCallRecord {
+                call_id: ToolCallId("screenshot".into()),
+                tool: "browser_screenshot".into(),
+                arguments: serde_json::json!({}),
+                result: None,
+            },
+        },
+        StoreEvent::ToolCallCompleted {
+            seq: 0,
+            request_id,
+            call_id: ToolCallId("screenshot".into()),
+            result: ToolResult::Completed {
+                output: "Screenshot".into(),
+                title: "Screenshot".into(),
+                metadata: std::collections::BTreeMap::from([
+                    ("image_object_key".into(), serde_json::json!(key)),
+                    ("image_media_type".into(), serde_json::json!("image/png")),
+                ]),
+            },
+        },
+        StoreEvent::ToolCallCompleted {
+            seq: 0,
+            request_id,
+            call_id: ToolCallId("toolu/a%b c".into()),
+            result: ToolResult::Completed {
+                output: "Screenshot".into(),
+                title: "Screenshot".into(),
+                metadata: std::collections::BTreeMap::from([
+                    ("image_object_key".into(), serde_json::json!(key)),
+                    ("image_media_type".into(), serde_json::json!("image/png")),
+                ]),
+            },
+        },
+        StoreEvent::ToolCallCompleted {
+            seq: 0,
+            request_id,
+            call_id: ToolCallId("bad-key".into()),
+            result: ToolResult::Completed {
+                output: "Screenshot".into(),
+                title: "Screenshot".into(),
+                metadata: std::collections::BTreeMap::from([
+                    ("image_object_key".into(), serde_json::json!("not-a-blob")),
+                    ("image_media_type".into(), serde_json::json!("image/png")),
+                ]),
+            },
+        },
+        StoreEvent::ToolCallCompleted {
+            seq: 0,
+            request_id,
+            call_id: ToolCallId("bad-type".into()),
+            result: ToolResult::Completed {
+                output: "Screenshot".into(),
+                title: "Screenshot".into(),
+                metadata: std::collections::BTreeMap::from([
+                    ("image_object_key".into(), serde_json::json!(key)),
+                    ("image_media_type".into(), serde_json::json!("text/html")),
+                ]),
+            },
+        },
+        StoreEvent::ToolCallCompleted {
+            seq: 0,
+            request_id,
+            call_id: ToolCallId("text".into()),
+            result: ToolResult::Completed {
+                output: "no image".into(),
+                title: "Text".into(),
+                metadata: std::collections::BTreeMap::default(),
+            },
+        },
+    ]
+}
+
+async fn assert_image_route_errors(
+    client: &reqwest::Client,
+    base: &str,
+    session: swarmy_core::SessionId,
+) {
+    let url = |id: String, call: &str| format!("{base}/v1/sessions/{id}/tool-images/{call}");
+    for call in ["unknown", "text", "bad-key", "bad-type"] {
+        let missing = client
+            .get(url(session.to_string(), call))
+            .bearer_auth("test-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(
+            missing.json::<serde_json::Value>().await.unwrap()["code"],
+            "image_not_found"
+        );
+    }
+    let missing = client
+        .get(url(Ulid::generate().to_string(), "screenshot"))
+        .bearer_auth("test-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(
+        missing.json::<serde_json::Value>().await.unwrap()["code"],
+        "session_not_found"
+    );
+    let denied = client
+        .get(url(session.to_string(), "screenshot"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), reqwest::StatusCode::UNAUTHORIZED);
+}

@@ -3829,6 +3829,7 @@ dependencies = [
  "swarmy-sandbox",
  "swarmy-store",
  "swarmy-testkit",
+ "swarmy-tools",
  "swarmy-version",
  "swarmy-volume",
  "tempfile",

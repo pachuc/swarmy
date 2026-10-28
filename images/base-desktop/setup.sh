@@ -12,6 +12,15 @@ curl --retry 3 -fsSL "https://storage.googleapis.com/chromium-browser-snapshots/
 printf '%s  %s\n' '3077c26bcc11b1e8abad762122a26698e3d620d97dd7d9620a22c52fa9eeb2fa' /tmp/chromium.zip | sha256sum -c -
 unzip -q /tmp/chromium.zip -d /opt
 rm /tmp/chromium.zip
+mkdir -p /etc/chromium/policies/managed
+cat > /etc/chromium/policies/managed/swarmy.json <<'JSON'
+{
+  "PasswordManagerEnabled": false,
+  "PasswordLeakDetectionEnabled": false,
+  "PromotionalTabsEnabled": false
+}
+JSON
+chmod 644 /etc/chromium/policies/managed/swarmy.json
 cat > /usr/local/bin/chromium <<'SH'
 #!/bin/sh
 set -eu
@@ -19,11 +28,12 @@ export DISPLAY=${DISPLAY:-:99}
 export LIBGL_ALWAYS_SOFTWARE=1
 export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 # The sandbox is already isolated by runc; Chromium's namespace sandbox is
-# unavailable there. Do not run the browser as root.
+# unavailable there. Do not run the browser as root. --test-type hides the
+# unsupported --no-sandbox infobar without changing the container boundary.
 if [ "$(id -u)" = 0 ]; then
     exec su -p -s /bin/sh agent -c 'exec /usr/local/bin/chromium "$@"' chromium "$@"
 fi
-exec /opt/chrome-linux/chrome --no-sandbox --no-first-run --no-default-browser-check \
+exec /opt/chrome-linux/chrome --no-sandbox --test-type --no-first-run --no-default-browser-check \
     --disable-background-networking --disable-component-update \
     --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
     --remote-allow-origins=http://127.0.0.1 \

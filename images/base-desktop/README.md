@@ -10,7 +10,10 @@ package requires snapd and cannot run in the sandbox, so this image downloads
 an official standalone Chromium snapshot instead. It does not install an update
 service. Its `chromium` wrapper disables first-run and background update
 requests and binds DevTools to `127.0.0.1:9222`; it runs as `agent` and uses
-`--no-sandbox` because runc provides the container boundary. DevTools is only
+`--no-sandbox` because runc provides the container boundary. `--test-type`
+hides the unsupported-flag infobar without removing `--no-sandbox`.
+A managed policy in `/etc/chromium/policies/managed/swarmy.json` disables the
+password manager, password-leak detection, and promotional tabs. DevTools is only
 reachable from inside the sandbox. A fresh browser profile is stored under
 `/home/agent/.config/chromium-debug` unless `CHROMIUM_USER_DATA_DIR` is set.
 
@@ -74,3 +77,9 @@ Chromium, and Blender checks still require a node with sudo and NBD support.
 On a real desktop sandbox, run `python3 images/base-desktop/tests/live-smoke.py`
 from a checkout to verify headed Chromium against a local HTTP login form,
 selection and evaluation, both screenshots, and a visible Blender window.
+
+The local `tests/desktop_check_app.py` serves a login and settings page with a
+verification code drawn only as canvas pixels. `tests/png_check.py` decodes
+screenshots and rejects blank images. The scripted chaos proof and the
+real-model operator check validate agent-level use of both browser and screen
+(see [graphics.md](../../docs/graphics.md)).

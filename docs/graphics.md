@@ -1,0 +1,88 @@
+# Desktop graphics and image inputs
+
+## What the desktop image gives an agent
+
+`base-desktop` gives an agent a browser, an X11 desktop and software-rendered
+OpenGL and Vulkan. It requires no GPU. Mesa is the standard open-source OpenGL and Vulkan implementation on Linux;
+its llvmpipe (OpenGL) and lavapipe (Vulkan) drivers run on the CPU. GPU
+rendering is not covered here.
+
+## The display image
+
+Xvfb is an X11 display server that draws into memory, rather than on a physical
+monitor. This image runs Xvfb on `:99` at 1280x800 and 24-bit color. Openbox is a small window manager: it places and decorates windows so desktop
+programs behave normally. The sandbox's first process (PID 1) is a small
+supervisor that restarts Xvfb if it exits; `/etc/swarmy/environment` supplies `DISPLAY` and software-renderer
+settings to container processes.
+
+The recipe's `[sandbox] display = true` becomes the stored `image_display` flag.
+It also installs a checksum-verified, pinned Chromium snapshot, not Ubuntu's
+snap-based Chromium package. Chromium binds its debugging port only to
+`127.0.0.1:9222` inside the sandbox. Build and inspect the image following
+[the image README](../images/base-desktop/README.md).
+
+## Browser and screen tools
+
+Chromium DevTools protocol (CDP) exchanges JSON over a WebSocket to navigate,
+inspect and capture a browser page. The accessibility tree is a structured list
+of roles and names used by assistive technology; `browser_snapshot` prints it
+with short element refs such as `[e3]`. Refs remain stable within a page but
+expire on navigation. Prefer snapshots for controls and text, screenshots for
+visual layout.
+
+The node runs the Python helper `/usr/local/libexec/swarmy-browser` for eight
+browser tools and two screen tools: `browser_navigate`, `browser_snapshot`, `browser_click`,
+`browser_type`, `browser_select`, `browser_scroll`, `browser_screenshot`, and
+`browser_evaluate`. The latter executes page JavaScript; use it only for pages
+the agent is authorized to control. `screen_screenshot` uses scrot to capture
+all of Xvfb, while `screen_windows` uses wmctrl to list windows by title.
+Snapshots are limited to 32 KiB, screenshots to 5 MiB, and each helper call
+to 40 seconds. The worker advertises these ten tools and their prompt only when
+the agent's image has the display flag; the node rejects display calls on
+other images.
+
+## Image inputs
+
+The helper returns PNG bytes as base64. The node stores them in a tool blob and
+replaces inline bytes in the completed event with `image_object_key` and
+`image_media_type`. The worker loads those bytes into a user image part for
+models whose catalog lists image input. Text-only models receive an omission
+note instead. The summarizer budgets 4,800 tokens per image. Download a
+completed call's image with `swarmy session image SESSION_ID CALL_ID --output FILE`;
+the API only serves images referenced by that session's own completed tool
+calls. Reading an image file with `read` also produces a downloadable image. The scripted fake model accepts image parts too, and its scripts can
+resolve accessibility refs through `{{ref:LABEL}}` placeholders using earlier
+tool-result text.
+
+## Memory sizing
+
+The recipe defaults to 3072 MiB; `swarmy agent create --memory` can override
+it. The node reserves that amount against its capacity. Chromium dominates
+memory use; Xvfb's 1280x800x24 framebuffer is about 4 MB and Blender adds its
+own usage. The desktop proof records the sandbox's `memory.peak` in its
+`summary.json` evidence. No GPU memory is involved.
+
+## How it is verified
+
+`python3 images/base-desktop/tests/browser-helper.py` checks the helper against
+a fake CDP endpoint without a display. `python3
+images/base-desktop/tests/live-smoke.py` exercises Chromium, Xvfb and Blender
+inside an actual desktop sandbox. `swarmy-chaos --scenario desktop` runs a scripted
+agent against an app in its sandbox: the root test `swarmy-chaos --test desktop`
+is wired through `scripts/node-suites/root-suites-plus.sh`. Its harness checks
+the app's own record, tool calls, PNG pixels, and exact image bytes in provider
+requests. The fake cannot interpret pixels.
+
+`scripts/desktop-agent-check.sh` checks that the chosen model advertises image
+input. It then runs the same task using a real vision model,
+checks the recorded browser/screen-only task window, downloads the screenshots,
+and compares the model's reported canvas code to the app's record. Only this
+real-model run proves that the model read pixels. Example:
+
+```sh
+scripts/desktop-agent-check.sh --swarm NAME --provider anthropic --model MODEL
+```
+
+## Not covered
+
+GPU scenarios, audio and multiple displays are separate work.

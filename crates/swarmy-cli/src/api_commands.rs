@@ -259,6 +259,25 @@ async fn session(
     json: bool,
 ) -> Result<()> {
     match command {
+        session_command::Command::Image {
+            session_id,
+            call_id,
+            output,
+        } => {
+            let (media_type, bytes) = request(
+                endpoint,
+                client.tool_image(&session_id.to_string(), &call_id),
+            )
+            .await?;
+            std::fs::write(&output, &bytes)?;
+            let path = output.display().to_string();
+            print(
+                &serde_json::json!({"session_id": session_id.to_string(), "call_id": call_id,
+                "media_type": media_type, "bytes": bytes.len(), "path": path}),
+                &format!("Saved {media_type} ({} bytes) to {path}", bytes.len()),
+                json,
+            );
+        }
         session_command::Command::List => {
             let mut after = None;
             loop {

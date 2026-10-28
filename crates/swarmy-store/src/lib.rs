@@ -410,6 +410,29 @@ impl Store {
         Ok(key)
     }
 
+    /// Read binary tool content written by `put_tool_blob`.
+    /// # Errors
+    /// Returns an error for a malformed, oversized, missing, or corrupt blob.
+    pub async fn get_tool_blob(&self, key: &str) -> Result<bytes::Bytes> {
+        let hash = key
+            .strip_prefix("blobs/")
+            .ok_or(StoreError::Storage(StorageError::Corrupt))?;
+        if hash.len() != 64
+            || !hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(StoreError::Storage(StorageError::Corrupt));
+        }
+        let bytes = self.blobs.get(key).await?;
+        if bytes.len() > 5 * 1024 * 1024
+            || key != format!("blobs/{}", blake3::hash(&bytes).to_hex())
+        {
+            return Err(StoreError::Storage(StorageError::Corrupt));
+        }
+        Ok(bytes)
+    }
+
     async fn prepare<T: Serialize>(&self, value: &T) -> Result<Vec<u8>> {
         let bytes = encode(value)?;
         let stored = if bytes.len() > INLINE_LIMIT {

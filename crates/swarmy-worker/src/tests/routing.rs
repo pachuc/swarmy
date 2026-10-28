@@ -51,6 +51,44 @@ async fn placement_prefers_scratch_node_then_falls_back_when_full() {
 }
 
 #[tokio::test]
+async fn expired_placement_tries_another_node_before_old_scratch_host() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let _session = f.session().await;
+    let old = f
+        .store
+        .place(
+            f.agent,
+            f.nodes[0],
+            f.now().checked_add(Duration::from_secs(2)).unwrap(),
+        )
+        .await
+        .unwrap();
+    f.store.claim_placement(&old).await.unwrap();
+    f.store
+        .report_scratch(
+            f.agent,
+            &ScratchRecord {
+                node_id: f.nodes[0],
+                bytes: 12,
+            },
+        )
+        .await
+        .unwrap();
+    f.advance(Duration::from_millis(2100));
+    let replacement =
+        crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
+            .await
+            .unwrap();
+    assert_eq!(replacement.node_id, f.nodes[1]);
+    assert_eq!(
+        replacement.last_change_reason,
+        PlacementChangeReason::Failure
+    );
+}
+
+#[tokio::test]
 async fn unrouted_ephemeral_first_attempt_keeps_gateway_pool_selection() {
     let Some(f) = Fixture::new().await else {
         return;

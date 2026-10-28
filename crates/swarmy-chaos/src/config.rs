@@ -13,6 +13,9 @@ pub(crate) struct Config {
     /// Receives the node settings as environment variables. Used by cloud benchmarks.
     #[arg(long)]
     pub node_driver: Option<PathBuf>,
+    /// Directory for the desktop proof screenshots, app record, and summary.
+    #[arg(long)]
+    pub desktop_output: Option<PathBuf>,
     /// Run the root volume measurement script twice after persistent scenarios.
     #[arg(long)]
     pub measurements: Option<PathBuf>,
@@ -62,6 +65,8 @@ pub(crate) enum Scenario {
     Continuity,
     /// Clone, repair a failing test, and push through one node kill using a local remote.
     Coding,
+    /// Log into a web app in the sandbox, change a setting, and take browser and screen screenshots with a scripted agent. Needs root and a display image.
+    Desktop,
     /// Saturate two rate-limited API keys of one HTTP fake behind one route with named agents. Needs no root.
     Saturation,
 }
@@ -90,11 +95,20 @@ impl Config {
             "--node-driver and --measurements require --scenario persistent"
         );
         ensure!(
+            self.desktop_output.is_none() || self.scenario == Some(Scenario::Desktop),
+            "--desktop-output requires --scenario desktop"
+        );
+        ensure!(
             !matches!(
                 self.scenario,
-                Some(Scenario::Persistent | Scenario::Continuity | Scenario::Coding)
+                Some(
+                    Scenario::Persistent
+                        | Scenario::Continuity
+                        | Scenario::Coding
+                        | Scenario::Desktop
+                )
             ) || self.image.is_some(),
-            "--scenario persistent, continuity, or coding requires --image"
+            "--scenario persistent, continuity, coding, or desktop requires --image"
         );
         ensure!(
             self.scenario != Some(Scenario::Saturation) || self.image.is_none(),
@@ -120,10 +134,19 @@ impl Config {
                 "deterministic node kill requires --sessions 1 --steps 3 --kills 0"
             );
         }
-        if matches!(self.scenario, Some(Scenario::Continuity | Scenario::Coding)) {
+        if matches!(
+            self.scenario,
+            Some(Scenario::Continuity | Scenario::Coding | Scenario::Desktop)
+        ) {
             ensure!(
                 self.gateways == 1 && self.kills == 0,
-                "--scenario continuity and coding require --gateways 1 --kills 0"
+                "--scenario continuity, coding, and desktop require --gateways 1 --kills 0"
+            );
+        }
+        if self.scenario == Some(Scenario::Desktop) {
+            ensure!(
+                self.sessions == 1,
+                "--scenario desktop requires --sessions 1"
             );
         }
         if self.scenario == Some(Scenario::Persistent) {

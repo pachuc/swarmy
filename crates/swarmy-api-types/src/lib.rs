@@ -384,6 +384,7 @@ pub struct Model {
     pub context_window: u64,
     pub key: String,
     pub name: String,
+    pub input_modalities: Vec<String>,
     pub limit: ModelLimit,
     pub cost: ModelCost,
     pub supported_efforts: Vec<ReasoningEffort>,
@@ -1354,6 +1355,12 @@ pub mod api_paths {
         ),
         responses((status = 200, body = Vec<TurnMetrics>), (status = 404, body = ApiError)))]
     pub fn session_metrics() {}
+    #[utoipa::path(get, path = "/v1/sessions/{id}/tool-images/{call_id}",
+        params(("id" = String, Path, description = "Session id"),
+               ("call_id" = String, Path, description = "Tool call whose result carries an image")),
+        responses((status = 200, description = "Image bytes with the stored media type", content(("image/png"), ("image/jpeg"), ("image/gif"), ("image/webp"))),
+                  (status = 404, body = ApiError)))]
+    pub fn session_tool_image() {}
     #[utoipa::path(get, path = "/v1/agents/{id}/metrics",
         params(
             ("id" = String, Path, description = "Agent id or name"),
@@ -1419,7 +1426,7 @@ pub mod api_paths {
         api_paths::update_agent, api_paths::delete_agent,
         api_paths::list_sessions, api_paths::create_session, api_paths::show_session,
         api_paths::close_session, api_paths::append_message, api_paths::interrupt_session,
-        api_paths::wait_idle, api_paths::session_events, api_paths::session_metrics,
+        api_paths::wait_idle, api_paths::session_events, api_paths::session_metrics, api_paths::session_tool_image,
         api_paths::agent_metrics,
         api_paths::subscribe, api_paths::update_subscription,
         api_paths::list_images, api_paths::upload_image, api_paths::show_image,
@@ -1520,7 +1527,7 @@ mod tests {
         ] {
             check!(ProviderApi, api);
         }
-        check!(Model, {"id":"m","provider":"p","context_window":100,"key":"p/m","name":"model","limit":{"context":100,"output":null},"cost":{"input":0.0,"output":0.0},"supported_efforts":[],"effective_api":"Fake","effective_base_url":"http://localhost:8000/v1","compat":{}});
+        check!(Model, {"id":"m","provider":"p","context_window":100,"key":"p/m","name":"model","input_modalities":["text","image"],"limit":{"context":100,"output":null},"cost":{"input":0.0,"output":0.0},"supported_efforts":[],"effective_api":"Fake","effective_base_url":"http://localhost:8000/v1","compat":{}});
         check!(Provider, {"id":"p","name":"provider","api":"Fake","auth_kinds":[],"env_keys":[],"credential_env_keys":[]});
         for kind in ["subscription", "api_key", "cloud"] {
             check!(CredentialKind, kind);

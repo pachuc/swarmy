@@ -25,6 +25,37 @@ async fn large_tool_image_blob_round_trips_without_inline_bytes() {
     let key = f.store.put_tool_blob(image.clone()).await.unwrap();
     assert!(key.starts_with("blobs/"));
     assert_eq!(blobs.get(&key).await.unwrap().as_ref(), image.as_slice());
+    assert_eq!(
+        f.store.get_tool_blob(&key).await.unwrap().as_ref(),
+        image.as_slice()
+    );
+}
+
+#[tokio::test]
+async fn tool_blob_refuses_wrong_content_hash() {
+    let blobs = Arc::new(MemoryBlobStore::default());
+    let Some(f) = TestStore::new(blobs.clone()) else {
+        return;
+    };
+    let key = f.store.put_tool_blob(b"original".to_vec()).await.unwrap();
+    blobs
+        .put(&key, bytes::Bytes::from_static(b"modified"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.store.get_tool_blob(&key).await,
+        Err(StoreError::Storage(swarmy_store::StorageError::Corrupt))
+    ));
+    assert!(matches!(
+        f.store.get_tool_blob("not-a-blob").await,
+        Err(StoreError::Storage(swarmy_store::StorageError::Corrupt))
+    ));
+    let oversized = vec![0_u8; 5 * 1024 * 1024 + 1];
+    let oversized_key = f.store.put_tool_blob(oversized).await.unwrap();
+    assert!(matches!(
+        f.store.get_tool_blob(&oversized_key).await,
+        Err(StoreError::Storage(swarmy_store::StorageError::Corrupt))
+    ));
 }
 
 #[tokio::test]

@@ -2102,6 +2102,55 @@
         }
       }
     },
+    "/v1/sessions/{id}/tool-images/{call_id}": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "session_tool_image",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "call_id",
+            "in": "path",
+            "description": "Tool call whose result carries an image",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Image bytes with the stored media type",
+            "content": {
+              "image/png": {},
+              "image/jpeg": {},
+              "image/gif": {},
+              "image/webp": {}
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/wait-idle": {
       "get": {
         "tags": [
@@ -3858,6 +3907,7 @@
           "context_window",
           "key",
           "name",
+          "input_modalities",
           "limit",
           "cost",
           "supported_efforts",
@@ -3892,6 +3942,12 @@
           },
           "id": {
             "type": "string"
+          },
+          "input_modalities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "key": {
             "type": "string"

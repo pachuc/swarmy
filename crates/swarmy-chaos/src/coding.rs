@@ -3,7 +3,7 @@ use std::{path::Path, process::Command, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use swarmy_core::{Event, Message, MessageId, MessageRole, Part, SessionState, ToolResult};
+use swarmy_core::{Event, Message, MessageId, MessageRole, Part, ToolResult};
 use tokio::time::{Instant, sleep, timeout};
 
 use crate::{Fixture, process::Kind};
@@ -53,10 +53,6 @@ fn remote(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn tool(index: usize, name: &str, input: &Value) -> Value {
-    json!({"parts":[{"tool_call":{"call_id":format!("coding-{index}"),"tool":name,"input":input}}], "stop_reason":"tool_calls", "usage":{"input_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0}})
-}
-
 fn script(remote: &str, work: &str) -> Vec<Value> {
     let ready = Path::new(remote).parent().expect("the harness always passes a repository path below a work directory, so it has a parent").join("remote-ready");
     let commands = [
@@ -72,49 +68,68 @@ fn script(remote: &str, work: &str) -> Vec<Value> {
         ),
     ];
     let mut responses = vec![
-        tool(
+        crate::scripted_tool(
+            "coding",
             0,
             "bash",
             &json!({"command":commands[0], "yield_seconds":120}),
         ),
-        tool(1, "read", &json!({"path":format!("{work}/AGENTS.md")})),
-        tool(
+        crate::scripted_tool(
+            "coding",
+            1,
+            "read",
+            &json!({"path":format!("{work}/AGENTS.md")}),
+        ),
+        crate::scripted_tool(
+            "coding",
             2,
             "bash",
             &json!({"command":commands[1], "yield_seconds":120}),
         ),
-        tool(3, "checkpoint", &json!({})),
-        tool(
+        crate::scripted_tool("coding", 3, "checkpoint", &json!({})),
+        crate::scripted_tool(
+            "coding",
             4,
             "bash",
             &json!({"command":commands[2], "yield_seconds":120,"timeout_ms":180_000}),
         ),
-        tool(
+        crate::scripted_tool(
+            "coding",
             5,
             "bash",
             &json!({"command":commands[3], "yield_seconds":120}),
         ),
-        tool(
+        crate::scripted_tool(
+            "coding",
             6,
             "edit",
             &json!({"path":format!("{work}/README.md"),"old_string":"# Coding proof\n","new_string":format!("# Coding proof\n{LINE}\n")}),
         ),
-        tool(
+        crate::scripted_tool(
+            "coding",
             7,
             "edit",
             &json!({"path":format!("{work}/answer.txt"),"old_string":"41","new_string":"42"}),
         ),
-        tool(
+        crate::scripted_tool(
+            "coding",
             8,
             "bash",
             &json!({"command":commands[4], "yield_seconds":120}),
         ),
-        json!({"parts":[{"text":{"text":DONE}}],"stop_reason":"end_turn","usage":{"input_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0}}),
+        crate::scripted_text(DONE),
     ];
-    let readme = tool(10, "read", &json!({"path":format!("{work}/README.md")}));
+    let readme = crate::scripted_tool(
+        "coding",
+        10,
+        "read",
+        &json!({"path":format!("{work}/README.md")}),
+    );
     responses[1]["parts"]
         .as_array_mut()
-        .expect("tool() always builds a parts array, so the second response has one to extend")
+        .expect(
+            "scripted_tool always builds a parts array, so the second response has one to extend",
+        )
         .push(readme["parts"][0].clone());
     responses
 }
@@ -187,26 +202,7 @@ pub(crate) async fn exercise(f: &mut Fixture) -> Result<()> {
         .await?;
     seed_sandbox_remote(f, agent.agent_id).await?;
     kill_at_marker(f, agent.agent_id).await?;
-    let events = timeout(Duration::from_secs(240), async {
-        loop {
-            for process in &mut f.processes {
-                process.check()?;
-            }
-            let record = f
-                .store
-                .fetch_session(session)
-                .await?
-                .context("session missing")?;
-            if record.state == SessionState::Idle {
-                let mut events = Vec::new();
-                crate::read_through(&f.store, session, &mut events, record.head_seq).await?;
-                return Ok::<_, anyhow::Error>(events);
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .context("coding recovery timed out")??;
+    let events = crate::wait_idle(f, session, Duration::from_secs(240), "coding recovery").await?;
     verify_events(f, &events).await?;
     verify_remote(&f.files.path().join(format!(
         ".swarmy/node/bundles/{}/rootfs/home/agent/work",

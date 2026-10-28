@@ -25,7 +25,9 @@ use idempotency::{IdempotencyKey, replay};
 use swarmy_api_types as api;
 use swarmy_bus::Bus;
 use swarmy_config::Keyring;
-use swarmy_core::{AgentId, AgentSettings, CredentialScope, ImageTag, SessionId};
+use swarmy_core::{
+    AgentId, AgentSettings, CredentialScope, Event, ImageTag, SessionId, ToolResult,
+};
 use swarmy_llm::catalog::Catalog;
 use swarmy_store::{CreateAgentOptions, MAX_SCAN_LIMIT, Store};
 use tokio::sync::Mutex;
@@ -219,6 +221,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions/{id}/wait-idle", get(conversation::wait_idle))
         .route("/v1/sessions/{id}/events", get(events))
         .route("/v1/sessions/{id}/metrics", get(session_metrics))
+        .route("/v1/sessions/{id}/tool-images/{call_id}", get(tool_image))
         .route("/v1/agents/{id}/metrics", get(agent_metrics))
         .route("/v1/events", get(stream::subscribe))
         .route(
@@ -618,6 +621,90 @@ async fn show_session(
     views::populate_session_detail(&state, &mut result, &record, agent).await?;
     Ok(Json(result))
 }
+async fn tool_image(
+    State(state): State<AppState>,
+    Path((text, call_id)): Path<(String, String)>,
+) -> Result<Response, ApiFailure> {
+    let session_id = id(&text, SessionId::from_ulid)?;
+    if state
+        .store
+        .fetch_session(session_id)
+        .await
+        .map_err(storage)?
+        .is_none()
+    {
+        return Err(ApiFailure::new(
+            StatusCode::NOT_FOUND,
+            "session_not_found",
+            "session not found",
+        ));
+    }
+    let mut after = 0;
+    loop {
+        let events = state
+            .store
+            .read_events(session_id, after, MAX_SCAN_LIMIT)
+            .await
+            .map_err(storage)?;
+        if events.is_empty() {
+            break;
+        }
+        for event in &events {
+            if let Event::ToolCallCompleted {
+                call_id: completed,
+                result: ToolResult::Completed { metadata, .. },
+                ..
+            } = event
+                && completed.0 == call_id
+                && let (Some(key), Some(media_type)) = (
+                    metadata
+                        .get("image_object_key")
+                        .and_then(serde_json::Value::as_str),
+                    metadata
+                        .get("image_media_type")
+                        .and_then(serde_json::Value::as_str),
+                )
+            {
+                if !matches!(
+                    media_type,
+                    "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+                ) {
+                    return Err(missing_tool_image());
+                }
+                let bytes = state.store.get_tool_blob(key).await.map_err(|error| {
+                    if matches!(
+                        error,
+                        swarmy_store::StoreError::Storage(swarmy_store::StorageError::Corrupt)
+                    ) {
+                        missing_tool_image()
+                    } else {
+                        storage(error)
+                    }
+                })?;
+                return Ok((
+                    [
+                        ("content-type", media_type),
+                        ("x-content-type-options", "nosniff"),
+                        ("content-disposition", "attachment"),
+                    ],
+                    bytes,
+                )
+                    .into_response());
+            }
+        }
+        after = events.last().map_or(after, Event::seq);
+    }
+    Err(missing_tool_image())
+}
+
+fn missing_tool_image() -> ApiFailure {
+    ApiFailure::new(
+        StatusCode::NOT_FOUND,
+        "image_not_found",
+        "no image for this tool call in this session",
+    )
+}
+
 async fn session_metrics(
     State(state): State<AppState>,
     Path(text): Path<String>,

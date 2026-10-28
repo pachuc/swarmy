@@ -94,8 +94,8 @@ control-plane services flush queued turn metrics before exit
   ([source](../crates/swarmy-testkit/src/lib.rs)).
 - **swarmy-e2e** owns the real-binary integration suites
   ([manifest](../crates/swarmy-e2e/Cargo.toml)).
-- **swarmy-chaos** is a binary that tests crashes, restart
-  continuity, and rate-limit saturation ([manifest](../crates/swarmy-chaos/Cargo.toml)).
+- **swarmy-chaos** is a binary that tests crashes, restart continuity, and rate-limit saturation, and runs the coding and desktop agent proofs
+  ([manifest](../crates/swarmy-chaos/Cargo.toml)).
 
 Dependency direction is an intention rather than a CI-enforced rule: most
 services consume storage and transport, while clients normally consume the
@@ -149,8 +149,12 @@ them in [api-breaks.txt](api-breaks.txt).
   runs. Node records carry advertised capacity and heartbeats, service
   heartbeats stay advisory, tool routing fences durable dispatch across
   worker replicas, and tool claims on agent volumes never publish disk
-  state. A placement epoch fences stale node operations
-  ([leases.rs](../crates/swarmy-store/src/leases.rs),
+  state. New placements prefer a node holding the agent's scratch data, but
+  after a placement lease expires the previous host is tried last, even if
+  it holds that scratch. Capacity admission remains transactional, and a
+  placement epoch fences stale node operations
+  ([placement.rs](../crates/swarmy-worker/src/placement.rs),
+  [leases.rs](../crates/swarmy-store/src/leases.rs),
   [placements.rs](../crates/swarmy-store/src/placements.rs),
   [nodes.rs](../crates/swarmy-store/src/nodes.rs),
   [services.rs](../crates/swarmy-store/src/services.rs),
@@ -232,6 +236,18 @@ indexes rather than trusting a NATS acknowledgment
 [gateway source](../crates/swarmy-gateway/src/role.rs)). Volumes use
 content-addressed chunks and manifests, with dirty periodic snapshots
 ([volume source](../crates/swarmy-volume/src/lib.rs)).
+
+### Desktop sessions and image inputs
+
+An image's stored display flag controls whether the worker adds the browser and
+screen tool schemas and display prompt to a named agent's inference request.
+The node runs the sandbox-local Python browser helper and rejects display tools
+on other images. Screenshot bytes become tool blobs referenced by the completed
+event's `image_object_key`; the worker adds image parts for models with image
+input, or an omission note for text-only models. The authenticated tool-images
+endpoint lets a client download only screenshots referenced by a session's
+completed tool calls. See [graphics.md](graphics.md) for the image, tools and
+agent-level proofs.
 
 ## Operational invariants
 
