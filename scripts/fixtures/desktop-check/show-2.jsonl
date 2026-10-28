@@ -11,4 +11,4 @@
 {"tool_call_completed": {"seq": 10, "request_id": "fixture", "call_id": "browser-image", "result": {"completed": {"output": "Screenshot", "title": "browser_screenshot", "metadata": {"image_object_key": "blobs/browser", "image_media_type": "image/png"}}}}}
 {"tool_call_requested": {"seq": 11, "request_id": "fixture", "call": {"call_id": "screen-image", "tool": "screen_screenshot", "arguments": {}, "result": null}}}
 {"tool_call_completed": {"seq": 12, "request_id": "fixture", "call_id": "screen-image", "result": {"completed": {"output": "Screenshot", "title": "screen_screenshot", "metadata": {"image_object_key": "blobs/screen", "image_media_type": "image/png"}}}}}
-{"inference_completed": {"seq": 13, "request_id": "fixture", "completion": {"message": {"role": "assistant", "parts": [{"text": {"text": "CODE: K7MWX3"}}]}}}}
+{"inference_completed":{"seq":13,"request_id":"fixture","message":{"role":"assistant","parts":[{"text":{"text":"CODE: K7MWX3"}}]}}}

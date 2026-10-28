@@ -93,7 +93,7 @@ import json,pathlib,sys
 p=pathlib.Path(sys.argv[1]); change=sys.argv[2]
 rows=list(map(json.loads,p.read_text().splitlines()))
 if change in ('bash','browser_evaluate'): rows[3]['tool_call_requested']['call']['tool']=change
-elif change=='code': rows[-1]['inference_completed']['completion']['message']['parts'][0]['text']['text']='CODE: AAAAAA'
+elif change=='code': rows[-1]['inference_completed']['message']['parts'][0]['text']['text']='CODE: AAAAAA'
 elif change=='theme': rows[-1]['tool_call_completed']['result']['completed']['output']=rows[-1]['tool_call_completed']['result']['completed']['output'].replace('dark','light')
 elif change=='setup': rows[1]['tool_call_requested']['call']['arguments']['command']='__SETUP__x'
 elif change=='view_source': rows[3]['tool_call_requested']['call']['arguments']['url']='view-source:http://127.0.0.1:8765/settings'

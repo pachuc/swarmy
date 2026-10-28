@@ -84,7 +84,7 @@ elif mode == 'tool-list':
     for entry in calls:
         print(entry['call']['call_id'], entry['call']['tool'])
 elif mode == 'reported-code':
-    responses = [e['completion'] for kind, e in events(args[0], int(args[1]))
+    responses = [e for kind, e in events(args[0], int(args[1]))
                  if kind == 'inference_completed']
     require(responses, 'task had no inference completion')
     parts = responses[-1]['message']['parts']
