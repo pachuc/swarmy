@@ -243,13 +243,15 @@ window. To turn affinity off for a provider, set `cache_affinity_secs = 0` in
 its `[selection.custom_providers.PROVIDER]` table (see Custom providers and
 models).
 
-To measure the effect, an operator runs the script below twice, with entries
-from different Anthropic workspaces. Each run consumes real quota. Run
-`--mode without` after setting `cache_affinity_secs = 0` for `anthropic` and
-restarting the workers, then remove the setting.
+To measure the effect, an operator runs the script below twice, with two
+entries that do not share a prompt cache: different accounts or workspaces,
+or different providers that serve the same model, such as a ChatGPT login and
+an OpenAI API key. Each run consumes real quota. The session starts on the
+first entry. Run `--mode without` after setting `cache_affinity_secs = 0` for
+both entries' providers and restarting the workers, then remove the setting.
 
 ```sh
-scripts/measure-cache-affinity.sh --mode with --entries first,second --gap 180 --turns 8
+scripts/measure-cache-affinity.sh --mode with --entries chatgpt/default,openai/work --model gpt-6-sol --gap 180 --turns 8
 ```
 
 ## Cost and quota views
