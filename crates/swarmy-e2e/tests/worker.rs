@@ -2394,14 +2394,27 @@ Finish the task
             let new = wait_successor(f, id).await;
             assert_ne!(id, new);
             check_side_successor(f, &agent.agent_id, id, new, &summary).await;
+            // The successor continues the turn on its own; appending while
+            // it still runs would race its writes.
+            f.idle(new).await;
             f.user_message(new).await;
+            let asked = f.store.fetch_session(new).await.unwrap().unwrap().head_seq;
             f.wake(new).await;
-            let fresh_events = f.idle(new).await;
-            assert!(
-                fresh_events
-                    .iter()
-                    .any(|event| matches!(event, Event::InferenceCompleted { .. }))
-            );
+            let fresh_events =
+                swarmy_testkit::eventually("successor answers the new message", WAIT, async || {
+                    let session = f.store.fetch_session(new).await.unwrap().unwrap();
+                    if session.state != SessionState::Idle {
+                        return None;
+                    }
+                    let events = read_all_events(f, new).await;
+                    events
+                        .iter()
+                        .any(|event| {
+                            matches!(event, Event::InferenceCompleted { seq, .. } if *seq > asked)
+                        })
+                        .then_some(events)
+                })
+                .await;
             let request = fresh_events
                 .iter()
                 .rev()
