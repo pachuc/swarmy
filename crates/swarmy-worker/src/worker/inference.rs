@@ -44,6 +44,29 @@ pub(super) fn warn_on_route_fallback(
 }
 
 impl Worker {
+    /// Keep the last entry while its prompt cache is warm, or use the normal step.
+    fn route_index(
+        &self,
+        session: &SessionRecord,
+        snapshot: &swarmy_store::RouteSnapshot,
+        model: &str,
+    ) -> usize {
+        let usual = snapshot.pick_or_earliest(session.route_step);
+        let window = snapshot
+            .affinity
+            .as_ref()
+            .map_or(std::time::Duration::ZERO, |a| {
+                self.config.catalog.cache_affinity_window(&a.provider)
+            });
+        let step = snapshot
+            .affine_step(session.route_step, window, model, self.now())
+            .unwrap_or(usual);
+        if step != usual {
+            tracing::debug!(session_id = %session.session_id, step, usual, "keeping the session on its cached entry");
+        }
+        step
+    }
+
     pub(crate) async fn prepare_request(
         &self,
         session: &SessionRecord,
@@ -67,7 +90,8 @@ impl Worker {
         if let swarmy_core::SessionKind::Named { agent_id } = session.kind {
             let (record, snapshot) = self
                 .store
-                .agent_and_route_snapshot(
+                .session_route_snapshot(
+                    session.session_id,
                     agent_id,
                     super::route_selection(session, &self.config, Timestamp::now()),
                 )
@@ -97,11 +121,13 @@ impl Worker {
         let snapshot = if session.needs_route_snapshot(self.config.default_route.as_deref()) {
             let snapshot = self
                 .store
-                .route_snapshot(
+                .session_route_snapshot(
+                    session.session_id,
                     session.agent_id,
                     super::route_selection(session, &self.config, Timestamp::now()),
                 )
-                .await?;
+                .await?
+                .1;
             warn_on_route_fallback(session, snapshot.name.as_deref(), &snapshot.skipped);
             snapshot
         } else {
@@ -137,7 +163,7 @@ impl Worker {
         if !summarizing {
             apply_display_tools(request, self.session_display(session).await?);
         }
-        let index = snapshot.pick_or_earliest(session.route_step);
+        let index = self.route_index(session, &snapshot, &selection.model);
         let step = snapshot.steps.get(index).context("empty route snapshot")?;
         let model_id = step
             .model

@@ -20,6 +20,7 @@ const AGENT_GITHUB_TOKEN: &str = "agent_github_token";
 const API_APPEND: &str = "api_append";
 const API_IDEMPOTENCY: &str = "api_idempotency";
 const API_SESSION_ID: &str = "api_session_id";
+const CACHE_AFFINITY: &str = "cache_affinity";
 const CHUNK_REUSED: &str = "chunk_reused";
 const COMPUTER_DELETED: &str = "computer_deleted";
 const COMPUTER_MEMORY: &str = "computer_memory";
@@ -150,6 +151,11 @@ impl<'a> Keys<'a> {
     }
     pub(crate) fn api_session_id_space(&self) -> Subspace {
         self.root.subspace(&(API_SESSION_ID,))
+    }
+    pub(crate) fn cache_affinity(&self, id: SessionId) -> Vec<u8> {
+        self.root
+            .subspace(&(CACHE_AFFINITY,))
+            .pack(&(id.as_ulid().to_bytes().as_slice(),))
     }
     pub(crate) fn chunk_reused(&self, hash: swarmy_core::ContentHash) -> Vec<u8> {
         self.chunk_reused_space().pack(&(hash.0.as_slice(),))

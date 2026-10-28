@@ -16,6 +16,7 @@ pub struct CustomProvider {
     pub base_url: Option<String>,
     pub api: Option<Api>,
     pub summarize_at: Option<u64>,
+    pub cache_affinity_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -61,6 +62,9 @@ impl Settings {
                 if let Some(threshold) = custom.summarize_at {
                     provider.summarize_at = Some(threshold);
                 }
+                if let Some(secs) = custom.cache_affinity_secs {
+                    provider.cache_affinity_secs = Some(secs);
+                }
             } else {
                 let api = custom
                     .api
@@ -83,6 +87,7 @@ impl Settings {
                         auth_kinds: vec!["api_key".into()],
                         models: BTreeMap::new(),
                         summarize_at: custom.summarize_at,
+                        cache_affinity_secs: custom.cache_affinity_secs,
                     },
                 );
             }
@@ -205,6 +210,7 @@ fn fake_fixture_model(id: &str) -> ModelInfo {
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+    use std::time::Duration;
 
     fn read(config: &str) -> Result<Settings, Error> {
         let directory = tempfile::tempdir().unwrap();
@@ -408,5 +414,29 @@ summarize_at = 500000
             .catalog()
             .unwrap();
         assert_eq!(round_trip.summarize_at("openai", "gpt-5.5"), Some(500_000));
+    }
+    #[test]
+    fn custom_provider_overrides_cache_affinity_window() {
+        let settings: Settings = toml::from_str(
+            r#"
+[selection.custom_providers.anthropic]
+cache_affinity_secs = 0
+[selection.custom_providers.private]
+api = "OpenAiCompletions"
+base_url = "https://example.com/v1"
+cache_affinity_secs = 900
+"#,
+        )
+        .unwrap();
+        let catalog = settings.catalog().unwrap();
+        assert_eq!(catalog.cache_affinity_window("anthropic"), Duration::ZERO);
+        assert_eq!(
+            catalog.cache_affinity_window("private"),
+            Duration::from_mins(15)
+        );
+        assert_eq!(
+            catalog.cache_affinity_window("openai"),
+            Duration::from_secs(300)
+        );
     }
 }

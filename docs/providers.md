@@ -180,6 +180,43 @@ instance role when the gateway runs in the cloud); SDK credentials can be
 rotated without storing a short-lived console key. An expired console key
 requires replacement, not refresh.
 
+### Prompt-cache affinity
+
+Anthropic and OpenAI keep the start of a recent prompt for a few minutes. When
+the next request repeats that start with the same credential and model, the
+cached part is billed at a lower rate and returns faster. Switching to another
+entry or model starts the cache from scratch.
+
+So at the start of each turn, and after a wait clears, a session goes back to
+the entry and model of its last successful completion when all of these hold:
+
+- that completion is younger than the provider's cache-affinity window (five
+  minutes unless configured);
+- the entry's breaker is closed;
+- the entry is still a step of the session's current route.
+
+Otherwise the session takes the route's first usable step as usual. Affinity
+never applies in the middle of a failover. A failover, or a new `--route` on the
+session, clears it. A change of route name (from the session, the agent, or the
+swarm default), provider or model also ends it. Editing a route's steps under
+the same name keeps it, as long as the entry is still in the route. Unrouted
+ephemeral sessions keep the gateway pool's choice.
+
+This has a cost side. On a `sub-then-key` route, a busy session that failed over
+to the paid key stays on that key for as long as it keeps completing within the
+window. To turn affinity off for a provider, set `cache_affinity_secs = 0` in
+its `[selection.custom_providers.PROVIDER]` table (see Custom providers and
+models).
+
+To measure the effect, an operator runs the script below twice, with entries
+from different Anthropic workspaces. Each run consumes real quota. Run
+`--mode without` after setting `cache_affinity_secs = 0` for `anthropic` and
+restarting the workers, then remove the setting.
+
+```sh
+scripts/measure-cache-affinity.sh --mode with --entries first,second --gap 180 --turns 8
+```
+
 ## Cost and quota views
 
 Every completion rolls into hourly metering buckets per session, agent,
@@ -360,7 +397,14 @@ context_window = 128000
 Put these entries in `.swarmy/config.toml` or the discovered user configuration.
 Store private endpoint credentials with `swarmy auth set private --file PATH`.
 New provider tables require `api` and `base_url`; existing ones keep omitted
-fields. A `[selection] providers = [...]` restricts gateway discovery.
+fields. A `[selection] providers = [...]` restricts gateway discovery. Provider
+tables accept `api`, `base_url`, `summarize_at`, and `cache_affinity_secs`, where
+`0` turns cache affinity off for that provider. For example:
+
+```toml
+[selection.custom_providers.anthropic]
+cache_affinity_secs = 3600
+```
 
 Models require `provider` and `id`. Optional fields are `name`, `api`, `base_url`,
 `context_window`, `max_output_tokens`, `reasoning`, `cost`, and `compat`. New

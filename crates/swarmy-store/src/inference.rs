@@ -346,6 +346,7 @@ impl Store {
                     now,
                 )
                 .await?;
+                self.record_cache_affinity(&trx, completion, now)?;
             }
             trx.set(&self.keys().event(claim.session_id, head), event);
             trx.set(&self.keys().inference_result(claim.request_id), response);

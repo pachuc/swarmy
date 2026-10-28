@@ -3,11 +3,14 @@
 //! The catalog lives in its own crate so services that only validate model
 //! metadata do not compile the inference clients in `swarmy-llm`.
 
-use std::{collections::BTreeMap, sync::OnceLock};
+use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use swarmy_core::ReasoningEffort;
+
+/// Anthropic's default prompt-cache lifetime, used as the affinity window when a provider sets no `cache_affinity_secs`.
+pub const DEFAULT_CACHE_AFFINITY: Duration = Duration::from_secs(300);
 
 /// Wire protocol selected by a provider or an individual model override.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +39,9 @@ pub struct ProviderInfo {
     /// When absent, each model's own threshold or window applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summarize_at: Option<u64>,
+    /// Seconds to keep using the last completion's entry and model. Zero disables affinity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_affinity_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -225,6 +231,14 @@ pub struct Catalog {
 }
 
 impl Catalog {
+    /// Prompt-cache affinity window for this provider, defaulting to five minutes.
+    #[must_use]
+    pub fn cache_affinity_window(&self, provider: &str) -> Duration {
+        self.provider(provider)
+            .and_then(|p| p.cache_affinity_secs)
+            .map_or(DEFAULT_CACHE_AFFINITY, Duration::from_secs)
+    }
+
     /// Build an owned catalog from provider metadata, ordered by provider id.
     #[must_use]
     pub fn from_providers(providers: impl IntoIterator<Item = ProviderInfo>) -> Self {
@@ -468,8 +482,31 @@ mod tests {
             .into_iter()
             .collect(),
             summarize_at: Some(500_000),
+            cache_affinity_secs: Some(60),
         }];
         let custom = Catalog::from_providers(providers);
         assert_eq!(custom.summarize_at("test", "m"), Some(500_000));
+    }
+    #[test]
+    fn cache_affinity_window_defaults_and_overrides() {
+        assert_eq!(
+            Catalog::get().cache_affinity_window("anthropic"),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            Catalog::get().cache_affinity_window("missing"),
+            Duration::from_secs(300)
+        );
+        let mut info = Catalog::get().provider("anthropic").unwrap().clone();
+        info.cache_affinity_secs = Some(60);
+        assert_eq!(
+            Catalog::from_providers([info.clone()]).cache_affinity_window("anthropic"),
+            Duration::from_secs(60)
+        );
+        info.cache_affinity_secs = Some(0);
+        assert_eq!(
+            Catalog::from_providers([info]).cache_affinity_window("anthropic"),
+            Duration::ZERO
+        );
     }
 }

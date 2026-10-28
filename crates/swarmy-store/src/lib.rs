@@ -55,9 +55,11 @@ pub use quota::{EntryQuota, ObservedQuota, QuotaConfig, QuotaSource};
 mod gc;
 mod leases;
 mod routes;
+#[cfg(test)]
+mod routes_affinity_tests;
 pub use routes::{
-    ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteCache, RouteFailure,
-    RouteSelection, RouteSnapshot, RouteStepStatus,
+    CacheAffinity, ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteCache,
+    RouteFailure, RouteSelection, RouteSnapshot, RouteStepStatus,
 };
 mod nodes;
 pub mod objects;

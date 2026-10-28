@@ -610,6 +610,19 @@ async fn unattributed_completions_keep_their_provider() {
     };
     let store = &test.store;
     let id = test.create().await;
+    store
+        .put_cache_affinity(
+            id,
+            &swarmy_store::CacheAffinity {
+                provider: "openai".into(),
+                entry: "primary".into(),
+                model: "gpt-5.5".into(),
+                route: None,
+                completed_at: Timestamp::now(),
+            },
+        )
+        .await
+        .unwrap();
     let session = store.fetch_session(id).await.unwrap().unwrap();
     let (step, claim) = start_claim(store, id).await;
     let request = claim.request_id;
@@ -630,6 +643,7 @@ async fn unattributed_completions_keep_their_provider() {
             .await
             .unwrap()
     );
+    assert_eq!(store.cache_affinity(id).await.unwrap(), None);
     let totals = store
         .dimension_totals(
             swarmy_store::MeteringDimension::AgentEntry,
@@ -853,4 +867,34 @@ async fn pruning_before_a_cutoff_hour_removes_whole_earlier_hours() {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].completions, want);
     }
+}
+
+#[tokio::test]
+async fn completion_records_cache_affinity() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let now = Timestamp::now();
+    let (tokens, cost) = usage(4, 4, 40);
+    complete_with(
+        &test.store,
+        id,
+        &input(
+            "openai",
+            "gpt-5.5",
+            "primary",
+            CredentialEntryKind::ApiKey,
+            tokens,
+            cost,
+            now,
+        ),
+    )
+    .await;
+    let value = test.store.cache_affinity(id).await.unwrap().unwrap();
+    assert_eq!(value.provider, "openai");
+    assert_eq!(value.entry, "primary");
+    assert_eq!(value.model, "gpt-5.5");
+    assert_eq!(value.route, None);
+    assert!(value.completed_at >= now);
 }
