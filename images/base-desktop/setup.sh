@@ -84,6 +84,7 @@ cat > /usr/local/libexec/swarmy-browser <<'PY'
 #!/usr/bin/python3
 """Small local CDP client. Browser state lives in Chromium, not this process."""
 import base64
+import fcntl
 import json
 import os
 import socket
@@ -95,6 +96,9 @@ import time
 import urllib.request
 
 PORT = 'http://127.0.0.1:9222'
+# A cold first start can take longer than the usual connection-refused retry window.
+CHROMIUM_START_TIMEOUT = 60
+CHROMIUM_START_LOCK = '/tmp/swarmy-chromium-start.lock'
 REFS = '/tmp/swarmy-browser-refs.json'
 LIMIT = 32768
 IMAGE_LIMIT = 5 * 1024 * 1024
@@ -117,21 +121,44 @@ def image(data):
             'image_media_type': 'image/png', 'output': 'PNG screenshot'}
 
 
+def start_chromium_once():
+    # Serialize launch decisions and retain the launcher PID across helper calls.
+    # Without both, simultaneous cold calls can each launch a competing browser.
+    with open(CHROMIUM_START_LOCK, 'a+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        lock.seek(0)
+        try:
+            pid = int(lock.read().strip())
+            os.kill(pid, 0)
+            return
+        except (ValueError, ProcessLookupError):
+            pass
+        process = subprocess.Popen(['chromium', 'about:blank'], stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   start_new_session=True)
+        lock.seek(0)
+        lock.truncate()
+        lock.write(str(process.pid))
+        lock.flush()
+
+
 class CDP:
     def __init__(self):
         pages = None
-        for attempt in range(30):
+        deadline = time.monotonic() + CHROMIUM_START_TIMEOUT
+        launched = False
+        while time.monotonic() < deadline:
             try:
                 pages = json.load(urllib.request.urlopen(PORT + '/json', timeout=1))
                 break
             except (OSError, ValueError):
-                if attempt == 0:
-                    subprocess.Popen(['chromium', 'about:blank'], stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                     start_new_session=True)
-                time.sleep(0.2)
+                if not launched:
+                    start_chromium_once()
+                    launched = True
+                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
         if pages is None:
-            raise ValueError('Chromium debugging port 9222 is unavailable')
+            raise ValueError('Chromium debugging port 9222 is unavailable after %d s' %
+                             CHROMIUM_START_TIMEOUT)
         page = next((p for p in pages if p.get('type') == 'page'), None)
         if page is None:
             raise ValueError('Chromium has no page target')

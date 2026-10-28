@@ -146,10 +146,10 @@ def start(directory, process_id, command, lifetime, call_id=None):
     return record, process
 
 
-def bash(directory, record, options):
+def bash(directory, record, options, started):
     timeout = options.get('timeout_ms', 120000) / 1000
     wait = min(options.get('yield_seconds', 10), timeout)
-    deadline = time.monotonic() + wait
+    deadline = started + wait
     while not (directory / 'exit.json').exists() and running(record):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -188,6 +188,7 @@ def bash(directory, record, options):
 def main():
     action, epoch, process_id, command, *extra = sys.argv[1:]
     lifetime = epoch + ':' + Path('/proc/sys/kernel/random/boot_id').read_text().strip() + ':' + str(identity(1))
+    started = time.monotonic()
     ROOT.mkdir(parents=True, exist_ok=True)
     directory = ROOT / process_id
     if action in ('process_start', 'bash'):
@@ -195,7 +196,7 @@ def main():
         record, process = start(directory, process_id, command, lifetime,
                                 options['call_id'] if action == 'bash' else None)
         if action == 'bash':
-            result = bash(directory, record, options)
+            result = bash(directory, record, options, started)
             if not result['backgrounded']:
                 # Reap foreground supervisors here: the container's PID 1 may
                 # not reap children orphaned by an exec that has returned.

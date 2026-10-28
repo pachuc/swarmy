@@ -145,7 +145,7 @@ main_body() {
     agent="desktop-check-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
     password="pw-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
     sha=$(sha256sum "$root/images/base-desktop/tests/desktop_check_app.py" | awk '{print $1}') || return 1
-    setup="mkdir -p /home/agent/desktop-check && cd /home/agent/desktop-check && curl -fsSL https://raw.githubusercontent.com/pachuc/swarmy/$app_ref/images/base-desktop/tests/desktop_check_app.py -o app.py && echo '$sha  app.py' | sha256sum -c - && python3 app.py --background --port 8765 --record record.json --log app.log --username desk --password $password"
+    setup="mkdir -p /home/agent/desktop-check && cd /home/agent/desktop-check && curl -fsSL https://raw.githubusercontent.com/pachuc/swarmy/$app_ref/images/base-desktop/tests/desktop_check_app.py -o app.py && echo '$sha  app.py' | sha256sum -c - && python3 app.py --background --port 8765 --record record.json --log app.log --username desk --password $password && (chromium about:blank >/dev/null 2>&1 </dev/null & curl -fsS --retry 60 --retry-connrefused --retry-delay 1 http://127.0.0.1:9222/json/version >/dev/null)"
     task="A small web app is running in your sandbox at http://127.0.0.1:8765/. Use only the browser and screen tools (the browser_* and screen_* tools); do not use bash, file tools, or browser_evaluate. Log in with username desk and password $password. On the settings page, change Theme to Dark and save it. Then take a screenshot with screen_screenshot. The settings page shows a verification code drawn as an image; read it from your screenshot and finish with exactly one line: CODE: <the code>."
     read_command='cat /home/agent/desktop-check/record.json'
     if ((dry_run)); then
@@ -166,7 +166,7 @@ main_body() {
     if [[ -n $effort ]]; then create+=(--effort "$effort"); fi
     call "${create[@]}" > "$out/agent-create.json" || return 1
     created=1
-    call --json run --agent "$agent" "Use the bash tool to run exactly this command, then reply with its output: $setup" > "$out/setup-run.jsonl" || return 1
+    call --json run --agent "$agent" "Use the bash tool with yield_seconds: 60 to run exactly this command, then reply with its output: $setup" > "$out/setup-run.jsonl" || return 1
     sid=$(py session-id "$out/setup-run.jsonl") || return 1
     call session show "$sid" --json > "$out/session-setup.jsonl" || return 1
     if ! py exact-bash "$out/session-setup.jsonl" 0 "$setup" listening > "$out/setup-output.txt"; then

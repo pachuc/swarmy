@@ -1,5 +1,7 @@
 # Agent and computer lifetime
 
+The bash tool starts its `yield_seconds` countdown when the helper starts, before it creates the process directory. A first command on a cold sandbox can take several extra seconds to start, which does not count against the yield.
+
 `Store::create_agent(name, image, description, now)` creates a unique,
 case-sensitive name and pins the registered `NAME:TAG` manifest. Lookup uses
 `get_agent` or `get_agent_by_name`; `list_agents` pages by agent id.

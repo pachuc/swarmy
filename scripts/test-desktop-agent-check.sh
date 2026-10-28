@@ -21,7 +21,7 @@ case $args in
   *' run --agent '*)
     stage=$(cat "$STUB_STAGE" 2>/dev/null || echo 0)
     stage=$((stage+1)); echo "$stage" > "$STUB_STAGE"
-    if ((stage == 1)); then printf '%s\n' "${*: -1}" | sed 's/^Use the bash tool to run exactly this command, then reply with its output: //' > "$STUB_SETUP"; fi
+    if ((stage == 1)); then printf '%s\n' "${*: -1}" | sed 's/^Use the bash tool with yield_seconds: 60 to run exactly this command, then reply with its output: //' > "$STUB_SETUP"; fi
     echo '{"event":"session_opened","session_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV"}';;
   *' session show '*)
     stage=$(cat "$STUB_STAGE")
@@ -71,6 +71,8 @@ run_case() {
     if bash "$repo/scripts/desktop-agent-check.sh" --swarm test --provider fake --model fake --swarmy "$tmp/bin/swarmy" --output "$tmp/out-$name" "$@" > "$tmp/$name.stdout" 2> "$tmp/$name.stderr"; then return 0; else return 1; fi
 }
 run_case positive
+grep -q "Use the bash tool with yield_seconds: 60 to run exactly this command" "$STUB_ARGS"
+grep -q "chromium about:blank.*curl -fsS --retry 60 --retry-connrefused" "$STUB_SETUP"
 [[ -s "$tmp/out-positive/summary.json" && -s "$tmp/out-positive/01-browser_screenshot-browser-image.png" ]]
 [[ -s "$tmp/out-positive/png-1-code.err" && -s "$tmp/out-positive/png-2-code.json" ]]
 grep -q 'code not visible' "$tmp/out-positive/png-1-code.err"
