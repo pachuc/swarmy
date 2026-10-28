@@ -229,7 +229,6 @@ async fn cost_by_agent_month_prints_twelve_rows_and_matching_total() {
         let expected = fixture
             .store
             .usage_aggregate(
-                swarmy_store::MeteringDimension::Agent,
                 swarmy_core::time::parse_bound("1y", Timestamp::now()).unwrap(),
                 Timestamp::now(),
                 swarmy_store::UsageGroupBy::Month,

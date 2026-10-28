@@ -232,9 +232,12 @@ series for scripts, and `GET /v1/usage` serves it over the API with `by`,
 `key`, `from`, `to`, and `group` filters. The API defaults to
 `by=agent`, `group=day`, and the trailing 30 days, echoes `by` as sent
 (`kind`, not `entry_kind`), and caps the span at 400 days with at most
-500 groups (`span_too_large`, `too_many_groups`). Hours are whole: the
-hour containing `to` is included, so `to` behaves as inclusive of its
-hour.
+500 groups (`span_too_large`, `too_many_groups`). Buckets are whole hours
+and the range is `[from, to)`. A `to` inside an hour includes that hour;
+a `to` exactly on an hour, such as a date or calendar word, stops before
+it, so `--until month` ends with last month. Without a key the series is
+the fleet total, the same for every `by`. Rollups are stored key first,
+so one key's series reads only that key's hours.
 
 ```sh
 # What did the coder agent cost each week this quarter?

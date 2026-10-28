@@ -175,6 +175,15 @@ impl Store {
                 },
             );
         }
+        self.metering_add_total(
+            trx,
+            &crate::metering::BucketWrite {
+                dimension: crate::metering::FLEET_DIMENSION,
+                hour,
+                usage: input.usage,
+                cost_micros: input.cost,
+            },
+        );
         // Combined dimensions keep per-owner entry attribution without
         // scanning completion records, which prune after their retention
         // window. Providers derive from the entry names on read.

@@ -295,10 +295,9 @@ async fn usage_series_matches_store_views_for_every_dimension_and_group() {
         }
         // Without a key the route aggregates the whole dimension.
         for by in ["agent", "entry", "model"] {
-            let dimension = MeteringDimension::parse(by).unwrap();
             let expected = fixture
                 .store
-                .usage_aggregate(dimension, from_ts, to_ts, group_by)
+                .usage_aggregate(from_ts, to_ts, group_by)
                 .await
                 .unwrap();
             let response = fixture
@@ -382,7 +381,7 @@ async fn usage_echoes_by_and_entry_quota_round_trips() {
         .await
         .unwrap();
     assert_eq!(echoed.by, "kind");
-    // The hour containing `to` is included: a completion thirty minutes
+    // A `to` inside an hour includes that hour: a completion thirty minutes
     // before the bound still lands in the series.
     let half_hour_before_to = Timestamp::from_second(to_ts.as_second() - 1_800).unwrap();
     complete(
@@ -471,4 +470,84 @@ async fn usage_echoes_by_and_entry_quota_round_trips() {
         .unwrap_err();
     assert!(matches!(missing, swarmy_client::Error::Api { status, .. }
             if status == reqwest::StatusCode::NOT_FOUND));
+}
+
+#[tokio::test]
+async fn usage_validation_reads_nothing_from_the_store() {
+    let Some(fixture) = Fixture::new().await else {
+        return;
+    };
+    let before = fixture.store.transaction_count();
+    for (from, to, group, expected) in [
+        (
+            "2023-01-01T00:00:00Z",
+            "2024-02-06T00:00:00Z",
+            "day",
+            "span_too_large",
+        ),
+        (
+            "2026-03-01T00:00:00Z",
+            "2026-03-04T00:00:00Z",
+            "hour",
+            "invalid_group",
+        ),
+        (
+            "2026-03-04T00:00:00Z",
+            "2026-03-01T00:00:00Z",
+            "day",
+            "invalid_range",
+        ),
+    ] {
+        let error = fixture
+            .client
+            .usage("agent", None, from, to, group)
+            .await
+            .unwrap_err();
+        let swarmy_client::Error::Api { body, .. } = error else {
+            panic!("expected API error");
+        };
+        assert_eq!(body.code, expected);
+    }
+    assert_eq!(fixture.store.transaction_count(), before);
+}
+
+#[tokio::test]
+async fn usage_to_on_an_hour_boundary_excludes_that_hour() {
+    let Some(fixture) = Fixture::new().await else {
+        return;
+    };
+    let (first, _, _) = seed(&fixture.store).await;
+    // The seed has a completion in the suggested hour; use two hours earlier.
+    let hour = 1_699_992_000;
+    for (second, cost) in [(hour - 60, 3), (hour + 60, 5)] {
+        complete(
+            &fixture.store,
+            first,
+            &CompletionSeed {
+                provider: "openai",
+                model: "gpt-5",
+                entry: "primary",
+                kind: CredentialEntryKind::ApiKey,
+                at: Timestamp::from_second(second).unwrap(),
+                cost,
+            },
+        )
+        .await;
+    }
+    let from = stamp(hour - 3_600);
+    for (to, count, cost) in [(hour, 1, 3), (hour + 1, 2, 8)] {
+        let response = fixture
+            .client
+            .usage(
+                "session",
+                Some(&first.to_string()),
+                &from,
+                &stamp(to),
+                "day",
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.total.completions, count);
+        assert_eq!(response.total.cost_micros, cost);
+    }
 }

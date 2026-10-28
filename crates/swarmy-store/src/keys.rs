@@ -387,12 +387,12 @@ impl<'a> Keys<'a> {
     pub(crate) fn metering_hour_single(
         &self,
         dimension: &str,
-        hour: i64,
         key: &str,
+        hour: i64,
         field: &str,
     ) -> Vec<u8> {
         self.metering_hour_space_root()
-            .pack(&(dimension, hour, key, field))
+            .pack(&(dimension, key, hour, field))
     }
     pub(crate) fn metering_hour_combined(
         &self,
@@ -405,9 +405,14 @@ impl<'a> Keys<'a> {
         self.metering_hour_space_root()
             .pack(&(dimension, owner, hour, entry, field))
     }
+    pub(crate) fn metering_hour_total(&self, dimension: &str, hour: i64, field: &str) -> Vec<u8> {
+        self.metering_hour_space_root()
+            .pack(&(dimension, hour, field))
+    }
     pub(crate) fn metering_hour_from(&self, dimension: &str, hour: i64) -> Vec<u8> {
         self.metering_hour_space_root().pack(&(dimension, hour))
     }
+    /// Start of an hour for an owner, or the key of a single dimension.
     pub(crate) fn metering_hour_owner_from(
         &self,
         dimension: &str,
@@ -815,6 +820,7 @@ impl<'a> Keys<'a> {
         self.metering_hour_space_root().subspace(&(dimension,))
     }
 
+    /// Rows for an owner, or the key of a single dimension.
     pub(crate) fn metering_hour_space_owner(&self, dimension: &str, owner: &str) -> Subspace {
         self.metering_hour_space_root()
             .subspace(&(dimension, owner))

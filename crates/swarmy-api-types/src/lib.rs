@@ -957,16 +957,16 @@ pub struct UsageGroupView {
 }
 
 /// A usage series over `[from, to)`: one row per calendar group plus the
-/// total across all groups. Without `key` the series aggregates every key
-/// in the dimension; with `key` it covers that session, agent, provider,
-/// entry, kind, or model only.
+/// total across all groups. Without `key` the series reads the fleet total,
+/// the same for every dimension; with `key` it covers that session,
+/// agent, provider, entry, kind, or model only.
 ///
 /// The response echoes the request bounds and the `by` value as sent
-/// (`kind`, not `entry_kind`). Buckets are whole hours: the hour containing
-/// `from` and the hour containing `to` are both included, so `to` behaves
-/// as inclusive of its hour. Defaults are `by=agent`, `group=day`, and the
-/// trailing 30 days; the span is capped at 400 days and the series at 500
-/// groups, rejected with `span_too_large` or `too_many_groups`. Bounds
+/// (`kind`, not `entry_kind`). Buckets are whole hours over `[from, to)`:
+/// a `to` inside an hour includes that hour, but an hour starting at `to`
+/// is excluded. Defaults are `by=agent`, `group=day`, and the trailing 30
+/// days; the 400-day span and 500-group caps are checked before reading,
+/// rejected with `span_too_large` or `too_many_groups`. Bounds
 /// accept RFC 3339 timestamps, calendar dates (`2026-09-01`, read as UTC
 /// midnight), `now`, relative spans (`7d`, `3mo`, `1y`), and
 /// calendar-aligned words (`day`, `2days`, `week`, `month`, `2months`,
@@ -1395,9 +1395,9 @@ pub mod api_paths {
     #[utoipa::path(get, path = "/v1/usage",
         params(
             ("by" = Option<String>, Query, description = "Rollup dimension: session, agent, provider, entry, kind, or model; defaults to agent and echoes as sent"),
-            ("key" = Option<String>, Query, description = "One key in the dimension; without it the series aggregates every key"),
+            ("key" = Option<String>, Query, description = "One key in the dimension; without it the series is the fleet total"),
             ("from" = Option<String>, Query, description = "Range start: RFC 3339, calendar date, now, a span like 7d or 3mo, or a calendar word like month or 2months; defaults to 30 days before to"),
-            ("to" = Option<String>, Query, description = "Range end in the same forms; defaults to now; the hour containing it is included"),
+            ("to" = Option<String>, Query, description = "Range end in the same forms; defaults to now; exclusive: the hour starting at it is not included, while a `to` inside an hour includes that hour"),
             ("group" = Option<String>, Query, description = "Calendar grouping: day, week, month, or year; defaults to day. The span is capped at 400 days (span_too_large) and the series at 500 groups (too_many_groups)"),
         ),
         responses((status = 200, body = UsageResponse), (status = 400, body = ApiError)))]

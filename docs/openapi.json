@@ -2184,7 +2184,7 @@
           {
             "name": "key",
             "in": "query",
-            "description": "One key in the dimension; without it the series aggregates every key",
+            "description": "One key in the dimension; without it the series is the fleet total",
             "required": false,
             "schema": {
               "type": "string"
@@ -2202,7 +2202,7 @@
           {
             "name": "to",
             "in": "query",
-            "description": "Range end in the same forms; defaults to now; the hour containing it is included",
+            "description": "Range end in the same forms; defaults to now; exclusive: the hour starting at it is not included, while a `to` inside an hour includes that hour",
             "required": false,
             "schema": {
               "type": "string"
@@ -5072,7 +5072,7 @@
       },
       "UsageResponse": {
         "type": "object",
-        "description": "A usage series over `[from, to)`: one row per calendar group plus the\ntotal across all groups. Without `key` the series aggregates every key\nin the dimension; with `key` it covers that session, agent, provider,\nentry, kind, or model only.\n\nThe response echoes the request bounds and the `by` value as sent\n(`kind`, not `entry_kind`). Buckets are whole hours: the hour containing\n`from` and the hour containing `to` are both included, so `to` behaves\nas inclusive of its hour. Defaults are `by=agent`, `group=day`, and the\ntrailing 30 days; the span is capped at 400 days and the series at 500\ngroups, rejected with `span_too_large` or `too_many_groups`. Bounds\naccept RFC 3339 timestamps, calendar dates (`2026-09-01`, read as UTC\nmidnight), `now`, relative spans (`7d`, `3mo`, `1y`), and\ncalendar-aligned words (`day`, `2days`, `week`, `month`, `2months`,\n`year`); a bare word means the start of the current UTC period and a\nleading `N` means the start of the period `N - 1` back.",
+        "description": "A usage series over `[from, to)`: one row per calendar group plus the\ntotal across all groups. Without `key` the series reads the fleet total,\nthe same for every dimension; with `key` it covers that session,\nagent, provider, entry, kind, or model only.\n\nThe response echoes the request bounds and the `by` value as sent\n(`kind`, not `entry_kind`). Buckets are whole hours over `[from, to)`:\na `to` inside an hour includes that hour, but an hour starting at `to`\nis excluded. Defaults are `by=agent`, `group=day`, and the trailing 30\ndays; the 400-day span and 500-group caps are checked before reading,\nrejected with `span_too_large` or `too_many_groups`. Bounds\naccept RFC 3339 timestamps, calendar dates (`2026-09-01`, read as UTC\nmidnight), `now`, relative spans (`7d`, `3mo`, `1y`), and\ncalendar-aligned words (`day`, `2days`, `week`, `month`, `2months`,\n`year`); a bare word means the start of the current UTC period and a\nleading `N` means the start of the period `N - 1` back.",
         "required": [
           "by",
           "group",

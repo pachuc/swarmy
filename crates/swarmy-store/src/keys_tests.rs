@@ -122,7 +122,11 @@ fn family_key_layout_matches_checked_in_hex() {
         ("manifest_parent", keys.manifest_parent(manifestid)),
         (
             "metering_hour",
-            keys.metering_hour_single("dimension", 3600, "key", "field"),
+            keys.metering_hour_single("dimension", "key", 3600, "field"),
+        ),
+        (
+            "metering_hour_total",
+            keys.metering_hour_total("fleet", 3600, "field"),
         ),
         ("node", keys.node(nodeid)),
         ("placed_tool_claim", keys.placed_tool_claim(requestid)),

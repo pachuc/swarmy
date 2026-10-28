@@ -665,12 +665,7 @@ async fn aggregate_series_sums_single_key_views() {
     let seed = seed_two_entries(&test).await;
     let store = &test.store;
     let aggregate = store
-        .usage_aggregate(
-            swarmy_store::MeteringDimension::Agent,
-            seed.from,
-            seed.to,
-            swarmy_store::UsageGroupBy::Day,
-        )
+        .usage_aggregate(seed.from, seed.to, swarmy_store::UsageGroupBy::Day)
         .await
         .unwrap();
     assert_eq!(aggregate.len(), 1);
@@ -897,4 +892,241 @@ async fn completion_records_cache_affinity() {
     assert_eq!(value.model, "gpt-5.5");
     assert_eq!(value.route, None);
     assert!(value.completed_at >= now);
+}
+
+#[tokio::test]
+async fn keyed_read_size_does_not_grow_with_unrelated_keys() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let first = test.create().await;
+    let agent = store.fetch_session(first).await.unwrap().unwrap().agent_id;
+    let hour = swarmy_store::metering::hour_floor(1_700_000_000);
+    let at = Timestamp::from_second(hour).unwrap();
+    let to = Timestamp::from_second(hour + 3_600).unwrap();
+    let (tokens, cost) = usage(10, 20, 3);
+    complete_with(
+        store,
+        first,
+        &input(
+            "openai",
+            "gpt-5",
+            "primary",
+            CredentialEntryKind::ApiKey,
+            tokens.clone(),
+            cost,
+            at,
+        ),
+    )
+    .await;
+    let views = [
+        (swarmy_store::MeteringDimension::Session, first.to_string()),
+        (swarmy_store::MeteringDimension::Agent, agent.to_string()),
+        (swarmy_store::MeteringDimension::Provider, "openai".into()),
+        (
+            swarmy_store::MeteringDimension::Entry,
+            "openai/primary".into(),
+        ),
+        (swarmy_store::MeteringDimension::Model, "gpt-5".into()),
+    ];
+    let mut before = Vec::new();
+    for (dimension, key) in &views {
+        let start = store.metering_rows_read_count();
+        store
+            .usage(*dimension, key, at, to, swarmy_store::UsageGroupBy::Day)
+            .await
+            .unwrap();
+        let delta = store.metering_rows_read_count() - start;
+        assert!(delta <= 8);
+        before.push(delta);
+    }
+    // EntryKind is related to the later completions, but its initial read is bounded.
+    let start = store.metering_rows_read_count();
+    store
+        .usage(
+            swarmy_store::MeteringDimension::EntryKind,
+            "api-key",
+            at,
+            to,
+            swarmy_store::UsageGroupBy::Day,
+        )
+        .await
+        .unwrap();
+    assert!(store.metering_rows_read_count() - start <= 8);
+    let start = store.metering_rows_read_count();
+    store
+        .usage_aggregate(at, to, swarmy_store::UsageGroupBy::Day)
+        .await
+        .unwrap();
+    assert!(store.metering_rows_read_count() - start <= 8);
+    for i in 0..5 {
+        let id = test.create().await;
+        complete_with(
+            store,
+            id,
+            &input(
+                "xai",
+                &format!("model-{i}"),
+                "aux",
+                CredentialEntryKind::ApiKey,
+                tokens.clone(),
+                cost,
+                at,
+            ),
+        )
+        .await;
+    }
+    for ((dimension, key), expected) in views.iter().zip(before) {
+        let start = store.metering_rows_read_count();
+        store
+            .usage(*dimension, key, at, to, swarmy_store::UsageGroupBy::Day)
+            .await
+            .unwrap();
+        assert_eq!(store.metering_rows_read_count() - start, expected);
+    }
+    let start = store.metering_rows_read_count();
+    store
+        .usage_aggregate(at, to, swarmy_store::UsageGroupBy::Day)
+        .await
+        .unwrap();
+    assert!(store.metering_rows_read_count() - start <= 8);
+}
+
+#[tokio::test]
+async fn single_dimension_rows_round_trip_by_key() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let a = test.create().await;
+    let b = test.create().await;
+    let at = Timestamp::from_second(1_700_000_000).unwrap();
+    let later = Timestamp::from_second(at.as_second() + 3_600).unwrap();
+    let (tokens, _) = usage(10, 20, 3);
+    for (id, provider, model, entry, kind, time, cost) in [
+        (
+            a,
+            "openai",
+            "gpt-5",
+            "main",
+            CredentialEntryKind::ApiKey,
+            at,
+            3,
+        ),
+        (
+            b,
+            "xai",
+            "other",
+            "aux",
+            CredentialEntryKind::Cloud,
+            later,
+            5,
+        ),
+    ] {
+        complete_with(
+            store,
+            id,
+            &input(provider, model, entry, kind, tokens.clone(), cost, time),
+        )
+        .await;
+        let agent = store.fetch_session(id).await.unwrap().unwrap().agent_id;
+        for (dimension, key) in [
+            (swarmy_store::MeteringDimension::Session, id.to_string()),
+            (swarmy_store::MeteringDimension::Agent, agent.to_string()),
+            (swarmy_store::MeteringDimension::Provider, provider.into()),
+            (
+                swarmy_store::MeteringDimension::Entry,
+                format!("{provider}/{entry}"),
+            ),
+            (
+                swarmy_store::MeteringDimension::EntryKind,
+                kind.as_str().into(),
+            ),
+            (swarmy_store::MeteringDimension::Model, model.into()),
+        ] {
+            let groups = store
+                .usage(
+                    dimension,
+                    &key,
+                    time,
+                    Timestamp::from_second(time.as_second() + 3_600).unwrap(),
+                    swarmy_store::UsageGroupBy::Day,
+                )
+                .await
+                .unwrap();
+            assert_eq!(groups.len(), 1, "{dimension:?}/{key}");
+            assert_eq!(groups[0].completions, 1);
+            assert_eq!(groups[0].totals.cost_micros, cost);
+        }
+    }
+    assert!(
+        store
+            .usage(
+                swarmy_store::MeteringDimension::Model,
+                "openai",
+                at,
+                Timestamp::from_second(later.as_second() + 3_600).unwrap(),
+                swarmy_store::UsageGroupBy::Day
+            )
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn usage_excludes_the_hour_starting_at_to() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let hour = 1_699_999_200;
+    let (tokens, _) = usage(10, 20, 3);
+    for (second, cost) in [(hour - 60, 3), (hour + 60, 5)] {
+        complete_with(
+            &test.store,
+            id,
+            &input(
+                "openai",
+                "gpt-5",
+                "primary",
+                CredentialEntryKind::ApiKey,
+                tokens.clone(),
+                cost,
+                Timestamp::from_second(second).unwrap(),
+            ),
+        )
+        .await;
+    }
+    let from = Timestamp::from_second(hour - 3_600).unwrap();
+    for (end, count, cost) in [(hour, 1, 3), (hour + 1, 2, 8)] {
+        let to = Timestamp::from_second(end).unwrap();
+        let groups = test
+            .store
+            .usage(
+                swarmy_store::MeteringDimension::Session,
+                &id.to_string(),
+                from,
+                to,
+                swarmy_store::UsageGroupBy::Day,
+            )
+            .await
+            .unwrap();
+        assert_eq!(groups.iter().map(|g| g.completions).sum::<u64>(), count);
+        assert_eq!(
+            groups.iter().map(|g| g.totals.cost_micros).sum::<u64>(),
+            cost
+        );
+        let aggregate = test
+            .store
+            .usage_aggregate(from, to, swarmy_store::UsageGroupBy::Day)
+            .await
+            .unwrap();
+        assert_eq!(aggregate.iter().map(|g| g.completions).sum::<u64>(), count);
+        assert_eq!(
+            aggregate.iter().map(|g| g.totals.cost_micros).sum::<u64>(),
+            cost
+        );
+    }
 }
