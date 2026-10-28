@@ -33,8 +33,9 @@ visual layout.
 The node runs the Python helper `/usr/local/libexec/swarmy-browser` for eight
 browser tools and two screen tools: `browser_navigate`, `browser_snapshot`, `browser_click`,
 `browser_type`, `browser_select`, `browser_scroll`, `browser_screenshot`, and
-`browser_evaluate`. The latter executes page JavaScript; use it only for pages
-the agent is authorized to control. `screen_screenshot` uses scrot to capture
+`browser_evaluate`. `browser_select` takes an option value or visible label.
+`browser_evaluate` executes page JavaScript; use it only for pages the agent
+is authorized to control. `screen_screenshot` uses scrot to capture
 all of Xvfb, while `screen_windows` uses wmctrl to list windows by title.
 Snapshots are limited to 32 KiB, screenshots to 5 MiB, and each helper call
 to 40 seconds. The worker advertises these ten tools and their prompt only when
@@ -43,7 +44,7 @@ other images.
 
 ## Image inputs
 
-The helper returns PNG bytes as base64. The node stores them in a tool blob and
+The helper returns PNG bytes as base64. Tool-result screenshots request high image detail so small text is not downscaled by the provider. The node stores them in a tool blob and
 replaces inline bytes in the completed event with `image_object_key` and
 `image_media_type`. The worker loads those bytes into a user image part for
 models whose catalog lists image input. Text-only models receive an omission

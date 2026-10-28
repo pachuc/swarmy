@@ -347,7 +347,7 @@ def run(action, args):
         if args.get('submit', False):
             cdp.on_element(args['ref'], 'function() { if (this.form) this.form.requestSubmit(); }')
     elif action == 'browser_select':
-        cdp.on_element(args['ref'], 'function(value) { this.value = value; if (this.value !== value) throw new Error("selection failed"); this.dispatchEvent(new Event("change", {bubbles:true})); }', [args['value']])
+        cdp.on_element(args['ref'], 'function(value) { if (this.tagName !== "SELECT") throw new Error("element is not a dropdown"); const options = Array.from(this.options); const option = options.find(o => o.value === value) ?? options.find(o => o.label.trim() === value) ?? options.find(o => o.label.trim().toLowerCase() === value.toLowerCase()); if (!option) throw new Error("option not found; available options: " + options.slice(0, 20).map(o => o.value + " / " + o.label.trim()).join(", ")); this.value = option.value; this.dispatchEvent(new Event("input", {bubbles:true})); this.dispatchEvent(new Event("change", {bubbles:true})); }', [args['value']])
     elif action == 'browser_scroll':
         if args.get('ref'):
             cdp.on_element(args['ref'], 'function() { this.scrollIntoView({block:"center"}); }')

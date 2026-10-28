@@ -60,6 +60,7 @@ installs a small Python DevTools client at `/usr/local/libexec/swarmy-browser`;
 requests reach Chromium on the sandbox-local port 9222. `browser_navigate`,
 `browser_snapshot`, `browser_click`, `browser_type`, `browser_select`,
 `browser_scroll`, `browser_screenshot`, and `browser_evaluate` use this client.
+`browser_select` takes an option value or visible label.
 Snapshots include URL, title, accessibility roles and names, and short refs
 valid until navigation. They are limited to 32 KiB with a truncation note.
 Viewport screenshots are PNG images capped at 5 MiB. `screen_screenshot` uses

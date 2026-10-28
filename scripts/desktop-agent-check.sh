@@ -60,14 +60,22 @@ elif mode == 'window-tools':
     require('browser_select' in names or 'browser_click' in names, 'task missing setting interaction')
     require('screen_screenshot' in names or 'browser_screenshot' in names, 'task missing screenshot')
     images = []
+    succeeded = set()
+    last_result = {}
     for call in calls:
         call_id, name = call['call']['call_id'], call['call']['tool']
         result = completed.get(call_id, {}).get('result', {}).get('completed')
-        require(result, f'task tool {name} did not complete')
+        last_result[name] = bool(result)
+        if not result:
+            continue
+        succeeded.add(name)
         metadata = result.get('metadata', {})
         if metadata.get('image_object_key'):
             require(metadata.get('image_media_type') == 'image/png', f'{name} returned non-PNG image')
             images.append((call_id, name))
+    for name in set(names):
+        require(name in succeeded, f'task tool {name} did not complete')
+        require(last_result[name], f'last task tool {name} did not complete')
     require(images, 'task had no completed image call')
     for call_id, name in images:
         print(call_id, name)

@@ -97,9 +97,27 @@ elif change=='code': rows[-1]['inference_completed']['completion']['message']['p
 elif change=='theme': rows[-1]['tool_call_completed']['result']['completed']['output']=rows[-1]['tool_call_completed']['result']['completed']['output'].replace('dark','light')
 elif change=='setup': rows[1]['tool_call_requested']['call']['arguments']['command']='__SETUP__x'
 elif change=='view_source': rows[3]['tool_call_requested']['call']['arguments']['url']='view-source:http://127.0.0.1:8765/settings'
+elif change in ('select_recovered', 'select_last_failed'):
+    requested = json.loads(json.dumps(rows[7]))
+    completed = json.loads(json.dumps(rows[8]))
+    requested['tool_call_requested']['call']['call_id'] = 'select-failed'
+    completed['tool_call_completed']['call_id'] = 'select-failed'
+    completed['tool_call_completed']['result'] = {'failed': {'error': 'selection failed'}}
+    if change == 'select_recovered':
+        rows[7:7] = [requested, completed]
+    else:
+        rows[9:9] = [requested, completed]
+
 p.write_text(''.join(json.dumps(row)+'\n' for row in rows))
 PY
 }
+restore
+mutate 2 select_recovered
+run_case select_recovered
+restore
+mutate 2 select_last_failed
+if run_case select_last_failed; then echo 'last failed select unexpectedly passed' >&2; exit 1; fi
+grep -q 'last task tool browser_select did not complete' "$tmp/select_last_failed.stderr"
 export PYTHONOPTIMIZE=1
 for variant in bash browser_evaluate code theme setup blank no_code view_source; do
     restore
@@ -142,4 +160,4 @@ else
     [[ $rc -eq 2 ]]
 fi
 ! grep -r -q 'token-secret-3c9e' "$tmp"
-echo 'desktop-agent-check: ok (positive, eight negative cases, text-only preflight, dry-run, required flags)'
+echo 'desktop-agent-check: ok (positive, recovered select, nine negative cases, text-only preflight, dry-run, required flags)'

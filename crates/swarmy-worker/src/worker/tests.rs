@@ -47,6 +47,12 @@ mod image_tests {
     }
 
     #[test]
+    fn tool_result_screenshot_uses_high_detail() {
+        let part = inference::tool_result_image("image/png", vec![1, 2, 3], "blob");
+        assert!(matches!(part, Part::Image { detail: Some(ref detail), .. } if detail == "high"));
+    }
+
+    #[test]
     fn unsupported_model_gets_a_note_instead_of_image_bytes() {
         let mut request = swarmy_llm::Request {
             no_cache: false,

@@ -4,6 +4,18 @@ use super::{
     SessionState, SubjectToken, SubmitInferenceOptions, Timestamp, Ulid, WorkQueue, Worker, Write,
 };
 
+/// Screenshots contain small text; provider auto detail may downscale it before the model can read it.
+const SCREENSHOT_IMAGE_DETAIL: &str = "high";
+
+pub(super) fn tool_result_image(media_type: &str, bytes: Vec<u8>, key: &str) -> swarmy_core::Part {
+    swarmy_core::Part::Image {
+        media_type: media_type.to_owned(),
+        bytes,
+        object_key: Some(key.to_owned()),
+        detail: Some(SCREENSHOT_IMAGE_DETAIL.into()),
+    }
+}
+
 pub(super) struct Compaction {
     pub(super) cut: usize,
     pub(super) recovery: bool,
@@ -286,12 +298,11 @@ impl Worker {
                             .and_then(serde_json::Value::as_str),
                     )
                 {
-                    images.push(swarmy_core::Part::Image {
-                        media_type: media_type.to_owned(),
-                        bytes: self.blobs.get(key).await?.to_vec(),
-                        object_key: Some(key.to_owned()),
-                        detail: None,
-                    });
+                    images.push(tool_result_image(
+                        media_type,
+                        self.blobs.get(key).await?.to_vec(),
+                        key,
+                    ));
                 }
             }
             expanded.push(message);

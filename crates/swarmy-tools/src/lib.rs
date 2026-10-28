@@ -112,8 +112,8 @@ sandbox_tool!(
 sandbox_tool!(
     BrowserSelect,
     "browser_select",
-    "Select a value in a dropdown from the latest snapshot.",
-    json!({"type":"object","properties":{"ref":{"type":"string","minLength":1},"value":{"type":"string","minLength":1}},"required":["ref","value"],"additionalProperties":false})
+    "Select an option in a dropdown from the latest snapshot, by its value or its visible label.",
+    json!({"type":"object","properties":{"ref":{"type":"string","minLength":1},"value":{"type":"string","minLength":1,"description":"The option value or visible label."}},"required":["ref","value"],"additionalProperties":false})
 );
 sandbox_tool!(
     BrowserScroll,

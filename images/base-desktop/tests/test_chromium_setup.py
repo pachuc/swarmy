@@ -61,6 +61,14 @@ class ChromiumSetupTests(unittest.TestCase):
                 self.assertGreater(len(attempts), 6)
                 launch.assert_called_once()
 
+    def test_select_matches_value_then_visible_label(self):
+        helper = self.script.split("cat > /usr/local/libexec/swarmy-browser <<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
+        self.assertIn('options.find(o => o.value === value)', helper)
+        self.assertIn('options.find(o => o.label.trim() === value)', helper)
+        self.assertIn('options.find(o => o.label.trim().toLowerCase() === value.toLowerCase())', helper)
+        self.assertIn('options.slice(0, 20)', helper)
+        self.assertIn('this.dispatchEvent(new Event("input", {bubbles:true}))', helper)
+
     def test_launcher_hides_warning_without_dropping_required_flag(self):
         wrapper = self.script.split("cat > /usr/local/bin/chromium <<'SH'\n", 1)[1].split('\nSH\n', 1)[0]
         self.assertIn('chrome --no-sandbox --test-type', wrapper)

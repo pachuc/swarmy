@@ -71,6 +71,8 @@ def main():
     assert reference, select
     call('browser_select', {'ref': reference.group(1), 'value': 'blue'})
     assert call('browser_evaluate', {'js': 'document.querySelector("select").value'})['output'] == '"blue"'
+    call('browser_select', {'ref': reference.group(1), 'value': 'Red'})
+    assert call('browser_evaluate', {'js': 'document.querySelector("select").value'})['output'] == '"red"'
     call('browser_scroll', {'direction': 'down'})
     blender = subprocess.Popen(['blender', '--factory-startup'], stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL)
