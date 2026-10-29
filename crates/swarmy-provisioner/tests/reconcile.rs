@@ -59,7 +59,7 @@ impl Fixture {
                     "default",
                     &CredentialRecord {
                         kind: CredentialKind::MachineProvider { env },
-                        bookkeeping: Default::default(),
+                        bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                         updated_at: store.now(),
                     },
                 )
@@ -200,7 +200,7 @@ async fn creation_limit_and_retry() {
     let before = f.log();
     f.reconciler.tick(&mut holder).await.unwrap();
     assert_eq!(f.log(), before);
-    *f.clock.lock().unwrap() += std::time::Duration::from_secs(61 * 60);
+    *f.clock.lock().unwrap() += std::time::Duration::from_mins(61);
     f.reconciler.tick(&mut holder).await.unwrap();
     assert!(f.log().contains("apply machine_count=6"));
     assert!(
@@ -251,7 +251,7 @@ async fn failed_apply_backoff_and_reuse_name() {
     f.reconciler.tick(&mut holder).await.unwrap();
     assert_eq!(before, f.log());
     fs::remove_file(f.temp.path().join("fail-apply")).unwrap();
-    *f.clock.lock().unwrap() += std::time::Duration::from_secs(5 * 60);
+    *f.clock.lock().unwrap() += std::time::Duration::from_mins(5);
     f.reconciler.tick(&mut holder).await.unwrap();
     let records = f.records().await;
     assert_eq!(records.len(), 2);
@@ -405,7 +405,7 @@ async fn restart_finishes_draining_without_apply() {
         .store
         .acquire_provisioner_lease(
             swarmy_core::LeaseOwnerId::from_ulid(5u128.into()),
-            std::time::Duration::from_secs(900),
+            std::time::Duration::from_mins(15),
         )
         .await
         .unwrap();
@@ -449,7 +449,7 @@ async fn missing_state_orphans_machine_and_blocks_growth() {
         .store
         .acquire_provisioner_lease(
             swarmy_core::LeaseOwnerId::from_ulid(6u128.into()),
-            std::time::Duration::from_secs(900),
+            std::time::Duration::from_mins(15),
         )
         .await
         .unwrap();
@@ -484,4 +484,23 @@ async fn draining_finishes_before_growth() {
     f.reconciler.tick(&mut holder).await.unwrap();
     assert!(f.log().contains("apply machine_count=3"));
     assert_eq!(f.records().await.len(), 4);
+}
+
+#[tokio::test]
+async fn new_generation_bypasses_failure_backoff() {
+    let Some(f) = Fixture::new(true, 3).await else {
+        return;
+    };
+    f.desired(1).await;
+    fs::write(f.temp.path().join("fail-apply"), "").unwrap();
+    let mut holder = Holder::new();
+    f.reconciler.tick(&mut holder).await.unwrap();
+    let before = f.log();
+    fs::remove_file(f.temp.path().join("fail-apply")).unwrap();
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(before, f.log());
+    f.desired(2).await;
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert!(f.log().contains("apply machine_count=2"));
+    assert_eq!(f.records().await.len(), 3);
 }

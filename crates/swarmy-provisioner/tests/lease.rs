@@ -40,7 +40,7 @@ async fn only_the_current_holder_applies() {
             "default",
             &CredentialRecord {
                 kind: CredentialKind::MachineProvider { env },
-                bookkeeping: Default::default(),
+                bookkeeping: swarmy_core::CredentialBookkeeping::default(),
                 updated_at: store.now(),
             },
         )

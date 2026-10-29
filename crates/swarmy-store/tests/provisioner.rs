@@ -17,7 +17,7 @@ async fn lease_window_and_reconcile_are_fenced() {
     });
     let first = LeaseOwnerId::from_ulid(1u128.into());
     let second = LeaseOwnerId::from_ulid(2u128.into());
-    let ttl = std::time::Duration::from_secs(900);
+    let ttl = std::time::Duration::from_mins(15);
     let old = store.acquire_provisioner_lease(first, ttl).await.unwrap();
     assert!(matches!(
         store.acquire_provisioner_lease(second, ttl).await,
