@@ -349,8 +349,8 @@ impl Store {
 
     /// Place an absent computer, advancing its retained epoch counter.
     /// Checking absence and the counter in one transaction prevents duplicate grants.
-    /// Recreating after release records Eviction, or RequirementChange after
-    /// a requested release; the first placement records Initial.
+    /// Recreating after release records `Eviction`, or `RequirementChange` after
+    /// a requested release; the first placement records `Initial`.
     /// Expired placements still consume capacity until released or taken over.
     /// # Errors
     /// Rejects existing placements, invalid expiry, missing or full nodes,
