@@ -416,6 +416,31 @@ command to finish; hand-lowering `count` and running `up` remains refused.
 
 See [REMOTE.md](REMOTE.md#draining-a-node) for how draining works on a node.
 
+## GPU nodes
+
+A node runs `nvidia-smi`, NVIDIA's driver command-line tool, once at startup to
+list installed cards. It advertises their model, memory in MiB, and count in its
+node record. A missing command, a query that fails or runs longer than 10 seconds,
+or malformed output means the node advertises no cards. `swarmy doctor` lists
+cards on live nodes.
+
+Agents set `--gpu none|shared|dedicated`. None can use any sandbox node, but
+prefers nodes without cards. Shared needs at least one card and can share the
+node with other shared GPU sandboxes, provided no dedicated GPU sandbox is there.
+Dedicated needs a card and no other GPU sandbox on that node; CPU sandboxes can
+still share it. Dedicated reserves the node's whole set of cards, not individual
+cards. A GPU requirement overrides local scratch preference, so moving from a
+scratch host may require a cold cargo target. If no node qualifies, the step
+fails and retries as with any full swarm; a durable capacity wait is planned.
+
+For tests and dev stacks only, `[node.fake_gpu]` with `model`, `memory_mib`, and
+`count` or `SWARMY_NODE_FAKE_GPU="MODEL,MEMORY_MIB,COUNT"` advertises fake cards
+without probing. Local services do not inherit shell variables, so use the TOML
+form for local swarms. The override only advertises cards; it exposes no device.
+
+Placement and admission are in place, but cards are not yet visible inside
+sandboxes, even on real GPU nodes; exposing the devices is later work.
+
 ## Machines
 
 Swarmy records every machine created for an elastic group: its group, OpenTofu machine name, size,

@@ -21,6 +21,9 @@ pub struct PlacementRecord {
     pub expires_at: Timestamp,
     pub last_change_reason: PlacementChangeReason,
     pub last_changed_at: Timestamp,
+    /// The GPU mode this placement was admitted under. Admission counts GPU
+    /// sandboxes from this field, so it stays right while the agent's requirement changes.
+    pub gpu: crate::GpuRequirement,
 }
 
 /// A node's recent observation of calls sharing one computer, not execution authority.
@@ -53,6 +56,7 @@ mod tests {
             expires_at: Timestamp::UNIX_EPOCH,
             last_change_reason: PlacementChangeReason::Initial,
             last_changed_at: Timestamp::UNIX_EPOCH,
+            gpu: crate::GpuRequirement::None,
         };
         let bytes = encode(&record).unwrap();
         assert_eq!(
@@ -62,7 +66,7 @@ mod tests {
                 48, 48, 48, 48, 48, 48, 48, 26, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
                 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 49, 1, 20, 49, 57, 55, 48, 45, 48,
                 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90, 0, 20, 49, 57, 55, 48, 45,
-                48, 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90
+                48, 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90, 0
             ]
         );
         assert_eq!(decode::<PlacementRecord>(&bytes).unwrap(), record);

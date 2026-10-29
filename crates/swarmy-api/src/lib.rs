@@ -391,6 +391,7 @@ async fn registered_nodes(state: &AppState) -> Result<Vec<api::DoctorNode>, ApiF
                 capacity: views::node_capacity(&record.capacity),
                 last_heartbeat: record.last_heartbeat.to_string(),
                 committed_memory_bytes: committed,
+                gpu: record.gpu.as_ref().map(views::gpu_cards),
             });
         }
         after = next;

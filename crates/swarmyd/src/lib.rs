@@ -1,4 +1,5 @@
 //! Local node control protocol. The Unix socket is accessible only to its owner.
+mod gpu;
 mod hosting;
 mod memory;
 pub mod role;

@@ -3194,6 +3194,17 @@
             "format": "int64",
             "minimum": 0
           },
+          "gpu": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GpuCards",
+                "description": "Cards the node advertises; null without cards."
+              }
+            ]
+          },
           "last_heartbeat": {
             "type": "string"
           },
@@ -3589,6 +3600,30 @@
             "minimum": 0
           },
           "started_at": {
+            "type": "string"
+          }
+        }
+      },
+      "GpuCards": {
+        "type": "object",
+        "description": "Cards offered by one node.",
+        "required": [
+          "model",
+          "memory_mib",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "memory_mib": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "model": {
             "type": "string"
           }
         }
@@ -4419,13 +4454,18 @@
         "type": "object",
         "required": [
           "node_id",
-          "epoch"
+          "epoch",
+          "gpu"
         ],
         "properties": {
           "epoch": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "gpu": {
+            "$ref": "#/components/schemas/GpuMode",
+            "description": "GPU mode the placement was admitted under."
           },
           "node_id": {
             "type": "string"
