@@ -15,7 +15,7 @@ use swarmy_config::Keyring;
 use swarmy_core::{
     AgentId, CredentialKind, CredentialRecord, CredentialScope, ElasticGroupDefinition,
     GpuRequirement, HourlyPrice, LeaseOwnerId, MachineState, MachineTransition, NodeCapacity,
-    NodeRecord, NodeRole, SessionId, SessionRecord, SessionState,
+    NodeId, NodeRecord, NodeRole, SessionId, SessionRecord, SessionState,
 };
 use swarmy_infra::Tofu;
 use swarmy_provisioner::{Holder, Nodes, Reconciler, Tick};
@@ -34,14 +34,12 @@ impl Fixture {
         Self::build(with_credentials, max, None).await
     }
     async fn with_nodes(max: u32, nodes: Arc<FakeNodes>) -> Option<Self> {
-        let fixture = Self::build(true, max, Some(nodes.clone())).await?;
-        nodes.set_store(fixture.store.clone(), fixture.temp.path().join("tofu.log"));
-        Some(fixture)
+        Self::build(true, max, Some(nodes)).await
     }
     async fn build(
         with_credentials: bool,
         max: u32,
-        nodes: Option<Arc<dyn Nodes>>,
+        nodes: Option<Arc<FakeNodes>>,
     ) -> Option<Self> {
         let stack = swarmy_testkit::Stack::load("provisioner-reconcile")?;
         let db = Arc::new(Database::new(Some(&stack.cluster)).unwrap());
@@ -94,6 +92,7 @@ impl Fixture {
         )
         .with_tofu(Tofu::from_binary(link, &temp.path().join("cache")));
         let reconciler = if let Some(nodes) = nodes {
+            nodes.set_store(store.clone(), temp.path().join("tofu.log"));
             reconciler.with_nodes(nodes, None)
         } else {
             reconciler
@@ -163,6 +162,21 @@ impl FakeNodes {
             .count()
     }
 }
+fn sandbox_node(id: NodeId, now: Timestamp) -> NodeRecord {
+    NodeRecord {
+        node_id: id,
+        roles: vec![NodeRole::Sandbox],
+        capacity: NodeCapacity {
+            cpu_millis: 1000,
+            memory_bytes: 1024,
+            disk_bytes: 1024,
+            sandboxes: 1,
+        },
+        last_heartbeat: now,
+        cached_images: vec![],
+        gpu: None,
+    }
+}
 #[async_trait::async_trait]
 impl Nodes for FakeNodes {
     async fn join(&self, node: &Machine, _primary: &LocalPrimary) -> anyhow::Result<()> {
@@ -180,19 +194,7 @@ impl Nodes for FakeNodes {
         }
         let store = self.store.lock().unwrap().clone().unwrap();
         store
-            .put_node(&NodeRecord {
-                node_id: node.node_id.unwrap(),
-                roles: vec![NodeRole::Sandbox],
-                capacity: NodeCapacity {
-                    cpu_millis: 1000,
-                    memory_bytes: 1024,
-                    disk_bytes: 1024,
-                    sandboxes: 1,
-                },
-                last_heartbeat: store.now(),
-                cached_images: vec![],
-                gpu: None,
-            })
+            .put_node(&sandbox_node(node.node_id.unwrap(), store.now()))
             .await?;
         Ok(())
     }
@@ -842,19 +844,10 @@ async fn provisioned_machine_joins_after_restart_without_reprovisioning() {
         .unwrap();
     f.store.release_provisioner_lease(&lease).await.unwrap();
     f.store
-        .put_node(&NodeRecord {
-            node_id: machine.machine_id.joined_node_id(),
-            roles: vec![NodeRole::Sandbox],
-            capacity: NodeCapacity {
-                cpu_millis: 1000,
-                memory_bytes: 1024,
-                disk_bytes: 1024,
-                sandboxes: 1,
-            },
-            last_heartbeat: f.store.now(),
-            cached_images: vec![],
-            gpu: None,
-        })
+        .put_node(&sandbox_node(
+            machine.machine_id.joined_node_id(),
+            f.store.now(),
+        ))
         .await
         .unwrap();
     f.reconciler.tick(&mut Holder::new()).await.unwrap();
@@ -895,4 +888,179 @@ async fn scale_down_drains_and_revokes_before_destroying() {
 #[tokio::test]
 async fn unreachable_node_is_still_destroyed() {
     scale_down_case(true).await;
+}
+
+async fn settled(f: &Fixture, applied: u32) {
+    let lease = f
+        .store
+        .acquire_provisioner_lease(
+            LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
+            Duration::from_mins(15),
+        )
+        .await
+        .unwrap();
+    let generation = f
+        .store
+        .get_elastic_group("gpu")
+        .await
+        .unwrap()
+        .unwrap()
+        .generation;
+    f.store
+        .record_elastic_reconcile(&lease, "gpu", applied, generation, true)
+        .await
+        .unwrap();
+    f.store.release_provisioner_lease(&lease).await.unwrap();
+}
+async fn provisioned(f: &Fixture, machine: &swarmy_core::MachineRecord) {
+    f.store
+        .transition_machine(
+            machine.machine_id,
+            &MachineTransition::Provisioned,
+            f.store.now(),
+        )
+        .await
+        .unwrap();
+}
+async fn joined(f: &Fixture, machine: &swarmy_core::MachineRecord) {
+    provisioned(f, machine).await;
+    f.store
+        .transition_machine(
+            machine.machine_id,
+            &MachineTransition::Joined {
+                node_id: machine.machine_id.joined_node_id(),
+            },
+            f.store.now(),
+        )
+        .await
+        .unwrap();
+}
+#[tokio::test]
+async fn failed_machine_missing_from_state_is_destroyed_and_replaced() {
+    let nodes = Arc::new(FakeNodes::default());
+    let Some(f) = Fixture::with_nodes(1, nodes).await else {
+        return;
+    };
+    f.desired(1).await;
+    let failed = seed(&f, 1, MachineState::Provisioning).await;
+    f.store
+        .transition_machine(
+            failed.machine_id,
+            &MachineTransition::Failed { detail: "x".into() },
+            f.store.now(),
+        )
+        .await
+        .unwrap();
+    state(&f, 0);
+    settled(&f, 1).await;
+    let mut holder = Holder::new();
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(
+        f.records()
+            .await
+            .iter()
+            .find(|r| r.machine_id == failed.machine_id)
+            .unwrap()
+            .state,
+        MachineState::Destroyed
+    );
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert!(f.log().contains("apply machine_count=1"));
+    assert!(f.records().await.iter().any(|r| r.name == "fleet-gpu-1"
+        && r.machine_id != failed.machine_id
+        && r.state == MachineState::Provisioning));
+}
+#[tokio::test]
+async fn missing_output_is_orphaned_before_drain() {
+    let nodes = Arc::new(FakeNodes::default());
+    let Some(f) = Fixture::with_nodes(2, nodes.clone()).await else {
+        return;
+    };
+    f.desired(2).await;
+    seed(&f, 1, MachineState::Provisioning).await;
+    let second = seed(&f, 2, MachineState::Provisioning).await;
+    joined(&f, &second).await;
+    state(&f, 1);
+    settled(&f, 2).await;
+    f.desired(1).await;
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    assert_eq!(
+        f.records()
+            .await
+            .iter()
+            .find(|r| r.machine_id == second.machine_id)
+            .unwrap()
+            .state,
+        MachineState::Orphaned
+    );
+    assert!(
+        !nodes
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("drain fleet-gpu-2"))
+    );
+}
+#[tokio::test]
+async fn registered_node_joins_even_after_deadline() {
+    let nodes = Arc::new(FakeNodes::default());
+    let Some(f) = Fixture::with_nodes(1, nodes.clone()).await else {
+        return;
+    };
+    f.desired(1).await;
+    let machine = seed(&f, 1, MachineState::Provisioning).await;
+    provisioned(&f, &machine).await;
+    state(&f, 1);
+    settled(&f, 1).await;
+    f.store
+        .put_node(&sandbox_node(
+            machine.machine_id.joined_node_id(),
+            f.store.now(),
+        ))
+        .await
+        .unwrap();
+    *f.clock.lock().unwrap() += Duration::from_mins(20);
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    assert_eq!(f.records().await[0].state, MachineState::Joined);
+    assert!(nodes.calls().is_empty());
+}
+#[tokio::test]
+async fn failed_lower_machine_removes_healthy_ones_above_then_regrows() {
+    let nodes = Arc::new(FakeNodes::default());
+    let Some(f) = Fixture::with_nodes(2, nodes.clone()).await else {
+        return;
+    };
+    f.desired(2).await;
+    let first = seed(&f, 1, MachineState::Provisioning).await;
+    f.store
+        .transition_machine(
+            first.machine_id,
+            &MachineTransition::Failed { detail: "x".into() },
+            f.store.now(),
+        )
+        .await
+        .unwrap();
+    let second = seed(&f, 2, MachineState::Provisioning).await;
+    joined(&f, &second).await;
+    state(&f, 2);
+    settled(&f, 2).await;
+    let mut holder = Holder::new();
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(
+        nodes.calls(),
+        [
+            "drain fleet-gpu-2 600 applies=0",
+            "revoke fleet-gpu-2 applies=0",
+            "drain fleet-gpu-1 600 applies=0",
+            "revoke fleet-gpu-1 applies=0"
+        ]
+    );
+    assert!(f.log().contains("apply machine_count=0"));
+    assert!(
+        f.records()
+            .await
+            .iter()
+            .all(|r| r.state == MachineState::Destroyed)
+    );
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert!(f.log().contains("apply machine_count=2"));
 }
