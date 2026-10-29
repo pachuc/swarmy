@@ -48,31 +48,27 @@ async fn register_and_set_desired() {
         ["a", "b"]
     );
     let updated = store
-        .set_elastic_desired("b", 1, &swarmy_core::MachineCause::from_reason("manual"))
+        .set_elastic_desired("b", 1, &MachineCause::from_reason("manual"))
         .await
         .unwrap();
     assert_eq!(updated.generation, 1);
     assert!(!updated.settled());
     assert_eq!(
         store
-            .set_elastic_desired("b", 1, &swarmy_core::MachineCause::from_reason("again"))
+            .set_elastic_desired("b", 1, &MachineCause::from_reason("again"))
             .await
             .unwrap(),
         updated
     );
     assert!(matches!(
         store
-            .set_elastic_desired("b", 3, &swarmy_core::MachineCause::from_reason("manual"))
+            .set_elastic_desired("b", 3, &MachineCause::from_reason("manual"))
             .await,
         Err(StoreError::Domain(DomainError::DesiredAboveMax { .. }))
     ));
     assert!(matches!(
         store
-            .set_elastic_desired(
-                "missing",
-                1,
-                &swarmy_core::MachineCause::from_reason("manual")
-            )
+            .set_elastic_desired("missing", 1, &MachineCause::from_reason("manual"))
             .await,
         Err(StoreError::Domain(DomainError::ElasticGroupMissing { .. }))
     ));
@@ -102,13 +98,13 @@ async fn register_and_set_desired() {
     );
     assert!(matches!(
         store
-            .set_elastic_desired("b", 2, &swarmy_core::MachineCause::from_reason("manual"))
+            .set_elastic_desired("b", 2, &MachineCause::from_reason("manual"))
             .await,
         Err(StoreError::Domain(DomainError::DesiredAboveMax { .. }))
     ));
     store.put_elastic_group(&definition("b")).await.unwrap();
     store
-        .set_elastic_desired("b", 2, &swarmy_core::MachineCause::from_reason("manual"))
+        .set_elastic_desired("b", 2, &MachineCause::from_reason("manual"))
         .await
         .unwrap();
     changed.max = 1;
@@ -126,11 +122,11 @@ async fn changing_identity_waits_for_reconciliation_even_when_empty() {
     let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
     store.put_elastic_group(&definition("race")).await.unwrap();
     store
-        .set_elastic_desired("race", 1, &swarmy_core::MachineCause::from_reason("manual"))
+        .set_elastic_desired("race", 1, &MachineCause::from_reason("manual"))
         .await
         .unwrap();
     let unsettled = store
-        .set_elastic_desired("race", 0, &swarmy_core::MachineCause::from_reason("manual"))
+        .set_elastic_desired("race", 0, &MachineCause::from_reason("manual"))
         .await
         .unwrap();
     assert_eq!((unsettled.desired, unsettled.applied), (0, 0));
@@ -197,7 +193,7 @@ async fn desired_cause_names_agent_and_session() {
     };
     let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
     store.put_elastic_group(&definition("b")).await.unwrap();
-    let cause = swarmy_core::MachineCause {
+    let cause = MachineCause {
         agent: Some(swarmy_core::AgentId::from_ulid(ulid::Ulid::from(1_u128))),
         session: Some(swarmy_core::SessionId::from_ulid(ulid::Ulid::from(2_u128))),
         reason: "tasky 01X: y".into(),
@@ -213,7 +209,7 @@ async fn desired_cause_names_agent_and_session() {
         cause
     );
     store
-        .set_elastic_desired("b", 1, &swarmy_core::MachineCause::from_reason("other"))
+        .set_elastic_desired("b", 1, &MachineCause::from_reason("other"))
         .await
         .unwrap();
     assert_eq!(
