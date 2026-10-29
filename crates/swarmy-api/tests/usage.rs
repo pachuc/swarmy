@@ -16,6 +16,7 @@ use ulid::Ulid;
 
 struct Fixture {
     store: Store,
+    base: String,
     client: Client,
     server: tokio::task::JoinHandle<Result<(), std::io::Error>>,
     // Held for its Drop: removes the test keys and streams even on panic.
@@ -49,6 +50,7 @@ impl Fixture {
         Some(Self {
             store,
             client: Client::new(&base, "test-token").unwrap(),
+            base,
             server,
             _guard: guard,
         })
@@ -550,4 +552,207 @@ async fn usage_to_on_an_hour_boundary_excludes_that_hour() {
         assert_eq!(response.total.completions, count);
         assert_eq!(response.total.cost_micros, cost);
     }
+}
+
+async fn seed_machine(store: &Store, row: &swarmy_core::NewMachine, at: Timestamp) {
+    use swarmy_core::MachineTransition;
+    store.create_machine(row, at).await.unwrap();
+    store
+        .transition_machine(row.machine_id, &MachineTransition::Creating, at)
+        .await
+        .unwrap();
+    store
+        .transition_machine(
+            row.machine_id,
+            &MachineTransition::Created {
+                address: "address".into(),
+            },
+            at,
+        )
+        .await
+        .unwrap();
+}
+
+async fn check_machine_responses(
+    fixture: &Fixture,
+    a: swarmy_core::MachineId,
+    b: swarmy_core::MachineId,
+    t: Timestamp,
+    name: &str,
+) {
+    let active = fixture.client.machines(false, None).await.unwrap();
+    assert_eq!(active.machines.len(), 1);
+    assert_eq!(
+        active.machines[0].current_agents[0].agent_name.as_deref(),
+        Some(name)
+    );
+    assert_eq!(active.machines[0].cause.reason, "fleet task needs a GPU");
+    assert_eq!(
+        active.machines[0].cost_micros,
+        fixture
+            .store
+            .get_machine(a)
+            .await
+            .unwrap()
+            .unwrap()
+            .cost_micros(active.as_of.parse().unwrap())
+    );
+    let all = fixture.client.machines(true, None).await.unwrap();
+    assert_eq!(all.machines.len(), 2);
+    let a_cost = all
+        .machines
+        .iter()
+        .find(|row| row.id == a.to_string())
+        .unwrap()
+        .cost_micros;
+    let b_machine = all
+        .machines
+        .iter()
+        .find(|row| row.id == b.to_string())
+        .unwrap();
+    assert_eq!(b_machine.cost_micros, 1_500_000);
+    assert_eq!(b_machine.cost, "1.5000");
+    assert_eq!(
+        all.totals,
+        vec![swarmy_api_types::MachineCostTotal {
+            currency: "EUR".into(),
+            cost_micros: a_cost + 1_500_000,
+            cost: swarmy_core::format_micros(a_cost + 1_500_000),
+        }]
+    );
+    let from = t
+        .checked_add(jiff::SignedDuration::from_secs(1800))
+        .unwrap();
+    let to = t
+        .checked_add(jiff::SignedDuration::from_secs(7200))
+        .unwrap();
+    let window = fixture
+        .client
+        .machines(true, Some((&from.to_string(), &to.to_string())))
+        .await
+        .unwrap();
+    let b_window = window
+        .machines
+        .iter()
+        .find(|row| row.id == b.to_string())
+        .unwrap();
+    assert_eq!(b_window.window_cost_micros, Some(750_000));
+    assert_eq!(b_window.window_cost.as_deref(), Some("0.7500"));
+    assert_eq!(
+        window.totals[0].cost_micros,
+        window
+            .machines
+            .iter()
+            .map(|row| row.window_cost_micros.unwrap())
+            .sum::<u64>()
+    );
+    for (query, code) in [
+        ("state=bogus", "invalid_state"),
+        ("from=2026-01-01", "invalid_range"),
+    ] {
+        let response = reqwest::Client::new()
+            .get(format!("{}/v1/machines?{query}", fixture.base))
+            .bearer_auth("test-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        let body: swarmy_api_types::ApiError = response.json().await.unwrap();
+        assert_eq!(body.code, code);
+    }
+}
+
+#[tokio::test]
+async fn machines_route_lists_cost_window_and_current_agents() {
+    use swarmy_core::{
+        BillingGranularity, HourlyPrice, MachineCause, MachineId, MachineTransition, NewMachine,
+        NodeId,
+    };
+    let Some(fixture) = Fixture::new().await else {
+        return;
+    };
+    let name = "machine-agent";
+    let agent = fixture
+        .store
+        .create_agent(
+            name,
+            swarmy_testkit::image(&fixture.store).await,
+            "",
+            Timestamp::now(),
+            None,
+        )
+        .await
+        .unwrap();
+    let now = Timestamp::now();
+    let t = Timestamp::new(1_700_000_000, 0).unwrap();
+    let a = NewMachine {
+        machine_id: MachineId::from_ulid(Ulid::generate()),
+        group: "gpu".into(),
+        name: "fleet-gpu-1".into(),
+        module: "scaleway".into(),
+        size: "L4".into(),
+        location: "par".into(),
+        cause: MachineCause {
+            agent: Some(agent.agent_id),
+            session: None,
+            reason: "fleet task needs a GPU".into(),
+        },
+        hourly_price: HourlyPrice {
+            micros: 750_000,
+            currency: "EUR".into(),
+        },
+        billing: BillingGranularity::PerStartedHour,
+    };
+    let b = NewMachine {
+        machine_id: MachineId::from_ulid(Ulid::generate()),
+        group: "gpu".into(),
+        name: "fleet-gpu-2".into(),
+        ..a.clone()
+    };
+    let created_a = now
+        .checked_sub(jiff::SignedDuration::from_secs(5400))
+        .unwrap();
+    seed_machine(&fixture.store, &a, created_a).await;
+    fixture
+        .store
+        .transition_machine(a.machine_id, &MachineTransition::Provisioned, created_a)
+        .await
+        .unwrap();
+    fixture
+        .store
+        .transition_machine(
+            a.machine_id,
+            &MachineTransition::Joined {
+                node_id: NodeId::from_ulid(Ulid::generate()),
+            },
+            created_a,
+        )
+        .await
+        .unwrap();
+    fixture
+        .store
+        .open_machine_assignment(a.machine_id, agent.agent_id, created_a)
+        .await
+        .unwrap();
+    seed_machine(&fixture.store, &b, t).await;
+    fixture
+        .store
+        .transition_machine(
+            b.machine_id,
+            &MachineTransition::Failed {
+                detail: "failed".into(),
+            },
+            t,
+        )
+        .await
+        .unwrap();
+    let end = t
+        .checked_add(jiff::SignedDuration::from_secs(5400))
+        .unwrap();
+    fixture
+        .store
+        .transition_machine(b.machine_id, &MachineTransition::Destroyed, end)
+        .await
+        .unwrap();
+    check_machine_responses(&fixture, a.machine_id, b.machine_id, t, name).await;
 }

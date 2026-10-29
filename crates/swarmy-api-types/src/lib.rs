@@ -533,6 +533,14 @@ pub struct DoctorSnapshot {
     pub nodes: Vec<DoctorNode>,
 }
 
+/// Cards offered by one node.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct GpuCards {
+    pub model: String,
+    pub memory_mib: u64,
+    pub count: u32,
+}
+
 /// One registered node and its committed sandbox memory in bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DoctorNode {
@@ -541,6 +549,8 @@ pub struct DoctorNode {
     pub capacity: NodeCapacity,
     pub last_heartbeat: String,
     pub committed_memory_bytes: u64,
+    /// Cards the node advertises; null without cards.
+    pub gpu: Option<GpuCards>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1105,6 +1115,8 @@ pub struct SandboxRequirements {
 pub struct PlacementView {
     pub node_id: String,
     pub epoch: u64,
+    /// GPU mode the placement was admitted under.
+    pub gpu: GpuMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1136,13 +1148,109 @@ impl SandboxState {
     }
 }
 
+/// Lifecycle state of one elastic machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineState {
+    Requested,
+    Creating,
+    Provisioning,
+    Joined,
+    Draining,
+    Destroyed,
+    Failed,
+    Orphaned,
+}
+impl MachineState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Requested => "requested",
+            Self::Creating => "creating",
+            Self::Provisioning => "provisioning",
+            Self::Joined => "joined",
+            Self::Draining => "draining",
+            Self::Destroyed => "destroyed",
+            Self::Failed => "failed",
+            Self::Orphaned => "orphaned",
+        }
+    }
+}
+/// Provider's billing-unit size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BillingGranularity {
+    PerStartedHour,
+    PerStartedMinute,
+}
+/// Why this machine was requested.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MachineCause {
+    pub agent_id: Option<String>,
+    pub agent_name: Option<String>,
+    pub session_id: Option<String>,
+    pub reason: String,
+}
+/// An agent with an open assignment on the machine.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MachineAgent {
+    pub agent_id: String,
+    pub agent_name: Option<String>,
+    pub since: String,
+}
+/// An elastic machine, priced as of `MachineList.as_of`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Machine {
+    pub id: String,
+    pub group: String,
+    pub name: String,
+    pub module: String,
+    pub size: String,
+    pub location: String,
+    pub address: Option<String>,
+    pub node_id: Option<String>,
+    pub state: MachineState,
+    pub requested_at: String,
+    pub created_at: Option<String>,
+    pub provisioned_at: Option<String>,
+    pub joined_at: Option<String>,
+    pub drain_requested_at: Option<String>,
+    pub destroyed_at: Option<String>,
+    pub cause: MachineCause,
+    pub hourly_price_micros: u64,
+    pub currency: String,
+    pub billing: BillingGranularity,
+    pub failure: Option<String>,
+    pub cost_micros: u64,
+    pub cost: String,
+    pub window_cost_micros: Option<u64>,
+    pub window_cost: Option<String>,
+    pub current_agents: Vec<MachineAgent>,
+}
+/// A per-currency cost total.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MachineCostTotal {
+    pub currency: String,
+    pub cost_micros: u64,
+    pub cost: String,
+}
+/// Machines as of one instant, with optional window totals.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MachineList {
+    pub as_of: String,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub machines: Vec<Machine>,
+    pub totals: Vec<MachineCostTotal>,
+}
+
 /// Versioned resource routes. These signatures are mirrored by the server router.
 pub mod api_paths {
     use super::{
         Agent, AgentDeleted, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession,
         CreateAgent, CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
         DoctorSnapshot, EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload,
-        InterruptOutcome, InterruptSession, Model, ProbeModel, ProbeResult, Provider,
+        InterruptOutcome, InterruptSession, MachineList, Model, ProbeModel, ProbeResult, Provider,
         PutCredentialRecord, QuotaEntry, Route, RouteDeleted, Session, SessionClosed,
         SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun, Subscription, TurnMetrics,
         UpdateAgent, UsageResponse,
@@ -1409,6 +1517,14 @@ pub mod api_paths {
         ),
         responses((status = 200, body = UsageResponse), (status = 400, body = ApiError)))]
     pub fn usage() {}
+    #[utoipa::path(get, path = "/v1/machines",
+        params(
+            ("state" = Option<String>, Query, description = "active (default) lists machines that may still cost money or are in progress; all includes destroyed ones"),
+            ("from" = Option<String>, Query, description = "Window start for window_cost, in the same forms as /v1/usage; requires to"),
+            ("to" = Option<String>, Query, description = "Window end, exclusive; requires from"),
+        ),
+        responses((status = 200, body = MachineList), (status = 400, body = ApiError), (status = 401, body = ApiError)))]
+    pub fn list_machines() {}
     #[utoipa::path(get, path = "/v1/quotas",
         responses((status = 200, body = Vec<QuotaEntry>), (status = 401, body = ApiError)))]
     pub fn quotas() {}
@@ -1437,7 +1553,7 @@ pub mod api_paths {
         api_paths::check_credential, api_paths::remove_credential,
         api_paths::check_credential_entry, api_paths::remove_credential_entry,
         api_paths::entry_quota, api_paths::set_entry_quota, api_paths::quotas,
-        api_paths::usage,
+        api_paths::usage, api_paths::list_machines,
         api_paths::list_routes, api_paths::set_route, api_paths::show_route,
         api_paths::delete_route, api_paths::set_session_route,
 
@@ -1446,7 +1562,7 @@ pub mod api_paths {
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
     WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Image, ImageUpload, Model, ProviderApi,
     Provider, ProbeModel, ProbeResult, CredentialKind, CredentialStatus, Credential, PutCredentialRecord, NodeRole, NodeCapacity,
-    Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode,
+    Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode, GpuCards,
     StageTiming, InferenceMetric, ToolMetric, ComputerMetric, TurnMetrics, LatencyPercentiles,
     AgentMetrics, StartGcRun, GcRun,
     CreateAgent, UpdateAgent, AgentReset, GpuMode, DeleteRequest,
@@ -1455,6 +1571,7 @@ pub mod api_paths {
     InterruptStatus, InterruptOutcome, SessionClosed,
     CreateImage, CreateCredential, CredentialDeleted, AgentDeleted, SetEntryQuota, EntryQuotaView, QuotaEntry, EntryQuotaDetail,
     UsageTotalsView, UsageGroupView, UsageResponse, EntryUsageView,
+    MachineState, BillingGranularity, MachineCause, MachineAgent, Machine, MachineCostTotal, MachineList,
     Event, EventPayload, ApiError,
     Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute
 )))]
@@ -1481,6 +1598,24 @@ mod tests {
 
     #[test]
     fn resource_json_contract() {
+        check!(GpuCards, {"model":"NVIDIA L4","memory_mib":23034,"count":1});
+        check!(PlacementView, {"node_id":"n","epoch":1,"gpu":"dedicated"});
+        for state in [
+            "requested",
+            "creating",
+            "provisioning",
+            "joined",
+            "draining",
+            "destroyed",
+            "failed",
+            "orphaned",
+        ] {
+            check!(MachineState, state);
+        }
+        for billing in ["per_started_hour", "per_started_minute"] {
+            check!(BillingGranularity, billing);
+        }
+        check!(MachineList, {"as_of":"2026-10-29T12:00:00Z","from":null,"to":null,"machines":[{"id":"01JC0000000000000000000001","group":"gpu","name":"fleet-gpu-1","module":"scaleway","size":"L4","location":"par","address":null,"node_id":null,"state":"requested","requested_at":"2026-10-29T12:00:00Z","created_at":null,"provisioned_at":null,"joined_at":null,"drain_requested_at":null,"destroyed_at":null,"cause":{"agent_id":null,"agent_name":null,"session_id":null,"reason":"task"},"hourly_price_micros":750_000,"currency":"EUR","billing":"per_started_hour","failure":null,"cost_micros":0,"cost":"0.0000","window_cost_micros":null,"window_cost":null,"current_agents":[]}],"totals":[{"currency":"EUR","cost_micros":0,"cost":"0.0000"}]});
         check!(LogId, {"kind":"session","id":"s"});
         check!(LogId, {"kind":"timeline","id":"s"});
         check!(Cursor, {"log_id":{"kind":"session","id":"s"},"sequence":0});

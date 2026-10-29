@@ -74,6 +74,18 @@ pub enum FenceError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DomainError {
+    #[error("machine does not exist")]
+    MachineMissing,
+    #[error("machine id already exists")]
+    MachineExists,
+    #[error("an active machine in this group already has that name")]
+    MachineNameInUse,
+    #[error("invalid machine record: {0}")]
+    InvalidMachine(String),
+    #[error(transparent)]
+    InvalidMachineTransition(#[from] swarmy_core::InvalidMachineTransition),
+    #[error("machine is not joined; only a joined machine takes new assignments")]
+    MachineNotJoined,
     #[error("credential does not exist")]
     CredentialMissing,
     #[error("route does not exist")]
@@ -104,6 +116,8 @@ pub enum DomainError {
     NodeMissing,
     #[error("node has no computer capacity available: {detail}")]
     NodeAtCapacity { detail: String },
+    #[error("node cannot host this GPU sandbox: {detail}")]
+    GpuUnavailable { detail: String },
     #[error("the memory requirement can only change after the current placement is evicted")]
     ActiveSandboxRequirements,
     #[error("placement already exists")]

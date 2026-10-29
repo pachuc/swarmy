@@ -3,10 +3,10 @@ use crate::{GpuRequirement, NodeRecord};
 use std::time::Duration;
 
 /// Whether `node` can host a computer with this GPU requirement. Every node
-/// satisfies `None`, and callers rely on that. Nodes do not advertise cards yet.
+/// satisfies `None`; GPU modes need a node advertising at least one card.
 #[must_use]
-pub fn node_satisfies(_node: &NodeRecord, requirement: GpuRequirement) -> bool {
-    requirement == GpuRequirement::None
+pub fn node_satisfies(node: &NodeRecord, requirement: GpuRequirement) -> bool {
+    !requirement.needs_card() || node.gpu_count() > 0
 }
 
 /// Short reason shown in session views while a session waits for capacity.

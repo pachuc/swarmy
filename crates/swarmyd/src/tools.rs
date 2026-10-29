@@ -788,6 +788,7 @@ mod tests {
             expires_at: now,
             last_change_reason: PlacementChangeReason::Initial,
             last_changed_at: now,
+            gpu: swarmy_core::GpuRequirement::None,
         };
         let explanation = format!("agent is placed on another node {other} at epoch 2");
         // The takeover test dispatches the replacement placement to the old node.

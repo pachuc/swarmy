@@ -425,6 +425,63 @@ command to finish; hand-lowering `count` and running `up` remains refused.
 
 See [REMOTE.md](REMOTE.md#draining-a-node) for how draining works on a node.
 
+## GPU nodes
+
+A node runs `nvidia-smi`, NVIDIA's driver command-line tool, once at startup to
+list installed cards. It advertises their model, memory in MiB, and count in its
+node record. A missing command, a query that fails or runs longer than 10 seconds,
+or malformed output means the node advertises no cards. `swarmy doctor` lists
+cards on live nodes.
+
+Agents set `--gpu none|shared|dedicated`. None can use any sandbox node, but
+prefers nodes without cards. Shared needs at least one card and can share the
+node with other shared GPU sandboxes, provided no dedicated GPU sandbox is there.
+Dedicated needs a card and no other GPU sandbox on that node; CPU sandboxes can
+still share it. Dedicated reserves the node's whole set of cards, not individual
+cards. A GPU requirement overrides local scratch preference, so moving from a
+scratch host may require a cold cargo target. If no node qualifies, the step
+parks the session in a durable capacity wait, as described in
+[When no node has room](#when-no-node-has-room).
+
+For tests and dev stacks only, `[node.fake_gpu]` with `model`, `memory_mib`, and
+`count` or `SWARMY_NODE_FAKE_GPU="MODEL,MEMORY_MIB,COUNT"` advertises fake cards
+without probing. Local services do not inherit shell variables, so use the TOML
+form for local swarms. The override only advertises cards; it exposes no device.
+
+Placement and admission are in place, but cards are not yet visible inside
+sandboxes, even on real GPU nodes; exposing the devices is later work.
+
+## Machines
+
+Swarmy records every machine created for an elastic group: its group, OpenTofu machine name, size,
+location, state, lifecycle timestamps, hourly price and currency, and cause.
+The cause includes an agent, a session and a free-text reason; the fleet driver
+puts its tasky id in the reason.
+
+- Requested: creation has been requested but no cloud machine exists yet.
+- Creating: the cloud create operation is in progress.
+- Provisioning: the cloud machine exists and is being configured.
+- Joined: the node has joined the swarm and may host agents.
+- Draining: new assignments have stopped while existing work finishes.
+- Destroyed: the machine has been removed; this state is final.
+- Failed: an operation failed; a machine already created keeps costing until destroyed.
+- Orphaned: swarmy lost track of a cloud machine that may still exist and cost money; check the provider and remove it by hand.
+
+The first billing unit starts on creation and is billed immediately. By default
+billing is per started hour; a record can instead specify per started minute.
+Cost is computed when the record is read, not periodically written. Assignment
+intervals track each agent's use of the machine, and current agents come from
+open intervals.
+
+```sh
+swarmy swarm machines
+swarmy swarm machines --all
+swarmy --swarm hz swarm machines --json
+```
+
+The provisioner writes records in a later task, so these lists remain empty
+until it arrives.
+
 ## Model provider credentials
 
 On the first `swarmy swarm up NAME`, `--copy-credential` copies the ChatGPT

@@ -165,9 +165,26 @@ impl UsageRow<'_> {
     }
 }
 
-fn print_usage(response: &swarmy_api_types::UsageResponse, json: bool) -> Result<()> {
+#[derive(serde::Serialize)]
+struct CostReport<'a> {
+    #[serde(flatten)]
+    usage: &'a swarmy_api_types::UsageResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    machines: Option<&'a swarmy_api_types::MachineList>,
+}
+fn print_usage(
+    response: &swarmy_api_types::UsageResponse,
+    machines: Option<&swarmy_api_types::MachineList>,
+    json: bool,
+) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string(response)?);
+        println!(
+            "{}",
+            serde_json::to_string(&CostReport {
+                usage: response,
+                machines
+            })?
+        );
         return Ok(());
     }
     for group in &response.groups {
@@ -205,6 +222,9 @@ fn print_usage(response: &swarmy_api_types::UsageResponse, json: bool) -> Result
         }
         .render()
     );
+    if let Some(section) = machines.and_then(crate::machines::render_cost_section) {
+        println!("\n{section}");
+    }
     Ok(())
 }
 
@@ -225,7 +245,18 @@ async fn cost(client: &Client, endpoint: &str, args: cost_command::Args, json: b
         ),
     )
     .await?;
-    print_usage(&response, json)
+    let machines = if key.is_none() {
+        Some(
+            request(
+                endpoint,
+                client.machines(true, Some((&since.to_string(), &until.to_string()))),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    print_usage(&response, machines.as_ref(), json)
 }
 
 async fn close_session(
@@ -1220,7 +1251,7 @@ pub(crate) async fn quota(
             );
         } else {
             println!("{}", quota_line(view));
-            print_usage(&response, false)?;
+            print_usage(&response, None, false)?;
         }
         return Ok(());
     }
@@ -1300,4 +1331,52 @@ pub(crate) async fn routes(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod machine_cost_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    #[test]
+    fn cost_report_json_keeps_usage_fields_at_top_level() {
+        let usage = swarmy_api_types::UsageResponse {
+            by: "agent".into(),
+            key: None,
+            group: "day".into(),
+            from: "from".into(),
+            to: "to".into(),
+            groups: vec![],
+            total: swarmy_api_types::UsageTotalsView {
+                input_tokens: 0,
+                cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+                total_tokens: 0,
+                cost_micros: 0,
+                cost_dollars: "0.0000".into(),
+                completions: 0,
+            },
+        };
+        let machines = swarmy_api_types::MachineList {
+            as_of: "now".into(),
+            from: None,
+            to: None,
+            machines: vec![],
+            totals: vec![],
+        };
+        let value = serde_json::to_value(CostReport {
+            usage: &usage,
+            machines: Some(&machines),
+        })
+        .unwrap();
+        assert_eq!(value["total"]["cost_dollars"], "0.0000");
+        assert!(value.get("machines").is_some());
+        let value = serde_json::to_value(CostReport {
+            usage: &usage,
+            machines: None,
+        })
+        .unwrap();
+        assert!(value.get("machines").is_none());
+    }
 }

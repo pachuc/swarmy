@@ -2631,6 +2631,8 @@ mod tools;
 #[path = "store/turns.rs"]
 mod turns;
 
+#[path = "store/machines.rs"]
+mod machines;
 #[path = "store/placements.rs"]
 mod placements;
 

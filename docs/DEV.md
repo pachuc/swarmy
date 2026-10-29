@@ -174,7 +174,8 @@ swarmy agent show reviewer --json
 Use `--system-prompt TEXT` for an inline prompt or `--system-prompt-file PATH`
 for a UTF-8 file. The two flags are mutually exclusive and preserve whitespace.
 `agent create` and `agent set` also take `--memory MIB` for the sandbox memory
-limit and `--gpu none|shared|dedicated` for the placement GPU requirement.
+limit and `--gpu none|shared|dedicated` for the GPU requirement enforced by placement and admission
+([GPU nodes](swarms.md#gpu-nodes)).
 `agent set NAME` changes only supplied fields. Changes apply to the next inference
 in every existing or future session of that agent; an already submitted request
 keeps its settings. Unset fields use the current stack defaults, as do ephemeral

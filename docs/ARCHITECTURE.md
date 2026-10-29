@@ -145,11 +145,13 @@ them in [api-breaks.txt](api-breaks.txt).
   [volumes.rs](../crates/swarmy-store/src/volumes.rs)).
 - **Leases, placements, and nodes.** `lease`, `lease_by_expiry`, `node`,
   `placement`, `placement_epoch`, `placement_by_node`, `placement_hosting`,
-  `placement_next_reason`, `volume_placement`, and `tool_placement` track ownership and where work
-  runs. Node records carry advertised capacity and heartbeats, service
+  `placement_next_reason`, `volume_placement`, and `tool_placement` track
+  ownership and where work runs. Node records carry advertised capacity, GPU
+  cards, and heartbeats; placements record the GPU mode admitted. Service
   heartbeats stay advisory, tool routing fences durable dispatch across
-  worker replicas, and tool claims on agent volumes never publish disk
-  state. New placements prefer a node holding the agent's scratch data, but
+  worker replicas, and tool claims on agent volumes never publish disk state.
+  Placement filters by GPU requirement before preferring a node holding the
+  agent's scratch data, but
   after a placement lease expires the previous host is tried last, even if
   it holds that scratch. Capacity admission remains transactional, and a
   placement epoch fences stale node operations. A GPU requirement change marks
@@ -253,6 +255,11 @@ completed tool calls. See [graphics.md](graphics.md) for the image, tools and
 agent-level proofs.
 
 ## Operational invariants
+
+- **GPU admission is transactional.** Shared and dedicated rules are checked
+  from the node's placement rows in the same transaction that reserves capacity,
+  so two dedicated placements cannot both win a node
+  ([placements.rs](../crates/swarmy-store/src/placements.rs)).
 
 - **Rate limits are retryable waits, not admission control.** Swarmy keeps
   no token buckets in front of providers: subscription windows, spend-tiered

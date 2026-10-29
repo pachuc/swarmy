@@ -1630,3 +1630,195 @@ async fn interrupting_a_capacity_wait_fails_its_calls_and_does_not_rerun_them() 
             .any(|event| matches!(event, Event::InferenceRequested { .. }))
     );
 }
+
+async fn add_gpu_node(f: &Fixture, sandboxes: u32) -> NodeId {
+    let node_id = NodeId::from_ulid(Ulid::from_parts(1, 3));
+    f.store
+        .put_node(&NodeRecord {
+            node_id,
+            roles: vec![NodeRole::Sandbox],
+            capacity: NodeCapacity {
+                cpu_millis: 1000,
+                memory_bytes: 16 * 1024 * 1024 * 1024,
+                disk_bytes: 1024,
+                sandboxes,
+            },
+            last_heartbeat: f.now(),
+            cached_images: Vec::new(),
+            gpu: Some(swarmy_core::GpuCards {
+                model: "NVIDIA L4".into(),
+                memory_mib: 23034,
+                count: 1,
+            }),
+        })
+        .await
+        .unwrap();
+    node_id
+}
+
+async fn set_gpu(f: &Fixture, mode: swarmy_core::GpuRequirement) {
+    f.store
+        .set_agent_with_resets(
+            f.agent,
+            &swarmy_core::AgentSettings {
+                gpu: Some(mode),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn shared_gpu_agent_waits_for_a_card_node_then_resumes_on_it() {
+    use swarmy_core::GpuRequirement;
+    use swarmy_store::{CAPACITY_WAIT_RETRY, WaitKind};
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    set_gpu(&f, GpuRequirement::Shared).await;
+    let id = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(id, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    f.request(id).await;
+    f.step(id).await;
+    assert_eq!(
+        f.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Sleeping
+    );
+    assert!(matches!(
+        f.store.session_wait(id).await.unwrap().unwrap().kind,
+        WaitKind::Capacity {
+            requirement: GpuRequirement::Shared
+        }
+    ));
+    f.advance(CAPACITY_WAIT_RETRY + Duration::from_secs(1));
+    let gpu = add_gpu_node(&f, 2).await;
+    assert!(f.store.wake_wait(id, f.now()).await.unwrap());
+    f.step(id).await;
+    let placement = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
+    assert_eq!(placement.node_id, gpu);
+    assert_eq!(placement.gpu, GpuRequirement::Shared);
+    assert!(f.store.session_wait(id).await.unwrap().is_none());
+    let delivery = f.delivery(gpu).await;
+    delivery.acknowledge().await.unwrap();
+}
+
+#[tokio::test]
+async fn gpu_agent_is_placed_on_the_card_node_despite_scratch_elsewhere() {
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    set_gpu(&f, swarmy_core::GpuRequirement::Dedicated).await;
+    let gpu = add_gpu_node(&f, 2).await;
+    f.store
+        .report_scratch(
+            f.agent,
+            &ScratchRecord {
+                node_id: f.nodes[0],
+                bytes: 12,
+            },
+        )
+        .await
+        .unwrap();
+    let placement =
+        crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
+            .await
+            .unwrap();
+    assert_eq!(placement.node_id, gpu);
+    assert_eq!(placement.gpu, swarmy_core::GpuRequirement::Dedicated);
+}
+
+#[tokio::test]
+async fn cpu_agent_leaves_scratch_on_a_card_node_for_a_free_cpu_node() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let _session = f.session().await;
+    let gpu = add_gpu_node(&f, 2).await;
+    f.store
+        .report_scratch(
+            f.agent,
+            &ScratchRecord {
+                node_id: gpu,
+                bytes: 12,
+            },
+        )
+        .await
+        .unwrap();
+    let placement =
+        crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
+            .await
+            .unwrap();
+    assert_ne!(placement.node_id, gpu);
+    assert_eq!(placement.gpu, swarmy_core::GpuRequirement::None);
+}
+
+#[tokio::test]
+async fn gpu_agent_without_card_nodes_gets_no_eligible_node() {
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    set_gpu(&f, swarmy_core::GpuRequirement::Shared).await;
+    let error = crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
+        .await
+        .unwrap_err();
+    let no_node = error
+        .downcast_ref::<crate::placement::NoEligibleNode>()
+        .unwrap();
+    assert_eq!(no_node.requirement, swarmy_core::GpuRequirement::Shared);
+    assert!(no_node.rejection.is_none());
+}
+
+#[tokio::test]
+async fn busy_dedicated_node_gets_no_eligible_node_with_the_refusal() {
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    set_gpu(&f, swarmy_core::GpuRequirement::Dedicated).await;
+    let gpu = add_gpu_node(&f, 2).await;
+    let holder = f
+        .store
+        .create_agent("holder", "routing:test", "", Timestamp::now(), None)
+        .await
+        .unwrap()
+        .agent_id;
+    f.store
+        .set_agent_with_resets(
+            holder,
+            &swarmy_core::AgentSettings {
+                gpu: Some(swarmy_core::GpuRequirement::Dedicated),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    f.store
+        .place(
+            holder,
+            gpu,
+            f.now().checked_add(Duration::from_secs(30)).unwrap(),
+        )
+        .await
+        .unwrap();
+    let error = crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
+        .await
+        .unwrap_err();
+    let no_node = error
+        .downcast_ref::<crate::placement::NoEligibleNode>()
+        .unwrap();
+    assert!(matches!(
+        no_node.rejection,
+        Some(StoreError::Domain(
+            swarmy_store::DomainError::GpuUnavailable { .. }
+        ))
+    ));
+}
