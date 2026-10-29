@@ -126,10 +126,6 @@ pub(crate) fn invalid_selection(failure: &swarmy_llm::selection::SelectionError)
         failure.to_string(),
     )
 }
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "`map_err` passes the owned error; taking a reference would require closures at every call site"
-)]
 /// Validate an operator GPU reason with the same rule as `request_gpu`.
 fn gpu_reason(text: Option<&str>) -> Result<Option<swarmy_core::GpuReason>, ApiFailure> {
     text.map(swarmy_core::GpuReason::parse)
@@ -137,6 +133,10 @@ fn gpu_reason(text: Option<&str>) -> Result<Option<swarmy_core::GpuReason>, ApiF
         .map_err(|message| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_request", message))
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` passes the owned error; taking a reference would require closures at every call site"
+)]
 fn storage(value: swarmy_store::StoreError) -> ApiFailure {
     use swarmy_store::StoreError;
     let message = value.to_string();

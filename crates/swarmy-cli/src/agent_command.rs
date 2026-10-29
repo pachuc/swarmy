@@ -117,6 +117,36 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn gpu_reason_requires_gpu_on_create_and_set() {
+        for command in ["create", "set"] {
+            assert!(
+                crate::Cli::try_parse_from([
+                    "swarmy",
+                    "agent",
+                    command,
+                    "tommy",
+                    "--gpu",
+                    "shared",
+                    "--gpu-reason",
+                    "tasky X: launched with --gpu"
+                ])
+                .is_ok()
+            );
+            assert!(
+                crate::Cli::try_parse_from([
+                    "swarmy",
+                    "agent",
+                    command,
+                    "tommy",
+                    "--gpu-reason",
+                    "x"
+                ])
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn agent_inference_flags_validate_without_connecting_to_the_stack() {
         for command in ["create", "set"] {
             for effort in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
@@ -154,30 +184,6 @@ mod tests {
             );
         }
         for command in ["create", "set"] {
-            assert!(
-                crate::Cli::try_parse_from([
-                    "swarmy",
-                    "agent",
-                    command,
-                    "tommy",
-                    "--gpu",
-                    "shared",
-                    "--gpu-reason",
-                    "tasky X: launched with --gpu"
-                ])
-                .is_ok()
-            );
-            assert!(
-                crate::Cli::try_parse_from([
-                    "swarmy",
-                    "agent",
-                    command,
-                    "tommy",
-                    "--gpu-reason",
-                    "x"
-                ])
-                .is_err()
-            );
             for value in ["true", "false"] {
                 assert!(
                     crate::Cli::try_parse_from([

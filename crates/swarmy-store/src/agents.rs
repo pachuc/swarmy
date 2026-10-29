@@ -937,7 +937,7 @@ mod tests {
         // A request with a session ends with the Some tag, the id length and the
         // 26-character id; an operator request ends with the None tag.
         assert_eq!(&encoded[encoded.len() - 28..encoded.len() - 26], [1, 26]);
-        let mut operator = requested.clone();
+        let mut operator = requested;
         operator.gpu_request.as_mut().unwrap().session_id = None;
         let operator_bytes = encode(&operator).unwrap();
         assert_eq!(decode::<AgentRecord>(&operator_bytes).unwrap(), operator);
