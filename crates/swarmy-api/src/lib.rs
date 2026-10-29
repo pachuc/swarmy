@@ -16,6 +16,7 @@ mod conversation;
 mod gc;
 mod idempotency;
 pub mod images;
+mod machines;
 mod models;
 pub mod role;
 mod stream;
@@ -261,6 +262,7 @@ pub fn router(state: AppState) -> Router {
             get(entry_quota).post(set_entry_quota),
         )
         .route("/v1/usage", get(usage))
+        .route("/v1/machines", get(machines::list))
         .route("/v1/quotas", get(quotas))
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize));
     // Health, the OpenAPI document, and the rendered reference are public so
@@ -1288,6 +1290,16 @@ struct UsageParams {
     to: Timestamp,
 }
 
+pub(crate) fn time_bound(
+    value: &str,
+    now: Timestamp,
+    code: &'static str,
+    message: &'static str,
+) -> Result<Timestamp, ApiFailure> {
+    swarmy_core::time::parse_bound(value, now)
+        .ok_or_else(|| ApiFailure::new(StatusCode::BAD_REQUEST, code, message))
+}
+
 fn usage_params(query: &UsageQuery) -> Result<UsageParams, ApiFailure> {
     let sent_by = query.by.clone().unwrap_or_else(|| "agent".into());
     let dimension = swarmy_store::MeteringDimension::parse(&sent_by).ok_or_else(|| {
@@ -1314,29 +1326,13 @@ fn usage_params(query: &UsageQuery) -> Result<UsageParams, ApiFailure> {
     let to = query
         .to
         .as_deref()
-        .map(|bound| {
-            swarmy_core::time::parse_bound(bound, now).ok_or_else(|| {
-                ApiFailure::new(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_to",
-                    "to is not a valid time",
-                )
-            })
-        })
+        .map(|bound| time_bound(bound, now, "invalid_to", "to is not a valid time"))
         .transpose()?
         .unwrap_or(now);
     let from = query
         .from
         .as_deref()
-        .map(|bound| {
-            swarmy_core::time::parse_bound(bound, now).ok_or_else(|| {
-                ApiFailure::new(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_from",
-                    "from is not a valid time",
-                )
-            })
-        })
+        .map(|bound| time_bound(bound, now, "invalid_from", "from is not a valid time"))
         .transpose()?
         .unwrap_or_else(|| {
             to.checked_add(jiff::Span::new().hours(-30 * 24))

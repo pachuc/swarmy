@@ -57,10 +57,7 @@ async fn server_probe(
         }
         swarmy_client::api_client::api_error(error, endpoint).into()
     })?;
-    let dollars = {
-        let units = answer.cost_micros / 100 + u64::from(answer.cost_micros % 100 >= 50);
-        format!("{}.{:04}", units / 10_000, units % 10_000)
-    };
+    let dollars = swarmy_core::format_micros(answer.cost_micros);
     if json {
         crate::client_commands::print_event(&crate::client_commands::Event::ProbeSummary {
             provider: &answer.provider,

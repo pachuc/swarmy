@@ -1172,6 +1172,75 @@
         }
       }
     },
+    "/v1/machines": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "list_machines",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "description": "active (default) lists machines that may still cost money or are in progress; all includes destroyed ones",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Window start for window_cost, in the same forms as /v1/usage; requires to",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Window end, exclusive; requires from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MachineList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/models": {
       "get": {
         "tags": [
@@ -2670,6 +2739,14 @@
           }
         }
       },
+      "BillingGranularity": {
+        "type": "string",
+        "description": "Provider's billing-unit size.",
+        "enum": [
+          "per_started_hour",
+          "per_started_minute"
+        ]
+      },
       "CloseSession": {
         "type": "object",
         "required": [
@@ -3889,6 +3966,269 @@
           }
         ],
         "description": "A log namespace."
+      },
+      "Machine": {
+        "type": "object",
+        "description": "An elastic machine, priced as of `MachineList.as_of`.",
+        "required": [
+          "id",
+          "group",
+          "name",
+          "module",
+          "size",
+          "location",
+          "state",
+          "requested_at",
+          "cause",
+          "hourly_price_micros",
+          "currency",
+          "billing",
+          "cost_micros",
+          "cost",
+          "current_agents"
+        ],
+        "properties": {
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "billing": {
+            "$ref": "#/components/schemas/BillingGranularity"
+          },
+          "cause": {
+            "$ref": "#/components/schemas/MachineCause"
+          },
+          "cost": {
+            "type": "string"
+          },
+          "cost_micros": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": "string"
+          },
+          "current_agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MachineAgent"
+            }
+          },
+          "destroyed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "drain_requested_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group": {
+            "type": "string"
+          },
+          "hourly_price_micros": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "joined_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location": {
+            "type": "string"
+          },
+          "module": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provisioned_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_at": {
+            "type": "string"
+          },
+          "size": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MachineState"
+          },
+          "window_cost": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "window_cost_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "MachineAgent": {
+        "type": "object",
+        "description": "An agent with an open assignment on the machine.",
+        "required": [
+          "agent_id",
+          "since"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "agent_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since": {
+            "type": "string"
+          }
+        }
+      },
+      "MachineCause": {
+        "type": "object",
+        "description": "Why this machine was requested.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agent_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "MachineCostTotal": {
+        "type": "object",
+        "description": "A per-currency cost total.",
+        "required": [
+          "currency",
+          "cost_micros",
+          "cost"
+        ],
+        "properties": {
+          "cost": {
+            "type": "string"
+          },
+          "cost_micros": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "currency": {
+            "type": "string"
+          }
+        }
+      },
+      "MachineList": {
+        "type": "object",
+        "description": "Machines as of one instant, with optional window totals.",
+        "required": [
+          "as_of",
+          "machines",
+          "totals"
+        ],
+        "properties": {
+          "as_of": {
+            "type": "string"
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "machines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Machine"
+            }
+          },
+          "to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "totals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MachineCostTotal"
+            }
+          }
+        }
+      },
+      "MachineState": {
+        "type": "string",
+        "description": "Lifecycle state of one elastic machine.",
+        "enum": [
+          "requested",
+          "creating",
+          "provisioning",
+          "joined",
+          "draining",
+          "destroyed",
+          "failed",
+          "orphaned"
+        ]
       },
       "MessageRole": {
         "type": "string",
