@@ -26,7 +26,7 @@ pub struct ElasticGroupRecord {
     /// Why desired last changed, copied into machine records by the provisioner.
     pub desired_reason: String,
     pub generation: u64,
-    /// Machines OpenTofu held after the provisioner's last apply.
+    /// Machines `OpenTofu` held after the provisioner's last apply.
     pub applied: u32,
     pub reconciled_generation: u64,
     pub updated_at: Timestamp,
