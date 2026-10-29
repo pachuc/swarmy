@@ -1040,6 +1040,19 @@ async fn check_credential(
         })?;
     Ok(Json(views::credential(summary)))
 }
+fn unknown_machine_provider() -> ApiFailure {
+    let names = swarmy_config::cloud::CloudProvider::ALL
+        .iter()
+        .map(|provider| provider.name())
+        .collect::<Vec<_>>()
+        .join(", ");
+    ApiFailure::new(
+        StatusCode::BAD_REQUEST,
+        "unknown_machine_provider",
+        format!("machine providers are {names}"),
+    )
+}
+
 async fn set_credential(
     State(state): State<AppState>,
     Json(body): Json<api::CreateCredential>,
@@ -1056,20 +1069,7 @@ async fn set_credential(
         let provider = body
             .provider
             .parse::<swarmy_config::cloud::CloudProvider>()
-            .map_err(|_| {
-                ApiFailure::new(
-                    StatusCode::BAD_REQUEST,
-                    "unknown_machine_provider",
-                    format!(
-                        "machine providers are {}",
-                        swarmy_config::cloud::CloudProvider::ALL
-                            .iter()
-                            .map(|provider| provider.name())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                )
-            })?;
+            .map_err(|_| unknown_machine_provider())?;
         if body.label != "default" {
             return Err(ApiFailure::new(
                 StatusCode::BAD_REQUEST,
