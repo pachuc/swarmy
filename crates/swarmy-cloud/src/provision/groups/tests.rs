@@ -1081,10 +1081,9 @@ fn log_sections(log: &str) -> BTreeMap<String, String> {
             current = Some(group.to_owned());
         }
         if let Some(group) = &current {
-            sections
-                .entry(group.clone())
-                .or_default()
-                .push_str(&format!("{line}\n"));
+            let section = sections.entry(group.clone()).or_default();
+            section.push_str(line);
+            section.push('\n');
         }
     }
     sections
