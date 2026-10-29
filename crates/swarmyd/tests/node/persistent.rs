@@ -225,7 +225,7 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
     let renewed_epoch = check_durable_background(store, &bus, &node, agent).await;
     let clean = check_dirty_without_publish(store, &bus, &node, agent, base).await;
     check_eviction_rehydrate(store, &bus, &node, agent, renewed_epoch, clean).await;
-    check_requirement_release(store, &bus, &node).await;
+    check_requirement_release(store, &bus, &node, agent).await;
     crash(&mut node, store, &bus, agent).await;
     takeover(&mut node, store, &bus, agent, true).await;
     takeover(
@@ -240,8 +240,9 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
 }
 
 /// A requirement release checkpoints and stops hosting even with processes running.
-async fn check_requirement_release(store: &Store, bus: &Bus, node: &Node) {
-    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+/// Uses the agent the earlier checks placed: the test node has one sandbox
+/// slot, so a second agent could not be placed while that computer is held.
+async fn check_requirement_release(store: &Store, bus: &Bus, node: &Node, agent: AgentId) {
     let job = dispatch(store, bus, node.id, agent, "echo durable >/persistent").await;
     completed(store, &job).await;
     let started = invoke(
