@@ -1,5 +1,5 @@
 //! Primary-host service entry point.
-use crate::{Holder, Reconciler, Tick};
+use crate::{Holder, Outcome, Reconciler, Tick};
 use std::{collections::BTreeMap, ffi::OsString, time::Duration};
 use swarmy_store::Store;
 
@@ -60,18 +60,22 @@ fn log_tick(result: anyhow::Result<Tick>, previous_limited: &mut BTreeMap<String
         Ok(Tick::Standby) => tracing::debug!("provisioner lease held elsewhere"),
         Ok(Tick::Reconciled(outcomes)) => {
             for outcome in outcomes {
-                let was_limited = previous_limited
-                    .insert(outcome.group.clone(), outcome.limited)
-                    .unwrap_or(outcome.limited);
-                if outcome.before != outcome.after || was_limited != outcome.limited {
-                    tracing::info!(?outcome, "elastic group reconciled");
-                } else if outcome.limited {
-                    tracing::debug!(?outcome, "elastic group creation limited");
-                }
+                log_outcome(outcome, previous_limited);
             }
         }
         Err(error) => {
             tracing::error!(error = %swarmy_core::error_chain(error.as_ref()), "provisioner tick failed");
         }
+    }
+}
+
+fn log_outcome(outcome: Outcome, previous_limited: &mut BTreeMap<String, bool>) {
+    let was_limited = previous_limited
+        .insert(outcome.group.clone(), outcome.limited)
+        .unwrap_or(outcome.limited);
+    if outcome.before != outcome.after || was_limited != outcome.limited {
+        tracing::info!(?outcome, "elastic group reconciled");
+    } else if outcome.limited {
+        tracing::debug!(?outcome, "elastic group creation limited");
     }
 }
