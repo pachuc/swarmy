@@ -97,6 +97,7 @@ records each machine in its machine ledger.
 GPU machine from its first command. `shared` lets other GPU computers use the
 same card; `dedicated` keeps the machine to this worker. A new worker is created
 with the requirement; a reused idle worker is set to it before the task starts.
+Either way the agent carries the reason `tasky <FULL_ID>: launched with --gpu`, so a machine the autoscaler starts for it names the task.
 
 `--allow-gpu` lets the worker decide when to call `request_gpu` and
 `release_gpu`. Its prompt says to request only for steps that need the card,
@@ -115,7 +116,7 @@ The hz gpu group autoscales. A GPU task's first command makes the provisioner st
 
 Status ends each row with `node=` (placement), `card=` (ledger machine size or
 `-`), `gpu=` (live requirement) and `machines=` (cost so far). A machine is
-charged when its cause reason starts with `tasky <id>` for the task or when
+charged when its cause reason starts with `tasky <id>` for the task (set by the worker's `request_gpu` reason or, for `--gpu` launches, by the launch reason) or when
 the worker's agent is on it now. The agent join counts the machine's whole cost
 so far, including time used by an earlier task. `swarmy swarm machines` lists
 the active ledger; `swarmy swarm machines --all` also lists destroyed machines.

@@ -343,6 +343,7 @@ async fn agent_inference_settings_create_and_independent_updates() {
         gpu: None,
         route: None,
         allow_gpu_request: Some(true),
+        gpu_reason: None,
     };
     let mut expected = store
         .create_agent(

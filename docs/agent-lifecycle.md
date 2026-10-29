@@ -98,7 +98,7 @@ The tool returns immediately; the hosting node releases the computer at its
 next renewal, and the next sandbox call waits for capacity if no matching node
 is ready. A repeated request for the current mode changes nothing. The reason,
 session and time stay on the agent record and appear in `agent show`; `release_gpu`
-or an operator `--gpu` change clears the reason. Turning the flag off does not
+or an operator `--gpu` change without `--gpu-reason` clears the reason; an operator change with `--gpu-reason` replaces it and records no session. Turning the flag off does not
 reset the requirement: use `--gpu none` for that. When the swarm has an autoscaled GPU group, the waiting call makes the provisioner start a machine, and the machine record's cause names this agent, its session and this reason. The first command may wait 5 to 15 minutes while the machine starts.
 
 ## Waiting for a node

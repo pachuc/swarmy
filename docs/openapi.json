@@ -3058,6 +3058,13 @@
               }
             ]
           },
+          "gpu_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the operator set `gpu`; needs `gpu` shared or dedicated in the same request.\nRecorded as the agent's GPU request with no session."
+          },
           "idempotency_key": {
             "type": "string"
           },
@@ -3927,11 +3934,10 @@
       },
       "GpuRequestView": {
         "type": "object",
-        "description": "The cause of an agent's current self-requested GPU requirement.",
+        "description": "The cause of an agent's current GPU requirement, from `request_gpu` or an operator's `gpu_reason`.",
         "required": [
           "reason",
-          "requested_at",
-          "session_id"
+          "requested_at"
         ],
         "properties": {
           "reason": {
@@ -3941,7 +3947,11 @@
             "type": "string"
           },
           "session_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The session that called `request_gpu`; absent when an operator gave the reason."
           }
         }
       },
@@ -5800,6 +5810,13 @@
                 "$ref": "#/components/schemas/GpuMode"
               }
             ]
+          },
+          "gpu_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the operator set `gpu`; needs `gpu` shared or dedicated in the same request.\nRecorded as the agent's GPU request with no session."
           },
           "idempotency_key": {
             "type": "string"

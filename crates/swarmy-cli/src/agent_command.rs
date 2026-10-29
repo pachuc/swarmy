@@ -154,6 +154,30 @@ mod tests {
             );
         }
         for command in ["create", "set"] {
+            assert!(
+                crate::Cli::try_parse_from([
+                    "swarmy",
+                    "agent",
+                    command,
+                    "tommy",
+                    "--gpu",
+                    "shared",
+                    "--gpu-reason",
+                    "tasky X: launched with --gpu"
+                ])
+                .is_ok()
+            );
+            assert!(
+                crate::Cli::try_parse_from([
+                    "swarmy",
+                    "agent",
+                    command,
+                    "tommy",
+                    "--gpu-reason",
+                    "x"
+                ])
+                .is_err()
+            );
             for value in ["true", "false"] {
                 assert!(
                     crate::Cli::try_parse_from([

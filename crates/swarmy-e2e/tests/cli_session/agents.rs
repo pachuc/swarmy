@@ -1369,6 +1369,7 @@ async fn create_agent_with_unknown_model_reports_the_catalog_explanation() {
             memory_mib: None,
             gpu: None,
             allow_gpu_request: None,
+            gpu_reason: None,
             github_token: None,
         };
         let error = client

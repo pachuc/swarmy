@@ -176,6 +176,7 @@ for a UTF-8 file. The two flags are mutually exclusive and preserve whitespace.
 `agent create` and `agent set` also take `--memory MIB` for the sandbox memory
 limit and `--gpu none|shared|dedicated` for the GPU requirement enforced by
 placement and admission ([GPU nodes](swarms.md#gpu-nodes)).
+`--gpu-reason TEXT` records why a shared or dedicated requirement was set; `agent show` prints it with session `-`, and an autoscaled GPU machine started for the agent takes it as its cause.
 `--allow-gpu-request true|false` lets the agent change its own GPU requirement
 with the `request_gpu` and `release_gpu` tools.
 `agent set NAME` changes only supplied fields. Changes apply to the next inference
