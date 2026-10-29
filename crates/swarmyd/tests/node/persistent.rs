@@ -266,23 +266,24 @@ async fn check_requirement_release(store: &Store, bus: &Bus, node: &Node, agent:
     completed(store, &job).await;
     assert!(store.request_placement_release(agent).await.unwrap());
     evicted(store, agent).await;
-    // Print the file and every process name so a failure says which half broke.
+    // Print the file and the process command lines so a failure says which half broke.
     let job = dispatch(
         store,
         bus,
         node.id,
         agent,
-        r#"cat /persistent; echo ---; for f in /proc/[0-9]*/comm; do read -r c <"$f" 2>/dev/null && echo "$c"; done"#,
+        // PID 1 is the sandbox's own init (`sleep infinity` in images without
+        // swarmy-init), so skip it and print every other command line.
+        r#"cat /persistent; echo ---; for f in /proc/[0-9]*/cmdline; do [ "$f" = /proc/1/cmdline ] && continue; tr '\0' ' ' <"$f" 2>/dev/null; echo; done"#,
     )
     .await;
     let metadata = completed(store, &job).await;
     let out = metadata["stdout"].as_str().unwrap_or_default();
     let (file, processes) = out.split_once("---\n").unwrap_or((out, ""));
     assert_eq!(file.trim(), "after-process", "final checkpoint lost: {out}");
-    assert!(
-        !processes.lines().any(|name| name == "sleep"),
-        "a process survived the requirement release: {processes}"
-    );
+    if let Some(line) = processes.lines().find(|line| line.trim() == "sleep 300") {
+        panic!("the process started before the release survived it: {line}");
+    }
     let placement = store.get_by_agent(agent).await.unwrap().unwrap();
     assert_eq!(
         placement.last_change_reason,
