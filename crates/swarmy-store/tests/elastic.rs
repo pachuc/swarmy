@@ -65,35 +65,6 @@ async fn register_and_set_desired() {
         store.put_elastic_group(&changed).await,
         Err(StoreError::Domain(DomainError::ElasticGroupBusy { .. }))
     ));
-    store.put_elastic_group(&definition("race")).await.unwrap();
-    store
-        .set_elastic_desired("race", 1, "manual")
-        .await
-        .unwrap();
-    let unsettled = store
-        .set_elastic_desired("race", 0, "manual")
-        .await
-        .unwrap();
-    assert_eq!((unsettled.desired, unsettled.applied), (0, 0));
-    assert!(!unsettled.settled());
-    let mut changed_race = definition("race");
-    changed_race.size = "different".into();
-    assert!(matches!(
-        store.put_elastic_group(&changed_race).await,
-        Err(StoreError::Domain(DomainError::ElasticGroupBusy { .. }))
-    ));
-    changed_race = definition("race");
-    changed_race.hourly_price = HourlyPrice::parse("0.50", "EUR").unwrap();
-    assert_eq!(
-        store
-            .put_elastic_group(&changed_race)
-            .await
-            .unwrap()
-            .definition
-            .hourly_price
-            .amount(),
-        "0.5"
-    );
     changed = definition("b");
     changed.max = 0;
     assert!(matches!(
@@ -123,4 +94,41 @@ async fn register_and_set_desired() {
         store.put_elastic_group(&changed).await,
         Err(StoreError::Domain(DomainError::DesiredAboveMax { .. }))
     ));
+}
+
+#[tokio::test]
+async fn changing_identity_waits_for_reconciliation_even_when_empty() {
+    let Some(stack) = swarmy_testkit::Stack::load("elastic") else {
+        return;
+    };
+    let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    store.put_elastic_group(&definition("race")).await.unwrap();
+    store
+        .set_elastic_desired("race", 1, "manual")
+        .await
+        .unwrap();
+    let unsettled = store
+        .set_elastic_desired("race", 0, "manual")
+        .await
+        .unwrap();
+    assert_eq!((unsettled.desired, unsettled.applied), (0, 0));
+    assert!(!unsettled.settled());
+    let mut changed_race = definition("race");
+    changed_race.size = "different".into();
+    assert!(matches!(
+        store.put_elastic_group(&changed_race).await,
+        Err(StoreError::Domain(DomainError::ElasticGroupBusy { .. }))
+    ));
+    changed_race = definition("race");
+    changed_race.hourly_price = HourlyPrice::parse("0.50", "EUR").unwrap();
+    assert_eq!(
+        store
+            .put_elastic_group(&changed_race)
+            .await
+            .unwrap()
+            .definition
+            .hourly_price
+            .amount(),
+        "0.5"
+    );
 }
