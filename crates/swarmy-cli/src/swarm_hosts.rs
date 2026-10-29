@@ -317,9 +317,8 @@ pub(crate) async fn down(
                 ),
             };
             if record.autoscale {
-                let (mut definition, _) =
-                    elastic_scale_requests(spec, &stack_primary(registry, spec)?, name, 0)?;
-                definition.autoscale = false;
+                let definition =
+                    autoscale_off_request(&record, &stack_primary(registry, spec)?, spec);
                 record = swarmy_client::api_client::call(
                     &endpoint,
                     client.put_elastic_group(name, &definition),
@@ -550,6 +549,27 @@ pub(crate) fn elastic_scale_requests(
     };
     Ok((request, desired))
 }
+fn autoscale_off_request(
+    record: &swarmy_api_types::ElasticGroup,
+    primary: &RecordedHost,
+    spec: &SwarmSpec,
+) -> swarmy_api_types::PutElasticGroup {
+    swarmy_api_types::PutElasticGroup {
+        idempotency_key: ulid::Ulid::generate().to_string(),
+        swarm: record.swarm.clone(),
+        module: record.module.clone(),
+        size: record.size.clone(),
+        location: record.location.clone(),
+        sandboxes: record.sandboxes,
+        local_storage: record.local_storage.clone(),
+        max: record.max,
+        price_per_hour: record.price_per_hour.clone(),
+        currency: record.currency.clone(),
+        primary_address: primary.public_address.clone(),
+        service_user: provision::user(spec).into(),
+        autoscale: false,
+    }
+}
 fn stack_primary(registry: &Registry, spec: &SwarmSpec) -> Result<RecordedHost> {
     let record = registry.read_record(&spec.name)?;
     record
@@ -719,6 +739,19 @@ nodes = ["gpu"]
             settled: true,
             updated_at: String::new(),
         };
+        group.autoscale = true;
+        group.desired = 1;
+        group.size = "other-size".into();
+        group.location = "other-location".into();
+        group.module = "scaleway".into();
+        group.max = 1;
+        let off = autoscale_off_request(&group, &primary, &spec);
+        assert!(!off.autoscale);
+        assert_eq!(off.size, group.size);
+        assert_eq!(off.location, group.location);
+        assert_eq!(off.module, group.module);
+        assert_eq!(off.max, group.max);
+        assert_eq!(off.primary_address, primary.public_address);
         assert!(elastic_down_blockers(&[group.clone()]).is_empty());
         group.applied = 1;
         assert_eq!(elastic_down_blockers(&[group.clone()]), ["gpu: 1 machines"]);

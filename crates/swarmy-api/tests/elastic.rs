@@ -386,5 +386,6 @@ async fn put_records_autoscale_and_refuses_a_second_autoscaled_group() {
         .unwrap();
     assert_eq!(changed["desired_reason"], "manual");
     assert!(changed.get("desired_agent").is_none());
+    assert!(changed.get("desired_session").is_none());
     task.abort();
 }

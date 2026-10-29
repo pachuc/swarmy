@@ -627,6 +627,29 @@ async fn restart_adopts_state_without_ledger() {
     );
 }
 #[tokio::test]
+async fn adopted_machines_keep_the_desired_cause() {
+    let Some(f) = Fixture::new(true, 3).await else {
+        return;
+    };
+    let cause = swarmy_core::MachineCause {
+        agent: Some(AgentId::from_ulid(ulid::Ulid::from(1_u128))),
+        session: Some(SessionId::from_ulid(ulid::Ulid::from(2_u128))),
+        reason: "tasky 01X: y".into(),
+    };
+    f.store.set_elastic_desired("gpu", 1, &cause).await.unwrap();
+    state(&f, 1);
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    let rows = f.records().await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].cause.agent, cause.agent);
+    assert_eq!(rows[0].cause.session, cause.session);
+    assert_eq!(
+        rows[0].cause.reason,
+        "adopted from OpenTofu state; tasky 01X: y"
+    );
+}
+
+#[tokio::test]
 async fn missing_state_orphans_machine_and_blocks_growth() {
     let Some(f) = Fixture::new(true, 3).await else {
         return;

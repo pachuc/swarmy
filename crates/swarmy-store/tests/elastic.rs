@@ -1,6 +1,6 @@
 #![deny(clippy::disallowed_methods)]
 use std::sync::Arc;
-use swarmy_core::{ElasticGroupDefinition, HourlyPrice};
+use swarmy_core::{ElasticGroupDefinition, HourlyPrice, MachineCause};
 use swarmy_store::{DomainError, StoreError, blob::MemoryBlobStore};
 
 fn definition(group: &str) -> ElasticGroupDefinition {
@@ -174,6 +174,20 @@ async fn only_one_group_autoscales() {
     store.put_elastic_group(&a).await.unwrap();
     b.autoscale = true;
     store.put_elastic_group(&b).await.unwrap();
+    store.put_elastic_group(&b).await.unwrap();
+    store
+        .set_elastic_desired("b", 1, &MachineCause::from_reason("manual"))
+        .await
+        .unwrap();
+    b.autoscale = false;
+    assert!(
+        !store
+            .put_elastic_group(&b)
+            .await
+            .unwrap()
+            .definition
+            .autoscale
+    );
 }
 
 #[tokio::test]
