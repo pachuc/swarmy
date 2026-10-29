@@ -365,16 +365,16 @@ pub enum Binaries {
         cache: PathBuf,
     },
     /// The build this process runs: swarmy-core beside the current executable, and the
-    /// libfdb_c.so this process loaded. The provisioner uploads it to nodes it joins.
+    /// `libfdb_c.so` this process loaded. The provisioner uploads it to nodes it joins.
     Installed { core: PathBuf, library: PathBuf },
     /// Development checkout copied into the node's source directory.
     Build { checkout: PathBuf },
 }
 
 impl Binaries {
-    /// Discover the running primary's core and loaded FoundationDB library.
+    /// Discover the running primary's core and loaded `FoundationDB` library.
     /// # Errors
-    /// Missing swarmy-core beside the executable, or no loaded libfdb_c.so.
+    /// Missing swarmy-core beside the executable, or no loaded `libfdb_c.so`.
     pub fn installed() -> Result<Self> {
         Self::installed_from(
             &std::env::current_exe()?,
@@ -1153,7 +1153,7 @@ pub async fn revoke_tunnel(node: &Machine, primary: Primary<'_>) -> Result<()> {
     let shell = primary.shell(6).await?;
     shell
         .checked(
-            &authorized_keys_command(&primary.user()?, &authorization, true)?,
+            &authorized_keys_command(&primary.user()?, &authorization, true),
             "revoke joining node tunnel key",
         )
         .await
@@ -1238,7 +1238,7 @@ fn pin_primary_key_command(node: &Machine, known_host: &str) -> Result<String> {
 
 // The service user's authorized_keys lives at its account home, not at the
 // bootstrap login's home. Both installation and revocation use this path.
-fn authorized_keys_command(user: &str, authorization: &str, revoke: bool) -> Result<String> {
+fn authorized_keys_command(user: &str, authorization: &str, revoke: bool) -> String {
     let home = format!("~{user}");
     let file = format!("{home}/.ssh/authorized_keys");
     let line = shell_words::quote(authorization);
@@ -1247,14 +1247,11 @@ fn authorized_keys_command(user: &str, authorization: &str, revoke: bool) -> Res
         let inner = format!(
             "umask 077; grep -vxF -- {line} {file} > {file}.tmp; status=$?; if [ \"$status\" -le 1 ]; then mv {file}.tmp {file}; else rm -f {file}.tmp; exit \"$status\"; fi"
         );
-        Ok(format!(
-            "sudo -u {user} sh -c {}",
-            shell_words::quote(&inner)
-        ))
+        format!("sudo -u {user} sh -c {}", shell_words::quote(&inner))
     } else {
-        Ok(format!(
+        format!(
             "service_user={user}; service_home={home}; umask 077; sudo -u $service_user mkdir -p $service_home/.ssh && sudo -u $service_user touch $service_home/.ssh/authorized_keys && (sudo -u $service_user grep -qxF -- {line} $service_home/.ssh/authorized_keys || printf '%s\\n' {line} | sudo -u $service_user tee -a $service_home/.ssh/authorized_keys >/dev/null)"
-        ))
+        )
     }
 }
 
@@ -1276,7 +1273,7 @@ async fn install_tunnel(
     // service user's authorized_keys, not the bootstrap login's.
     shell
         .checked(
-            &authorized_keys_command(&primary.user()?, &authorization, false)?,
+            &authorized_keys_command(&primary.user()?, &authorization, false),
             "authorize joining node tunnel",
         )
         .await?;
@@ -1749,8 +1746,7 @@ mod provisioning_command_tests {
 
     #[test]
     fn revoke_only_moves_authorized_keys_after_a_successful_grep() {
-        let command =
-            super::authorized_keys_command("swarmy", "ssh-ed25519 AAAA test", true).unwrap();
+        let command = super::authorized_keys_command("swarmy", "ssh-ed25519 AAAA test", true);
         let words = shell_words::split(&command).unwrap();
         assert_eq!(&words[..4], &["sudo", "-u", "swarmy", "sh"]);
         let inner = words.last().unwrap();

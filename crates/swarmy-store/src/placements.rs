@@ -447,10 +447,10 @@ impl Store {
                 gpu,
             };
             self.write_placement(&trx, &record)?;
-            if gpu != GpuRequirement::None {
-                if let Some(machine) = self.joined_machine_in(&trx, node).await? {
-                    self.open_assignment_in(&trx, machine, agent, now).await?;
-                }
+            if gpu != GpuRequirement::None
+                && let Some(machine) = self.joined_machine_in(&trx, node).await?
+            {
+                self.open_assignment_in(&trx, machine, agent, now).await?;
             }
             write(
                 &trx,
@@ -597,11 +597,11 @@ impl Store {
             };
             trx.clear(&self.keys().placement_address(current.agent_id));
             self.write_placement(&trx, &record)?;
-            if gpu != GpuRequirement::None {
-                if let Some(machine) = self.joined_machine_in(&trx, node).await? {
-                    self.open_assignment_in(&trx, machine, record.agent_id, now)
-                        .await?;
-                }
+            if gpu != GpuRequirement::None
+                && let Some(machine) = self.joined_machine_in(&trx, node).await?
+            {
+                self.open_assignment_in(&trx, machine, record.agent_id, now)
+                    .await?;
             }
             write(
                 &trx,

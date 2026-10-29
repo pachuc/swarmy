@@ -272,6 +272,8 @@ fn last_variables(dir: &Path) -> Option<Map<String, Value>> {
 pub fn group_key_path(dir: &Path, group: &str) -> PathBuf {
     dir.join("keys/groups").join(group)
 }
+/// # Errors
+/// Key generation or file access failures.
 pub async fn group_key(dir: &Path, swarm: &str, group: &str) -> Result<String> {
     let keys = dir.join("keys/groups");
     create_private_dir(&keys)?;
@@ -394,7 +396,7 @@ fn hosts_from(
         })
         .collect()
 }
-/// One OpenTofu machine as a host record, not yet provisioned. Swarmy provisions over IPv4.
+/// One `OpenTofu` machine as a host record, not yet provisioned. Swarmy provisions over IPv4.
 /// # Errors
 /// Missing public IPv4 or non-IPv4 private address.
 pub fn recorded_host(group: &str, m: &swarmy_infra::Machine, key: &Path) -> Result<RecordedHost> {

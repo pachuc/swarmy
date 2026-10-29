@@ -113,17 +113,11 @@ impl Store {
                 .await?
                 .ok_or(StoreError::Domain(DomainError::MachineMissing))?;
             record.apply(transition, at).map_err(DomainError::from)?;
-            if let MachineTransition::Joined { node_id } = transition {
-                if *node_id == id.joined_node_id() {
-                    let space = self.keys().placement_by_node_space(*node_id);
-                    for (_, bytes) in scan_all(&trx, space.range()).await? {
-                        let placement: PlacementRecord = decode(&bytes)?;
-                        if placement.gpu != GpuRequirement::None {
-                            self.open_assignment_in(&trx, id, placement.agent_id, at)
-                                .await?;
-                        }
-                    }
-                }
+            if let MachineTransition::Joined { node_id } = transition
+                && *node_id == id.joined_node_id()
+            {
+                self.open_joined_placements_in(&trx, id, *node_id, at)
+                    .await?;
             }
             if matches!(transition, MachineTransition::Destroyed) {
                 self.close_open_assignments_in(&trx, id, at).await?;
@@ -132,6 +126,23 @@ impl Store {
             Ok(record)
         })
         .await
+    }
+    async fn open_joined_placements_in(
+        &self,
+        trx: &Transaction,
+        machine: MachineId,
+        node: NodeId,
+        at: Timestamp,
+    ) -> Result<()> {
+        let space = self.keys().placement_by_node_space(node);
+        for (_, bytes) in scan_all(trx, space.range()).await? {
+            let placement: PlacementRecord = decode(&bytes)?;
+            if placement.gpu != GpuRequirement::None {
+                self.open_assignment_in(trx, machine, placement.agent_id, at)
+                    .await?;
+            }
+        }
+        Ok(())
     }
     /// Read one record.
     /// # Errors
