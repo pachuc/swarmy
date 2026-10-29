@@ -114,7 +114,7 @@ impl Tofu {
         if let Some(path) = override_bin.filter(|value| !value.is_empty()) {
             let path = PathBuf::from(path);
             if !path.is_file() {
-                return Err(crate::Error::TofuBinMissing(path));
+                return Err(Error::TofuBinMissing(path));
             }
             return Ok(Self::from_binary(path, cache));
         }

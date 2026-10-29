@@ -186,13 +186,11 @@ impl Store {
         applied: u32,
         generation: u64,
         settled: bool,
-    ) -> Result<swarmy_core::ElasticGroupRecord> {
+    ) -> Result<ElasticGroupRecord> {
         self.transaction(|trx| async move {
             self.check_provisioner(&trx, lease).await?;
             let key = self.keys().elastic_group(group);
-            let Some(mut record): Option<swarmy_core::ElasticGroupRecord> =
-                read(&trx, &key).await?
-            else {
+            let Some(mut record): Option<ElasticGroupRecord> = read(&trx, &key).await? else {
                 return Err(DomainError::ElasticGroupMissing {
                     group: group.into(),
                 }

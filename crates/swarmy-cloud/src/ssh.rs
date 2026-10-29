@@ -374,6 +374,9 @@ impl Ssh {
             .await?;
         let mut sources = vec![core.join("swarmy-core"), core.join("libfdb_c.so")];
         if stack {
+            sources.push(core.join("swarmy-provisioner"));
+        }
+        if stack {
             let client = release
                 .ensure(cache, crate::release::Component::Client, target)
                 .await?;
