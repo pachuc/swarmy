@@ -41,8 +41,14 @@ pub fn capacity_wait_notice(requirement: GpuRequirement, max_wait: Duration) -> 
 pub fn capacity_wait_exceeded(requirement: GpuRequirement, max_wait: Duration) -> String {
     let reason = capacity_wait_reason(requirement);
     let secs = max_wait.as_secs();
+    let advice = match requirement {
+        GpuRequirement::None => "Try again later.",
+        GpuRequirement::Shared | GpuRequirement::Dedicated => {
+            "Try again later, or change the agent's GPU requirement."
+        }
+    };
     format!(
-        "The tool call did not run: swarmy was {reason} for {secs} seconds and gave up. Try again later, or change the agent's GPU requirement."
+        "The tool call did not run: swarmy was {reason} for {secs} seconds and gave up. {advice}"
     )
 }
 

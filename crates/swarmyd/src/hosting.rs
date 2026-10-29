@@ -332,6 +332,8 @@ impl Hosting {
         Ok(())
     }
 
+    /// A requirement release stops hosting between calls even if processes run:
+    /// card devices belong to the sandbox created for the old requirement.
     async fn host(&self, agent: AgentId, mut calls: mpsc::Receiver<Call>) -> Result<()> {
         let Some(mut first) = calls.recv().await else {
             return Ok(());

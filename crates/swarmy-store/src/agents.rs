@@ -204,7 +204,8 @@ impl Store {
         .await
     }
 
-    /// Apply overrides and explicit resets in the same transaction.
+    /// Apply overrides and explicit resets in the same transaction. A GPU
+    /// change requests a placed computer release; a memory change still needs eviction.
     /// # Errors
     /// Rejects unknown agents, missing routes, oversized records, and storage failures.
     pub async fn set_agent_with_resets(
