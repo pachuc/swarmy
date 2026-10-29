@@ -452,11 +452,26 @@ impl Reconciler {
             hourly_price: def.hourly_price.clone(),
             billing: BillingGranularity::default(),
         };
-        self.store.create_machine(&machine, self.store.now()).await.map_err(|error| {
-            if matches!(error, StoreError::Domain(swarmy_store::DomainError::MachineNameInUse)) {
-                anyhow!("elastic group {}: machine {} is active in the ledger and missing from OpenTofu state; it may still exist and cost money; check the provider and remove it before the group can grow past {} machines", def.group, machine.name, n - 1)
-            } else { error.into() }
-        })
+        match self.store.create_machine(&machine, self.store.now()).await {
+            Ok(record) => Ok(record),
+            Err(StoreError::Domain(swarmy_store::DomainError::MachineNameInUse)) => {
+                let state = self
+                    .store
+                    .list_machines(Some(&def.group), MachineFilter::Active)
+                    .await?
+                    .into_iter()
+                    .find(|record| record.name == machine.name)
+                    .map_or_else(|| "active".to_owned(), |record| record.state.to_string());
+                bail!(
+                    "elastic group {}: machine {} is {} in the ledger and missing from OpenTofu state; it may still exist and cost money; check the provider and remove it before the group can grow past {} machines",
+                    def.group,
+                    machine.name,
+                    state,
+                    n - 1
+                )
+            }
+            Err(error) => Err(error.into()),
+        }
     }
     async fn sync(
         &self,
