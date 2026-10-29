@@ -79,9 +79,12 @@ mod tests {
             PlacementChangeReason::Eviction,
             PlacementChangeReason::Unstarted,
             PlacementChangeReason::RequirementChange,
-        ].into_iter().enumerate() {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let bytes = encode(&reason).unwrap();
-            assert_eq!(bytes, [1, index as u8]);
+            assert_eq!(bytes, [1, u8::try_from(index).unwrap()]);
             assert_eq!(decode::<PlacementChangeReason>(&bytes).unwrap(), reason);
         }
     }

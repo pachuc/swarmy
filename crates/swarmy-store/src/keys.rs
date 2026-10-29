@@ -757,7 +757,9 @@ impl<'a> Keys<'a> {
         self.root.subspace(&(SCRATCH,))
     }
     pub(crate) fn placement_next_reason(&self, id: AgentId) -> Vec<u8> {
-        self.root.subspace(&(PLACEMENT_NEXT_REASON,)).pack(&(id.as_ulid().to_bytes().as_slice(),))
+        self.root
+            .subspace(&(PLACEMENT_NEXT_REASON,))
+            .pack(&(id.as_ulid().to_bytes().as_slice(),))
     }
 
     pub(crate) fn placement_hosting(&self, id: AgentId) -> Vec<u8> {

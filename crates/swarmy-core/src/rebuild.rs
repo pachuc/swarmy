@@ -49,8 +49,15 @@ mod tests {
             "2026-09-16T10:00:00Z".parse().unwrap(),
             "2026-09-16T10:00:05Z".parse().unwrap(),
             None,
-        ).unwrap();
-        for text in ["GPU requirement changed", "5 seconds before recovery", "Running processes did not survive", "cargo target directory", "/tmp"] {
+        )
+        .unwrap();
+        for text in [
+            "GPU requirement changed",
+            "5 seconds before recovery",
+            "Running processes did not survive",
+            "cargo target directory",
+            "/tmp",
+        ] {
             assert!(message.contains(text));
         }
     }

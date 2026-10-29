@@ -144,7 +144,7 @@ them in [api-breaks.txt](api-breaks.txt).
   [session_images.rs](../crates/swarmy-store/src/session_images.rs),
   [volumes.rs](../crates/swarmy-store/src/volumes.rs)).
 - **Leases, placements, and nodes.** `lease`, `lease_by_expiry`, `node`,
-  `placement`, `placement_epoch`, `placement_by_node`, `placement_hosting`,
+  `placement`, `placement_epoch`, `placement_by_node`, `placement_hosting`, `placement_next_reason`,
   `volume_placement`, and `tool_placement` track ownership and where work
   runs. Node records carry advertised capacity and heartbeats, service
   heartbeats stay advisory, tool routing fences durable dispatch across
@@ -152,7 +152,9 @@ them in [api-breaks.txt](api-breaks.txt).
   state. New placements prefer a node holding the agent's scratch data, but
   after a placement lease expires the previous host is tried last, even if
   it holds that scratch. Capacity admission remains transactional, and a
-  placement epoch fences stale node operations
+  placement epoch fences stale node operations. A GPU requirement change marks
+  the hosting row for release at the next node renewal; the next placement
+  records `RequirementChange`
   ([placement.rs](../crates/swarmy-worker/src/placement.rs),
   [leases.rs](../crates/swarmy-store/src/leases.rs),
   [placements.rs](../crates/swarmy-store/src/placements.rs),
@@ -162,7 +164,7 @@ them in [api-breaks.txt](api-breaks.txt).
   [placed_tools.rs](../crates/swarmy-store/src/placed_tools.rs)).
 - **Inference, routes, and credentials.** `route`, `credential_entry`,
   `credential_entry_lease`, `inference_request`, `inference_claim`,
-  `inference_result`, `inference_wait`, and `inference_breaker` connect
+  `inference_result`, `inference_breaker`, and the shared `session_wait` connect
   named failover chains over auth entries, fenced refresh of encrypted
   credential records, provider availability advertisements, and retryable
   waits
@@ -170,7 +172,8 @@ them in [api-breaks.txt](api-breaks.txt).
   [credentials.rs](../crates/swarmy-store/src/credentials.rs),
   [selection.rs](../crates/swarmy-store/src/selection.rs),
   [inference.rs](../crates/swarmy-store/src/inference.rs),
-  [inference_wait.rs](../crates/swarmy-store/src/inference_wait.rs)).
+  [breakers.rs](../crates/swarmy-store/src/breakers.rs),
+  [session_wait.rs](../crates/swarmy-store/src/session_wait.rs)).
 - **Metering.** `usage_record`, `usage_record_by_time`, `metering_hour`,
   `turn_metrics`, `turn_tool`, and `turn_inference` hold per-request usage,
   hourly aggregates and step timings; per-completion attribution and quota
@@ -258,14 +261,22 @@ agent-level proofs.
   the system is durable to. The protocol client returns it at once, the
   gateway records it and opens that auth entry's circuit breaker until the
   provider's Retry-After or a backoff, and the worker fails over along the
-  route or parks the session in `inference_wait` with a wake time and releases
+  route or parks the session in `session_wait` with a wake time and releases
   its lease. While the breaker is open neither the scheduler nor the gateway
   sends work to the entry, so hundreds of waiting sessions cost the provider
   nothing; one claimed probe tests it afterwards. Remaining-quota headers
   feed the quota views as observed values
-  ([inference_wait.rs](../crates/swarmy-store/src/inference_wait.rs),
+  ([session_wait.rs](../crates/swarmy-store/src/session_wait.rs),
   [attempt.rs](../crates/swarmy-gateway/src/attempt.rs),
   [saturation scenario](../crates/swarmy-chaos/src/saturation.rs)).
+
+- **No room is a wait, not a retry.** When placement finds no node that can
+  host a computer, the worker parks the session in `session_wait` with a
+  capacity kind, releases its lease and acknowledges the work. It tries again
+  every 30 seconds, or at once when capacity waits are woken; the maximum
+  session wait turns pending calls into failed calls
+  ([session_wait.rs](../crates/swarmy-store/src/session_wait.rs),
+  [tools.rs](../crates/swarmy-worker/src/worker/tools.rs)).
 
 - **Fence every owner.** Session leases, inference claims, placement epochs
   and volume leases are checked in the transaction that changes durable state;

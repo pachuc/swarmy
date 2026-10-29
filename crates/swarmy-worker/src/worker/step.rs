@@ -1,4 +1,5 @@
 use super::inference::warn_on_route_fallback;
+use super::tools::DispatchOutcome;
 use super::{
     Action, Arc, Bus, Context, Event, FailoverAction, HeldLease, KillPoint, LiveFeed,
     MAX_SCAN_LIMIT, MessageId, RequestId, Result, SNAPSHOT_CACHE_SIZE, SandboxArguments, SessionId,
@@ -234,22 +235,15 @@ impl Worker {
                             .iter()
                             .all(|call| self.can_dispatch_tool(call, display))
                     {
-                        return self.dispatch_calls(session, lease, &calls, turn).await;
+                        match self
+                            .dispatch_calls(session, lease, events, &calls, turn)
+                            .await?
+                        {
+                            DispatchOutcome::Sent | DispatchOutcome::Parked => return Ok(()),
+                            DispatchOutcome::Failed => continue,
+                        }
                     }
-                    let batch: Vec<_> = calls
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, call)| Event::ToolCallRequested {
-                            seq: 0,
-                            request_id: RequestId::for_step(
-                                id,
-                                session.head_seq
-                                    + 1
-                                    + u64::try_from(index).expect("batch fits u64"),
-                            ),
-                            call,
-                        })
-                        .collect();
+                    let batch = tool_requests(session, &calls);
                     self.append(&mut *session, lease, &mut *events, &batch)
                         .await?;
                     if self
@@ -392,7 +386,7 @@ impl Worker {
         )
         .await?;
         session.interrupt_requested = true;
-        self.store.clear_inference_wait(session.session_id).await?;
+        self.store.clear_session_wait(session.session_id).await?;
         self.finish(session, lease, snapshot, events, turn).await?;
         Ok(true)
     }
@@ -422,6 +416,7 @@ impl Worker {
             self.store.clear_inference_wait(id).await?;
         }
         if let Some(wait) = self.store.session_wait(id).await?
+            && wait.inference().is_some()
             && wait
                 .since
                 .checked_add(self.config.max_session_wait)
@@ -446,15 +441,15 @@ impl Worker {
                 request_id,
                 error: format!(
                     "inference wait exceeded: {} ({} attempts)",
-                    wait.reasons.join("; "),
-                    wait.attempts
+                    wait.reasons().join("; "),
+                    wait.inference().map_or(0, |h| h.attempts)
                 ),
                 retryable: false,
                 retry_at: None,
                 failure_kind: swarmy_core::FailureKind::WaitExceeded,
             };
             self.append(session, lease, events, &[terminal]).await?;
-            self.store.clear_inference_wait(id).await?;
+            self.store.clear_session_wait(id).await?;
             self.finish(session, lease, snapshot, events, turn).await?;
             return Ok(true);
         }
@@ -475,7 +470,8 @@ impl Worker {
             let wait = self.store.session_wait(id).await?;
             if wait
                 .as_ref()
-                .is_none_or(|wait| wait.last_failure_seq != *seq)
+                .and_then(swarmy_store::SessionWait::inference)
+                .is_none_or(|h| h.last_failure_seq != *seq)
             {
                 return self
                     .failover_or_park(session, lease, *seq, (error, *failure_kind), *retry_at, now)
@@ -892,4 +888,21 @@ pub(super) fn pending_tools(events: &[Event]) -> Vec<PendingCall> {
 pub(super) struct PendingCall {
     pub(super) request_id: RequestId,
     pub(super) call: ToolCallRecord,
+}
+
+/// Construct the request events for a direct dispatch or a failed capacity wait.
+pub(super) fn tool_requests(session: &SessionRecord, calls: &[ToolCallRecord]) -> Vec<Event> {
+    calls
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, call)| Event::ToolCallRequested {
+            seq: 0,
+            request_id: RequestId::for_step(
+                session.session_id,
+                session.head_seq + 1 + u64::try_from(index).expect("batch fits u64"),
+            ),
+            call,
+        })
+        .collect()
 }

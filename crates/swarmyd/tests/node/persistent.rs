@@ -225,6 +225,7 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
     let renewed_epoch = check_durable_background(store, &bus, &node, agent).await;
     let clean = check_dirty_without_publish(store, &bus, &node, agent, base).await;
     check_eviction_rehydrate(store, &bus, &node, agent, renewed_epoch, clean).await;
+    check_requirement_release(store, &bus, &node).await;
     crash(&mut node, store, &bus, agent).await;
     takeover(&mut node, store, &bus, agent, true).await;
     takeover(
@@ -236,6 +237,32 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
     )
     .await;
     graceful(&mut node, store, &bus, base).await;
+}
+
+/// A requirement release checkpoints and stops hosting even with processes running.
+async fn check_requirement_release(store: &Store, bus: &Bus, node: &Node) {
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    let job = dispatch(store, bus, node.id, agent, "echo durable >/persistent").await;
+    completed(store, &job).await;
+    let started = invoke(
+        node,
+        store,
+        bus,
+        agent,
+        "process_start",
+        serde_json::json!({"command": "exec sleep 300"}),
+    )
+    .await;
+    assert!(started["process_id"].is_string());
+    assert!(store.request_placement_release(agent).await.unwrap());
+    evicted(store, agent).await;
+    let job = dispatch(store, bus, node.id, agent, "cat /persistent").await;
+    completed(store, &job).await;
+    let placement = store.get_by_agent(agent).await.unwrap().unwrap();
+    assert_eq!(
+        placement.last_change_reason,
+        swarmy_core::PlacementChangeReason::RequirementChange
+    );
 }
 
 /// Both lease-mismatch orders must fail closed before any sandbox starts.

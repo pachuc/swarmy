@@ -500,7 +500,7 @@ pub(crate) async fn populate_session_detail(
     {
         result.waiting = Some(api::WaitingReason {
             wake_at: Some(wait.wake_at.to_string()),
-            reasons: wait.reasons,
+            reasons: wait.reasons(),
         });
     }
     let usage = state

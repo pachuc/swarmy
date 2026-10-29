@@ -50,9 +50,13 @@ impl Store {
                     let request_id = if wait.inference().map_or(0, |h| h.last_failure_seq) == 0 {
                         RequestId::for_step(id, crate::seq_after(session.head_seq, 1)?)
                     } else {
-                        self.request_from_event(&trx, id, wait.inference().map_or(0, |h| h.last_failure_seq))
-                            .await?
-                            .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?
+                        self.request_from_event(
+                            &trx,
+                            id,
+                            wait.inference().map_or(0, |h| h.last_failure_seq),
+                        )
+                        .await?
+                        .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?
                     };
                     self.append_interrupted(&trx, session, request_id, self.now())
                         .await?;
@@ -136,9 +140,7 @@ impl Store {
     }
 
     async fn clear_wait_in(&self, trx: &Transaction, id: SessionId) -> Result<()> {
-        if let Some(wait) =
-            read::<crate::SessionWait>(trx, &self.keys().session_wait(id)).await?
-        {
+        if let Some(wait) = read::<crate::SessionWait>(trx, &self.keys().session_wait(id)).await? {
             self.clear_wait(trx, id, &wait);
         }
         Ok(())

@@ -3,7 +3,7 @@ use jiff::Timestamp;
 use serde::Serialize;
 use swarmy_core::{Event, InflightRecord, Lease, RequestId, SessionId, SessionState, SnapshotRef};
 
-use crate::{SessionWait, Result, Store, StoreError, read, write};
+use crate::{Result, SessionWait, Store, StoreError, read, write};
 
 /// Route position to persist with the inference handoff. The submitter
 /// resolved the route against open breakers before building the request, so

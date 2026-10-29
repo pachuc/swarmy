@@ -19,21 +19,21 @@ pub(crate) use session::{
     SESSION_CHUNK_MARKER, SESSION_MAX_BYTES, SESSION_RECORD_VERSION, StoredSession,
 };
 pub mod blob;
+mod breakers;
 mod computers;
 pub mod credentials;
 mod inference;
-mod breakers;
-mod session_wait;
 mod interrupt;
 mod metrics;
 mod metrics_codec;
 mod metrics_model;
 #[cfg(test)]
 mod metrics_tests;
+mod session_wait;
 pub use interrupt::InterruptResult;
 pub use metrics::{
     AgentMetrics, ComputerMetric, InferenceMetric, LatencyPercentiles, MetricPatch, StageTiming,
-    ToolMetric, TurnMetrics, WaitKind, completion_patches, dispatch_patches,
+    ToolMetric, TurnMetrics, WaitKind as MetricWaitKind, completion_patches, dispatch_patches,
 };
 mod selection;
 mod services;
@@ -77,11 +77,14 @@ pub use turns::{SubmitInferenceOptions, SubmitRouteStep};
 mod volumes;
 pub use volumes::PutImageOptions;
 
+pub use breakers::{BreakerCandidate, CredentialKey};
+pub use runnable::{RUNNABLE_PARTITIONS, runnable_partition};
 #[cfg(any(test, feature = "test-support"))]
 pub use session_wait::LeaseAudit;
-pub use breakers::{BreakerCandidate, CredentialKey};
-pub use session_wait::{CAPACITY_WAIT_RETRY, CapacityPark, InferenceFailureWait, InferenceHistory, SessionWait, WaitKind as SessionWaitKind};
-pub use runnable::{RUNNABLE_PARTITIONS, runnable_partition};
+pub use session_wait::{
+    CAPACITY_WAIT_RETRY, CapacityPark, InferenceFailureWait, InferenceHistory, SessionWait,
+    WaitKind,
+};
 
 use std::{
     future::Future,

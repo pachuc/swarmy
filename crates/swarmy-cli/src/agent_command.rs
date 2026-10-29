@@ -25,12 +25,12 @@ pub(crate) struct InferenceArgs {
     /// Sandbox memory limit in MiB
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     pub memory: Option<u64>,
-    /// GPU requirement for placement
+    /// GPU requirement for placement; changing it restarts a placed computer on a node that satisfies it
     #[arg(long, value_enum)]
     pub gpu: Option<GpuArg>,
 }
 
-/// GPU requirement for placement, parsed once by clap instead of matched as a string.
+/// GPU requirement for placement; changing it restarts a placed computer on a node that satisfies it, parsed once by clap instead of matched as a string.
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub(crate) enum GpuArg {
     None,

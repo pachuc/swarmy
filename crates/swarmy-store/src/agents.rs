@@ -240,7 +240,9 @@ impl Store {
                     .is_some()
             {
                 if agent.requirements.memory_mib != previous_requirements.memory_mib {
-                    return Err(StoreError::Domain(crate::DomainError::ActiveSandboxRequirements));
+                    return Err(StoreError::Domain(
+                        crate::DomainError::ActiveSandboxRequirements,
+                    ));
                 }
                 self.request_release_in(&trx, id).await?;
             }

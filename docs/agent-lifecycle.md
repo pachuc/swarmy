@@ -46,7 +46,7 @@ it deletes the computer of an ephemeral session and sets the session to
 Completed. A named main session cannot be closed by this API.
 
 `swarmy session interrupt SESSION_ID` ends the current turn without closing the
-session. A parked inference wait ends immediately with a non-retryable
+session. A parked wait (inference or capacity) ends immediately with a non-retryable
 `InferenceFailed` event. A running turn ends at its next worker step boundary;
 an active provider request may have to return first. `session show` displays a
 pending interruption, including `interrupt_requested` in JSON output. Idle and
@@ -71,3 +71,22 @@ with `agent create` or `agent set`; `agent set --provider default`,
 preserve the agent's identity, computer, and sessions and apply to the next
 inference request. Ephemeral sessions instead persist an `inference` selection
 when created. See [choosing a model](providers.md#choosing-and-inspecting-models).
+
+## Changing the GPU requirement
+
+Changing a placed agent's GPU requirement requests a release at the hosting
+node's next lease renewal. The node finishes its current call, takes a final
+disk checkpoint, and releases the placement even if processes remain running.
+The next call places the computer on a node that satisfies the new requirement.
+Running processes and host-local scratch, including the cargo target directory
+and `/tmp`, are lost; the next build starts cold. Every session gets a notice
+explaining that the GPU requirement changed and describing the restore point.
+A memory requirement still cannot change until the placement is evicted.
+
+## Waiting for a node
+
+When no eligible node has room, a tool dispatch parks the session rather than
+failing the step. The conversation receives one system notice per capacity
+wait, and `session show` prints "Waiting until ...". The scheduler retries
+every 30 seconds. After `[scheduler] max_session_wait_secs` (default 3600),
+the pending calls fail without running, and the turn continues.

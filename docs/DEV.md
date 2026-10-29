@@ -261,7 +261,7 @@ plain-PUT fallback is safe. Additional settings are
 `[worker] lease_ms`, `[worker] recovery_interval_ms`, `[bus] ack_wait_ms`,
 `[bus] max_deliver`, `[gateway] concurrency`, `[node] heartbeat_interval_ms`,
 `[sandbox] idle_secs`, `[gc] grace_secs`, `[gc] interval_secs`,
-`[inference] max_wait_secs`, `[inference] max_backoff_secs`,
+`[scheduler] max_session_wait_secs`, `[inference] max_backoff_secs`,
 `[inference] gateway_wait_secs`, `[volume_snapshots] period_secs`, and
 `[context] system_prompt`. The optional `[context] summarize_at` and
 `[context] context_window` override the compaction threshold and the known

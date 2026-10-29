@@ -356,18 +356,10 @@ async fn breaker_grants_one_probe_and_wait_wakes_without_a_lease() {
             .is_empty()
     );
     assert_eq!(
-        f.store
-            .scan_due_waits(timestamp(105))
-            .await
-            .unwrap(),
+        f.store.scan_due_waits(timestamp(105)).await.unwrap(),
         vec![id]
     );
-    assert!(
-        f.store
-            .wake_wait(id, timestamp(105))
-            .await
-            .unwrap()
-    );
+    assert!(f.store.wake_wait(id, timestamp(105)).await.unwrap());
     assert_eq!(
         f.store.fetch_session(id).await.unwrap().unwrap().state,
         SessionState::Runnable
@@ -418,8 +410,11 @@ async fn leased_park_rejects_stale_leases_and_dedupes_the_same_sequence() {
     assert_eq!(audit[0].state, SessionState::Sleeping);
     assert!(audit[0].waiting && !audit[0].leased);
     let wait = test.store.session_wait(id).await.unwrap().unwrap();
-    assert_eq!(wait.attempts, 1);
-    assert_eq!(wait.reasons, ["openai/primary: quota reached"]);
+    assert_eq!(wait.inference().unwrap().attempts, 1);
+    assert_eq!(
+        wait.inference().unwrap().reasons,
+        ["openai/primary: quota reached"]
+    );
     // A stale lease cannot park through the leased path.
     let stale = swarmy_core::Lease {
         owner: owner(),
@@ -439,12 +434,7 @@ async fn leased_park_rejects_stale_leases_and_dedupes_the_same_sequence() {
     ));
     // Waking and reclaiming, then re-parking the same failure sequence,
     // records no new attempt: the wait already covers that failure.
-    assert!(
-        test.store
-            .wake_wait(id, timestamp(160))
-            .await
-            .unwrap()
-    );
+    assert!(test.store.wake_wait(id, timestamp(160)).await.unwrap());
     let second = test
         .store
         .claim_lease(id, owner(), timestamp(10_000))
@@ -463,8 +453,11 @@ async fn leased_park_rejects_stale_leases_and_dedupes_the_same_sequence() {
             .unwrap()
     );
     let wait = test.store.session_wait(id).await.unwrap().unwrap();
-    assert_eq!(wait.attempts, 1);
-    assert_eq!(wait.reasons, ["openai/primary: quota reached"]);
+    assert_eq!(wait.inference().unwrap().attempts, 1);
+    assert_eq!(
+        wait.inference().unwrap().reasons,
+        ["openai/primary: quota reached"]
+    );
 }
 
 #[tokio::test]
@@ -492,12 +485,7 @@ async fn leased_park_extends_the_wait_on_a_new_sequence() {
     );
     // The next failure sequence extends the same wait with its own attempt
     // and reason instead of replacing it.
-    assert!(
-        test.store
-            .wake_wait(id, timestamp(160))
-            .await
-            .unwrap()
-    );
+    assert!(test.store.wake_wait(id, timestamp(160)).await.unwrap());
     let second = test
         .store
         .claim_lease(id, owner(), timestamp(10_000))
@@ -516,9 +504,9 @@ async fn leased_park_extends_the_wait_on_a_new_sequence() {
             .unwrap()
     );
     let wait = test.store.session_wait(id).await.unwrap().unwrap();
-    assert_eq!(wait.attempts, 2);
+    assert_eq!(wait.inference().unwrap().attempts, 2);
     assert_eq!(
-        wait.reasons,
+        wait.inference().unwrap().reasons,
         [
             "openai/primary: quota reached",
             "openai/backup: quota reached"
@@ -2910,3 +2898,333 @@ async fn session_plan_replacement_is_atomic_fenced_and_validated() {
 
 #[path = "store/timers.rs"]
 mod timers;
+
+#[tokio::test]
+async fn capacity_park_releases_the_lease_and_notices_once() {
+    use swarmy_core::GpuRequirement;
+    use swarmy_store::{CAPACITY_WAIT_RETRY, CapacityPark, WaitKind};
+    let Some(f) = TestStore::memory() else { return };
+    let id = f.create().await;
+    let lease = f
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    let parked = f
+        .store
+        .park_for_capacity(
+            id,
+            &lease,
+            GpuRequirement::Shared,
+            timestamp(100),
+            std::time::Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let CapacityPark::Parked {
+        notice: Some(event),
+    } = parked
+    else {
+        panic!("first park must notice")
+    };
+    let Event::MessageAppended { message, .. } = *event else {
+        panic!("notice is a system message")
+    };
+    assert!(format!("{message:?}").contains("waiting for GPU capacity"));
+    let audit = f.store.lease_audit(&[id]).await.unwrap();
+    assert_eq!(audit[0].state, SessionState::Sleeping);
+    assert!(audit[0].waiting && !audit[0].leased);
+    let wait = f.store.session_wait(id).await.unwrap().unwrap();
+    assert!(matches!(
+        wait.kind,
+        WaitKind::Capacity {
+            requirement: GpuRequirement::Shared
+        }
+    ));
+    assert_eq!((wait.since, wait.wake_at), (timestamp(100), timestamp(130)));
+    assert!(
+        f.store
+            .scan_due_waits(timestamp(129))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        f.store.scan_due_waits(timestamp(130)).await.unwrap(),
+        vec![id]
+    );
+    assert!(f.store.wake_wait(id, timestamp(130)).await.unwrap());
+    let lease = f
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.store
+            .park_for_capacity(
+                id,
+                &lease,
+                GpuRequirement::Shared,
+                timestamp(140),
+                CAPACITY_WAIT_RETRY * 120
+            )
+            .await
+            .unwrap(),
+        CapacityPark::Parked { notice: None }
+    ));
+    let wait = f.store.session_wait(id).await.unwrap().unwrap();
+    assert_eq!((wait.since, wait.wake_at), (timestamp(100), timestamp(170)));
+    assert_eq!(
+        f.store
+            .read_events(id, 0, 20)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|e| matches!(
+                e,
+                Event::MessageAppended {
+                    message: Message {
+                        role: MessageRole::System,
+                        ..
+                    },
+                    ..
+                }
+            ))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn capacity_wait_expires_at_the_max_and_keeps_the_lease() {
+    use swarmy_core::GpuRequirement;
+    use swarmy_store::CapacityPark;
+    let Some(f) = TestStore::memory() else { return };
+    let id = f.create().await;
+    for (at, wake) in [(100, 130), (150, 160)] {
+        let lease = f
+            .store
+            .claim_lease(id, owner(), timestamp(10_000))
+            .await
+            .unwrap();
+        assert!(matches!(
+            f.store
+                .park_for_capacity(
+                    id,
+                    &lease,
+                    GpuRequirement::None,
+                    timestamp(at),
+                    std::time::Duration::from_secs(60)
+                )
+                .await
+                .unwrap(),
+            CapacityPark::Parked { .. }
+        ));
+        assert_eq!(
+            f.store.session_wait(id).await.unwrap().unwrap().wake_at,
+            timestamp(wake)
+        );
+        assert!(f.store.wake_wait(id, timestamp(wake)).await.unwrap());
+    }
+    let lease = f
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.store
+            .park_for_capacity(
+                id,
+                &lease,
+                GpuRequirement::None,
+                timestamp(160),
+                std::time::Duration::from_secs(60)
+            )
+            .await
+            .unwrap(),
+        CapacityPark::Expired
+    ));
+    let audit = f.store.lease_audit(&[id]).await.unwrap();
+    assert_eq!(audit[0].state, SessionState::Leased);
+    assert!(audit[0].leased && !audit[0].waiting);
+    assert!(
+        f.store
+            .scan_due_waits(timestamp(1000))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn inference_clear_keeps_a_capacity_wait() {
+    use swarmy_core::GpuRequirement;
+    let Some(f) = TestStore::memory() else { return };
+    let id = f.create().await;
+    let lease = f
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    f.store
+        .park_for_capacity(
+            id,
+            &lease,
+            GpuRequirement::None,
+            timestamp(100),
+            std::time::Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    assert!(f.store.wake_wait(id, timestamp(130)).await.unwrap());
+    let _lease = f
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    f.store.clear_inference_wait(id).await.unwrap();
+    assert!(
+        f.store
+            .session_wait(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .capacity()
+            .is_some()
+    );
+    f.store.clear_session_wait(id).await.unwrap();
+    assert!(f.store.session_wait(id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn breaker_does_not_park_a_session_woken_from_capacity() {
+    use swarmy_core::GpuRequirement;
+    let Some(f) = TestStore::memory() else { return };
+    let id = f.create().await;
+    let lease = f
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    f.store
+        .park_for_capacity(
+            id,
+            &lease,
+            GpuRequirement::None,
+            timestamp(100),
+            std::time::Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    assert!(f.store.wake_wait(id, timestamp(130)).await.unwrap());
+    assert!(
+        !f.store
+            .park_runnable_for_breaker(
+                id,
+                "open",
+                timestamp(200),
+                timestamp(131),
+                std::time::Duration::from_secs(3600)
+            )
+            .await
+            .unwrap()
+    );
+    assert!(
+        f.store
+            .session_wait(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .capacity()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn wake_capacity_waits_wakes_only_capacity_waits() {
+    use swarmy_core::GpuRequirement;
+    let Some(f) = TestStore::memory() else { return };
+    let a = f.create().await;
+    let b = f.create().await;
+    let lease = f
+        .store
+        .claim_lease(a, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    f.store
+        .park_for_capacity(
+            a,
+            &lease,
+            GpuRequirement::None,
+            timestamp(100),
+            std::time::Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    assert!(
+        f.store
+            .park_runnable_for_breaker(
+                b,
+                "open",
+                timestamp(120),
+                timestamp(100),
+                std::time::Duration::from_secs(3600)
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        f.store.wake_capacity_waits(timestamp(100)).await.unwrap(),
+        vec![a]
+    );
+    assert_eq!(
+        f.store.fetch_session(a).await.unwrap().unwrap().state,
+        SessionState::Runnable
+    );
+    assert_eq!(
+        f.store.fetch_session(b).await.unwrap().unwrap().state,
+        SessionState::Sleeping
+    );
+    assert_eq!(
+        f.store.scan_due_waits(timestamp(120)).await.unwrap(),
+        vec![b]
+    );
+}
+
+#[tokio::test]
+async fn interrupt_finishes_a_capacity_wait() {
+    use swarmy_core::GpuRequirement;
+    let Some(f) = TestStore::memory() else { return };
+    let id = f.create().await;
+    let lease = f
+        .store
+        .claim_lease(id, owner(), timestamp(10_000))
+        .await
+        .unwrap();
+    f.store
+        .park_for_capacity(
+            id,
+            &lease,
+            GpuRequirement::None,
+            timestamp(100),
+            std::time::Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        f.store.interrupt_session(id).await.unwrap(),
+        InterruptResult::Finished
+    );
+    assert!(f.store.session_wait(id).await.unwrap().is_none());
+    assert!(
+        f.store
+            .scan_due_waits(timestamp(1000))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        f.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Idle
+    );
+}

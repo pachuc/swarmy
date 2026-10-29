@@ -1,53 +1,93 @@
+use crate::{Result, Store, StoreError, read, scan, write};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use swarmy_core::{GpuRequirement, SessionId, SessionState, Event, Lease, Message, MessageId, MessageRole, Part};
-use crate::{Result, Store, StoreError, read, scan, write};
+use swarmy_core::{
+    Event, GpuRequirement, Lease, Message, MessageId, MessageRole, Part, SessionId, SessionState,
+};
 
 /// How long a session waits before trying again to find a node.
 pub const CAPACITY_WAIT_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionWait { pub since: Timestamp, pub wake_at: Timestamp, pub kind: WaitKind }
+pub struct SessionWait {
+    pub since: Timestamp,
+    pub wake_at: Timestamp,
+    pub kind: WaitKind,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WaitKind { Inference(InferenceHistory), Capacity { requirement: GpuRequirement } }
+pub enum WaitKind {
+    Inference(InferenceHistory),
+    Capacity { requirement: GpuRequirement },
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InferenceHistory { pub last_failure_seq: u64, pub reasons: Vec<String>, pub attempts: u32 }
+pub struct InferenceHistory {
+    pub last_failure_seq: u64,
+    pub reasons: Vec<String>,
+    pub attempts: u32,
+}
 #[derive(Clone, Debug)]
-pub enum CapacityPark { Parked { notice: Option<Event> }, Expired }
+pub enum CapacityPark {
+    Parked { notice: Option<Box<Event>> },
+    Expired,
+}
 impl InferenceHistory {
     pub(crate) fn record_reason(&mut self, reason: &str) {
         let summary: String = reason.chars().take(256).collect();
-        if !self.reasons.contains(&summary) && self.reasons.len() < 32 { self.reasons.push(summary); }
+        if !self.reasons.contains(&summary) && self.reasons.len() < 32 {
+            self.reasons.push(summary);
+        }
     }
 }
 impl SessionWait {
     #[must_use]
     pub fn inference_new(since: Timestamp, wake_at: Timestamp) -> Self {
-        Self { since, wake_at, kind: WaitKind::Inference(InferenceHistory::default()) }
+        Self {
+            since,
+            wake_at,
+            kind: WaitKind::Inference(InferenceHistory::default()),
+        }
     }
     #[must_use]
     pub fn inference(&self) -> Option<&InferenceHistory> {
-        if let WaitKind::Inference(history) = &self.kind { Some(history) } else { None }
+        if let WaitKind::Inference(history) = &self.kind {
+            Some(history)
+        } else {
+            None
+        }
     }
     pub(crate) fn inference_mut(&mut self) -> &mut InferenceHistory {
-        if !matches!(self.kind, WaitKind::Inference(_)) { self.kind = WaitKind::Inference(InferenceHistory::default()); }
-        let WaitKind::Inference(history) = &mut self.kind else { unreachable!("kind was replaced above") };
+        if !matches!(self.kind, WaitKind::Inference(_)) {
+            self.kind = WaitKind::Inference(InferenceHistory::default());
+        }
+        let WaitKind::Inference(history) = &mut self.kind else {
+            unreachable!("kind was replaced above")
+        };
         history
     }
     #[must_use]
     pub fn capacity(&self) -> Option<GpuRequirement> {
-        if let WaitKind::Capacity { requirement } = self.kind { Some(requirement) } else { None }
+        if let WaitKind::Capacity { requirement } = self.kind {
+            Some(requirement)
+        } else {
+            None
+        }
     }
     #[must_use]
     pub fn reasons(&self) -> Vec<String> {
         match &self.kind {
             WaitKind::Inference(history) => history.reasons.clone(),
-            WaitKind::Capacity { requirement } => vec![swarmy_core::capacity_wait_reason(*requirement)],
+            WaitKind::Capacity { requirement } => {
+                vec![swarmy_core::capacity_wait_reason(*requirement)]
+            }
         }
     }
 }
 /// One provider failure being parked by the worker.
-pub struct InferenceFailureWait<'a> { pub seq: u64, pub reason: &'a str, pub wake_at: Timestamp }
+pub struct InferenceFailureWait<'a> {
+    pub seq: u64,
+    pub reason: &'a str,
+    pub wake_at: Timestamp,
+}
 /// One session's parking and lease rows read together, so a checker sees no
 /// torn view of a park. Test-only, also available with `test-support`.
 #[cfg(any(test, feature = "test-support"))]
@@ -62,7 +102,10 @@ pub struct LeaseAudit {
     pub leased: bool,
 }
 
-enum WakeRule { Due, Capacity }
+enum WakeRule {
+    Due,
+    Capacity,
+}
 
 impl Store {
     /// Read each session's state, inference wait, and lease in one transaction.
@@ -130,9 +173,10 @@ impl Store {
             }
             let key = self.keys().session_wait(id);
             let existing = read::<SessionWait>(&trx, &key).await?;
-            if existing.as_ref().is_some_and(|w| w.capacity().is_some()) { return Ok(false); }
-            let mut wait = existing
-                .unwrap_or_else(|| SessionWait::inference_new(now, until));
+            if existing.as_ref().is_some_and(|w| w.capacity().is_some()) {
+                return Ok(false);
+            }
+            let mut wait = existing.unwrap_or_else(|| SessionWait::inference_new(now, until));
             let limit = wait
                 .since
                 .checked_add(max_wait)
@@ -222,7 +266,12 @@ impl Store {
     pub async fn scan_due_waits(&self, now: Timestamp) -> Result<Vec<SessionId>> {
         let space = self.keys().session_wait_due_space_root();
         let end = self.keys().session_wait_due_space(now).range().1;
-        Ok(self.due_page(space.range().0, end).await?.into_iter().map(|(_, id)| id).collect())
+        Ok(self
+            .due_page(space.range().0, end)
+            .await?
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect())
     }
 
     async fn due_page(&self, begin: Vec<u8>, end: Vec<u8>) -> Result<Vec<(Vec<u8>, SessionId)>> {
@@ -232,35 +281,51 @@ impl Store {
             let begin = begin.clone();
             let end = end.clone();
             async move {
-                scan(&trx, (begin, end), crate::MAX_SCAN_LIMIT).await?
-                    .into_iter().map(|(key, _)| {
+                scan(&trx, (begin, end), crate::MAX_SCAN_LIMIT)
+                    .await?
+                    .into_iter()
+                    .map(|(key, _)| {
                         let (_, id): ((i64, i32), Vec<u8>) = space.unpack(&key)?;
                         Ok((key, crate::keys::session_id(&id)?))
-                    }).collect()
+                    })
+                    .collect()
             }
-        }).await
+        })
+        .await
     }
 
     /// Wake a due sleeping session and remove its due index entry.
     /// # Errors
     /// Returns storage failures.
     pub async fn wake_wait(&self, id: SessionId, now: Timestamp) -> Result<bool> {
-        self.transaction(|trx| async move { self.wake_in(&trx, id, now, WakeRule::Due).await }).await
+        self.transaction(|trx| async move { self.wake_in(&trx, id, now, WakeRule::Due).await })
+            .await
     }
 
-    async fn wake_in(&self, trx: &foundationdb::Transaction, id: SessionId, now: Timestamp, rule: WakeRule) -> Result<bool> {
+    async fn wake_in(
+        &self,
+        trx: &foundationdb::Transaction,
+        id: SessionId,
+        now: Timestamp,
+        rule: WakeRule,
+    ) -> Result<bool> {
         let key = self.keys().session_wait(id);
-        let Some(mut wait) = read::<SessionWait>(trx, &key).await? else { return Ok(false); };
+        let Some(mut wait) = read::<SessionWait>(trx, &key).await? else {
+            return Ok(false);
+        };
         if match rule {
             WakeRule::Due => wait.wake_at > now,
             WakeRule::Capacity => wait.capacity().is_none(),
-        } { return Ok(false); }
+        } {
+            return Ok(false);
+        }
         self.clear_wait(trx, id, &wait);
         wait.wake_at = now;
         write(trx, &key, &wait)?;
         let session = self.session(trx, id).await?;
         if session.state == SessionState::Sleeping {
-            self.transition(trx, session, SessionState::Runnable, now).await?;
+            self.transition(trx, session, SessionState::Runnable, now)
+                .await?;
             return Ok(true);
         }
         Ok(false)
@@ -274,19 +339,36 @@ impl Store {
     pub async fn wake_capacity_waits(&self, now: Timestamp) -> Result<Vec<SessionId>> {
         let space = self.keys().session_wait_due_space_root();
         let mut begin = space.range().0;
-        let end = self.keys().session_wait_due_space(now.checked_add(CAPACITY_WAIT_RETRY)
-            .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?).range().1;
+        let end = self
+            .keys()
+            .session_wait_due_space(
+                now.checked_add(CAPACITY_WAIT_RETRY)
+                    .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?,
+            )
+            .range()
+            .1;
         let mut woken = Vec::new();
         loop {
             let page = self.due_page(begin.clone(), end.clone()).await?;
-            if page.is_empty() { break; }
+            if page.is_empty() {
+                break;
+            }
             for (_, id) in &page {
-                if self.transaction(|trx| async move { self.wake_in(&trx, *id, now, WakeRule::Capacity).await }).await? {
+                if self
+                    .transaction(|trx| async move {
+                        self.wake_in(&trx, *id, now, WakeRule::Capacity).await
+                    })
+                    .await?
+                {
                     woken.push(*id);
                 }
             }
-            begin = crate::next_cursor(&page.last().expect("nonempty page").0);
-            if page.len() < crate::MAX_SCAN_LIMIT { break; }
+            if let Some((key, _)) = page.last() {
+                begin = crate::next_cursor(key);
+            }
+            if page.len() < crate::MAX_SCAN_LIMIT {
+                break;
+            }
         }
         Ok(woken)
     }
@@ -294,21 +376,43 @@ impl Store {
     /// Park a leased session whose tool dispatch found no eligible node.
     /// # Errors
     /// Rejects stale leases and storage failures.
-    pub async fn park_for_capacity(&self, id: SessionId, lease: &Lease, requirement: GpuRequirement,
-        now: Timestamp, max_wait: std::time::Duration) -> Result<CapacityPark> {
+    pub async fn park_for_capacity(
+        &self,
+        id: SessionId,
+        lease: &Lease,
+        requirement: GpuRequirement,
+        now: Timestamp,
+        max_wait: std::time::Duration,
+    ) -> Result<CapacityPark> {
         self.transaction(|trx| async move {
             self.check_worker_lease(&trx, id, lease, now).await?;
             let previous = read::<SessionWait>(&trx, &self.keys().session_wait(id)).await?;
-            let since = previous.as_ref().filter(|w| w.capacity().is_some()).map_or(now, |w| w.since);
-            let limit = since.checked_add(max_wait).map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+            let since = previous
+                .as_ref()
+                .filter(|w| w.capacity().is_some())
+                .map_or(now, |w| w.since);
+            let limit = since
+                .checked_add(max_wait)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
             if now >= limit {
-                if let Some(wait) = previous { self.clear_wait(&trx, id, &wait); }
+                if let Some(wait) = previous {
+                    self.clear_wait(&trx, id, &wait);
+                }
                 return Ok(CapacityPark::Expired);
             }
             let first = previous.as_ref().is_none_or(|w| w.capacity().is_none());
-            if let Some(wait) = previous { self.clear_wait(&trx, id, &wait); }
-            let wake_at = now.checked_add(CAPACITY_WAIT_RETRY).map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?.min(limit);
-            let wait = SessionWait { since, wake_at, kind: WaitKind::Capacity { requirement } };
+            if let Some(wait) = previous {
+                self.clear_wait(&trx, id, &wait);
+            }
+            let wake_at = now
+                .checked_add(CAPACITY_WAIT_RETRY)
+                .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?
+                .min(limit);
+            let wait = SessionWait {
+                since,
+                wake_at,
+                kind: WaitKind::Capacity { requirement },
+            };
             write(&trx, &self.keys().session_wait(id), &wait)?;
             write(&trx, &self.keys().session_wait_due(wake_at, id), &())?;
             let mut session = self.session(&trx, id).await?;
@@ -316,35 +420,44 @@ impl Store {
                 session.head_seq = crate::seq_after(session.head_seq, 1)?;
                 let event = Event::MessageAppended {
                     seq: session.head_seq,
-                    message: Message { id: MessageId::from_ulid(ulid::Ulid::generate()), role: MessageRole::System,
-                        parts: vec![Part::Text { text: swarmy_core::capacity_wait_notice(requirement, max_wait) }] },
+                    message: Message {
+                        id: MessageId::from_ulid(ulid::Ulid::generate()),
+                        role: MessageRole::System,
+                        parts: vec![Part::Text {
+                            text: swarmy_core::capacity_wait_notice(requirement, max_wait),
+                        }],
+                    },
                 };
                 let bytes = self.prepare(&event).await?;
                 trx.set(&self.keys().event(id, session.head_seq), &bytes);
-                Some(event)
-            } else { None };
-            self.transition(&trx, session, SessionState::Sleeping, now).await?;
+                Some(Box::new(event))
+            } else {
+                None
+            };
+            self.transition(&trx, session, SessionState::Sleeping, now)
+                .await?;
             Ok(CapacityPark::Parked { notice })
-        }).await
+        })
+        .await
     }
 
     /// Clear a wait of either kind on interruption or terminal failure.
     /// # Errors
     /// Returns storage failures.
     pub async fn clear_session_wait(&self, id: SessionId) -> Result<()> {
-        self.transaction(|trx| async move {
-            if let Some(wait) = read::<SessionWait>(&trx, &self.keys().session_wait(id)).await? {
-                self.clear_wait(&trx, id, &wait);
-            }
-            let mut session = self.session(&trx, id).await?;
-            session.route_step = 0;
-            self.write_session(&trx, &session)
-        }).await
+        self.clear_wait_kind(id, false).await
     }
 
-    pub(crate) async fn clear_capacity_wait_in(&self, trx: &foundationdb::Transaction, id: SessionId) -> Result<()> {
+    pub(crate) async fn clear_capacity_wait_in(
+        &self,
+        trx: &foundationdb::Transaction,
+        id: SessionId,
+    ) -> Result<()> {
         if let Some(wait) = read::<SessionWait>(trx, &self.keys().session_wait(id)).await?
-            && wait.capacity().is_some() { self.clear_wait(trx, id, &wait); }
+            && wait.capacity().is_some()
+        {
+            self.clear_wait(trx, id, &wait);
+        }
         Ok(())
     }
 
@@ -354,15 +467,64 @@ impl Store {
     /// # Errors
     /// Returns storage failures.
     pub async fn clear_inference_wait(&self, id: SessionId) -> Result<()> {
+        self.clear_wait_kind(id, true).await
+    }
+
+    async fn clear_wait_kind(&self, id: SessionId, only_inference: bool) -> Result<()> {
         self.transaction(|trx| async move {
             if let Some(wait) = read::<SessionWait>(&trx, &self.keys().session_wait(id)).await?
-                && wait.inference().is_some()
-            { self.clear_wait(&trx, id, &wait); }
+                && (!only_inference || wait.inference().is_some())
+            {
+                self.clear_wait(&trx, id, &wait);
+            }
             let mut session = self.session(&trx, id).await?;
             session.route_step = 0;
-            self.write_session(&trx, &session)?;
-            Ok(())
+            self.write_session(&trx, &session)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use swarmy_core::{decode, encode};
+
+    #[test]
+    fn session_wait_has_fixed_bytes() {
+        let ts = [
+            49, 57, 55, 48, 45, 48, 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90,
+        ];
+        let capacity = SessionWait {
+            since: Timestamp::UNIX_EPOCH,
+            wake_at: Timestamp::UNIX_EPOCH,
+            kind: WaitKind::Capacity {
+                requirement: GpuRequirement::Shared,
+            },
+        };
+        let inference = SessionWait {
+            since: Timestamp::UNIX_EPOCH,
+            wake_at: Timestamp::UNIX_EPOCH,
+            kind: WaitKind::Inference(InferenceHistory {
+                last_failure_seq: 7,
+                reasons: vec!["x".into()],
+                attempts: 2,
+            }),
+        };
+        let capacity_bytes = [vec![1, 20], ts.to_vec(), vec![20], ts.to_vec(), vec![1, 1]].concat();
+        let inference_bytes = [
+            vec![1, 20],
+            ts.to_vec(),
+            vec![20],
+            ts.to_vec(),
+            vec![0, 7, 1, 1, 120, 2],
+        ]
+        .concat();
+        for (wait, expected) in [(capacity, capacity_bytes), (inference, inference_bytes)] {
+            let encoded = encode(&wait).unwrap();
+            assert_eq!(encoded, expected);
+            assert_eq!(decode::<SessionWait>(&encoded).unwrap(), wait);
+        }
     }
 }

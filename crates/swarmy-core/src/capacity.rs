@@ -13,9 +13,16 @@ pub fn node_satisfies(_node: &NodeRecord, requirement: GpuRequirement) -> bool {
 #[must_use]
 pub fn capacity_wait_reason(requirement: GpuRequirement) -> String {
     match requirement {
-        GpuRequirement::None => "waiting for computer capacity: no live node has room for this computer".into(),
-        GpuRequirement::Shared => "waiting for GPU capacity: no live node with a shared GPU can host this computer".into(),
-        GpuRequirement::Dedicated => "waiting for GPU capacity: no live node with a dedicated GPU can host this computer".into(),
+        GpuRequirement::None => {
+            "waiting for computer capacity: no live node has room for this computer".into()
+        }
+        GpuRequirement::Shared => {
+            "waiting for GPU capacity: no live node with a shared GPU can host this computer".into()
+        }
+        GpuRequirement::Dedicated => {
+            "waiting for GPU capacity: no live node with a dedicated GPU can host this computer"
+                .into()
+        }
     }
 }
 
@@ -24,7 +31,9 @@ pub fn capacity_wait_reason(requirement: GpuRequirement) -> String {
 pub fn capacity_wait_notice(requirement: GpuRequirement, max_wait: Duration) -> String {
     let reason = capacity_wait_reason(requirement);
     let secs = max_wait.as_secs();
-    format!("Swarmy is {reason}. The tool call will run when a node can take the computer, which can take several minutes while a new machine starts. If no node can take it within {secs} seconds, the call fails without running.")
+    format!(
+        "Swarmy is {reason}. The tool call will run when a node can take the computer, which can take several minutes while a new machine starts. If no node can take it within {secs} seconds, the call fails without running."
+    )
 }
 
 /// The tool error recorded when a capacity wait reaches its maximum.
@@ -32,7 +41,9 @@ pub fn capacity_wait_notice(requirement: GpuRequirement, max_wait: Duration) -> 
 pub fn capacity_wait_exceeded(requirement: GpuRequirement, max_wait: Duration) -> String {
     let reason = capacity_wait_reason(requirement);
     let secs = max_wait.as_secs();
-    format!("The tool call did not run: swarmy was {reason} for {secs} seconds and gave up. Try again later, or change the agent's GPU requirement.")
+    format!(
+        "The tool call did not run: swarmy was {reason} for {secs} seconds and gave up. Try again later, or change the agent's GPU requirement."
+    )
 }
 
 #[cfg(test)]
@@ -42,7 +53,11 @@ mod tests {
     #[test]
     fn gpu_wait_texts_say_waiting_for_gpu_capacity() {
         let wait = Duration::from_secs(3600);
-        for text in [capacity_wait_reason(GpuRequirement::Shared), capacity_wait_notice(GpuRequirement::Shared, wait), capacity_wait_exceeded(GpuRequirement::Shared, wait)] {
+        for text in [
+            capacity_wait_reason(GpuRequirement::Shared),
+            capacity_wait_notice(GpuRequirement::Shared, wait),
+            capacity_wait_exceeded(GpuRequirement::Shared, wait),
+        ] {
             assert!(text.contains("waiting for GPU capacity"));
             assert!(text.contains("shared"));
         }
@@ -52,7 +67,11 @@ mod tests {
     #[test]
     fn cpu_wait_texts_say_computer_capacity() {
         let wait = Duration::from_secs(3600);
-        for text in [capacity_wait_reason(GpuRequirement::None), capacity_wait_notice(GpuRequirement::None, wait), capacity_wait_exceeded(GpuRequirement::None, wait)] {
+        for text in [
+            capacity_wait_reason(GpuRequirement::None),
+            capacity_wait_notice(GpuRequirement::None, wait),
+            capacity_wait_exceeded(GpuRequirement::None, wait),
+        ] {
             assert!(text.contains("waiting for computer capacity"));
             assert!(!text.contains("GPU"));
         }

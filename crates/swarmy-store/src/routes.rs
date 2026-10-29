@@ -15,9 +15,9 @@ use swarmy_core::{
 };
 
 use crate::{
-    CredentialKey, InferenceFailureWait, SessionWait, Result, Store, StoreError,
-    credentials::{decode_entry, entry_ready},
+    CredentialKey, InferenceFailureWait, Result, SessionWait, Store, StoreError,
     breakers::Breaker,
+    credentials::{decode_entry, entry_ready},
     read, scan_all, write,
 };
 
@@ -813,8 +813,7 @@ impl Store {
         for step in chain.steps {
             let key = CredentialKey::for_label(&step.provider, step.label.clone());
             let breaker: Option<Breaker> = read(trx, &self.breaker_key(&key)).await?;
-            let (open_until, reason) =
-                crate::breakers::open_state(breaker.as_ref(), selection.now);
+            let (open_until, reason) = crate::breakers::open_state(breaker.as_ref(), selection.now);
             steps.push(RouteStepStatus {
                 provider: step.provider,
                 label: step.label,

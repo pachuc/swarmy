@@ -695,7 +695,7 @@ async fn rate_limit_waits_without_a_worker_lease_then_recovers() {
         f.wake(id).await;
         let started = std::time::Instant::now();
         f.wait_state(id, SessionState::Sleeping).await;
-        assert!(f.store.session_wait(id).await.unwrap().unwrap().reasons[0].contains("quota reached"));
+        assert!(f.store.session_wait(id).await.unwrap().unwrap().inference().unwrap().reasons[0].contains("quota reached"));
         let leases = f.store.scan_expired_leases(
             Timestamp::now().checked_add(Duration::from_secs(60)).unwrap(), None, 64
         ).await.unwrap();
@@ -1103,7 +1103,9 @@ async fn wait_for_wait_reason(
 ) -> swarmy_store::SessionWait {
     swarmy_testkit::eventually("breaker names the entry", WAIT, async || {
         f.store.session_wait(id).await.unwrap().filter(|wait| {
-            wait.reasons
+            wait.inference()
+                .unwrap()
+                .reasons
                 .iter()
                 .any(|reason| reason.contains(first) && reason.contains(second))
         })
@@ -1215,12 +1217,14 @@ async fn all_entries_open_parks_until_earliest_retry() {
             // gateway is ready; wait for the entry-named breaker reason.
             let wait = wait_for_wait_reason(f, id, "openai/primary", "quota reached").await;
             assert!(
-                wait.reasons
+                wait.inference()
+                    .unwrap()
+                    .reasons
                     .iter()
                     .any(|reason| reason.contains("openai/primary")
                         && reason.contains("quota reached")),
                 "waiting reasons name the entry: {:?}",
-                wait.reasons
+                wait.inference().unwrap().reasons
             );
             assert_eq!(f.calls(), 0);
             // The session wakes at the earlier retry and completes on the

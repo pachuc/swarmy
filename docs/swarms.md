@@ -348,6 +348,15 @@ uncommitted changes are refused unless `--allow-dirty` is set. Machines
 provisioned before the `swarmy-core` binary should be upgraded with the same
 command; the installed units are reconciled.
 
+## When no node has room
+
+A full swarm, or a GPU requirement no node meets, parks sessions instead of
+failing their calls. The scheduler retries every 30 seconds and sessions
+continue on their own when capacity appears. After the configured maximum
+session wait (one hour by default), pending calls fail without running.
+
+Elastic groups will later add machines for these waits.
+
 ## Scaling node groups
 
 ```sh

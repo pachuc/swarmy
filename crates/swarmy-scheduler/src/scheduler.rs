@@ -176,7 +176,7 @@ impl Scheduler {
             .first()
             .is_some_and(|event| {
                 matches!(event, Event::InferenceFailed { retryable: true, seq, .. }
-                    if wait.is_none_or(|wait| wait.last_failure_seq != *seq))
+                    if wait.and_then(swarmy_store::SessionWait::inference).is_none_or(|h| h.last_failure_seq != *seq))
             }))
     }
 

@@ -490,7 +490,7 @@ async fn show_session(client: &Client, endpoint: &str, session_id: Ulid, json: b
             && let Some(wait) = &record.waiting
         {
             println!(
-                "WaitingForInference until {}: {}",
+                "Waiting until {}: {}",
                 wait.wake_at.as_deref().unwrap_or("-"),
                 wait.reasons.join("; ")
             );
