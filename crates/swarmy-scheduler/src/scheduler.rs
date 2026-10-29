@@ -83,10 +83,8 @@ impl Scheduler {
                 swarmy_store::DomainError::SessionMissing,
             ))?;
         if session.state == SessionState::Runnable {
-            if session.interrupt_requested {
-                if self.finish_interrupt(session_id).await? {
-                    return Ok(());
-                }
+            if session.interrupt_requested && self.finish_interrupt(session_id).await? {
+                return Ok(());
             }
             if self
                 .park_for_breaker(session_id, &session, agent.as_ref(), breakers)
