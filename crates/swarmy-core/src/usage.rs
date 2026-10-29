@@ -58,6 +58,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn format_micros_rounds_half_up() {
+        for (micros, expected) in [
+            (0, "0.0000"),
+            (49, "0.0000"),
+            (50, "0.0001"),
+            (1_500_000, "1.5000"),
+        ] {
+            assert_eq!(format_micros(micros), expected);
+        }
+    }
+    #[test]
     fn token_usage_has_fixed_bytes() {
         let usage = TokenUsage {
             input_tokens: 1,

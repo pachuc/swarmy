@@ -294,3 +294,286 @@ impl MachineRecord {
             .saturating_sub(self.price_of_units(start))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    fn t(seconds: i64) -> Timestamp {
+        Timestamp::new(1_800_000_000 + seconds, 0).unwrap()
+    }
+    fn record() -> MachineRecord {
+        let mut record = NewMachine {
+            machine_id: MachineId::from_ulid(0.into()),
+            group: "gpu".into(),
+            module: "scaleway".into(),
+            size: "L4".into(),
+            location: "par".into(),
+            cause: MachineCause {
+                agent: None,
+                session: None,
+                reason: "test".into(),
+            },
+            hourly_price_micros: 750_000,
+            currency: "EUR".into(),
+            billing: BillingGranularity::PerStartedHour,
+        }
+        .record(t(0));
+        record.created_at = Some(t(0));
+        record.state = MachineState::Joined;
+        record
+    }
+    #[test]
+    fn per_started_hour_bills_each_started_hour() {
+        for (seconds, expected) in [
+            (0, 750_000),
+            (1, 750_000),
+            (3600, 750_000),
+            (3601, 1_500_000),
+        ] {
+            let mut row = record();
+            row.destroyed_at = Some(t(seconds));
+            assert_eq!(row.cost_micros(t(10000)), expected);
+        }
+    }
+    #[test]
+    fn running_machine_bills_up_to_now() {
+        let mut row = record();
+        assert_eq!(row.cost_micros(t(7200)), 1_500_000);
+        assert_eq!(
+            row.cost_micros(
+                t(7200)
+                    .checked_add(jiff::SignedDuration::from_nanos(1))
+                    .unwrap()
+            ),
+            2_250_000
+        );
+        row.state = MachineState::Failed;
+        assert_eq!(row.cost_micros(t(7200)), 1_500_000);
+    }
+    #[test]
+    fn per_started_minute_bills_each_started_minute() {
+        let mut row = record();
+        row.billing = BillingGranularity::PerStartedMinute;
+        for (seconds, expected) in [(59, 12_500), (60, 12_500), (61, 25_000), (3600, 750_000)] {
+            row.destroyed_at = Some(t(seconds));
+            assert_eq!(row.cost_micros(t(5000)), expected);
+        }
+        row.hourly_price_micros = 1_000_000;
+        row.destroyed_at = Some(t(1));
+        assert_eq!(row.cost_micros(t(5000)), 16_667);
+        row.destroyed_at = Some(t(170));
+        assert_eq!(row.cost_micros(t(5000)), 50_000);
+    }
+    #[test]
+    fn never_created_costs_nothing() {
+        let mut row = record();
+        row.created_at = None;
+        assert_eq!(row.cost_micros(t(5000)), 0);
+        assert_eq!(row.cost_micros_between(t(0), t(5000), t(5000)), 0);
+    }
+    #[test]
+    fn windows_partition_the_total() {
+        let mut row = record();
+        row.destroyed_at = Some(t(9000));
+        assert_eq!(row.cost_micros(t(10000)), 2_250_000);
+        for (from, to, expected) in [
+            (1800, 7200, 750_000),
+            (0, 3600, 750_000),
+            (7200, 36000, 750_000),
+            (10800, 36000, 0),
+            (-86400, 0, 0),
+        ] {
+            assert_eq!(row.cost_micros_between(t(from), t(to), t(10000)), expected);
+        }
+        let sum = [(-1, 3600), (3600, 7200), (7200, 86400)]
+            .into_iter()
+            .map(|(from, to)| row.cost_micros_between(t(from), t(to), t(10000)))
+            .sum::<u64>();
+        assert_eq!(sum, row.cost_micros(t(10000)));
+        row.billing = BillingGranularity::PerStartedMinute;
+        row.hourly_price_micros = 1_000_000;
+        row.destroyed_at = Some(t(170));
+        assert_eq!(row.cost_micros_between(t(0), t(60), t(200)), 16_667);
+        assert_eq!(row.cost_micros_between(t(60), t(180), t(200)), 33_333);
+        assert_eq!(
+            row.cost_micros_between(t(0), t(60), t(200))
+                + row.cost_micros_between(t(60), t(180), t(200)),
+            row.cost_micros(t(200))
+        );
+        assert_eq!(row.cost_micros_between(t(60), t(0), t(200)), 0);
+    }
+    #[test]
+    fn transitions_follow_the_table() {
+        use MachineState as S;
+        let states = [
+            S::Requested,
+            S::Creating,
+            S::Provisioning,
+            S::Joined,
+            S::Draining,
+            S::Destroyed,
+            S::Failed,
+            S::Orphaned,
+        ];
+        let transitions = [
+            MachineTransition::Creating,
+            MachineTransition::Created {
+                address: "address".into(),
+            },
+            MachineTransition::Provisioned,
+            MachineTransition::Joined {
+                node_id: NodeId::from_ulid(0.into()),
+            },
+            MachineTransition::DrainRequested,
+            MachineTransition::Destroyed,
+            MachineTransition::Failed {
+                detail: "failed".into(),
+            },
+            MachineTransition::Orphaned {
+                detail: "orphaned".into(),
+            },
+        ];
+        for state in states {
+            for (index, transition) in transitions.iter().enumerate() {
+                let mut row = record();
+                row.state = state;
+                row.provisioned_at = Some(t(1));
+                let original = row.clone();
+                let allowed = match index {
+                    0 => state == S::Requested,
+                    1 => state == S::Creating,
+                    2 => false,
+                    3 => state == S::Provisioning,
+                    4 => matches!(state, S::Provisioning | S::Joined),
+                    5 => matches!(state, S::Requested | S::Draining | S::Failed | S::Orphaned),
+                    6 => matches!(
+                        state,
+                        S::Requested | S::Creating | S::Provisioning | S::Joined | S::Draining
+                    ),
+                    _ => matches!(
+                        state,
+                        S::Creating | S::Provisioning | S::Joined | S::Draining | S::Failed
+                    ),
+                };
+                let result = row.apply(transition, t(2));
+                assert_eq!(result.is_ok(), allowed, "{state} {}", transition.name());
+                if !allowed {
+                    assert_eq!(row, original);
+                    let error = result.unwrap_err();
+                    assert_eq!(error.from, state);
+                    assert_eq!(error.transition, transition.name());
+                }
+            }
+        }
+    }
+    #[test]
+    fn lifecycle_stamps_each_step() {
+        let mut row = record();
+        row.state = MachineState::Requested;
+        row.created_at = None;
+        row.apply(&MachineTransition::Creating, t(1)).unwrap();
+        row.apply(
+            &MachineTransition::Created {
+                address: "address".into(),
+            },
+            t(2),
+        )
+        .unwrap();
+        assert!(
+            row.apply(
+                &MachineTransition::Joined {
+                    node_id: NodeId::from_ulid(1.into())
+                },
+                t(3)
+            )
+            .is_err()
+        );
+        row.apply(&MachineTransition::Provisioned, t(3)).unwrap();
+        assert!(row.apply(&MachineTransition::Provisioned, t(4)).is_err());
+        let node_id = NodeId::from_ulid(1.into());
+        row.apply(&MachineTransition::Joined { node_id }, t(4))
+            .unwrap();
+        row.apply(&MachineTransition::DrainRequested, t(5)).unwrap();
+        row.apply(&MachineTransition::Destroyed, t(6)).unwrap();
+        assert_eq!(
+            (
+                row.created_at,
+                row.provisioned_at,
+                row.joined_at,
+                row.drain_requested_at,
+                row.destroyed_at
+            ),
+            (Some(t(2)), Some(t(3)), Some(t(4)), Some(t(5)), Some(t(6)))
+        );
+        assert_eq!(row.address.as_deref(), Some("address"));
+        assert_eq!(row.node_id, Some(node_id));
+    }
+    #[test]
+    fn active_excludes_destroyed_and_failed_before_creation() {
+        let mut row = record();
+        assert!(row.is_active());
+        row.state = MachineState::Failed;
+        assert!(row.is_active());
+        row.created_at = None;
+        assert!(!row.is_active());
+        row.state = MachineState::Destroyed;
+        assert!(!row.is_active());
+    }
+    #[test]
+    fn assignment_has_fixed_bytes() {
+        let row = MachineAssignment {
+            machine: MachineId::from_ulid(0.into()),
+            agent: AgentId::from_ulid(1.into()),
+            from: Timestamp::UNIX_EPOCH,
+            to: None,
+        };
+        assert_eq!(
+            crate::encode(&row).unwrap(),
+            [
+                1, 26, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
+                48, 48, 48, 48, 48, 48, 48, 26, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
+                48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 49, 20, 49, 57, 55, 48, 45, 48, 49,
+                45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90, 0
+            ]
+        );
+        assert_eq!(
+            crate::decode::<MachineAssignment>(&crate::encode(&row).unwrap()).unwrap(),
+            row
+        );
+    }
+    #[test]
+    fn machine_state_and_billing_have_fixed_bytes() {
+        for (index, state) in [
+            MachineState::Requested,
+            MachineState::Creating,
+            MachineState::Provisioning,
+            MachineState::Joined,
+            MachineState::Draining,
+            MachineState::Destroyed,
+            MachineState::Failed,
+            MachineState::Orphaned,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                crate::encode(&state).unwrap(),
+                [1, u8::try_from(index).unwrap()]
+            );
+        }
+        assert_eq!(
+            crate::encode(&BillingGranularity::PerStartedHour).unwrap(),
+            [1, 0]
+        );
+        assert_eq!(
+            crate::encode(&BillingGranularity::PerStartedMinute).unwrap(),
+            [1, 1]
+        );
+        let row = record();
+        assert_eq!(
+            crate::decode::<MachineRecord>(&crate::encode(&row).unwrap()).unwrap(),
+            row
+        );
+    }
+}

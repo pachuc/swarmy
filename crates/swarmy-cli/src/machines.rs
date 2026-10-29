@@ -136,3 +136,59 @@ pub(crate) fn render_cost_section(list: &MachineList) -> Option<String> {
     }
     Some(lines.join("\n"))
 }
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use clap::Parser;
+    fn list() -> MachineList {
+        let first: Machine = serde_json::from_value(serde_json::json!({
+            "id":"01JC0000000000000000000001", "group":"gpu", "module":"scaleway", "size":"L4-1-24G", "location":"fr-par-2", "address":null, "node_id":"node-1", "state":"joined", "requested_at":"2026-10-29T10:55:00Z", "created_at":null, "provisioned_at":null, "joined_at":null, "drain_requested_at":null, "destroyed_at":null,
+            "cause":{"agent_id":null,"agent_name":null,"session_id":null,"reason":"fleet task 01M63CEJ needs a GPU"}, "hourly_price_micros":750000, "currency":"EUR", "billing":"per_started_hour", "failure":null, "cost_micros":1500000, "cost":"1.5000", "window_cost_micros":750000, "window_cost":"0.7500", "current_agents":[{"agent_id":"agent-1","agent_name":"worker-3","since":"2026-10-29T10:55:00Z"}]
+        })).unwrap();
+        let mut second = first.clone();
+        second.id = "01JC0000000000000000000002".into();
+        second.location = "pl-waw-2".into();
+        second.state = swarmy_api_types::MachineState::Requested;
+        second.requested_at = "2026-10-29T11:59:30Z".into();
+        second.node_id = None;
+        second.cost_micros = 0;
+        second.cost = "0.0000".into();
+        second.window_cost_micros = Some(0);
+        second.window_cost = Some("0.0000".into());
+        second.current_agents.clear();
+        second.cause.reason = "autoscale: 1 session waiting".into();
+        MachineList {
+            as_of: "2026-10-29T12:00:00Z".into(),
+            from: Some("2026-10-29T10:00:00Z".into()),
+            to: Some("2026-10-29T12:00:00Z".into()),
+            machines: vec![first, second],
+            totals: vec![swarmy_api_types::MachineCostTotal {
+                currency: "EUR".into(),
+                cost_micros: 750000,
+                cost: "0.7500".into(),
+            }],
+        }
+    }
+    #[test]
+    fn machines_table_renders_aligned_columns() {
+        let expected = "ID                          GROUP  SIZE      LOCATION  STATE      AGE    NODE    COST        AGENTS    REASON\n01JC0000000000000000000001  gpu    L4-1-24G  fr-par-2  joined     1h 5m  node-1  EUR 1.5000  worker-3  fleet task 01M63CEJ needs a GPU\n01JC0000000000000000000002  gpu    L4-1-24G  pl-waw-2  requested  0s     -       EUR 0.0000  -         autoscale: 1 session waiting";
+        assert_eq!(render_table(&list()).unwrap(), expected);
+    }
+    #[test]
+    fn cost_section_lists_only_machines_with_window_cost() {
+        let list = list();
+        assert_eq!(
+            render_cost_section(&list).unwrap(),
+            "machines from 2026-10-29T10:00:00Z to 2026-10-29T12:00:00Z:\n  01JC0000000000000000000001 gpu L4-1-24G joined cost=EUR 0.7500\n  total cost=EUR 0.7500"
+        );
+        let mut empty = list;
+        empty.machines.clear();
+        assert_eq!(render_cost_section(&empty), None);
+    }
+    #[test]
+    fn machines_clap_accepts_all() {
+        assert!(crate::Cli::try_parse_from(["swarmy", "swarm", "machines", "--all"]).is_ok());
+    }
+}
