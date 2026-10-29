@@ -108,10 +108,11 @@ A move keeps files on the worker's disk but loses running processes, `/tmp`,
 and the cargo target directory. The next build is cold. The first command can
 wait several minutes while a machine starts.
 
-Release and kill set the worker back with `swarmy agent set worker-N --gpu none
---allow-gpu-request false`, only if it is not already there. The computer then
-returns to hz on its next command. A GPU machine with no GPU computer on it for
-30 minutes is drained and destroyed.
+Release and kill set the worker back with
+`swarmy agent set worker-N --gpu none --allow-gpu-request false`, only if it is
+not already there. The computer then returns to hz on its next command.
+Until autoscale lands, a GPU machine is not destroyed by itself when its last
+GPU computer leaves; scale the group down with `swarmy swarm scale <swarm> gpu 0` once `fleet status` shows no worker on it.
 
 Status ends each row with `node=` (placement), `card=` (ledger machine size or
 `-`), `gpu=` (live requirement) and `machines=` (cost so far). A machine is

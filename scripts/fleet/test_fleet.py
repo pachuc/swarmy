@@ -248,7 +248,11 @@ class FleetTests(unittest.TestCase):
         create = self.creates()[1]
         self.assertEqual(create[create.index("--gpu") + 1], "none")
         self.assertEqual(create[create.index("--allow-gpu-request") + 1], "false")
-        prompt = (self.root / "prompt-worker-2").read_text().split("Test plan:\nRun widget test", 1)[1]
+        full_prompt = (self.root / "prompt-worker-2").read_text()
+        self.assertIn("Test plan:\nRun widget test\n\nRead the repository's AGENTS.md", full_prompt)
+        self.assertNotIn("GPU access:", full_prompt)
+        # AGENTS.md is embedded in every prompt and already names request_gpu.
+        prompt = full_prompt.split("Test plan:\nRun widget test", 1)[1]
         self.assertNotIn("request_gpu", prompt)
         self.assertNotIn("GPU requirement", prompt)
         state = json.loads((self.root / "state" / "aaaaa2.json").read_text())
@@ -258,6 +262,7 @@ class FleetTests(unittest.TestCase):
     def test_launch_gpu_without_tools_names_the_requirement_only(self):
         result = self.call("launch", "EWR2HD", "--gpu", "dedicated")
         self.assertEqual(result.returncode, 0, result.stderr)
+        # Check the task-specific part; embedded AGENTS.md already names request_gpu.
         prompt = (self.root / "prompt-worker-1").read_text().split("Test plan:\nRun widget test", 1)[1]
         self.assertIn("starts with a dedicated GPU requirement", prompt)
         self.assertNotIn("request_gpu", prompt)
