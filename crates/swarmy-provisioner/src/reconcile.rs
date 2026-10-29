@@ -1,4 +1,4 @@
-//! Reconcile OpenTofu state and the durable machine ledger before each apply.
+//! Reconcile `OpenTofu` state and the durable machine ledger before each apply.
 //!
 //! | Rule | Ledger | In state | Action |
 //! |---|---|---|---|
@@ -39,7 +39,7 @@ use swarmy_store::{
     credentials::CredentialStore,
 };
 
-pub const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(5 * 60);
+pub const RETRY_AFTER_FAILURE: Duration = Duration::from_mins(5);
 pub struct Reconciler {
     store: Store,
     credentials: Option<CredentialStore>,
@@ -115,6 +115,8 @@ impl Reconciler {
     /// Renew before every group; a replaced holder never starts an apply.
     /// # Errors
     /// Returns store or runtime failures.
+    /// # Panics
+    /// Only if the claimed lease unexpectedly disappears within this tick.
     pub async fn tick(&self, holder: &mut Holder) -> Result<Tick> {
         let lease = match &holder.lease {
             Some(lease) if lease.expires_at <= self.store.now() => {
@@ -149,7 +151,7 @@ impl Reconciler {
                 || self
                     .retry
                     .lock()
-                    .expect("retry mutex poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .get(&record.definition.group)
                     .is_some_and(|(generation, at)| {
                         *generation == record.generation && self.store.now() < *at
@@ -189,10 +191,13 @@ impl Reconciler {
                 }
                 Err(error) => {
                     tracing::error!(group = %record.definition.group, error = %swarmy_core::error_chain(error.as_ref()), "elastic reconcile failed");
-                    self.retry.lock().expect("retry mutex poisoned").insert(
-                        record.definition.group.clone(),
-                        (record.generation, self.store.now() + RETRY_AFTER_FAILURE),
-                    );
+                    self.retry
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(
+                            record.definition.group.clone(),
+                            (record.generation, self.store.now() + RETRY_AFTER_FAILURE),
+                        );
                 }
             }
         }
@@ -215,61 +220,7 @@ impl Reconciler {
                 limited: true,
             });
         }
-        let module = Module::try_from(def.module.clone()).map_err(|error| anyhow!(error))?;
-        let provider = module
-            .machine_provider()
-            .context("elastic group must use a built-in machine module")?;
-        let creds = self
-            .credentials
-            .as_ref()
-            .context("the provisioner needs the cluster keyring to decrypt cloud credentials")?;
-        let entry = creds
-            .get_entry(CredentialScope::Cluster, provider.name(), "default")
-            .await?;
-        let missing = || {
-            anyhow!(
-                "elastic group {} needs {} credentials in the swarm: run swarmy --swarm {} auth set {} --from-env",
-                def.group,
-                provider,
-                def.swarm,
-                provider
-            )
-        };
-        let Some(CredentialKind::MachineProvider { env }) = entry.map(|entry| entry.kind) else {
-            return Err(missing());
-        };
-        let mut credentials = CloudCredentials::default();
-        credentials.set(CloudCredential::from_env(provider, |name| {
-            env.get(name).cloned()
-        })?);
-        let env = groups::module_credential_env(&credentials, &module, false)?;
-        let key = groups::group_key(&self.data_dir, &def.swarm, &def.group).await?;
-        let tofu = self
-            .tofu
-            .get_or_try_init(|| Tofu::resolve(&self.cache))
-            .await?;
-        let workspace = tofu.workspace(groups::group_dir(&self.data_dir, &def.group), env);
-        let vars = |count| {
-            groups::group_variables(&GroupInputs {
-                swarm: &def.swarm,
-                group: &def.group,
-                machine_count: count,
-                size: Some(&def.size),
-                location: Some(&def.location),
-                ssh_public_key: &key,
-                bucket: "",
-                network: "",
-            })
-        };
-        workspace
-            .prepare(
-                swarmy_infra::modules::find(&def.module)
-                    .context("module is not built in")?
-                    .files,
-                &vars(record.applied),
-            )
-            .await?;
-        workspace.init().await?;
+        let (workspace, key) = self.workspace(def, record.applied).await?;
         let outputs = self.outputs(&workspace, def).await?;
         let actual = u32::try_from(outputs.len())?;
         self.sync(def, &record.desired_reason, &outputs, None)
@@ -278,30 +229,9 @@ impl Reconciler {
             .store
             .list_machines(Some(&def.group), MachineFilter::Active)
             .await?;
-        let draining = active
-            .iter()
-            .filter(|r| {
-                r.state == MachineState::Draining && outputs.iter().any(|m| m.name == r.name)
-            })
-            .filter_map(|r| number(def, &r.name))
-            .min();
-        let (target, limited) = if let Some(n) = draining {
-            (record.desired.min(n - 1), false)
-        } else if record.desired > actual {
-            let grant = self
-                .store
-                .reserve_elastic_creations(lease, record.desired - actual)
-                .await?;
-            if grant.granted < record.desired - actual {
-                tracing::warn!(group = %def.group, wanted = record.desired - actual, granted = grant.granted, used = grant.used, limit = MAX_ELASTIC_CREATIONS_PER_HOUR, next_free_at = ?grant.next_free_at, "creation limit reached: at most 4 machine creations per hour per swarm; the rest wait for the window");
-            }
-            (
-                actual + grant.granted,
-                grant.granted < record.desired - actual,
-            )
-        } else {
-            (record.desired, false)
-        };
+        let (target, limited) = self
+            .target(lease, record, actual, &outputs, &active)
+            .await?;
         self.fail_unneeded(def, &outputs, target, &active).await?;
         if target == actual {
             self.store
@@ -323,10 +253,113 @@ impl Reconciler {
         }
         self.prepare_ledger(def, &record.desired_reason, actual, target)
             .await?;
-        workspace.set_variables(&vars(target)).await?;
+        workspace
+            .set_variables(&variables(def, &key, target))
+            .await?;
+        self.apply_and_record(lease, record, &workspace, actual, target)
+            .await?;
+        Ok(Outcome {
+            group: def.group.clone(),
+            before: actual,
+            after: target,
+            desired: record.desired,
+            limited,
+        })
+    }
+    async fn credential_env(
+        &self,
+        def: &ElasticGroupDefinition,
+    ) -> Result<swarmy_infra::CredentialEnv> {
+        let module = Module::try_from(def.module.clone()).map_err(|error| anyhow!(error))?;
+        let provider = module
+            .machine_provider()
+            .context("elastic group must use a built-in machine module")?;
+        let creds = self
+            .credentials
+            .as_ref()
+            .context("the provisioner needs the cluster keyring to decrypt cloud credentials")?;
+        let entry = creds
+            .get_entry(CredentialScope::Cluster, provider.name(), "default")
+            .await?;
+        let Some(CredentialKind::MachineProvider { env }) = entry.map(|entry| entry.kind) else {
+            bail!(
+                "elastic group {} needs {} credentials in the swarm: run swarmy --swarm {} auth set {} --from-env",
+                def.group,
+                provider,
+                def.swarm,
+                provider
+            );
+        };
+        let mut credentials = CloudCredentials::default();
+        credentials.set(CloudCredential::from_env(provider, |name| {
+            env.get(name).cloned()
+        })?);
+        Ok(groups::module_credential_env(&credentials, &module, false)?)
+    }
+    async fn workspace(
+        &self,
+        def: &ElasticGroupDefinition,
+        applied: u32,
+    ) -> Result<(Workspace<'_>, String)> {
+        let env = self.credential_env(def).await?;
+        let key = groups::group_key(&self.data_dir, &def.swarm, &def.group).await?;
+        let tofu = self
+            .tofu
+            .get_or_try_init(|| Tofu::resolve(&self.cache))
+            .await?;
+        let workspace = tofu.workspace(groups::group_dir(&self.data_dir, &def.group), env);
+        workspace
+            .prepare(
+                swarmy_infra::modules::find(&def.module)
+                    .context("module is not built in")?
+                    .files,
+                &variables(def, &key, applied),
+            )
+            .await?;
+        workspace.init().await?;
+        Ok((workspace, key))
+    }
+    async fn target(
+        &self,
+        lease: &Lease,
+        record: &ElasticGroupRecord,
+        actual: u32,
+        outputs: &[Machine],
+        active: &[MachineRecord],
+    ) -> Result<(u32, bool)> {
+        let def = &record.definition;
+        let draining = active
+            .iter()
+            .filter(|r| {
+                r.state == MachineState::Draining && outputs.iter().any(|m| m.name == r.name)
+            })
+            .filter_map(|r| number(def, &r.name))
+            .min();
+        if let Some(n) = draining {
+            return Ok((record.desired.min(n - 1), false));
+        }
+        if record.desired <= actual {
+            return Ok((record.desired, false));
+        }
+        let wanted = record.desired - actual;
+        let grant = self.store.reserve_elastic_creations(lease, wanted).await?;
+        if grant.granted < wanted {
+            tracing::warn!(group = %def.group, wanted, granted = grant.granted, used = grant.used, limit = MAX_ELASTIC_CREATIONS_PER_HOUR, next_free_at = ?grant.next_free_at, "creation limit reached: at most 4 machine creations per hour per swarm; the rest wait for the window");
+        }
+        Ok((actual + grant.granted, grant.granted < wanted))
+    }
+    async fn apply_and_record(
+        &self,
+        lease: &Lease,
+        record: &ElasticGroupRecord,
+        workspace: &Workspace<'_>,
+        actual: u32,
+        target: u32,
+    ) -> Result<()> {
+        let def = &record.definition;
         let applied = workspace.apply().await;
-        self.backup(&workspace, &def.group).await;
-        let after = self.outputs(&workspace, def).await;
+        self.backup(workspace, &def.group).await;
+        let after = self.outputs(workspace, def).await;
         let length = if let Ok(ref machines) = after {
             u32::try_from(machines.len())?
         } else {
@@ -368,13 +401,7 @@ impl Reconciler {
                 def.group
             );
         }
-        Ok(Outcome {
-            group: def.group.clone(),
-            before: actual,
-            after: length,
-            desired: record.desired,
-            limited,
-        })
+        Ok(())
     }
     async fn outputs(
         &self,
@@ -443,23 +470,8 @@ impl Reconciler {
             .list_machines(Some(&def.group), MachineFilter::Active)
             .await?;
         for record in &active {
-            let Some(n) = number(def, &record.name) else {
-                tracing::warn!(name = %record.name, "invalid machine name in ledger");
-                continue;
-            };
-            let machine = outputs.iter().find(|m| m.name == record.name);
-            match (record.state, machine) {
-                (MachineState::Requested, Some(machine)) => { self.transition(record, MachineTransition::Creating).await?; self.transition(record, MachineTransition::Created { address: address(machine)? }).await?; }
-                (MachineState::Creating, Some(machine)) => self.transition(record, MachineTransition::Created { address: address(machine)? }).await?,
-                (MachineState::Draining, None) => self.transition(record, MachineTransition::Destroyed).await?,
-                (MachineState::Provisioning | MachineState::Joined, None) => self.transition(record, MachineTransition::Orphaned { detail: format!("machine {} is no longer in OpenTofu state, but swarmy did not remove it; it may still exist and cost money; check the provider", record.name) }).await?,
-                (MachineState::Requested | MachineState::Creating, None) if after.is_some() => {
-                    let (actual, target, error) = after.as_ref().expect("post-apply sync");
-                    if n > *actual && n <= *target { self.transition(record, MachineTransition::Failed { detail: error.clone().unwrap_or_else(|| format!("OpenTofu applied machine_count = {target} but did not report {}", record.name)) }).await?; }
-                },
-                (MachineState::Failed | MachineState::Orphaned, None) if after.as_ref().is_some_and(|(actual, target, _)| n > *target && n <= *actual) => self.transition(record, MachineTransition::Destroyed).await?,
-                _ => {},
-            }
+            self.sync_record(def, record, outputs, after.as_ref())
+                .await?;
         }
         for (i, machine) in outputs.iter().enumerate() {
             if !active.iter().any(|r| r.name == machine.name) {
@@ -484,6 +496,63 @@ impl Reconciler {
         }
         Ok(())
     }
+    async fn sync_record(
+        &self,
+        def: &ElasticGroupDefinition,
+        record: &MachineRecord,
+        outputs: &[Machine],
+        after: Option<&(u32, u32, Option<String>)>,
+    ) -> Result<()> {
+        let Some(n) = number(def, &record.name) else {
+            tracing::warn!(name = %record.name, "invalid machine name in ledger");
+            return Ok(());
+        };
+        let machine = outputs.iter().find(|m| m.name == record.name);
+        match (record.state, machine) {
+            (MachineState::Requested, Some(machine)) => {
+                self.transition(record, MachineTransition::Creating).await?;
+                self.transition(record, MachineTransition::Created { address: address(machine)? }).await?;
+            }
+            (MachineState::Creating, Some(machine)) => self.transition(record, MachineTransition::Created { address: address(machine)? }).await?,
+            (MachineState::Draining, None) => self.transition(record, MachineTransition::Destroyed).await?,
+            (MachineState::Provisioning | MachineState::Joined, None) => self.transition(record, MachineTransition::Orphaned { detail: format!("machine {} is no longer in OpenTofu state, but swarmy did not remove it; it may still exist and cost money; check the provider", record.name) }).await?,
+            (MachineState::Requested | MachineState::Creating | MachineState::Failed | MachineState::Orphaned, None) => self.sync_missing(record, n, after).await?,
+            _ => {},
+        }
+        Ok(())
+    }
+    async fn sync_missing(
+        &self,
+        record: &MachineRecord,
+        n: u32,
+        after: Option<&(u32, u32, Option<String>)>,
+    ) -> Result<()> {
+        let Some((actual, target, error)) = after else {
+            return Ok(());
+        };
+        if matches!(
+            record.state,
+            MachineState::Requested | MachineState::Creating
+        ) && n > *actual
+            && n <= *target
+        {
+            let detail = error.clone().unwrap_or_else(|| {
+                format!(
+                    "OpenTofu applied machine_count = {target} but did not report {}",
+                    record.name
+                )
+            });
+            self.transition(record, MachineTransition::Failed { detail })
+                .await?;
+        } else if matches!(record.state, MachineState::Failed | MachineState::Orphaned)
+            && n > *target
+            && n <= *actual
+        {
+            self.transition(record, MachineTransition::Destroyed)
+                .await?;
+        }
+        Ok(())
+    }
     async fn fail_unneeded(
         &self,
         def: &ElasticGroupDefinition,
@@ -491,13 +560,13 @@ impl Reconciler {
         target: u32,
         active: &[MachineRecord],
     ) -> Result<()> {
+        let actual = u32::try_from(outputs.len())?;
         for record in active {
             if matches!(
                 record.state,
                 MachineState::Requested | MachineState::Creating
             ) && !outputs.iter().any(|m| m.name == record.name)
-                && !number(def, &record.name)
-                    .is_some_and(|n| n > outputs.len() as u32 && n <= target)
+                && !number(def, &record.name).is_some_and(|n| n > actual && n <= target)
             {
                 self.transition(
                     record,
@@ -611,4 +680,21 @@ fn address(machine: &Machine) -> Result<String> {
         .map(|ip| ip.to_string())
         .or_else(|| machine.public_ipv6.map(|ip| ip.to_string()))
         .context("machine has no public address")
+}
+
+fn variables(
+    def: &ElasticGroupDefinition,
+    key: &str,
+    machine_count: u32,
+) -> serde_json::Map<String, serde_json::Value> {
+    groups::group_variables(&GroupInputs {
+        swarm: &def.swarm,
+        group: &def.group,
+        machine_count,
+        size: Some(&def.size),
+        location: Some(&def.location),
+        ssh_public_key: key,
+        bucket: "",
+        network: "",
+    })
 }

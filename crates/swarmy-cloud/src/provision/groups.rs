@@ -65,6 +65,8 @@ pub(crate) struct Applied {
 fn root(dir: &Path) -> PathBuf {
     dir.join("tofu")
 }
+/// Working directory for one machine group.
+#[must_use]
 pub fn group_dir(dir: &Path, group: &str) -> PathBuf {
     root(dir).join(group)
 }
@@ -112,6 +114,9 @@ fn provider_env(
     }
     Ok(env)
 }
+/// Environment variables required by a module, excluding secret values from files.
+/// # Errors
+/// Returns `CloudNotLoggedIn` when a required provider is absent.
 pub fn module_credential_env(
     credentials: &CloudCredentials,
     module: &Module,
@@ -259,6 +264,9 @@ fn last_variables(dir: &Path) -> Option<Map<String, Value>> {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
+/// Return or generate the group SSH public key.
+/// # Errors
+/// Returns filesystem or key-generation failures.
 pub async fn group_key(dir: &Path, swarm: &str, group: &str) -> Result<String> {
     let keys = dir.join("keys/groups");
     create_private_dir(&keys)?;

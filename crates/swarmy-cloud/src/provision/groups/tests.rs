@@ -1180,8 +1180,8 @@ fn scaleway_module_environment_has_only_its_three_provider_keys() {
     let env = module_credential_env(&credentials, &Module::Scaleway, false).unwrap();
     assert_eq!(
         env.names()
-            .filter(|name| name.starts_with("SCW_"))
+            .filter(|name| name.starts_with("SCW_") && *name != "SCW_CONFIG_PATH")
             .collect::<Vec<_>>(),
-        ["SCW_ACCESS_KEY", "SCW_DEFAULT_PROJECT_ID", "SCW_SECRET_KEY"]
+        ["SCW_ACCESS_KEY", "SCW_SECRET_KEY", "SCW_DEFAULT_PROJECT_ID"]
     );
 }

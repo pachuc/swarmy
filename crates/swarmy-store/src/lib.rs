@@ -342,6 +342,7 @@ impl Store {
     /// Observe the store clock. Production reads the wall clock through the
     /// default closure; lease and expiry tests inject a shared manual clock
     /// with [`Store::with_clock`] instead of sleeping out real leases.
+    #[must_use]
     pub fn now(&self) -> jiff::Timestamp {
         (self.clock)()
     }
