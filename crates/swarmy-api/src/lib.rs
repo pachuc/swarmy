@@ -130,6 +130,13 @@ pub(crate) fn invalid_selection(failure: &swarmy_llm::selection::SelectionError)
     clippy::needless_pass_by_value,
     reason = "`map_err` passes the owned error; taking a reference would require closures at every call site"
 )]
+/// Validate an operator GPU reason with the same rule as `request_gpu`.
+fn gpu_reason(text: Option<&str>) -> Result<Option<swarmy_core::GpuReason>, ApiFailure> {
+    text.map(swarmy_core::GpuReason::parse)
+        .transpose()
+        .map_err(|message| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_request", message))
+}
+
 fn storage(value: swarmy_store::StoreError) -> ApiFailure {
     use swarmy_store::StoreError;
     let message = value.to_string();
@@ -147,7 +154,9 @@ fn storage(value: swarmy_store::StoreError) -> ApiFailure {
             ApiFailure::new(StatusCode::NOT_FOUND, "image_not_found", message)
         }
         StoreError::Domain(
-            swarmy_store::DomainError::InvalidAgentName | swarmy_store::DomainError::InvalidImage,
+            swarmy_store::DomainError::InvalidAgentName
+            | swarmy_store::DomainError::InvalidImage
+            | swarmy_store::DomainError::GpuReasonWithoutCard,
         ) => ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_request", message),
         StoreError::Domain(swarmy_store::DomainError::ElasticGroupMissing { .. }) => {
             ApiFailure::new(StatusCode::NOT_FOUND, "elastic_group_not_found", message)
@@ -495,6 +504,7 @@ async fn create_agent(
         memory_mib: body.memory_mib,
         gpu: body.gpu.map(Into::into),
         allow_gpu_request: body.allow_gpu_request,
+        gpu_reason: gpu_reason(body.gpu_reason.as_deref())?,
         route: body.route,
     };
     let key = IdempotencyKey::parse(&body.idempotency_key)?;
@@ -547,12 +557,13 @@ async fn update_agent(
         memory_mib: body.memory_mib,
         gpu: body.gpu.map(Into::into),
         allow_gpu_request: body.allow_gpu_request,
+        gpu_reason: gpu_reason(body.gpu_reason.as_deref())?,
         route: body.route,
     };
     let resets: Vec<swarmy_core::InferenceField> =
         body.resets.into_iter().map(Into::into).collect();
     let mut merged = record.clone();
-    settings.apply_to(&mut merged, &resets);
+    settings.apply_to(&mut merged, &resets, Timestamp::now());
     swarmy_llm::selection::validate(
         &state.catalog,
         &swarmy_core::InferenceSelection {

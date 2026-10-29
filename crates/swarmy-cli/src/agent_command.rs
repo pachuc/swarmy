@@ -28,6 +28,9 @@ pub(crate) struct InferenceArgs {
     /// GPU requirement for placement; changing it restarts a placed computer on a node that satisfies it
     #[arg(long, value_enum)]
     pub gpu: Option<GpuArg>,
+    /// Why this GPU requirement is set (1-500 characters); shown in `agent show` and used as an autoscaled machine's cause. Needs --gpu shared or dedicated
+    #[arg(long, requires = "gpu", value_name = "TEXT")]
+    pub gpu_reason: Option<String>,
     /// Let the agent change its own GPU requirement with `request_gpu` and `release_gpu`
     #[arg(long, value_name = "true|false", value_parser = clap::value_parser!(bool))]
     pub allow_gpu_request: Option<bool>,

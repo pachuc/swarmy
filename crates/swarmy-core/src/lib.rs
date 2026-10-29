@@ -78,8 +78,8 @@ pub use agent::{AgentRecord, AgentSettings, GpuRequest};
 mod gpu_tool;
 pub use gpu_tool::{
     GPU_ALREADY_RELEASED, GPU_RELEASED, GPU_REQUEST_NEEDS_AGENT, GPU_REQUEST_NOT_ALLOWED,
-    GPU_TOOL_NOT_ALONE, GpuToolCall, MAX_GPU_REASON_CHARS, RELEASE_GPU_TOOL, REQUEST_GPU_TOOL,
-    RequestedMode, gpu_already, gpu_requested, is_gpu_tool,
+    GPU_TOOL_NOT_ALONE, GpuReason, GpuToolCall, MAX_GPU_REASON_CHARS, RELEASE_GPU_TOOL,
+    REQUEST_GPU_TOOL, RequestedMode, gpu_already, gpu_requested, is_gpu_tool,
 };
 pub mod best_effort;
 pub use best_effort::ignore_best_effort;

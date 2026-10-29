@@ -344,7 +344,7 @@ mod tests {
         w.gpu_request = Some(GpuRequest {
             reason: "tasky 01AAA: render".into(),
             requested_at: at(0),
-            session_id: w.session_id,
+            session_id: Some(w.session_id),
         });
         let Decision::Raise { desired, cause } = decide(&group(0, 1, 1), &[], &[w.clone()], at(31))
         else {

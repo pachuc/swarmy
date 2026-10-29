@@ -684,12 +684,14 @@ impl From<AgentReset> for swarmy_core::InferenceField {
     }
 }
 
-/// The cause of an agent's current self-requested GPU requirement.
+/// The cause of an agent's current GPU requirement, from `request_gpu` or an operator's `gpu_reason`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct GpuRequestView {
     pub reason: String,
     pub requested_at: String,
-    pub session_id: String,
+    /// The session that called `request_gpu`; absent when an operator gave the reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// Every client mutation has a key that survives retries of the same intent.
@@ -711,6 +713,10 @@ pub struct CreateAgent {
     pub gpu: Option<GpuMode>,
     #[serde(default)]
     pub allow_gpu_request: Option<bool>,
+    /// Why the operator set `gpu`; needs `gpu` shared or dedicated in the same request.
+    /// Recorded as the agent's GPU request with no session.
+    #[serde(default)]
+    pub gpu_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_token: Option<String>,
 }
@@ -730,6 +736,10 @@ pub struct UpdateAgent {
     pub gpu: Option<GpuMode>,
     #[serde(default)]
     pub allow_gpu_request: Option<bool>,
+    /// Why the operator set `gpu`; needs `gpu` shared or dedicated in the same request.
+    /// Recorded as the agent's GPU request with no session.
+    #[serde(default)]
+    pub gpu_reason: Option<String>,
     #[serde(default)]
     pub resets: Vec<AgentReset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1733,6 +1743,7 @@ mod tests {
         }
         check!(WaitingReason, {"wake_at":"2026-09-23T12:00:00Z","reasons":["provider rate limit"]});
         check!(ImageRef, {"name":"base","tag":"dev"});
+        check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s","requirements":{"memory_mib":768,"gpu":"none"},"allow_gpu_request":false});
         check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s","requirements":{"memory_mib":768,"gpu":"none"},"allow_gpu_request":false});
         check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s","requirements":{"memory_mib":768,"gpu":"shared"},"allow_gpu_request":true,"gpu_request":{"reason":"render test","requested_at":"2026-10-29T12:00:00Z","session_id":"s"}});
         check!(Session, {"id":"s","agent_id":"a","kind":"named","state":"sleeping","log_id":{"kind":"session","id":"s"},"head_sequence":2,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":{"wake_at":null,"reasons":["timer"]},"main":false});

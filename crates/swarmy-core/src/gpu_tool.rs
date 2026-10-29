@@ -5,6 +5,28 @@ use serde::Deserialize;
 pub const REQUEST_GPU_TOOL: &str = "request_gpu";
 pub const RELEASE_GPU_TOOL: &str = "release_gpu";
 pub const MAX_GPU_REASON_CHARS: usize = 500;
+
+/// Why a GPU requirement was set: trimmed, 1-500 characters, not blank.
+/// `request_gpu` and an operator's `--gpu-reason` share this rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GpuReason(String);
+
+impl GpuReason {
+    /// # Errors
+    /// Rejects a reason that is blank or over 500 characters after trimming.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let reason = text.trim();
+        if reason.is_empty() || reason.chars().count() > MAX_GPU_REASON_CHARS {
+            return Err("reason must be 1-500 characters and not blank".into());
+        }
+        Ok(Self(reason.into()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 pub const GPU_REQUEST_NOT_ALLOWED: &str = "This agent is not allowed to change its GPU requirement, so nothing changed. An operator can allow it with: swarmy agent set <agent> --allow-gpu-request true";
 pub const GPU_REQUEST_NEEDS_AGENT: &str = "request_gpu and release_gpu work only for named agents. This session's computer belongs to no named agent, so nothing changed.";
 pub const GPU_TOOL_NOT_ALONE: &str = "No tool call in this response ran. request_gpu and release_gpu move your computer, so each must be the only tool call in its response. Call it on its own, then repeat the other calls.";
@@ -58,13 +80,10 @@ impl GpuToolCall {
                     Ok(args) => args,
                     Err(error) => return Err(error.to_string()),
                 };
-                let reason = args.reason.trim();
-                if reason.is_empty() || reason.chars().count() > MAX_GPU_REASON_CHARS {
-                    return Err("reason must be 1-500 characters and not blank".into());
-                }
+                let reason = GpuReason::parse(&args.reason)?;
                 Ok(Self::Request {
                     mode: args.mode,
-                    reason: reason.into(),
+                    reason: reason.as_str().into(),
                 })
             }
             RELEASE_GPU_TOOL => match serde_json::from_value::<EmptyArguments>(arguments) {
@@ -112,6 +131,17 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use serde_json::json;
+    #[test]
+    fn gpu_reason_trims_and_bounds() {
+        assert_eq!(GpuReason::parse("  x  ").unwrap().as_str(), "x");
+        for text in [" ", "", &"x".repeat(501)] {
+            assert_eq!(
+                GpuReason::parse(text),
+                Err("reason must be 1-500 characters and not blank".into())
+            );
+        }
+        assert!(GpuReason::parse(&"x".repeat(500)).is_ok());
+    }
     #[test]
     fn gpu_tool_arguments_parse_and_reject() {
         assert_eq!(

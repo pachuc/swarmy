@@ -132,6 +132,8 @@ pub enum DomainError {
     GpuUnavailable { detail: String },
     #[error("the memory requirement can only change after the current placement is evicted")]
     ActiveSandboxRequirements,
+    #[error("a GPU reason needs a shared or dedicated GPU requirement in the same change")]
+    GpuReasonWithoutCard,
     #[error("placement already exists")]
     PlacementExists,
     #[error("volume does not exist")]
