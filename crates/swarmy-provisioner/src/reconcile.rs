@@ -190,8 +190,8 @@ impl Reconciler {
             }
         }
         if record.settled()
-            && (self.nodes.is_none() || record.applied == record.desired)
-            && !self.holds_failed(record).await?
+            && (self.nodes.is_none()
+                || (record.applied == record.desired && !self.holds_failed(record).await?))
         {
             return Ok(GroupProgress::Join(None));
         }
