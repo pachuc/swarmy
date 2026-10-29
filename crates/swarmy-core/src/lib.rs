@@ -55,6 +55,9 @@ pub use tool::{
     cap_tool_output, tool_spill_path,
 };
 
+mod price;
+pub use price::HourlyPrice;
+
 mod placement;
 pub use placement::{AgentCallStatus, PlacementChangeReason, PlacementRecord};
 

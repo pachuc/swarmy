@@ -144,7 +144,7 @@ mod tests {
     use clap::Parser;
     fn list() -> MachineList {
         let first: Machine = serde_json::from_value(serde_json::json!({
-            "id":"01JC0000000000000000000001", "group":"gpu", "module":"scaleway", "size":"L4-1-24G", "location":"fr-par-2", "address":null, "node_id":"node-1", "state":"joined", "requested_at":"2026-10-29T10:55:00Z", "created_at":null, "provisioned_at":null, "joined_at":null, "drain_requested_at":null, "destroyed_at":null,
+            "id":"01JC0000000000000000000001", "group":"gpu", "name":"fleet-gpu-1", "module":"scaleway", "size":"L4-1-24G", "location":"fr-par-2", "address":null, "node_id":"node-1", "state":"joined", "requested_at":"2026-10-29T10:55:00Z", "created_at":null, "provisioned_at":null, "joined_at":null, "drain_requested_at":null, "destroyed_at":null,
             "cause":{"agent_id":null,"agent_name":null,"session_id":null,"reason":"fleet task 01M63CEJ needs a GPU"}, "hourly_price_micros":750_000, "currency":"EUR", "billing":"per_started_hour", "failure":null, "cost_micros":1_500_000, "cost":"1.5000", "window_cost_micros":750_000, "window_cost":"0.7500", "current_agents":[{"agent_id":"agent-1","agent_name":"worker-3","since":"2026-10-29T10:55:00Z"}]
         })).unwrap();
         let mut second = first.clone();
@@ -184,7 +184,13 @@ mod tests {
             "machines from 2026-10-29T10:00:00Z to 2026-10-29T12:00:00Z:\n  01JC0000000000000000000001 gpu L4-1-24G joined cost=EUR 0.7500\n  total cost=EUR 0.7500"
         );
         let mut empty = list;
-        empty.machines.clear();
+        for machine in &mut empty.machines {
+            machine.window_cost_micros = Some(0);
+        }
+        assert_eq!(render_cost_section(&empty), None);
+        for machine in &mut empty.machines {
+            machine.window_cost_micros = None;
+        }
         assert_eq!(render_cost_section(&empty), None);
     }
     #[test]

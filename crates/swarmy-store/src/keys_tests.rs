@@ -132,6 +132,10 @@ fn family_key_layout_matches_checked_in_hex() {
             "machine_assignment_open",
             keys.machine_assignment_open(machineid, agentid),
         ),
+        (
+            "machine_by_group",
+            keys.machine_by_group("g", "n", machineid),
+        ),
         ("manifest", keys.manifest(manifestid)),
         ("manifest_parent", keys.manifest_parent(manifestid)),
         (

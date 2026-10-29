@@ -1,13 +1,22 @@
 //! Durable elastic machine records are the cost source for rented machines.
 //! Cost is derived at read time, not accumulated by a background writer.
 //!
-//! Transitions: Requested -> Creating -> Provisioning (Created), Provisioning
-//! -> Provisioning (Provisioned) -> Joined, Provisioning or Joined -> Draining,
-//! Requested/Draining/Failed/Orphaned -> Destroyed. Requested through Draining
-//! may fail; Creating through Failed (except Requested) may become Orphaned.
-//! Destroyed is terminal.
+//! | Transition | Allowed from | Result state | Sets |
+//! |---|---|---|---|
+//! | `Creating` | Requested | `Creating` | nothing |
+//! | `Created { address }` | `Creating` | Provisioning | `created_at`, `address` |
+//! | `Provisioned` | Provisioning, only while `provisioned_at` is None | Provisioning (unchanged) | `provisioned_at` |
+//! | `Joined { node_id }` | Provisioning, only once `provisioned_at` is Some | Joined | `joined_at`, `node_id` |
+//! | `DrainRequested` | Provisioning, Joined | Draining | `drain_requested_at` |
+//! | `Destroyed` | Requested, Draining, Failed, Orphaned | `Destroyed` | `destroyed_at` |
+//! | `Failed { detail }` | Requested, Creating, Provisioning, Joined, Draining | Failed | `failure = Some(detail)` |
+//! | `Orphaned { detail }` | Creating, Provisioning, Joined, Draining, Failed | Orphaned | `failure = Some(detail)` |
+//!
+//! Every other pair is rejected and leaves the record unchanged. Destroyed is terminal.
+//! A machine is active unless Destroyed, or Failed before cloud creation.
+//! Billing units are anchored at `created_at`; the first is billed on creation.
 
-use crate::{AgentId, MachineId, NodeId, SessionId};
+use crate::{AgentId, HourlyPrice, MachineId, NodeId, SessionId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -83,14 +92,15 @@ pub struct MachineCause {
 pub struct NewMachine {
     pub machine_id: MachineId,
     pub group: String,
+    /// The `OpenTofu` machine name, for example `fleet-gpu-1`; unique among active machines of the group.
+    pub name: String,
     /// `OpenTofu` module name from the group spec.
     pub module: String,
     pub size: String,
     pub location: String,
     pub cause: MachineCause,
-    /// Millionths of `currency`, copied from the group at request time.
-    pub hourly_price_micros: u64,
-    pub currency: String,
+    /// Copied from the group at request time.
+    pub hourly_price: HourlyPrice,
     pub billing: BillingGranularity,
 }
 impl NewMachine {
@@ -100,6 +110,7 @@ impl NewMachine {
         MachineRecord {
             machine_id: self.machine_id,
             group: self.group.clone(),
+            name: self.name.clone(),
             module: self.module.clone(),
             size: self.size.clone(),
             location: self.location.clone(),
@@ -113,8 +124,7 @@ impl NewMachine {
             drain_requested_at: None,
             destroyed_at: None,
             cause: self.cause.clone(),
-            hourly_price_micros: self.hourly_price_micros,
-            currency: self.currency.clone(),
+            hourly_price: self.hourly_price.clone(),
             billing: self.billing,
             failure: None,
         }
@@ -124,6 +134,8 @@ impl NewMachine {
 pub struct MachineRecord {
     pub machine_id: MachineId,
     pub group: String,
+    /// The `OpenTofu` machine name, for example `fleet-gpu-1`; unique among active machines of the group.
+    pub name: String,
     pub module: String,
     pub size: String,
     pub location: String,
@@ -137,8 +149,7 @@ pub struct MachineRecord {
     pub drain_requested_at: Option<Timestamp>,
     pub destroyed_at: Option<Timestamp>,
     pub cause: MachineCause,
-    pub hourly_price_micros: u64,
-    pub currency: String,
+    pub hourly_price: HourlyPrice,
     pub billing: BillingGranularity,
     pub failure: Option<String>,
 }
@@ -267,7 +278,7 @@ impl MachineRecord {
     fn price_of_units(&self, units: u128) -> u64 {
         let per_hour = self.billing.units_per_hour();
         let micros = units
-            .saturating_mul(u128::from(self.hourly_price_micros))
+            .saturating_mul(u128::from(self.hourly_price.micros))
             .saturating_add(per_hour / 2)
             / per_hour;
         u64::try_from(micros).unwrap_or(u64::MAX)
@@ -306,6 +317,7 @@ mod tests {
         let mut record = NewMachine {
             machine_id: MachineId::from_ulid(0.into()),
             group: "gpu".into(),
+            name: "gpu-1".into(),
             module: "scaleway".into(),
             size: "L4".into(),
             location: "par".into(),
@@ -314,8 +326,10 @@ mod tests {
                 session: None,
                 reason: "test".into(),
             },
-            hourly_price_micros: 750_000,
-            currency: "EUR".into(),
+            hourly_price: HourlyPrice {
+                micros: 750_000,
+                currency: "EUR".into(),
+            },
             billing: BillingGranularity::PerStartedHour,
         }
         .record(t(0));
@@ -359,7 +373,7 @@ mod tests {
             row.destroyed_at = Some(t(seconds));
             assert_eq!(row.cost_micros(t(5000)), expected);
         }
-        row.hourly_price_micros = 1_000_000;
+        row.hourly_price.micros = 1_000_000;
         row.destroyed_at = Some(t(1));
         assert_eq!(row.cost_micros(t(5000)), 16_667);
         row.destroyed_at = Some(t(170));
@@ -392,7 +406,7 @@ mod tests {
             .sum::<u64>();
         assert_eq!(sum, row.cost_micros(t(10000)));
         row.billing = BillingGranularity::PerStartedMinute;
-        row.hourly_price_micros = 1_000_000;
+        row.hourly_price.micros = 1_000_000;
         row.destroyed_at = Some(t(170));
         assert_eq!(row.cost_micros_between(t(0), t(60), t(200)), 16_667);
         assert_eq!(row.cost_micros_between(t(60), t(180), t(200)), 33_333);

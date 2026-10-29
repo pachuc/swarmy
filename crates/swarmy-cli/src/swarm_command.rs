@@ -15,12 +15,6 @@ pub(crate) fn parse_name(value: &str) -> Result<String, swarmy_config::Error> {
 }
 #[derive(Subcommand)]
 pub(crate) enum Command {
-    /// List elastic machines with state, age, node, cost and cause
-    Machines {
-        /// Include destroyed and failed-before-creation machines
-        #[arg(long)]
-        all: bool,
-    },
     /// Write a new swarm spec; --local runs the stack and services on this machine
     #[command(group(clap::ArgGroup::new("kind").required(true).args(["local", "host", "on"])))]
     Create {
@@ -184,6 +178,12 @@ pub(crate) enum Command {
     Supervise { state: PathBuf, core: PathBuf },
     /// List registered swarms; `*` marks the current one
     Ls,
+    /// List elastic machines with state, age, node, cost and cause
+    Machines {
+        /// Include destroyed and failed-before-creation machines
+        #[arg(long)]
+        all: bool,
+    },
     /// Show a swarm's API, record, and spec (default: the swarm this command would use)
     Show {
         #[arg(value_parser = parse_name)]

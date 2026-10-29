@@ -1136,7 +1136,6 @@ impl SandboxState {
     }
 }
 
-/// Versioned resource routes. These signatures are mirrored by the server router.
 /// Lifecycle state of one elastic machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -1192,6 +1191,7 @@ pub struct MachineAgent {
 pub struct Machine {
     pub id: String,
     pub group: String,
+    pub name: String,
     pub module: String,
     pub size: String,
     pub location: String,
@@ -1232,6 +1232,7 @@ pub struct MachineList {
     pub totals: Vec<MachineCostTotal>,
 }
 
+/// Versioned resource routes. These signatures are mirrored by the server router.
 pub mod api_paths {
     use super::{
         Agent, AgentDeleted, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession,
@@ -1506,9 +1507,9 @@ pub mod api_paths {
     pub fn usage() {}
     #[utoipa::path(get, path = "/v1/machines",
         params(
-            ("state" = Option<String>, Query, description = "active (default) or all"),
-            ("from" = Option<String>, Query, description = "Window start, requires to"),
-            ("to" = Option<String>, Query, description = "Window end, exclusive, requires from"),
+            ("state" = Option<String>, Query, description = "active (default) lists machines that may still cost money or are in progress; all includes destroyed ones"),
+            ("from" = Option<String>, Query, description = "Window start for window_cost, in the same forms as /v1/usage; requires to"),
+            ("to" = Option<String>, Query, description = "Window end, exclusive; requires from"),
         ),
         responses((status = 200, body = MachineList), (status = 400, body = ApiError), (status = 401, body = ApiError)))]
     pub fn list_machines() {}
@@ -1600,7 +1601,7 @@ mod tests {
         for billing in ["per_started_hour", "per_started_minute"] {
             check!(BillingGranularity, billing);
         }
-        check!(MachineList, {"as_of":"2026-10-29T12:00:00Z","from":null,"to":null,"machines":[{"id":"01JC0000000000000000000001","group":"gpu","module":"scaleway","size":"L4","location":"par","address":null,"node_id":null,"state":"requested","requested_at":"2026-10-29T12:00:00Z","created_at":null,"provisioned_at":null,"joined_at":null,"drain_requested_at":null,"destroyed_at":null,"cause":{"agent_id":null,"agent_name":null,"session_id":null,"reason":"task"},"hourly_price_micros":750_000,"currency":"EUR","billing":"per_started_hour","failure":null,"cost_micros":0,"cost":"0.0000","window_cost_micros":null,"window_cost":null,"current_agents":[]}],"totals":[{"currency":"EUR","cost_micros":0,"cost":"0.0000"}]});
+        check!(MachineList, {"as_of":"2026-10-29T12:00:00Z","from":null,"to":null,"machines":[{"id":"01JC0000000000000000000001","group":"gpu","name":"fleet-gpu-1","module":"scaleway","size":"L4","location":"par","address":null,"node_id":null,"state":"requested","requested_at":"2026-10-29T12:00:00Z","created_at":null,"provisioned_at":null,"joined_at":null,"drain_requested_at":null,"destroyed_at":null,"cause":{"agent_id":null,"agent_name":null,"session_id":null,"reason":"task"},"hourly_price_micros":750_000,"currency":"EUR","billing":"per_started_hour","failure":null,"cost_micros":0,"cost":"0.0000","window_cost_micros":null,"window_cost":null,"current_agents":[]}],"totals":[{"currency":"EUR","cost_micros":0,"cost":"0.0000"}]});
         check!(LogId, {"kind":"session","id":"s"});
         check!(LogId, {"kind":"timeline","id":"s"});
         check!(Cursor, {"log_id":{"kind":"session","id":"s"},"sequence":0});

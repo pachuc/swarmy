@@ -731,6 +731,7 @@ pub(crate) fn machine_view(
     api::Machine {
         id: record.machine_id.to_string(),
         group: record.group.clone(),
+        name: record.name.clone(),
         module: record.module.clone(),
         size: record.size.clone(),
         location: record.location.clone(),
@@ -761,8 +762,8 @@ pub(crate) fn machine_view(
             session_id: record.cause.session.map(|id| id.to_string()),
             reason: record.cause.reason.clone(),
         },
-        hourly_price_micros: record.hourly_price_micros,
-        currency: record.currency.clone(),
+        hourly_price_micros: record.hourly_price.micros,
+        currency: record.hourly_price.currency.clone(),
         billing: match record.billing {
             swarmy_core::BillingGranularity::PerStartedHour => {
                 api::BillingGranularity::PerStartedHour

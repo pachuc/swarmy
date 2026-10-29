@@ -599,9 +599,26 @@ async fn check_machine_responses(
     );
     let all = fixture.client.machines(true, None).await.unwrap();
     assert_eq!(all.machines.len(), 2);
+    let a_cost = all
+        .machines
+        .iter()
+        .find(|row| row.id == a.to_string())
+        .unwrap()
+        .cost_micros;
+    let b_machine = all
+        .machines
+        .iter()
+        .find(|row| row.id == b.to_string())
+        .unwrap();
+    assert_eq!(b_machine.cost_micros, 1_500_000);
+    assert_eq!(b_machine.cost, "1.5000");
     assert_eq!(
-        all.totals[0].cost_micros,
-        all.machines.iter().map(|row| row.cost_micros).sum::<u64>()
+        all.totals,
+        vec![swarmy_api_types::MachineCostTotal {
+            currency: "EUR".into(),
+            cost_micros: a_cost + 1_500_000,
+            cost: swarmy_core::format_micros(a_cost + 1_500_000),
+        }]
     );
     let from = t
         .checked_add(jiff::SignedDuration::from_secs(1800))
@@ -614,14 +631,20 @@ async fn check_machine_responses(
         .machines(true, Some((&from.to_string(), &to.to_string())))
         .await
         .unwrap();
+    let b_window = window
+        .machines
+        .iter()
+        .find(|row| row.id == b.to_string())
+        .unwrap();
+    assert_eq!(b_window.window_cost_micros, Some(750_000));
+    assert_eq!(b_window.window_cost.as_deref(), Some("0.7500"));
     assert_eq!(
+        window.totals[0].cost_micros,
         window
             .machines
             .iter()
-            .find(|row| row.id == b.to_string())
-            .unwrap()
-            .window_cost_micros,
-        Some(750_000)
+            .map(|row| row.window_cost_micros.unwrap())
+            .sum::<u64>()
     );
     for (query, code) in [
         ("state=bogus", "invalid_state"),
@@ -642,7 +665,8 @@ async fn check_machine_responses(
 #[tokio::test]
 async fn machines_route_lists_cost_window_and_current_agents() {
     use swarmy_core::{
-        BillingGranularity, MachineCause, MachineId, MachineTransition, NewMachine, NodeId,
+        BillingGranularity, HourlyPrice, MachineCause, MachineId, MachineTransition, NewMachine,
+        NodeId,
     };
     let Some(fixture) = Fixture::new().await else {
         return;
@@ -664,6 +688,7 @@ async fn machines_route_lists_cost_window_and_current_agents() {
     let a = NewMachine {
         machine_id: MachineId::from_ulid(Ulid::generate()),
         group: "gpu".into(),
+        name: "fleet-gpu-1".into(),
         module: "scaleway".into(),
         size: "L4".into(),
         location: "par".into(),
@@ -672,13 +697,16 @@ async fn machines_route_lists_cost_window_and_current_agents() {
             session: None,
             reason: "fleet task needs a GPU".into(),
         },
-        hourly_price_micros: 750_000,
-        currency: "EUR".into(),
+        hourly_price: HourlyPrice {
+            micros: 750_000,
+            currency: "EUR".into(),
+        },
         billing: BillingGranularity::PerStartedHour,
     };
     let b = NewMachine {
         machine_id: MachineId::from_ulid(Ulid::generate()),
         group: "gpu".into(),
+        name: "fleet-gpu-2".into(),
         ..a.clone()
     };
     let created_a = now

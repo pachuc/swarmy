@@ -1,6 +1,6 @@
 //! Transactional elastic-machine ledger and assignment intervals.
 use crate::{DomainError, Result, Store, StoreError, read, scan_all, write};
-use foundationdb::Transaction;
+use foundationdb::{Transaction, tuple::Subspace};
 use jiff::Timestamp;
 use swarmy_core::{
     AgentId, MachineAssignment, MachineId, MachineRecord, MachineState, MachineTransition,
@@ -18,13 +18,28 @@ pub enum MachineFilter {
 fn invalid(field: &str) -> StoreError {
     StoreError::Domain(DomainError::InvalidMachine(field.to_owned()))
 }
-fn id_from(bytes: &[u8]) -> Result<MachineId> {
-    let bytes: [u8; 16] = bytes.try_into()?;
-    Ok(MachineId::from_ulid(u128::from_be_bytes(bytes).into()))
+impl MachineFilter {
+    fn matches(self, record: &MachineRecord) -> bool {
+        match self {
+            Self::All => true,
+            Self::Active => record.is_active(),
+            Self::State(state) => record.state == state,
+        }
+    }
 }
-fn agent_from(bytes: &[u8]) -> Result<AgentId> {
-    let bytes: [u8; 16] = bytes.try_into()?;
-    Ok(AgentId::from_ulid(u128::from_be_bytes(bytes).into()))
+fn open_assignment(
+    space: &Subspace,
+    machine: MachineId,
+    key: &[u8],
+    value: &[u8],
+) -> Result<MachineAssignment> {
+    let (bytes,): (Vec<u8>,) = space.unpack(key)?;
+    Ok(MachineAssignment {
+        machine,
+        agent: crate::keys::agent_id(&bytes)?,
+        from: decode(value)?,
+        to: None,
+    })
 }
 impl Store {
     /// Create a Requested record, validating its descriptive fields and currency.
@@ -37,6 +52,7 @@ impl Store {
     ) -> Result<MachineRecord> {
         for (name, value) in [
             ("group", &machine.group),
+            ("name", &machine.name),
             ("module", &machine.module),
             ("size", &machine.size),
             ("location", &machine.location),
@@ -46,8 +62,7 @@ impl Store {
                 return Err(invalid(name));
             }
         }
-        if machine.currency.len() != 3 || !machine.currency.bytes().all(|b| b.is_ascii_uppercase())
-        {
+        if !machine.hourly_price.currency_is_valid() {
             return Err(invalid("currency"));
         }
         self.transaction(|trx| async move {
@@ -55,8 +70,30 @@ impl Store {
             if read::<MachineRecord>(&trx, &key).await?.is_some() {
                 return Err(StoreError::Domain(DomainError::MachineExists));
             }
+            let space = self
+                .keys()
+                .machine_by_group_name_space(&machine.group, &machine.name);
+            for (index_key, _) in scan_all(&trx, space.range()).await? {
+                let (bytes,): (Vec<u8>,) = space.unpack(&index_key)?;
+                let existing = read::<MachineRecord>(
+                    &trx,
+                    &self.keys().machine(crate::keys::machine_id(&bytes)?),
+                )
+                .await?
+                .ok_or(crate::StorageError::Corrupt)?;
+                if existing.is_active() {
+                    return Err(StoreError::Domain(DomainError::MachineNameInUse));
+                }
+            }
             let record = machine.record(at);
             write(&trx, &key, &record)?;
+            write(
+                &trx,
+                &self
+                    .keys()
+                    .machine_by_group(&machine.group, &machine.name, machine.machine_id),
+                &(),
+            )?;
             Ok(record)
         })
         .await
@@ -91,23 +128,36 @@ impl Store {
         self.transaction(|trx| async move { read(&trx, &self.keys().machine(id)).await })
             .await
     }
-    /// List records by request id, optionally filtering on state or activity.
+    /// List records by request id across all groups, or by name within one group.
     /// # Errors
     /// Storage or decoding errors.
-    pub async fn list_machines(&self, filter: MachineFilter) -> Result<Vec<MachineRecord>> {
-        let (begin, end) = self.keys().machine_space().range();
-        let mut result = Vec::new();
-        for (_, value) in self.scan_all_pages(begin, end).await? {
-            let record: MachineRecord = decode(&value)?;
-            if match filter {
-                MachineFilter::All => true,
-                MachineFilter::Active => record.is_active(),
-                MachineFilter::State(state) => record.state == state,
-            } {
-                result.push(record);
+    pub async fn list_machines(
+        &self,
+        group: Option<&str>,
+        filter: MachineFilter,
+    ) -> Result<Vec<MachineRecord>> {
+        let mut records = Vec::new();
+        if let Some(group) = group {
+            let space = self.keys().machine_by_group_space(group);
+            let (begin, end) = space.range();
+            for (key, _) in self.scan_all_pages(begin, end).await? {
+                let (_, bytes): (String, Vec<u8>) = space.unpack(&key)?;
+                let record = self
+                    .get_machine(crate::keys::machine_id(&bytes)?)
+                    .await?
+                    .ok_or(crate::StorageError::Corrupt)?;
+                records.push(record);
+            }
+        } else {
+            let (begin, end) = self.keys().machine_space().range();
+            for (_, value) in self.scan_all_pages(begin, end).await? {
+                records.push(decode(&value)?);
             }
         }
-        Ok(result)
+        Ok(records
+            .into_iter()
+            .filter(|record| filter.matches(record))
+            .collect())
     }
     /// Open a new interval only for a joined machine; an existing open interval is unchanged.
     /// # Errors
@@ -172,11 +222,27 @@ impl Store {
     ) -> Result<()> {
         let space = self.keys().machine_assignment_open_space(machine);
         for (key, value) in scan_all(trx, space.range()).await? {
-            let (bytes,): (Vec<u8>,) = space.unpack(&key)?;
-            self.close_assignment_in(trx, machine, agent_from(&bytes)?, decode(&value)?, at)
+            let row = open_assignment(&space, machine, &key, &value)?;
+            self.close_assignment_in(trx, machine, row.agent, row.from, at)
                 .await?;
         }
         Ok(())
+    }
+    /// Every currently open interval on a machine, ordered by start and agent.
+    /// # Errors
+    /// Storage or decoding errors.
+    pub async fn open_machine_assignments(
+        &self,
+        machine: MachineId,
+    ) -> Result<Vec<MachineAssignment>> {
+        let space = self.keys().machine_assignment_open_space(machine);
+        let (begin, end) = space.range();
+        let mut rows = Vec::new();
+        for (key, value) in self.scan_all_pages(begin, end).await? {
+            rows.push(open_assignment(&space, machine, &key, &value)?);
+        }
+        rows.sort_by_key(|row| (row.from, row.agent));
+        Ok(rows)
     }
     /// Close an open interval. Returns false when nothing was open.
     /// # Errors
@@ -225,7 +291,7 @@ impl Store {
         let mut rows = Vec::new();
         for (key, _) in self.scan_all_pages(begin, end).await? {
             let (bytes, (seconds, nanos)): (Vec<u8>, (i64, i32)) = space.unpack(&key)?;
-            let machine = id_from(&bytes)?;
+            let machine = crate::keys::machine_id(&bytes)?;
             let from = Timestamp::new(seconds, nanos).map_err(|_| crate::StorageError::Corrupt)?;
             let row = self
                 .transaction(|trx| async move {

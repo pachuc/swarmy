@@ -1182,7 +1182,7 @@
           {
             "name": "state",
             "in": "query",
-            "description": "active (default) or all",
+            "description": "active (default) lists machines that may still cost money or are in progress; all includes destroyed ones",
             "required": false,
             "schema": {
               "type": "string"
@@ -1191,7 +1191,7 @@
           {
             "name": "from",
             "in": "query",
-            "description": "Window start, requires to",
+            "description": "Window start for window_cost, in the same forms as /v1/usage; requires to",
             "required": false,
             "schema": {
               "type": "string"
@@ -1200,7 +1200,7 @@
           {
             "name": "to",
             "in": "query",
-            "description": "Window end, exclusive, requires from",
+            "description": "Window end, exclusive; requires from",
             "required": false,
             "schema": {
               "type": "string"
@@ -3973,6 +3973,7 @@
         "required": [
           "id",
           "group",
+          "name",
           "module",
           "size",
           "location",
@@ -4061,6 +4062,9 @@
             "type": "string"
           },
           "module": {
+            "type": "string"
+          },
+          "name": {
             "type": "string"
           },
           "node_id": {
@@ -4214,7 +4218,7 @@
       },
       "MachineState": {
         "type": "string",
-        "description": "Versioned resource routes. These signatures are mirrored by the server router.\nLifecycle state of one elastic machine.",
+        "description": "Lifecycle state of one elastic machine.",
         "enum": [
           "requested",
           "creating",

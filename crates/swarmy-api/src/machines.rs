@@ -54,18 +54,19 @@ pub(crate) async fn list(
             ));
         }
     };
-    let records = state.store.list_machines(filter).await.map_err(storage)?;
+    let records = state
+        .store
+        .list_machines(None, filter)
+        .await
+        .map_err(storage)?;
     let mut names: HashMap<AgentId, Option<String>> = HashMap::new();
     let mut open_rows = Vec::new();
     for record in &records {
-        let open: Vec<_> = state
+        let open = state
             .store
-            .machine_assignments(record.machine_id)
+            .open_machine_assignments(record.machine_id)
             .await
-            .map_err(storage)?
-            .into_iter()
-            .filter(|row| row.to.is_none())
-            .collect();
+            .map_err(storage)?;
         for id in open.iter().map(|row| row.agent).chain(record.cause.agent) {
             if let std::collections::hash_map::Entry::Vacant(entry) = names.entry(id) {
                 entry.insert(

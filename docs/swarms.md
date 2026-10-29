@@ -374,7 +374,7 @@ See [REMOTE.md](REMOTE.md#draining-a-node) for how draining works on a node.
 
 ## Machines
 
-Swarmy records every machine created for an elastic group: its group, size,
+Swarmy records every machine created for an elastic group: its group, OpenTofu machine name, size,
 location, state, lifecycle timestamps, hourly price and currency, and cause.
 The cause includes an agent, a session and a free-text reason; the fleet driver
 puts its tasky id in the reason.
@@ -386,7 +386,7 @@ puts its tasky id in the reason.
 - Draining: new assignments have stopped while existing work finishes.
 - Destroyed: the machine has been removed; this state is final.
 - Failed: an operation failed; a machine already created keeps costing until destroyed.
-- Orphaned: ownership is uncertain and cleanup is needed.
+- Orphaned: swarmy lost track of a cloud machine that may still exist and cost money; check the provider and remove it by hand.
 
 The first billing unit starts on creation and is billed immediately. By default
 billing is per started hour; a record can instead specify per started minute.

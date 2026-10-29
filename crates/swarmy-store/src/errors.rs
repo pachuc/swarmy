@@ -78,6 +78,8 @@ pub enum DomainError {
     MachineMissing,
     #[error("machine id already exists")]
     MachineExists,
+    #[error("an active machine in this group already has that name")]
+    MachineNameInUse,
     #[error("invalid machine record: {0}")]
     InvalidMachine(String),
     #[error(transparent)]
