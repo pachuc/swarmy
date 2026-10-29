@@ -56,7 +56,9 @@ pub use tool::{
 };
 
 mod price;
-pub use price::HourlyPrice;
+pub use price::{HourlyPrice, InvalidPrice};
+pub mod elastic;
+pub use elastic::{ElasticGroupDefinition, ElasticGroupRecord, MAX_ELASTIC_MACHINES};
 
 mod placement;
 pub use placement::{AgentCallStatus, PlacementChangeReason, PlacementRecord};

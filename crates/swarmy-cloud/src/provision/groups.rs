@@ -30,10 +30,10 @@ pub struct MachineGroups<'a> {
 /// True if any group creates machines.
 #[must_use]
 pub fn has_module_groups(spec: &SwarmSpec) -> bool {
-    spec.groups.values().any(|g| is_module(&g.module))
+    spec.groups.values().any(|g| opentofu_group(g))
 }
-fn is_module(module: &Module) -> bool {
-    !matches!(module, Module::Existing | Module::Local)
+fn opentofu_group(group: &GroupSpec) -> bool {
+    !matches!(group.module, Module::Existing | Module::Local) && !group.elastic
 }
 /// Module groups in placement order.
 #[must_use]
@@ -45,7 +45,7 @@ pub fn apply_order(spec: &SwarmSpec) -> Vec<String> {
     order.extend(spec.placement.nodes.iter().cloned());
     let mut result = Vec::new();
     for name in order {
-        if !result.contains(&name) && spec.groups.get(&name).is_some_and(|g| is_module(&g.module)) {
+        if !result.contains(&name) && spec.groups.get(&name).is_some_and(|g| opentofu_group(g)) {
             result.push(name);
         }
     }
@@ -67,14 +67,6 @@ fn root(dir: &Path) -> PathBuf {
 }
 fn group_dir(dir: &Path, group: &str) -> PathBuf {
     root(dir).join(group)
-}
-fn valid_name(name: &str) -> bool {
-    name.len() <= 20
-        && name.starts_with(|c: char| c.is_ascii_lowercase())
-        && name.ends_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && name
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
 }
 fn module_name(module: &Module) -> String {
     module.clone().into()
@@ -201,13 +193,13 @@ pub(crate) fn preflight(
             )));
         }
         seen.push(name.clone());
-        if !valid_name(&spec.name) {
+        if !swarmy_config::is_opentofu_name(&spec.name) {
             return Err(Error::other(format!(
                 "swarm \"{}\": OpenTofu groups need a swarm name of 1-20 lowercase letters, digits and hyphens that starts with a letter and does not end with a hyphen",
                 spec.name
             )));
         }
-        if !valid_name(&name) {
+        if !swarmy_config::is_opentofu_name(&name) {
             return Err(Error::other(format!(
                 "group \"{name}\": OpenTofu groups need a group name of 1-20 lowercase letters, digits and hyphens that starts with a letter and does not end with a hyphen"
             )));

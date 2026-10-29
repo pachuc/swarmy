@@ -48,6 +48,9 @@ pub enum CredentialKind {
         expires_at: Timestamp,
         extra: BTreeMap<String, String>,
     },
+    MachineProvider {
+        env: BTreeMap<String, String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +73,7 @@ pub enum CredentialEntryKind {
     Subscription,
     ApiKey,
     Cloud,
+    MachineProvider,
 }
 
 impl CredentialEntryKind {
@@ -79,6 +83,7 @@ impl CredentialEntryKind {
             Self::Subscription => "subscription",
             Self::ApiKey => "api-key",
             Self::Cloud => "cloud",
+            Self::MachineProvider => "machine-provider",
         }
     }
 }
@@ -90,12 +95,16 @@ impl CredentialRecord {
             CredentialKind::OAuth { .. } => CredentialEntryKind::Subscription,
             CredentialKind::ApiKey { .. } if self.bookkeeping.cloud => CredentialEntryKind::Cloud,
             CredentialKind::ApiKey { .. } => CredentialEntryKind::ApiKey,
+            CredentialKind::MachineProvider { .. } => CredentialEntryKind::MachineProvider,
         }
     }
 
     #[must_use]
     pub fn status(&self, now: Timestamp) -> CredentialStatus {
         match &self.kind {
+            CredentialKind::MachineProvider { env } if env.is_empty() => {
+                CredentialStatus::NeedsLogin
+            }
             CredentialKind::ApiKey { key, .. }
                 if key.is_empty() || self.bookkeeping.needs_login =>
             {

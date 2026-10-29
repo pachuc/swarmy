@@ -1,12 +1,13 @@
 //! Placement always names groups. To run services on this machine, declare
 //! `[groups.local] module = "local"` and set `services = "local"`. The value
 //! is a group name, not a keyword; `swarm create --local` will write that group.
-use crate::{Error, names::is_valid_name};
+use crate::{Error, is_opentofu_name, names::is_valid_name};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
 };
+use swarmy_core::{HourlyPrice, MAX_ELASTIC_MACHINES};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SwarmSpec {
@@ -87,6 +88,18 @@ pub struct GroupSpec {
     /// Sandbox scratch: a block device or `dir:/path`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_storage: Option<String>,
+    /// The swarm's provisioner owns this group's machines.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub elastic: bool,
+    /// Maximum elastic machine count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<u32>,
+    /// Exact hourly price as a decimal string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_per_hour: Option<String>,
+    /// ISO 4217 currency code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -174,7 +187,17 @@ pub fn validate_swarm_name(name: &str) -> Result<(), Error> {
 }
 impl GroupSpec {
     #[must_use]
+    pub fn hourly_price(&self) -> Option<HourlyPrice> {
+        if !self.elastic {
+            return None;
+        }
+        HourlyPrice::parse(self.price_per_hour.as_deref()?, self.currency.as_deref()?).ok()
+    }
+    #[must_use]
     pub fn machines(&self) -> u32 {
+        if self.elastic {
+            return 0;
+        }
         match self.module {
             Module::Existing => u32::try_from(self.hosts.len()).unwrap_or(u32::MAX),
             Module::Local => 1,
@@ -182,7 +205,53 @@ impl GroupSpec {
         }
     }
 }
-fn group_failure(g: &str, group: &GroupSpec, node_only: bool) -> Option<String> {
+fn elastic_failure(swarm: &str, g: &str, group: &GroupSpec) -> Option<String> {
+    if !group.elastic {
+        return (group.max.is_some() || group.price_per_hour.is_some() || group.currency.is_some())
+            .then(|| {
+                format!(
+                    "group \"{g}\": max, price_per_hour and currency apply only to elastic groups"
+                )
+            });
+    }
+    if matches!(
+        group.module,
+        Module::Existing | Module::Local | Module::Path(_)
+    ) {
+        return Some(format!(
+            "group \"{g}\": elastic groups need a built-in module that creates machines, not {}",
+            group.module.label()
+        ));
+    }
+    if group.count.is_some() {
+        return Some(format!(
+            "group \"{g}\": an elastic group has no count; the provisioner sets its machine count between 0 and max"
+        ));
+    }
+    if !matches!(group.max, Some(1..=MAX_ELASTIC_MACHINES)) {
+        return Some(format!(
+            "group \"{g}\": an elastic group needs max between 1 and 50"
+        ));
+    }
+    let (Some(amount), Some(currency)) = (&group.price_per_hour, &group.currency) else {
+        return Some(format!(
+            "group \"{g}\": an elastic group needs price_per_hour and currency, for example price_per_hour = \"0.75\" and currency = \"EUR\""
+        ));
+    };
+    if let Err(error) = HourlyPrice::parse(amount, currency) {
+        return Some(format!("group \"{g}\": {error}"));
+    }
+    if !is_opentofu_name(swarm) || !is_opentofu_name(g) {
+        return Some(format!(
+            "group \"{g}\": elastic groups need swarm and group names of 1-20 lowercase letters, digits and hyphens that start with a letter and do not end with a hyphen"
+        ));
+    }
+    None
+}
+fn group_failure(swarm: &str, g: &str, group: &GroupSpec, node_only: bool) -> Option<String> {
+    if let Some(message) = elastic_failure(swarm, g, group) {
+        return Some(message);
+    }
     if group.stack_dir.is_some() && group.module != Module::Local {
         return Some(format!(
             "group \"{g}\": stack_dir applies only to local groups"
@@ -191,9 +260,9 @@ fn group_failure(g: &str, group: &GroupSpec, node_only: bool) -> Option<String> 
     match &group.module {
         Module::HetznerCloud | Module::Aws | Module::Scaleway | Module::Path(_) => {
             let m = group.module.label();
-            if group.count.is_none() {
+            if group.count.is_none() && !group.elastic {
                 Some(format!("group \"{g}\": module {m} needs count"))
-            } else if group.count == Some(0) && !node_only {
+            } else if group.count == Some(0) && !node_only && !group.elastic {
                 Some(format!("group \"{g}\": count must be at least 1; only a group that runs nodes and neither the stack nor the services can have count 0"))
             } else if !group.hosts.is_empty() {
                 Some(format!(
@@ -277,6 +346,11 @@ impl SwarmSpec {
                     stack_dir,
                     sandboxes: None,
                     local_storage: None,
+
+                    elastic: false,
+                    max: None,
+                    price_per_hour: None,
+                    currency: None,
                 },
             )]
             .into(),
@@ -324,7 +398,7 @@ impl SwarmSpec {
             let node_only = self.placement.nodes.contains(g)
                 && *g != self.placement.stack
                 && *g != self.placement.services;
-            if let Some(message) = group_failure(g, group, node_only) {
+            if let Some(message) = group_failure(&self.name, g, group, node_only) {
                 return Err(Error::Spec(message));
             }
         }
@@ -342,6 +416,17 @@ impl SwarmSpec {
             return Err(Error::Spec(
                 "placement.nodes must name at least one group".into(),
             ));
+        }
+        for (g, group) in &self.groups {
+            if group.elastic
+                && (!self.placement.nodes.contains(g)
+                    || self.placement.stack == *g
+                    || self.placement.services == *g)
+            {
+                return Err(Error::Spec(format!(
+                    "group \"{g}\" is elastic, so it must be listed in placement.nodes and run neither the stack nor the services"
+                )));
+            }
         }
         let mut seen = BTreeSet::new();
         for g in &self.placement.nodes {

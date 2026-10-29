@@ -102,6 +102,11 @@ pub(crate) fn cloud_spec(name: &str, args: &CreateCloud) -> Result<SwarmSpec> {
         } else {
             None
         },
+
+        elastic: false,
+        max: None,
+        price_per_hour: None,
+        currency: None,
     };
     let mut groups = std::collections::BTreeMap::new();
     groups.insert("control".into(), group(size.clone(), 1, args.nodes == 0));
@@ -213,6 +218,11 @@ pub(crate) fn host_spec(registry: &Registry, name: &str, args: &CreateHost) -> R
                     ssh_key: std::fs::canonicalize(&args.ssh_key)?,
                     private_address: args.private_address.clone(),
                 }],
+
+                elastic: false,
+                max: None,
+                price_per_hour: None,
+                currency: None,
             },
         )]
         .into(),

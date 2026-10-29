@@ -342,6 +342,11 @@ fn mixed_cloud_stack_and_existing_nodes() {
                 ssh_key: f.key.clone(),
                 private_address: None,
             }],
+
+            elastic: false,
+            max: None,
+            price_per_hour: None,
+            currency: None,
         },
     );
     spec.placement.nodes = vec!["box".into()];

@@ -45,3 +45,14 @@ pub(crate) fn is_valid_name(name: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
+
+/// Whether a name is safe for an OpenTofu machine group.
+#[must_use]
+pub fn is_opentofu_name(name: &str) -> bool {
+    name.len() <= 20
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name.ends_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
