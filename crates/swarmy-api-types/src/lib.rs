@@ -1138,7 +1138,7 @@ impl SandboxState {
 
 /// Versioned resource routes. These signatures are mirrored by the server router.
 /// Lifecycle state of one elastic machine.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MachineState {
     Requested,
@@ -1152,7 +1152,7 @@ pub enum MachineState {
 }
 impl MachineState {
     #[must_use]
-    pub const fn as_str(&self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Requested => "requested",
             Self::Creating => "creating",
@@ -1166,7 +1166,7 @@ impl MachineState {
     }
 }
 /// Provider's billing-unit size.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BillingGranularity {
     PerStartedHour,
