@@ -5,7 +5,7 @@ use swarmy_core::{
 };
 use swarmy_store::{DomainError, MachineFilter};
 
-fn machine(group: &str) -> NewMachine {
+pub(super) fn machine(group: &str) -> NewMachine {
     NewMachine {
         machine_id: MachineId::from_ulid(Ulid::generate()),
         group: group.into(),

@@ -3,8 +3,8 @@ use crate::{DomainError, Result, Store, StoreError, read, scan_all, write};
 use foundationdb::{Transaction, tuple::Subspace};
 use jiff::Timestamp;
 use swarmy_core::{
-    AgentId, MachineAssignment, MachineId, MachineRecord, MachineState, MachineTransition,
-    NewMachine, decode,
+    AgentId, GpuRequirement, MachineAssignment, MachineId, MachineRecord, MachineState,
+    MachineTransition, NewMachine, NodeId, PlacementRecord, decode,
 };
 
 /// Which machine records a listing returns.
@@ -113,6 +113,12 @@ impl Store {
                 .await?
                 .ok_or(StoreError::Domain(DomainError::MachineMissing))?;
             record.apply(transition, at).map_err(DomainError::from)?;
+            if let MachineTransition::Joined { node_id } = transition
+                && *node_id == id.joined_node_id()
+            {
+                self.open_joined_placements_in(&trx, id, *node_id, at)
+                    .await?;
+            }
             if matches!(transition, MachineTransition::Destroyed) {
                 self.close_open_assignments_in(&trx, id, at).await?;
             }
@@ -120,6 +126,23 @@ impl Store {
             Ok(record)
         })
         .await
+    }
+    async fn open_joined_placements_in(
+        &self,
+        trx: &Transaction,
+        machine: MachineId,
+        node: NodeId,
+        at: Timestamp,
+    ) -> Result<()> {
+        let space = self.keys().placement_by_node_space(node);
+        for (_, bytes) in scan_all(trx, space.range()).await? {
+            let placement: PlacementRecord = decode(&bytes)?;
+            if placement.gpu != GpuRequirement::None {
+                self.open_assignment_in(trx, machine, placement.agent_id, at)
+                    .await?;
+            }
+        }
+        Ok(())
     }
     /// Read one record.
     /// # Errors
@@ -175,28 +198,73 @@ impl Store {
             if record.state != MachineState::Joined {
                 return Err(StoreError::Domain(DomainError::MachineNotJoined));
             }
-            let open = self.keys().machine_assignment_open(machine, agent);
-            if read::<Timestamp>(&trx, &open).await?.is_some() {
-                return Ok(());
-            }
-            write(
-                &trx,
-                &self.keys().machine_assignment(machine, agent, at),
-                &MachineAssignment {
-                    machine,
-                    agent,
-                    from: at,
-                    to: None,
-                },
-            )?;
-            write(
-                &trx,
-                &self.keys().machine_assignment_by_agent(agent, machine, at),
-                &(),
-            )?;
-            write(&trx, &open, &at)
+            self.open_assignment_in(&trx, machine, agent, at).await
         })
         .await
+    }
+    pub(crate) async fn joined_machine_in(
+        &self,
+        trx: &Transaction,
+        node: NodeId,
+    ) -> Result<Option<MachineId>> {
+        let machine = node.ledger_machine_id();
+        let record: Option<MachineRecord> = read(trx, &self.keys().machine(machine)).await?;
+        Ok(record
+            .filter(|r| r.node_id == Some(node) && r.state == MachineState::Joined)
+            .map(|_| machine))
+    }
+    pub(crate) async fn open_assignment_in(
+        &self,
+        trx: &Transaction,
+        machine: MachineId,
+        agent: AgentId,
+        at: Timestamp,
+    ) -> Result<()> {
+        let open = self.keys().machine_assignment_open(machine, agent);
+        if read::<Timestamp>(trx, &open).await?.is_some() {
+            return Ok(());
+        }
+        write(
+            trx,
+            &self.keys().machine_assignment(machine, agent, at),
+            &MachineAssignment {
+                machine,
+                agent,
+                from: at,
+                to: None,
+            },
+        )?;
+        write(
+            trx,
+            &self.keys().machine_assignment_by_agent(agent, machine, at),
+            &(),
+        )?;
+        write(trx, &open, &at)
+    }
+    pub(crate) async fn close_assignment_for_node_in(
+        &self,
+        trx: &Transaction,
+        node: NodeId,
+        agent: AgentId,
+        at: Timestamp,
+    ) -> Result<bool> {
+        self.close_machine_assignment_in(trx, node.ledger_machine_id(), agent, at)
+            .await
+    }
+    async fn close_machine_assignment_in(
+        &self,
+        trx: &Transaction,
+        machine: MachineId,
+        agent: AgentId,
+        at: Timestamp,
+    ) -> Result<bool> {
+        let Some(from) = read(trx, &self.keys().machine_assignment_open(machine, agent)).await?
+        else {
+            return Ok(false);
+        };
+        self.close_assignment_in(trx, machine, agent, from, at)
+            .await?;
+        Ok(true)
     }
     async fn close_assignment_in(
         &self,
@@ -254,14 +322,8 @@ impl Store {
         at: Timestamp,
     ) -> Result<bool> {
         self.transaction(|trx| async move {
-            let Some(from) =
-                read(&trx, &self.keys().machine_assignment_open(machine, agent)).await?
-            else {
-                return Ok(false);
-            };
-            self.close_assignment_in(&trx, machine, agent, from, at)
-                .await?;
-            Ok(true)
+            self.close_machine_assignment_in(&trx, machine, agent, at)
+                .await
         })
         .await
     }

@@ -4920,7 +4920,9 @@
           "local_storage",
           "max",
           "price_per_hour",
-          "currency"
+          "currency",
+          "primary_address",
+          "service_user"
         ],
         "properties": {
           "currency": {
@@ -4946,10 +4948,18 @@
           "price_per_hour": {
             "type": "string"
           },
+          "primary_address": {
+            "type": "string",
+            "description": "Public IPv4 address of the stack host; elastic machines tunnel to it."
+          },
           "sandboxes": {
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          },
+          "service_user": {
+            "type": "string",
+            "description": "Service login that owns swarmy on the stack host."
           },
           "size": {
             "type": "string"

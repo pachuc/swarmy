@@ -18,6 +18,10 @@ pub struct ElasticGroupDefinition {
     pub local_storage: String,
     pub max: u32,
     pub hourly_price: HourlyPrice,
+    /// Public IPv4 address of the stack host. Elastic machines tunnel to it, because they never share its private network.
+    pub primary_address: std::net::Ipv4Addr,
+    /// Service login that owns swarmy on every host of the swarm.
+    pub service_user: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ElasticGroupRecord {
@@ -55,6 +59,8 @@ mod tests {
                 local_storage: "dir:/x".into(),
                 max: 2,
                 hourly_price: HourlyPrice::parse("0.75", "EUR").unwrap(),
+                primary_address: std::net::Ipv4Addr::new(192, 0, 2, 1),
+                service_user: "swarmy".into(),
             },
             desired: 1,
             desired_reason: "manual".into(),
@@ -68,8 +74,9 @@ mod tests {
             bytes,
             [
                 1, 1, 115, 1, 103, 3, 97, 119, 115, 1, 120, 2, 101, 117, 1, 6, 100, 105, 114, 58,
-                47, 120, 2, 176, 227, 45, 3, 69, 85, 82, 1, 6, 109, 97, 110, 117, 97, 108, 1, 0, 0,
-                20, 49, 57, 55, 48, 45, 48, 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90
+                47, 120, 2, 176, 227, 45, 3, 69, 85, 82, 192, 0, 2, 1, 6, 115, 119, 97, 114, 109,
+                121, 1, 6, 109, 97, 110, 117, 97, 108, 1, 0, 0, 20, 49, 57, 55, 48, 45, 48, 49, 45,
+                48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90
             ]
         );
         assert_eq!(crate::decode::<ElasticGroupRecord>(&bytes).unwrap(), record);

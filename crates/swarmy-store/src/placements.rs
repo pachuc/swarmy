@@ -400,6 +400,7 @@ impl Store {
     }
 
     /// Place an absent computer, advancing its retained epoch counter.
+    /// Records machine assignment intervals for GPU placements on joined elastic machines.
     /// Checking absence and the counter in one transaction prevents duplicate grants.
     /// Recreating after release records `Eviction`, or `RequirementChange` after
     /// a requested release; the first placement records `Initial`.
@@ -446,6 +447,11 @@ impl Store {
                 gpu,
             };
             self.write_placement(&trx, &record)?;
+            if gpu != GpuRequirement::None
+                && let Some(machine) = self.joined_machine_in(&trx, node).await?
+            {
+                self.open_assignment_in(&trx, machine, agent, now).await?;
+            }
             write(
                 &trx,
                 &self.keys().placement_hosting(agent),
@@ -490,6 +496,7 @@ impl Store {
     }
 
     /// Clear a live placement and its node index, returning its capacity.
+    /// Records machine assignment intervals for GPU placements on joined elastic machines.
     /// The epoch counter survives release so old tokens can never become valid again.
     /// # Errors
     /// Rejects absent, expired, or replaced leases and storage errors.
@@ -512,6 +519,15 @@ impl Store {
             }
             self.free_computer(&trx, current.node_id, current.agent_id)
                 .await?;
+            if current.gpu != GpuRequirement::None {
+                self.close_assignment_for_node_in(
+                    &trx,
+                    current.node_id,
+                    current.agent_id,
+                    self.now(),
+                )
+                .await?;
+            }
             trx.clear(&self.keys().placement(current.agent_id));
             trx.clear(&self.keys().placement_hosting(current.agent_id));
             trx.clear(&self.keys().placement_address(current.agent_id));
@@ -553,6 +569,10 @@ impl Store {
                     .keys()
                     .placement_by_node(current.node_id, current.agent_id),
             );
+            if current.gpu != GpuRequirement::None {
+                self.close_assignment_for_node_in(&trx, current.node_id, current.agent_id, now)
+                    .await?;
+            }
             let gpu = self.reserve_computer(&trx, node, current.agent_id).await?;
             let hosting = self
                 .read_placement_hosting(&trx, &current)
@@ -577,6 +597,12 @@ impl Store {
             };
             trx.clear(&self.keys().placement_address(current.agent_id));
             self.write_placement(&trx, &record)?;
+            if gpu != GpuRequirement::None
+                && let Some(machine) = self.joined_machine_in(&trx, node).await?
+            {
+                self.open_assignment_in(&trx, machine, record.agent_id, now)
+                    .await?;
+            }
             write(
                 &trx,
                 &self.keys().placement_hosting(current.agent_id),
@@ -632,6 +658,10 @@ impl Store {
     ) -> Result<()> {
         trx.clear(&self.keys().placement_next_reason(agent));
         if let Some(current) = read::<PlacementRecord>(trx, &self.keys().placement(agent)).await? {
+            if current.gpu != GpuRequirement::None {
+                self.close_assignment_for_node_in(trx, current.node_id, agent, self.now())
+                    .await?;
+            }
             self.free_computer(trx, current.node_id, agent).await?;
             trx.clear(&self.keys().placement(agent));
             trx.clear(&self.keys().placement_hosting(agent));

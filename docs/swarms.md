@@ -512,6 +512,8 @@ billing is per started hour; a record can instead specify per started minute.
 Cost is computed when the record is read, not periodically written. Assignment
 intervals track each agent's use of the machine, and current agents come from
 open intervals.
+A GPU placement on a joined machine opens an interval; release or a move closes it.
+CPU sandboxes on a GPU machine are not counted.
 
 ```sh
 swarmy swarm machines

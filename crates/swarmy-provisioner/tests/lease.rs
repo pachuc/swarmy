@@ -57,6 +57,8 @@ async fn only_the_current_holder_applies() {
             local_storage: "dir:/tmp".into(),
             max: 2,
             hourly_price: HourlyPrice::parse("0.75", "EUR").unwrap(),
+            primary_address: "192.0.2.1".parse().unwrap(),
+            service_user: "swarmy".into(),
         })
         .await
         .unwrap();

@@ -140,7 +140,8 @@ impl SwarmHost for ssh::Ssh {
         ssh::adopt_key(node, source).await
     }
     async fn provision(&self, node: &Machine, primary: Option<&Machine>) -> Result<String> {
-        self.provision(node, primary).await
+        self.provision(node, primary.map(ssh::Primary::Remote))
+            .await
     }
     async fn services(
         &self,
@@ -169,7 +170,7 @@ impl SwarmHost for ssh::Ssh {
         ssh::drain_node(node, timeout, force).await
     }
     async fn revoke_tunnel(&self, node: &Machine, primary: &Machine) -> Result<()> {
-        ssh::revoke_tunnel(node, primary).await
+        ssh::revoke_tunnel(node, ssh::Primary::Remote(primary)).await
     }
     async fn stop(&self, node: &Machine) -> Result<()> {
         ssh::stop_units(node).await
@@ -202,7 +203,24 @@ fn machine(
         sandboxes,
         bucket: None,
         services: matches!(role, Role::Stack { services: true }),
+        node_id: None,
     }
+}
+/// A machine an elastic group created, as the provisioner joins it: a sandbox node
+/// with the group's sandboxes and storage, the swarm bucket, and its ledger node id.
+#[must_use]
+pub fn joining_node(
+    host: &RecordedHost,
+    service_user: &str,
+    sandboxes: u32,
+    local_storage: &str,
+    bucket: Option<swarmy_config::BucketSpec>,
+    node_id: swarmy_core::NodeId,
+) -> Machine {
+    let mut node = machine(host, service_user, Role::Node, sandboxes, local_storage);
+    node.bucket = bucket;
+    node.node_id = Some(node_id);
+    node
 }
 fn node(p: &Planned, user: &str, bucket: Option<&swarmy_config::BucketSpec>) -> Machine {
     let mut machine = machine(&p.host, user, p.role, p.sandboxes, &p.local_storage);
@@ -224,7 +242,9 @@ fn bucket_spec(spec: &SwarmSpec, record: &SwarmRecord) -> Option<swarmy_config::
         },
     })
 }
-fn user(spec: &SwarmSpec) -> &str {
+/// The service login every host of the swarm uses.
+#[must_use]
+pub fn user(spec: &SwarmSpec) -> &str {
     spec.service_user.as_deref().unwrap_or("swarmy")
 }
 /// Exclusive nonblocking per-swarm lock, held until dropped.

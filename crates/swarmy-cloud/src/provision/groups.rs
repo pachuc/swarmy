@@ -264,13 +264,20 @@ fn last_variables(dir: &Path) -> Option<Map<String, Value>> {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
+fn group_keys_dir(dir: &Path) -> PathBuf {
+    dir.join("keys/groups")
+}
+/// Path of the group SSH identity on the primary.
+#[must_use]
+pub fn group_key_path(dir: &Path, group: &str) -> PathBuf {
+    group_keys_dir(dir).join(group)
+}
 /// Return or generate the group SSH public key.
 /// # Errors
 /// Returns filesystem or key-generation failures.
 pub async fn group_key(dir: &Path, swarm: &str, group: &str) -> Result<String> {
-    let keys = dir.join("keys/groups");
-    create_private_dir(&keys)?;
-    let key = keys.join(group);
+    create_private_dir(&group_keys_dir(dir))?;
+    let key = group_key_path(dir, group);
     let public = if key.is_file() {
         fs::read(key.with_extension("pub"))?
     } else {
@@ -379,15 +386,44 @@ fn hosts_from(
             )));
         }
     }
-    outputs.machines.iter().map(|m| {
-        let public = m.public_ipv4.ok_or_else(|| Error::other(format!("group {group}: machine {} has no public IPv4 address; swarmy provisions over IPv4", m.name)))?;
-        let private_address = match m.private_ip {
-            Some(IpAddr::V4(ip)) => Some(ip.to_string()),
-            Some(address) => return Err(Error::other(format!("group {group}: machine {}: private address {address} must be IPv4", m.name))),
-            None => None,
-        };
-        Ok(RecordedHost { name: m.name.clone(), public_address: public.to_string(), private_address, ssh_user: m.ssh_user.clone(), ssh_key: key.into(), provisioned: previous.iter().any(|h| h.name == m.name && h.provisioned) })
-    }).collect()
+    outputs
+        .machines
+        .iter()
+        .map(|m| {
+            let mut host = recorded_host(group, m, key)?;
+            host.provisioned = previous.iter().any(|h| h.name == m.name && h.provisioned);
+            Ok(host)
+        })
+        .collect()
+}
+/// One `OpenTofu` machine as a host record, not yet provisioned. Swarmy provisions over IPv4.
+/// # Errors
+/// Missing public IPv4 or non-IPv4 private address.
+pub fn recorded_host(group: &str, m: &swarmy_infra::Machine, key: &Path) -> Result<RecordedHost> {
+    let public = m.public_ipv4.ok_or_else(|| {
+        Error::other(format!(
+            "group {group}: machine {} has no public IPv4 address; swarmy provisions over IPv4",
+            m.name
+        ))
+    })?;
+    let private_address = match m.private_ip {
+        Some(IpAddr::V4(ip)) => Some(ip.to_string()),
+        Some(address) => {
+            return Err(Error::other(format!(
+                "group {group}: machine {}: private address {address} must be IPv4",
+                m.name
+            )));
+        }
+        None => None,
+    };
+    Ok(RecordedHost {
+        name: m.name.clone(),
+        public_address: public.to_string(),
+        private_address,
+        ssh_user: m.ssh_user.clone(),
+        ssh_key: key.into(),
+        provisioned: false,
+    })
 }
 pub(crate) fn bucket_from(
     record: &SwarmRecord,

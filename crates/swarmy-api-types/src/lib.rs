@@ -920,6 +920,10 @@ pub struct PutElasticGroup {
     pub max: u32,
     pub price_per_hour: String,
     pub currency: String,
+    /// Public IPv4 address of the stack host; elastic machines tunnel to it.
+    pub primary_address: String,
+    /// Service login that owns swarmy on the stack host.
+    pub service_user: String,
 }
 /// Set the desired number of machines, between zero and max.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

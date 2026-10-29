@@ -15,10 +15,27 @@
 //! Every other pair is rejected and leaves the record unchanged. Destroyed is terminal.
 //! A machine is active unless Destroyed, or Failed before cloud creation.
 //! Billing units are anchored at `created_at`; the first is billed on creation.
+//! Joined elastic nodes share their machine id ULID for direct ledger lookup.
 
 use crate::{AgentId, HourlyPrice, MachineId, NodeId, SessionId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+
+/// An elastic machine joins as the node whose id has the same ULID, so the store
+/// maps a node to its machine with one point read. The provisioner writes this
+/// id to the node before provisioning it.
+impl MachineId {
+    #[must_use]
+    pub const fn joined_node_id(self) -> NodeId {
+        NodeId::from_ulid(self.as_ulid())
+    }
+}
+impl NodeId {
+    #[must_use]
+    pub const fn ledger_machine_id(self) -> MachineId {
+        MachineId::from_ulid(self.as_ulid())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -533,6 +550,13 @@ mod tests {
         assert!(!row.is_active());
         row.state = MachineState::Destroyed;
         assert!(!row.is_active());
+    }
+    #[test]
+    fn machine_and_node_ids_share_a_ulid() {
+        let machine = MachineId::from_ulid(ulid::Ulid::generate());
+        assert_eq!(machine.joined_node_id().ledger_machine_id(), machine);
+        let node = NodeId::from_ulid(ulid::Ulid::generate());
+        assert_eq!(node.ledger_machine_id().joined_node_id(), node);
     }
     #[test]
     fn assignment_has_fixed_bytes() {

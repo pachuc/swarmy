@@ -48,6 +48,12 @@ fn definition(
     }
     let hourly_price = HourlyPrice::parse(&body.price_per_hour, &body.currency)
         .map_err(|e| invalid(e.to_string()))?;
+    let primary_address = body
+        .primary_address
+        .parse::<std::net::Ipv4Addr>()
+        .map_err(|_| invalid("primary_address must be the stack host's public IPv4 address"))?;
+    swarmy_config::validate_service_user(&body.service_user)
+        .map_err(|error| invalid(error.to_string()))?;
     Ok(ElasticGroupDefinition {
         swarm: body.swarm.clone(),
         group,
@@ -58,6 +64,8 @@ fn definition(
         local_storage: body.local_storage.clone(),
         max: body.max,
         hourly_price,
+        primary_address,
+        service_user: body.service_user.clone(),
     })
 }
 pub(super) async fn put(

@@ -6,7 +6,7 @@ use swarmy_cloud::provision::groups::{self, MachineGroups};
 use swarmy_cloud::provision::{self, UpRequest};
 use swarmy_config::cloud::{CloudCredentials, CloudProvider};
 use swarmy_config::swarm::{
-    GroupSpec, HostSpec, Lifecycle, Module, Placement, Registry, SwarmSpec,
+    GroupSpec, HostSpec, Lifecycle, Module, Placement, RecordedHost, Registry, SwarmSpec,
 };
 use swarmy_infra::Tofu;
 
@@ -486,6 +486,7 @@ pub(crate) async fn node_add(
 /// Build the registration and desired-count requests without network access.
 pub(crate) fn elastic_scale_requests(
     spec: &SwarmSpec,
+    primary: &RecordedHost,
     group: &str,
     count: u32,
 ) -> Result<(
@@ -526,6 +527,8 @@ pub(crate) fn elastic_scale_requests(
             .currency
             .clone()
             .context("elastic group has no currency")?,
+        primary_address: primary.public_address.clone(),
+        service_user: provision::user(spec).into(),
     };
     let desired = swarmy_api_types::SetElasticDesired {
         idempotency_key: ulid::Ulid::generate().to_string(),
@@ -536,12 +539,25 @@ pub(crate) fn elastic_scale_requests(
 }
 /// Apply an elastic scale through the swarm's control plane.
 pub(crate) async fn scale_elastic(
+    registry: &Registry,
     spec: &SwarmSpec,
     group: &str,
     count: u32,
     json_output: bool,
 ) -> Result<()> {
-    let (definition, desired) = elastic_scale_requests(spec, group, count)?;
+    let record = registry.read_record(&spec.name)?;
+    let primary = record
+        .as_ref()
+        .and_then(|record| record.hosts.get(&spec.placement.stack))
+        .and_then(|hosts| hosts.first())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "swarm {} is not up; run swarmy swarm up {} first",
+                spec.name,
+                spec.name
+            )
+        })?;
+    let (definition, desired) = elastic_scale_requests(spec, primary, group, count)?;
     let (client, endpoint) = crate::target::connect_swarm(&spec.name).await?;
     swarmy_client::api_client::call(&endpoint, client.put_elastic_group(group, &definition))
         .await?;
@@ -634,19 +650,29 @@ services = "control"
 nodes = ["gpu"]
 "#;
         let spec = SwarmSpec::parse(text).unwrap();
-        let (definition, desired) = elastic_scale_requests(&spec, "gpu", 1).unwrap();
+        let primary = RecordedHost {
+            name: "control".into(),
+            public_address: "198.51.100.7".into(),
+            private_address: None,
+            ssh_user: "root".into(),
+            ssh_key: "key".into(),
+            provisioned: true,
+        };
+        let (definition, desired) = elastic_scale_requests(&spec, &primary, "gpu", 1).unwrap();
+        assert_eq!(definition.primary_address, "198.51.100.7");
+        assert_eq!(definition.service_user, "swarmy");
         assert_eq!(definition.swarm, "fleet");
         assert_eq!(definition.sandboxes, 64);
         assert_eq!(definition.local_storage, "dir:/srv/swarmy-local");
         assert_eq!(desired.desired, 1);
         assert_eq!(desired.reason.as_deref(), Some("swarmy swarm scale"));
         assert!(
-            elastic_scale_requests(&spec, "gpu", 3)
+            elastic_scale_requests(&spec, &primary, "gpu", 3)
                 .unwrap_err()
                 .to_string()
                 .contains("max = 2")
         );
-        assert!(elastic_scale_requests(&spec, "control", 1).is_err());
+        assert!(elastic_scale_requests(&spec, &primary, "control", 1).is_err());
         let mut group = swarmy_api_types::ElasticGroup {
             swarm: "fleet".into(),
             group: "gpu".into(),
