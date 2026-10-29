@@ -31,7 +31,7 @@ impl Store {
                     || previous.module != definition.module
                     || previous.size != definition.size
                     || previous.location != definition.location)
-                    && (record.desired > 0 || record.applied > 0)
+                    && (record.desired > 0 || record.applied > 0 || !record.settled())
                 {
                     return Err(DomainError::ElasticGroupBusy {
                         group: definition.group.clone(),

@@ -51,6 +51,17 @@ fn group_body(key: &str) -> PutElasticGroup {
     }
 }
 
+async fn assert_api_error(
+    response: reqwest::Response,
+    status: u16,
+    code: &str,
+) -> serde_json::Value {
+    assert_eq!(response.status().as_u16(), status);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["code"], code);
+    body
+}
+
 async fn assert_registration(client: &reqwest::Client, base: &str) {
     let group_url = format!("{base}/swarm/groups/gpu");
     let response = client
@@ -107,6 +118,22 @@ async fn assert_desired(client: &reqwest::Client, base: &str) {
         (changed.desired, changed.generation, changed.settled),
         (1, 1, false)
     );
+    let desired_two = SetElasticDesired {
+        idempotency_key: "desired-two".into(),
+        desired: 2,
+        reason: None,
+    };
+    let latest: ElasticGroup = client
+        .put(&desired_url)
+        .bearer_auth("test-token")
+        .json(&desired_two)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!((latest.desired, latest.generation), (2, 2));
     assert_eq!(
         client
             .put(&desired_url)
@@ -120,6 +147,16 @@ async fn assert_desired(client: &reqwest::Client, base: &str) {
             .unwrap(),
         changed
     );
+    let current: ElasticGroup = client
+        .get(&group_url)
+        .bearer_auth("test-token")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!((current.desired, current.generation), (2, 2));
     let too_many = SetElasticDesired {
         idempotency_key: "desired-many".into(),
         desired: 3,
@@ -143,30 +180,32 @@ async fn assert_bad_definitions(client: &reqwest::Client, base: &str) {
     let group_url = format!("{base}/swarm/groups/gpu");
     let mut busy = group_body("busy");
     busy.size = "different".into();
-    assert_eq!(
+    assert_api_error(
         client
             .put(&group_url)
             .bearer_auth("test-token")
             .json(&busy)
             .send()
             .await
-            .unwrap()
-            .status(),
-        409
-    );
+            .unwrap(),
+        409,
+        "elastic_group_busy",
+    )
+    .await;
     let mut invalid = group_body("invalid");
     invalid.module = "existing".into();
-    assert_eq!(
+    assert_api_error(
         client
             .put(&group_url)
             .bearer_auth("test-token")
             .json(&invalid)
             .send()
             .await
-            .unwrap()
-            .status(),
-        400
-    );
+            .unwrap(),
+        400,
+        "invalid_elastic_group",
+    )
+    .await;
     let missing = client
         .put(format!("{base}/swarm/groups/missing/desired"))
         .bearer_auth("test-token")
@@ -178,7 +217,7 @@ async fn assert_bad_definitions(client: &reqwest::Client, base: &str) {
         .send()
         .await
         .unwrap();
-    assert_eq!(missing.status(), 404);
+    assert_api_error(missing, 404, "elastic_group_not_found").await;
 }
 
 async fn assert_machine_credentials(client: &reqwest::Client, base: &str) {
@@ -205,29 +244,34 @@ async fn assert_machine_credentials(client: &reqwest::Client, base: &str) {
     let mut unknown = cred.clone();
     unknown.idempotency_key = "unknown-provider".into();
     unknown.provider = "openai".into();
-    assert_eq!(
+    assert_api_error(
         client
             .post(format!("{base}/credentials"))
             .bearer_auth("test-token")
             .json(&unknown)
             .send()
             .await
-            .unwrap()
-            .status(),
-        400
-    );
+            .unwrap(),
+        400,
+        "unknown_machine_provider",
+    )
+    .await;
     let mut absent = cred;
     absent.idempotency_key = "missing-token".into();
     absent.extra.clear();
-    assert_eq!(
+    let missing = assert_api_error(
         client
             .post(format!("{base}/credentials"))
             .bearer_auth("test-token")
             .json(&absent)
             .send()
             .await
-            .unwrap()
-            .status(),
-        400
-    );
+            .unwrap(),
+        400,
+        "invalid_machine_credential",
+    )
+    .await;
+    let message = missing["message"].as_str().unwrap();
+    assert!(message.contains("HCLOUD_TOKEN"));
+    assert!(!message.contains("example-secret"));
 }

@@ -106,7 +106,7 @@ pub(crate) enum Command {
         name: String,
         /// A group listed in placement.nodes that runs neither the stack nor the services
         group: String,
-        /// New number of machines (1-50; 0 to max for an elastic group)
+        /// New number of machines (0-50, 0 only for node groups whose machines `OpenTofu` creates; 0 to max for an elastic group)
         #[arg(value_parser = clap::value_parser!(u32).range(0..=50))]
         count: u32,
         /// Seconds to wait on each removed node for running sandbox commands to finish

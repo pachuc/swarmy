@@ -296,6 +296,8 @@ pub(crate) async fn down(
     if spec.lifecycle == Lifecycle::Persistent && !destroy {
         let what = if groups::has_module_groups(spec) {
             "down destroys its machines, database and bucket"
+        } else if spec.groups.values().any(|group| group.elastic) {
+            "down destroys its elastic machines and deletes its database and swarmy's files on every host"
         } else {
             "down deletes its database and swarmy's files on every host (the machines keep running)"
         };
@@ -524,7 +526,7 @@ pub(crate) fn elastic_scale_requests(
         local_storage: selected
             .local_storage
             .clone()
-            .unwrap_or_else(|| "dir:/srv/swarmy-local".into()),
+            .unwrap_or_else(|| swarmy_config::DEFAULT_CREATED_LOCAL_STORAGE.into()),
         max,
         price_per_hour: selected
             .price_per_hour
@@ -662,7 +664,7 @@ nodes = ["gpu"]
             size: "cpx41".into(),
             location: "fsn1".into(),
             sandboxes: 64,
-            local_storage: "dir:/srv/swarmy-local".into(),
+            local_storage: swarmy_config::DEFAULT_CREATED_LOCAL_STORAGE.into(),
             max: 2,
             price_per_hour: "0.75".into(),
             currency: "EUR".into(),

@@ -1059,7 +1059,14 @@ async fn set_credential(
                 ApiFailure::new(
                     StatusCode::BAD_REQUEST,
                     "unknown_machine_provider",
-                    "machine providers are hetzner-cloud, hetzner-s3, aws",
+                    format!(
+                        "machine providers are {}",
+                        swarmy_config::cloud::CloudProvider::ALL
+                            .iter()
+                            .map(|provider| provider.name())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
                 )
             })?;
         if body.label != "default" {

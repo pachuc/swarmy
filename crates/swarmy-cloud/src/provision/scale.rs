@@ -121,9 +121,9 @@ pub fn preflight(
             "group \"{group}\" is elastic; the CLI scales it through the swarm's API"
         )));
     }
-    if count == 0 {
+    if count == 0 && kind == GroupKind::Existing {
         return Err(Error::other(format!(
-            "group \"{group}\" is not elastic, so its count must be between 1 and 50"
+            "group \"{group}\" lists existing hosts and cannot be scaled to zero; keep at least one host (only groups whose machines OpenTofu creates can have zero)"
         )));
     }
     let record = read_up_record(registry, spec)?;

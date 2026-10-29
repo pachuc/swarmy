@@ -1,6 +1,9 @@
 //! Validated identifiers used in swarm and service paths.
 use crate::Error;
 
+/// Default scratch storage for created machines.
+pub const DEFAULT_CREATED_LOCAL_STORAGE: &str = "dir:/srv/swarmy-local";
+
 #[must_use]
 pub const fn default_sandboxes() -> u32 {
     64

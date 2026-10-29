@@ -790,15 +790,35 @@ fn scale_requires_a_provisioned_stack_before_cloud_login() {
 }
 
 #[test]
-fn non_elastic_workers_cannot_scale_to_zero() {
+fn scale_workers_to_zero_and_back() {
     let f = setup();
     single_worker(&f);
-    let output = f.run(&["swarm", "scale", "fleet", "workers", "0"]);
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("not elastic, so its count must be between 1 and 50")
-    );
+    worker_outputs(&f, 0);
+    let output = f.ok(&["--json", "swarm", "scale", "fleet", "workers", "0"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["to"], 0);
+    assert_eq!(report["removed"], serde_json::json!(["fleet-workers-1"]));
+    let spec = SwarmSpec::parse(
+        &fs::read_to_string(f.path().join("config/swarmy/swarms/fleet.toml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(spec.groups["workers"].count, Some(0));
+    let vars: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            f.path()
+                .join("data/swarmy/swarms/fleet/tofu/workers/swarmy.tfvars.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(vars["machine_count"], 0);
+    worker_outputs(&f, 1);
+    let output = f.ok(&["--json", "swarm", "scale", "fleet", "workers", "1"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["added"], serde_json::json!(["fleet-workers-1"]));
+    let refused = f.run(&["swarm", "scale", "fleet", "workers", "51"]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("51"));
 }
 
 #[test]
@@ -834,7 +854,4 @@ fn elastic_gpu_is_not_planned_or_applied_on_the_laptop() {
     let output = f.run(&["swarm", "scale", "fleet", "gpu", "3"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("max = 2"));
-    let output = f.run(&["swarm", "scale", "fleet", "workers", "0"]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("not elastic"));
 }

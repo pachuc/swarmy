@@ -91,7 +91,7 @@ pub struct GroupSpec {
     /// The swarm's provisioner owns this group's machines.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub elastic: bool,
-    /// Maximum elastic machine count.
+    /// Elastic groups only: maximum machine count (1-50).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<u32>,
     /// Exact hourly price as a decimal string.

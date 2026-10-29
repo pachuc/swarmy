@@ -3,6 +3,7 @@ use crate::HourlyPrice;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+/// Maximum number of machines in an elastic group.
 pub const MAX_ELASTIC_MACHINES: u32 = 50;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ElasticGroupDefinition {
@@ -11,7 +12,9 @@ pub struct ElasticGroupDefinition {
     pub module: String,
     pub size: String,
     pub location: String,
+    /// Used by task 6b when it provisions joined machines.
     pub sandboxes: u32,
+    /// Used by task 6b when it provisions joined machines.
     pub local_storage: String,
     pub max: u32,
     pub hourly_price: HourlyPrice,
@@ -20,8 +23,10 @@ pub struct ElasticGroupDefinition {
 pub struct ElasticGroupRecord {
     pub definition: ElasticGroupDefinition,
     pub desired: u32,
+    /// Why desired last changed, copied into machine records by the provisioner.
     pub desired_reason: String,
     pub generation: u64,
+    /// Machines OpenTofu held after the provisioner's last apply.
     pub applied: u32,
     pub reconciled_generation: u64,
     pub updated_at: Timestamp,
