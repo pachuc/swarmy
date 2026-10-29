@@ -22,6 +22,7 @@ async fn node(store: &Store, capacity: u32) -> NodeRecord {
         },
         last_heartbeat: Timestamp::now(),
         cached_images: vec![],
+        gpu: None,
     };
     store.put_node(&record).await.unwrap();
     record

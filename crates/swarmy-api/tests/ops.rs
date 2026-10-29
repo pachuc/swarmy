@@ -629,6 +629,7 @@ async fn doctor_reports_registered_nodes() {
             },
             last_heartbeat: jiff::Timestamp::now(),
             cached_images: Vec::new(),
+            gpu: None,
         })
         .await
         .unwrap();

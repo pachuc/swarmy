@@ -870,6 +870,7 @@ async fn computer_session(
         },
         last_heartbeat: Timestamp::now(),
         cached_images: vec![],
+        gpu: None,
     };
     store.put_node(&node).await.unwrap();
     let placement = store

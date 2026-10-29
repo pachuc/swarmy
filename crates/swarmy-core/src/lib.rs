@@ -35,7 +35,7 @@ pub use store::{IdempotencyRecord, IdempotencyState, InflightRecord, RunnableEnt
 pub use volume::{CHUNK_SIZE, ContentHash, GcRun, ImageRecord, ManifestHeader, VolumeRecord};
 
 mod node;
-pub use node::{NodeCapacity, NodeRecord, NodeRole};
+pub use node::{GpuCards, NodeCapacity, NodeRecord, NodeRole};
 mod sandbox;
 pub use sandbox::{
     BlockDevice, ExecOutput, ExecRequest, ExecResult, GpuRequirement, PauseHandle, RuntimeCaps,

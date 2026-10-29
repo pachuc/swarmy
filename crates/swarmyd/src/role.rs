@@ -69,6 +69,7 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
         capacity: settings.node.capacity.clone(),
         last_heartbeat: jiff::Timestamp::now(),
         cached_images: Vec::new(),
+        gpu: None,
     };
     if let Some(reserve) = settings.node.memory_reserve_mib {
         record.capacity.memory_bytes = advertised_memory(reserve)?;

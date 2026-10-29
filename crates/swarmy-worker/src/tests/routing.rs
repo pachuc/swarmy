@@ -218,6 +218,7 @@ impl Fixture {
                     },
                     last_heartbeat: Timestamp::now(),
                     cached_images: Vec::new(),
+                    gpu: None,
                 })
                 .await
                 .unwrap();

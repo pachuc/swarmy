@@ -3,7 +3,8 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
 use swarmy_core::{
-    AgentId, NodeId, NodeRecord, NodeRole, PlacementChangeReason, PlacementRecord, decode,
+    AgentId, GpuRequirement, NodeId, NodeRecord, NodeRole, PlacementChangeReason, PlacementRecord,
+    SandboxRequirements, decode,
 };
 
 use crate::{Result, Store, StoreError, check_limit, read, scan, scan_all, write};
@@ -22,6 +23,33 @@ pub(crate) struct PlacementHosting {
     claimed: Option<Timestamp>,
     last_renewed: Option<Timestamp>,
     pub(crate) failure_estimate: Option<Timestamp>,
+}
+
+/// A node's current placement commitments.
+#[derive(Default)]
+struct NodeLoad {
+    committed_bytes: u64,
+    shared_gpu: u32,
+    dedicated_gpu: u32,
+}
+
+fn admit_gpu(node: &NodeRecord, requirement: GpuRequirement, load: &NodeLoad) -> Result<()> {
+    let detail = match requirement {
+        GpuRequirement::None => return Ok(()),
+        _ if node.gpu_count() == 0 => format!("node {} has no GPU", node.node_id),
+        GpuRequirement::Shared if load.dedicated_gpu > 0 => {
+            format!("node {} hosts a dedicated GPU sandbox", node.node_id)
+        }
+        GpuRequirement::Dedicated if load.shared_gpu + load.dedicated_gpu > 0 => format!(
+            "node {} already hosts {} GPU sandboxes",
+            node.node_id,
+            load.shared_gpu + load.dedicated_gpu
+        ),
+        _ => return Ok(()),
+    };
+    Err(StoreError::Domain(crate::DomainError::GpuUnavailable {
+        detail,
+    }))
 }
 
 impl Store {
@@ -146,20 +174,27 @@ impl Store {
         .await
     }
 
-    async fn requirement_bytes(&self, trx: &Transaction, agent: AgentId) -> Result<u64> {
+    async fn requirements(&self, trx: &Transaction, agent: AgentId) -> Result<SandboxRequirements> {
         let ephemeral: Option<u64> = read(trx, &self.keys().computer_memory(agent)).await?;
-        let mib = if let Some(mib) = ephemeral {
-            mib
+        if let Some(memory_mib) = ephemeral {
+            Ok(SandboxRequirements {
+                memory_mib,
+                gpu: GpuRequirement::None,
+            })
         } else {
-            self.read_agent(trx, agent)
+            Ok(self
+                .read_agent(trx, agent)
                 .await?
-                .map_or(768, |record| record.requirements.memory_mib)
-        };
-        mib.checked_mul(1024 * 1024)
-            .filter(|bytes| *bytes > 0)
-            .ok_or(StoreError::Domain(
-                crate::DomainError::InvalidMemoryRequirement,
-            ))
+                .map_or_else(SandboxRequirements::default, |record| record.requirements))
+        }
+    }
+
+    /// Requirements placement must satisfy for this computer.
+    /// # Errors
+    /// Returns storage or decoding failures.
+    pub async fn computer_requirements(&self, agent: AgentId) -> Result<SandboxRequirements> {
+        self.transaction(|trx| async move { self.requirements(&trx, agent).await })
+            .await
     }
 
     /// Committed sandbox memory in bytes; expired placements remain committed.
@@ -175,32 +210,41 @@ impl Store {
     /// released by a process that accounts for memory differently, which
     /// happened during the upgrade that introduced memory budgets.
     async fn committed_bytes(&self, trx: &Transaction, node: NodeId) -> Result<u64> {
-        self.committed_bytes_excluding(trx, node, AgentId::from_ulid(ulid::Ulid::nil()))
-            .await
+        Ok(self
+            .node_load(trx, node, AgentId::from_ulid(ulid::Ulid::nil()))
+            .await?
+            .committed_bytes)
     }
 
-    /// The committed sum without one agent's own placement, so a takeover on
-    /// the same node is not charged twice for the computer it is replacing.
-    async fn committed_bytes_excluding(
+    /// Derive memory and GPU occupancy in one scan of the node's placement rows.
+    async fn node_load(
         &self,
         trx: &Transaction,
         node: NodeId,
         exclude: AgentId,
-    ) -> Result<u64> {
+    ) -> Result<NodeLoad> {
         let (begin, end) = self.keys().placement_by_node_space(node).range();
-        let mut total: u64 = 0;
+        let mut load = NodeLoad::default();
         for (_, value) in scan_all(trx, (begin, end)).await? {
             let record: PlacementRecord = decode(&value)?;
             if record.agent_id == exclude {
                 continue;
             }
-            total = total
-                .checked_add(self.requirement_bytes(trx, record.agent_id).await?)
+            load.committed_bytes = load
+                .committed_bytes
+                .checked_add(requirement_bytes(
+                    self.requirements(trx, record.agent_id).await?,
+                )?)
                 .ok_or(StoreError::Storage(
                     crate::StorageError::MemoryCapacityOverflow,
                 ))?;
+            match record.gpu {
+                GpuRequirement::None => {}
+                GpuRequirement::Shared => load.shared_gpu += 1,
+                GpuRequirement::Dedicated => load.dedicated_gpu += 1,
+            }
         }
-        Ok(total)
+        Ok(load)
     }
 
     async fn reserve_computer(
@@ -208,7 +252,7 @@ impl Store {
         trx: &Transaction,
         node: NodeId,
         agent: AgentId,
-    ) -> Result<()> {
+    ) -> Result<GpuRequirement> {
         let registered: NodeRecord = read(trx, &self.keys().node(node))
             .await?
             .ok_or(StoreError::Domain(crate::DomainError::NodeMissing))?;
@@ -225,17 +269,25 @@ impl Store {
                 ),
             }));
         }
-        let bytes = self.requirement_bytes(trx, agent).await?;
-        let committed = self.committed_bytes_excluding(trx, node, agent).await?;
-        if bytes > registered.capacity.memory_bytes.saturating_sub(committed) {
+        let requirements = self.requirements(trx, agent).await?;
+        let bytes = requirement_bytes(requirements)?;
+        let load = self.node_load(trx, node, agent).await?;
+        if bytes
+            > registered
+                .capacity
+                .memory_bytes
+                .saturating_sub(load.committed_bytes)
+        {
             return Err(StoreError::Domain(crate::DomainError::NodeAtCapacity {
                 detail: format!(
-                    "agent {agent} needs {bytes} bytes but node {node} has {committed} of {} bytes committed",
-                    registered.capacity.memory_bytes
+                    "agent {agent} needs {bytes} bytes but node {node} has {} of {} bytes committed",
+                    load.committed_bytes, registered.capacity.memory_bytes
                 ),
             }));
         }
-        write(trx, &key, &(count + 1))
+        admit_gpu(&registered, requirements.gpu, &load)?;
+        write(trx, &key, &(count + 1))?;
+        Ok(requirements.gpu)
     }
 
     async fn free_computer(&self, trx: &Transaction, node: NodeId, _agent: AgentId) -> Result<()> {
@@ -332,7 +384,7 @@ impl Store {
             let epoch: u64 = read(&trx, &self.keys().placement_epoch(agent))
                 .await?
                 .unwrap_or(0);
-            self.reserve_computer(&trx, node, agent).await?;
+            let gpu = self.reserve_computer(&trx, node, agent).await?;
             let record = PlacementRecord {
                 agent_id: agent,
                 node_id: node,
@@ -344,6 +396,7 @@ impl Store {
                     PlacementChangeReason::Eviction
                 },
                 last_changed_at: now,
+                gpu,
             };
             self.write_placement(&trx, &record)?;
             write(
@@ -442,7 +495,7 @@ impl Store {
                     .keys()
                     .placement_by_node(current.node_id, current.agent_id),
             );
-            self.reserve_computer(&trx, node, current.agent_id).await?;
+            let gpu = self.reserve_computer(&trx, node, current.agent_id).await?;
             let hosting = self
                 .read_placement_hosting(&trx, &current)
                 .await?
@@ -461,6 +514,7 @@ impl Store {
                     PlacementChangeReason::Unstarted
                 },
                 last_changed_at: now,
+                gpu,
                 ..current
             };
             trx.clear(&self.keys().placement_address(current.agent_id));
@@ -526,4 +580,14 @@ impl Store {
         }
         Ok(())
     }
+}
+
+fn requirement_bytes(requirements: SandboxRequirements) -> Result<u64> {
+    requirements
+        .memory_mib
+        .checked_mul(1024 * 1024)
+        .filter(|bytes| *bytes > 0)
+        .ok_or(StoreError::Domain(
+            crate::DomainError::InvalidMemoryRequirement,
+        ))
 }

@@ -4,8 +4,45 @@ use tokio::sync::Mutex;
 
 use anyhow::{Result, bail};
 use jiff::Timestamp;
-use swarmy_core::{AgentId, NodeRecord, NodeRole, PlacementRecord, VolumeId};
+use swarmy_core::{
+    AgentId, GpuRequirement, NodeId, NodeRecord, NodeRole, PlacementRecord, VolumeId,
+};
 use swarmy_store::{MAX_SCAN_LIMIT, Store, StoreError};
+
+/// No live node could take the computer. The capacity wait matches on this type
+/// to park the session instead of failing the step, so it must never be wrapped in context.
+#[derive(Debug)]
+pub(crate) struct NoEligibleNode {
+    pub(crate) requirement: GpuRequirement,
+    /// The last store refusal, when some node was eligible but refused.
+    pub(crate) rejection: Option<StoreError>,
+}
+
+impl std::fmt::Display for NoEligibleNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.requirement {
+            GpuRequirement::None => {
+                write!(f, "no live sandbox node has available computer capacity")
+            }
+            GpuRequirement::Shared => write!(
+                f,
+                "no live sandbox node with a GPU can host this shared GPU computer"
+            ),
+            GpuRequirement::Dedicated => write!(
+                f,
+                "no live sandbox node with a GPU can host this dedicated GPU computer"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NoEligibleNode {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.rejection
+            .as_ref()
+            .map(|error| error as &(dyn std::error::Error + 'static))
+    }
+}
 
 /// A cached route is a hint; dispatch and execution still check the stored epoch.
 #[derive(Default)]
@@ -56,6 +93,7 @@ pub(crate) async fn resolve_at(
     lease: Duration,
     now: Timestamp,
 ) -> Result<PlacementRecord> {
+    let requirement = store.computer_requirements(agent).await?.gpu;
     // The last rejection explains a placement that never succeeds.
     let mut rejection = None;
     // Contention can change the winner while capacity is being reserved. Re-read
@@ -90,7 +128,10 @@ pub(crate) async fn resolve_at(
             cursor = next;
         }
         let scratch_node = store.scratch(agent).await?.map(|record| record.node_id);
-        order_candidates(&mut nodes, scratch_node, old.as_ref());
+        order_candidates(&mut nodes, requirement, scratch_node, old.as_ref());
+        if nodes.is_empty() {
+            break;
+        }
         for node in nodes {
             let expiry = now.checked_add(lease)?;
             let result = if let Some(old) = &old {
@@ -103,41 +144,47 @@ pub(crate) async fn resolve_at(
                 Err(
                     error @ StoreError::Domain(
                         swarmy_store::DomainError::NodeAtCapacity { .. }
-                        | swarmy_store::DomainError::NodeMissing,
+                        | swarmy_store::DomainError::NodeMissing
+                        | swarmy_store::DomainError::GpuUnavailable { .. },
                     ),
                 ) => {
-                    rejection = Some(error.to_string());
+                    rejection = Some(error);
                 }
                 Err(
                     error @ (StoreError::Domain(swarmy_store::DomainError::PlacementExists)
                     | StoreError::Fence(swarmy_store::FenceError::PlacementMismatch)),
                 ) => {
-                    rejection = Some(error.to_string());
+                    rejection = Some(error);
                     break;
                 }
                 Err(error) => return Err(error.into()),
             }
         }
     }
-    match rejection {
-        Some(rejection) => {
-            bail!("no live sandbox node has available computer capacity: {rejection}")
-        }
-        None => bail!("no live sandbox node has available computer capacity"),
+    Err(NoEligibleNode {
+        requirement,
+        rejection,
     }
+    .into())
 }
 
 fn order_candidates(
     nodes: &mut Vec<NodeRecord>,
-    scratch_node: Option<swarmy_core::NodeId>,
+    requirement: GpuRequirement,
+    scratch_node: Option<NodeId>,
     old: Option<&PlacementRecord>,
 ) {
-    nodes.retain(|node| node.roles.contains(&NodeRole::Sandbox) && node.capacity.sandboxes > 0);
-    // Capacity admission remains transactional. An expired lease means the old
-    // node lost the computer, so try it last; otherwise prefer local scratch.
+    nodes.retain(|node| {
+        node.roles.contains(&NodeRole::Sandbox)
+            && node.capacity.sandboxes > 0
+            && (!requirement.needs_card() || node.gpu_count() > 0)
+    });
+    // Admission remains transactional. A CPU node beats scratch on a card node
+    // for CPU work; ineligible nodes are filtered before scratch can win.
     nodes.sort_by_key(|node| {
         (
             old.is_some_and(|old| old.node_id == node.node_id),
+            !requirement.needs_card() && node.gpu_count() > 0,
             scratch_node != Some(node.node_id),
             node.node_id,
         )
