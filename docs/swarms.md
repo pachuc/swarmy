@@ -516,8 +516,8 @@ swarmy swarm machines --all
 swarmy --swarm hz swarm machines --json
 ```
 
-The provisioner writes records in a later task, so these lists remain empty
-until it arrives.
+The primary provisioner writes records before and after each OpenTofu apply;
+new machines remain in Provisioning until SSH joining is implemented.
 
 ## Model provider credentials
 
