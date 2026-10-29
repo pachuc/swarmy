@@ -32,6 +32,7 @@ async fn group_routes_and_machine_credentials() {
     assert_registration(&client, &base).await;
     assert_desired(&client, &base).await;
     assert_bad_definitions(&client, &base).await;
+    put_rejects_bad_primary_address_and_service_user(&client, &base).await;
     assert_machine_credentials(&client, &base).await;
     task.abort();
 }
@@ -276,4 +277,37 @@ async fn assert_machine_credentials(client: &reqwest::Client, base: &str) {
     let message = missing["message"].as_str().unwrap();
     assert!(message.contains("HCLOUD_TOKEN"));
     assert!(!message.contains("example-secret"));
+}
+
+async fn put_rejects_bad_primary_address_and_service_user(client: &reqwest::Client, base: &str) {
+    let url = format!("{base}/swarm/groups/gpu");
+    let mut body = group_body("bad-address");
+    body.primary_address = "invalid".into();
+    assert_api_error(
+        client
+            .put(&url)
+            .bearer_auth("test-token")
+            .json(&body)
+            .send()
+            .await
+            .unwrap(),
+        400,
+        "invalid_elastic_group",
+    )
+    .await;
+    body.idempotency_key = "bad-user".into();
+    body.primary_address = "192.0.2.1".into();
+    body.service_user = "bad user".into();
+    assert_api_error(
+        client
+            .put(&url)
+            .bearer_auth("test-token")
+            .json(&body)
+            .send()
+            .await
+            .unwrap(),
+        400,
+        "invalid_elastic_group",
+    )
+    .await;
 }

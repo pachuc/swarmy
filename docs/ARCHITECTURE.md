@@ -165,6 +165,7 @@ them in [api-breaks.txt](api-breaks.txt).
   [tool_routing.rs](../crates/swarmy-store/src/tool_routing.rs),
   [placed_tools.rs](../crates/swarmy-store/src/placed_tools.rs)).
 - **Elastic groups.** `elastic_group` holds the swarm-owned definition, desired count, and reconciliation generations; `elastic_creations` holds the creation safety window, while `provisioner_lease` and `provisioner_sequence` fence the single primary provisioner ([elastic.rs](../crates/swarmy-store/src/elastic.rs)).
+- **Machine ledger.** `machine`, `machine_by_group`, `machine_assignment`, `machine_assignment_by_agent`, and `machine_assignment_open` record elastic machine lifecycle and agent intervals. A joined machine's node id equals its machine id ULID; GPU placement transactions find the machine with one point read and open or close assignment intervals ([machines.rs](../crates/swarmy-store/src/machines.rs), [placements.rs](../crates/swarmy-store/src/placements.rs)).
 - **Inference, routes, and credentials.** `route`, `credential_entry`,
   `credential_entry_lease`, `inference_request`, `inference_claim`,
   `inference_result`, `inference_breaker`, and the shared `session_wait` connect

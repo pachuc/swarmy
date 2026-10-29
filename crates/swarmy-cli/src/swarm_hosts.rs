@@ -528,7 +528,7 @@ pub(crate) fn elastic_scale_requests(
             .clone()
             .context("elastic group has no currency")?,
         primary_address: primary.public_address.clone(),
-        service_user: swarmy_cloud::provision::user(spec).into(),
+        service_user: provision::user(spec).into(),
     };
     let desired = swarmy_api_types::SetElasticDesired {
         idempotency_key: ulid::Ulid::generate().to_string(),

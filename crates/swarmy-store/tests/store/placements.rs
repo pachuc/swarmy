@@ -1411,3 +1411,156 @@ async fn gpu_tool_operator_gpu_change_clears_the_reason() {
         .unwrap();
     assert!(changed.gpu_request.is_none());
 }
+
+async fn ledger_gpu_node(test: &TestStore, group: &str) -> (swarmy_core::MachineId, NodeId) {
+    use swarmy_core::MachineTransition;
+    let machine = machines::machine(group);
+    let mut host = gpu_node(&test.store, 5, 1).await;
+    host.node_id = machine.machine_id.joined_node_id();
+    test.store.put_node(&host).await.unwrap();
+    test.store
+        .create_machine(&machine, timestamp(1))
+        .await
+        .unwrap();
+    test.store
+        .transition_machine(
+            machine.machine_id,
+            &MachineTransition::Creating,
+            timestamp(2),
+        )
+        .await
+        .unwrap();
+    test.store
+        .transition_machine(
+            machine.machine_id,
+            &MachineTransition::Created {
+                address: "address".into(),
+            },
+            timestamp(3),
+        )
+        .await
+        .unwrap();
+    test.store
+        .transition_machine(
+            machine.machine_id,
+            &MachineTransition::Provisioned,
+            timestamp(4),
+        )
+        .await
+        .unwrap();
+    (machine.machine_id, host.node_id)
+}
+
+#[tokio::test]
+async fn gpu_placements_on_a_joined_machine_record_assignment_intervals() {
+    use swarmy_core::{GpuRequirement, MachineTransition};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (machine, host) = ledger_gpu_node(&test, "gpu-assignment").await;
+    let a = gpu_agent(&test.store, "gpu-assignment-a", GpuRequirement::Shared).await;
+    let b = gpu_agent(&test.store, "gpu-assignment-b", GpuRequirement::Shared).await;
+    let c = gpu_agent(&test.store, "gpu-assignment-c", GpuRequirement::None).await;
+    let first = test.store.place(a, host, future(60)).await.unwrap();
+    assert!(
+        test.store
+            .open_machine_assignments(machine)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    test.store
+        .transition_machine(
+            machine,
+            &MachineTransition::Joined { node_id: host },
+            timestamp(5),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        test.store
+            .open_machine_assignments(machine)
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.agent)
+            .collect::<Vec<_>>(),
+        [a]
+    );
+    let second = test.store.place(b, host, future(60)).await.unwrap();
+    let open = test.store.open_machine_assignments(machine).await.unwrap();
+    assert_eq!(open.len(), 2);
+    assert!(open.iter().any(|row| row.agent == a));
+    assert!(open.iter().any(|row| row.agent == b));
+    test.store.place(c, host, future(60)).await.unwrap();
+    assert_eq!(
+        test.store
+            .open_machine_assignments(machine)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    test.store.release(&second).await.unwrap();
+    assert!(
+        test.store
+            .machine_assignments(machine)
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.agent == b && row.to.is_some())
+    );
+    let old = expire(&test, &first).await;
+    let other = gpu_node(&test.store, 2, 1).await.node_id;
+    test.store.take_over(&old, other, future(60)).await.unwrap();
+    assert!(
+        test.store
+            .machine_assignments(machine)
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.agent == a && row.to.is_some())
+    );
+    assert!(
+        test.store
+            .open_machine_assignments(other.ledger_machine_id())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_gpu_computer_closes_its_interval() {
+    use swarmy_core::{GpuRequirement, MachineTransition};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (machine, host) = ledger_gpu_node(&test, "gpu-deleted").await;
+    test.store
+        .transition_machine(
+            machine,
+            &MachineTransition::Joined { node_id: host },
+            timestamp(5),
+        )
+        .await
+        .unwrap();
+    let agent = gpu_agent(&test.store, "gpu-deleted-agent", GpuRequirement::Shared).await;
+    test.store.place(agent, host, future(60)).await.unwrap();
+    test.store.delete_agent(agent).await.unwrap();
+    assert!(
+        test.store
+            .open_machine_assignments(machine)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        test.store
+            .machine_assignments(machine)
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.agent == agent && row.to.is_some())
+    );
+}

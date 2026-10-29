@@ -355,13 +355,6 @@ mod tests {
         record
     }
     #[test]
-    fn machine_and_node_ids_share_a_ulid() {
-        let machine = MachineId::from_ulid(ulid::Ulid::new());
-        assert_eq!(machine.joined_node_id().ledger_machine_id(), machine);
-        let node = NodeId::from_ulid(ulid::Ulid::new());
-        assert_eq!(node.ledger_machine_id().joined_node_id(), node);
-    }
-    #[test]
     fn per_started_hour_bills_each_started_hour() {
         for (seconds, expected) in [
             (0, 750_000),
@@ -373,13 +366,6 @@ mod tests {
             row.destroyed_at = Some(t(seconds));
             assert_eq!(row.cost_micros(t(10000)), expected);
         }
-    }
-    #[test]
-    fn machine_and_node_ids_share_a_ulid() {
-        let machine = MachineId::from_ulid(ulid::Ulid::new());
-        assert_eq!(machine.joined_node_id().ledger_machine_id(), machine);
-        let node = NodeId::from_ulid(ulid::Ulid::new());
-        assert_eq!(node.ledger_machine_id().joined_node_id(), node);
     }
     #[test]
     fn running_machine_bills_up_to_now() {
@@ -397,13 +383,6 @@ mod tests {
         assert_eq!(row.cost_micros(t(7200)), 1_500_000);
     }
     #[test]
-    fn machine_and_node_ids_share_a_ulid() {
-        let machine = MachineId::from_ulid(ulid::Ulid::new());
-        assert_eq!(machine.joined_node_id().ledger_machine_id(), machine);
-        let node = NodeId::from_ulid(ulid::Ulid::new());
-        assert_eq!(node.ledger_machine_id().joined_node_id(), node);
-    }
-    #[test]
     fn per_started_minute_bills_each_started_minute() {
         let mut row = record();
         row.billing = BillingGranularity::PerStartedMinute;
@@ -418,25 +397,11 @@ mod tests {
         assert_eq!(row.cost_micros(t(5000)), 50_000);
     }
     #[test]
-    fn machine_and_node_ids_share_a_ulid() {
-        let machine = MachineId::from_ulid(ulid::Ulid::new());
-        assert_eq!(machine.joined_node_id().ledger_machine_id(), machine);
-        let node = NodeId::from_ulid(ulid::Ulid::new());
-        assert_eq!(node.ledger_machine_id().joined_node_id(), node);
-    }
-    #[test]
     fn never_created_costs_nothing() {
         let mut row = record();
         row.created_at = None;
         assert_eq!(row.cost_micros(t(5000)), 0);
         assert_eq!(row.cost_micros_between(t(0), t(5000), t(5000)), 0);
-    }
-    #[test]
-    fn machine_and_node_ids_share_a_ulid() {
-        let machine = MachineId::from_ulid(ulid::Ulid::new());
-        assert_eq!(machine.joined_node_id().ledger_machine_id(), machine);
-        let node = NodeId::from_ulid(ulid::Ulid::new());
-        assert_eq!(node.ledger_machine_id().joined_node_id(), node);
     }
     #[test]
     fn windows_partition_the_total() {
@@ -468,13 +433,6 @@ mod tests {
             row.cost_micros(t(200))
         );
         assert_eq!(row.cost_micros_between(t(60), t(0), t(200)), 0);
-    }
-    #[test]
-    fn machine_and_node_ids_share_a_ulid() {
-        let machine = MachineId::from_ulid(ulid::Ulid::new());
-        assert_eq!(machine.joined_node_id().ledger_machine_id(), machine);
-        let node = NodeId::from_ulid(ulid::Ulid::new());
-        assert_eq!(node.ledger_machine_id().joined_node_id(), node);
     }
     #[test]
     fn transitions_follow_the_table() {
@@ -541,13 +499,6 @@ mod tests {
         }
     }
     #[test]
-    fn machine_and_node_ids_share_a_ulid() {
-        let machine = MachineId::from_ulid(ulid::Ulid::new());
-        assert_eq!(machine.joined_node_id().ledger_machine_id(), machine);
-        let node = NodeId::from_ulid(ulid::Ulid::new());
-        assert_eq!(node.ledger_machine_id().joined_node_id(), node);
-    }
-    #[test]
     fn lifecycle_stamps_each_step() {
         let mut row = record();
         row.state = MachineState::Requested;
@@ -590,13 +541,6 @@ mod tests {
         assert_eq!(row.node_id, Some(node_id));
     }
     #[test]
-    fn machine_and_node_ids_share_a_ulid() {
-        let machine = MachineId::from_ulid(ulid::Ulid::new());
-        assert_eq!(machine.joined_node_id().ledger_machine_id(), machine);
-        let node = NodeId::from_ulid(ulid::Ulid::new());
-        assert_eq!(node.ledger_machine_id().joined_node_id(), node);
-    }
-    #[test]
     fn active_excludes_destroyed_and_failed_before_creation() {
         let mut row = record();
         assert!(row.is_active());
@@ -609,9 +553,9 @@ mod tests {
     }
     #[test]
     fn machine_and_node_ids_share_a_ulid() {
-        let machine = MachineId::from_ulid(ulid::Ulid::new());
+        let machine = MachineId::from_ulid(ulid::Ulid::generate());
         assert_eq!(machine.joined_node_id().ledger_machine_id(), machine);
-        let node = NodeId::from_ulid(ulid::Ulid::new());
+        let node = NodeId::from_ulid(ulid::Ulid::generate());
         assert_eq!(node.ledger_machine_id().joined_node_id(), node);
     }
     #[test]
@@ -635,13 +579,6 @@ mod tests {
             crate::decode::<MachineAssignment>(&crate::encode(&row).unwrap()).unwrap(),
             row
         );
-    }
-    #[test]
-    fn machine_and_node_ids_share_a_ulid() {
-        let machine = MachineId::from_ulid(ulid::Ulid::new());
-        assert_eq!(machine.joined_node_id().ledger_machine_id(), machine);
-        let node = NodeId::from_ulid(ulid::Ulid::new());
-        assert_eq!(node.ledger_machine_id().joined_node_id(), node);
     }
     #[test]
     fn machine_state_and_billing_have_fixed_bytes() {

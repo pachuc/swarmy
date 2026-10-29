@@ -1663,6 +1663,91 @@ mod provisioning_command_tests {
     }
 
     #[test]
+    fn primary_steps_run_over_ssh_or_on_this_host() {
+        let remote = node();
+        let remote_shell = super::PrimaryShell {
+            primary: super::Primary::Remote(&remote),
+            address: Some("10.0.0.1".into()),
+        };
+        let command = remote_shell.command("echo ok").unwrap();
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(command.as_std().get_program(), "ssh");
+        assert_eq!(&args[args.len() - 2..], &["10.0.0.1", "echo ok"]);
+        let local = super::LocalPrimary {
+            address: "192.0.2.1".parse().unwrap(),
+            service_user: "swarmy".into(),
+        };
+        let shell = super::PrimaryShell {
+            primary: super::Primary::Local(&local),
+            address: None,
+        };
+        let command = shell.command("echo ok").unwrap();
+        assert_eq!(command.as_std().get_program(), "sh");
+        assert_eq!(
+            command.as_std().get_args().collect::<Vec<_>>(),
+            ["-c", "echo ok"]
+        );
+    }
+
+    #[test]
+    fn local_primary_tunnels_to_its_given_address() {
+        let local = super::LocalPrimary {
+            address: "192.0.2.1".parse().unwrap(),
+            service_user: "swarmy".into(),
+        };
+        assert_eq!(
+            super::Primary::Local(&local).tunnel_address().unwrap(),
+            local.address
+        );
+    }
+
+    #[test]
+    fn node_id_command_writes_the_persisted_id_file() {
+        let id = swarmy_core::NodeId::from_ulid(ulid::Ulid::generate());
+        let text = super::node_id_command(&node(), id).unwrap();
+        let words = shell_words::split(&text).unwrap();
+        assert!(
+            words
+                .iter()
+                .any(|word| word == "~swarmy/swarmy/.swarmy/node-id")
+        );
+        assert!(words.iter().any(|word| word == &id.to_string()));
+    }
+
+    #[test]
+    fn installed_binaries_come_from_the_executable_dir_and_loaded_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("swarmy-provisioner");
+        assert!(
+            super::Binaries::installed_from(&exe, "")
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("swarmy-core")
+        );
+        std::fs::write(dir.path().join("swarmy-core"), "binary").unwrap();
+        assert!(
+            super::Binaries::installed_from(&exe, "")
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("no libfdb_c.so loaded")
+        );
+        let maps = "00400000-00452000 r-xp 00000000 00:00 0 /opt/x/libfdb_c.so";
+        let super::Binaries::Installed { core, library } =
+            super::Binaries::installed_from(&exe, maps).unwrap()
+        else {
+            panic!("expected installed binaries")
+        };
+        assert_eq!(core, dir.path().join("swarmy-core"));
+        assert_eq!(library, std::path::Path::new("/opt/x/libfdb_c.so"));
+    }
+
+    #[test]
     fn revoke_only_moves_authorized_keys_after_a_successful_grep() {
         let command =
             super::authorized_keys_command("swarmy", "ssh-ed25519 AAAA test", true).unwrap();
