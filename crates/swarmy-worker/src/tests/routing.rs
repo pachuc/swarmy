@@ -1381,7 +1381,7 @@ async fn add_gpu_node(f: &Fixture, sandboxes: u32) -> NodeId {
             roles: vec![NodeRole::Sandbox],
             capacity: NodeCapacity {
                 cpu_millis: 1000,
-                memory_bytes: 1024 * 1024 * 1024,
+                memory_bytes: 16 * 1024 * 1024 * 1024,
                 disk_bytes: 1024,
                 sandboxes,
             },
