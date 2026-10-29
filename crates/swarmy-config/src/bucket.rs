@@ -70,6 +70,31 @@ impl Default for BucketSpec {
 }
 
 impl BucketSpec {
+    /// The bucket the settings select, or None when `s3.bucket` is empty. Non-empty
+    /// access keys select static keys; empty ones select the instance role.
+    #[must_use]
+    pub fn from_settings(s3: &crate::S3Settings) -> Option<Self> {
+        if s3.bucket.is_empty() {
+            return None;
+        }
+        let credentials = if s3.access_key.is_empty() {
+            BucketCredentials::InstanceRole
+        } else {
+            BucketCredentials::StaticKeys {
+                access_key: s3.access_key.clone(),
+                secret_key: s3.secret_key.clone(),
+            }
+        };
+        Some(Self {
+            endpoint: s3.endpoint.clone(),
+            region: s3.region.clone(),
+            bucket: s3.bucket.clone(),
+            prefix: s3.prefix.clone(),
+            conditional_create: s3.conditional_create,
+            credentials,
+        })
+    }
+
     /// An AWS instance-role bucket named `bucket`.
     #[must_use]
     pub fn aws(bucket: &str) -> Self {
@@ -175,4 +200,33 @@ fn valid_bucket_name(bucket: &str) -> bool {
         && bucket.bytes().all(dns)
         && !bucket.starts_with('-')
         && !bucket.ends_with('-')
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    #[test]
+    fn settings_round_trip_through_bucket_spec() {
+        for credentials in [
+            BucketCredentials::InstanceRole,
+            BucketCredentials::StaticKeys {
+                access_key: "key".into(),
+                secret_key: "secret".into(),
+            },
+        ] {
+            let spec = BucketSpec {
+                bucket: "bucket".into(),
+                region: "region".into(),
+                credentials,
+                ..BucketSpec::default()
+            };
+            let mut settings = Settings::default();
+            spec.apply_to_settings(&mut settings);
+            assert_eq!(BucketSpec::from_settings(&settings.s3), Some(spec));
+        }
+        let mut settings = Settings::default();
+        settings.s3.bucket.clear();
+        assert_eq!(BucketSpec::from_settings(&settings.s3), None);
+    }
 }

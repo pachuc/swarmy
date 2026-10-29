@@ -14,6 +14,8 @@ fn definition(group: &str) -> ElasticGroupDefinition {
         local_storage: "dir:/srv/swarmy-local".into(),
         max: 2,
         hourly_price: HourlyPrice::parse("0.75", "EUR").unwrap(),
+        primary_address: "192.0.2.1".parse().unwrap(),
+        service_user: "swarmy".into(),
     }
 }
 #[tokio::test]

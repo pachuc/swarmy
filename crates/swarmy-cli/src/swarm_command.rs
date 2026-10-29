@@ -791,6 +791,7 @@ async fn run_scale(
             );
         }
         Box::pin(crate::swarm_hosts::scale_elastic(
+            registry,
             &spec,
             group,
             count,

@@ -40,6 +40,8 @@ async fn lease_window_and_reconcile_are_fenced() {
         local_storage: "dir:/tmp".into(),
         max: 6,
         hourly_price: HourlyPrice::parse("0.75", "EUR").unwrap(),
+        primary_address: "192.0.2.1".parse().unwrap(),
+        service_user: "swarmy".into(),
     };
     store.put_elastic_group(&group).await.unwrap();
     store.set_elastic_desired("gpu", 2, "test").await.unwrap();

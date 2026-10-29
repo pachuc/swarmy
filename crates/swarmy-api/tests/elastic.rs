@@ -48,6 +48,8 @@ fn group_body(key: &str) -> PutElasticGroup {
         max: 2,
         price_per_hour: "0.75".into(),
         currency: "EUR".into(),
+        primary_address: "192.0.2.1".into(),
+        service_user: "swarmy".into(),
     }
 }
 

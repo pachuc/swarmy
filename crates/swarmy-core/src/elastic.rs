@@ -18,6 +18,10 @@ pub struct ElasticGroupDefinition {
     pub local_storage: String,
     pub max: u32,
     pub hourly_price: HourlyPrice,
+    /// Public IPv4 address of the stack host. Elastic machines tunnel to it, because they never share its private network.
+    pub primary_address: std::net::Ipv4Addr,
+    /// Service login that owns swarmy on every host of the swarm.
+    pub service_user: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ElasticGroupRecord {
@@ -55,6 +59,8 @@ mod tests {
                 local_storage: "dir:/x".into(),
                 max: 2,
                 hourly_price: HourlyPrice::parse("0.75", "EUR").unwrap(),
+                primary_address: std::net::Ipv4Addr::new(192, 0, 2, 1),
+                service_user: "swarmy".into(),
             },
             desired: 1,
             desired_reason: "manual".into(),
