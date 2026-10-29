@@ -151,12 +151,11 @@ them in [api-breaks.txt](api-breaks.txt).
   heartbeats stay advisory, tool routing fences durable dispatch across
   worker replicas, and tool claims on agent volumes never publish disk state.
   Placement filters by GPU requirement before preferring a node holding the
-  agent's scratch data, but
-  after a placement lease expires the previous host is tried last, even if
-  it holds that scratch. Capacity admission remains transactional, and a
-  placement epoch fences stale node operations. A GPU requirement change marks
-  the hosting row for release at the next node renewal; the next placement
-  records `RequirementChange`
+  agent's scratch data, but after a placement lease expires the previous
+  host is tried last, even if it holds that scratch. Capacity admission
+  remains transactional, and a placement epoch fences stale node operations.
+  A GPU requirement change marks the hosting row for release at the next
+  node renewal; the next placement records `RequirementChange`
   ([placement.rs](../crates/swarmy-worker/src/placement.rs),
   [leases.rs](../crates/swarmy-store/src/leases.rs),
   [placements.rs](../crates/swarmy-store/src/placements.rs),

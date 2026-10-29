@@ -270,7 +270,7 @@ async fn check_requirement_release(store: &Store, bus: &Bus, node: &Node) {
         bus,
         node.id,
         agent,
-        r#"test "$(cat /persistent)" = after-process && ! pgrep -x sleep"#,
+        r#"test "$(cat /persistent)" = after-process && ! grep -qsx sleep /proc/[0-9]*/comm"#,
     )
     .await;
     completed(store, &job).await;
