@@ -41,18 +41,14 @@ pub(crate) async fn detect(fake: Option<&GpuCards>, query: Command) -> Option<Gp
 /// Run the bounded command and report why a node cannot advertise cards.
 async fn query_output(mut query: Command) -> Option<Vec<u8>> {
     query.stdin(Stdio::null()).kill_on_drop(true);
-    let output = match tokio::time::timeout(Duration::from_secs(10), query.output()).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) if error.kind() == ErrorKind::NotFound => {
-            tracing::debug!("nvidia-smi not installed; no GPU cards");
-            return None;
-        }
-        Ok(Err(error)) => {
-            tracing::warn!(error = %swarmy_core::error_chain(&error), "GPU query failed to start");
-            return None;
-        }
-        Err(_) => {
-            tracing::warn!("GPU query timed out");
+    let output = tokio::time::timeout(Duration::from_secs(10), query.output())
+        .await
+        .map_err(|_| QueryFailure::Timeout)
+        .and_then(|result| result.map_err(QueryFailure::Spawn));
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => {
+            report_query_failure(&error);
             return None;
         }
     };
@@ -61,6 +57,23 @@ async fn query_output(mut query: Command) -> Option<Vec<u8>> {
         return None;
     }
     Some(output.stdout)
+}
+
+enum QueryFailure {
+    Timeout,
+    Spawn(std::io::Error),
+}
+
+fn report_query_failure(failure: &QueryFailure) {
+    match failure {
+        QueryFailure::Timeout => tracing::warn!("GPU query timed out"),
+        QueryFailure::Spawn(error) if error.kind() == ErrorKind::NotFound => {
+            tracing::debug!("nvidia-smi not installed; no GPU cards");
+        }
+        QueryFailure::Spawn(error) => {
+            tracing::warn!(error = %swarmy_core::error_chain(error), "GPU query failed to start");
+        }
+    }
 }
 
 /// One card per line, "NAME, `MEMORY_MIB`". Blank output means no cards.

@@ -362,7 +362,7 @@ impl Store {
     /// Expired placements still consume capacity until released or taken over.
     /// # Errors
     /// Rejects existing placements, invalid expiry, missing or full nodes,
-    /// nodes without the sandbox role, epoch overflow, and storage errors.
+    /// nodes without the sandbox role, GPU admission conflicts, epoch overflow, and storage errors.
     pub async fn place(
         &self,
         agent: AgentId,
@@ -472,7 +472,7 @@ impl Store {
     /// Competing takeovers conflict on the placement and only one can commit.
     /// # Errors
     /// Rejects live or replaced placements, invalid expiry, unavailable capacity,
-    /// missing nodes, epoch overflow, and storage errors.
+    /// missing nodes, GPU admission conflicts, epoch overflow, and storage errors.
     pub async fn take_over(
         &self,
         expected: &PlacementRecord,
