@@ -207,14 +207,34 @@ pub(crate) fn session(record: &swarmy_core::SessionRecord) -> api::Session {
 
 #[must_use]
 pub(crate) fn requirements(value: swarmy_core::SandboxRequirements) -> api::SandboxRequirements {
-    let gpu = match value.gpu {
-        swarmy_core::GpuRequirement::None => api::GpuMode::None,
-        swarmy_core::GpuRequirement::Shared => api::GpuMode::Shared,
-        swarmy_core::GpuRequirement::Dedicated => api::GpuMode::Dedicated,
-    };
+    let gpu = gpu_mode(value.gpu);
     api::SandboxRequirements {
         memory_mib: value.memory_mib,
         gpu,
+    }
+}
+
+pub(crate) fn gpu_mode(value: swarmy_core::GpuRequirement) -> api::GpuMode {
+    match value {
+        swarmy_core::GpuRequirement::None => api::GpuMode::None,
+        swarmy_core::GpuRequirement::Shared => api::GpuMode::Shared,
+        swarmy_core::GpuRequirement::Dedicated => api::GpuMode::Dedicated,
+    }
+}
+
+pub(crate) fn gpu_cards(value: &swarmy_core::GpuCards) -> api::GpuCards {
+    api::GpuCards {
+        model: value.model.clone(),
+        memory_mib: value.memory_mib,
+        count: value.count,
+    }
+}
+
+pub(crate) fn placement(value: &swarmy_core::PlacementRecord) -> api::PlacementView {
+    api::PlacementView {
+        node_id: value.node_id.to_string(),
+        epoch: value.epoch,
+        gpu: gpu_mode(value.gpu),
     }
 }
 
@@ -563,10 +583,7 @@ pub(crate) async fn populate_session_detail(
             .await
             .map_err(storage)?
             .map(|address| address.to_string());
-        result.placement = Some(api::PlacementView {
-            node_id: placement.node_id.to_string(),
-            epoch: placement.epoch,
-        });
+        result.placement = Some(self::placement(placement));
     }
     Ok(())
 }
@@ -644,10 +661,7 @@ async fn populate_agent_detail(
             .map(|address| address.to_string()),
         None => None,
     };
-    view.placement = placement.as_ref().map(|value| api::PlacementView {
-        node_id: value.node_id.to_string(),
-        epoch: value.epoch,
-    });
+    view.placement = placement.as_ref().map(self::placement);
     let volume = state
         .store
         .get_volume(swarmy_core::VolumeId::from_ulid(agent_id.as_ulid()))

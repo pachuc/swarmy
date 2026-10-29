@@ -669,6 +669,7 @@ async fn agent_show_reports_placement_and_committed_snapshot() {
         .unwrap();
         assert_eq!(shown["placement"]["node_id"], node.to_string());
         assert_eq!(shown["placement"]["epoch"], placement.epoch);
+        assert_eq!(shown["placement"]["gpu"], "none");
         assert!(shown["last_snapshot_at"].is_string());
         assert!(shown["last_snapshot_age_seconds"].is_number());
         // Placement must not be presented as an observed running sandbox.

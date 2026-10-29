@@ -32,6 +32,7 @@ secondary count cap.
 | `[node] roles` | `SWARMY_NODE_ROLES` (comma-separated) | `["sandbox", "volume"]` |
 | `[node.capacity] cpu_millis` | `SWARMY_NODE_CPU_MILLIS` | `1000` |
 | `[node.capacity] memory_bytes` (sandbox budget) | `SWARMY_NODE_MEMORY_BYTES` | `1073741824` |
+| `[node] fake_gpu` (table with model, memory_mib, count) | `SWARMY_NODE_FAKE_GPU` (`MODEL,MEMORY_MIB,COUNT`) | unset |
 | `[node] memory_reserve_mib` (derive budget from host RAM) | `SWARMY_NODE_MEMORY_RESERVE_MIB` | unset |
 | `[node.capacity] disk_bytes` | `SWARMY_NODE_DISK_BYTES` | `34359738368` |
 | `[node.capacity] sandboxes` | `SWARMY_NODE_SANDBOXES` | `1` |

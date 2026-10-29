@@ -190,3 +190,112 @@ fn order_candidates(
         )
     });
 }
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use swarmy_core::{GpuCards, NodeCapacity};
+
+    fn node(number: u128, cards: bool) -> NodeRecord {
+        NodeRecord {
+            node_id: NodeId::from_ulid(ulid::Ulid::from(number)),
+            roles: vec![NodeRole::Sandbox],
+            capacity: NodeCapacity {
+                cpu_millis: 1000,
+                memory_bytes: 1 << 30,
+                disk_bytes: 1024,
+                sandboxes: 2,
+            },
+            last_heartbeat: Timestamp::UNIX_EPOCH,
+            cached_images: vec![],
+            gpu: cards.then(|| GpuCards {
+                model: "L4".into(),
+                memory_mib: 23034,
+                count: 1,
+            }),
+        }
+    }
+    fn ids(nodes: &[NodeRecord]) -> Vec<NodeId> {
+        nodes.iter().map(|node| node.node_id).collect()
+    }
+    #[test]
+    fn cpu_work_tries_card_nodes_last() {
+        let mut nodes = vec![node(1, true), node(2, false)];
+        order_candidates(&mut nodes, GpuRequirement::None, None, None);
+        assert_eq!(
+            ids(&nodes),
+            vec![node(2, false).node_id, node(1, true).node_id]
+        );
+    }
+    #[test]
+    fn cpu_work_prefers_a_cpu_node_over_scratch_on_a_card_node() {
+        let mut nodes = vec![node(1, true), node(2, false)];
+        order_candidates(
+            &mut nodes,
+            GpuRequirement::None,
+            Some(nodes[0].node_id),
+            None,
+        );
+        assert_eq!(
+            ids(&nodes),
+            vec![node(2, false).node_id, node(1, true).node_id]
+        );
+    }
+    #[test]
+    fn gpu_work_sees_only_card_nodes() {
+        let mut nodes = vec![node(1, false), node(2, true)];
+        order_candidates(&mut nodes, GpuRequirement::Shared, None, None);
+        assert_eq!(ids(&nodes), vec![node(2, true).node_id]);
+        let mut nodes = vec![node(1, false)];
+        order_candidates(&mut nodes, GpuRequirement::Dedicated, None, None);
+        assert!(nodes.is_empty());
+    }
+    #[test]
+    fn gpu_requirement_ignores_scratch_on_an_ineligible_node() {
+        let mut nodes = vec![node(1, false), node(2, true), node(3, true)];
+        order_candidates(
+            &mut nodes,
+            GpuRequirement::Dedicated,
+            Some(node(1, false).node_id),
+            None,
+        );
+        assert_eq!(
+            ids(&nodes),
+            vec![node(2, true).node_id, node(3, true).node_id]
+        );
+        order_candidates(
+            &mut nodes,
+            GpuRequirement::Dedicated,
+            Some(node(3, true).node_id),
+            None,
+        );
+        assert_eq!(
+            ids(&nodes),
+            vec![node(3, true).node_id, node(2, true).node_id]
+        );
+    }
+    #[test]
+    fn expired_old_node_still_goes_last() {
+        let old = PlacementRecord {
+            agent_id: AgentId::from_ulid(ulid::Ulid::from(4_u128)),
+            node_id: node(2, true).node_id,
+            epoch: 1,
+            expires_at: Timestamp::UNIX_EPOCH,
+            last_change_reason: swarmy_core::PlacementChangeReason::Initial,
+            last_changed_at: Timestamp::UNIX_EPOCH,
+            gpu: GpuRequirement::Shared,
+        };
+        let mut nodes = vec![node(2, true), node(3, true)];
+        order_candidates(
+            &mut nodes,
+            GpuRequirement::Shared,
+            Some(old.node_id),
+            Some(&old),
+        );
+        assert_eq!(
+            ids(&nodes),
+            vec![node(3, true).node_id, node(2, true).node_id]
+        );
+    }
+}

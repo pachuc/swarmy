@@ -629,7 +629,11 @@ async fn doctor_reports_registered_nodes() {
             },
             last_heartbeat: jiff::Timestamp::now(),
             cached_images: Vec::new(),
-            gpu: None,
+            gpu: Some(swarmy_core::GpuCards {
+                model: "NVIDIA L4".into(),
+                memory_mib: 23034,
+                count: 1,
+            }),
         })
         .await
         .unwrap();
@@ -640,5 +644,13 @@ async fn doctor_reports_registered_nodes() {
         .find(|reported| reported.node_id == node.to_string())
         .unwrap();
     assert_eq!(reported.capacity.sandboxes, 4);
+    assert_eq!(
+        reported.gpu,
+        Some(api::GpuCards {
+            model: "NVIDIA L4".into(),
+            memory_mib: 23034,
+            count: 1
+        })
+    );
     assert_eq!(reported.committed_memory_bytes, 0);
 }
