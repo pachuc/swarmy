@@ -83,8 +83,7 @@ impl Scheduler {
                 swarmy_store::DomainError::SessionMissing,
             ))?;
         if session.state == SessionState::Runnable {
-            if session.interrupt_requested {
-                self.finish_interrupt(session_id).await?;
+            if session.interrupt_requested && self.finish_interrupt(session_id).await? {
                 return Ok(());
             }
             if self
@@ -109,9 +108,9 @@ impl Scheduler {
 
     /// Finish an interrupt requested on a runnable session and publish its
     /// terminal event to live clients.
-    async fn finish_interrupt(&self, session_id: SessionId) -> Result<(), anyhow::Error> {
+    async fn finish_interrupt(&self, session_id: SessionId) -> Result<bool, anyhow::Error> {
         if !self.store.finish_runnable_interrupt(session_id).await? {
-            return Ok(());
+            return Ok(false);
         }
         let head = self
             .store
@@ -126,7 +125,7 @@ impl Scheduler {
                 .publish_live(swarmy_bus::LiveFeed::SessionEvents(session_id), &event)
                 .await?;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Park a runnable session while its route's breaker stays open, unless
@@ -142,7 +141,7 @@ impl Scheduler {
         let Some((until, reason)) = self.breaker_park(session, agent, breakers).await? else {
             return Ok(false);
         };
-        let wait = self.store.inference_wait(session_id).await?;
+        let wait = self.store.session_wait(session_id).await?;
         if self.failure_pending(session, wait.as_ref()).await? || self.wait_expired(wait.as_ref()) {
             return Ok(false);
         }
@@ -153,7 +152,7 @@ impl Scheduler {
                 &reason,
                 until,
                 Timestamp::now(),
-                self.config.max_inference_wait,
+                self.config.max_session_wait,
             )
             .await?)
     }
@@ -164,7 +163,7 @@ impl Scheduler {
     async fn failure_pending(
         &self,
         session: &swarmy_core::SessionRecord,
-        wait: Option<&swarmy_store::InferenceWait>,
+        wait: Option<&swarmy_store::SessionWait>,
     ) -> Result<bool, anyhow::Error> {
         if session.head_seq == 0 {
             return Ok(false);
@@ -176,16 +175,16 @@ impl Scheduler {
             .first()
             .is_some_and(|event| {
                 matches!(event, Event::InferenceFailed { retryable: true, seq, .. }
-                    if wait.is_none_or(|wait| wait.last_failure_seq != *seq))
+                    if wait.and_then(swarmy_store::SessionWait::inference).is_none_or(|h| h.last_failure_seq != *seq))
             }))
     }
 
-    /// Whether the inference wait outlasted the maximum gateway wait and the
+    /// Whether the session wait outlasted the maximum session wait and the
     /// session must run to observe the timeout.
-    fn wait_expired(&self, wait: Option<&swarmy_store::InferenceWait>) -> bool {
+    fn wait_expired(&self, wait: Option<&swarmy_store::SessionWait>) -> bool {
         wait.is_some_and(|wait| {
             wait.since
-                .checked_add(self.config.max_inference_wait)
+                .checked_add(self.config.max_session_wait)
                 .is_ok_and(|limit| limit <= Timestamp::now())
         })
     }
@@ -221,11 +220,11 @@ impl Scheduler {
         self.fire_due_timers(now).await
     }
 
-    /// Wake every inference wait whose deadline passed. A lost race with the
+    /// Wake every session wait whose deadline passed. A lost race with the
     /// gateway just nudges a session the worker will find already complete.
     async fn wake_due_waits(&self, now: Timestamp) -> Result<(), StoreError> {
-        for id in self.store.scan_due_inference_waits(now).await? {
-            if self.store.wake_inference_wait(id, now).await? {
+        for id in self.store.scan_due_waits(now).await? {
+            if self.store.wake_wait(id, now).await? {
                 self.nudge(id, false, &mut RouteCache::default()).await;
             }
         }

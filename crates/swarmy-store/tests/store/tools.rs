@@ -131,6 +131,7 @@ fn node() -> NodeRecord {
         },
         last_heartbeat: Timestamp::now(),
         cached_images: vec![],
+        gpu: None,
     }
 }
 

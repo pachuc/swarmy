@@ -535,6 +535,14 @@ pub struct DoctorSnapshot {
     pub nodes: Vec<DoctorNode>,
 }
 
+/// Cards offered by one node.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct GpuCards {
+    pub model: String,
+    pub memory_mib: u64,
+    pub count: u32,
+}
+
 /// One registered node and its committed sandbox memory in bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DoctorNode {
@@ -543,6 +551,8 @@ pub struct DoctorNode {
     pub capacity: NodeCapacity,
     pub last_heartbeat: String,
     pub committed_memory_bytes: u64,
+    /// Cards the node advertises; null without cards.
+    pub gpu: Option<GpuCards>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1152,6 +1162,8 @@ pub struct SandboxRequirements {
 pub struct PlacementView {
     pub node_id: String,
     pub epoch: u64,
+    /// GPU mode the placement was admitted under.
+    pub gpu: GpuMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1612,7 +1624,7 @@ pub mod api_paths {
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
     WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Image, ImageUpload, Model, ProviderApi,
     Provider, ProbeModel, ProbeResult, CredentialKind, CredentialStatus, Credential, PutCredentialRecord, NodeRole, NodeCapacity,
-    Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode,
+    Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode, GpuCards,
     StageTiming, InferenceMetric, ToolMetric, ComputerMetric, TurnMetrics, LatencyPercentiles,
     AgentMetrics, StartGcRun, GcRun,
     CreateAgent, UpdateAgent, AgentReset, GpuMode, DeleteRequest,
@@ -1648,6 +1660,8 @@ mod tests {
 
     #[test]
     fn resource_json_contract() {
+        check!(GpuCards, {"model":"NVIDIA L4","memory_mib":23034,"count":1});
+        check!(PlacementView, {"node_id":"n","epoch":1,"gpu":"dedicated"});
         for state in [
             "requested",
             "creating",

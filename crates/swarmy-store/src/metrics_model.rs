@@ -225,11 +225,14 @@ pub enum MetricPatch {
     Tool(ToolMetric),
     Computer(ComputerMetric),
     Error(String),
-    Wait { request_id: String, kind: WaitKind },
+    Wait {
+        request_id: String,
+        kind: MetricWaitKind,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum WaitKind {
+pub enum MetricWaitKind {
     Retry,
     RateLimit,
     MissingGateway,
@@ -741,26 +744,26 @@ fn apply_wait(
     summary: &mut StoredTurnSummaryCurrent,
     inference: &mut BTreeMap<String, StoredTurnInferenceCurrent>,
     request_id: &str,
-    kind: WaitKind,
+    kind: MetricWaitKind,
 ) {
     let old_throughput = inference
         .get(request_id)
         .and_then(|row| row.metric.output_tokens_per_second);
     let row = inference_entry(inference, request_id);
     match kind {
-        WaitKind::Retry => {
+        MetricWaitKind::Retry => {
             row.metric.retries = row.metric.retries.saturating_add(1);
             summary.retries += 1;
         }
-        WaitKind::RateLimit => {
+        MetricWaitKind::RateLimit => {
             row.metric.rate_limit_waits = row.metric.rate_limit_waits.saturating_add(1);
             summary.rate_limit_waits += 1;
         }
-        WaitKind::MissingGateway => {
+        MetricWaitKind::MissingGateway => {
             row.metric.gateway_waits = row.metric.gateway_waits.saturating_add(1);
             summary.gateway_waits += 1;
         }
-        WaitKind::ProviderFailure => {
+        MetricWaitKind::ProviderFailure => {
             row.metric.provider_failures = row.metric.provider_failures.saturating_add(1);
             summary.provider_failures += 1;
         }

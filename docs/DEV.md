@@ -174,7 +174,8 @@ swarmy agent show reviewer --json
 Use `--system-prompt TEXT` for an inline prompt or `--system-prompt-file PATH`
 for a UTF-8 file. The two flags are mutually exclusive and preserve whitespace.
 `agent create` and `agent set` also take `--memory MIB` for the sandbox memory
-limit and `--gpu none|shared|dedicated` for the placement GPU requirement.
+limit and `--gpu none|shared|dedicated` for the GPU requirement enforced by placement and admission
+([GPU nodes](swarms.md#gpu-nodes)).
 `agent set NAME` changes only supplied fields. Changes apply to the next inference
 in every existing or future session of that agent; an already submitted request
 keeps its settings. Unset fields use the current stack defaults, as do ephemeral
@@ -261,7 +262,7 @@ plain-PUT fallback is safe. Additional settings are
 `[worker] lease_ms`, `[worker] recovery_interval_ms`, `[bus] ack_wait_ms`,
 `[bus] max_deliver`, `[gateway] concurrency`, `[node] heartbeat_interval_ms`,
 `[sandbox] idle_secs`, `[gc] grace_secs`, `[gc] interval_secs`,
-`[inference] max_wait_secs`, `[inference] max_backoff_secs`,
+`[scheduler] max_session_wait_secs`, `[inference] max_backoff_secs`,
 `[inference] gateway_wait_secs`, `[volume_snapshots] period_secs`, and
 `[context] system_prompt`. The optional `[context] summarize_at` and
 `[context] context_window` override the compaction threshold and the known

@@ -325,7 +325,7 @@ async fn session_selection_routes_and_missing_gateway_waits() {
                     f.store.fetch_session(id).await.unwrap().unwrap().state,
                     SessionState::Sleeping
                 );
-                assert!(f.store.inference_wait(id).await.unwrap().is_some());
+                assert!(f.store.session_wait(id).await.unwrap().is_some());
             }
         }
         let fake = f.infer(f.session(None).await).await;

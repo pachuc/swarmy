@@ -179,7 +179,7 @@ mod duration {
 const DEFAULT_VOLUME_SNAPSHOT_PERIOD: Duration = Duration::from_secs(600);
 const DEFAULT_VOLUME_SNAPSHOT_RETENTION: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(10).expect("snapshot retention count is nonzero");
-const DEFAULT_INFERENCE_MAX_WAIT: Duration = Duration::from_secs(3600);
+const DEFAULT_MAX_SESSION_WAIT: Duration = Duration::from_secs(3600);
 const DEFAULT_INFERENCE_MAX_BACKOFF: Duration = Duration::from_secs(300);
 const DEFAULT_INFERENCE_GATEWAY_WAIT: Duration = Duration::from_secs(30);
 const DEFAULT_METERING_RAW_RETENTION_DAYS: std::num::NonZeroU64 =
@@ -244,8 +244,6 @@ pub struct GarbageCollection {
 #[serde(default, deny_unknown_fields)]
 pub struct Inference {
     #[serde(with = "duration::secs")]
-    pub max_wait_secs: Duration,
-    #[serde(with = "duration::secs")]
     pub max_backoff_secs: Duration,
     #[serde(with = "duration::secs")]
     pub gateway_wait_secs: Duration,
@@ -255,7 +253,6 @@ pub struct Inference {
 impl Default for Inference {
     fn default() -> Self {
         Self {
-            max_wait_secs: DEFAULT_INFERENCE_MAX_WAIT,
             max_backoff_secs: DEFAULT_INFERENCE_MAX_BACKOFF,
             gateway_wait_secs: DEFAULT_INFERENCE_GATEWAY_WAIT,
             default_route: None,
@@ -425,6 +422,8 @@ pub struct SchedulerSettings {
     pub ephemeral_retention_secs: Duration,
     #[serde(with = "duration::secs")]
     pub placement_lease_secs: Duration,
+    #[serde(with = "duration::secs")]
+    pub max_session_wait_secs: Duration,
 }
 impl Default for SchedulerSettings {
     fn default() -> Self {
@@ -434,6 +433,7 @@ impl Default for SchedulerSettings {
             resend_interval_ms: DEFAULT_SCHEDULER_RESEND_INTERVAL,
             ephemeral_retention_secs: DEFAULT_EPHEMERAL_RETENTION,
             placement_lease_secs: DEFAULT_PLACEMENT_LEASE,
+            max_session_wait_secs: DEFAULT_MAX_SESSION_WAIT,
         }
     }
 }
@@ -459,6 +459,8 @@ pub struct NodeSettings {
     pub capacity: swarmy_core::NodeCapacity,
     /// When set, advertise RAM minus this reserve as sandbox memory.
     pub memory_reserve_mib: Option<u64>,
+    /// Advertise these cards instead of probing nvidia-smi; for CPU-only tests and the dev stack.
+    pub fake_gpu: Option<swarmy_core::GpuCards>,
     #[serde(with = "duration::ms")]
     pub heartbeat_interval_ms: Duration,
 }
@@ -472,6 +474,7 @@ impl Default for NodeSettings {
             ],
             capacity: DEFAULT_NODE_CAPACITY,
             memory_reserve_mib: None,
+            fake_gpu: None,
             heartbeat_interval_ms: DEFAULT_NODE_HEARTBEAT_INTERVAL,
         }
     }
@@ -936,6 +939,14 @@ impl Settings {
                 return Err(Error::Environment(name.into()));
             }
         }
+        if self
+            .node
+            .fake_gpu
+            .as_ref()
+            .is_some_and(|gpu| gpu.model.trim().is_empty() || gpu.memory_mib == 0 || gpu.count == 0)
+        {
+            return Err(Error::Environment("SWARMY_NODE_FAKE_GPU".into()));
+        }
         Ok(())
     }
 
@@ -1035,7 +1046,7 @@ static ENV_TABLE: &[EnvEntry] = &[
     e!("SWARMY_EPHEMERAL_RETENTION_SECONDS", |s, v, _| assign_duration(&mut s.scheduler.ephemeral_retention_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.scheduler.ephemeral_retention_secs, duration::Unit::Secs))),
     e!("SWARMY_SANDBOX_IDLE_SECONDS", |s, v, _| assign_duration(&mut s.sandbox.idle_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.sandbox.idle_secs, duration::Unit::Secs))),
     e!("SWARMY_PLACEMENT_LEASE_SECONDS", |s, v, _| assign_duration(&mut s.scheduler.placement_lease_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.scheduler.placement_lease_secs, duration::Unit::Secs))),
-    e!("SWARMY_INFERENCE_MAX_WAIT_SECONDS", |s, v, _| assign_duration(&mut s.inference.max_wait_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.inference.max_wait_secs, duration::Unit::Secs))),
+    e!("SWARMY_MAX_SESSION_WAIT_SECONDS", |s, v, _| assign_duration(&mut s.scheduler.max_session_wait_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.scheduler.max_session_wait_secs, duration::Unit::Secs))),
     e!("SWARMY_INFERENCE_MAX_BACKOFF_SECONDS", |s, v, _| assign_duration(&mut s.inference.max_backoff_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.inference.max_backoff_secs, duration::Unit::Secs))),
     e!("SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS", |s, v, _| assign_duration(&mut s.inference.gateway_wait_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.inference.gateway_wait_secs, duration::Unit::Secs))),
     e!("SWARMY_INFERENCE_DEFAULT_ROUTE", |s, v, _| { assign_opt_string(&mut s.inference.default_route, v); Ok(()) }, |s| Some(s.inference.default_route.clone().unwrap_or_default())),
@@ -1047,6 +1058,7 @@ static ENV_TABLE: &[EnvEntry] = &[
     e!("SWARMY_GC_BATCH_SIZE", |s, v, _| assign(&mut s.gc.batch_size, v), |s| Some(s.gc.batch_size.to_string())),
     e!("SWARMY_GC_DELETE_CONCURRENCY", |s, v, _| assign(&mut s.gc.delete_concurrency, v), |s| Some(s.gc.delete_concurrency.to_string())),
     e!("SWARMY_METERING_RAW_RETENTION_DAYS", |s, v, _| assign(&mut s.metering.raw_retention_days, v), |s| Some(s.metering.raw_retention_days.to_string())),
+    e!("SWARMY_NODE_FAKE_GPU", set_node_fake_gpu, |s| s.node.fake_gpu.as_ref().map(|g| format!("{},{},{}", g.model, g.memory_mib, g.count))),
     e!("SWARMY_NODE_ROLES", set_node_roles, |s| Some(format_node_roles(s))),
     e!("SWARMY_NODE_HEARTBEAT_INTERVAL_MS", |s, v, _| assign_duration(&mut s.node.heartbeat_interval_ms, v, duration::Unit::Millis), |s| Some(duration::format(s.node.heartbeat_interval_ms, duration::Unit::Millis))),
     e!("SWARMY_NODE_CPU_MILLIS", |s, v, _| assign(&mut s.node.capacity.cpu_millis, v), |s| Some(s.node.capacity.cpu_millis.to_string())),
@@ -1153,6 +1165,26 @@ fn set_models(
     _environment: &BTreeMap<String, String>,
 ) -> Result<(), ()> {
     settings.selection.models = serde_json::from_str(value).map_err(|_| ())?;
+    Ok(())
+}
+
+fn set_node_fake_gpu(
+    settings: &mut Settings,
+    value: &str,
+    _env: &BTreeMap<String, String>,
+) -> Result<(), ()> {
+    let mut parts = value.rsplitn(3, ',');
+    let count: u32 = parts.next().ok_or(())?.trim().parse().map_err(|_| ())?;
+    let memory_mib: u64 = parts.next().ok_or(())?.trim().parse().map_err(|_| ())?;
+    let model = parts.next().ok_or(())?.trim();
+    if model.is_empty() || count == 0 || memory_mib == 0 {
+        return Err(());
+    }
+    settings.node.fake_gpu = Some(swarmy_core::GpuCards {
+        model: model.into(),
+        memory_mib,
+        count,
+    });
     Ok(())
 }
 
@@ -1280,6 +1312,48 @@ mod tests {
                     .apply_environment(&BTreeMap::from([(name.into(), "0".into())]))
                     .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn fake_gpu_parses_and_rejects_invalid_values() {
+        let mut settings = Settings::default();
+        settings
+            .apply_environment(&BTreeMap::from([(
+                "SWARMY_NODE_FAKE_GPU".into(),
+                "NVIDIA L4, rev 2,23034,2".into(),
+            )]))
+            .unwrap();
+        assert_eq!(
+            settings.node.fake_gpu,
+            Some(swarmy_core::GpuCards {
+                model: "NVIDIA L4, rev 2".into(),
+                memory_mib: 23034,
+                count: 2
+            })
+        );
+        for value in ["x,0,1", "x,1,0", ",1,1", "x,1"] {
+            assert!(
+                Settings::default()
+                    .apply_environment(&BTreeMap::from([(
+                        "SWARMY_NODE_FAKE_GPU".into(),
+                        value.into()
+                    )]))
+                    .is_err()
+            );
+        }
+        let text = settings.to_toml().unwrap();
+        assert!(text.contains("[node.fake_gpu]"));
+        let decoded: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(decoded.node.fake_gpu, settings.node.fake_gpu);
+        for (model, memory_mib, count) in [("", 1, 1), ("x", 0, 1), ("x", 1, 0)] {
+            let mut invalid = Settings::default();
+            invalid.node.fake_gpu = Some(swarmy_core::GpuCards {
+                model: model.into(),
+                memory_mib,
+                count,
+            });
+            assert!(invalid.validate().is_err());
         }
     }
 
@@ -1616,7 +1690,7 @@ mod tests {
             ("SWARMY_EPHEMERAL_RETENTION_SECONDS", "123"),
             ("SWARMY_SANDBOX_IDLE_SECONDS", "124"),
             ("SWARMY_PLACEMENT_LEASE_SECONDS", "125"),
-            ("SWARMY_INFERENCE_MAX_WAIT_SECONDS", "126"),
+            ("SWARMY_MAX_SESSION_WAIT_SECONDS", "126"),
             ("SWARMY_INFERENCE_MAX_BACKOFF_SECONDS", "127"),
             ("SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS", "128"),
             ("SWARMY_INFERENCE_DEFAULT_ROUTE", "test-route"),
@@ -1635,6 +1709,7 @@ mod tests {
             ("SWARMY_NODE_MEMORY_BYTES", "2147483648"),
             ("SWARMY_NODE_DISK_BYTES", "21474836480"),
             ("SWARMY_NODE_SANDBOXES", "7"),
+            ("SWARMY_NODE_FAKE_GPU", "Fake L4,23034,1"),
         ];
         let mut exported = BTreeMap::new();
         for (name, value) in distinct {

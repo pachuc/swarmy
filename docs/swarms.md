@@ -390,6 +390,15 @@ uncommitted changes are refused unless `--allow-dirty` is set. Machines
 provisioned before the `swarmy-core` binary should be upgraded with the same
 command; the installed units are reconciled.
 
+## When no node has room
+
+A full swarm, or a GPU requirement no node meets, parks sessions instead of
+failing their calls. The scheduler retries every 30 seconds and sessions
+continue on their own when capacity appears. After the configured maximum
+session wait (one hour by default), pending calls fail without running.
+
+Elastic groups will later add machines for these waits.
+
 ## Scaling node groups
 
 ```sh
@@ -401,9 +410,8 @@ swarmy swarm scale fleet workers 2 --drain-timeout 1200
 Count is 0 to 50. Zero is allowed only for a node group whose machines
 OpenTofu creates; it removes all machines while keeping the group in the spec
 with `count = 0`. An elastic group takes 0 to its `max` (see
-[Elastic groups](#elastic-groups)). Existing-host groups keep at least one host; stack and
-services groups need at least one machine. Growing
-updates the spec and reruns the normal provisioning path; already provisioned
+[Elastic groups](#elastic-groups)). Existing-host groups keep at least one
+host; stack and services groups need at least one machine. Growing updates the spec and reruns the normal provisioning path; already provisioned
 machines are skipped. Shrinking removes the highest-numbered nodes first. It
 waits up to `--drain-timeout` seconds per node (600 by default) for running
 sandbox commands and turns to finish. The node agent then stops cleanly,
@@ -424,8 +432,8 @@ See [REMOTE.md](REMOTE.md#draining-a-node) for how draining works on a node.
 An elastic group declares cloud machines in the swarm spec, but the swarm's
 provisioner on the primary owns the machines and runs OpenTofu there.
 The laptop never applies that group's OpenTofu module. `--force` does not apply;
-the provisioner on the primary drains and destroys elastic machines. In a swarm with an existing
-stack group, add `gpu` to `placement.nodes` and declare:
+the provisioner on the primary drains and destroys elastic machines. In a
+swarm with an existing stack group, add `gpu` to `placement.nodes` and declare:
 
 ```toml
 [groups.gpu]
@@ -447,6 +455,31 @@ After adding the group, register it once with `swarmy swarm scale hz gpu 0`.
 Scale accepts 0 through max; down sets desired to 0 and refuses until the
 provisioner has reconciled that change and all machines are gone. The hourly
 price comes from the spec because the module contract has no price output.
+## GPU nodes
+
+A node runs `nvidia-smi`, NVIDIA's driver command-line tool, once at startup to
+list installed cards. It advertises their model, memory in MiB, and count in its
+node record. A missing command, a query that fails or runs longer than 10 seconds,
+or malformed output means the node advertises no cards. `swarmy doctor` lists
+cards on live nodes.
+
+Agents set `--gpu none|shared|dedicated`. None can use any sandbox node, but
+prefers nodes without cards. Shared needs at least one card and can share the
+node with other shared GPU sandboxes, provided no dedicated GPU sandbox is there.
+Dedicated needs a card and no other GPU sandbox on that node; CPU sandboxes can
+still share it. Dedicated reserves the node's whole set of cards, not individual
+cards. A GPU requirement overrides local scratch preference, so moving from a
+scratch host may require a cold cargo target. If no node qualifies, the step
+parks the session in a durable capacity wait, as described in
+[When no node has room](#when-no-node-has-room).
+
+For tests and dev stacks only, `[node.fake_gpu]` with `model`, `memory_mib`, and
+`count` or `SWARMY_NODE_FAKE_GPU="MODEL,MEMORY_MIB,COUNT"` advertises fake cards
+without probing. Local services do not inherit shell variables, so use the TOML
+form for local swarms. The override only advertises cards; it exposes no device.
+
+Placement and admission are in place, but cards are not yet visible inside
+sandboxes, even on real GPU nodes; exposing the devices is later work.
 
 ## Machines
 

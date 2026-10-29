@@ -204,7 +204,8 @@ impl Store {
         .await
     }
 
-    /// Apply overrides and explicit resets in the same transaction.
+    /// Apply overrides and explicit resets in the same transaction. A GPU
+    /// change requests a placed computer release; a memory change still needs eviction.
     /// # Errors
     /// Rejects unknown agents, missing routes, oversized records, and storage failures.
     pub async fn set_agent_with_resets(
@@ -239,9 +240,12 @@ impl Store {
                     .await?
                     .is_some()
             {
-                return Err(StoreError::Domain(
-                    crate::DomainError::ActiveSandboxRequirements,
-                ));
+                if agent.requirements.memory_mib != previous_requirements.memory_mib {
+                    return Err(StoreError::Domain(
+                        crate::DomainError::ActiveSandboxRequirements,
+                    ));
+                }
+                self.request_release_in(&trx, id).await?;
             }
             write(&trx, &self.keys().agent(id), &agent)?;
             Ok(agent)

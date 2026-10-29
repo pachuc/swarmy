@@ -496,7 +496,7 @@ impl Gateway {
         &self,
         job: &InferenceJob,
         turn: Option<MessageId>,
-        kind: swarmy_store::WaitKind,
+        kind: swarmy_store::MetricWaitKind,
     ) {
         if let Some(turn) = turn {
             self.store.observe_turn_metric(
