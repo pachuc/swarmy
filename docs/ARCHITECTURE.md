@@ -75,7 +75,7 @@ crate in a tier depends on every lower tier.
   ([source](../crates/swarmy-devtools/src/main.rs)).
 - **swarmy-cloud** provisions SSH-reachable hosts as swarms, upgrades them, opens per-swarm tunnels, and, with the opt-in remote feature, manages a static-key bucket; the provisioner is its only server-side user
   ([source](../crates/swarmy-cloud/src/lib.rs)).
-- **swarmy-provisioner** is the primary-only service that reconciles elastic groups with OpenTofu and the machine ledger, and joins, drains and destroys machines through the client's SSH path ([source](../crates/swarmy-provisioner/src/reconcile.rs)).
+- **swarmy-provisioner** is the primary-only service that reconciles elastic groups with OpenTofu and the machine ledger, autoscales the one group with `autoscale = true` from parked GPU capacity waits (`session_wait` rows) and idle machines by changing desired only, and joins, drains and destroys machines through the client's SSH path ([source](../crates/swarmy-provisioner/src/reconcile.rs)).
 - **swarmy-infra** fetches a pinned, checksum-verified OpenTofu release, runs it in a per-swarm working directory with cloud credentials only in the environment, and owns the module output contract and the verified-download helper the swarmy release cache shares ([source](../crates/swarmy-infra/src/lib.rs)), and carries the OpenTofu machine-group modules from infra/modules ([modules](../crates/swarmy-infra/src/modules.rs)).
 
 Services share one bootstrap from `swarmy-config`: `Settings::load` for

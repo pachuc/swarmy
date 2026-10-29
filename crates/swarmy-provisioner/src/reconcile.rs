@@ -10,6 +10,7 @@
 //! | S6 | Draining or Failed | yes | Lower the target below the lowest such machine |
 //! | S6a | Orphaned | yes | None |
 //! | J1 | Provisioning, no `provisioned_at` | yes | Provision over SSH, then Provisioned |
+//! | Autoscaled group | before the rules above | desired raised for parked GPU waits and lowered for idle top machines (see autoscale.rs) |
 //! | J2 | Provisioning, `provisioned_at` set, node registered | yes | Joined, wake capacity waits |
 //! | J3 | Provisioning past `JOIN_TIMEOUT` | yes | Failed |
 //! | D1 | Provisioning, Joined, Draining or Failed at or above lowest removed | yes | `DrainRequested` if needed, drain and revoke before apply |
@@ -155,6 +156,9 @@ impl Reconciler {
     pub async fn tick(&self, holder: &mut Holder) -> Result<Tick> {
         if self.hold(holder).await?.is_none() {
             return Ok(Tick::Standby);
+        }
+        if let Err(error) = crate::autoscale::run(&self.store).await {
+            tracing::error!(error = %swarmy_core::error_chain(error.as_ref()), "autoscale failed");
         }
         let mut outcomes = Vec::new();
         for record in self.store.list_elastic_groups().await? {
@@ -1002,7 +1006,7 @@ impl Reconciler {
 fn name(def: &ElasticGroupDefinition, n: u32) -> String {
     format!("{}-{}-{n}", def.swarm, def.group)
 }
-fn number(def: &ElasticGroupDefinition, value: &str) -> Option<u32> {
+pub(crate) fn number(def: &ElasticGroupDefinition, value: &str) -> Option<u32> {
     value
         .strip_prefix(&format!("{}-{}-", def.swarm, def.group))?
         .parse()

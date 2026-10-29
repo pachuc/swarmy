@@ -111,8 +111,7 @@ wait several minutes while a machine starts.
 Release and kill set the worker back with
 `swarmy agent set worker-N --gpu none --allow-gpu-request false`, only if it is
 not already there. The computer then returns to hz on its next command.
-Until autoscale lands, a GPU machine is not destroyed by itself when its last
-GPU computer leaves; scale the group down with `swarmy swarm scale <swarm> gpu 0` once `fleet status` shows no worker on it.
+The hz gpu group autoscales. A GPU task's first command makes the provisioner start a machine, and the machine is drained and destroyed after 30 minutes without a GPU computer and with no GPU task waiting. After `fleet release` that is about 30 minutes later; a worker that stays quiet keeps it about 60 minutes. `swarmy --swarm hz swarm machines` shows each machine's state and cause.
 
 Status ends each row with `node=` (placement), `card=` (ledger machine size or
 `-`), `gpu=` (live requirement) and `machines=` (cost so far). A machine is

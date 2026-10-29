@@ -2,7 +2,8 @@ use crate::{Result, Store, StoreError, read, scan, write};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use swarmy_core::{
-    Event, GpuRequirement, Lease, Message, MessageId, MessageRole, Part, SessionId, SessionState,
+    AgentId, Event, GpuRequirement, Lease, Message, MessageId, MessageRole, Part, PlacementRecord,
+    SessionId, SessionState,
 };
 
 /// How long a session waits before trying again to find a node.
@@ -88,6 +89,20 @@ impl SessionWait {
         }
     }
 }
+/// A session parked because no node could host its GPU computer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GpuCapacityWait {
+    pub session_id: SessionId,
+    pub agent_id: AgentId,
+    pub agent_name: Option<String>,
+    pub requirement: GpuRequirement,
+    pub since: Timestamp,
+    /// Set when the agent asked for the card itself with `request_gpu`.
+    pub gpu_request: Option<swarmy_core::GpuRequest>,
+    /// The agent already holds a GPU placement; its wait clears when its tools dispatch.
+    pub placed: bool,
+}
+
 /// One provider failure being parked by the worker.
 pub struct InferenceFailureWait<'a> {
     pub seq: u64,
@@ -114,6 +129,55 @@ enum WakeRule {
 }
 
 impl Store {
+    /// Every GPU capacity wait of a live session, oldest first.
+    /// # Errors
+    /// Storage or decoding errors.
+    pub async fn gpu_capacity_waits(&self) -> Result<Vec<GpuCapacityWait>> {
+        let space = self.keys().session_wait_space();
+        let (begin, end) = space.range();
+        let mut waits = Vec::new();
+        for (key, value) in self.scan_all_pages(begin, end).await? {
+            let (bytes,): (Vec<u8>,) = space.unpack(&key)?;
+            let id = crate::keys::session_id(&bytes)?;
+            let wait = swarmy_core::decode::<SessionWait>(&value)?;
+            let Some(requirement) = wait.capacity().filter(|r| r.needs_card()) else {
+                continue;
+            };
+            if let Some(row) = self
+                .transaction(|trx| async move {
+                    let Some((session, _)) = self.fetch_session_in(&trx, id).await? else {
+                        return Ok(None);
+                    };
+                    if !matches!(
+                        session.state,
+                        SessionState::Sleeping | SessionState::Runnable | SessionState::Leased
+                    ) {
+                        return Ok(None);
+                    }
+                    let agent = self.read_agent(&trx, session.agent_id).await?;
+                    let placed =
+                        read::<PlacementRecord>(&trx, &self.keys().placement(session.agent_id))
+                            .await?
+                            .is_some_and(|p| p.gpu.needs_card());
+                    Ok(Some(GpuCapacityWait {
+                        session_id: id,
+                        agent_id: session.agent_id,
+                        agent_name: agent.as_ref().map(|a| a.name.clone()),
+                        requirement,
+                        since: wait.since,
+                        gpu_request: agent.and_then(|a| a.gpu_request),
+                        placed,
+                    }))
+                })
+                .await?
+            {
+                waits.push(row);
+            }
+        }
+        waits.sort_by_key(|w| (w.since, w.session_id));
+        Ok(waits)
+    }
+
     /// Read each session's state, session wait, and lease in one transaction.
     /// # Errors
     /// Returns missing-session, decoding, or storage failures.
