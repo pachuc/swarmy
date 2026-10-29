@@ -17,7 +17,10 @@ mod bucket;
 mod names;
 pub use bucket::{BucketCredentials, BucketSpec, ownership_marker_key};
 pub use exports::parse_exports;
-pub use names::{default_sandboxes, validate_name, validate_service_user};
+pub use names::{
+    DEFAULT_CREATED_LOCAL_STORAGE, default_sandboxes, is_opentofu_name, validate_name,
+    validate_service_user,
+};
 pub use object::ObjectPrefix;
 use serde::{Deserialize, Serialize};
 use std::{

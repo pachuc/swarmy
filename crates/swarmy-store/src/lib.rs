@@ -22,6 +22,7 @@ pub mod blob;
 mod breakers;
 mod computers;
 pub mod credentials;
+mod elastic;
 mod inference;
 mod interrupt;
 mod machines;

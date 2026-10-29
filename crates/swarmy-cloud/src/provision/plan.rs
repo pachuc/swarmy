@@ -138,7 +138,7 @@ fn storage(group: &swarmy_config::swarm::GroupSpec) -> String {
         if group.module == Module::Existing {
             String::new()
         } else {
-            "dir:/srv/swarmy-local".into()
+            swarmy_config::DEFAULT_CREATED_LOCAL_STORAGE.into()
         }
     })
 }

@@ -1101,6 +1101,51 @@ pub(crate) fn auth_display(summary: &swarmy_api_types::Credential, json: bool, e
         );
     }
 }
+async fn set_machine_credential(
+    client: &Client,
+    endpoint: &str,
+    args: &auth_command::Set,
+    machine: swarmy_config::cloud::CloudProvider,
+    json: bool,
+) -> Result<()> {
+    let (names, _) = machine.env_names();
+    let instruction = format!(
+        "{machine} is a machine provider for elastic groups: export {} and run swarmy auth set {machine} --from-env",
+        names.join(", ")
+    );
+    ensure!(
+        args.source.from_env
+            && args.source.api_key.is_none()
+            && args.source.file.is_none()
+            && args.extra.is_empty()
+            && args.label.is_none()
+            && args.limit.is_none()
+            && args.window.is_none(),
+        "{instruction}"
+    );
+    let credential =
+        swarmy_config::cloud::CloudCredential::from_env(machine, |name| std::env::var(name).ok())?;
+    let extra = credential
+        .env()
+        .iter()
+        .map(|(name, value)| (name.into(), value.into()))
+        .collect();
+    request(
+        endpoint,
+        client.set_credential(&swarmy_api_types::CreateCredential {
+            idempotency_key: Ulid::generate().to_string(),
+            provider: machine.name().into(),
+            kind: swarmy_api_types::CredentialKind::MachineProvider,
+            label: "default".into(),
+            secret: String::new(),
+            extra,
+        }),
+    )
+    .await?;
+    auth_report("saved", machine.name(), json);
+    Ok(())
+}
+
 pub(crate) async fn auth_set(
     client: &Client,
     endpoint: &str,
@@ -1119,6 +1164,9 @@ pub(crate) async fn auth_set(
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
         "invalid provider id"
     );
+    if let Ok(machine) = provider.parse::<swarmy_config::cloud::CloudProvider>() {
+        return set_machine_credential(client, endpoint, &args, machine, json).await;
+    }
     validate_auth_set_sources(&args)?;
     let has_source = auth_set_has_source(&args);
     let has_quota = args.limit.is_some() || args.window.is_some();

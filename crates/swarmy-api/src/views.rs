@@ -315,6 +315,9 @@ pub(crate) fn credential(value: store::credentials::CredentialSummary) -> api::C
             swarmy_core::CredentialEntryKind::Subscription => api::CredentialKind::Subscription,
             swarmy_core::CredentialEntryKind::ApiKey => api::CredentialKind::ApiKey,
             swarmy_core::CredentialEntryKind::Cloud => api::CredentialKind::Cloud,
+            swarmy_core::CredentialEntryKind::MachineProvider => {
+                api::CredentialKind::MachineProvider
+            }
         },
         label: value.label,
         status: match value.status {
@@ -816,6 +819,30 @@ pub(crate) fn machine_totals(machines: &[api::Machine]) -> Vec<api::MachineCostT
             cost: swarmy_core::format_micros(cost_micros),
         })
         .collect()
+}
+
+#[must_use]
+pub(crate) fn elastic_group(record: &swarmy_core::ElasticGroupRecord) -> api::ElasticGroup {
+    let definition = &record.definition;
+    api::ElasticGroup {
+        swarm: definition.swarm.clone(),
+        group: definition.group.clone(),
+        module: definition.module.clone(),
+        size: definition.size.clone(),
+        location: definition.location.clone(),
+        sandboxes: definition.sandboxes,
+        local_storage: definition.local_storage.clone(),
+        max: definition.max,
+        price_per_hour: definition.hourly_price.amount(),
+        currency: definition.hourly_price.currency.clone(),
+        desired: record.desired,
+        desired_reason: record.desired_reason.clone(),
+        applied: record.applied,
+        generation: record.generation,
+        reconciled_generation: record.reconciled_generation,
+        settled: record.settled(),
+        updated_at: record.updated_at.to_string(),
+    }
 }
 
 #[cfg(test)]

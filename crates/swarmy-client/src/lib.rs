@@ -803,6 +803,43 @@ impl Client {
         self.send(Method::POST, &format!("routes/{}", segment(name)), body)
             .await
     }
+    /// Read an elastic group.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn elastic_group(&self, group: &str) -> Result<api::ElasticGroup, Error> {
+        self.get(&format!("swarm/groups/{}", segment(group)), &[])
+            .await
+    }
+    /// Register an elastic group definition.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn put_elastic_group(
+        &self,
+        group: &str,
+        body: &api::PutElasticGroup,
+    ) -> Result<api::ElasticGroup, Error> {
+        self.send(
+            Method::PUT,
+            &format!("swarm/groups/{}", segment(group)),
+            body,
+        )
+        .await
+    }
+    /// Set the desired elastic machine count.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn set_elastic_desired(
+        &self,
+        group: &str,
+        body: &api::SetElasticDesired,
+    ) -> Result<api::ElasticGroup, Error> {
+        self.send(
+            Method::PUT,
+            &format!("swarm/groups/{}/desired", segment(group)),
+            body,
+        )
+        .await
+    }
     /// Remove a named inference route.
     /// # Errors
     /// Returns transport, API, or decoding failures.

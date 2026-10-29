@@ -13,6 +13,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 mod api_failure;
 mod conversation;
+mod elastic;
 mod gc;
 mod idempotency;
 pub mod images;
@@ -148,6 +149,18 @@ fn storage(value: swarmy_store::StoreError) -> ApiFailure {
         StoreError::Domain(
             swarmy_store::DomainError::InvalidAgentName | swarmy_store::DomainError::InvalidImage,
         ) => ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_request", message),
+        StoreError::Domain(swarmy_store::DomainError::ElasticGroupMissing { .. }) => {
+            ApiFailure::new(StatusCode::NOT_FOUND, "elastic_group_not_found", message)
+        }
+        StoreError::Domain(swarmy_store::DomainError::ElasticGroupBusy { .. }) => {
+            ApiFailure::new(StatusCode::CONFLICT, "elastic_group_busy", message)
+        }
+        StoreError::Domain(swarmy_store::DomainError::DesiredAboveMax { .. }) => {
+            ApiFailure::new(StatusCode::BAD_REQUEST, "desired_above_max", message)
+        }
+        StoreError::Domain(swarmy_store::DomainError::InvalidElasticGroup(_)) => {
+            ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_elastic_group", message)
+        }
         StoreError::Domain(swarmy_store::DomainError::RouteMissing) => {
             ApiFailure::new(StatusCode::BAD_REQUEST, "route_not_found", message)
         }
@@ -251,6 +264,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/credentials/{provider}/{label}",
             get(check_credential_entry).delete(remove_credential_entry),
+        )
+        .route(
+            "/v1/swarm/groups/{group}",
+            get(elastic::show).put(elastic::put),
+        )
+        .route(
+            "/v1/swarm/groups/{group}/desired",
+            axum::routing::put(elastic::set_desired),
         )
         .route("/v1/routes", get(list_routes))
         .route(
@@ -1019,6 +1040,19 @@ async fn check_credential(
         })?;
     Ok(Json(views::credential(summary)))
 }
+fn unknown_machine_provider() -> ApiFailure {
+    let names = swarmy_config::cloud::CloudProvider::ALL
+        .iter()
+        .map(|provider| provider.name())
+        .collect::<Vec<_>>()
+        .join(", ");
+    ApiFailure::new(
+        StatusCode::BAD_REQUEST,
+        "unknown_machine_provider",
+        format!("machine providers are {names}"),
+    )
+}
+
 async fn set_credential(
     State(state): State<AppState>,
     Json(body): Json<api::CreateCredential>,
@@ -1031,6 +1065,38 @@ async fn set_credential(
             "add subscription credentials with swarmy auth login",
         ));
     }
+    let machine_env = if body.kind == api::CredentialKind::MachineProvider {
+        let provider = body
+            .provider
+            .parse::<swarmy_config::cloud::CloudProvider>()
+            .map_err(|_| unknown_machine_provider())?;
+        if body.label != "default" {
+            return Err(ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "machine provider label must be default",
+            ));
+        }
+        let credential = swarmy_config::cloud::CloudCredential::from_env(provider, |name| {
+            body.extra.get(name).cloned()
+        })
+        .map_err(|error| {
+            ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_machine_credential",
+                error.to_string(),
+            )
+        })?;
+        Some(
+            credential
+                .env()
+                .iter()
+                .map(|(name, value)| (name.into(), value.into()))
+                .collect(),
+        )
+    } else {
+        None
+    };
     let store = credential_store(&state)?;
     let record = CredentialRecord {
         bookkeeping: swarmy_core::CredentialBookkeeping {
@@ -1038,9 +1104,13 @@ async fn set_credential(
             label: Some(body.label.clone()),
             ..Default::default()
         },
-        kind: CredentialKind::ApiKey {
-            key: body.secret,
-            extra: body.extra,
+        kind: if let Some(env) = machine_env {
+            CredentialKind::MachineProvider { env }
+        } else {
+            CredentialKind::ApiKey {
+                key: body.secret,
+                extra: body.extra,
+            }
         },
         updated_at: Timestamp::now(),
     };

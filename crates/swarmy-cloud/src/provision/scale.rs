@@ -18,6 +18,7 @@ use swarmy_config::{
 pub enum GroupKind {
     Module,
     Existing,
+    Elastic,
 }
 
 /// # Errors
@@ -48,6 +49,9 @@ pub fn check_scalable(spec: &SwarmSpec, group: &str) -> Result<GroupKind> {
             spec.name,
             spec.placement.nodes.join(", ")
         )));
+    }
+    if selected.elastic {
+        return Ok(GroupKind::Elastic);
     }
     match selected.module {
         Module::Existing => Ok(GroupKind::Existing),
@@ -112,6 +116,11 @@ pub fn preflight(
     count: u32,
 ) -> Result<(GroupKind, SwarmRecord)> {
     let kind = check_scalable(spec, group)?;
+    if kind == GroupKind::Elastic {
+        return Err(Error::other(format!(
+            "group \"{group}\" is elastic; the CLI scales it through the swarm's API"
+        )));
+    }
     if count == 0 && kind == GroupKind::Existing {
         return Err(Error::other(format!(
             "group \"{group}\" lists existing hosts and cannot be scaled to zero; keep at least one host (only groups whose machines OpenTofu creates can have zero)"
@@ -414,6 +423,9 @@ async fn shrink(
     match kind {
         GroupKind::Module => apply_lower(request, spec, record, before, report).await?,
         GroupKind::Existing => remove_existing(host, request, spec, record, before, report).await?,
+        GroupKind::Elastic => {
+            return Err(Error::other("elastic groups are scaled through the API"));
+        }
     }
     Ok(())
 }
