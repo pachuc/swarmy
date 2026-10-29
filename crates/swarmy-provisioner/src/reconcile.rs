@@ -6,14 +6,20 @@
 //! | S2 | Creating | yes | Created |
 //! | S3 | Requested or Creating | no | Reuse or fail after target selection |
 //! | S4 | Provisioning or Joined | no | Orphaned |
-//! | S5 | Draining | no | Destroyed |
-//! | S6 | Provisioning, Joined, Draining, Failed or Orphaned | yes | None |
-//! | S7 | Failed or Orphaned | no | None |
+//! | S5 | Draining or Failed | no | Destroyed |
+//! | S6 | Draining or Failed | yes | Lower the target below the lowest such machine |
+//! | S6a | Orphaned | yes | None |
+//! | J1 | Provisioning, no `provisioned_at` | yes | Provision over SSH, then Provisioned |
+//! | J2 | Provisioning, `provisioned_at` set, node registered | yes | Joined, wake capacity waits |
+//! | J3 | Provisioning past `JOIN_TIMEOUT` | yes | Failed |
+//! | D1 | Provisioning, Joined, Draining or Failed at or above lowest removed | yes | `DrainRequested` if needed, drain and revoke before apply |
+//! | S7 | Orphaned | no | None |
 //! | S8 | No active record | yes | Adopt as Creating, Created |
 //!
 //! Replaying these rules against state before applying makes every interrupted step recoverable.
 //! Reservations and group results check the lease in their transactions. Ledger transitions
 //! are not fenced: the binary runs as a single unit on the primary, and invalid transitions fail.
+//! Joins and drains renew the lease before each machine.
 use anyhow::{Context, Result, anyhow, bail};
 use jiff::Timestamp;
 use object_store::{ObjectStore, path::Path};
@@ -23,10 +29,16 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use swarmy_cloud::provision::groups::{self, GroupInputs};
+use swarmy_cloud::{
+    provision::{
+        self,
+        groups::{self, GroupInputs},
+    },
+    ssh::{self, LocalPrimary},
+};
 use swarmy_config::{
     cloud::{CloudCredential, CloudCredentials},
-    swarm::Module,
+    swarm::{Module, RecordedHost},
 };
 use swarmy_core::{
     BillingGranularity, CredentialKind, CredentialScope, ElasticGroupDefinition,
@@ -39,6 +51,10 @@ use swarmy_store::{
     credentials::CredentialStore,
 };
 
+/// A created machine must join within this period.
+pub const JOIN_TIMEOUT: Duration = Duration::from_mins(15);
+/// Maximum time to let sandbox commands finish before forcing a drain.
+pub const DRAIN_TIMEOUT: Duration = Duration::from_mins(10);
 pub const RETRY_AFTER_FAILURE: Duration = Duration::from_mins(5);
 pub struct Reconciler {
     store: Store,
@@ -48,6 +64,14 @@ pub struct Reconciler {
     cache: PathBuf,
     tofu: tokio::sync::OnceCell<Tofu>,
     retry: Mutex<BTreeMap<String, (u64, Timestamp)>>,
+    nodes: Option<Arc<dyn crate::Nodes>>,
+    bucket: Option<swarmy_config::BucketSpec>,
+    join_errors: Mutex<BTreeMap<MachineId, String>>,
+}
+enum GroupProgress {
+    Standby,
+    Skip,
+    Join(Option<Outcome>),
 }
 pub struct Holder {
     owner: LeaseOwnerId,
@@ -101,7 +125,20 @@ impl Reconciler {
             cache,
             tofu: tokio::sync::OnceCell::new(),
             retry: Mutex::new(BTreeMap::new()),
+            nodes: None,
+            bucket: None,
+            join_errors: Mutex::new(BTreeMap::new()),
         }
+    }
+    #[must_use]
+    pub fn with_nodes(
+        mut self,
+        nodes: Arc<dyn crate::Nodes>,
+        bucket: Option<swarmy_config::BucketSpec>,
+    ) -> Self {
+        self.nodes = Some(nodes);
+        self.bucket = bucket;
+        self
     }
     #[must_use]
     pub fn with_tofu(mut self, tofu: Tofu) -> Self {
@@ -121,42 +158,324 @@ impl Reconciler {
         }
         let mut outcomes = Vec::new();
         for record in self.store.list_elastic_groups().await? {
-            if record.settled()
-                || self
-                    .retry
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(&record.definition.group)
-                    .is_some_and(|(generation, at)| {
-                        *generation == record.generation && self.store.now() < *at
-                    })
-            {
-                continue;
+            match self.apply_group(holder, &record).await? {
+                GroupProgress::Standby => return Ok(Tick::Standby),
+                GroupProgress::Skip => continue,
+                GroupProgress::Join(outcome) => outcomes.extend(outcome),
             }
-            let Some(lease) = self.hold(holder).await? else {
-                return Ok(Tick::Standby);
-            };
-            match self.reconcile(&lease, &record).await {
-                Ok(outcome) => {
-                    self.retry
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .remove(&record.definition.group);
-                    outcomes.push(outcome);
-                }
+            match self.join_pending(holder, &record.definition.group).await {
+                Ok(true) => {}
+                Ok(false) => return Ok(Tick::Standby),
                 Err(error) => {
-                    tracing::error!(group = %record.definition.group, error = %swarmy_core::error_chain(error.as_ref()), "elastic reconcile failed");
-                    self.retry
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(
-                            record.definition.group.clone(),
-                            (record.generation, self.store.now() + RETRY_AFTER_FAILURE),
-                        );
+                    tracing::error!(group = %record.definition.group, error = %swarmy_core::error_chain(error.as_ref()), "elastic join failed");
                 }
             }
         }
         Ok(Tick::Reconciled(outcomes))
+    }
+    async fn apply_group(
+        &self,
+        holder: &mut Holder,
+        record: &ElasticGroupRecord,
+    ) -> Result<GroupProgress> {
+        if self.backing_off(record) {
+            return Ok(GroupProgress::Join(None));
+        }
+        let doomed = match self.drain_removed(holder, record).await {
+            Ok(Some(doomed)) => doomed,
+            Ok(None) => return Ok(GroupProgress::Standby),
+            Err(error) => {
+                tracing::error!(group = %record.definition.group, error = %swarmy_core::error_chain(error.as_ref()), "elastic drain failed");
+                self.delay_retry(record);
+                return Ok(GroupProgress::Skip);
+            }
+        };
+        if record.settled() && record.applied == record.desired && !doomed {
+            return Ok(GroupProgress::Join(None));
+        }
+        let Some(lease) = self.hold(holder).await? else {
+            return Ok(GroupProgress::Standby);
+        };
+        match self.reconcile(&lease, record).await {
+            Ok(outcome) => {
+                self.retry
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&record.definition.group);
+                Ok(GroupProgress::Join(Some(outcome)))
+            }
+            Err(error) => {
+                tracing::error!(group = %record.definition.group, error = %swarmy_core::error_chain(error.as_ref()), "elastic reconcile failed");
+                self.delay_retry(record);
+                Ok(GroupProgress::Join(None))
+            }
+        }
+    }
+    fn backing_off(&self, record: &ElasticGroupRecord) -> bool {
+        self.retry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&record.definition.group)
+            .is_some_and(|(generation, at)| {
+                *generation == record.generation && self.store.now() < *at
+            })
+    }
+    fn delay_retry(&self, record: &ElasticGroupRecord) {
+        self.retry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                record.definition.group.clone(),
+                (record.generation, self.store.now() + RETRY_AFTER_FAILURE),
+            );
+    }
+    async fn current_outputs(
+        &self,
+        def: &ElasticGroupDefinition,
+        applied: u32,
+    ) -> Result<Vec<Machine>> {
+        let (workspace, _) = self.workspace(def, applied).await?;
+        self.outputs(&workspace, def).await
+    }
+    fn node_machine(
+        &self,
+        def: &ElasticGroupDefinition,
+        record: &MachineRecord,
+        host: &RecordedHost,
+    ) -> provision::Machine {
+        provision::joining_node(
+            host,
+            &def.service_user,
+            def.sandboxes,
+            &def.local_storage,
+            self.bucket.clone(),
+            record.machine_id.joined_node_id(),
+        )
+    }
+    async fn drain_removed(
+        &self,
+        holder: &mut Holder,
+        record: &ElasticGroupRecord,
+    ) -> Result<Option<bool>> {
+        let def = &record.definition;
+        let active = self
+            .store
+            .list_machines(Some(&def.group), MachineFilter::Active)
+            .await?;
+        let lowest = lowest_doomed(def, &active, |r| {
+            number(def, &r.name).is_some_and(|n| n <= record.applied)
+        });
+        let Some(nodes) = &self.nodes else {
+            return Ok(Some(lowest.is_some()));
+        };
+        let keep = lowest.map_or(record.desired, |n| record.desired.min(n - 1));
+        let mut victims: Vec<_> = active
+            .into_iter()
+            .filter(|r| {
+                number(def, &r.name).is_some_and(|n| n > keep && n <= record.applied)
+                    && matches!(
+                        r.state,
+                        MachineState::Provisioning
+                            | MachineState::Joined
+                            | MachineState::Draining
+                            | MachineState::Failed
+                    )
+            })
+            .collect();
+        if victims.is_empty() {
+            return Ok(Some(lowest.is_some()));
+        }
+        victims.sort_by_key(|r| std::cmp::Reverse(number(def, &r.name)));
+        let outputs = self.current_outputs(def, record.applied).await?;
+        for victim in victims {
+            if self.hold(holder).await?.is_none() {
+                return Ok(None);
+            }
+            self.drain_one(nodes.as_ref(), def, &victim, &outputs)
+                .await?;
+        }
+        Ok(Some(lowest.is_some()))
+    }
+    async fn drain_one(
+        &self,
+        nodes: &dyn crate::Nodes,
+        def: &ElasticGroupDefinition,
+        victim: &MachineRecord,
+        outputs: &[Machine],
+    ) -> Result<()> {
+        let Some(output) = outputs.iter().find(|m| m.name == victim.name) else {
+            tracing::warn!(name = %victim.name, "machine missing from state before drain");
+            return Ok(());
+        };
+        if matches!(
+            victim.state,
+            MachineState::Provisioning | MachineState::Joined
+        ) {
+            self.transition(victim, MachineTransition::DrainRequested)
+                .await?;
+        }
+        let host = groups::recorded_host(
+            &def.group,
+            output,
+            &groups::group_key_path(&self.data_dir, &def.group),
+        )?;
+        let node = self.node_machine(def, victim, &host);
+        self.drain_and_revoke(nodes, def, victim, &node, &host)
+            .await;
+        Ok(())
+    }
+    async fn drain_and_revoke(
+        &self,
+        nodes: &dyn crate::Nodes,
+        def: &ElasticGroupDefinition,
+        victim: &MachineRecord,
+        node: &provision::Machine,
+        host: &RecordedHost,
+    ) {
+        log_drain(victim, nodes.drain(node, DRAIN_TIMEOUT).await);
+        if let Err(error) = nodes.revoke(node, &local_primary(def)).await {
+            tracing::warn!(name = %victim.name, error = %swarmy_core::error_chain(error.as_ref()), "could not revoke tunnel key; stale forwarding-only line is inert");
+        }
+        swarmy_core::ignore_best_effort(
+            ssh::forget_host_key(&host.public_address, &host.ssh_key),
+            "forget removed node host key",
+        );
+    }
+    async fn join_pending(&self, holder: &mut Holder, group: &str) -> Result<bool> {
+        let Some(nodes) = &self.nodes else {
+            return Ok(true);
+        };
+        let Some(record) = self.store.get_elastic_group(group).await? else {
+            return Ok(true);
+        };
+        let def = &record.definition;
+        let mut pending: Vec<_> = self
+            .store
+            .list_machines(Some(group), MachineFilter::Active)
+            .await?
+            .into_iter()
+            .filter(|r| {
+                r.state == MachineState::Provisioning
+                    && number(def, &r.name).is_some_and(|n| n <= record.applied)
+            })
+            .collect();
+        if pending.is_empty() {
+            return Ok(true);
+        }
+        pending.sort_by_key(|r| number(def, &r.name));
+        let outputs = self.current_outputs(def, record.applied).await?;
+        for machine in pending {
+            if self.hold(holder).await?.is_none() {
+                return Ok(false);
+            }
+            self.join_one(nodes.as_ref(), def, &machine, &outputs)
+                .await?;
+        }
+        Ok(true)
+    }
+    async fn join_one(
+        &self,
+        nodes: &dyn crate::Nodes,
+        def: &ElasticGroupDefinition,
+        machine: &MachineRecord,
+        outputs: &[Machine],
+    ) -> Result<()> {
+        let Some(output) = outputs.iter().find(|m| m.name == machine.name) else {
+            return Ok(());
+        };
+        if machine.provisioned_at.is_some() && self.finish_join(machine).await? {
+            return Ok(());
+        }
+        let now = self.store.now();
+        let Some(created) = machine.created_at else {
+            return Ok(());
+        };
+        let deadline = created + JOIN_TIMEOUT;
+        if now >= deadline {
+            let last = self
+                .join_errors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&machine.machine_id)
+                .unwrap_or_else(|| "none recorded since the provisioner started".into());
+            let detail = format!(
+                "did not join within {} minutes of creation; last error: {last}",
+                JOIN_TIMEOUT.as_secs() / 60
+            );
+            tracing::warn!(name = %machine.name, detail, "elastic join timed out");
+            self.transition(machine, MachineTransition::Failed { detail })
+                .await?;
+            return Ok(());
+        }
+        if !self
+            .provision_pending(nodes, def, machine, output, deadline, now)
+            .await?
+        {
+            return Ok(());
+        }
+        self.finish_join(machine).await?;
+        Ok(())
+    }
+    async fn finish_join(&self, machine: &MachineRecord) -> Result<bool> {
+        let node_id = machine.machine_id.joined_node_id();
+        if self.store.get_node(node_id).await?.is_some() {
+            self.transition(machine, MachineTransition::Joined { node_id })
+                .await?;
+            self.join_errors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&machine.machine_id);
+            let woken = self.store.wake_capacity_waits(self.store.now()).await?;
+            tracing::info!(name = %machine.name, %node_id, woken = woken.len(), "elastic node joined");
+            Ok(true)
+        } else {
+            self.join_errors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    machine.machine_id,
+                    format!("provisioning finished but node {node_id} has not registered"),
+                );
+            Ok(false)
+        }
+    }
+    async fn provision_pending(
+        &self,
+        nodes: &dyn crate::Nodes,
+        def: &ElasticGroupDefinition,
+        machine: &MachineRecord,
+        output: &Machine,
+        deadline: Timestamp,
+        now: Timestamp,
+    ) -> Result<bool> {
+        if machine.provisioned_at.is_none() {
+            let host = groups::recorded_host(
+                &def.group,
+                output,
+                &groups::group_key_path(&self.data_dir, &def.group),
+            )?;
+            let node = self.node_machine(def, machine, &host);
+            let remaining = Duration::try_from(deadline.duration_since(now)).unwrap_or_default();
+            match tokio::time::timeout(remaining, nodes.join(&node, &local_primary(def))).await {
+                Ok(Ok(())) => {
+                    self.transition(machine, MachineTransition::Provisioned)
+                        .await?;
+                }
+                result => {
+                    let detail = match result {
+                        Ok(Err(error)) => swarmy_core::error_chain(error.as_ref()),
+                        _ => "join attempt timed out".into(),
+                    };
+                    tracing::warn!(name = %machine.name, detail, "elastic join failed");
+                    self.join_errors
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(machine.machine_id, detail);
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
     }
     async fn hold(&self, holder: &mut Holder) -> Result<Option<Lease>> {
         let now = self.store.now();
@@ -315,13 +634,7 @@ impl Reconciler {
         active: &[MachineRecord],
     ) -> Result<(u32, bool)> {
         let def = &record.definition;
-        let draining = active
-            .iter()
-            .filter(|r| {
-                r.state == MachineState::Draining && outputs.iter().any(|m| m.name == r.name)
-            })
-            .filter_map(|r| number(def, &r.name))
-            .min();
+        let draining = lowest_doomed(def, active, |r| outputs.iter().any(|m| m.name == r.name));
         if let Some(n) = draining {
             return Ok((record.desired.min(n - 1), false));
         }
@@ -389,7 +702,6 @@ impl Reconciler {
             self.fail_pending(def, actual, target, &swarmy_core::error_chain(error))
                 .await?;
         }
-        // Task 6b joins machines left in Provisioning here: provision over SSH, then Provisioned and Joined.
         self.store
             .record_elastic_reconcile(
                 lease,
@@ -534,9 +846,9 @@ impl Reconciler {
                 self.transition(record, MachineTransition::Created { address: address(machine)? }).await?;
             }
             (MachineState::Creating, Some(machine)) => self.transition(record, MachineTransition::Created { address: address(machine)? }).await?,
-            (MachineState::Draining, None) => self.transition(record, MachineTransition::Destroyed).await?,
+            (MachineState::Draining | MachineState::Failed, None) => self.transition(record, MachineTransition::Destroyed).await?,
             (MachineState::Provisioning | MachineState::Joined, None) => self.transition(record, MachineTransition::Orphaned { detail: format!("machine {} is no longer in OpenTofu state, but swarmy did not remove it; it may still exist and cost money; check the provider", record.name) }).await?,
-            (MachineState::Requested | MachineState::Creating | MachineState::Failed | MachineState::Orphaned, None) => self.sync_missing(record, n, after).await?,
+            (MachineState::Requested | MachineState::Creating | MachineState::Orphaned, None) => self.sync_missing(record, n, after).await?,
             _ => {},
         }
         Ok(())
@@ -721,4 +1033,32 @@ fn variables(
         bucket: "",
         network: "",
     })
+}
+
+fn log_drain(victim: &MachineRecord, result: Result<ssh::Drain>) {
+    match result {
+        Ok(drain) => {
+            tracing::info!(name = %victim.name, stopped = drain.stopped, busy = ?drain.busy, unreleased = ?drain.unreleased, "elastic node drained");
+        }
+        Err(error) => {
+            tracing::warn!(name = %victim.name, error = %swarmy_core::error_chain(error.as_ref()), "could not reach node to drain it; removing without draining");
+        }
+    }
+}
+fn local_primary(def: &ElasticGroupDefinition) -> LocalPrimary {
+    LocalPrimary {
+        address: def.primary_address,
+        service_user: def.service_user.clone(),
+    }
+}
+fn lowest_doomed(
+    def: &ElasticGroupDefinition,
+    active: &[MachineRecord],
+    held: impl Fn(&MachineRecord) -> bool,
+) -> Option<u32> {
+    active
+        .iter()
+        .filter(|r| matches!(r.state, MachineState::Draining | MachineState::Failed) && held(r))
+        .filter_map(|r| number(def, &r.name))
+        .min()
 }

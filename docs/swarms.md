@@ -399,7 +399,7 @@ failing their calls. The scheduler retries every 30 seconds and sessions
 continue on their own when capacity appears. After the configured maximum
 session wait (one hour by default), pending calls fail without running.
 
-Elastic groups will later add machines for these waits.
+Elastic groups will later add machines for these waits. The provisioner wakes parked sessions when a machine joins.
 
 ## Scaling node groups
 
@@ -457,7 +457,7 @@ After adding the group, register it once with `swarmy swarm scale hz gpu 0`.
 Scale accepts 0 through max; down sets desired to 0 and refuses until the
 provisioner has reconciled that change and all machines are gone. The hourly
 price comes from the spec because the module contract has no price output.
-New machines currently stop in Provisioning until task 6b joins them.
+The provisioner joins each machine over SSH from the primary using the primary's own swarmy-core build. A machine that has not joined within 15 minutes of creation is failed, destroyed and replaced within the creation limit. Shrinking drains each removed node for up to 10 minutes, then stops it anyway, revokes its tunnel key and destroys it.
 The creation interlock reserves at most four machine creations per hour per swarm,
 including failed applies; further growth waits for the one-hour window.
 ## GPU nodes
@@ -505,7 +505,7 @@ puts its tasky id in the reason.
 - Failed: an operation failed; a machine already created keeps costing until destroyed.
 - Orphaned: swarmy lost track of a cloud machine that may still exist and cost money; check the provider and remove it by hand.
 
-The provisioner writes Requested and Creating before the OpenTofu apply, Created (which enters Provisioning) after it sees the machine in state, and DrainRequested before removal and Destroyed after it disappears from state.
+The provisioner writes Requested and Creating before the OpenTofu apply, Created (which enters Provisioning) after it sees the machine in state, Provisioned after SSH configuration, Joined after node registration, Failed after the join timeout, and DrainRequested before removal and Destroyed after it disappears from state.
 
 The first billing unit starts on creation and is billed immediately. By default
 billing is per started hour; a record can instead specify per started minute.
