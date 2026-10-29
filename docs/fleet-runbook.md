@@ -56,7 +56,13 @@ ad hoc against the local API with `--swarm local`.
   in order before the replacement text. An idle interrupt is harmless.
   Direct CLI callers can use `swarmy run --session ID --queue "text"`.
 - `scripts/fleet/fleet status`: one line per worker with task, provider,
-  model, state and its age, task elapsed time, and cost. A recent wait can show
+  model, state and its age, task elapsed time, and cost. Each line ends with
+  `node=` (where the worker's computer is placed), `card=` (the cloud size
+  of that node when it is a ledger GPU machine, such as `L4-1-24G`; `-` on
+  hz), `gpu=` (the worker's current GPU requirement) and `machines=` (the
+  cost so far of the GPU machines charged to the task). A worker waiting for
+  a GPU machine shows `waiting_capacity` with the reason; that is not a stall.
+  A recent wait can show
   `waiting_inference 2m; waiting for inference: ...`. A session in
   `waiting_inference` or `leased` longer than `stall_minutes` (default 10)
   shows `STALLED` in the state column and makes status exit 2; an operator or
@@ -80,6 +86,46 @@ ad hoc against the local API with `--swarm local`.
   the task text says; the task text and the review are the quality control.
 - Cost: `swarmy agent show worker-N --swarm dev` totals a worker's spend;
   `swarmy cost --agent worker-N --swarm dev` shows the same spend by day.
+
+## GPU tasks
+
+Tasks that build or test graphical software may need a machine with an NVIDIA
+card. The GPU machines are Scaleway L4 instances rented by the hour. Swarmy
+records each machine in its machine ledger.
+
+`scripts/fleet/fleet launch TASK --gpu shared|dedicated` puts the worker on a
+GPU machine from its first command. `shared` lets other GPU computers use the
+same card; `dedicated` keeps the machine to this worker. A new worker is created
+with the requirement; a reused idle worker is set to it before the task starts.
+
+`--allow-gpu` lets the worker decide when to call `request_gpu` and
+`release_gpu`. Its prompt says to request only for steps that need the card,
+push work before moving, and start the reason with `tasky <FULL_ID>: `.
+`allow_gpu = true` in fleet.toml enables this for every launch;
+`--no-allow-gpu` disables it for one task.
+
+A move keeps files on the worker's disk but loses running processes, `/tmp`,
+and the cargo target directory. The next build is cold. The first command can
+wait several minutes while a machine starts.
+
+Release and kill set the worker back with `swarmy agent set worker-N --gpu none
+--allow-gpu-request false`, only if it is not already there. The computer then
+returns to hz on its next command. A GPU machine with no GPU computer on it for
+30 minutes is drained and destroyed.
+
+Status ends each row with `node=` (placement), `card=` (ledger machine size or
+`-`), `gpu=` (live requirement) and `machines=` (cost so far). A machine is
+charged when its cause reason starts with `tasky <id>` for the task or when
+the worker's agent is on it now. The agent join counts the machine's whole cost
+so far, including time used by an earlier task. `swarmy swarm machines` lists
+the active ledger; `swarmy swarm machines --all` also lists destroyed machines.
+
+A capacity wait gives up after `[scheduler] max_session_wait_secs` (default
+one hour) and the tool call fails. The worker can then call `release_gpu`. To
+stop the wait sooner, use `fleet kill TASK`.
+
+This does not change the worker image; making `swarmy-dev` use the card is a
+separate task in the GPU goal.
 
 ## Subscription limits
 
