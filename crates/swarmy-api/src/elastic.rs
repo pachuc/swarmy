@@ -39,8 +39,7 @@ fn definition(
             "swarm and group names must be 1-20 lowercase letters, digits and hyphens, starting with a letter and not ending in a hyphen",
         ));
     }
-    let module =
-        Module::try_from(body.module.clone()).map_err(|error| invalid(error.to_string()))?;
+    let module = Module::try_from(body.module.clone()).map_err(invalid)?;
     if matches!(module, Module::Existing | Module::Local | Module::Path(_)) {
         return Err(invalid("elastic groups need a built-in machine module"));
     }
