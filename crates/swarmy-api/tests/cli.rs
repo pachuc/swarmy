@@ -284,6 +284,7 @@ async fn agent_management_uses_api_and_preserves_requirements() {
         .unwrap();
     let updated = client.agent("worker").await.unwrap();
     assert_eq!(updated.requirements.memory_mib, 1024);
+    assert!(!updated.allow_gpu_request);
     assert!(updated.provider.is_none());
     assert!(updated.model.is_none());
     assert_eq!(updated.id, created.id);

@@ -316,7 +316,7 @@ impl Fixture {
             .await;
     }
 
-    async fn request_calls(&self, id: SessionId, calls: &[(&str, serde_json::Value)]) {
+    async fn request_calls(&self, id: SessionId, calls: &[(&str, Value)]) {
         let head = self
             .store
             .fetch_session(id)
@@ -1839,4 +1839,250 @@ async fn busy_dedicated_node_gets_no_eligible_node_with_the_refusal() {
             swarmy_store::DomainError::GpuUnavailable { .. }
         ))
     ));
+}
+
+async fn allow_gpu(f: &Fixture) {
+    f.store
+        .set_agent_with_resets(
+            f.agent,
+            &swarmy_core::AgentSettings {
+                allow_gpu_request: Some(true),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn gpu_tool_mixed_with_other_calls_runs_nothing() {
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    allow_gpu(&f).await;
+    let id = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(id, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    f.request_calls(
+        id,
+        &[
+            ("bash", json!({"command":"echo hi"})),
+            ("request_gpu", json!({"mode":"shared","reason":"x"})),
+        ],
+    )
+    .await;
+    f.step(id).await;
+    let events = f.store.read_events(id, 0, 64).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, Event::ToolCallRequested { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(events.iter().filter(|e| matches!(e, Event::ToolCallCompleted { result: ToolResult::Error { error }, .. } if error == swarmy_core::GPU_TOOL_NOT_ALONE)).count(), 2);
+    assert_eq!(
+        f.store
+            .get_agent(f.agent)
+            .await
+            .unwrap()
+            .unwrap()
+            .requirements
+            .gpu,
+        swarmy_core::GpuRequirement::None
+    );
+    assert!(f.store.get_by_agent(f.agent).await.unwrap().is_none());
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::InferenceRequested { .. }))
+    );
+}
+
+#[tokio::test]
+async fn gpu_tools_are_advertised_only_to_allowed_agents() {
+    use swarmy_llm::ToolDefinition;
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    let named = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(named, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    let request = || swarmy_llm::Request {
+        no_cache: false,
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: ["bash", "request_gpu", "release_gpu"]
+            .into_iter()
+            .map(|name| ToolDefinition {
+                name: name.into(),
+                description: String::new(),
+                parameters: json!({"type":"object"}),
+            })
+            .collect(),
+        settings: GenerationSettings {
+            model: "test-model".into(),
+            ..Default::default()
+        },
+    };
+    let mut off = request();
+    f.worker
+        .prepare_request(
+            &f.store.fetch_session(named).await.unwrap().unwrap(),
+            &mut off,
+            &mut Vec::new(),
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        off.tools
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
+        ["bash"]
+    );
+    allow_gpu(&f).await;
+    let mut on = request();
+    f.worker
+        .prepare_request(
+            &f.store.fetch_session(named).await.unwrap().unwrap(),
+            &mut on,
+            &mut Vec::new(),
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(on.tools.len(), 3);
+    let ephemeral = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(
+            ephemeral,
+            None,
+            f.now(),
+            Some(swarmy_store::AgentSessionOptions {
+                image: Some("routing:test"),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let mut anonymous = request();
+    f.worker
+        .prepare_request(
+            &f.store.fetch_session(ephemeral).await.unwrap().unwrap(),
+            &mut anonymous,
+            &mut Vec::new(),
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        anonymous
+            .tools
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
+        ["bash"]
+    );
+}
+
+#[tokio::test]
+async fn gpu_tool_moves_the_computer_then_next_call_waits_and_runs_on_a_gpu_node() {
+    use swarmy_core::GpuRequirement;
+    use swarmy_store::{CAPACITY_WAIT_RETRY, WaitKind};
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    allow_gpu(&f).await;
+    let first = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(first, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    f.request(first).await;
+    f.step(first).await;
+    let placement = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
+    let delivery = f.delivery(placement.node_id).await;
+    let claim = f.claim(delivery.value.clone(), placement.clone()).await;
+    f.complete(&claim).await.unwrap();
+    delivery.acknowledge().await.unwrap();
+
+    let second = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(second, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    f.request_calls(
+        second,
+        &[(
+            "request_gpu",
+            json!({"mode":"shared","reason":"render test"}),
+        )],
+    )
+    .await;
+    f.step(second).await;
+    let events = f.store.read_events(second, 0, 64).await.unwrap();
+    assert_eq!(events.iter().filter(|e| matches!(e, Event::ToolCallCompleted { result: ToolResult::Completed { output, .. }, .. } if output.contains("did not wait"))).count(), 1);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::InferenceRequested { .. }))
+    );
+    let agent = f.store.get_agent(f.agent).await.unwrap().unwrap();
+    assert_eq!(agent.requirements.gpu, GpuRequirement::Shared);
+    assert_eq!(agent.gpu_request.unwrap().reason, "render test");
+    assert!(
+        f.store
+            .placement_release_requested(&placement)
+            .await
+            .unwrap()
+    );
+
+    let third = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(third, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    f.request(third).await;
+    f.step(third).await;
+    assert!(matches!(
+        f.store.session_wait(third).await.unwrap().unwrap().kind,
+        WaitKind::Capacity {
+            requirement: GpuRequirement::Shared
+        }
+    ));
+    let events = f.store.read_events(third, 0, 64).await.unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::ToolCallRequested { .. }))
+    );
+    assert_eq!(events.iter().filter(|e| matches!(e, Event::MessageAppended { message, .. } if message.role == MessageRole::System && message.parts.iter().any(|p| matches!(p, Part::Text { text } if text.contains("waiting for GPU capacity"))))).count(), 1);
+    f.store.release(&placement).await.unwrap();
+    f.advance(CAPACITY_WAIT_RETRY + Duration::from_secs(1));
+    let gpu = add_gpu_node(&f, 2).await;
+    assert!(f.store.wake_wait(third, f.now()).await.unwrap());
+    f.step(third).await;
+    let moved = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
+    assert_eq!(moved.node_id, gpu);
+    assert_eq!(moved.gpu, GpuRequirement::Shared);
+    assert_eq!(
+        moved.last_change_reason,
+        PlacementChangeReason::RequirementChange
+    );
+    assert!(f.store.session_wait(third).await.unwrap().is_none());
+    assert_eq!(
+        f.store.fetch_session(third).await.unwrap().unwrap().state,
+        SessionState::WaitingTools
+    );
+    f.delivery(gpu).await.acknowledge().await.unwrap();
 }
