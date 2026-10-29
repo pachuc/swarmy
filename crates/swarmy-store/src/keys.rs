@@ -37,6 +37,7 @@ const COMPUTER_NOTICE: &str = "computer_notice";
 const COMPUTER_NOTICE_DELIVERED: &str = "computer_notice_delivered";
 const CREDENTIAL_ENTRY: &str = "credential_entry";
 const CREDENTIAL_ENTRY_LEASE: &str = "credential_entry_lease";
+const ELASTIC_CREATIONS: &str = "elastic_creations";
 const ELASTIC_GROUP: &str = "elastic_group";
 const ENTRY_QUOTA_CONFIG: &str = "entry_quota_config";
 const ENTRY_QUOTA_OBSERVED: &str = "entry_quota_observed";
@@ -80,6 +81,8 @@ const PLACEMENT_COUNT: &str = "placement_count";
 const PLACEMENT_EPOCH: &str = "placement_epoch";
 const PLACEMENT_HOSTING: &str = "placement_hosting";
 const PLACEMENT_NEXT_REASON: &str = "placement_next_reason";
+const PROVISIONER_LEASE: &str = "provisioner_lease";
+const PROVISIONER_SEQUENCE: &str = "provisioner_sequence";
 const REQUEST_TURN: &str = "request_turn";
 const ROUTE: &str = "route";
 const RUNNABLE: &str = "runnable";
@@ -548,6 +551,15 @@ impl<'a> Keys<'a> {
     }
     pub(crate) fn request_turn_space(&self) -> Subspace {
         self.root.subspace(&(REQUEST_TURN,))
+    }
+    pub(crate) fn elastic_creations(&self) -> Vec<u8> {
+        self.root.subspace(&(ELASTIC_CREATIONS,)).pack(&())
+    }
+    pub(crate) fn provisioner_lease(&self) -> Vec<u8> {
+        self.root.subspace(&(PROVISIONER_LEASE,)).pack(&())
+    }
+    pub(crate) fn provisioner_sequence(&self) -> Vec<u8> {
+        self.root.subspace(&(PROVISIONER_SEQUENCE,)).pack(&())
     }
     pub(crate) fn elastic_group(&self, group: &str) -> Vec<u8> {
         self.elastic_group_space().pack(&(group,))

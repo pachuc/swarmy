@@ -98,6 +98,29 @@ pub struct Tofu {
     plugin_cache: PathBuf,
 }
 impl Tofu {
+    /// The test override when set and non-empty, otherwise the pinned verified download.
+    /// # Errors
+    /// Returns `TofuBinMissing` for a missing override, or download errors.
+    pub async fn resolve(cache: &Path) -> Result<Self> {
+        Self::resolve_with(std::env::var_os("SWARMY_TOFU_BIN").as_deref(), cache).await
+    }
+    /// Resolve with an explicit override so tests do not mutate process environment.
+    /// # Errors
+    /// Returns `TofuBinMissing` for a missing override, or download errors.
+    pub async fn resolve_with(
+        override_bin: Option<&std::ffi::OsStr>,
+        cache: &Path,
+    ) -> Result<Self> {
+        if let Some(path) = override_bin.filter(|value| !value.is_empty()) {
+            let path = PathBuf::from(path);
+            if !path.is_file() {
+                return Err(crate::Error::TofuBinMissing(path));
+            }
+            return Ok(Self::from_binary(path, cache));
+        }
+        Self::install(cache, &opentofu::Source::pinned()).await
+    }
+
     /// # Errors
     /// Returns installation or platform errors.
     pub async fn install(cache: &Path, source: &opentofu::Source) -> Result<Self> {

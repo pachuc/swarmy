@@ -23,9 +23,12 @@ mod breakers;
 mod computers;
 pub mod credentials;
 mod elastic;
+pub use elastic::{CreationGrant, MAX_ELASTIC_CREATIONS_PER_HOUR};
 mod inference;
 mod interrupt;
 mod machines;
+mod provisioner;
+mod singleton_lease;
 pub use machines::MachineFilter;
 mod metrics;
 mod metrics_codec;
@@ -339,7 +342,7 @@ impl Store {
     /// Observe the store clock. Production reads the wall clock through the
     /// default closure; lease and expiry tests inject a shared manual clock
     /// with [`Store::with_clock`] instead of sleeping out real leases.
-    pub(crate) fn now(&self) -> jiff::Timestamp {
+    pub fn now(&self) -> jiff::Timestamp {
         (self.clock)()
     }
 

@@ -65,7 +65,7 @@ pub(crate) struct Applied {
 fn root(dir: &Path) -> PathBuf {
     dir.join("tofu")
 }
-fn group_dir(dir: &Path, group: &str) -> PathBuf {
+pub fn group_dir(dir: &Path, group: &str) -> PathBuf {
     root(dir).join(group)
 }
 fn module_name(module: &Module) -> String {
@@ -112,12 +112,12 @@ fn provider_env(
     }
     Ok(env)
 }
-fn credential_env(
+pub fn module_credential_env(
     credentials: &CloudCredentials,
-    group: &GroupSpec,
+    module: &Module,
     bucket: bool,
 ) -> Result<CredentialEnv> {
-    let providers: Vec<_> = match &group.module {
+    let providers: Vec<_> = match module {
         // Custom modules receive all stored providers: their provider needs are unknown.
         Module::Path(_) => CloudProvider::ALL.to_vec(),
         module => {
@@ -130,11 +130,7 @@ fn credential_env(
             providers
         }
     };
-    provider_env(
-        credentials,
-        &providers,
-        !matches!(group.module, Module::Path(_)),
-    )
+    provider_env(credentials, &providers, !matches!(module, Module::Path(_)))
 }
 fn network_zone(location: &str) -> Option<&'static str> {
     match location {
@@ -167,7 +163,7 @@ pub fn check_credentials(spec: &SwarmSpec, credentials: &CloudCredentials) -> Re
     for name in apply_order(spec) {
         let group = &spec.groups[&name];
         let bucket = name == spec.placement.stack && creates_bucket(spec);
-        let _ = credential_env(credentials, group, bucket)?;
+        let _ = module_credential_env(credentials, &group.module, bucket)?;
     }
     Ok(())
 }
@@ -263,7 +259,7 @@ fn last_variables(dir: &Path) -> Option<Map<String, Value>> {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
-async fn group_key(dir: &Path, swarm: &str, group: &str) -> Result<String> {
+pub async fn group_key(dir: &Path, swarm: &str, group: &str) -> Result<String> {
     let keys = dir.join("keys/groups");
     create_private_dir(&keys)?;
     let key = keys.join(group);
@@ -274,35 +270,41 @@ async fn group_key(dir: &Path, swarm: &str, group: &str) -> Result<String> {
     };
     Ok(String::from_utf8(public)?.trim().to_owned())
 }
-fn variables(
-    spec: &SwarmSpec,
-    name: &str,
-    group: &GroupSpec,
-    key: &str,
-    bucket: &str,
-    network: &str,
-) -> Map<String, Value> {
+pub struct GroupInputs<'a> {
+    pub swarm: &'a str,
+    pub group: &'a str,
+    pub machine_count: u32,
+    pub size: Option<&'a str>,
+    pub location: Option<&'a str>,
+    pub ssh_public_key: &'a str,
+    pub bucket: &'a str,
+    pub network: &'a str,
+}
+/// Module variables shared by the client and the primary's provisioner.
+#[must_use]
+pub fn group_variables(inputs: &GroupInputs<'_>) -> Map<String, Value> {
     let mut vars = Map::new();
     for (k, v) in [
-        ("swarm", json!(spec.name)),
-        ("group", json!(name)),
-        ("machine_count", json!(group.count.unwrap_or_default())),
-        ("ssh_public_key", json!(key)),
+        ("swarm", json!(inputs.swarm)),
+        ("group", json!(inputs.group)),
+        ("machine_count", json!(inputs.machine_count)),
+        ("ssh_public_key", json!(inputs.ssh_public_key)),
         ("ssh_allowed_cidrs", json!(["0.0.0.0/0", "::/0"])),
-        ("bucket_name", json!(bucket)),
+        ("bucket_name", json!(inputs.bucket)),
         ("bucket_force_destroy", json!(false)),
-        ("network_id", json!(network)),
+        ("network_id", json!(inputs.network)),
     ] {
         vars.insert(k.into(), v);
     }
-    if let Some(size) = &group.size {
+    if let Some(size) = inputs.size {
         vars.insert("size".into(), json!(size));
     }
-    if let Some(location) = &group.location {
+    if let Some(location) = inputs.location {
         vars.insert("location".into(), json!(location));
     }
     vars
 }
+
 struct ModuleSet {
     files: Vec<(String, Vec<u8>)>,
 }
@@ -418,8 +420,21 @@ async fn prepare_group<'a>(
         .iter()
         .find(|(kind, _)| kind == &group.module)
         .map_or("", |(_, id)| id.as_str());
-    let vars = variables(spec, name, group, key, group_bucket, network);
-    let env = credential_env(machines.credentials, group, !group_bucket.is_empty())?;
+    let vars = group_variables(&GroupInputs {
+        swarm: &spec.name,
+        group: name,
+        machine_count: group.count.unwrap_or_default(),
+        size: group.size.as_deref(),
+        location: group.location.as_deref(),
+        ssh_public_key: key,
+        bucket: group_bucket,
+        network,
+    });
+    let env = module_credential_env(
+        machines.credentials,
+        &group.module,
+        !group_bucket.is_empty(),
+    )?;
     let workspace = machines.tofu.workspace(group_dir(dir, name), env);
     let module = module_files(name, group)?;
     workspace.prepare(&module.borrowed(), &vars).await?;
@@ -611,7 +626,7 @@ fn destroy_env(
                     .map(str::to_owned)
             })
             .is_some_and(|s| !s.is_empty());
-        return credential_env(credentials, group, bucket);
+        return module_credential_env(credentials, &group.module, bucket);
     }
     provider_env(credentials, &CloudProvider::ALL, false)
 }
