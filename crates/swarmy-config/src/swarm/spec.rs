@@ -531,6 +531,13 @@ nodes = ["box"]
         assert_eq!(group.machines(), 0);
         assert_eq!(group.hourly_price().unwrap().amount(), "0.75");
         assert_eq!(SwarmSpec::parse(&spec.to_toml().unwrap()).unwrap(), spec);
+        let mut non_elastic = SwarmSpec::parse(CLOUD).unwrap();
+        non_elastic.groups.get_mut("workers").unwrap().autoscale = true;
+        assert!(
+            non_elastic.validate().unwrap_err().to_string().contains(
+                "max, price_per_hour, currency and autoscale apply only to elastic groups"
+            )
+        );
         let base = spec.clone();
         let cases: Vec<ElasticCase> = vec![
             (
