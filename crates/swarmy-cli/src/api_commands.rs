@@ -165,9 +165,26 @@ impl UsageRow<'_> {
     }
 }
 
-fn print_usage(response: &swarmy_api_types::UsageResponse, json: bool) -> Result<()> {
+#[derive(serde::Serialize)]
+struct CostReport<'a> {
+    #[serde(flatten)]
+    usage: &'a swarmy_api_types::UsageResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    machines: Option<&'a swarmy_api_types::MachineList>,
+}
+fn print_usage(
+    response: &swarmy_api_types::UsageResponse,
+    machines: Option<&swarmy_api_types::MachineList>,
+    json: bool,
+) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string(response)?);
+        println!(
+            "{}",
+            serde_json::to_string(&CostReport {
+                usage: response,
+                machines
+            })?
+        );
         return Ok(());
     }
     for group in &response.groups {
@@ -205,6 +222,9 @@ fn print_usage(response: &swarmy_api_types::UsageResponse, json: bool) -> Result
         }
         .render()
     );
+    if let Some(section) = machines.and_then(crate::machines::render_cost_section) {
+        println!("\n{section}");
+    }
     Ok(())
 }
 
@@ -225,7 +245,18 @@ async fn cost(client: &Client, endpoint: &str, args: cost_command::Args, json: b
         ),
     )
     .await?;
-    print_usage(&response, json)
+    let machines = if key.is_none() {
+        Some(
+            request(
+                endpoint,
+                client.machines(true, Some((&since.to_string(), &until.to_string()))),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    print_usage(&response, machines.as_ref(), json)
 }
 
 async fn close_session(
@@ -1220,7 +1251,7 @@ pub(crate) async fn quota(
             );
         } else {
             println!("{}", quota_line(view));
-            print_usage(&response, false)?;
+            print_usage(&response, None, false)?;
         }
         return Ok(());
     }

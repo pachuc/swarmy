@@ -1,8 +1,8 @@
 use foundationdb::tuple::Subspace;
 use jiff::Timestamp;
 use swarmy_core::{
-    AgentId, CredentialScope, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, RequestId,
-    SessionId, TimerId, VolumeId,
+    AgentId, CredentialScope, ImageTag, LeaseOwnerId, MachineId, ManifestId, MessageId, NodeId,
+    RequestId, SessionId, TimerId, VolumeId,
 };
 
 pub(crate) fn session_id(bytes: &[u8]) -> crate::Result<SessionId> {
@@ -53,6 +53,10 @@ const INFERENCE_WAIT_DUE: &str = "inference_wait_due";
 const INFLIGHT: &str = "inflight";
 const LEASE: &str = "lease";
 const LEASE_BY_EXPIRY: &str = "lease_by_expiry";
+const MACHINE: &str = "machine";
+const MACHINE_ASSIGNMENT: &str = "machine_assignment";
+const MACHINE_ASSIGNMENT_BY_AGENT: &str = "machine_assignment_by_agent";
+const MACHINE_ASSIGNMENT_OPEN: &str = "machine_assignment_open";
 const MANIFEST: &str = "manifest";
 const MANIFEST_PARENT: &str = "manifest_parent";
 const METERING_HOUR: &str = "metering_hour";
@@ -426,6 +430,64 @@ impl<'a> Keys<'a> {
         self.root.subspace(&(METERING_HOUR,))
     }
 
+    pub(crate) fn machine(&self, id: MachineId) -> Vec<u8> {
+        self.machine_space()
+            .pack(&(id.as_ulid().to_bytes().as_slice(),))
+    }
+    pub(crate) fn machine_space(&self) -> Subspace {
+        self.root.subspace(&(MACHINE,))
+    }
+    pub(crate) fn machine_assignment(
+        &self,
+        machine: MachineId,
+        agent: AgentId,
+        from: Timestamp,
+    ) -> Vec<u8> {
+        self.machine_assignment_space_root().pack(&(
+            machine.as_ulid().to_bytes().as_slice(),
+            agent.as_ulid().to_bytes().as_slice(),
+            (from.as_second(), from.subsec_nanosecond()),
+        ))
+    }
+    pub(crate) fn machine_assignment_space_root(&self) -> Subspace {
+        self.root.subspace(&(MACHINE_ASSIGNMENT,))
+    }
+    pub(crate) fn machine_assignment_space(&self, machine: MachineId) -> Subspace {
+        self.machine_assignment_space_root()
+            .subspace(&(machine.as_ulid().to_bytes().as_slice(),))
+    }
+    pub(crate) fn machine_assignment_by_agent(
+        &self,
+        agent: AgentId,
+        machine: MachineId,
+        from: Timestamp,
+    ) -> Vec<u8> {
+        self.machine_assignment_by_agent_space_root().pack(&(
+            agent.as_ulid().to_bytes().as_slice(),
+            machine.as_ulid().to_bytes().as_slice(),
+            (from.as_second(), from.subsec_nanosecond()),
+        ))
+    }
+    pub(crate) fn machine_assignment_by_agent_space_root(&self) -> Subspace {
+        self.root.subspace(&(MACHINE_ASSIGNMENT_BY_AGENT,))
+    }
+    pub(crate) fn machine_assignment_by_agent_space(&self, agent: AgentId) -> Subspace {
+        self.machine_assignment_by_agent_space_root()
+            .subspace(&(agent.as_ulid().to_bytes().as_slice(),))
+    }
+    pub(crate) fn machine_assignment_open(&self, machine: MachineId, agent: AgentId) -> Vec<u8> {
+        self.machine_assignment_open_space_root().pack(&(
+            machine.as_ulid().to_bytes().as_slice(),
+            agent.as_ulid().to_bytes().as_slice(),
+        ))
+    }
+    pub(crate) fn machine_assignment_open_space_root(&self) -> Subspace {
+        self.root.subspace(&(MACHINE_ASSIGNMENT_OPEN,))
+    }
+    pub(crate) fn machine_assignment_open_space(&self, machine: MachineId) -> Subspace {
+        self.machine_assignment_open_space_root()
+            .subspace(&(machine.as_ulid().to_bytes().as_slice(),))
+    }
     pub(crate) fn node(&self, id: NodeId) -> Vec<u8> {
         self.node_space()
             .pack(&(id.as_ulid().to_bytes().as_slice(),))

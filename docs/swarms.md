@@ -372,6 +372,37 @@ command to finish; hand-lowering `count` and running `up` remains refused.
 
 See [REMOTE.md](REMOTE.md#draining-a-node) for how draining works on a node.
 
+## Machines
+
+Swarmy records every machine created for an elastic group: its group, size,
+location, state, lifecycle timestamps, hourly price and currency, and cause.
+The cause includes an agent, a session and a free-text reason; the fleet driver
+puts its tasky id in the reason.
+
+- Requested: creation has been requested but no cloud machine exists yet.
+- Creating: the cloud create operation is in progress.
+- Provisioning: the cloud machine exists and is being configured.
+- Joined: the node has joined the swarm and may host agents.
+- Draining: new assignments have stopped while existing work finishes.
+- Destroyed: the machine has been removed; this state is final.
+- Failed: an operation failed; a machine already created keeps costing until destroyed.
+- Orphaned: ownership is uncertain and cleanup is needed.
+
+The first billing unit starts on creation and is billed immediately. By default
+billing is per started hour; a record can instead specify per started minute.
+Cost is computed when the record is read, not periodically written. Assignment
+intervals track each agent's use of the machine, and current agents come from
+open intervals.
+
+```sh
+swarmy swarm machines
+swarmy swarm machines --all
+swarmy --swarm hz swarm machines --json
+```
+
+The provisioner writes records in a later task, so these lists remain empty
+until it arrives.
+
 ## Model provider credentials
 
 On the first `swarmy swarm up NAME`, `--copy-credential` copies the ChatGPT

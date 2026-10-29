@@ -15,6 +15,12 @@ pub(crate) fn parse_name(value: &str) -> Result<String, swarmy_config::Error> {
 }
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    /// List elastic machines with state, age, node, cost and cause
+    Machines {
+        /// Include destroyed and failed-before-creation machines
+        #[arg(long)]
+        all: bool,
+    },
     /// Write a new swarm spec; --local runs the stack and services on this machine
     #[command(group(clap::ArgGroup::new("kind").required(true).args(["local", "host", "on"])))]
     Create {
@@ -833,6 +839,7 @@ pub(crate) async fn run(
             crate::swarm_hosts::plan(&registry, &spec, json_output).await?;
         }
         Command::Ls => list(&registry, json_output)?,
+        Command::Machines { all } => crate::machines::list(all, json_output).await?,
         Command::Show { name } => {
             if let Some(name) = name {
                 show(&registry, &registry.read(&name)?, json_output)?;

@@ -74,6 +74,16 @@ pub enum FenceError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DomainError {
+    #[error("machine does not exist")]
+    MachineMissing,
+    #[error("machine id already exists")]
+    MachineExists,
+    #[error("invalid machine record: {0}")]
+    InvalidMachine(String),
+    #[error(transparent)]
+    InvalidMachineTransition(#[from] swarmy_core::InvalidMachineTransition),
+    #[error("machine is not joined; only a joined machine takes new assignments")]
+    MachineNotJoined,
     #[error("credential does not exist")]
     CredentialMissing,
     #[error("route does not exist")]

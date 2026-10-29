@@ -736,6 +736,21 @@ impl Client {
         }
         self.get("usage", &query).await
     }
+    /// List elastic machines; `all` includes destroyed rows and `window` adds window costs.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn machines(
+        &self,
+        all: bool,
+        window: Option<(&str, &str)>,
+    ) -> Result<api::MachineList, Error> {
+        let mut query = vec![("state", if all { "all" } else { "active" }.to_owned())];
+        if let Some((from, to)) = window {
+            query.push(("from", from.to_owned()));
+            query.push(("to", to.to_owned()));
+        }
+        self.get("machines", &query).await
+    }
     /// Read full catalog model rows for CLI rendering.
     /// # Errors
     /// Returns transport, API, or decoding failures.

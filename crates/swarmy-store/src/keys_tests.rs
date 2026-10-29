@@ -3,8 +3,8 @@
 use foundationdb::tuple::Subspace;
 use jiff::Timestamp;
 use swarmy_core::{
-    AgentId, CredentialScope, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, RequestId,
-    SessionId, TimerId, VolumeId,
+    AgentId, CredentialScope, ImageTag, LeaseOwnerId, MachineId, ManifestId, MessageId, NodeId,
+    RequestId, SessionId, TimerId, VolumeId,
 };
 
 use crate::keys::Keys;
@@ -42,6 +42,7 @@ fn family_key_layout_matches_checked_in_hex() {
     let sessionid = SessionId::from_ulid(u128::from_be_bytes([34; 16]).into());
     let nodeid = NodeId::from_ulid(u128::from_be_bytes([51; 16]).into());
     let volumeid = VolumeId::from_ulid(u128::from_be_bytes([68; 16]).into());
+    let machineid = MachineId::from_ulid(u128::from_be_bytes([187; 16]).into());
     let manifestid = ManifestId::from_ulid(u128::from_be_bytes([85; 16]).into());
     let leaseownerid = LeaseOwnerId::from_ulid(u128::from_be_bytes([102; 16]).into());
     let timerid = TimerId::from_ulid(u128::from_be_bytes([119; 16]).into());
@@ -118,6 +119,19 @@ fn family_key_layout_matches_checked_in_hex() {
         ("inflight", keys.inflight(requestid)),
         ("lease", keys.lease(sessionid)),
         ("lease_by_expiry", keys.lease_by_expiry(at, sessionid)),
+        ("machine", keys.machine(machineid)),
+        (
+            "machine_assignment",
+            keys.machine_assignment(machineid, agentid, at),
+        ),
+        (
+            "machine_assignment_by_agent",
+            keys.machine_assignment_by_agent(agentid, machineid, at),
+        ),
+        (
+            "machine_assignment_open",
+            keys.machine_assignment_open(machineid, agentid),
+        ),
         ("manifest", keys.manifest(manifestid)),
         ("manifest_parent", keys.manifest_parent(manifestid)),
         (
