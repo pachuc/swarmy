@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 
 FLEET = Path(__file__).with_name("fleet")
@@ -12,6 +13,37 @@ ROOT = FLEET.resolve().parents[2]
 HEAD = "1" * 40
 SQUASH = "2" * 40
 FULL = "01M38DCQ5BFPXNPNF0NWEWR2HD"
+GPU_REASON = "tasky " + FULL + ": <why you need the GPU>"
+
+
+def machine(machine_id, node_id, reason, agents, micros):
+    """One API Machine as the ledger prints it."""
+    return {"id": machine_id, "group": "gpu", "name": "fleet-" + machine_id, "module": "scaleway",
+            "size": "L4-1-24G", "location": "fr-par-2", "address": None, "node_id": node_id,
+            "state": "joined" if node_id else "creating", "requested_at": "2026-10-29T10:55:00Z",
+            "created_at": None, "provisioned_at": None, "joined_at": None,
+            "drain_requested_at": None, "destroyed_at": None,
+            "cause": {"agent_id": None, "agent_name": None, "session_id": None, "reason": reason},
+            "hourly_price_micros": 750_000, "currency": "EUR", "billing": "per_started_hour",
+            "failure": None, "cost_micros": micros, "cost": "unused", "window_cost_micros": None,
+            "window_cost": None,
+            "current_agents": [{"agent_id": agent, "agent_name": None, "since": "2026-10-29T10:56:00Z"}
+                               for agent in agents]}
+
+
+def ledger(*machines):
+    return json.dumps({"as_of": "2026-10-29T12:00:00Z", "from": None, "to": None,
+                       "machines": list(machines), "totals": []})
+
+
+def gpu_agent(gpu, allow, node=None):
+    """AGENT_EXTRA for an agent with this GPU state and optional placement."""
+    extra = {"requirements": {"memory_mib": 512, "gpu": gpu}, "allow_gpu_request": allow}
+    if node:
+        extra["placement"] = {"node_id": node, "epoch": 3, "gpu": gpu}
+    return json.dumps(extra)
+
+
 STUB = '''#!/usr/bin/env python3
 import json, os, subprocess, sys
 from datetime import datetime, timedelta, timezone
@@ -49,7 +81,7 @@ elif args[:1] == ['-C']:
         pass
     elif args[2] == 'log':
         print(os.environ.get('INTEGRATED', ''))
-elif args[:2] == ['--swarm', 'dev'] or args[:1] in (['agent'], ['run'], ['session']):
+elif args[:2] == ['--swarm', 'dev'] or args[:1] in (['agent'], ['run'], ['session'], ['swarm']):
     # A local swarm in fleet.toml drops the --swarm flag (node API mode).
     rest = args[2:] if args[:2] == ['--swarm', 'dev'] else args
     if rest[:2] == ['agent', 'create']:
@@ -68,6 +100,7 @@ elif args[:2] == ['--swarm', 'dev'] or args[:1] in (['agent'], ['run'], ['sessio
     elif rest[:2] == ['agent', 'show']:
         out = dict(_agent_base)
         out['name'] = rest[2]
+        out.update(json.loads(os.environ.get('AGENT_EXTRA', '{}')))
         print(json.dumps(out))
     elif rest[:3] == ['session', 'ls', '--json']:
         if (root / 'interrupted').exists():
@@ -143,6 +176,9 @@ elif args[:2] == ['--swarm', 'dev'] or args[:1] in (['agent'], ['run'], ['sessio
             print('nothing to interrupt', file=sys.stderr)
             sys.exit(1)
         (root / 'interrupted').write_text('yes')
+    elif rest[:2] == ['swarm', 'machines']:
+        print(os.environ.get('MACHINES', json.dumps({'as_of': '2026-10-29T12:00:00Z', 'from': None, 'to': None,
+                                                     'machines': [], 'totals': []})))
     else:
         print('{}')
 '''
@@ -181,6 +217,138 @@ class FleetTests(unittest.TestCase):
 
     def creates(self):
         return [call for call in self.calls() if call[2:4] == ["agent", "create"]]
+
+    def sets(self):
+        return [call[2:] for call in self.calls() if call[2:4] == ["agent", "set"]]
+
+    def driver(self):
+        """Load the driver without running main."""
+        module = types.ModuleType("fleet_driver")
+        module.__file__ = str(FLEET.resolve())
+        exec(compile(FLEET.read_text(), str(FLEET), "exec"), module.__dict__)
+        return module
+
+    def test_launch_gpu_flags_reach_agent_create_and_the_prompt(self):
+        result = self.call("launch", "EWR2HD", "--gpu", "shared", "--allow-gpu")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        create = self.creates()[0]
+        self.assertEqual(create[create.index("--gpu") + 1], "shared")
+        self.assertEqual(create[create.index("--allow-gpu-request") + 1], "true")
+        self.assertEqual(self.sets(), [])
+        state = json.loads((self.root / "state" / "ewr2hd.json").read_text())
+        self.assertEqual(state["gpu"], "shared")
+        self.assertIs(state["allow_gpu"], True)
+        prompt = (self.root / "prompt-worker-1").read_text()
+        for fragment in (GPU_REASON, "request_gpu", "release_gpu",
+                         "must each be the only tool call in its response", "commit and push your work",
+                         "starts with a shared GPU requirement"):
+            self.assertIn(fragment, prompt)
+        second = self.call("launch", "AAAAA2")
+        self.assertEqual(second.returncode, 0, second.stderr)
+        create = self.creates()[1]
+        self.assertEqual(create[create.index("--gpu") + 1], "none")
+        self.assertEqual(create[create.index("--allow-gpu-request") + 1], "false")
+        full_prompt = (self.root / "prompt-worker-2").read_text()
+        self.assertIn("Test plan:\nRun widget test\n\nRead the repository's AGENTS.md", full_prompt)
+        self.assertNotIn("GPU access:", full_prompt)
+        # AGENTS.md is embedded in every prompt and already names request_gpu.
+        prompt = full_prompt.split("Test plan:\nRun widget test", 1)[1]
+        self.assertNotIn("request_gpu", prompt)
+        self.assertNotIn("GPU requirement", prompt)
+        state = json.loads((self.root / "state" / "aaaaa2.json").read_text())
+        self.assertEqual(state["gpu"], "none")
+        self.assertIs(state["allow_gpu"], False)
+
+    def test_launch_gpu_without_tools_names_the_requirement_only(self):
+        result = self.call("launch", "EWR2HD", "--gpu", "dedicated")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Check the task-specific part; embedded AGENTS.md already names request_gpu.
+        prompt = (self.root / "prompt-worker-1").read_text().split("Test plan:\nRun widget test", 1)[1]
+        self.assertIn("starts with a dedicated GPU requirement", prompt)
+        self.assertNotIn("request_gpu", prompt)
+        create = self.creates()[0]
+        self.assertEqual(create[create.index("--allow-gpu-request") + 1], "false")
+
+    def test_allow_gpu_default_comes_from_config(self):
+        self.config.write_text(self.config.read_text() + "allow_gpu = true\n")
+        self.assertEqual(self.call("launch", "AAAAA1").returncode, 0)
+        self.assertEqual(self.call("launch", "AAAAA2", "--no-allow-gpu").returncode, 0)
+        self.assertEqual([c[c.index("--allow-gpu-request") + 1] for c in self.creates()], ["true", "false"])
+        self.config.write_text(self.config.read_text().replace("allow_gpu = true", 'allow_gpu = "yes"'))
+        result = self.call("launch", "AAAAA3")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("allow_gpu must be true or false", result.stderr)
+
+    def test_reused_worker_is_set_to_the_launch_gpu_state(self):
+        self.assertEqual(self.call("launch", "AAAAA1").returncode, 0)
+        self.assertEqual(self.call("release", "AAAAA1", "--force").returncode, 0)
+        result = self.call("launch", "AAAAA2", "--gpu", "dedicated", "--allow-gpu")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.creates()), 1)
+        self.assertEqual(self.sets(), [["agent", "set", "worker-1", "--gpu", "dedicated",
+                                        "--allow-gpu-request", "true"]])
+
+    def test_release_and_kill_reset_the_gpu_and_skip_a_worker_without_one(self):
+        self.assertEqual(self.call("launch", "EWR2HD", "--gpu", "shared", "--allow-gpu").returncode, 0)
+        result = self.call("release", "EWR2HD", "--force", env=dict(self.env, AGENT_EXTRA=gpu_agent("shared", True)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("its GPU requirement is back to none", result.stdout)
+        reset = ["agent", "set", "worker-1", "--gpu", "none", "--allow-gpu-request", "false"]
+        self.assertEqual(self.sets()[-1], reset)
+        self.assertEqual(json.loads((self.root / "state" / "workers.json").read_text()), {"worker-1": None})
+        self.assertEqual(self.call("launch", "AAAAA2").returncode, 0)
+        before = len(self.sets())
+        result = self.call("release", "AAAAA2", "--force")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.sets()), before)
+        self.assertNotIn("GPU requirement", result.stdout)
+        self.assertEqual(self.call("launch", "AAAAA3").returncode, 0)
+        result = self.call("kill", "AAAAA3", "--timeout-seconds", "2",
+                           env=dict(self.env, AGENT_EXTRA=gpu_agent("dedicated", False)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.sets()[-1], reset)
+
+    def test_status_shows_node_card_gpu_and_charged_machine_cost(self):
+        self.assertEqual(self.call("launch", "EWR2HD", "--gpu", "shared", "--allow-gpu").returncode, 0)
+        status = self.call("status")
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn("node=-\tcard=-\tgpu=none\tmachines=-", status.stdout)
+        self.assertEqual(self.calls().count(["--swarm", "dev", "swarm", "machines", "--json"]), 1)
+        ms = ledger(machine("m-1", "node-1", "autoscale: 1 session waiting", ["01AGENT"], 1_500_000),
+                    machine("m-2", None, "tasky " + FULL + ": run the GPUI example", [], 250_000),
+                    machine("m-3", "node-3", "tasky 01M38DCQ5BFPXNPNF0NWAAAAAA: another task", ["01OTHER"], 9_000_000))
+        status = self.call("status", env=dict(self.env, AGENT_EXTRA=gpu_agent("shared", True, "node-1"), MACHINES=ms))
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn("node=node-1\tcard=L4-1-24G\tgpu=shared\tmachines=EUR 1.7500", status.stdout)
+
+    def test_status_reports_a_capacity_wait_without_calling_it_a_stall(self):
+        self.assertEqual(self.call("launch", "EWR2HD", "--gpu", "shared").returncode, 0)
+        reason = "waiting for GPU capacity: no live node with a shared GPU can host this computer"
+        status = self.call("status", env=dict(self.env, WAIT_REASONS=json.dumps([reason]), STATE_AGE_MINUTES="35"))
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn("waiting_capacity 35m; " + reason, status.stdout)
+        self.assertNotIn("waiting for inference", status.stdout)
+        self.assertNotIn("STALLED", status.stdout)
+
+    def test_machine_join_cost_and_card_helpers(self):
+        mod = self.driver()
+        ms = [machine("m-1", "node-1", "autoscale: 1 session waiting", ["01AGENT"], 1_500_000),
+              machine("m-2", None, "tasky " + FULL + ": render", [], 250_000),
+              machine("m-3", None, "see tasky " + FULL, ["01OTHER"], 5_000_000),
+              machine("m-4", None, "tasky 01M38DCQ5BFPXNPNF0NWAAAAAA: other", [], 7_000_000)]
+        for task_id in ("EWR2HD", FULL):
+            self.assertEqual([m["id"] for m in mod.task_machines(ms, task_id, "01AGENT")], ["m-1", "m-2"])
+        self.assertEqual([m["id"] for m in mod.task_machines(ms, None, "01AGENT")], ["m-1"])
+        self.assertEqual(mod.machine_cost(mod.task_machines(ms, FULL, "01AGENT")), "EUR 1.7500")
+        self.assertEqual(mod.machine_cost([]), "-")
+        usd = machine("m-5", None, "tasky " + FULL + ": compute", [], 100_000)
+        usd["currency"] = "USD"
+        self.assertEqual(mod.machine_cost(mod.task_machines(ms + [usd], FULL, "01AGENT")), "EUR 1.7500+USD 0.1000")
+        self.assertEqual([mod.format_micros(n) for n in (49, 50, 1_500_000)],
+                         ["0.0000", "0.0001", "1.5000"])
+        self.assertEqual(mod.node_card(ms, "node-1"), "L4-1-24G")
+        self.assertEqual(mod.node_card(ms, "hz-node"), "-")
+        self.assertEqual(mod.node_card(ms, None), "-")
 
     def test_launch_status_collect_resume_and_release(self):
         launch = self.call("launch", "EWR2HD", "--provider", "fake", "--model", "fake", "--effort", "high")

@@ -109,7 +109,7 @@ medium, four workers, `memory_mib = 24576`, image `swarmy-dev:hz`,
 export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | head -1 | sed -E 's/.*= *"([^"]+)".*/\1/')
 ```
 
-- `fleet launch TASK [--worker worker-N]`, `fleet status`, `fleet collect TASK`
+- `fleet launch TASK [--worker worker-N] [--gpu shared|dedicated] [--allow-gpu]`, `fleet status`, `fleet collect TASK`
   (checks the pushed branch, links its head SHA in tasky, moves the task to testing,
   and prints the report), `fleet release [--into BRANCH] [--force] TASK`,
   `fleet kill TASK`, `fleet resume TASK "text"`, `fleet reset worker-N`,
@@ -121,7 +121,15 @@ export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | hea
 - A task's branch is `swarmy/` plus the last six characters of the task ULID,
   lowercased. State files: `.dev/fleet-hz/<suffix>.json|.jsonl` and
   `worker-N.meta.json` (provider, model, image the worker was created with;
-  `launch` matches an idle worker on provider and model).
+  `launch` matches an idle worker on provider and model). The task assignment
+  JSON records `gpu` and `allow_gpu` as launched; status shows live values from
+  `agent show`, because the worker can change them itself.
+- GPU tasks: see "GPU tasks" in [fleet-runbook.md](fleet-runbook.md).
+  `fleet release` and `fleet kill` reset the worker to `--gpu none
+  --allow-gpu-request false`, so it goes back to hz. `fleet status` shows
+  node, card, GPU mode, capacity waits, and the cost of machines charged to
+  the task, joined by a `tasky <id>` reason or by the worker being on the
+  machine.
 - The `hz` cluster's credential store holds only the OpenRouter key. Before
   workers can use the ChatGPT subscription, import the owner's credential
   (`swarmy auth import --swarm hz`; `adopt --copy-credential` put the file
