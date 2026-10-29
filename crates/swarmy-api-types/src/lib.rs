@@ -427,6 +427,7 @@ pub enum CredentialKind {
     Subscription,
     ApiKey,
     Cloud,
+    MachineProvider,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -444,6 +445,7 @@ impl CredentialKind {
             Self::Subscription => "subscription",
             Self::ApiKey => "api_key",
             Self::Cloud => "cloud",
+            Self::MachineProvider => "machine_provider",
         }
     }
 }
@@ -883,6 +885,51 @@ pub struct ProbeResult {
     pub elapsed_seconds: f64,
 }
 
+/// An elastic group as held by the swarm.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ElasticGroup {
+    pub swarm: String,
+    pub group: String,
+    pub module: String,
+    pub size: String,
+    pub location: String,
+    pub sandboxes: u32,
+    pub local_storage: String,
+    pub max: u32,
+    pub price_per_hour: String,
+    pub currency: String,
+    pub desired: u32,
+    pub desired_reason: String,
+    pub applied: u32,
+    pub generation: u64,
+    pub reconciled_generation: u64,
+    /// Whether the provisioner has acted on the latest desired count.
+    pub settled: bool,
+    pub updated_at: String,
+}
+/// Register or update an elastic group's definition from the swarm spec.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PutElasticGroup {
+    pub idempotency_key: String,
+    pub swarm: String,
+    pub module: String,
+    pub size: String,
+    pub location: String,
+    pub sandboxes: u32,
+    pub local_storage: String,
+    pub max: u32,
+    pub price_per_hour: String,
+    pub currency: String,
+}
+/// Set the desired number of machines, between zero and max.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SetElasticDesired {
+    pub idempotency_key: String,
+    pub desired: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// One route step: the provider, the entry label (`*` for every entry of
 /// the provider in creation order), and an optional model override.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1264,11 +1311,11 @@ pub mod api_paths {
     use super::{
         Agent, AgentDeleted, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession,
         CreateAgent, CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
-        DoctorSnapshot, EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload,
-        InterruptOutcome, InterruptSession, MachineList, Model, ProbeModel, ProbeResult, Provider,
-        PutCredentialRecord, QuotaEntry, Route, RouteDeleted, Session, SessionClosed,
-        SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun, Subscription, TurnMetrics,
-        UpdateAgent, UsageResponse,
+        DoctorSnapshot, ElasticGroup, EntryQuotaView, Event, GcRun, HealthResponse, Image,
+        ImageUpload, InterruptOutcome, InterruptSession, MachineList, Model, ProbeModel,
+        ProbeResult, Provider, PutCredentialRecord, PutElasticGroup, QuotaEntry, Route,
+        RouteDeleted, Session, SessionClosed, SetElasticDesired, SetEntryQuota, SetRoute,
+        SetSessionRoute, StartGcRun, Subscription, TurnMetrics, UpdateAgent, UsageResponse,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
@@ -1332,6 +1379,20 @@ pub mod api_paths {
         request_body = SetSessionRoute,
         responses((status = 200, body = Session), (status = 404, body = ApiError)))]
     pub fn set_session_route() {}
+    #[utoipa::path(get, path = "/v1/swarm/groups/{group}",
+        params(("group" = String, Path, description = "Group name")),
+        responses((status = 200, body = ElasticGroup), (status = 404, body = ApiError)))]
+    pub fn show_elastic_group() {}
+    #[utoipa::path(put, path = "/v1/swarm/groups/{group}",
+        params(("group" = String, Path, description = "Group name")),
+        request_body = PutElasticGroup,
+        responses((status = 200, body = ElasticGroup), (status = 400, body = ApiError), (status = 409, body = ApiError)))]
+    pub fn put_elastic_group() {}
+    #[utoipa::path(put, path = "/v1/swarm/groups/{group}/desired",
+        params(("group" = String, Path, description = "Group name")),
+        request_body = SetElasticDesired,
+        responses((status = 200, body = ElasticGroup), (status = 400, body = ApiError), (status = 404, body = ApiError)))]
+    pub fn set_elastic_desired() {}
     #[utoipa::path(get, path = "/v1/routes",
         responses((status = 200, body = Vec<Route>), (status = 401, body = ApiError)))]
     pub fn list_routes() {}
@@ -1569,6 +1630,7 @@ pub mod api_paths {
         api_paths::check_credential_entry, api_paths::remove_credential_entry,
         api_paths::entry_quota, api_paths::set_entry_quota, api_paths::quotas,
         api_paths::usage, api_paths::list_machines,
+        api_paths::show_elastic_group, api_paths::put_elastic_group, api_paths::set_elastic_desired,
         api_paths::list_routes, api_paths::set_route, api_paths::show_route,
         api_paths::delete_route, api_paths::set_session_route,
 
@@ -1588,7 +1650,7 @@ pub mod api_paths {
     UsageTotalsView, UsageGroupView, UsageResponse, EntryUsageView,
     MachineState, BillingGranularity, MachineCause, MachineAgent, Machine, MachineCostTotal, MachineList,
     Event, EventPayload, ApiError,
-    Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute
+    Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute, ElasticGroup, PutElasticGroup, SetElasticDesired
 )))]
 pub struct ApiDocument;
 

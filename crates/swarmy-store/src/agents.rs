@@ -915,6 +915,8 @@ mod tests {
         });
         let encoded = encode(&requested).unwrap();
         assert_eq!(decode::<AgentRecord>(&encoded).unwrap(), requested);
-        assert!(encoded.windows(4).any(|bytes| bytes == [1, 1, 1, 114]));
+        // Postcard places the timestamp and session ID after the reason, so
+        // these bytes start the appended fields rather than ending the record.
+        assert_eq!(&encoded[bytes.len() - 2..bytes.len() + 2], [1, 1, 1, 114]);
     }
 }

@@ -709,3 +709,28 @@ async fn existing_group_cannot_scale_to_zero() {
     assert_eq!(f.log(), before_log);
     assert_eq!(host.calls(), before_calls);
 }
+
+#[test]
+fn elastic_group_is_scaled_through_the_api_not_the_laptop() {
+    let f = Fixture::new();
+    let mut spec = f.spec.clone();
+    let workers = spec.groups.get_mut("workers").unwrap();
+    workers.elastic = true;
+    workers.count = None;
+    workers.max = Some(2);
+    workers.price_per_hour = Some("0.75".into());
+    workers.currency = Some("EUR".into());
+    spec.validate().unwrap();
+    assert_eq!(
+        check_scalable(&spec, "workers").unwrap(),
+        GroupKind::Elastic
+    );
+    for count in [0, 1] {
+        assert!(
+            preflight(&f.registry, &spec, "workers", count)
+                .unwrap_err()
+                .to_string()
+                .contains("is elastic; the CLI scales it through the swarm's API")
+        );
+    }
+}

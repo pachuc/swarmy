@@ -163,11 +163,12 @@ them in [api-breaks.txt](api-breaks.txt).
   [services.rs](../crates/swarmy-store/src/services.rs),
   [tool_routing.rs](../crates/swarmy-store/src/tool_routing.rs),
   [placed_tools.rs](../crates/swarmy-store/src/placed_tools.rs)).
+- **Elastic groups.** `elastic_group` holds the swarm-owned definition, desired count, and reconciliation generations ([elastic.rs](../crates/swarmy-store/src/elastic.rs)).
 - **Inference, routes, and credentials.** `route`, `credential_entry`,
   `credential_entry_lease`, `inference_request`, `inference_claim`,
   `inference_result`, `inference_breaker`, and the shared `session_wait` connect
   named failover chains over auth entries, fenced refresh of encrypted
-  credential records, provider availability advertisements, and retryable
+  credential records (including the machine-provider kind used by OpenTofu), provider availability advertisements, and retryable
   waits
   ([routes.rs](../crates/swarmy-store/src/routes.rs),
   [credentials.rs](../crates/swarmy-store/src/credentials.rs),

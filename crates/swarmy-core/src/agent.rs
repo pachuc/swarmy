@@ -39,10 +39,10 @@ pub struct AgentRecord {
     /// Failover chain for this agent's turns. `None` inherits the swarm default.
     #[serde(default)]
     pub route: Option<String>,
-    /// Whether the agent may change its own GPU requirement with request_gpu and release_gpu.
+    /// Whether the agent may change its own GPU requirement with `request_gpu` and `release_gpu`.
     #[serde(default)]
     pub allow_gpu_request: bool,
-    /// Set by request_gpu; cleared by release_gpu and by an operator GPU change.
+    /// Set by `request_gpu`; cleared by `release_gpu` and by an operator GPU change.
     #[serde(default)]
     pub gpu_request: Option<GpuRequest>,
 }

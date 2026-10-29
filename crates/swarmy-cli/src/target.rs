@@ -25,7 +25,10 @@ pub(crate) fn resolve() -> Result<Api, swarmy_client::Error> {
     api_client::resolve(flag())
 }
 pub(crate) async fn endpoint() -> anyhow::Result<(String, String)> {
-    match resolve()? {
+    endpoint_for(resolve()?).await
+}
+async fn endpoint_for(api: Api) -> anyhow::Result<(String, String)> {
+    match api {
         Api::Direct { url, token } => Ok((url, token)),
         Api::Tunnel {
             swarm,
@@ -69,6 +72,11 @@ async fn open_tunnel(
         .record
         .api_url()
         .with_context(|| format!("the tunnel to swarm {swarm} forwards no API port"))
+}
+/// Connect to a named swarm independently of the global --swarm flag.
+pub(crate) async fn connect_swarm(name: &str) -> anyhow::Result<(swarmy_client::Client, String)> {
+    let (url, token) = endpoint_for(api_client::resolve(Some(name))?).await?;
+    Ok(api_client::connect_to(&url, token)?)
 }
 pub(crate) async fn connect() -> anyhow::Result<(swarmy_client::Client, String)> {
     let (url, token) = endpoint().await?;

@@ -637,7 +637,6 @@ async fn agent_show_reports_placement_and_committed_snapshot() {
                 last_heartbeat: Timestamp::now(),
                 cached_images: vec![],
                 gpu: None,
-                allow_gpu_request: None,
             })
             .await
             .unwrap();

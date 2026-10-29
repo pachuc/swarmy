@@ -76,6 +76,7 @@ fn family_key_layout_matches_checked_in_hex() {
             "credential_entry_lease",
             keys.credential_entry_lease(CredentialScope::Cluster, "provider", "label"),
         ),
+        ("elastic_group", keys.elastic_group("value")),
         (
             "entry_quota_config",
             keys.entry_quota_config("provider", "label"),

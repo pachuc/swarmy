@@ -673,6 +673,15 @@ impl Worker {
         }
     }
 }
+/// Only agents allowed to request a GPU see `request_gpu` and `release_gpu`.
+pub(super) fn apply_gpu_tools(request: &mut swarmy_llm::Request, allowed: bool) {
+    if !allowed {
+        request
+            .tools
+            .retain(|tool| !swarmy_core::is_gpu_tool(&tool.name));
+    }
+}
+
 pub(super) fn apply_display_tools(request: &mut swarmy_llm::Request, display: bool) {
     if display {
         request.system_prompt.push_str("\n\n");
@@ -741,14 +750,5 @@ mod legacy_notice_tests {
             }],
         };
         assert!(is_effort_notice(&message));
-    }
-}
-
-/// Only agents allowed to request a GPU see request_gpu and release_gpu.
-pub(super) fn apply_gpu_tools(request: &mut swarmy_llm::Request, allowed: bool) {
-    if !allowed {
-        request
-            .tools
-            .retain(|tool| !swarmy_core::is_gpu_tool(&tool.name));
     }
 }

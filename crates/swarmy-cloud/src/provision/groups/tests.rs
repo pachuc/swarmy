@@ -1146,3 +1146,22 @@ async fn scaleway_node_group_gets_only_scaleway_keys_and_no_network() {
     let record = f.registry.read_record("fleet").unwrap().unwrap();
     assert_eq!(record.hosts["workers"][0].private_address, None);
 }
+
+#[test]
+fn elastic_group_is_not_a_laptop_opentofu_group() {
+    let mut f = Fixture::new();
+    let mut gpu = f.spec.groups["workers"].clone();
+    gpu.count = None;
+    gpu.elastic = true;
+    gpu.max = Some(2);
+    gpu.price_per_hour = Some("0.75".into());
+    gpu.currency = Some("EUR".into());
+    f.spec.groups.insert("gpu".into(), gpu);
+    f.spec.placement.nodes.push("gpu".into());
+    f.spec.validate().unwrap();
+    assert_eq!(apply_order(&f.spec), ["control", "workers"]);
+    f.spec.groups.get_mut("workers").unwrap().module = Module::Existing;
+    assert!(has_module_groups(&f.spec)); // control still creates machines
+    f.spec.groups.get_mut("control").unwrap().module = Module::Existing;
+    assert!(!has_module_groups(&f.spec));
+}
