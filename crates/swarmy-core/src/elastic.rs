@@ -22,13 +22,17 @@ pub struct ElasticGroupDefinition {
     pub primary_address: std::net::Ipv4Addr,
     /// Service login that owns swarmy on every host of the swarm.
     pub service_user: String,
+    /// The provisioner sets desired from sessions waiting for a GPU and from idle
+    /// machines. Set it only on a group whose machines have an NVIDIA card. At most
+    /// one group of a swarm autoscales.
+    pub autoscale: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ElasticGroupRecord {
     pub definition: ElasticGroupDefinition,
     pub desired: u32,
-    /// Why desired last changed, copied into machine records by the provisioner.
-    pub desired_reason: String,
+    /// Why desired last changed. The provisioner copies it into the machine records it creates.
+    pub desired_cause: crate::MachineCause,
     pub generation: u64,
     /// Machines `OpenTofu` held after the provisioner's last apply.
     pub applied: u32,
@@ -61,9 +65,10 @@ mod tests {
                 hourly_price: HourlyPrice::parse("0.75", "EUR").unwrap(),
                 primary_address: std::net::Ipv4Addr::new(192, 0, 2, 1),
                 service_user: "swarmy".into(),
+                autoscale: false,
             },
             desired: 1,
-            desired_reason: "manual".into(),
+            desired_cause: crate::MachineCause::from_reason("manual"),
             generation: 1,
             applied: 0,
             reconciled_generation: 0,
@@ -75,8 +80,8 @@ mod tests {
             [
                 1, 1, 115, 1, 103, 3, 97, 119, 115, 1, 120, 2, 101, 117, 1, 6, 100, 105, 114, 58,
                 47, 120, 2, 176, 227, 45, 3, 69, 85, 82, 192, 0, 2, 1, 6, 115, 119, 97, 114, 109,
-                121, 1, 6, 109, 97, 110, 117, 97, 108, 1, 0, 0, 20, 49, 57, 55, 48, 45, 48, 49, 45,
-                48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90
+                121, 0, 1, 0, 0, 6, 109, 97, 110, 117, 97, 108, 1, 0, 0, 20, 49, 57, 55, 48, 45,
+                48, 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90
             ]
         );
         assert_eq!(crate::decode::<ElasticGroupRecord>(&bytes).unwrap(), record);

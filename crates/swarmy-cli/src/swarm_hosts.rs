@@ -97,6 +97,7 @@ pub(crate) fn cloud_spec(name: &str, args: &CreateCloud) -> Result<SwarmSpec> {
         max: None,
         price_per_hour: None,
         currency: None,
+        autoscale: false,
     };
     let mut groups = std::collections::BTreeMap::new();
     groups.insert("control".into(), group(size.clone(), 1, args.nodes == 0));
@@ -213,6 +214,7 @@ pub(crate) fn host_spec(registry: &Registry, name: &str, args: &CreateHost) -> R
                 max: None,
                 price_per_hour: None,
                 currency: None,
+                autoscale: false,
             },
         )]
         .into(),
@@ -314,6 +316,15 @@ pub(crate) async fn down(
                     "down needs the swarm's API to stop its elastic groups; start the swarm first",
                 ),
             };
+            if record.autoscale {
+                let definition =
+                    autoscale_off_request(&record, &stack_primary(registry, spec)?, spec);
+                record = swarmy_client::api_client::call(
+                    &endpoint,
+                    client.put_elastic_group(name, &definition),
+                )
+                .await?;
+            }
             if record.desired > 0 {
                 record = swarmy_client::api_client::call(
                     &endpoint,
@@ -529,6 +540,7 @@ pub(crate) fn elastic_scale_requests(
             .context("elastic group has no currency")?,
         primary_address: primary.public_address.clone(),
         service_user: provision::user(spec).into(),
+        autoscale: selected.autoscale,
     };
     let desired = swarmy_api_types::SetElasticDesired {
         idempotency_key: ulid::Ulid::generate().to_string(),
@@ -536,6 +548,42 @@ pub(crate) fn elastic_scale_requests(
         reason: Some("swarmy swarm scale".into()),
     };
     Ok((request, desired))
+}
+fn autoscale_off_request(
+    record: &swarmy_api_types::ElasticGroup,
+    primary: &RecordedHost,
+    spec: &SwarmSpec,
+) -> swarmy_api_types::PutElasticGroup {
+    swarmy_api_types::PutElasticGroup {
+        idempotency_key: ulid::Ulid::generate().to_string(),
+        swarm: record.swarm.clone(),
+        module: record.module.clone(),
+        size: record.size.clone(),
+        location: record.location.clone(),
+        sandboxes: record.sandboxes,
+        local_storage: record.local_storage.clone(),
+        max: record.max,
+        price_per_hour: record.price_per_hour.clone(),
+        currency: record.currency.clone(),
+        primary_address: primary.public_address.clone(),
+        service_user: provision::user(spec).into(),
+        autoscale: false,
+    }
+}
+fn stack_primary(registry: &Registry, spec: &SwarmSpec) -> Result<RecordedHost> {
+    let record = registry.read_record(&spec.name)?;
+    record
+        .as_ref()
+        .and_then(|record| record.hosts.get(&spec.placement.stack))
+        .and_then(|hosts| hosts.first())
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "swarm {} is not up; run swarmy swarm up {} first",
+                spec.name,
+                spec.name
+            )
+        })
 }
 /// Apply an elastic scale through the swarm's control plane.
 pub(crate) async fn scale_elastic(
@@ -545,19 +593,8 @@ pub(crate) async fn scale_elastic(
     count: u32,
     json_output: bool,
 ) -> Result<()> {
-    let record = registry.read_record(&spec.name)?;
-    let primary = record
-        .as_ref()
-        .and_then(|record| record.hosts.get(&spec.placement.stack))
-        .and_then(|hosts| hosts.first())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "swarm {} is not up; run swarmy swarm up {} first",
-                spec.name,
-                spec.name
-            )
-        })?;
-    let (definition, desired) = elastic_scale_requests(spec, primary, group, count)?;
+    let primary = stack_primary(registry, spec)?;
+    let (definition, desired) = elastic_scale_requests(spec, &primary, group, count)?;
     let (client, endpoint) = crate::target::connect_swarm(&spec.name).await?;
     swarmy_client::api_client::call(&endpoint, client.put_elastic_group(group, &definition))
         .await?;
@@ -566,6 +603,11 @@ pub(crate) async fn scale_elastic(
             .await?;
     if json_output {
         println!("{}", serde_json::to_string(&record)?);
+    } else if record.autoscale {
+        println!(
+            "group {group}: desired {} of max {}, {} machines now; autoscale is on: the provisioner adds machines for sessions waiting for a GPU and removes machines idle for 30 minutes",
+            record.desired, record.max, record.applied
+        );
     } else {
         println!(
             "group {group}: desired {} of max {}, {} machines now; the provisioner on the primary creates or destroys the rest",
@@ -644,6 +686,7 @@ elastic = true
 max = 2
 price_per_hour = "0.75"
 currency = "EUR"
+autoscale = true
 [placement]
 stack = "control"
 services = "control"
@@ -661,6 +704,7 @@ nodes = ["gpu"]
         let (definition, desired) = elastic_scale_requests(&spec, &primary, "gpu", 1).unwrap();
         assert_eq!(definition.primary_address, "198.51.100.7");
         assert_eq!(definition.service_user, "swarmy");
+        assert!(definition.autoscale);
         assert_eq!(definition.swarm, "fleet");
         assert_eq!(definition.sandboxes, 64);
         assert_eq!(definition.local_storage, "dir:/srv/swarmy-local");
@@ -682,16 +726,32 @@ nodes = ["gpu"]
             sandboxes: 64,
             local_storage: swarmy_config::DEFAULT_CREATED_LOCAL_STORAGE.into(),
             max: 2,
+            autoscale: false,
             price_per_hour: "0.75".into(),
             currency: "EUR".into(),
             desired: 0,
             desired_reason: "registered".into(),
+            desired_agent: None,
+            desired_session: None,
             applied: 0,
             generation: 0,
             reconciled_generation: 0,
             settled: true,
             updated_at: String::new(),
         };
+        group.autoscale = true;
+        group.desired = 1;
+        group.size = "other-size".into();
+        group.location = "other-location".into();
+        group.module = "scaleway".into();
+        group.max = 1;
+        let off = autoscale_off_request(&group, &primary, &spec);
+        assert!(!off.autoscale);
+        assert_eq!(off.size, group.size);
+        assert_eq!(off.location, group.location);
+        assert_eq!(off.module, group.module);
+        assert_eq!(off.max, group.max);
+        assert_eq!(off.primary_address, primary.public_address);
         assert!(elastic_down_blockers(&[group.clone()]).is_empty());
         group.applied = 1;
         assert_eq!(elastic_down_blockers(&[group.clone()]), ["gpu: 1 machines"]);

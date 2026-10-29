@@ -1,7 +1,7 @@
 //! Runtime truth for elastic machine groups.
-use crate::{DomainError, Result, StorageError, Store, StoreError, read, write};
+use crate::{DomainError, Result, StorageError, Store, StoreError, read, scan_all, write};
 use std::time::Duration;
-use swarmy_core::{ElasticGroupDefinition, ElasticGroupRecord, MAX_ELASTIC_MACHINES};
+use swarmy_core::{ElasticGroupDefinition, ElasticGroupRecord, MAX_ELASTIC_MACHINES, MachineCause};
 
 const CREATION_WINDOW: Duration = Duration::from_hours(1);
 
@@ -20,6 +20,18 @@ impl Store {
         }
         self.transaction(|trx| async move {
             let key = self.keys().elastic_group(&definition.group);
+            if definition.autoscale {
+                for (_, bytes) in scan_all(&trx, self.keys().elastic_group_space().range()).await? {
+                    let other: ElasticGroupRecord = swarmy_core::decode(&bytes)?;
+                    if other.definition.group != definition.group && other.definition.autoscale {
+                        return Err(DomainError::InvalidElasticGroup(format!(
+                            "only one elastic group may autoscale; group {} already does",
+                            other.definition.group
+                        ))
+                        .into());
+                    }
+                }
+            }
             let old: Option<ElasticGroupRecord> = read(&trx, &key).await?;
             let mut record = if let Some(mut record) = old {
                 if definition.max < record.desired {
@@ -47,7 +59,7 @@ impl Store {
                 ElasticGroupRecord {
                     definition: definition.clone(),
                     desired: 0,
-                    desired_reason: "registered".into(),
+                    desired_cause: MachineCause::from_reason("registered"),
                     generation: 0,
                     applied: 0,
                     reconciled_generation: 0,
@@ -91,7 +103,7 @@ impl Store {
         &self,
         group: &str,
         desired: u32,
-        reason: &str,
+        cause: &MachineCause,
     ) -> Result<ElasticGroupRecord> {
         self.transaction(|trx| async move {
             let key = self.keys().elastic_group(group);
@@ -110,7 +122,7 @@ impl Store {
             }
             if record.desired != desired {
                 record.desired = desired;
-                record.desired_reason = reason.into();
+                record.desired_cause = cause.clone();
                 record.generation = record
                     .generation
                     .checked_add(1)

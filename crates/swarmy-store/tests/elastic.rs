@@ -1,6 +1,6 @@
 #![deny(clippy::disallowed_methods)]
 use std::sync::Arc;
-use swarmy_core::{ElasticGroupDefinition, HourlyPrice};
+use swarmy_core::{ElasticGroupDefinition, HourlyPrice, MachineCause};
 use swarmy_store::{DomainError, StoreError, blob::MemoryBlobStore};
 
 fn definition(group: &str) -> ElasticGroupDefinition {
@@ -16,6 +16,7 @@ fn definition(group: &str) -> ElasticGroupDefinition {
         hourly_price: HourlyPrice::parse("0.75", "EUR").unwrap(),
         primary_address: "192.0.2.1".parse().unwrap(),
         service_user: "swarmy".into(),
+        autoscale: false,
     }
 }
 #[tokio::test]
@@ -46,19 +47,29 @@ async fn register_and_set_desired() {
             .collect::<Vec<_>>(),
         ["a", "b"]
     );
-    let updated = store.set_elastic_desired("b", 1, "manual").await.unwrap();
+    let updated = store
+        .set_elastic_desired("b", 1, &MachineCause::from_reason("manual"))
+        .await
+        .unwrap();
     assert_eq!(updated.generation, 1);
     assert!(!updated.settled());
     assert_eq!(
-        store.set_elastic_desired("b", 1, "again").await.unwrap(),
+        store
+            .set_elastic_desired("b", 1, &MachineCause::from_reason("again"))
+            .await
+            .unwrap(),
         updated
     );
     assert!(matches!(
-        store.set_elastic_desired("b", 3, "manual").await,
+        store
+            .set_elastic_desired("b", 3, &MachineCause::from_reason("manual"))
+            .await,
         Err(StoreError::Domain(DomainError::DesiredAboveMax { .. }))
     ));
     assert!(matches!(
-        store.set_elastic_desired("missing", 1, "manual").await,
+        store
+            .set_elastic_desired("missing", 1, &MachineCause::from_reason("manual"))
+            .await,
         Err(StoreError::Domain(DomainError::ElasticGroupMissing { .. }))
     ));
     let mut changed = definition("b");
@@ -86,11 +97,16 @@ async fn register_and_set_desired() {
         "0.5"
     );
     assert!(matches!(
-        store.set_elastic_desired("b", 2, "manual").await,
+        store
+            .set_elastic_desired("b", 2, &MachineCause::from_reason("manual"))
+            .await,
         Err(StoreError::Domain(DomainError::DesiredAboveMax { .. }))
     ));
     store.put_elastic_group(&definition("b")).await.unwrap();
-    store.set_elastic_desired("b", 2, "manual").await.unwrap();
+    store
+        .set_elastic_desired("b", 2, &MachineCause::from_reason("manual"))
+        .await
+        .unwrap();
     changed.max = 1;
     assert!(matches!(
         store.put_elastic_group(&changed).await,
@@ -106,11 +122,11 @@ async fn changing_identity_waits_for_reconciliation_even_when_empty() {
     let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
     store.put_elastic_group(&definition("race")).await.unwrap();
     store
-        .set_elastic_desired("race", 1, "manual")
+        .set_elastic_desired("race", 1, &MachineCause::from_reason("manual"))
         .await
         .unwrap();
     let unsettled = store
-        .set_elastic_desired("race", 0, "manual")
+        .set_elastic_desired("race", 0, &MachineCause::from_reason("manual"))
         .await
         .unwrap();
     assert_eq!((unsettled.desired, unsettled.applied), (0, 0));
@@ -132,5 +148,77 @@ async fn changing_identity_waits_for_reconciliation_even_when_empty() {
             .hourly_price
             .amount(),
         "0.5"
+    );
+}
+
+#[tokio::test]
+async fn only_one_group_autoscales() {
+    let Some(stack) = swarmy_testkit::Stack::load("elastic-autoscale") else {
+        return;
+    };
+    let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    let mut a = definition("a");
+    a.autoscale = true;
+    store.put_elastic_group(&a).await.unwrap();
+    let mut b = definition("b");
+    b.autoscale = true;
+    assert!(matches!(store.put_elastic_group(&b).await,
+        Err(StoreError::Domain(DomainError::InvalidElasticGroup(message))) if message.contains("group a already does")));
+    b.autoscale = false;
+    store.put_elastic_group(&b).await.unwrap();
+    a.autoscale = false;
+    store.put_elastic_group(&a).await.unwrap();
+    b.autoscale = true;
+    store.put_elastic_group(&b).await.unwrap();
+    store.put_elastic_group(&b).await.unwrap();
+    store
+        .set_elastic_desired("b", 1, &MachineCause::from_reason("manual"))
+        .await
+        .unwrap();
+    b.autoscale = false;
+    assert!(
+        !store
+            .put_elastic_group(&b)
+            .await
+            .unwrap()
+            .definition
+            .autoscale
+    );
+}
+
+#[tokio::test]
+async fn desired_cause_names_agent_and_session() {
+    let Some(stack) = swarmy_testkit::Stack::load("elastic-cause") else {
+        return;
+    };
+    let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    store.put_elastic_group(&definition("b")).await.unwrap();
+    let cause = MachineCause {
+        agent: Some(swarmy_core::AgentId::from_ulid(ulid::Ulid::from(1_u128))),
+        session: Some(swarmy_core::SessionId::from_ulid(ulid::Ulid::from(2_u128))),
+        reason: "tasky 01X: y".into(),
+    };
+    store.set_elastic_desired("b", 1, &cause).await.unwrap();
+    assert_eq!(
+        store
+            .get_elastic_group("b")
+            .await
+            .unwrap()
+            .unwrap()
+            .desired_cause,
+        cause
+    );
+    store
+        .set_elastic_desired("b", 1, &MachineCause::from_reason("other"))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_elastic_group("b")
+            .await
+            .unwrap()
+            .unwrap()
+            .desired_cause,
+        cause
     );
 }

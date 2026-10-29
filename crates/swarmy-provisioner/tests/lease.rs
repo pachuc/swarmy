@@ -59,10 +59,14 @@ async fn only_the_current_holder_applies() {
             hourly_price: HourlyPrice::parse("0.75", "EUR").unwrap(),
             primary_address: "192.0.2.1".parse().unwrap(),
             service_user: "swarmy".into(),
+            autoscale: false,
         })
         .await
         .unwrap();
-    store.set_elastic_desired("gpu", 1, "test").await.unwrap();
+    store
+        .set_elastic_desired("gpu", 1, &swarmy_core::MachineCause::from_reason("test"))
+        .await
+        .unwrap();
     let temp = tempfile::tempdir().unwrap();
     let link = temp.path().join("fake-tofu");
     std::os::unix::fs::symlink(

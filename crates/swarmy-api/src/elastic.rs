@@ -66,6 +66,7 @@ fn definition(
         hourly_price,
         primary_address,
         service_user: body.service_user.clone(),
+        autoscale: body.autoscale,
     })
 }
 pub(super) async fn put(
@@ -108,7 +109,9 @@ pub(super) async fn set_desired(
                     .set_elastic_desired(
                         &group,
                         body.desired,
-                        body.reason.as_deref().unwrap_or("set through the API"),
+                        &swarmy_core::MachineCause::from_reason(
+                            body.reason.as_deref().unwrap_or("set through the API"),
+                        ),
                     )
                     .await
                     .map_err(storage)?,

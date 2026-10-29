@@ -896,10 +896,17 @@ pub struct ElasticGroup {
     pub sandboxes: u32,
     pub local_storage: String,
     pub max: u32,
+    pub autoscale: bool,
     pub price_per_hour: String,
     pub currency: String,
     pub desired: u32,
     pub desired_reason: String,
+    /// Agent whose waiting session caused the latest desired change, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desired_agent: Option<String>,
+    /// Session that caused the latest desired change, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desired_session: Option<String>,
     pub applied: u32,
     pub generation: u64,
     pub reconciled_generation: u64,
@@ -924,6 +931,9 @@ pub struct PutElasticGroup {
     pub primary_address: String,
     /// Service login that owns swarmy on the stack host.
     pub service_user: String,
+    /// Whether the provisioner scales this group for sessions waiting for a GPU.
+    #[serde(default)]
+    pub autoscale: bool,
 }
 /// Set the desired number of machines, between zero and max.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

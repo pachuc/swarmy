@@ -100,6 +100,9 @@ pub struct GroupSpec {
     /// ISO 4217 currency code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
+    /// Elastic groups only: the provisioner scales the group for sessions waiting for a GPU.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub autoscale: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -207,10 +210,10 @@ impl GroupSpec {
 }
 fn elastic_failure(swarm: &str, g: &str, group: &GroupSpec) -> Option<String> {
     if !group.elastic {
-        return (group.max.is_some() || group.price_per_hour.is_some() || group.currency.is_some())
+        return (group.max.is_some() || group.price_per_hour.is_some() || group.currency.is_some() || group.autoscale)
             .then(|| {
                 format!(
-                    "group \"{g}\": max, price_per_hour and currency apply only to elastic groups"
+                    "group \"{g}\": max, price_per_hour, currency and autoscale apply only to elastic groups"
                 )
             });
     }
@@ -351,6 +354,7 @@ impl SwarmSpec {
                     max: None,
                     price_per_hour: None,
                     currency: None,
+                    autoscale: false,
                 },
             )]
             .into(),
@@ -389,6 +393,7 @@ impl SwarmSpec {
                 self.name
             )));
         }
+        let mut autoscaled = None;
         for (g, group) in &self.groups {
             if !is_valid_name(g) {
                 return Err(Error::Spec(format!(
@@ -400,6 +405,14 @@ impl SwarmSpec {
                 && *g != self.placement.services;
             if let Some(message) = group_failure(&self.name, g, group, node_only) {
                 return Err(Error::Spec(message));
+            }
+            if group.autoscale {
+                if let Some(other) = autoscaled {
+                    return Err(Error::Spec(format!(
+                        "groups \"{other}\" and \"{g}\" cannot both autoscale; at most one elastic group may autoscale"
+                    )));
+                }
+                autoscaled = Some(g);
             }
         }
         for (field, g) in [
@@ -523,14 +536,31 @@ nodes = ["box"]
         group.max = Some(2);
         group.price_per_hour = Some("0.75".into());
         group.currency = Some("EUR".into());
+        group.autoscale = true;
         assert_eq!(group.machines(), 0);
         assert_eq!(group.hourly_price().unwrap().amount(), "0.75");
         assert_eq!(SwarmSpec::parse(&spec.to_toml().unwrap()).unwrap(), spec);
+        let mut non_elastic = SwarmSpec::parse(CLOUD).unwrap();
+        non_elastic.groups.get_mut("workers").unwrap().autoscale = true;
+        assert!(
+            non_elastic.validate().unwrap_err().to_string().contains(
+                "max, price_per_hour, currency and autoscale apply only to elastic groups"
+            )
+        );
+        let mut two_autoscaled = spec.clone();
+        two_autoscaled
+            .groups
+            .insert("gpu".into(), spec.groups["workers"].clone());
+        let error = two_autoscaled.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("gpu") && error.contains("workers"),
+            "{error}"
+        );
         let base = spec.clone();
         let cases: Vec<ElasticCase> = vec![
             (
                 (|s| s.groups.get_mut("workers").unwrap().elastic = false),
-                "max, price_per_hour and currency apply only to elastic groups",
+                "max, price_per_hour, currency and autoscale apply only to elastic groups",
             ),
             (
                 (|s| s.groups.get_mut("workers").unwrap().module = Module::Local),

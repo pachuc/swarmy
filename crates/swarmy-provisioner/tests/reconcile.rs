@@ -110,6 +110,7 @@ impl Fixture {
                 hourly_price: HourlyPrice::parse("0.75", "EUR").unwrap(),
                 primary_address: "192.0.2.1".parse().unwrap(),
                 service_user: "swarmy".into(),
+                autoscale: false,
             })
             .await
             .unwrap();
@@ -124,7 +125,11 @@ impl Fixture {
     }
     async fn desired(&self, n: u32) {
         self.store
-            .set_elastic_desired("gpu", n, "tasky 01TEST")
+            .set_elastic_desired(
+                "gpu",
+                n,
+                &swarmy_core::MachineCause::from_reason("tasky 01TEST"),
+            )
             .await
             .unwrap();
     }
@@ -622,6 +627,29 @@ async fn restart_adopts_state_without_ledger() {
     );
 }
 #[tokio::test]
+async fn adopted_machines_keep_the_desired_cause() {
+    let Some(f) = Fixture::new(true, 3).await else {
+        return;
+    };
+    let cause = swarmy_core::MachineCause {
+        agent: Some(AgentId::from_ulid(ulid::Ulid::from(1_u128))),
+        session: Some(SessionId::from_ulid(ulid::Ulid::from(2_u128))),
+        reason: "tasky 01X: y".into(),
+    };
+    f.store.set_elastic_desired("gpu", 1, &cause).await.unwrap();
+    state(&f, 1);
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    let rows = f.records().await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].cause.agent, cause.agent);
+    assert_eq!(rows[0].cause.session, cause.session);
+    assert_eq!(
+        rows[0].cause.reason,
+        "adopted from OpenTofu state; tasky 01X: y"
+    );
+}
+
+#[tokio::test]
 async fn missing_state_orphans_machine_and_blocks_growth() {
     let Some(f) = Fixture::new(true, 3).await else {
         return;
@@ -1064,4 +1092,19 @@ async fn failed_lower_machine_removes_healthy_ones_above_then_regrows() {
     );
     f.reconciler.tick(&mut holder).await.unwrap();
     assert!(f.log().contains("apply machine_count=2"));
+}
+
+#[tokio::test]
+async fn machines_carry_the_desired_cause() {
+    let Some(f) = Fixture::new(true, 2).await else {
+        return;
+    };
+    let cause = swarmy_core::MachineCause {
+        agent: Some(AgentId::from_ulid(ulid::Ulid::from(1_u128))),
+        session: Some(SessionId::from_ulid(ulid::Ulid::from(2_u128))),
+        reason: "tasky 01X: y".into(),
+    };
+    f.store.set_elastic_desired("gpu", 1, &cause).await.unwrap();
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    assert_eq!(f.records().await[0].cause, cause);
 }
