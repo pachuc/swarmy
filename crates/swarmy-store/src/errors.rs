@@ -104,7 +104,7 @@ pub enum DomainError {
     NodeMissing,
     #[error("node has no computer capacity available: {detail}")]
     NodeAtCapacity { detail: String },
-    #[error("sandbox requirements can only change after the current placement is evicted")]
+    #[error("the memory requirement can only change after the current placement is evicted")]
     ActiveSandboxRequirements,
     #[error("placement already exists")]
     PlacementExists,

@@ -8,23 +8,29 @@ use swarmy_core::{
 /// How long a session waits before trying again to find a node.
 pub const CAPACITY_WAIT_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Why a parked session waits, and since when. One row per session survives a wake.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionWait {
     pub since: Timestamp,
     pub wake_at: Timestamp,
     pub kind: WaitKind,
 }
+/// The kind of wait that currently blocks a session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WaitKind {
+    /// Inference could not run: a breaker, exhausted route, or missing gateway.
     Inference(InferenceHistory),
+    /// Tool dispatch found no live node that can host the computer.
     Capacity { requirement: GpuRequirement },
 }
+/// Failures accumulated across one inference wait.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferenceHistory {
     pub last_failure_seq: u64,
     pub reasons: Vec<String>,
     pub attempts: u32,
 }
+/// What a capacity park did. The notice is boxed to keep expiry cheap.
 #[derive(Clone, Debug)]
 pub enum CapacityPark {
     Parked { notice: Option<Box<Event>> },
@@ -461,8 +467,8 @@ impl Store {
         Ok(())
     }
 
-    /// Remove a completed turn's wait and any remaining due index entry.
-    /// A completed attempt also restarts the route chain, so the next turn
+    /// Remove a completed inference wait and its due index, preserving a
+    /// capacity wait. A completed attempt restarts the route chain, so the next turn
     /// probes from the first step again.
     /// # Errors
     /// Returns storage failures.

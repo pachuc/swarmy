@@ -30,7 +30,7 @@ pub(crate) struct InferenceArgs {
     pub gpu: Option<GpuArg>,
 }
 
-/// GPU requirement for placement; changing it restarts a placed computer on a node that satisfies it, parsed once by clap instead of matched as a string.
+/// GPU requirement for placement, parsed once by clap instead of matched as a string.
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub(crate) enum GpuArg {
     None,
