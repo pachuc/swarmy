@@ -197,6 +197,7 @@ them in [api-breaks.txt](api-breaks.txt).
   track scheduled wakes, collector leases, durable tool execution, and
   deduplicated API writes ([keys.rs](../crates/swarmy-store/src/keys.rs),
   [timers.rs](../crates/swarmy-store/src/timers.rs),
+  [gpu_tools.rs](../crates/swarmy-store/src/gpu_tools.rs) for GPU requirement changes by agent tools,
   [tools.rs](../crates/swarmy-store/src/tools.rs),
   [gc.rs](../crates/swarmy-store/src/gc.rs),
   [api_idempotency.rs](../crates/swarmy-store/src/api_idempotency.rs)).

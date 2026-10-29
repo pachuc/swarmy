@@ -740,3 +740,28 @@ fn timer_tools_dispatch_without_a_sandbox() {
         );
     }
 }
+
+#[test]
+fn gpu_tools_dispatch_without_a_sandbox() {
+    let mut registry = ToolRegistry::default();
+    swarmy_tools::register(&mut registry);
+    for (name, arguments) in [
+        (
+            "request_gpu",
+            json!({"mode":"shared","reason":"render test"}),
+        ),
+        ("release_gpu", json!({})),
+    ] {
+        assert!(!registry.get(name).unwrap().sandbox_bound());
+        let call = ToolCallRecord {
+            call_id: ToolCallId(name.into()),
+            tool: name.into(),
+            arguments,
+            result: None,
+        };
+        assert_eq!(
+            step(&[user_event(), inference_event(std::slice::from_ref(&call))]),
+            Action::DispatchTools(vec![call])
+        );
+    }
+}

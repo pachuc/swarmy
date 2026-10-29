@@ -218,10 +218,13 @@ async fn agent_management_uses_api_and_preserves_requirements() {
         route: None,
         memory_mib: Some(2048),
         gpu: Some(swarmy_api_types::GpuMode::Shared),
+        allow_gpu_request: Some(true),
         github_token: Some("synthetic-github-token".into()),
     };
     let created = client.create_agent(&create).await.unwrap();
     assert_eq!(created.name, "worker");
+    assert!(created.allow_gpu_request);
+    assert!(created.gpu_request.is_none());
     // Create and show share the detail conversion, so the rows match apart
     // from the snapshot age, which is computed from the current time.
     let shown = client.agent("worker").await.unwrap();
@@ -268,6 +271,7 @@ async fn agent_management_uses_api_and_preserves_requirements() {
                 route: None,
                 memory_mib: Some(1024),
                 gpu: Some(swarmy_api_types::GpuMode::None),
+                allow_gpu_request: Some(false),
                 resets: vec![
                     swarmy_api_types::AgentReset::Provider,
                     swarmy_api_types::AgentReset::Model,
@@ -280,6 +284,7 @@ async fn agent_management_uses_api_and_preserves_requirements() {
         .unwrap();
     let updated = client.agent("worker").await.unwrap();
     assert_eq!(updated.requirements.memory_mib, 1024);
+    assert!(!updated.allow_gpu_request);
     assert!(updated.provider.is_none());
     assert!(updated.model.is_none());
     assert_eq!(updated.id, created.id);
@@ -316,6 +321,7 @@ async fn agent_update_rejects_invalid_merged_model() {
                 route: None,
                 memory_mib: None,
                 gpu: None,
+                allow_gpu_request: None,
                 resets: Vec::new(),
                 github_token: None,
                 clear_github_token: false,

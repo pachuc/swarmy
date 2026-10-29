@@ -225,7 +225,7 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
     let renewed_epoch = check_durable_background(store, &bus, &node, agent).await;
     let clean = check_dirty_without_publish(store, &bus, &node, agent, base).await;
     check_eviction_rehydrate(store, &bus, &node, agent, renewed_epoch, clean).await;
-    check_requirement_release(store, &bus, &node).await;
+    check_requirement_release(store, &bus, &node, agent).await;
     crash(&mut node, store, &bus, agent).await;
     takeover(&mut node, store, &bus, agent, true).await;
     takeover(
@@ -240,8 +240,9 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
 }
 
 /// A requirement release checkpoints and stops hosting even with processes running.
-async fn check_requirement_release(store: &Store, bus: &Bus, node: &Node) {
-    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+/// Uses the agent the earlier checks placed: the test node has one sandbox
+/// slot, so a second agent could not be placed while that computer is held.
+async fn check_requirement_release(store: &Store, bus: &Bus, node: &Node, agent: AgentId) {
     let job = dispatch(store, bus, node.id, agent, "echo durable >/persistent").await;
     completed(store, &job).await;
     let started = invoke(
@@ -265,15 +266,24 @@ async fn check_requirement_release(store: &Store, bus: &Bus, node: &Node) {
     completed(store, &job).await;
     assert!(store.request_placement_release(agent).await.unwrap());
     evicted(store, agent).await;
+    // Print the file and the process command lines so a failure says which half broke.
     let job = dispatch(
         store,
         bus,
         node.id,
         agent,
-        r#"test "$(cat /persistent)" = after-process && ! grep -qsx sleep /proc/[0-9]*/comm"#,
+        // PID 1 is the sandbox's own init (`sleep infinity` in images without
+        // swarmy-init), so skip it and print every other command line.
+        r#"cat /persistent; echo ---; for f in /proc/[0-9]*/cmdline; do [ "$f" = /proc/1/cmdline ] && continue; tr '\0' ' ' <"$f" 2>/dev/null; echo; done"#,
     )
     .await;
-    completed(store, &job).await;
+    let metadata = completed(store, &job).await;
+    let out = metadata["stdout"].as_str().unwrap_or_default();
+    let (file, processes) = out.split_once("---\n").unwrap_or((out, ""));
+    assert_eq!(file.trim(), "after-process", "final checkpoint lost: {out}");
+    if let Some(line) = processes.lines().find(|line| line.trim() == "sleep 300") {
+        panic!("the process started before the release survived it: {line}");
+    }
     let placement = store.get_by_agent(agent).await.unwrap().unwrap();
     assert_eq!(
         placement.last_change_reason,
