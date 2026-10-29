@@ -151,7 +151,7 @@ swarmy-gateway.service enabled'
 [[ $(list_installed_control_units) == 'swarmy-gateway.service' ]]
 SWARMY_TEST_INSTALLED='swarmy-provisioner.service enabled'
 [[ $(list_installed_control_units) == 'swarmy-provisioner.service' ]]
-SWARMY_TEST_INSTALLED='swarmy-stack.service enabled' 
+SWARMY_TEST_INSTALLED='swarmy-stack.service enabled'
 [[ $(list_installed_control_units) == 'swarmy-stack.service' ]]
 SWARMY_TEST_INSTALLED='swarmy-stack.service enabled
 swarmyd.service enabled
