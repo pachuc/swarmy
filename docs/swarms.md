@@ -516,9 +516,6 @@ swarmy swarm machines --all
 swarmy --swarm hz swarm machines --json
 ```
 
-The primary provisioner writes records before and after each OpenTofu apply;
-new machines remain in Provisioning until SSH joining is implemented.
-
 ## Model provider credentials
 
 On the first `swarmy swarm up NAME`, `--copy-credential` copies the ChatGPT

@@ -12,6 +12,7 @@ case "$1" in
  apply)
     count=$(python3 -c 'import json; print(json.load(open("swarmy.tfvars.json"))["machine_count"])')
     printf 'apply machine_count=%s\n' "$count" >> "$fixture/tofu.log"
+    touch "$fixture/applied"
     if [ -f "$fixture/fail-apply" ]; then echo 'injected apply failure' >&2; exit 1; fi
     if [ -f "$fixture/fail-apply-partial" ]; then
         python3 -c 'import json, os; path="terraform.tfstate"; old=json.load(open(path))["count"] if os.path.exists(path) else 0; json.dump({"count":old+1},open(path,"w"))'
@@ -19,6 +20,9 @@ case "$1" in
     fi
     python3 -c 'import json,sys; json.dump({"count":int(sys.argv[1])},open("terraform.tfstate","w"))' "$count" ;;
  output)
+    if [ -f "$fixture/applied" ] && [ -f "$fixture/fail-output" ]; then
+        echo 'injected output failure' >&2; exit 1
+    fi
     python3 - <<'PY'
 import json
 vars=json.load(open('swarmy.tfvars.json'))

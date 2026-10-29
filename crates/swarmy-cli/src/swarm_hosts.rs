@@ -37,6 +37,7 @@ pub(crate) struct CreateCloud {
     pub lifecycle: Option<Lifecycle>,
 }
 
+// SWARMY_TOFU_BIN is a development and test override of the pinned download.
 async fn tofu(registry: &Registry) -> Result<Tofu> {
     Ok(Tofu::resolve(&registry.dirs().cache).await?)
 }

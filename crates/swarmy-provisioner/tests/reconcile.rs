@@ -129,7 +129,7 @@ async fn scale_up_down_and_backup() {
         (outcomes[0].before, outcomes[0].after, outcomes[0].limited),
         (0, 2, false)
     );
-    assert!(f.log().contains("apply machine_count=2"));
+    assert_eq!(f.log().matches("apply machine_count=2").count(), 1);
     assert!(f.log().contains("env SCW_ACCESS_KEY"));
     assert!(
         f.store
@@ -146,6 +146,9 @@ async fn scale_up_down_and_backup() {
         assert_eq!(row.created_at, Some(*f.clock.lock().unwrap()));
         assert_eq!(row.provisioned_at, None);
         assert_eq!(row.cause.reason, "tasky 01TEST");
+        assert_eq!(row.cause.agent, None);
+        assert_eq!(row.cause.session, None);
+        assert_eq!(row.hourly_price, HourlyPrice::parse("0.75", "EUR").unwrap());
         assert_eq!(
             row.address.as_deref(),
             Some(format!("203.0.113.{}", index + 11).as_str())
@@ -168,7 +171,12 @@ async fn scale_up_down_and_backup() {
     assert_eq!(f.log().matches("apply machine_count").count(), count);
     f.desired(1).await;
     f.reconciler.tick(&mut holder).await.unwrap();
-    assert_eq!(f.records().await[1].state, MachineState::Destroyed);
+    assert_eq!(f.log().matches("apply machine_count=1").count(), 1);
+    let rows = f.records().await;
+    assert_eq!(rows[0].state, MachineState::Provisioning);
+    assert_eq!(rows[1].state, MachineState::Destroyed);
+    assert!(rows[1].drain_requested_at.is_some());
+    assert!(rows[1].destroyed_at.is_some());
     f.desired(0).await;
     f.reconciler.tick(&mut holder).await.unwrap();
     assert!(
@@ -177,14 +185,9 @@ async fn scale_up_down_and_backup() {
             .iter()
             .all(|r| r.state == MachineState::Destroyed)
     );
-    assert!(
-        f.store
-            .get_elastic_group("gpu")
-            .await
-            .unwrap()
-            .unwrap()
-            .settled()
-    );
+    let group = f.store.get_elastic_group("gpu").await.unwrap().unwrap();
+    assert!(group.settled());
+    assert_eq!(group.applied, 0);
 }
 #[tokio::test]
 async fn creation_limit_and_retry() {
@@ -197,6 +200,15 @@ async fn creation_limit_and_retry() {
         panic!("not leader")
     };
     assert_eq!((outcomes[0].after, outcomes[0].limited), (4, true));
+    assert_eq!(f.log().matches("apply machine_count=4").count(), 1);
+    assert!(
+        !f.store
+            .get_elastic_group("gpu")
+            .await
+            .unwrap()
+            .unwrap()
+            .settled()
+    );
     let before = f.log();
     f.reconciler.tick(&mut holder).await.unwrap();
     assert_eq!(f.log(), before);
@@ -246,7 +258,13 @@ async fn failed_apply_backoff_and_reuse_name() {
     fs::write(f.temp.path().join("fail-apply"), "").unwrap();
     let mut holder = Holder::new();
     f.reconciler.tick(&mut holder).await.unwrap();
-    assert_eq!(f.records().await[0].state, MachineState::Failed);
+    let failed = &f.records().await[0];
+    assert_eq!(failed.state, MachineState::Failed);
+    assert!(!failed.is_active());
+    let failed_id = failed.machine_id;
+    let group = f.store.get_elastic_group("gpu").await.unwrap().unwrap();
+    assert_eq!(group.applied, 0);
+    assert!(!group.settled());
     let before = f.log();
     f.reconciler.tick(&mut holder).await.unwrap();
     assert_eq!(before, f.log());
@@ -255,10 +273,50 @@ async fn failed_apply_backoff_and_reuse_name() {
     f.reconciler.tick(&mut holder).await.unwrap();
     let records = f.records().await;
     assert_eq!(records.len(), 2);
+    let replacement = records
+        .iter()
+        .find(|r| r.state == MachineState::Provisioning)
+        .unwrap();
+    assert_eq!(replacement.name, "fleet-gpu-1");
+    assert_ne!(replacement.machine_id, failed_id);
+}
+#[tokio::test]
+async fn output_error_after_apply_is_not_settled() {
+    let Some(f) = Fixture::new(true, 2).await else {
+        return;
+    };
+    let mut holder = Holder::new();
+    f.reconciler.tick(&mut holder).await.unwrap();
+    f.desired(1).await;
+    fs::write(f.temp.path().join("fail-output"), "").unwrap();
+    let error = f
+        .reconciler
+        .reconcile(
+            holder.lease().unwrap(),
+            &f.store.get_elastic_group("gpu").await.unwrap().unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("reading OpenTofu outputs"));
     assert!(
-        records
-            .iter()
-            .any(|r| r.state == MachineState::Provisioning)
+        !f.store
+            .get_elastic_group("gpu")
+            .await
+            .unwrap()
+            .unwrap()
+            .settled()
+    );
+    assert_eq!(f.records().await[0].state, MachineState::Creating);
+    fs::remove_file(f.temp.path().join("fail-output")).unwrap();
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(f.records().await[0].state, MachineState::Provisioning);
+    assert!(
+        f.store
+            .get_elastic_group("gpu")
+            .await
+            .unwrap()
+            .unwrap()
+            .settled()
     );
 }
 #[tokio::test]
@@ -266,10 +324,31 @@ async fn partial_failure_records_observed_state() {
     let Some(f) = Fixture::new(true, 2).await else {
         return;
     };
-    f.desired(2).await;
-    fs::write(f.temp.path().join("fail-apply-partial"), "").unwrap();
     let mut holder = Holder::new();
     f.reconciler.tick(&mut holder).await.unwrap();
+    f.desired(2).await;
+    fs::write(f.temp.path().join("fail-apply-partial"), "").unwrap();
+    let error = f
+        .reconciler
+        .reconcile(
+            holder.lease().unwrap(),
+            &f.store.get_elastic_group("gpu").await.unwrap().unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("OpenTofu apply"));
+    let local = fs::read(f.temp.path().join("data/tofu/gpu/terraform.tfstate")).unwrap();
+    assert_eq!(
+        f.objects
+            .get(&Path::from("tofu-state/gpu/terraform.tfstate"))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap()
+            .as_ref(),
+        local
+    );
     let records = f.records().await;
     assert_eq!(records[0].state, MachineState::Provisioning);
     assert_eq!(records[1].state, MachineState::Failed);

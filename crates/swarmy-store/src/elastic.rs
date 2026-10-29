@@ -1,6 +1,9 @@
 //! Runtime truth for elastic machine groups.
 use crate::{DomainError, Result, StorageError, Store, StoreError, read, write};
+use std::time::Duration;
 use swarmy_core::{ElasticGroupDefinition, ElasticGroupRecord, MAX_ELASTIC_MACHINES};
+
+const CREATION_WINDOW: Duration = Duration::from_hours(1);
 
 impl Store {
     /// Register or update a definition without changing the desired machine count.
@@ -136,15 +139,13 @@ impl Store {
     pub async fn elastic_creation_slots(&self) -> Result<CreationGrant> {
         self.transaction(|trx| async move {
             let now = self.now();
-            let mut times: Vec<jiff::Timestamp> = read(&trx, &self.keys().elastic_creations())
-                .await?
-                .unwrap_or_default();
-            times.retain(|at| *at + std::time::Duration::from_secs(3600) > now);
-            let mut result = grant(&times, 0);
-            result.next_free_at = result
-                .next_free_at
-                .map(|at| at + std::time::Duration::from_secs(3600));
-            Ok(result)
+            let times = live_window(
+                read(&trx, &self.keys().elastic_creations())
+                    .await?
+                    .unwrap_or_default(),
+                now,
+            );
+            Ok(grant(&times, 0))
         })
         .await
     }
@@ -160,19 +161,14 @@ impl Store {
             self.check_provisioner(&trx, lease).await?;
             let now = self.now();
             let key = self.keys().elastic_creations();
-            let mut times: Vec<jiff::Timestamp> = read(&trx, &key).await?.unwrap_or_default();
-            times.retain(|at| *at + std::time::Duration::from_secs(3600) > now);
+            let mut times = live_window(read(&trx, &key).await?.unwrap_or_default(), now);
             let count = wanted.min(
                 MAX_ELASTIC_CREATIONS_PER_HOUR
                     .saturating_sub(u32::try_from(times.len()).unwrap_or(u32::MAX)),
             );
             times.extend(std::iter::repeat_n(now, count as usize));
             write(&trx, &key, &times)?;
-            let mut result = grant(&times, count);
-            result.next_free_at = result
-                .next_free_at
-                .map(|at| at + std::time::Duration::from_secs(3600));
-            Ok(result)
+            Ok(grant(&times, count))
         })
         .await
     }
@@ -224,12 +220,16 @@ impl Store {
         Ok(())
     }
 }
+fn live_window(mut times: Vec<jiff::Timestamp>, now: jiff::Timestamp) -> Vec<jiff::Timestamp> {
+    times.retain(|at| *at + CREATION_WINDOW > now);
+    times
+}
 fn grant(times: &[jiff::Timestamp], granted: u32) -> CreationGrant {
     CreationGrant {
         granted,
         used: u32::try_from(times.len()).unwrap_or(u32::MAX),
         next_free_at: if times.len() >= MAX_ELASTIC_CREATIONS_PER_HOUR as usize {
-            times.first().copied()
+            times.first().map(|at| *at + CREATION_WINDOW)
         } else {
             None
         },

@@ -1,6 +1,6 @@
 //! Primary-host service entry point.
 use crate::{Holder, Reconciler, Tick};
-use std::{ffi::OsString, time::Duration};
+use std::{collections::BTreeMap, ffi::OsString, time::Duration};
 use swarmy_store::Store;
 
 pub const LEASE_TTL: Duration = Duration::from_mins(15);
@@ -36,6 +36,7 @@ async fn serve(args: Vec<OsString>) -> anyhow::Result<()> {
 }
 async fn run_loop(reconciler: &Reconciler) -> anyhow::Result<()> {
     let mut holder = Holder::new();
+    let mut previous_limited = BTreeMap::new();
     let shutdown = swarmy_config::shutdown_signal();
     tokio::pin!(shutdown);
     let mut interval = tokio::time::interval(RECONCILE_INTERVAL);
@@ -44,7 +45,7 @@ async fn run_loop(reconciler: &Reconciler) -> anyhow::Result<()> {
             () = &mut shutdown => break,
             _ = interval.tick() => {},
         }
-        log_tick(reconciler.tick(&mut holder).await);
+        log_tick(reconciler.tick(&mut holder).await, &mut previous_limited);
     }
     if let Some(lease) = holder.lease() {
         swarmy_core::ignore_best_effort(
@@ -54,13 +55,18 @@ async fn run_loop(reconciler: &Reconciler) -> anyhow::Result<()> {
     }
     Ok(())
 }
-fn log_tick(result: anyhow::Result<Tick>) {
+fn log_tick(result: anyhow::Result<Tick>, previous_limited: &mut BTreeMap<String, bool>) {
     match result {
         Ok(Tick::Standby) => tracing::debug!("provisioner lease held elsewhere"),
         Ok(Tick::Reconciled(outcomes)) => {
             for outcome in outcomes {
-                if outcome.before != outcome.after || outcome.limited {
+                let was_limited = previous_limited
+                    .insert(outcome.group.clone(), outcome.limited)
+                    .unwrap_or(outcome.limited);
+                if outcome.before != outcome.after || was_limited != outcome.limited {
                     tracing::info!(?outcome, "elastic group reconciled");
+                } else if outcome.limited {
+                    tracing::debug!(?outcome, "elastic group creation limited");
                 }
             }
         }

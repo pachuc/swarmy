@@ -143,7 +143,6 @@ async fn pins() {
 
 #[tokio::test]
 async fn explicit_override_resolves_without_download() {
-    use std::ffi::OsStr;
     use swarmy_infra::Tofu;
     let cache = tempfile::tempdir().unwrap();
     let missing = cache.path().join("missing-tofu");
@@ -159,7 +158,4 @@ async fn explicit_override_resolves_without_download() {
             .binary(),
         binary
     );
-    // The empty override uses the pinned download. Its offline fixture is not
-    // available in this test, so only the nonempty override is exercised here.
-    assert_ne!(OsStr::new(""), binary.as_os_str());
 }

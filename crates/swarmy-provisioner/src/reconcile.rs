@@ -115,37 +115,10 @@ impl Reconciler {
     /// Renew before every group; a replaced holder never starts an apply.
     /// # Errors
     /// Returns store or runtime failures.
-    /// # Panics
-    /// Only if the claimed lease unexpectedly disappears within this tick.
     pub async fn tick(&self, holder: &mut Holder) -> Result<Tick> {
-        let lease = match &holder.lease {
-            Some(lease) if lease.expires_at <= self.store.now() => {
-                self.store
-                    .acquire_provisioner_lease(holder.owner, crate::role::LEASE_TTL)
-                    .await
-            }
-            Some(lease) if lease.expires_at >= self.store.now() + crate::role::LEASE_TTL => {
-                Ok(lease.clone())
-            }
-            Some(lease) => {
-                self.store
-                    .renew_provisioner_lease(lease, crate::role::LEASE_TTL)
-                    .await
-            }
-            None => {
-                self.store
-                    .acquire_provisioner_lease(holder.owner, crate::role::LEASE_TTL)
-                    .await
-            }
-        };
-        holder.lease = match lease {
-            Ok(lease) => Some(lease),
-            Err(StoreError::Fence(FenceError::ProvisionerLeaseMismatch)) => {
-                holder.lease = None;
-                return Ok(Tick::Standby);
-            }
-            Err(error) => return Err(error.into()),
-        };
+        if self.hold(holder).await?.is_none() {
+            return Ok(Tick::Standby);
+        }
         let mut outcomes = Vec::new();
         for record in self.store.list_elastic_groups().await? {
             if record.settled()
@@ -160,33 +133,14 @@ impl Reconciler {
             {
                 continue;
             }
-            let lease = if holder.lease.as_ref().expect("claimed lease").expires_at
-                >= self.store.now() + crate::role::LEASE_TTL
-            {
-                holder.lease.as_ref().expect("claimed lease").clone()
-            } else {
-                match self
-                    .store
-                    .renew_provisioner_lease(
-                        holder.lease.as_ref().expect("claimed lease"),
-                        crate::role::LEASE_TTL,
-                    )
-                    .await
-                {
-                    Ok(lease) => lease,
-                    Err(StoreError::Fence(FenceError::ProvisionerLeaseMismatch)) => {
-                        holder.lease = None;
-                        return Ok(Tick::Standby);
-                    }
-                    Err(error) => return Err(error.into()),
-                }
+            let Some(lease) = self.hold(holder).await? else {
+                return Ok(Tick::Standby);
             };
-            holder.lease = Some(lease.clone());
             match self.reconcile(&lease, &record).await {
                 Ok(outcome) => {
                     self.retry
                         .lock()
-                        .expect("retry mutex poisoned")
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .remove(&record.definition.group);
                     outcomes.push(outcome);
                 }
@@ -203,6 +157,38 @@ impl Reconciler {
             }
         }
         Ok(Tick::Reconciled(outcomes))
+    }
+    async fn hold(&self, holder: &mut Holder) -> Result<Option<Lease>> {
+        let now = self.store.now();
+        let lease = match holder.lease.as_ref() {
+            Some(lease) if lease.expires_at <= now => {
+                self.store
+                    .acquire_provisioner_lease(holder.owner, crate::role::LEASE_TTL)
+                    .await
+            }
+            Some(lease) if lease.expires_at >= now + crate::role::LEASE_TTL => Ok(lease.clone()),
+            Some(lease) => {
+                self.store
+                    .renew_provisioner_lease(lease, crate::role::LEASE_TTL)
+                    .await
+            }
+            None => {
+                self.store
+                    .acquire_provisioner_lease(holder.owner, crate::role::LEASE_TTL)
+                    .await
+            }
+        };
+        match lease {
+            Ok(lease) => {
+                holder.lease = Some(lease.clone());
+                Ok(Some(lease))
+            }
+            Err(StoreError::Fence(FenceError::ProvisionerLeaseMismatch)) => {
+                holder.lease = None;
+                Ok(None)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
     /// The single reconcile path shared by manual and future autoscaling.
     /// # Errors
@@ -361,6 +347,24 @@ impl Reconciler {
         let applied = workspace.apply().await;
         self.backup(workspace, &def.group).await;
         let after = self.outputs(workspace, def).await;
+        if applied.is_ok() && after.is_err() {
+            self.store
+                .record_elastic_reconcile(
+                    lease,
+                    &def.group,
+                    record.applied,
+                    record.generation,
+                    false,
+                )
+                .await?;
+            return after.with_context(|| format!(
+                "reading OpenTofu outputs after applying machine_count = {target} for elastic group {}",
+                def.group
+            )).map(|_| ());
+        }
+        if let Err(error) = &after {
+            tracing::warn!(group = %def.group, error = %swarmy_core::error_chain(error.as_ref()), "reading OpenTofu outputs after failed apply");
+        }
         let length = if let Ok(ref machines) = after {
             u32::try_from(machines.len())?
         } else {
@@ -692,6 +696,7 @@ fn number(def: &ElasticGroupDefinition, value: &str) -> Option<u32> {
         .parse()
         .ok()
         .filter(|n| *n > 0)
+        .filter(|n| name(def, *n) == value)
 }
 fn address(machine: &Machine) -> Result<String> {
     machine

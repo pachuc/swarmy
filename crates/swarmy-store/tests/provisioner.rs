@@ -58,12 +58,18 @@ async fn lease_window_and_reconcile_are_fenced() {
         store.reserve_elastic_creations(&old, 1).await,
         Err(StoreError::Fence(FenceError::ProvisionerLeaseMismatch))
     ));
+    assert_eq!(store.elastic_creation_slots().await.unwrap().used, 4);
+    let unchanged = store.get_elastic_group("gpu").await.unwrap().unwrap();
+    assert_eq!((unchanged.applied, unchanged.reconciled_generation), (0, 0));
     assert!(matches!(
         store
             .record_elastic_reconcile(&old, "gpu", 1, 1, true)
             .await,
         Err(StoreError::Fence(FenceError::ProvisionerLeaseMismatch))
     ));
+    assert_eq!(store.elastic_creation_slots().await.unwrap().used, 4);
+    let unchanged = store.get_elastic_group("gpu").await.unwrap().unwrap();
+    assert_eq!((unchanged.applied, unchanged.reconciled_generation), (0, 0));
     let record = store
         .record_elastic_reconcile(&live, "gpu", 1, 1, false)
         .await
