@@ -21,12 +21,13 @@ variables {
   location       = "fr-par-2"
   ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBswarmyTestKeyNotARealKey0000000000000 swarmy-test"
 }
+# Check changed image and labels before creating state: image changes are ignored after launch.
 run "caller_labels_cannot_replace_swarmy_labels" {
   command = plan
   variables { labels = { "swarmy-swarm" = "other", team = "infra" } }
   assert {
     condition     = scaleway_instance_server.this[0].tags == tolist(["swarmy-group=gpu", "swarmy-managed=true", "swarmy-swarm=fleet", "team=infra"]) && scaleway_instance_security_group.this.tags == scaleway_instance_server.this[0].tags && scaleway_instance_ip.this[0].tags == scaleway_instance_server.this[0].tags
-    error_message = "tags: ${jsonencode(scaleway_instance_server.this[0].tags)} sg: ${jsonencode(scaleway_instance_security_group.this.tags)} ip: ${jsonencode(scaleway_instance_ip.this[0].tags)}"
+    error_message = "Caller labels cannot replace swarmy labels; all three resources must have the same sorted tags."
   }
 }
 

@@ -36,7 +36,11 @@ macro_rules! module {
 }
 
 /// Every carried module, sorted by name.
-pub static MODULES: &[Module] = &[module!("aws"), module!("hetzner-cloud"), module!("scaleway")];
+pub static MODULES: &[Module] = &[
+    module!("aws"),
+    module!("hetzner-cloud"),
+    module!("scaleway"),
+];
 
 /// The carried module with this name.
 #[must_use]

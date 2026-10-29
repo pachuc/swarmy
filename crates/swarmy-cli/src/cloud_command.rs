@@ -173,6 +173,10 @@ mod tests {
             split_stdin("a\nb\n", CloudProvider::HetznerS3).unwrap(),
             ["a", "b"]
         );
+        assert_eq!(
+            split_stdin("a\nb\nc\n", CloudProvider::Scaleway).unwrap(),
+            ["a", "b", "c"]
+        );
         for (text, count) in [("", 0), ("a\n", 1), ("a\nb\nc\n", 3)] {
             assert_eq!(
                 split_stdin(text, CloudProvider::HetznerS3)

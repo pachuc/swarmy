@@ -71,15 +71,11 @@ fn machine_refs(pair: Option<&(Tofu, CloudCredentials)>) -> Option<MachineGroups
 const ON_MODULES: &str = "--on takes hetzner-cloud, aws, scaleway, or an absolute path to your own module; use --host for machines you own and --local for this machine";
 
 pub(crate) fn cloud_spec(name: &str, args: &CreateCloud) -> Result<SwarmSpec> {
-    let module = Module::try_from(args.module.clone()).map_err(|_| anyhow::anyhow!(
-        ON_MODULES
-    ))?;
+    let module = Module::try_from(args.module.clone()).map_err(|_| anyhow::anyhow!(ON_MODULES))?;
     if matches!(module, Module::Existing | Module::Local)
         || matches!(&module, Module::Path(p) if !p.is_absolute())
     {
-        bail!(
-            ON_MODULES
-        );
+        bail!(ON_MODULES);
     }
     if args.nodes == 0 && args.node_size.is_some() {
         bail!("--node-size requires --nodes greater than 0");
