@@ -48,8 +48,8 @@ Completed. A named main session cannot be closed by this API.
 `swarmy session interrupt SESSION_ID` ends the current turn without closing the
 session. A parked inference wait ends immediately with a non-retryable
 `InferenceFailed` event. A capacity wait hands its pending calls to a worker;
-those calls fail without running and the turn ends. A running turn ends at its next worker step boundary;
-an active provider request may have to return first. `session show` displays a
+those calls fail without running and the turn ends. A running turn ends at its
+next worker step boundary; an active provider request may have to return first. `session show` displays a
 pending interruption, including `interrupt_requested` in JSON output. Idle and
 Completed sessions have no turn to interrupt, so the command exits with an error.
 If a sandbox tool returns a managed process while interruption is pending, the
