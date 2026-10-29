@@ -47,16 +47,21 @@ impl Store {
                     let wait = read::<crate::SessionWait>(&trx, &self.keys().session_wait(id))
                         .await?
                         .ok_or(StoreError::Domain(crate::DomainError::MissingSessionWait))?;
-                    let request_id = if wait.inference().map_or(0, |h| h.last_failure_seq) == 0 {
+                    if wait.capacity().is_some() {
+                        self.clear_wait(&trx, id, &wait);
+                        let mut session = session;
+                        session.interrupt_requested = true;
+                        self.transition(&trx, session, SessionState::Runnable, self.now())
+                            .await?;
+                        return Ok(InterruptResult::Requested);
+                    }
+                    let previous_seq = wait.inference().map_or(0, |h| h.last_failure_seq);
+                    let request_id = if previous_seq == 0 {
                         RequestId::for_step(id, crate::seq_after(session.head_seq, 1)?)
                     } else {
-                        self.request_from_event(
-                            &trx,
-                            id,
-                            wait.inference().map_or(0, |h| h.last_failure_seq),
-                        )
-                        .await?
-                        .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?
+                        self.request_from_event(&trx, id, previous_seq)
+                            .await?
+                            .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?
                     };
                     self.append_interrupted(&trx, session, request_id, self.now())
                         .await?;
@@ -87,6 +92,12 @@ impl Store {
         self.transaction(|trx| async move {
             let session = self.session(&trx, id).await?;
             if session.state != SessionState::Runnable || !session.interrupt_requested {
+                return Ok(false);
+            }
+            if read::<crate::SessionWait>(&trx, &self.keys().session_wait(id))
+                .await?
+                .is_some_and(|wait| wait.capacity().is_some())
+            {
                 return Ok(false);
             }
             let request_id = if session.head_seq == 0 {

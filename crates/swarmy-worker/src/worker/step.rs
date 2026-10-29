@@ -1,5 +1,5 @@
 use super::inference::warn_on_route_fallback;
-use super::tools::DispatchOutcome;
+use super::tools::{Dispatch, DispatchOutcome};
 use super::{
     Action, Arc, Bus, Context, Event, FailoverAction, HeldLease, KillPoint, LiveFeed,
     MAX_SCAN_LIMIT, MessageId, RequestId, Result, SNAPSHOT_CACHE_SIZE, SandboxArguments, SessionId,
@@ -378,6 +378,17 @@ impl Worker {
                     .checked_add(1)
                     .context("sequence overflow")?,
             ));
+        let unrequested = snapshot.replay(events).unrequested_tool_calls();
+        if !unrequested.is_empty() {
+            self.fail_dispatch(
+                session,
+                lease,
+                events,
+                &Dispatch::Calls(&unrequested),
+                "The tool call did not run: the operator interrupted the turn.",
+            )
+            .await?;
+        }
         self.append(
             session,
             lease,

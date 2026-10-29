@@ -144,8 +144,8 @@ them in [api-breaks.txt](api-breaks.txt).
   [session_images.rs](../crates/swarmy-store/src/session_images.rs),
   [volumes.rs](../crates/swarmy-store/src/volumes.rs)).
 - **Leases, placements, and nodes.** `lease`, `lease_by_expiry`, `node`,
-  `placement`, `placement_epoch`, `placement_by_node`, `placement_hosting`, `placement_next_reason`,
-  `volume_placement`, and `tool_placement` track ownership and where work
+  `placement`, `placement_epoch`, `placement_by_node`, `placement_hosting`,
+  `placement_next_reason`, `volume_placement`, and `tool_placement` track ownership and where work
   runs. Node records carry advertised capacity and heartbeats, service
   heartbeats stay advisory, tool routing fences durable dispatch across
   worker replicas, and tool claims on agent volumes never publish disk

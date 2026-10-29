@@ -1501,6 +1501,9 @@ async fn gpu_requirement_change_moves_the_computer_and_explains_it() {
             requirement: GpuRequirement::Shared
         }
     ));
+    let events = f.store.read_events(second, 0, 64).await.unwrap();
+    assert_eq!(events.iter().filter(|event| matches!(event, Event::MessageAppended { message, .. }
+        if message.role == MessageRole::System && message.parts.iter().any(|part| matches!(part, Part::Text { text } if text.contains("waiting for GPU capacity"))))).count(), 1);
     f.store
         .set_agent_with_resets(
             f.agent,
@@ -1537,6 +1540,15 @@ async fn capacity_wait_past_the_max_fails_the_calls_and_continues() {
     fill_nodes(&f).await;
     let id = f.session().await;
     f.step(id).await;
+    let audit = f.store.lease_audit(&[id]).await.unwrap();
+    assert_eq!(audit[0].state, SessionState::Sleeping);
+    assert!(audit[0].waiting && !audit[0].leased);
+    assert!(matches!(
+        f.store.session_wait(id).await.unwrap().unwrap().kind,
+        swarmy_store::WaitKind::Capacity {
+            requirement: GpuRequirement::None
+        }
+    ));
     f.advance(CAPACITY_WAIT_RETRY + Duration::from_secs(1));
     assert!(f.store.wake_wait(id, f.now()).await.unwrap());
     f.advance(Duration::from_secs(3601));
@@ -1549,5 +1561,72 @@ async fn capacity_wait_past_the_max_fails_the_calls_and_continues() {
     assert_eq!(
         f.store.fetch_session(id).await.unwrap().unwrap().state,
         SessionState::WaitingInference
+    );
+}
+
+#[tokio::test]
+async fn interrupting_a_capacity_wait_fails_its_calls_and_does_not_rerun_them() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    fill_nodes(&f).await;
+    let id = f.session().await;
+    f.step(id).await;
+    assert_eq!(
+        f.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Sleeping
+    );
+    assert_eq!(
+        f.store.interrupt_session(id).await.unwrap(),
+        swarmy_store::InterruptResult::Requested
+    );
+    assert!(!f.store.finish_runnable_interrupt(id).await.unwrap());
+    f.step(id).await;
+    let events = f.store.read_events(id, 0, 64).await.unwrap();
+    let requests = events
+        .iter()
+        .filter(|event| matches!(event, Event::ToolCallRequested { .. }))
+        .count();
+    assert_eq!(requests, 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::ToolCallCompleted {
+        result: ToolResult::Error { error }, ..
+    } if error == "The tool call did not run: the operator interrupted the turn."))
+            .count(),
+        requests
+    );
+    let session = f.store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(session.state, SessionState::Idle);
+    assert!(f.store.session_wait(id).await.unwrap().is_none());
+    add_live_node(&f, NodeId::from_ulid(Ulid::from_parts(1, 3))).await;
+    f.store
+        .append_user_message(
+            id,
+            session.head_seq,
+            &Message {
+                id: MessageId::from_ulid(Ulid::generate()),
+                role: MessageRole::User,
+                parts: vec![Part::Text {
+                    text: "continue".into(),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    f.step(id).await;
+    let events = f.store.read_events(id, 0, 64).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::ToolCallRequested { .. }))
+            .count(),
+        requests
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::InferenceRequested { .. }))
     );
 }

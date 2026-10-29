@@ -32,8 +32,8 @@ mod metrics_tests;
 mod session_wait;
 pub use interrupt::InterruptResult;
 pub use metrics::{
-    AgentMetrics, ComputerMetric, InferenceMetric, LatencyPercentiles, MetricPatch, StageTiming,
-    ToolMetric, TurnMetrics, WaitKind as MetricWaitKind, completion_patches, dispatch_patches,
+    AgentMetrics, ComputerMetric, InferenceMetric, LatencyPercentiles, MetricPatch, MetricWaitKind,
+    StageTiming, ToolMetric, TurnMetrics, completion_patches, dispatch_patches,
 };
 mod selection;
 mod services;

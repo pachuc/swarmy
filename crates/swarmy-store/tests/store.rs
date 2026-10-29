@@ -3192,7 +3192,7 @@ async fn wake_capacity_waits_wakes_only_capacity_waits() {
 }
 
 #[tokio::test]
-async fn interrupt_finishes_a_capacity_wait() {
+async fn interrupt_of_a_capacity_wait_hands_it_to_a_worker() {
     use swarmy_core::GpuRequirement;
     let Some(f) = TestStore::memory() else { return };
     let id = f.create().await;
@@ -3213,9 +3213,18 @@ async fn interrupt_finishes_a_capacity_wait() {
         .unwrap();
     assert_eq!(
         f.store.interrupt_session(id).await.unwrap(),
-        InterruptResult::Finished
+        InterruptResult::Requested
     );
-    assert!(f.store.session_wait(id).await.unwrap().is_none());
+    assert!(
+        f.store
+            .session_wait(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .capacity()
+            .is_some()
+    );
+    assert!(!f.store.finish_runnable_interrupt(id).await.unwrap());
     assert!(
         f.store
             .scan_due_waits(timestamp(1000))
@@ -3225,6 +3234,67 @@ async fn interrupt_finishes_a_capacity_wait() {
     );
     assert_eq!(
         f.store.fetch_session(id).await.unwrap().unwrap().state,
-        SessionState::Idle
+        SessionState::Runnable
+    );
+}
+
+#[tokio::test]
+async fn finished_turn_clears_a_capacity_wait() {
+    use swarmy_core::GpuRequirement;
+    use swarmy_store::CapacityPark;
+    let Some(f) = TestStore::memory() else { return };
+    let id = f.create().await;
+    let expiry = timestamp(4_102_444_800);
+    let lease = f.store.claim_lease(id, owner(), expiry).await.unwrap();
+    assert!(matches!(
+        f.store
+            .park_for_capacity(
+                id,
+                &lease,
+                GpuRequirement::None,
+                timestamp(100),
+                std::time::Duration::from_secs(60)
+            )
+            .await
+            .unwrap(),
+        CapacityPark::Parked { notice: Some(_) }
+    ));
+    assert!(f.store.wake_wait(id, timestamp(130)).await.unwrap());
+    let lease = f.store.claim_lease(id, owner(), expiry).await.unwrap();
+    let head = f.store.fetch_session(id).await.unwrap().unwrap().head_seq;
+    f.store
+        .finish_turn(
+            id,
+            head,
+            &lease,
+            &SnapshotRef {
+                object_key: "test-checkpoint".into(),
+                seq: head + 1,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(f.store.session_wait(id).await.unwrap().is_none());
+    f.store
+        .set_state(id, SessionState::Runnable, None, timestamp(200))
+        .await
+        .unwrap();
+    let lease = f.store.claim_lease(id, owner(), expiry).await.unwrap();
+    assert!(matches!(
+        f.store
+            .park_for_capacity(
+                id,
+                &lease,
+                GpuRequirement::None,
+                timestamp(200),
+                std::time::Duration::from_secs(60)
+            )
+            .await
+            .unwrap(),
+        CapacityPark::Parked { notice: Some(_) }
+    ));
+    assert_eq!(
+        f.store.session_wait(id).await.unwrap().unwrap().since,
+        timestamp(200)
     );
 }

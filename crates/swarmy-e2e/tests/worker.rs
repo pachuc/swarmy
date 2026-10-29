@@ -871,7 +871,7 @@ async fn missing_gateway_exhausts_wait_budget() {
 }
 
 #[tokio::test]
-async fn session_wait_budget_ends_a_turn_with_accumulated_reasons() {
+async fn inference_wait_budget_ends_a_turn_with_accumulated_reasons() {
     run(|f| {
         Box::pin(async move {
             f.max_wait_seconds = 3;

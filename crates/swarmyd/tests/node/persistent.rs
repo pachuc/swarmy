@@ -254,9 +254,25 @@ async fn check_requirement_release(store: &Store, bus: &Bus, node: &Node) {
     )
     .await;
     assert!(started["process_id"].is_string());
+    let job = dispatch(
+        store,
+        bus,
+        node.id,
+        agent,
+        "echo after-process >/persistent",
+    )
+    .await;
+    completed(store, &job).await;
     assert!(store.request_placement_release(agent).await.unwrap());
     evicted(store, agent).await;
-    let job = dispatch(store, bus, node.id, agent, "cat /persistent").await;
+    let job = dispatch(
+        store,
+        bus,
+        node.id,
+        agent,
+        r#"test "$(cat /persistent)" = after-process && ! pgrep -x sleep"#,
+    )
+    .await;
     completed(store, &job).await;
     let placement = store.get_by_agent(agent).await.unwrap().unwrap();
     assert_eq!(

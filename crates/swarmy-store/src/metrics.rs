@@ -19,8 +19,8 @@ pub(crate) use crate::metrics_codec::{
     StoredTurnSummaryCurrent,
 };
 pub use crate::metrics_model::{
-    AgentMetrics, ComputerMetric, InferenceMetric, LatencyPercentiles, MetricPatch, StageTiming,
-    ToolMetric, TurnMetrics, WaitKind, completion_patches, dispatch_patches,
+    AgentMetrics, ComputerMetric, InferenceMetric, LatencyPercentiles, MetricPatch, MetricWaitKind,
+    StageTiming, ToolMetric, TurnMetrics, completion_patches, dispatch_patches,
 };
 
 /// One queued observability write. Patches that share a turn are batched by

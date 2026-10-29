@@ -84,8 +84,9 @@ impl Scheduler {
             ))?;
         if session.state == SessionState::Runnable {
             if session.interrupt_requested {
-                self.finish_interrupt(session_id).await?;
-                return Ok(());
+                if self.finish_interrupt(session_id).await? {
+                    return Ok(());
+                }
             }
             if self
                 .park_for_breaker(session_id, &session, agent.as_ref(), breakers)
@@ -109,9 +110,9 @@ impl Scheduler {
 
     /// Finish an interrupt requested on a runnable session and publish its
     /// terminal event to live clients.
-    async fn finish_interrupt(&self, session_id: SessionId) -> Result<(), anyhow::Error> {
+    async fn finish_interrupt(&self, session_id: SessionId) -> Result<bool, anyhow::Error> {
         if !self.store.finish_runnable_interrupt(session_id).await? {
-            return Ok(());
+            return Ok(false);
         }
         let head = self
             .store
@@ -126,7 +127,7 @@ impl Scheduler {
                 .publish_live(swarmy_bus::LiveFeed::SessionEvents(session_id), &event)
                 .await?;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Park a runnable session while its route's breaker stays open, unless
@@ -180,7 +181,7 @@ impl Scheduler {
             }))
     }
 
-    /// Whether the inference wait outlasted the maximum gateway wait and the
+    /// Whether the session wait outlasted the maximum session wait and the
     /// session must run to observe the timeout.
     fn wait_expired(&self, wait: Option<&swarmy_store::SessionWait>) -> bool {
         wait.is_some_and(|wait| {
@@ -221,7 +222,7 @@ impl Scheduler {
         self.fire_due_timers(now).await
     }
 
-    /// Wake every inference wait whose deadline passed. A lost race with the
+    /// Wake every session wait whose deadline passed. A lost race with the
     /// gateway just nudges a session the worker will find already complete.
     async fn wake_due_waits(&self, now: Timestamp) -> Result<(), StoreError> {
         for id in self.store.scan_due_waits(now).await? {

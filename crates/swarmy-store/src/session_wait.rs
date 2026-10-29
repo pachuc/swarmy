@@ -114,7 +114,7 @@ enum WakeRule {
 }
 
 impl Store {
-    /// Read each session's state, inference wait, and lease in one transaction.
+    /// Read each session's state, session wait, and lease in one transaction.
     /// # Errors
     /// Returns missing-session, decoding, or storage failures.
     /// Test-only entry point, also available with the `test-support` feature.
@@ -150,7 +150,7 @@ impl Store {
         trx.clear(&self.keys().session_wait(id));
     }
 
-    /// Read a session's current inference wait and accumulated reasons.
+    /// Read a session's current wait of either kind.
     /// # Errors
     /// Returns storage failures.
     pub async fn session_wait(&self, id: SessionId) -> Result<Option<SessionWait>> {
@@ -241,7 +241,8 @@ impl Store {
         let mut wait = read::<SessionWait>(trx, &key)
             .await?
             .unwrap_or_else(|| SessionWait::inference_new(now, failure.wake_at));
-        if wait.inference().map_or(0, |h| h.last_failure_seq) != failure.seq {
+        let previous_seq = wait.inference().map_or(0, |h| h.last_failure_seq);
+        if previous_seq != failure.seq {
             let history = wait.inference_mut();
             history.attempts = history.attempts.saturating_add(1);
             history.record_reason(failure.reason);
@@ -250,7 +251,7 @@ impl Store {
             .since
             .checked_add(max_wait)
             .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
-        if wait.inference().map_or(0, |h| h.last_failure_seq) != 0 {
+        if previous_seq != 0 {
             self.clear_wait(trx, id, &wait);
         }
         wait.inference_mut().last_failure_seq = failure.seq;
@@ -300,7 +301,7 @@ impl Store {
         .await
     }
 
-    /// Wake a due sleeping session and remove its due index entry.
+    /// Wake a due sleeping session, remove its due index and set `wake_at` to now.
     /// # Errors
     /// Returns storage failures.
     pub async fn wake_wait(&self, id: SessionId, now: Timestamp) -> Result<bool> {

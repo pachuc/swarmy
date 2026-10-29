@@ -130,6 +130,7 @@ impl Store {
                     read::<swarmy_core::MessageId>(&trx, &turn_key),
                 )?;
                 crate::check_head(session.head_seq, expected_head)?;
+                self.clear_capacity_wait_in(&trx, id).await?;
                 if let Some(route) = route {
                     self.write_submit_route_step(&trx, id, &mut session, route, now)
                         .await?;

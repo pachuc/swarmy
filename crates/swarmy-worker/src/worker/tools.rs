@@ -18,7 +18,7 @@ enum StoreTool {
     Timer,
 }
 
-enum Dispatch<'a> {
+pub(super) enum Dispatch<'a> {
     Calls(&'a [ToolCallRecord]),
     Pending(&'a [ToolJob]),
 }
@@ -369,7 +369,7 @@ impl Worker {
         }
     }
 
-    async fn fail_dispatch(
+    pub(super) async fn fail_dispatch(
         &self,
         session: &mut SessionRecord,
         lease: &HeldLease,

@@ -692,7 +692,7 @@ async fn update_agent(
         .context("agent update timed out")?
         .map_err(|error| match &error {
             swarmy_client::Error::Api { body, .. } if body.code == "agent_computer_placed" => {
-                anyhow::anyhow!("the agent's computer is placed; retry after it is released")
+                anyhow::anyhow!("the memory requirement can only change after the agent's computer is released; a GPU change restarts it instead")
             }
             _ => swarmy_client::api_client::api_error(error, endpoint).into(),
         })

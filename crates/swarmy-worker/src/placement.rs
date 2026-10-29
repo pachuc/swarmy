@@ -108,6 +108,9 @@ pub(crate) async fn resolve_at(
                     .await?
                     .is_some_and(|node| swarmy_core::node_satisfies(&node, requirement))
             {
+                // A placement that raced the requirement change has no release
+                // request; ask for one so the node lets it go.
+                store.request_placement_release(agent).await?;
                 return Err(NoEligibleNode {
                     requirement,
                     rejection: None,
