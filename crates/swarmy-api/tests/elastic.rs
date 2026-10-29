@@ -312,3 +312,79 @@ async fn put_rejects_bad_primary_address_and_service_user(client: &reqwest::Clie
     )
     .await;
 }
+
+#[tokio::test]
+async fn put_records_autoscale_and_refuses_a_second_autoscaled_group() {
+    let Some(stack) = swarmy_testkit::Stack::load("api-elastic-autoscale") else {
+        return;
+    };
+    let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    let bus = Bus::connect(&stack.nats_url, Config::default())
+        .await
+        .unwrap();
+    let state = AppState::new(
+        store,
+        bus,
+        "test-token".into(),
+        swarmy_llm::catalog::Catalog::get().clone(),
+        Arc::new(object_store::memory::InMemory::new()),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1/swarm/groups", listener.local_addr().unwrap());
+    let task = tokio::spawn(axum::serve(listener, router(state)).into_future());
+    let client = reqwest::Client::new();
+    let mut body = group_body("autoscale-first");
+    body.autoscale = true;
+    let first = format!("{base}/gpu");
+    assert!(
+        client
+            .put(&first)
+            .bearer_auth("test-token")
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    let registered: ElasticGroup = client
+        .get(&first)
+        .bearer_auth("test-token")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(registered.autoscale);
+    body.idempotency_key = "autoscale-second".into();
+    assert_api_error(
+        client
+            .put(format!("{base}/gpu2"))
+            .bearer_auth("test-token")
+            .json(&body)
+            .send()
+            .await
+            .unwrap(),
+        400,
+        "invalid_elastic_group",
+    )
+    .await;
+    let changed: serde_json::Value = client
+        .put(format!("{first}/desired"))
+        .bearer_auth("test-token")
+        .json(&SetElasticDesired {
+            idempotency_key: "autoscale-desired".into(),
+            desired: 1,
+            reason: Some("manual".into()),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(changed["desired_reason"], "manual");
+    assert!(changed.get("desired_agent").is_none());
+    task.abort();
+}

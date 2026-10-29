@@ -154,3 +154,61 @@ async fn changing_identity_waits_for_reconciliation_even_when_empty() {
         "0.5"
     );
 }
+
+#[tokio::test]
+async fn only_one_group_autoscales() {
+    let Some(stack) = swarmy_testkit::Stack::load("elastic-autoscale") else {
+        return;
+    };
+    let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    let mut a = definition("a");
+    a.autoscale = true;
+    store.put_elastic_group(&a).await.unwrap();
+    let mut b = definition("b");
+    b.autoscale = true;
+    assert!(matches!(store.put_elastic_group(&b).await,
+        Err(StoreError::Domain(DomainError::InvalidElasticGroup(message))) if message.contains("group a already does")));
+    b.autoscale = false;
+    store.put_elastic_group(&b).await.unwrap();
+    a.autoscale = false;
+    store.put_elastic_group(&a).await.unwrap();
+    b.autoscale = true;
+    store.put_elastic_group(&b).await.unwrap();
+}
+
+#[tokio::test]
+async fn desired_cause_names_agent_and_session() {
+    let Some(stack) = swarmy_testkit::Stack::load("elastic-cause") else {
+        return;
+    };
+    let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    store.put_elastic_group(&definition("b")).await.unwrap();
+    let cause = swarmy_core::MachineCause {
+        agent: Some(swarmy_core::AgentId::from_ulid(ulid::Ulid::from(1_u128))),
+        session: Some(swarmy_core::SessionId::from_ulid(ulid::Ulid::from(2_u128))),
+        reason: "tasky 01X: y".into(),
+    };
+    store.set_elastic_desired("b", 1, &cause).await.unwrap();
+    assert_eq!(
+        store
+            .get_elastic_group("b")
+            .await
+            .unwrap()
+            .unwrap()
+            .desired_cause,
+        cause
+    );
+    store
+        .set_elastic_desired("b", 1, &swarmy_core::MachineCause::from_reason("other"))
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_elastic_group("b")
+            .await
+            .unwrap()
+            .unwrap()
+            .desired_cause,
+        cause
+    );
+}

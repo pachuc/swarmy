@@ -1070,3 +1070,18 @@ async fn failed_lower_machine_removes_healthy_ones_above_then_regrows() {
     f.reconciler.tick(&mut holder).await.unwrap();
     assert!(f.log().contains("apply machine_count=2"));
 }
+
+#[tokio::test]
+async fn machines_carry_the_desired_cause() {
+    let Some(f) = Fixture::new(true, 2).await else {
+        return;
+    };
+    let cause = swarmy_core::MachineCause {
+        agent: Some(AgentId::from_ulid(ulid::Ulid::from(1_u128))),
+        session: Some(SessionId::from_ulid(ulid::Ulid::from(2_u128))),
+        reason: "tasky 01X: y".into(),
+    };
+    f.store.set_elastic_desired("gpu", 1, &cause).await.unwrap();
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    assert_eq!(f.records().await[0].cause, cause);
+}

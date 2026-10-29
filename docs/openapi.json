@@ -3497,6 +3497,7 @@
           "sandboxes",
           "local_storage",
           "max",
+          "autoscale",
           "price_per_hour",
           "currency",
           "desired",
@@ -3513,6 +3514,9 @@
             "format": "int32",
             "minimum": 0
           },
+          "autoscale": {
+            "type": "boolean"
+          },
           "currency": {
             "type": "string"
           },
@@ -3521,8 +3525,22 @@
             "format": "int32",
             "minimum": 0
           },
+          "desired_agent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Agent whose waiting session caused the latest desired change, if any."
+          },
           "desired_reason": {
             "type": "string"
+          },
+          "desired_session": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Session that caused the latest desired change, if any."
           },
           "generation": {
             "type": "integer",
@@ -4925,6 +4943,10 @@
           "service_user"
         ],
         "properties": {
+          "autoscale": {
+            "type": "boolean",
+            "description": "Whether the provisioner scales this group for sessions waiting for a GPU."
+          },
           "currency": {
             "type": "string"
           },
