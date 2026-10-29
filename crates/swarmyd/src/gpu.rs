@@ -17,10 +17,29 @@ pub(crate) fn nvidia_smi() -> Command {
 }
 
 /// The fake wins without running the query. Otherwise any failure means no cards.
-pub(crate) async fn detect(fake: Option<&GpuCards>, mut query: Command) -> Option<GpuCards> {
+pub(crate) async fn detect(fake: Option<&GpuCards>, query: Command) -> Option<GpuCards> {
     if let Some(fake) = fake {
         return Some(fake.clone());
     }
+    let stdout = query_output(query).await?;
+    let cards = match std::str::from_utf8(&stdout)
+        .map_err(anyhow::Error::from)
+        .and_then(parse_cards)
+    {
+        Ok(cards) => cards,
+        Err(error) => {
+            tracing::warn!(error = %swarmy_core::error_chain(&*error), "GPU query output is malformed");
+            return None;
+        }
+    };
+    if let Some(cards) = &cards {
+        tracing::info!(model = %cards.model, memory_mib = cards.memory_mib, count = cards.count, "GPU cards detected");
+    }
+    cards
+}
+
+/// Run the bounded command and report why a node cannot advertise cards.
+async fn query_output(mut query: Command) -> Option<Vec<u8>> {
     query.stdin(Stdio::null()).kill_on_drop(true);
     let output = match tokio::time::timeout(Duration::from_secs(10), query.output()).await {
         Ok(Ok(output)) => output,
@@ -41,23 +60,10 @@ pub(crate) async fn detect(fake: Option<&GpuCards>, mut query: Command) -> Optio
         tracing::warn!(status = %output.status, stderr = %String::from_utf8_lossy(&output.stderr).trim(), "GPU query failed");
         return None;
     }
-    let cards = match std::str::from_utf8(&output.stdout)
-        .map_err(anyhow::Error::from)
-        .and_then(parse_cards)
-    {
-        Ok(cards) => cards,
-        Err(error) => {
-            tracing::warn!(error = %swarmy_core::error_chain(&*error), "GPU query output is malformed");
-            return None;
-        }
-    };
-    if let Some(cards) = &cards {
-        tracing::info!(model = %cards.model, memory_mib = cards.memory_mib, count = cards.count, "GPU cards detected");
-    }
-    cards
+    Some(output.stdout)
 }
 
-/// One card per line, "NAME, MEMORY_MIB". Blank output means no cards.
+/// One card per line, "NAME, `MEMORY_MIB`". Blank output means no cards.
 pub(crate) fn parse_cards(stdout: &str) -> Result<Option<GpuCards>> {
     let mut first: Option<GpuCards> = None;
     let mut ignored = 0_u32;
@@ -82,7 +88,7 @@ pub(crate) fn parse_cards(stdout: &str) -> Result<Option<GpuCards>> {
                     model: model.into(),
                     memory_mib,
                     count: 1,
-                })
+                });
             }
             Some(card) if card.model == model && card.memory_mib == memory_mib => card.count += 1,
             Some(_) => ignored += 1,

@@ -755,7 +755,7 @@ async fn gpu_agent(store: &Store, name: &str, mode: swarmy_core::GpuRequirement)
         .agent_id
 }
 
-fn gpu_unavailable(error: StoreError) {
+fn gpu_unavailable(error: &StoreError) {
     assert!(
         matches!(
             error,
@@ -789,7 +789,8 @@ async fn shared_gpu_sandboxes_share_a_card_node_and_never_land_without_one() {
     let empty = gpu_node(&test.store, 4, 0).await;
     let agent = gpu_agent(&test.store, "s4", swarmy_core::GpuRequirement::Shared).await;
     gpu_unavailable(
-        test.store
+        &test
+            .store
             .place(agent, empty.node_id, future(60))
             .await
             .unwrap_err(),
@@ -807,13 +808,15 @@ async fn dedicated_gpu_excludes_other_gpu_sandboxes_in_both_directions() {
     let shared = gpu_agent(&test.store, "s1", swarmy_core::GpuRequirement::Shared).await;
     let first = test.store.place(dedicated, node, future(60)).await.unwrap();
     gpu_unavailable(
-        test.store
+        &test
+            .store
             .place(shared, node, future(60))
             .await
             .unwrap_err(),
     );
     gpu_unavailable(
-        test.store
+        &test
+            .store
             .place(dedicated2, node, future(60))
             .await
             .unwrap_err(),
@@ -827,7 +830,8 @@ async fn dedicated_gpu_excludes_other_gpu_sandboxes_in_both_directions() {
     test.store.release(&first).await.unwrap();
     let shared_placement = test.store.place(shared, node, future(60)).await.unwrap();
     gpu_unavailable(
-        test.store
+        &test
+            .store
             .place(dedicated2, node, future(60))
             .await
             .unwrap_err(),
@@ -853,7 +857,8 @@ async fn gpu_takeover_readmits_on_the_new_node() {
     test.store.claim_placement(&first).await.unwrap();
     let expired = expire(&test, &first).await;
     gpu_unavailable(
-        test.store
+        &test
+            .store
             .take_over(&expired, cpu, future(60))
             .await
             .unwrap_err(),
@@ -873,7 +878,7 @@ async fn gpu_rejection_leaves_counts_unchanged() {
     };
     let node = gpu_node(&test.store, 2, 0).await.node_id;
     let agent = gpu_agent(&test.store, "s1", swarmy_core::GpuRequirement::Shared).await;
-    gpu_unavailable(test.store.place(agent, node, future(60)).await.unwrap_err());
+    gpu_unavailable(&test.store.place(agent, node, future(60)).await.unwrap_err());
     assert_eq!(test.store.committed_memory(node).await.unwrap(), 0);
     let cpu = test
         .store

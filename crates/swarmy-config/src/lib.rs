@@ -1343,7 +1343,7 @@ mod tests {
         assert_eq!(decoded.node.fake_gpu, settings.node.fake_gpu);
         let mut invalid = Settings::default();
         invalid.node.fake_gpu = Some(swarmy_core::GpuCards {
-            model: "".into(),
+            model: String::new(),
             memory_mib: 1,
             count: 1,
         });

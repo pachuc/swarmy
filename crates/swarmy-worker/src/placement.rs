@@ -234,7 +234,7 @@ mod tests {
         order_candidates(
             &mut nodes,
             GpuRequirement::None,
-            Some(nodes[0].node_id),
+            Some(node(1, true).node_id),
             None,
         );
         assert_eq!(
