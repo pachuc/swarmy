@@ -20,7 +20,7 @@ pub struct SshNodes {
 }
 impl SshNodes {
     /// # Errors
-    /// The installed core or loaded FoundationDB library is missing.
+    /// The installed core or loaded `FoundationDB` library is missing.
     pub fn installed() -> anyhow::Result<Self> {
         Ok(Self {
             ssh: Ssh::new(ssh::Binaries::installed()?),

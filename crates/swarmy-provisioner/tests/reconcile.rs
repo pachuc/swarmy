@@ -890,9 +890,9 @@ async fn scale_down_case(unreachable: bool) {
 }
 #[tokio::test]
 async fn scale_down_drains_and_revokes_before_destroying() {
-    scale_down_case(false).await
+    scale_down_case(false).await;
 }
 #[tokio::test]
 async fn unreachable_node_is_still_destroyed() {
-    scale_down_case(true).await
+    scale_down_case(true).await;
 }

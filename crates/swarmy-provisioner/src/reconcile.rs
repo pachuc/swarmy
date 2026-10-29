@@ -8,10 +8,10 @@
 //! | S4 | Provisioning or Joined | no | Orphaned |
 //! | S5 | Draining | no | Destroyed |
 //! | S6 | Failed in state | yes | Lower target below that machine |
-//! | J1 | Provisioning, no provisioned_at | yes | Provision over SSH, then Provisioned |
-//! | J2 | Provisioning, provisioned_at set, node registered | yes | Joined, wake capacity waits |
-//! | J3 | Provisioning past JOIN_TIMEOUT | yes | Failed |
-//! | D1 | Provisioning, Joined, Draining or Failed at or above lowest removed | yes | DrainRequested if needed, drain and revoke before apply |
+//! | J1 | Provisioning, no `provisioned_at` | yes | Provision over SSH, then Provisioned |
+//! | J2 | Provisioning, `provisioned_at` set, node registered | yes | Joined, wake capacity waits |
+//! | J3 | Provisioning past `JOIN_TIMEOUT` | yes | Failed |
+//! | D1 | Provisioning, Joined, Draining or Failed at or above lowest removed | yes | `DrainRequested` if needed, drain and revoke before apply |
 //! | S7 | Failed or Orphaned | no | None |
 //! | S8 | No active record | yes | Adopt as Creating, Created |
 //!
@@ -66,6 +66,11 @@ pub struct Reconciler {
     nodes: Option<Arc<dyn crate::Nodes>>,
     bucket: Option<swarmy_config::BucketSpec>,
     join_errors: Mutex<BTreeMap<MachineId, String>>,
+}
+enum GroupProgress {
+    Standby,
+    Skip,
+    Join(Option<Outcome>),
 }
 pub struct Holder {
     owner: LeaseOwnerId,
@@ -152,47 +157,61 @@ impl Reconciler {
         }
         let mut outcomes = Vec::new();
         for record in self.store.list_elastic_groups().await? {
-            if !self.backing_off(&record) {
-                match self.drain_removed(holder, &record).await {
-                    Ok(true) => {}
-                    Ok(false) => return Ok(Tick::Standby),
-                    Err(error) => {
-                        tracing::error!(group = %record.definition.group, error = %swarmy_core::error_chain(error.as_ref()), "elastic drain failed");
-                        self.delay_retry(&record);
-                        continue;
-                    }
-                }
-                if !record.settled()
-                    || record.applied != record.desired
-                    || self.holds_failed(&record).await?
-                {
-                    let Some(lease) = self.hold(holder).await? else {
-                        return Ok(Tick::Standby);
-                    };
-                    match self.reconcile(&lease, &record).await {
-                        Ok(outcome) => {
-                            self.retry
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .remove(&record.definition.group);
-                            outcomes.push(outcome);
-                        }
-                        Err(error) => {
-                            tracing::error!(group = %record.definition.group, error = %swarmy_core::error_chain(error.as_ref()), "elastic reconcile failed");
-                            self.delay_retry(&record);
-                        }
-                    }
-                }
+            match self.apply_group(holder, &record).await? {
+                GroupProgress::Standby => return Ok(Tick::Standby),
+                GroupProgress::Skip => continue,
+                GroupProgress::Join(outcome) => outcomes.extend(outcome),
             }
             match self.join_pending(holder, &record.definition.group).await {
                 Ok(true) => {}
                 Ok(false) => return Ok(Tick::Standby),
                 Err(error) => {
-                    tracing::error!(group = %record.definition.group, error = %swarmy_core::error_chain(error.as_ref()), "elastic join failed")
+                    tracing::error!(group = %record.definition.group, error = %swarmy_core::error_chain(error.as_ref()), "elastic join failed");
                 }
             }
         }
         Ok(Tick::Reconciled(outcomes))
+    }
+    async fn apply_group(
+        &self,
+        holder: &mut Holder,
+        record: &ElasticGroupRecord,
+    ) -> Result<GroupProgress> {
+        if self.backing_off(record) {
+            return Ok(GroupProgress::Join(None));
+        }
+        match self.drain_removed(holder, record).await {
+            Ok(true) => {}
+            Ok(false) => return Ok(GroupProgress::Standby),
+            Err(error) => {
+                tracing::error!(group = %record.definition.group, error = %swarmy_core::error_chain(error.as_ref()), "elastic drain failed");
+                self.delay_retry(record);
+                return Ok(GroupProgress::Skip);
+            }
+        }
+        if record.settled()
+            && (self.nodes.is_none() || record.applied == record.desired)
+            && !self.holds_failed(record).await?
+        {
+            return Ok(GroupProgress::Join(None));
+        }
+        let Some(lease) = self.hold(holder).await? else {
+            return Ok(GroupProgress::Standby);
+        };
+        match self.reconcile(&lease, record).await {
+            Ok(outcome) => {
+                self.retry
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&record.definition.group);
+                Ok(GroupProgress::Join(Some(outcome)))
+            }
+            Err(error) => {
+                tracing::error!(group = %record.definition.group, error = %swarmy_core::error_chain(error.as_ref()), "elastic reconcile failed");
+                self.delay_retry(record);
+                Ok(GroupProgress::Join(None))
+            }
+        }
     }
     fn backing_off(&self, record: &ElasticGroupRecord) -> bool {
         self.retry
@@ -291,40 +310,51 @@ impl Reconciler {
             if self.hold(holder).await?.is_none() {
                 return Ok(false);
             }
-            if matches!(
-                victim.state,
-                MachineState::Provisioning | MachineState::Joined
-            ) {
-                self.transition(&victim, MachineTransition::DrainRequested)
-                    .await?;
-            }
-            let Some(output) = outputs.iter().find(|m| m.name == victim.name) else {
-                tracing::warn!(name = %victim.name, "machine missing from state before drain");
-                continue;
-            };
-            let host = groups::recorded_host(
-                &def.group,
-                output,
-                &groups::group_key_path(&self.data_dir, &def.group),
-            )?;
-            let node = self.node_machine(def, &victim, output)?;
-            match nodes.drain(&node, DRAIN_TIMEOUT).await {
-                Ok(drain) => {
-                    tracing::info!(name = %victim.name, stopped = drain.stopped, busy = ?drain.busy, unreleased = ?drain.unreleased, "elastic node drained")
-                }
-                Err(error) => {
-                    tracing::warn!(name = %victim.name, error = %swarmy_core::error_chain(error.as_ref()), "could not reach node to drain it; removing without draining")
-                }
-            }
-            if let Err(error) = nodes.revoke(&node, &local_primary(def)).await {
-                tracing::warn!(name = %victim.name, error = %swarmy_core::error_chain(error.as_ref()), "could not revoke tunnel key; stale forwarding-only line is inert");
-            }
-            swarmy_core::ignore_best_effort(
-                ssh::forget_host_key(&host.public_address, &host.ssh_key),
-                "forget removed node host key",
-            );
+            self.drain_one(nodes.as_ref(), def, &victim, &outputs)
+                .await?;
         }
         Ok(true)
+    }
+    async fn drain_one(
+        &self,
+        nodes: &dyn crate::Nodes,
+        def: &ElasticGroupDefinition,
+        victim: &MachineRecord,
+        outputs: &[Machine],
+    ) -> Result<()> {
+        if matches!(
+            victim.state,
+            MachineState::Provisioning | MachineState::Joined
+        ) {
+            self.transition(victim, MachineTransition::DrainRequested)
+                .await?;
+        }
+        let Some(output) = outputs.iter().find(|m| m.name == victim.name) else {
+            tracing::warn!(name = %victim.name, "machine missing from state before drain");
+            return Ok(());
+        };
+        let host = groups::recorded_host(
+            &def.group,
+            output,
+            &groups::group_key_path(&self.data_dir, &def.group),
+        )?;
+        let node = self.node_machine(def, victim, output)?;
+        match nodes.drain(&node, DRAIN_TIMEOUT).await {
+            Ok(drain) => {
+                tracing::info!(name = %victim.name, stopped = drain.stopped, busy = ?drain.busy, unreleased = ?drain.unreleased, "elastic node drained");
+            }
+            Err(error) => {
+                tracing::warn!(name = %victim.name, error = %swarmy_core::error_chain(error.as_ref()), "could not reach node to drain it; removing without draining");
+            }
+        }
+        if let Err(error) = nodes.revoke(&node, &local_primary(def)).await {
+            tracing::warn!(name = %victim.name, error = %swarmy_core::error_chain(error.as_ref()), "could not revoke tunnel key; stale forwarding-only line is inert");
+        }
+        swarmy_core::ignore_best_effort(
+            ssh::forget_host_key(&host.public_address, &host.ssh_key),
+            "forget removed node host key",
+        );
+        Ok(())
     }
     async fn join_pending(&self, holder: &mut Holder, group: &str) -> Result<bool> {
         let Some(nodes) = &self.nodes else {
@@ -353,73 +383,81 @@ impl Reconciler {
             if self.hold(holder).await?.is_none() {
                 return Ok(false);
             }
-            let now = self.store.now();
-            let Some(created) = machine.created_at else {
-                continue;
-            };
-            let deadline = created + JOIN_TIMEOUT;
-            if now >= deadline {
-                let last = self
-                    .join_errors
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&machine.machine_id)
-                    .unwrap_or_else(|| "none recorded since the provisioner started".into());
-                let detail =
-                    format!("did not join within 15 minutes of creation; last error: {last}");
-                tracing::warn!(name = %machine.name, detail, "elastic join timed out");
-                self.transition(&machine, MachineTransition::Failed { detail })
-                    .await?;
-                continue;
-            }
-            if machine.provisioned_at.is_none() {
-                let Some(output) = outputs.iter().find(|m| m.name == machine.name) else {
-                    continue;
-                };
-                let node = self.node_machine(def, &machine, output)?;
-                let remaining =
-                    Duration::try_from(deadline.duration_since(now)).unwrap_or_default();
-                match tokio::time::timeout(remaining, nodes.join(&node, &local_primary(def))).await
-                {
-                    Ok(Ok(())) => {
-                        self.transition(&machine, MachineTransition::Provisioned)
-                            .await?
-                    }
-                    result => {
-                        let detail = match result {
-                            Ok(Err(error)) => swarmy_core::error_chain(error.as_ref()),
-                            _ => "join attempt timed out".into(),
-                        };
-                        tracing::warn!(name = %machine.name, detail, "elastic join failed");
-                        self.join_errors
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .insert(machine.machine_id, detail);
-                        continue;
-                    }
-                }
-            }
-            let node_id = machine.machine_id.joined_node_id();
-            if self.store.get_node(node_id).await?.is_some() {
-                self.transition(&machine, MachineTransition::Joined { node_id })
-                    .await?;
-                self.join_errors
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&machine.machine_id);
-                let woken = self.store.wake_capacity_waits(self.store.now()).await?;
-                tracing::info!(name = %machine.name, %node_id, woken = woken.len(), "elastic node joined");
-            } else {
-                self.join_errors
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(
-                        machine.machine_id,
-                        format!("provisioning finished but node {node_id} has not registered"),
-                    );
-            }
+            self.join_one(nodes.as_ref(), def, &machine, &outputs)
+                .await?;
         }
         Ok(true)
+    }
+    async fn join_one(
+        &self,
+        nodes: &dyn crate::Nodes,
+        def: &ElasticGroupDefinition,
+        machine: &MachineRecord,
+        outputs: &[Machine],
+    ) -> Result<()> {
+        let now = self.store.now();
+        let Some(created) = machine.created_at else {
+            return Ok(());
+        };
+        let deadline = created + JOIN_TIMEOUT;
+        if now >= deadline {
+            let last = self
+                .join_errors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&machine.machine_id)
+                .unwrap_or_else(|| "none recorded since the provisioner started".into());
+            let detail = format!("did not join within 15 minutes of creation; last error: {last}");
+            tracing::warn!(name = %machine.name, detail, "elastic join timed out");
+            self.transition(machine, MachineTransition::Failed { detail })
+                .await?;
+            return Ok(());
+        }
+        if machine.provisioned_at.is_none() {
+            let Some(output) = outputs.iter().find(|m| m.name == machine.name) else {
+                return Ok(());
+            };
+            let node = self.node_machine(def, machine, output)?;
+            let remaining = Duration::try_from(deadline.duration_since(now)).unwrap_or_default();
+            match tokio::time::timeout(remaining, nodes.join(&node, &local_primary(def))).await {
+                Ok(Ok(())) => {
+                    self.transition(machine, MachineTransition::Provisioned)
+                        .await?;
+                }
+                result => {
+                    let detail = match result {
+                        Ok(Err(error)) => swarmy_core::error_chain(error.as_ref()),
+                        _ => "join attempt timed out".into(),
+                    };
+                    tracing::warn!(name = %machine.name, detail, "elastic join failed");
+                    self.join_errors
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(machine.machine_id, detail);
+                    return Ok(());
+                }
+            }
+        }
+        let node_id = machine.machine_id.joined_node_id();
+        if self.store.get_node(node_id).await?.is_some() {
+            self.transition(machine, MachineTransition::Joined { node_id })
+                .await?;
+            self.join_errors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&machine.machine_id);
+            let woken = self.store.wake_capacity_waits(self.store.now()).await?;
+            tracing::info!(name = %machine.name, %node_id, woken = woken.len(), "elastic node joined");
+        } else {
+            self.join_errors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(
+                    machine.machine_id,
+                    format!("provisioning finished but node {node_id} has not registered"),
+                );
+        }
+        Ok(())
     }
     async fn hold(&self, holder: &mut Holder) -> Result<Option<Lease>> {
         let now = self.store.now();
