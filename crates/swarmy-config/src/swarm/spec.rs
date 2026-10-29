@@ -417,17 +417,6 @@ impl SwarmSpec {
                 "placement.nodes must name at least one group".into(),
             ));
         }
-        for (g, group) in &self.groups {
-            if group.elastic
-                && (!self.placement.nodes.contains(g)
-                    || self.placement.stack == *g
-                    || self.placement.services == *g)
-            {
-                return Err(Error::Spec(format!(
-                    "group \"{g}\" is elastic, so it must be listed in placement.nodes and run neither the stack nor the services"
-                )));
-            }
-        }
         let mut seen = BTreeSet::new();
         for g in &self.placement.nodes {
             let Some(group) = self.groups.get(g) else {
@@ -443,6 +432,17 @@ impl SwarmSpec {
             if group.module == Module::Local {
                 return Err(Error::Spec(format!(
                     "placement.nodes: group \"{g}\" is local; this machine can run the stack or the services, not nodes"
+                )));
+            }
+        }
+        for (g, group) in &self.groups {
+            if group.elastic
+                && (!self.placement.nodes.contains(g)
+                    || self.placement.stack == *g
+                    || self.placement.services == *g)
+            {
+                return Err(Error::Spec(format!(
+                    "group \"{g}\" is elastic, so it must be listed in placement.nodes and run neither the stack nor the services"
                 )));
             }
         }
