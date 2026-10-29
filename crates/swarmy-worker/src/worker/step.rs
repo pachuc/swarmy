@@ -229,6 +229,12 @@ impl Worker {
                         .await;
                 }
                 Action::DispatchTools(calls) => {
+                    if self
+                        .refuse_mixed_gpu_batch(session, lease, events, &calls)
+                        .await?
+                    {
+                        continue;
+                    }
                     let display = self.session_display(session).await?;
                     if self.store.ensure_session_computer(id).await.is_ok()
                         && calls

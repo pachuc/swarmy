@@ -2532,9 +2532,13 @@
           "description",
           "image",
           "created_at",
-          "requirements"
+          "requirements",
+          "allow_gpu_request"
         ],
         "properties": {
+          "allow_gpu_request": {
+            "type": "boolean"
+          },
           "call_status": {
             "oneOf": [
               {
@@ -2566,6 +2570,16 @@
             "items": {
               "$ref": "#/components/schemas/EntryUsageView"
             }
+          },
+          "gpu_request": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GpuRequestView"
+              }
+            ]
           },
           "id": {
             "type": "string"
@@ -3009,6 +3023,12 @@
           "image"
         ],
         "properties": {
+          "allow_gpu_request": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "description": {
             "type": "string"
           },
@@ -3886,6 +3906,26 @@
           "shared",
           "dedicated"
         ]
+      },
+      "GpuRequestView": {
+        "type": "object",
+        "description": "The cause of an agent's current self-requested GPU requirement.",
+        "required": [
+          "reason",
+          "requested_at",
+          "session_id"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "requested_at": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        }
       },
       "HealthResponse": {
         "type": "object",
@@ -5688,6 +5728,12 @@
           "idempotency_key"
         ],
         "properties": {
+          "allow_gpu_request": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "clear_github_token": {
             "type": "boolean"
           },

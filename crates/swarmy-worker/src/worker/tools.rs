@@ -16,6 +16,7 @@ pub(super) enum DispatchOutcome {
 enum StoreTool {
     Plan,
     Timer,
+    Gpu,
 }
 
 pub(super) enum Dispatch<'a> {
@@ -58,6 +59,7 @@ impl Worker {
         match tool {
             "update_plan" => Some(StoreTool::Plan),
             "set_timer" | "list_timers" | "cancel_timer" => Some(StoreTool::Timer),
+            name if swarmy_core::is_gpu_tool(name) => Some(StoreTool::Gpu),
             _ => None,
         }
     }
@@ -208,6 +210,21 @@ impl Worker {
                         call,
                     )
                     .await?
+            }
+            Some(StoreTool::Gpu) => {
+                let result = self
+                    .store
+                    .complete_gpu_tool(
+                        session.session_id,
+                        session.head_seq,
+                        token,
+                        request_id,
+                        call,
+                    )
+                    .await;
+                // Invalidate even on error: a commit-unknown failure may have changed the requirement.
+                self.placements.invalidate(session.agent_id).await;
+                result?
             }
             None => anyhow::bail!("not a store tool: {}", call.tool),
         };
@@ -367,6 +384,32 @@ impl Worker {
                 Ok(DispatchOutcome::Failed)
             }
         }
+    }
+
+    /// Refuse every call in a mixed GPU response in a single append.
+    pub(super) async fn refuse_mixed_gpu_batch(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        events: &mut Vec<Event>,
+        calls: &[ToolCallRecord],
+    ) -> Result<bool> {
+        if calls.len() > 1
+            && calls
+                .iter()
+                .any(|call| swarmy_core::is_gpu_tool(&call.tool))
+        {
+            self.fail_dispatch(
+                session,
+                lease,
+                events,
+                &Dispatch::Calls(calls),
+                swarmy_core::GPU_TOOL_NOT_ALONE,
+            )
+            .await?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     pub(super) async fn fail_dispatch(

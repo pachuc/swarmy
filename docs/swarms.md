@@ -471,7 +471,10 @@ still share it. Dedicated reserves the node's whole set of cards, not individual
 cards. A GPU requirement overrides local scratch preference, so moving from a
 scratch host may require a cold cargo target. If no node qualifies, the step
 parks the session in a durable capacity wait, as described in
-[When no node has room](#when-no-node-has-room).
+[When no node has room](#when-no-node-has-room). An agent allowed with
+`--allow-gpu-request true` can change the requirement itself with the
+`request_gpu` and `release_gpu` tools
+([agents that ask for a GPU](agent-lifecycle.md#agents-that-ask-for-a-gpu)).
 
 For tests and dev stacks only, `[node.fake_gpu]` with `model`, `memory_mib`, and
 `count` or `SWARMY_NODE_FAKE_GPU="MODEL,MEMORY_MIB,COUNT"` advertises fake cards

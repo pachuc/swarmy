@@ -70,6 +70,7 @@ pub mod objects;
 mod placed_tools;
 mod placements;
 pub use placements::ScratchRecord;
+mod gpu_tools;
 mod plans;
 mod session_images;
 mod timers;

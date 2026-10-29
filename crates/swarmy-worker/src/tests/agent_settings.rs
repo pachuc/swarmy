@@ -149,6 +149,7 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
                         memory_mib: None,
                         gpu: None,
                         route: None,
+                        allow_gpu_request: None,
                     }),
                     ..Default::default()
                 }),
@@ -175,6 +176,7 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
                     memory_mib: None,
                     gpu: None,
                     route: None,
+                    allow_gpu_request: None,
                 },
                 &[],
             )

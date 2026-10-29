@@ -93,6 +93,8 @@ impl Store {
                     reasoning_effort: settings.reasoning_effort,
                     provider: settings.provider.clone(),
                     route: settings.route.clone(),
+                    allow_gpu_request: settings.allow_gpu_request.unwrap_or(false),
+                    gpu_request: None,
                     requirements: swarmy_core::SandboxRequirements {
                         memory_mib: settings.memory_mib.or(default_memory).unwrap_or(768),
                         gpu: settings.gpu.unwrap_or_default(),
@@ -235,22 +237,36 @@ impl Store {
             }
             let previous_requirements = agent.requirements;
             settings.apply_to(&mut agent, resets);
-            if agent.requirements != previous_requirements
-                && read::<swarmy_core::PlacementRecord>(&trx, &self.keys().placement(id))
-                    .await?
-                    .is_some()
-            {
-                if agent.requirements.memory_mib != previous_requirements.memory_mib {
-                    return Err(StoreError::Domain(
-                        crate::DomainError::ActiveSandboxRequirements,
-                    ));
-                }
-                self.request_release_in(&trx, id).await?;
-            }
-            write(&trx, &self.keys().agent(id), &agent)?;
+            self.write_agent_requirements_in(&trx, &agent, previous_requirements)
+                .await?;
             Ok(agent)
         })
         .await
+    }
+
+    /// Write an agent whose sandbox requirements may differ from `previous`. A GPU
+    /// change asks the hosting node to release a placed computer; a memory change is
+    /// refused while the computer is placed. Agent settings and the GPU tools both
+    /// write through here so a requirement change has one implementation.
+    pub(crate) async fn write_agent_requirements_in(
+        &self,
+        trx: &Transaction,
+        agent: &AgentRecord,
+        previous: swarmy_core::SandboxRequirements,
+    ) -> Result<()> {
+        if agent.requirements != previous
+            && read::<swarmy_core::PlacementRecord>(trx, &self.keys().placement(agent.agent_id))
+                .await?
+                .is_some()
+        {
+            if agent.requirements.memory_mib != previous.memory_mib {
+                return Err(StoreError::Domain(
+                    crate::DomainError::ActiveSandboxRequirements,
+                ));
+            }
+            self.request_release_in(trx, agent.agent_id).await?;
+        }
+        write(trx, &self.keys().agent(agent.agent_id), agent)
     }
 
     /// Delete the identity and its computer atomically, retaining its sessions.
@@ -874,6 +890,8 @@ mod tests {
             provider: None,
             route: None,
             requirements: swarmy_core::SandboxRequirements::default(),
+            allow_gpu_request: false,
+            gpu_request: None,
         };
         let bytes = encode(&record).unwrap();
         assert_eq!(
@@ -884,9 +902,21 @@ mod tests {
                 101, 4, 116, 101, 115, 116, 26, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
                 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 0, 20, 49, 57, 55, 48, 45, 48,
                 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90, 0, 0, 0, 0, 0, 128, 6, 0,
-                0
+                0, 0, 0
             ]
         );
         assert_eq!(decode::<AgentRecord>(&bytes).unwrap(), record);
+        let mut requested = record;
+        requested.allow_gpu_request = true;
+        requested.gpu_request = Some(swarmy_core::GpuRequest {
+            reason: "r".into(),
+            requested_at: Timestamp::UNIX_EPOCH,
+            session_id: SessionId::from_ulid(ulid::Ulid::from(0_u128)),
+        });
+        let encoded = encode(&requested).unwrap();
+        assert_eq!(decode::<AgentRecord>(&encoded).unwrap(), requested);
+        // Postcard places the timestamp and session ID after the reason, so
+        // these bytes start the appended fields rather than ending the record.
+        assert_eq!(&encoded[bytes.len() - 2..bytes.len() + 2], [1, 1, 1, 114]);
     }
 }
