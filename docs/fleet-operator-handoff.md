@@ -128,7 +128,7 @@ export GH_TOKEN=$(grep -E '^(github_token|token)' scripts/fleet/fleet.toml | hea
   `fleet release` and `fleet kill` reset the worker to `--gpu none
   --allow-gpu-request false`, so it goes back to hz. `fleet status` shows
   node, card, GPU mode, capacity waits, and the cost of machines charged to
-  the task, joined by a `tasky <id>` reason or by the worker being on the
+  the task, joined by a `tasky <id>` reason (also for `--gpu` launches, whose agent carries `tasky <FULL_ID>: launched with --gpu`) or by the worker being on the
   machine.
 - The `hz` cluster's credential store holds only the OpenRouter key. Before
   workers can use the ChatGPT subscription, import the owner's credential

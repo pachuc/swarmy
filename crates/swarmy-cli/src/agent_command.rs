@@ -28,6 +28,9 @@ pub(crate) struct InferenceArgs {
     /// GPU requirement for placement; changing it restarts a placed computer on a node that satisfies it
     #[arg(long, value_enum)]
     pub gpu: Option<GpuArg>,
+    /// Why this GPU requirement is set (1-500 characters); shown in `agent show` and used as an autoscaled machine's cause. Needs --gpu shared or dedicated
+    #[arg(long, requires = "gpu", value_name = "TEXT")]
+    pub gpu_reason: Option<String>,
     /// Let the agent change its own GPU requirement with `request_gpu` and `release_gpu`
     #[arg(long, value_name = "true|false", value_parser = clap::value_parser!(bool))]
     pub allow_gpu_request: Option<bool>,
@@ -112,6 +115,36 @@ fn agent_name(name: &str) -> Result<String, String> {
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use clap::Parser;
+
+    #[test]
+    fn gpu_reason_requires_gpu_on_create_and_set() {
+        for command in ["create", "set"] {
+            assert!(
+                crate::Cli::try_parse_from([
+                    "swarmy",
+                    "agent",
+                    command,
+                    "tommy",
+                    "--gpu",
+                    "shared",
+                    "--gpu-reason",
+                    "tasky X: launched with --gpu"
+                ])
+                .is_ok()
+            );
+            assert!(
+                crate::Cli::try_parse_from([
+                    "swarmy",
+                    "agent",
+                    command,
+                    "tommy",
+                    "--gpu-reason",
+                    "x"
+                ])
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn agent_inference_flags_validate_without_connecting_to_the_stack() {

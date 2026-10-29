@@ -14,6 +14,7 @@ HEAD = "1" * 40
 SQUASH = "2" * 40
 FULL = "01M38DCQ5BFPXNPNF0NWEWR2HD"
 GPU_REASON = "tasky " + FULL + ": <why you need the GPU>"
+LAUNCH_REASON = "tasky " + FULL + ": launched with --gpu"
 
 
 def machine(machine_id, node_id, reason, agents, micros):
@@ -36,9 +37,11 @@ def ledger(*machines):
                        "machines": list(machines), "totals": []})
 
 
-def gpu_agent(gpu, allow, node=None):
+def gpu_agent(gpu, allow, node=None, reason=None):
     """AGENT_EXTRA for an agent with this GPU state and optional placement."""
     extra = {"requirements": {"memory_mib": 512, "gpu": gpu}, "allow_gpu_request": allow}
+    if reason:
+        extra["gpu_request"] = {"reason": reason, "requested_at": "2026-10-29T12:00:00Z"}
     if node:
         extra["placement"] = {"node_id": node, "epoch": 3, "gpu": gpu}
     return json.dumps(extra)
@@ -235,6 +238,7 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(create[create.index("--gpu") + 1], "shared")
         self.assertEqual(create[create.index("--allow-gpu-request") + 1], "true")
         self.assertEqual(self.sets(), [])
+        self.assertEqual(create[create.index("--gpu-reason") + 1], LAUNCH_REASON)
         state = json.loads((self.root / "state" / "ewr2hd.json").read_text())
         self.assertEqual(state["gpu"], "shared")
         self.assertIs(state["allow_gpu"], True)
@@ -247,6 +251,7 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         create = self.creates()[1]
         self.assertEqual(create[create.index("--gpu") + 1], "none")
+        self.assertNotIn("--gpu-reason", create)
         self.assertEqual(create[create.index("--allow-gpu-request") + 1], "false")
         full_prompt = (self.root / "prompt-worker-2").read_text()
         self.assertIn("Test plan:\nRun widget test\n\nRead the repository's AGENTS.md", full_prompt)
@@ -286,7 +291,7 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(self.creates()), 1)
         self.assertEqual(self.sets(), [["agent", "set", "worker-1", "--gpu", "dedicated",
-                                        "--allow-gpu-request", "true"]])
+                                        "--allow-gpu-request", "true", "--gpu-reason", LAUNCH_REASON]])
 
     def test_release_and_kill_reset_the_gpu_and_skip_a_worker_without_one(self):
         self.assertEqual(self.call("launch", "EWR2HD", "--gpu", "shared", "--allow-gpu").returncode, 0)
@@ -295,6 +300,7 @@ class FleetTests(unittest.TestCase):
         self.assertIn("its GPU requirement is back to none", result.stdout)
         reset = ["agent", "set", "worker-1", "--gpu", "none", "--allow-gpu-request", "false"]
         self.assertEqual(self.sets()[-1], reset)
+        self.assertNotIn("--gpu-reason", self.sets()[-1])
         self.assertEqual(json.loads((self.root / "state" / "workers.json").read_text()), {"worker-1": None})
         self.assertEqual(self.call("launch", "AAAAA2").returncode, 0)
         before = len(self.sets())
@@ -307,6 +313,20 @@ class FleetTests(unittest.TestCase):
                            env=dict(self.env, AGENT_EXTRA=gpu_agent("dedicated", False)))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.sets()[-1], reset)
+        self.assertNotIn("--gpu-reason", self.sets()[-1])
+
+    def test_reused_worker_with_another_tasks_gpu_reason_is_set_again(self):
+        self.assertEqual(self.call("launch", "AAAAA1").returncode, 0)
+        self.assertEqual(self.call("release", "AAAAA1", "--force").returncode, 0)
+        same = dict(self.env, AGENT_EXTRA=gpu_agent("shared", False, reason=LAUNCH_REASON))
+        self.assertEqual(self.call("launch", "EWR2HD", "--gpu", "shared", env=same).returncode, 0)
+        self.assertEqual(self.sets(), [])
+        self.assertEqual(self.call("release", "EWR2HD", "--force", env=same).returncode, 0)
+        earlier = "tasky 01M38DCQ5BFPXNPNF0NWAAAAAA: launched with --gpu"
+        old = dict(self.env, AGENT_EXTRA=gpu_agent("shared", False, reason=earlier))
+        self.assertEqual(self.call("launch", "AAAAA2", "--gpu", "shared", env=old).returncode, 0)
+        self.assertEqual(self.sets()[-1], ["agent", "set", "worker-1", "--gpu", "shared",
+                                          "--allow-gpu-request", "false", "--gpu-reason", LAUNCH_REASON])
 
     def test_status_shows_node_card_gpu_and_charged_machine_cost(self):
         self.assertEqual(self.call("launch", "EWR2HD", "--gpu", "shared", "--allow-gpu").returncode, 0)
@@ -332,6 +352,9 @@ class FleetTests(unittest.TestCase):
 
     def test_machine_join_cost_and_card_helpers(self):
         mod = self.driver()
+        self.assertEqual(mod.gpu_args("none", False, None), ["--gpu", "none", "--allow-gpu-request", "false"])
+        self.assertEqual(mod.gpu_args("shared", True, LAUNCH_REASON)[-2:], ["--gpu-reason", LAUNCH_REASON])
+        self.assertEqual(mod.task_machines([machine("m-9", None, LAUNCH_REASON, [], 1)], FULL, None)[0]["id"], "m-9")
         ms = [machine("m-1", "node-1", "autoscale: 1 session waiting", ["01AGENT"], 1_500_000),
               machine("m-2", None, "tasky " + FULL + ": render", [], 250_000),
               machine("m-3", None, "see tasky " + FULL, ["01OTHER"], 5_000_000),

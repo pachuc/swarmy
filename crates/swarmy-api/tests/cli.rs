@@ -219,6 +219,7 @@ async fn agent_management_uses_api_and_preserves_requirements() {
         memory_mib: Some(2048),
         gpu: Some(swarmy_api_types::GpuMode::Shared),
         allow_gpu_request: Some(true),
+        gpu_reason: None,
         github_token: Some("synthetic-github-token".into()),
     };
     let created = client.create_agent(&create).await.unwrap();
@@ -272,6 +273,7 @@ async fn agent_management_uses_api_and_preserves_requirements() {
                 memory_mib: Some(1024),
                 gpu: Some(swarmy_api_types::GpuMode::None),
                 allow_gpu_request: Some(false),
+                gpu_reason: None,
                 resets: vec![
                     swarmy_api_types::AgentReset::Provider,
                     swarmy_api_types::AgentReset::Model,
@@ -290,6 +292,82 @@ async fn agent_management_uses_api_and_preserves_requirements() {
     assert_eq!(updated.id, created.id);
     client.delete_agent("worker", "delete").await.unwrap();
     assert!(store.get_agent_by_name("worker").await.unwrap().is_none());
+    server.abort();
+}
+
+#[tokio::test]
+async fn agent_gpu_reason_is_recorded_validated_and_cleared() {
+    use swarmy_api_types::{CreateAgent, GpuMode, ImageRef, UpdateAgent};
+    let Some((client, _store, server, _guard)) = fixture().await else {
+        return;
+    };
+    let create = CreateAgent {
+        idempotency_key: "reason-create".into(),
+        name: "gpu-reason-agent".into(),
+        description: "test".into(),
+        image: ImageRef {
+            name: "fixture".into(),
+            tag: "test".into(),
+        },
+        provider: Some("fake".into()),
+        model: Some("scripted".into()),
+        effort: None,
+        system_prompt: None,
+        route: None,
+        memory_mib: None,
+        gpu: Some(GpuMode::Shared),
+        allow_gpu_request: None,
+        gpu_reason: Some("  tasky 01X: launched with --gpu  ".into()),
+        github_token: None,
+    };
+    let created = client.create_agent(&create).await.unwrap();
+    let cause = created.gpu_request.unwrap();
+    assert_eq!(cause.reason, "tasky 01X: launched with --gpu");
+    assert!(cause.session_id.is_none());
+    let mut update = UpdateAgent {
+        idempotency_key: "reason-invalid-mode".into(),
+        description: None,
+        provider: None,
+        model: None,
+        effort: None,
+        system_prompt: None,
+        route: None,
+        memory_mib: None,
+        gpu: Some(GpuMode::None),
+        allow_gpu_request: None,
+        gpu_reason: Some("x".into()),
+        resets: vec![],
+        github_token: None,
+        clear_github_token: false,
+    };
+    let error = client
+        .update_agent("gpu-reason-agent", &update)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("invalid_request"), "{error}");
+    update.idempotency_key = "reason-too-long".into();
+    update.gpu = Some(GpuMode::Dedicated);
+    update.gpu_reason = Some("x".repeat(501));
+    let error = client
+        .update_agent("gpu-reason-agent", &update)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("invalid_request"), "{error}");
+    update.idempotency_key = "reason-clear".into();
+    update.gpu = Some(GpuMode::None);
+    update.gpu_reason = None;
+    client
+        .update_agent("gpu-reason-agent", &update)
+        .await
+        .unwrap();
+    assert!(
+        client
+            .agent("gpu-reason-agent")
+            .await
+            .unwrap()
+            .gpu_request
+            .is_none()
+    );
     server.abort();
 }
 
@@ -322,6 +400,7 @@ async fn agent_update_rejects_invalid_merged_model() {
                 memory_mib: None,
                 gpu: None,
                 allow_gpu_request: None,
+                gpu_reason: None,
                 resets: Vec::new(),
                 github_token: None,
                 clear_github_token: false,

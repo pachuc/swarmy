@@ -90,7 +90,7 @@ impl Store {
                 agent.gpu_request = Some(GpuRequest {
                     reason,
                     requested_at: now,
-                    session_id,
+                    session_id: Some(session_id),
                 });
                 gpu_requested(mode)
             }

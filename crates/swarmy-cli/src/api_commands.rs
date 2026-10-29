@@ -544,6 +544,20 @@ async fn show_session(client: &Client, endpoint: &str, session_id: Ulid, json: b
     Ok(())
 }
 
+fn gpu_request_text(request: Option<&swarmy_api_types::GpuRequestView>) -> String {
+    request.map_or_else(
+        || "-".into(),
+        |r| {
+            format!(
+                "{} (session {} at {})",
+                r.reason,
+                r.session_id.as_deref().unwrap_or("-"),
+                r.requested_at
+            )
+        },
+    )
+}
+
 fn settings_text(agent: &swarmy_api_types::Agent) -> String {
     format!(
         "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nroute={}\nsandbox_memory_mib={}\nsandbox_gpu={}\nallow_gpu_request={}\ngpu_request={}",
@@ -555,13 +569,7 @@ fn settings_text(agent: &swarmy_api_types::Agent) -> String {
         agent.requirements.memory_mib,
         agent.requirements.gpu.as_str(),
         agent.allow_gpu_request,
-        agent.gpu_request.as_ref().map_or_else(
-            || "-".into(),
-            |r| format!(
-                "{} (session {} at {})",
-                r.reason, r.session_id, r.requested_at
-            )
-        ),
+        gpu_request_text(agent.gpu_request.as_ref()),
     )
 }
 struct AgentFlags {
@@ -573,6 +581,7 @@ struct AgentFlags {
     memory_mib: Option<u64>,
     gpu: Option<swarmy_api_types::GpuMode>,
     allow_gpu_request: Option<bool>,
+    gpu_reason: Option<String>,
     resets: Vec<swarmy_api_types::AgentReset>,
 }
 fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<AgentFlags> {
@@ -615,6 +624,7 @@ fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<AgentFl
         memory_mib: args.memory,
         gpu,
         allow_gpu_request: args.allow_gpu_request,
+        gpu_reason: args.gpu_reason,
         resets,
     })
 }
@@ -796,6 +806,7 @@ async fn agent_create(
             memory_mib: flags.memory_mib,
             gpu: flags.gpu,
             allow_gpu_request: flags.allow_gpu_request,
+            gpu_reason: flags.gpu_reason,
             github_token: token,
         }),
     )
@@ -865,6 +876,7 @@ async fn agent(
                     memory_mib: flags.memory_mib,
                     gpu: flags.gpu,
                     allow_gpu_request: flags.allow_gpu_request,
+                    gpu_reason: flags.gpu_reason,
                     resets: flags.resets,
                     github_token,
                     clear_github_token,
@@ -1439,5 +1451,25 @@ mod machine_cost_tests {
         })
         .unwrap();
         assert!(value.get("machines").is_none());
+    }
+}
+
+#[cfg(test)]
+mod gpu_request_text_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::gpu_request_text;
+    use swarmy_api_types::GpuRequestView;
+
+    #[test]
+    fn displays_operator_and_tool_reasons() {
+        assert_eq!(gpu_request_text(None), "-");
+        let mut request = GpuRequestView {
+            reason: "r".into(),
+            requested_at: "t".into(),
+            session_id: None,
+        };
+        assert_eq!(gpu_request_text(Some(&request)), "r (session - at t)");
+        request.session_id = Some("s".into());
+        assert_eq!(gpu_request_text(Some(&request)), "r (session s at t)");
     }
 }

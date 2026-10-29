@@ -344,7 +344,7 @@ mod tests {
         w.gpu_request = Some(GpuRequest {
             reason: "tasky 01AAA: render".into(),
             requested_at: at(0),
-            session_id: w.session_id,
+            session_id: Some(w.session_id),
         });
         let Decision::Raise { desired, cause } = decide(&group(0, 1, 1), &[], &[w.clone()], at(31))
         else {
@@ -357,6 +357,27 @@ mod tests {
             cause.reason,
             "tasky 01AAA: render (autoscale: 1 session(s) waiting for GPU capacity)"
         );
+    }
+    #[test]
+    fn an_operator_reason_without_a_session_names_the_machine() {
+        let mut w = wait(GpuRequirement::Shared);
+        w.gpu_request = Some(GpuRequest {
+            reason: "tasky 01M38DCQ5BFPXNPNF0NWEWR2HD: launched with --gpu".into(),
+            requested_at: at(0),
+            session_id: None,
+        });
+        let Decision::Raise { cause, .. } =
+            decide(&group(0, 1, 1), &[], std::slice::from_ref(&w), at(31))
+        else {
+            panic!("expected raise")
+        };
+        assert!(
+            cause
+                .reason
+                .starts_with("tasky 01M38DCQ5BFPXNPNF0NWEWR2HD: launched with --gpu")
+        );
+        assert_eq!(cause.agent, Some(w.agent_id));
+        assert_eq!(cause.session, Some(w.session_id));
     }
     #[test]
     fn shared_waits_pack_by_sandboxes_after_free_room() {

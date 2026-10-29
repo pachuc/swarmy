@@ -218,6 +218,16 @@ def full_task_id(record, task_id):
     return full_id
 
 
+def launch_gpu_reason(task, task_id, gpu):
+    """The GPU reason for a worker launched with a GPU requirement, or None without one.
+
+    An autoscaled machine takes its cause from this reason, and fleet status
+    charges a machine to a task whose reason starts with `tasky <id>`."""
+    if gpu == "none":
+        return None
+    return f"tasky {full_task_id(task, task_id)}: launched with --gpu"
+
+
 def workers_path(config):
     return state_path(config) / "workers.json"
 
@@ -243,27 +253,31 @@ def selection_args(args, config):
     return provider, model, effort, selection
 
 
-def gpu_args(gpu, allow):
+def gpu_args(gpu, allow, reason):
     """Agent create/set flags for the GPU requirement and request flag."""
-    return ["--gpu", gpu, "--allow-gpu-request", "true" if allow else "false"]
+    args = ["--gpu", gpu, "--allow-gpu-request", "true" if allow else "false"]
+    if reason:
+        args += ["--gpu-reason", reason]
+    return args
 
 
-def set_worker_gpu(config, name, gpu, allow):
+def set_worker_gpu(config, name, gpu, allow, reason):
     """Match a worker's GPU state, skipping the write when it already matches."""
     detail = one(command(swarmy(config, "agent", "show", name, "--json")))
     current = (detail.get("requirements") or {}).get("gpu") or "none"
-    if current == gpu and bool(detail.get("allow_gpu_request")) == allow:
+    current_reason = (detail.get("gpu_request") or {}).get("reason")
+    if current == gpu and bool(detail.get("allow_gpu_request")) == allow and (reason is None or current_reason == reason):
         return False
-    command(swarmy(config, "agent", "set", name, *gpu_args(gpu, allow)))
+    command(swarmy(config, "agent", "set", name, *gpu_args(gpu, allow, reason)))
     return True
 
 
-def create_worker(name, config, selection, image, gpu, allow):
+def create_worker(name, config, selection, image, gpu, allow, reason):
     extra = ["--image", image] if image else []
     # A worker builds the workspace; the sandbox default of 768 MiB would be
     # enforced as a cgroup limit and kill cargo.
     extra += ["--memory", str(config.get("memory_mib", 6144))]
-    extra += gpu_args(gpu, allow)
+    extra += gpu_args(gpu, allow, reason)
     command(swarmy(config, "agent", "create", name, *extra, "--description", "fleet worker",
                    *selection, "--github-token-stdin"), input=config["github_token"] + "\n")
 
@@ -277,7 +291,7 @@ def worker_meta(config, name):
     return json.loads(path.read_text()) if path.exists() else {}
 
 
-def pick_worker(config, selection, image, provider, model, gpu, allow):
+def pick_worker(config, selection, image, provider, model, gpu, allow, reason):
     """Prefer an idle worker created with the requested provider and model.
 
     A worker's selection is fixed when it is created (run --agent takes no
@@ -295,7 +309,7 @@ def pick_worker(config, selection, image, provider, model, gpu, allow):
         # The first free number, so a reset worker's name is reused rather
         # than colliding with a live one when the pool has gaps.
         name = next(f"worker-{n}" for n in range(1, int(config["workers"]) + 1) if f"worker-{n}" not in workers)
-        create_worker(name, config, selection, image, gpu, allow)
+        create_worker(name, config, selection, image, gpu, allow, reason)
         workers[name] = None
         save_workers(config, workers)
         save(worker_meta_path(config, name), {"provider": provider, "model": model, "image": image})
@@ -330,6 +344,7 @@ def launch(args, config):
     allow_gpu = config["allow_gpu"] if args.allow_gpu is None else args.allow_gpu
     # Build before choosing a worker so a missing task id costs no worker.
     text = prompt(args.task_id, task, config, branch, gpu=gpu, allow_gpu=allow_gpu)
+    gpu_reason = launch_gpu_reason(task, args.task_id, gpu)
     if getattr(args, "worker", None):
         # A task that must run on a particular worker, for example to pick up
         # files an earlier session left on that worker's disk.
@@ -339,11 +354,11 @@ def launch(args, config):
         if workers[args.worker]:
             raise RuntimeError(f"{args.worker} still holds {workers[args.worker]}; release it first")
         worker = args.worker
-        set_worker_gpu(config, worker, gpu, allow_gpu)
+        set_worker_gpu(config, worker, gpu, allow_gpu, gpu_reason)
     else:
-        worker, workers, created = pick_worker(config, selection, image, provider, model, gpu, allow_gpu)
+        worker, workers, created = pick_worker(config, selection, image, provider, model, gpu, allow_gpu, gpu_reason)
         if not created:
-            set_worker_gpu(config, worker, gpu, allow_gpu)
+            set_worker_gpu(config, worker, gpu, allow_gpu, gpu_reason)
     log = state_path(config) / (suffix + ".jsonl")
     log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with log.open("w") as stream:
@@ -781,7 +796,7 @@ def release(task_id, config, *, into=None, force=False):
     reset = False
     if held and task_suffix(held) == task_suffix(task_id):
         # Reset before freeing, so failure leaves the assignment retryable.
-        reset = set_worker_gpu(config, data["worker"], "none", False)
+        reset = set_worker_gpu(config, data["worker"], "none", False, None)
         workers[data["worker"]] = None
         save_workers(config, workers)
     path.unlink()

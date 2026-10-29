@@ -153,7 +153,7 @@ pub(crate) fn agent(record: swarmy_core::AgentRecord) -> api::Agent {
         gpu_request: record.gpu_request.map(|r| api::GpuRequestView {
             reason: r.reason,
             requested_at: r.requested_at.to_string(),
-            session_id: r.session_id.to_string(),
+            session_id: r.session_id.map(|id| id.to_string()),
         }),
         node_id: None,
         scratch: None,
