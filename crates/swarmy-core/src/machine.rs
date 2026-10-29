@@ -83,7 +83,7 @@ pub struct MachineCause {
 pub struct NewMachine {
     pub machine_id: MachineId,
     pub group: String,
-    /// OpenTofu module name from the group spec.
+    /// `OpenTofu` module name from the group spec.
     pub module: String,
     pub size: String,
     pub location: String,
@@ -207,7 +207,7 @@ impl MachineRecord {
                 self.state = S::Provisioning;
             }
             (S::Provisioning, MachineTransition::Provisioned) if self.provisioned_at.is_none() => {
-                self.provisioned_at = Some(at)
+                self.provisioned_at = Some(at);
             }
             (S::Provisioning, MachineTransition::Joined { node_id })
                 if self.provisioned_at.is_some() =>

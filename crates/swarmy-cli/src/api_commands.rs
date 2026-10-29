@@ -1332,3 +1332,51 @@ pub(crate) async fn routes(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod machine_cost_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    #[test]
+    fn cost_report_json_keeps_usage_fields_at_top_level() {
+        let usage = swarmy_api_types::UsageResponse {
+            by: "agent".into(),
+            key: None,
+            group: "day".into(),
+            from: "from".into(),
+            to: "to".into(),
+            groups: vec![],
+            total: swarmy_api_types::UsageTotalsView {
+                input_tokens: 0,
+                cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+                total_tokens: 0,
+                cost_micros: 0,
+                cost_dollars: "0.0000".into(),
+                completions: 0,
+            },
+        };
+        let machines = swarmy_api_types::MachineList {
+            as_of: "now".into(),
+            from: None,
+            to: None,
+            machines: vec![],
+            totals: vec![],
+        };
+        let value = serde_json::to_value(CostReport {
+            usage: &usage,
+            machines: Some(&machines),
+        })
+        .unwrap();
+        assert_eq!(value["total"]["cost_dollars"], "0.0000");
+        assert!(value.get("machines").is_some());
+        let value = serde_json::to_value(CostReport {
+            usage: &usage,
+            machines: None,
+        })
+        .unwrap();
+        assert!(value.get("machines").is_none());
+    }
+}

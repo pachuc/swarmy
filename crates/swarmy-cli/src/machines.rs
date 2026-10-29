@@ -145,7 +145,7 @@ mod tests {
     fn list() -> MachineList {
         let first: Machine = serde_json::from_value(serde_json::json!({
             "id":"01JC0000000000000000000001", "group":"gpu", "module":"scaleway", "size":"L4-1-24G", "location":"fr-par-2", "address":null, "node_id":"node-1", "state":"joined", "requested_at":"2026-10-29T10:55:00Z", "created_at":null, "provisioned_at":null, "joined_at":null, "drain_requested_at":null, "destroyed_at":null,
-            "cause":{"agent_id":null,"agent_name":null,"session_id":null,"reason":"fleet task 01M63CEJ needs a GPU"}, "hourly_price_micros":750000, "currency":"EUR", "billing":"per_started_hour", "failure":null, "cost_micros":1500000, "cost":"1.5000", "window_cost_micros":750000, "window_cost":"0.7500", "current_agents":[{"agent_id":"agent-1","agent_name":"worker-3","since":"2026-10-29T10:55:00Z"}]
+            "cause":{"agent_id":null,"agent_name":null,"session_id":null,"reason":"fleet task 01M63CEJ needs a GPU"}, "hourly_price_micros":750_000, "currency":"EUR", "billing":"per_started_hour", "failure":null, "cost_micros":1_500_000, "cost":"1.5000", "window_cost_micros":750_000, "window_cost":"0.7500", "current_agents":[{"agent_id":"agent-1","agent_name":"worker-3","since":"2026-10-29T10:55:00Z"}]
         })).unwrap();
         let mut second = first.clone();
         second.id = "01JC0000000000000000000002".into();
@@ -166,7 +166,7 @@ mod tests {
             machines: vec![first, second],
             totals: vec![swarmy_api_types::MachineCostTotal {
                 currency: "EUR".into(),
-                cost_micros: 750000,
+                cost_micros: 750_000,
                 cost: "0.7500".into(),
             }],
         }

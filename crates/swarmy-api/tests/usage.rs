@@ -554,6 +554,91 @@ async fn usage_to_on_an_hour_boundary_excludes_that_hour() {
     }
 }
 
+async fn seed_machine(store: &Store, row: &swarmy_core::NewMachine, at: Timestamp) {
+    use swarmy_core::MachineTransition;
+    store.create_machine(row, at).await.unwrap();
+    store
+        .transition_machine(row.machine_id, &MachineTransition::Creating, at)
+        .await
+        .unwrap();
+    store
+        .transition_machine(
+            row.machine_id,
+            &MachineTransition::Created {
+                address: "address".into(),
+            },
+            at,
+        )
+        .await
+        .unwrap();
+}
+
+async fn check_machine_responses(
+    fixture: &Fixture,
+    a: swarmy_core::MachineId,
+    b: swarmy_core::MachineId,
+    t: Timestamp,
+    name: &str,
+) {
+    let active = fixture.client.machines(false, None).await.unwrap();
+    assert_eq!(active.machines.len(), 1);
+    assert_eq!(
+        active.machines[0].current_agents[0].agent_name.as_deref(),
+        Some(name)
+    );
+    assert_eq!(active.machines[0].cause.reason, "fleet task needs a GPU");
+    assert_eq!(
+        active.machines[0].cost_micros,
+        fixture
+            .store
+            .get_machine(a)
+            .await
+            .unwrap()
+            .unwrap()
+            .cost_micros(active.as_of.parse().unwrap())
+    );
+    let all = fixture.client.machines(true, None).await.unwrap();
+    assert_eq!(all.machines.len(), 2);
+    assert_eq!(
+        all.totals[0].cost_micros,
+        all.machines.iter().map(|row| row.cost_micros).sum::<u64>()
+    );
+    let from = t
+        .checked_add(jiff::SignedDuration::from_secs(1800))
+        .unwrap();
+    let to = t
+        .checked_add(jiff::SignedDuration::from_secs(7200))
+        .unwrap();
+    let window = fixture
+        .client
+        .machines(true, Some((&from.to_string(), &to.to_string())))
+        .await
+        .unwrap();
+    assert_eq!(
+        window
+            .machines
+            .iter()
+            .find(|row| row.id == b.to_string())
+            .unwrap()
+            .window_cost_micros,
+        Some(750_000)
+    );
+    for (query, code) in [
+        ("state=bogus", "invalid_state"),
+        ("from=2026-01-01", "invalid_range"),
+    ] {
+        let response = reqwest::Client::new()
+            .get(format!("{}/v1/machines?{query}", fixture.base))
+            .bearer_auth("test-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        let body: swarmy_api_types::ApiError = response.json().await.unwrap();
+        assert_eq!(body.code, code);
+    }
+}
+
 #[tokio::test]
 async fn machines_route_lists_cost_window_and_current_agents() {
     use swarmy_core::{
@@ -567,7 +652,7 @@ async fn machines_route_lists_cost_window_and_current_agents() {
         .store
         .create_agent(
             name,
-            &swarmy_testkit::image(&fixture.store).await.to_string(),
+            swarmy_testkit::image(&fixture.store).await,
             "",
             Timestamp::now(),
             None,
@@ -599,23 +684,7 @@ async fn machines_route_lists_cost_window_and_current_agents() {
     let created_a = now
         .checked_sub(jiff::SignedDuration::from_secs(5400))
         .unwrap();
-    fixture.store.create_machine(&a, created_a).await.unwrap();
-    fixture
-        .store
-        .transition_machine(a.machine_id, &MachineTransition::Creating, created_a)
-        .await
-        .unwrap();
-    fixture
-        .store
-        .transition_machine(
-            a.machine_id,
-            &MachineTransition::Created {
-                address: "address".into(),
-            },
-            created_a,
-        )
-        .await
-        .unwrap();
+    seed_machine(&fixture.store, &a, created_a).await;
     fixture
         .store
         .transition_machine(a.machine_id, &MachineTransition::Provisioned, created_a)
@@ -637,23 +706,7 @@ async fn machines_route_lists_cost_window_and_current_agents() {
         .open_machine_assignment(a.machine_id, agent.agent_id, created_a)
         .await
         .unwrap();
-    fixture.store.create_machine(&b, t).await.unwrap();
-    fixture
-        .store
-        .transition_machine(b.machine_id, &MachineTransition::Creating, t)
-        .await
-        .unwrap();
-    fixture
-        .store
-        .transition_machine(
-            b.machine_id,
-            &MachineTransition::Created {
-                address: "address".into(),
-            },
-            t,
-        )
-        .await
-        .unwrap();
+    seed_machine(&fixture.store, &b, t).await;
     fixture
         .store
         .transition_machine(
@@ -673,61 +726,5 @@ async fn machines_route_lists_cost_window_and_current_agents() {
         .transition_machine(b.machine_id, &MachineTransition::Destroyed, end)
         .await
         .unwrap();
-    let active = fixture.client.machines(false, None).await.unwrap();
-    assert_eq!(active.machines.len(), 1);
-    assert_eq!(
-        active.machines[0].current_agents[0].agent_name.as_deref(),
-        Some(name)
-    );
-    assert_eq!(active.machines[0].cause.reason, "fleet task needs a GPU");
-    assert_eq!(
-        active.machines[0].cost_micros,
-        fixture
-            .store
-            .get_machine(a.machine_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .cost_micros(active.as_of.parse().unwrap())
-    );
-    let all = fixture.client.machines(true, None).await.unwrap();
-    assert_eq!(all.machines.len(), 2);
-    assert_eq!(
-        all.totals[0].cost_micros,
-        all.machines.iter().map(|row| row.cost_micros).sum::<u64>()
-    );
-    let from = t
-        .checked_add(jiff::SignedDuration::from_secs(1800))
-        .unwrap();
-    let to = t
-        .checked_add(jiff::SignedDuration::from_secs(7200))
-        .unwrap();
-    let window = fixture
-        .client
-        .machines(true, Some((&from.to_string(), &to.to_string())))
-        .await
-        .unwrap();
-    assert_eq!(
-        window
-            .machines
-            .iter()
-            .find(|row| row.id == b.machine_id.to_string())
-            .unwrap()
-            .window_cost_micros,
-        Some(750_000)
-    );
-    for (query, code) in [
-        ("state=bogus", "invalid_state"),
-        ("from=2026-01-01", "invalid_range"),
-    ] {
-        let response = reqwest::Client::new()
-            .get(format!("{}/v1/machines?{query}", fixture.base))
-            .bearer_auth("test-token")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
-        let body: swarmy_api_types::ApiError = response.json().await.unwrap();
-        assert_eq!(body.code, code);
-    }
+    check_machine_responses(&fixture, a.machine_id, b.machine_id, t, name).await;
 }
