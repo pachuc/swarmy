@@ -141,6 +141,7 @@ impl Reconciler {
         holder.lease = match lease {
             Ok(lease) => Some(lease),
             Err(StoreError::Fence(FenceError::ProvisionerLeaseMismatch)) => {
+                holder.lease = None;
                 return Ok(Tick::Standby);
             }
             Err(error) => return Err(error.into()),
