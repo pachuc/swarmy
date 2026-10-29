@@ -339,22 +339,26 @@ impl Reconciler {
             &groups::group_key_path(&self.data_dir, &def.group),
         )?;
         let node = self.node_machine(def, victim, output)?;
-        match nodes.drain(&node, DRAIN_TIMEOUT).await {
-            Ok(drain) => {
-                tracing::info!(name = %victim.name, stopped = drain.stopped, busy = ?drain.busy, unreleased = ?drain.unreleased, "elastic node drained");
-            }
-            Err(error) => {
-                tracing::warn!(name = %victim.name, error = %swarmy_core::error_chain(error.as_ref()), "could not reach node to drain it; removing without draining");
-            }
-        }
-        if let Err(error) = nodes.revoke(&node, &local_primary(def)).await {
+        self.drain_and_revoke(nodes, def, victim, &node, &host)
+            .await;
+        Ok(())
+    }
+    async fn drain_and_revoke(
+        &self,
+        nodes: &dyn crate::Nodes,
+        def: &ElasticGroupDefinition,
+        victim: &MachineRecord,
+        node: &provision::Machine,
+        host: &swarmy_config::swarm::RecordedHost,
+    ) {
+        log_drain(victim, nodes.drain(node, DRAIN_TIMEOUT).await);
+        if let Err(error) = nodes.revoke(node, &local_primary(def)).await {
             tracing::warn!(name = %victim.name, error = %swarmy_core::error_chain(error.as_ref()), "could not revoke tunnel key; stale forwarding-only line is inert");
         }
         swarmy_core::ignore_best_effort(
             ssh::forget_host_key(&host.public_address, &host.ssh_key),
             "forget removed node host key",
         );
-        Ok(())
     }
     async fn join_pending(&self, holder: &mut Holder, group: &str) -> Result<bool> {
         let Some(nodes) = &self.nodes else {
@@ -413,30 +417,11 @@ impl Reconciler {
                 .await?;
             return Ok(());
         }
-        if machine.provisioned_at.is_none() {
-            let Some(output) = outputs.iter().find(|m| m.name == machine.name) else {
-                return Ok(());
-            };
-            let node = self.node_machine(def, machine, output)?;
-            let remaining = Duration::try_from(deadline.duration_since(now)).unwrap_or_default();
-            match tokio::time::timeout(remaining, nodes.join(&node, &local_primary(def))).await {
-                Ok(Ok(())) => {
-                    self.transition(machine, MachineTransition::Provisioned)
-                        .await?;
-                }
-                result => {
-                    let detail = match result {
-                        Ok(Err(error)) => swarmy_core::error_chain(error.as_ref()),
-                        _ => "join attempt timed out".into(),
-                    };
-                    tracing::warn!(name = %machine.name, detail, "elastic join failed");
-                    self.join_errors
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(machine.machine_id, detail);
-                    return Ok(());
-                }
-            }
+        if !self
+            .provision_pending(nodes, def, machine, outputs, deadline, now)
+            .await?
+        {
+            return Ok(());
         }
         let node_id = machine.machine_id.joined_node_id();
         if self.store.get_node(node_id).await?.is_some() {
@@ -458,6 +443,42 @@ impl Reconciler {
                 );
         }
         Ok(())
+    }
+    async fn provision_pending(
+        &self,
+        nodes: &dyn crate::Nodes,
+        def: &ElasticGroupDefinition,
+        machine: &MachineRecord,
+        outputs: &[Machine],
+        deadline: Timestamp,
+        now: Timestamp,
+    ) -> Result<bool> {
+        if machine.provisioned_at.is_none() {
+            let Some(output) = outputs.iter().find(|m| m.name == machine.name) else {
+                return Ok(false);
+            };
+            let node = self.node_machine(def, machine, output)?;
+            let remaining = Duration::try_from(deadline.duration_since(now)).unwrap_or_default();
+            match tokio::time::timeout(remaining, nodes.join(&node, &local_primary(def))).await {
+                Ok(Ok(())) => {
+                    self.transition(machine, MachineTransition::Provisioned)
+                        .await?;
+                }
+                result => {
+                    let detail = match result {
+                        Ok(Err(error)) => swarmy_core::error_chain(error.as_ref()),
+                        _ => "join attempt timed out".into(),
+                    };
+                    tracing::warn!(name = %machine.name, detail, "elastic join failed");
+                    self.join_errors
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(machine.machine_id, detail);
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
     }
     async fn hold(&self, holder: &mut Holder) -> Result<Option<Lease>> {
         let now = self.store.now();
@@ -1017,6 +1038,16 @@ fn variables(
     })
 }
 
+fn log_drain(victim: &MachineRecord, result: Result<ssh::Drain>) {
+    match result {
+        Ok(drain) => {
+            tracing::info!(name = %victim.name, stopped = drain.stopped, busy = ?drain.busy, unreleased = ?drain.unreleased, "elastic node drained");
+        }
+        Err(error) => {
+            tracing::warn!(name = %victim.name, error = %swarmy_core::error_chain(error.as_ref()), "could not reach node to drain it; removing without draining");
+        }
+    }
+}
 fn local_primary(def: &ElasticGroupDefinition) -> LocalPrimary {
     LocalPrimary {
         address: def.primary_address,
