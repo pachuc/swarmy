@@ -399,7 +399,7 @@ failing their calls. The scheduler retries every 30 seconds and sessions
 continue on their own when capacity appears. After the configured maximum
 session wait (one hour by default), pending calls fail without running.
 
-Elastic groups will later add machines for these waits. The provisioner wakes parked sessions when a machine joins.
+In a swarm with an autoscaled elastic group, a session waiting for a GPU makes the provisioner add a machine, and parked sessions continue when it joins, usually 5 to 15 minutes later (see [Elastic groups](#elastic-groups)). The provisioner wakes parked sessions when a machine joins.
 
 ## Scaling node groups
 
@@ -439,10 +439,12 @@ swarm with an existing stack group, add `gpu` to `placement.nodes` and declare:
 
 ```toml
 [groups.gpu]
-module = "hetzner-cloud"
-size = "cpx41"
-location = "fsn1"
+module = "scaleway"
+size = "L4-1-24G"
+location = "fr-par-2"
 elastic = true
+autoscale = true
+sandboxes = 1
 max = 1
 price_per_hour = "0.75"
 currency = "EUR"
@@ -453,6 +455,8 @@ services = "box"
 nodes = ["gpu"]
 ```
 
+Autoscale buys machines only for GPU waits, so turn it on only for a group whose size has a GPU.
+
 After adding the group, register it once with `swarmy swarm scale hz gpu 0`.
 Scale accepts 0 through max; down sets desired to 0 and refuses until the
 provisioner has reconciled that change and all machines are gone. The hourly
@@ -460,6 +464,12 @@ price comes from the spec because the module contract has no price output.
 The provisioner joins each machine over SSH from the primary using the primary's own swarmy-core build. A machine that has not joined within 15 minutes of creation is failed, destroyed and replaced within the creation limit. Shrinking drains each removed node for up to 10 minutes, then stops it anyway, revokes its tunnel key and destroys it.
 The creation interlock reserves at most four machine creations per hour per swarm,
 including failed applies; further growth waits for the one-hour window.
+
+Every 15 seconds the provisioner counts sessions waiting for a GPU. Each dedicated session needs a machine of its own. Shared sessions fill room on busy machines, then use `sandboxes` computers per machine; set `sandboxes` to the number of GPU computers one machine should hold, 1 for an L4-1-24G running fleet workers. The provisioner raises desired up to `max`, within the limit of four creations per hour. The machine's cause names the first waiting agent and session, and its reason starts with that agent's `request_gpu` reason, so a `tasky <id>` prefix carries through to `fleet status`.
+
+Desired falls only when no session waits for a GPU, and only from the top. The highest-numbered machine goes once it has had no GPU computer for 30 minutes, counted from its join or from when its last GPU computer left, or when it was never created. An idle machine below a busy one stays. CPU computers on a GPU machine do not keep it alive; they are drained and move. Only one group per swarm may autoscale, and the default is off.
+
+`swarmy swarm scale` on an autoscaled group sets desired once; after the provisioner has applied it, autoscale adjusts it from there. To scale by hand, set `autoscale = false` and run scale again. `swarmy swarm down` turns autoscale off first. The node's own 30-minute idle eviction (`[sandbox] idle_secs`) means a quiet GPU worker's machine goes about 60 minutes after its last command. A released fleet task's machine goes about 30 minutes after release.
 ## GPU nodes
 
 A node runs `nvidia-smi`, NVIDIA's driver command-line tool, once at startup to

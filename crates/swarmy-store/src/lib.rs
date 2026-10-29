@@ -89,8 +89,8 @@ pub use runnable::{RUNNABLE_PARTITIONS, runnable_partition};
 #[cfg(any(test, feature = "test-support"))]
 pub use session_wait::LeaseAudit;
 pub use session_wait::{
-    CAPACITY_WAIT_RETRY, CapacityPark, InferenceFailureWait, InferenceHistory, SessionWait,
-    WaitKind,
+    CAPACITY_WAIT_RETRY, CapacityPark, GpuCapacityWait, InferenceFailureWait, InferenceHistory,
+    SessionWait, WaitKind,
 };
 
 use std::{

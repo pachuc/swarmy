@@ -1612,3 +1612,60 @@ async fn deleting_a_gpu_computer_closes_its_interval() {
             .any(|row| row.agent == agent && row.to.is_some())
     );
 }
+
+#[tokio::test]
+async fn gpu_capacity_waits_list_gpu_waits_with_their_cause() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (agent_a, id_a, lease_a) = gpu_tool_session(&test.store, "wait-a", true).await;
+    gpu_output(
+        gpu_tool(
+            &test.store,
+            id_a,
+            &lease_a,
+            "request_gpu",
+            serde_json::json!({"mode":"shared", "reason":"tasky 01AAA: render"}),
+        )
+        .await,
+    );
+    test.store
+        .park_for_capacity(
+            id_a,
+            &lease_a,
+            swarmy_core::GpuRequirement::Shared,
+            Timestamp::now(),
+            Duration::from_hours(1),
+        )
+        .await
+        .unwrap();
+    let (_, id_b, lease_b) = gpu_tool_session(&test.store, "wait-b", true).await;
+    test.store
+        .park_for_capacity(
+            id_b,
+            &lease_b,
+            swarmy_core::GpuRequirement::None,
+            Timestamp::now(),
+            Duration::from_hours(1),
+        )
+        .await
+        .unwrap();
+    let waits = test.store.gpu_capacity_waits().await.unwrap();
+    assert_eq!(waits.len(), 1);
+    assert_eq!(waits[0].session_id, id_a);
+    assert_eq!(waits[0].requirement, swarmy_core::GpuRequirement::Shared);
+    assert_eq!(waits[0].agent_name.as_deref(), Some("wait-a"));
+    assert_eq!(
+        waits[0].gpu_request.as_ref().unwrap().reason,
+        "tasky 01AAA: render"
+    );
+    assert!(!waits[0].placed);
+    let card = gpu_node(&test.store, 2, 1).await;
+    test.store
+        .place(agent_a, card.node_id, future(60))
+        .await
+        .unwrap();
+    assert!(test.store.gpu_capacity_waits().await.unwrap()[0].placed);
+    test.store.clear_session_wait(id_a).await.unwrap();
+    assert!(test.store.gpu_capacity_waits().await.unwrap().is_empty());
+}

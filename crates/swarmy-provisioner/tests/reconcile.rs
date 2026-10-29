@@ -31,15 +31,20 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(with_credentials: bool, max: u32) -> Option<Self> {
-        Self::build(with_credentials, max, None).await
+        Self::build(with_credentials, max, None, false).await
     }
     async fn with_nodes(max: u32, nodes: Arc<FakeNodes>) -> Option<Self> {
-        Self::build(true, max, Some(nodes)).await
+        Self::build(true, max, Some(nodes), false).await
+    }
+    async fn autoscaled(max: u32, nodes: Arc<FakeNodes>) -> Option<Self> {
+        *nodes.card.lock().unwrap() = true;
+        Self::build(true, max, Some(nodes), true).await
     }
     async fn build(
         with_credentials: bool,
         max: u32,
         nodes: Option<Arc<FakeNodes>>,
+        autoscale: bool,
     ) -> Option<Self> {
         let stack = swarmy_testkit::Stack::load("provisioner-reconcile")?;
         let db = Arc::new(Database::new(Some(&stack.cluster)).unwrap());
@@ -110,7 +115,7 @@ impl Fixture {
                 hourly_price: HourlyPrice::parse("0.75", "EUR").unwrap(),
                 primary_address: "192.0.2.1".parse().unwrap(),
                 service_user: "swarmy".into(),
-                autoscale: false,
+                autoscale,
             })
             .await
             .unwrap();
@@ -150,6 +155,7 @@ struct FakeNodes {
     calls: Mutex<Vec<String>>,
     join_error: Mutex<Option<String>>,
     drain_fails: Mutex<bool>,
+    card: Mutex<bool>,
 }
 impl FakeNodes {
     fn set_store(&self, store: Store, log: std::path::PathBuf) {
@@ -198,9 +204,17 @@ impl Nodes for FakeNodes {
             anyhow::bail!("{error}")
         }
         let store = self.store.lock().unwrap().clone().unwrap();
-        store
-            .put_node(&sandbox_node(node.node_id.unwrap(), store.now()))
-            .await?;
+        let mut record = sandbox_node(node.node_id.unwrap(), store.now());
+        if *self.card.lock().unwrap() {
+            record.capacity.sandboxes = node.sandboxes;
+            record.gpu = Some(swarmy_core::GpuCards {
+                model: "NVIDIA L4".into(),
+                memory_mib: 23034,
+                count: 1,
+            });
+            record.capacity.memory_bytes = 16 * 1024 * 1024 * 1024;
+        }
+        store.put_node(&record).await?;
         Ok(())
     }
     async fn drain(&self, node: &Machine, timeout: Duration) -> anyhow::Result<Drain> {
@@ -1107,4 +1121,236 @@ async fn machines_carry_the_desired_cause() {
     f.store.set_elastic_desired("gpu", 1, &cause).await.unwrap();
     f.reconciler.tick(&mut Holder::new()).await.unwrap();
     assert_eq!(f.records().await[0].cause, cause);
+}
+
+async fn gpu_waiter(f: &Fixture, name: &str, mode: &str, reason: &str) -> (AgentId, SessionId) {
+    use swarmy_core::{AgentSettings, Event, RequestId, ToolCallId, ToolCallRecord};
+    let agent = f
+        .store
+        .create_agent(
+            name,
+            swarmy_testkit::image(&f.store).await,
+            "",
+            f.store.now(),
+            Some(swarmy_store::CreateAgentOptions {
+                settings: Some(&AgentSettings {
+                    allow_gpu_request: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap()
+        .agent_id;
+    let (id, _) = f
+        .store
+        .open_main_session(agent, f.store.now())
+        .await
+        .unwrap();
+    f.store.wake_session(id, f.store.now()).await.unwrap();
+    let lease = f
+        .store
+        .claim_lease(
+            id,
+            LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
+            f.store.now() + Duration::from_hours(1),
+        )
+        .await
+        .unwrap();
+    let head = f.store.fetch_session(id).await.unwrap().unwrap().head_seq;
+    let result = f
+        .store
+        .complete_gpu_tool(
+            id,
+            head,
+            &lease,
+            RequestId::for_step(id, head),
+            &ToolCallRecord {
+                call_id: ToolCallId("request_gpu".into()),
+                tool: "request_gpu".into(),
+                arguments: serde_json::json!({ "mode": mode, "reason": reason }),
+                result: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(result, Event::ToolCallCompleted { .. }));
+    let requirement = match mode {
+        "shared" => GpuRequirement::Shared,
+        "dedicated" => GpuRequirement::Dedicated,
+        _ => panic!("bad mode"),
+    };
+    f.store
+        .park_for_capacity(
+            id,
+            &lease,
+            requirement,
+            f.store.now(),
+            Duration::from_hours(1),
+        )
+        .await
+        .unwrap();
+    (agent, id)
+}
+async fn desired_count(f: &Fixture) -> u32 {
+    f.store.list_elastic_groups().await.unwrap()[0].desired
+}
+#[tokio::test]
+async fn a_gpu_wait_buys_a_machine_named_after_its_cause() {
+    let Some(f) = Fixture::autoscaled(1, Arc::new(FakeNodes::default())).await else {
+        return;
+    };
+    let (agent, session) = gpu_waiter(&f, "w1", "shared", "tasky 01M63TEST: shader demo").await;
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    assert_eq!(desired_count(&f).await, 1);
+    let record = &f.records().await[0];
+    assert_eq!(record.state, MachineState::Joined);
+    assert_eq!(record.cause.agent, Some(agent));
+    assert_eq!(record.cause.session, Some(session));
+    assert!(
+        record
+            .cause
+            .reason
+            .starts_with("tasky 01M63TEST: shader demo (autoscale: 1 session(s)")
+    );
+    assert_eq!(
+        f.store.fetch_session(session).await.unwrap().unwrap().state,
+        SessionState::Runnable
+    );
+    f.store
+        .place(
+            agent,
+            record.machine_id.joined_node_id(),
+            f.store.now() + Duration::from_hours(1),
+        )
+        .await
+        .unwrap();
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    assert_eq!(desired_count(&f).await, 1);
+    assert_eq!(
+        f.store
+            .open_machine_assignments(record.machine_id)
+            .await
+            .unwrap()[0]
+            .agent,
+        agent
+    );
+}
+#[tokio::test]
+async fn an_idle_machine_is_removed_after_thirty_minutes() {
+    let nodes = Arc::new(FakeNodes::default());
+    let Some(f) = Fixture::autoscaled(1, nodes.clone()).await else {
+        return;
+    };
+    let mut holder = Holder::new();
+    let (agent, session) = gpu_waiter(&f, "w1", "shared", "tasky 01M63TEST: shader demo").await;
+    f.reconciler.tick(&mut holder).await.unwrap();
+    let machine = f.records().await[0].machine_id;
+    let placement = f
+        .store
+        .place(
+            agent,
+            machine.joined_node_id(),
+            f.store.now() + Duration::from_hours(1),
+        )
+        .await
+        .unwrap();
+    f.store.clear_session_wait(session).await.unwrap();
+    f.store.release(&placement).await.unwrap();
+    *f.clock.lock().unwrap() += Duration::from_mins(29);
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(desired_count(&f).await, 1);
+    assert!(!nodes.calls().iter().any(|c| c.starts_with("drain")));
+    *f.clock.lock().unwrap() += Duration::from_mins(1);
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(desired_count(&f).await, 0);
+    assert!(
+        f.store.list_elastic_groups().await.unwrap()[0]
+            .desired_cause
+            .reason
+            .starts_with("autoscale: lowered from 1 to 0")
+    );
+    assert!(nodes.calls().iter().any(|c| c.starts_with("drain")));
+    assert!(nodes.calls().iter().any(|c| c.starts_with("revoke")));
+    assert!(f.log().contains("apply machine_count=0"));
+    assert_eq!(f.records().await[0].state, MachineState::Destroyed);
+}
+#[tokio::test]
+async fn dedicated_waits_beyond_max_keep_waiting_and_block_lowering() {
+    let Some(f) = Fixture::autoscaled(1, Arc::new(FakeNodes::default())).await else {
+        return;
+    };
+    let (a, _) = gpu_waiter(&f, "a", "dedicated", "tasky first").await;
+    let (_, b) = gpu_waiter(&f, "b", "dedicated", "tasky second").await;
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    assert_eq!(desired_count(&f).await, 1);
+    assert_eq!(f.records().await.len(), 1);
+    let machine = f.records().await[0].machine_id;
+    let placement = f
+        .store
+        .place(
+            a,
+            machine.joined_node_id(),
+            f.store.now() + Duration::from_hours(1),
+        )
+        .await
+        .unwrap();
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    assert_eq!(desired_count(&f).await, 1);
+    assert!(f.store.session_wait(b).await.unwrap().is_some());
+    f.store.release(&placement).await.unwrap();
+    *f.clock.lock().unwrap() += Duration::from_mins(31);
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    assert_eq!(desired_count(&f).await, 1);
+}
+#[tokio::test]
+async fn autoscale_respects_the_creation_limit() {
+    let Some(f) = Fixture::autoscaled(6, Arc::new(FakeNodes::default())).await else {
+        return;
+    };
+    for i in 0..5 {
+        gpu_waiter(&f, &format!("w{i}"), "dedicated", "test demand").await;
+    }
+    let Tick::Reconciled(outcomes) = f.reconciler.tick(&mut Holder::new()).await.unwrap() else {
+        panic!("standby")
+    };
+    assert_eq!(desired_count(&f).await, 5);
+    assert!(outcomes.iter().any(|o| o.group == "gpu" && o.limited));
+    assert!(f.log().contains("apply machine_count=4"));
+    assert!(!f.log().contains("apply machine_count=5"));
+}
+#[tokio::test]
+async fn groups_without_autoscale_ignore_waits() {
+    let Some(f) = Fixture::with_nodes(1, Arc::new(FakeNodes::default())).await else {
+        return;
+    };
+    gpu_waiter(&f, "w1", "shared", "test").await;
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    assert_eq!(desired_count(&f).await, 0);
+    assert!(!f.log().contains("apply machine_count"));
+}
+#[tokio::test]
+async fn manual_scale_on_an_autoscaled_group_is_a_starting_point() {
+    let Some(f) = Fixture::autoscaled(1, Arc::new(FakeNodes::default())).await else {
+        return;
+    };
+    let mut holder = Holder::new();
+    f.store
+        .set_elastic_desired(
+            "gpu",
+            1,
+            &swarmy_core::MachineCause::from_reason("swarmy swarm scale"),
+        )
+        .await
+        .unwrap();
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(f.records().await[0].state, MachineState::Joined);
+    assert_eq!(f.records().await[0].cause.reason, "swarmy swarm scale");
+    *f.clock.lock().unwrap() += Duration::from_mins(29);
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(desired_count(&f).await, 1);
+    *f.clock.lock().unwrap() += Duration::from_mins(1);
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(desired_count(&f).await, 0);
 }

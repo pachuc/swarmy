@@ -1,3 +1,4 @@
+pub mod autoscale;
 pub mod nodes;
 pub mod reconcile;
 pub mod role;
