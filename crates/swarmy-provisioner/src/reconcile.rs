@@ -244,7 +244,7 @@ impl Reconciler {
         host: &RecordedHost,
     ) -> provision::Machine {
         provision::joining_node(
-            &host,
+            host,
             &def.service_user,
             def.sandboxes,
             &def.local_storage,
