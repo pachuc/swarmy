@@ -162,7 +162,10 @@ impl Reconciler {
                         continue;
                     }
                 }
-                if !record.settled() || self.holds_failed(&record).await? {
+                if !record.settled()
+                    || record.applied != record.desired
+                    || self.holds_failed(&record).await?
+                {
                     let Some(lease) = self.hold(holder).await? else {
                         return Ok(Tick::Standby);
                     };

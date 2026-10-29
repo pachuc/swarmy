@@ -314,7 +314,7 @@ async fn creation_limit_and_retry() {
     let before = f.log();
     f.reconciler.tick(&mut holder).await.unwrap();
     assert_eq!(f.log(), before);
-    *f.clock.lock().unwrap() += std::time::Duration::from_mins(61);
+    *f.clock.lock().unwrap() += Duration::from_mins(61);
     f.reconciler.tick(&mut holder).await.unwrap();
     assert!(f.log().contains("apply machine_count=6"));
     assert!(
@@ -371,7 +371,7 @@ async fn failed_apply_backoff_and_reuse_name() {
     f.reconciler.tick(&mut holder).await.unwrap();
     assert_eq!(before, f.log());
     fs::remove_file(f.temp.path().join("fail-apply")).unwrap();
-    *f.clock.lock().unwrap() += std::time::Duration::from_mins(5);
+    *f.clock.lock().unwrap() += Duration::from_mins(5);
     f.reconciler.tick(&mut holder).await.unwrap();
     let records = f.records().await;
     assert_eq!(records.len(), 2);
@@ -585,8 +585,8 @@ async fn restart_finishes_draining_without_apply() {
     let lease = f
         .store
         .acquire_provisioner_lease(
-            swarmy_core::LeaseOwnerId::from_ulid(5u128.into()),
-            std::time::Duration::from_mins(15),
+            LeaseOwnerId::from_ulid(5u128.into()),
+            Duration::from_mins(15),
         )
         .await
         .unwrap();
@@ -629,8 +629,8 @@ async fn missing_state_orphans_machine_and_blocks_growth() {
     let lease = f
         .store
         .acquire_provisioner_lease(
-            swarmy_core::LeaseOwnerId::from_ulid(6u128.into()),
-            std::time::Duration::from_mins(15),
+            LeaseOwnerId::from_ulid(6u128.into()),
+            Duration::from_mins(15),
         )
         .await
         .unwrap();
@@ -722,7 +722,7 @@ async fn new_machine_joins_and_wakes_capacity_waits() {
         .claim_lease(
             session.session_id,
             LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
-            f.store.now(),
+            f.store.now() + Duration::from_hours(1),
         )
         .await
         .unwrap();
