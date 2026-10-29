@@ -122,7 +122,7 @@ Cancelled: channels (slice 5, see `backlog/chaty.md`), sandbox-pause-resume
 
 ## Decisions made, and why
 
-- **Provisioning is a separate binary on the primary.** `swarmy-provisioner` runs OpenTofu (and, from task 6b, SSH provisioning) for elastic groups. It alone links swarmy-cloud and swarmy-infra on the server side, so `swarmy-core` carries neither the OpenTofu download nor the SSH provisioning code.
+- **Provisioning is a separate binary on the primary.** `swarmy-provisioner` runs OpenTofu and SSH provisioning for elastic groups. It alone links swarmy-cloud and swarmy-infra on the server side, so `swarmy-core` carries neither the OpenTofu download nor the SSH provisioning code.
 - **FoundationDB as truth, NATS as transport.** The safety argument is "every
   write checks its lease in the same transaction", which needs serializable
   transactions over arbitrary keys; the bus is allowed to lose or duplicate.

@@ -1,6 +1,6 @@
 //! Primary-host service entry point.
 use crate::{Holder, Outcome, Reconciler, Tick};
-use std::{collections::BTreeMap, ffi::OsString, time::Duration};
+use std::{collections::BTreeMap, ffi::OsString, sync::Arc, time::Duration};
 use swarmy_store::Store;
 
 pub const LEASE_TTL: Duration = Duration::from_mins(15);
@@ -30,6 +30,10 @@ async fn serve(args: Vec<OsString>) -> anyhow::Result<()> {
         opened.blobs.object_store(),
         dirs.data.join("provisioner"),
         dirs.cache,
+    )
+    .with_nodes(
+        Arc::new(crate::SshNodes::installed()?),
+        swarmy_config::BucketSpec::from_settings(&settings.s3),
     );
     tracing::info!("provisioner ready");
     run_loop(&reconciler).await

@@ -15,6 +15,7 @@ name = "swarmy-provisioner"
 path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 jiff.workspace = true
 object_store.workspace = true
 serde_json.workspace = true
