@@ -529,7 +529,7 @@ mod tests {
         }
     }
     #[test]
-    fn validation_and_mapping() {
+    fn mapping_and_redaction() {
         let hc = entry(CloudProvider::HetznerCloud, &[TOKEN], None);
         let s3 = entry(CloudProvider::HetznerS3, &[S3_ACCESS, S3_SECRET], None);
         let scw = entry(
@@ -567,6 +567,59 @@ mod tests {
             ]
         );
         assert_eq!(scw.set_fields(), ["access_key", "secret_key", "project_id"]);
+        let aws_without_region = entry(CloudProvider::Aws, &[AWS_ACCESS, AWS_SECRET], None);
+        assert_eq!(
+            aws_without_region.env().iter().collect::<Vec<_>>(),
+            vec![
+                ("AWS_ACCESS_KEY_ID", AWS_ACCESS),
+                ("AWS_SECRET_ACCESS_KEY", AWS_SECRET)
+            ]
+        );
+        assert_eq!(hc.set_fields(), ["token"]);
+        assert_eq!(s3.set_fields(), ["access_key", "secret_key"]);
+        assert_eq!(
+            aws.set_fields(),
+            ["access_key_id", "secret_access_key", "region"]
+        );
+        assert_eq!(
+            aws_without_region.set_fields(),
+            ["access_key_id", "secret_access_key"]
+        );
+        for env in [&hc.env(), &s3.env(), &aws.env(), &scw.env()] {
+            let debug = format!("{env:?}");
+            for secret in [
+                TOKEN,
+                S3_ACCESS,
+                S3_SECRET,
+                AWS_ACCESS,
+                AWS_SECRET,
+                SCW_ACCESS,
+                SCW_SECRET,
+                SCW_PROJECT,
+            ] {
+                assert!(!debug.contains(secret));
+            }
+        }
+        assert!(format!("{aws:?}").contains("eu-central-1"));
+        for c in [hc, s3, aws, scw] {
+            let debug = format!("{c:?}");
+            for secret in [
+                TOKEN,
+                S3_ACCESS,
+                S3_SECRET,
+                AWS_ACCESS,
+                AWS_SECRET,
+                SCW_ACCESS,
+                SCW_SECRET,
+                SCW_PROJECT,
+            ] {
+                assert!(!debug.contains(secret));
+            }
+            assert!(debug.contains("..redacted.."));
+        }
+    }
+    #[test]
+    fn credential_validation() {
         assert_eq!(
             CloudCredential::new(
                 CloudProvider::Scaleway,
@@ -627,56 +680,6 @@ mod tests {
                 .to_string(),
             "cloud credentials: hetzner-s3 expected 2 secret fields, got 1"
         );
-        let aws_without_region = entry(CloudProvider::Aws, &[AWS_ACCESS, AWS_SECRET], None);
-        assert_eq!(
-            aws_without_region.env().iter().collect::<Vec<_>>(),
-            vec![
-                ("AWS_ACCESS_KEY_ID", AWS_ACCESS),
-                ("AWS_SECRET_ACCESS_KEY", AWS_SECRET)
-            ]
-        );
-        assert_eq!(hc.set_fields(), ["token"]);
-        assert_eq!(s3.set_fields(), ["access_key", "secret_key"]);
-        assert_eq!(
-            aws.set_fields(),
-            ["access_key_id", "secret_access_key", "region"]
-        );
-        assert_eq!(
-            aws_without_region.set_fields(),
-            ["access_key_id", "secret_access_key"]
-        );
-        for env in [&hc.env(), &s3.env(), &aws.env(), &scw.env()] {
-            let debug = format!("{env:?}");
-            for secret in [
-                TOKEN,
-                S3_ACCESS,
-                S3_SECRET,
-                AWS_ACCESS,
-                AWS_SECRET,
-                SCW_ACCESS,
-                SCW_SECRET,
-                SCW_PROJECT,
-            ] {
-                assert!(!debug.contains(secret));
-            }
-        }
-        assert!(format!("{aws:?}").contains("eu-central-1"));
-        for c in [hc, s3, aws, scw] {
-            let debug = format!("{c:?}");
-            for secret in [
-                TOKEN,
-                S3_ACCESS,
-                S3_SECRET,
-                AWS_ACCESS,
-                AWS_SECRET,
-                SCW_ACCESS,
-                SCW_SECRET,
-                SCW_PROJECT,
-            ] {
-                assert!(!debug.contains(secret));
-            }
-            assert!(debug.contains("..redacted.."));
-        }
     }
     #[test]
     fn names_replace_and_remove() {
