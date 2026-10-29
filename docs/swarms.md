@@ -332,8 +332,14 @@ nodes = ["box", "gpu"]
 Machines get a routed public IPv4, no private network, root login via
 cloud-init, and a 200 GB block-storage root disk. Nodes reach the primary
 through the node tunnel over the internet. The group creates no bucket, so
-the swarm needs a `[bucket]` or a stack that provides object storage. Only
-the node-group use has been validated.
+the swarm needs a `[bucket]` or a stack that provides object storage. The
+group's security group stays when the group is scaled to zero and is removed
+when the group leaves the spec or the swarm is taken down. Use an API key for
+a dedicated project, with the InstancesFullAccess and BlockStorageFullAccess
+permission sets on that project only. The root disk is a Block Storage (SBS)
+volume, and OpenTofu reads and deletes it through the Block Storage API.
+Swarmy uses Scaleway only for node groups; a Scaleway stack or services group
+has not been tried.
 
 ## Planning changes
 

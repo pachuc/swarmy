@@ -123,10 +123,12 @@ The `scaleway` module implements the thirteen inputs with these meanings:
 The machines output uses `ssh_user` root and public IPv4 only; `private_ip`,
 `bucket` and `network_id` are always null. Each instance has a fixed 200 GB
 `sbs_volume` root disk, deleted on termination. Image and user_data changes
-are ignored after launch. Use an API key for a dedicated project with the
-Instances full-access permission set on that project only. This module has
-been checked only by tofu validate and offline mock tests until the operator
-validation in this goal.
+are ignored after launch. Use an API key for a dedicated project, with
+the InstancesFullAccess and BlockStorageFullAccess permission sets on that
+project only. The root disk is a Block Storage (SBS) volume, and OpenTofu
+reads and deletes it through the Block Storage API. This module has only
+been checked by tofu validate and offline mock tests. It has not yet been
+run against real Scaleway.
 
 ## How swarmy runs these modules
 
