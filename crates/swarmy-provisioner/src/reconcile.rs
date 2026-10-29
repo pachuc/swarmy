@@ -117,6 +117,14 @@ impl Reconciler {
     /// Returns store or runtime failures.
     pub async fn tick(&self, holder: &mut Holder) -> Result<Tick> {
         let lease = match &holder.lease {
+            Some(lease) if lease.expires_at <= self.store.now() => {
+                self.store
+                    .acquire_provisioner_lease(holder.owner, crate::role::LEASE_TTL)
+                    .await
+            }
+            Some(lease) if lease.expires_at >= self.store.now() + crate::role::LEASE_TTL => {
+                Ok(lease.clone())
+            }
             Some(lease) => {
                 self.store
                     .renew_provisioner_lease(lease, crate::role::LEASE_TTL)
@@ -149,20 +157,26 @@ impl Reconciler {
             {
                 continue;
             }
-            let lease = match self
-                .store
-                .renew_provisioner_lease(
-                    holder.lease.as_ref().expect("claimed lease"),
-                    crate::role::LEASE_TTL,
-                )
-                .await
+            let lease = if holder.lease.as_ref().expect("claimed lease").expires_at
+                >= self.store.now() + crate::role::LEASE_TTL
             {
-                Ok(lease) => lease,
-                Err(StoreError::Fence(FenceError::ProvisionerLeaseMismatch)) => {
-                    holder.lease = None;
-                    return Ok(Tick::Standby);
+                holder.lease.as_ref().expect("claimed lease").clone()
+            } else {
+                match self
+                    .store
+                    .renew_provisioner_lease(
+                        holder.lease.as_ref().expect("claimed lease"),
+                        crate::role::LEASE_TTL,
+                    )
+                    .await
+                {
+                    Ok(lease) => lease,
+                    Err(StoreError::Fence(FenceError::ProvisionerLeaseMismatch)) => {
+                        holder.lease = None;
+                        return Ok(Tick::Standby);
+                    }
+                    Err(error) => return Err(error.into()),
                 }
-                Err(error) => return Err(error.into()),
             };
             holder.lease = Some(lease.clone());
             match self.reconcile(&lease, &record).await {

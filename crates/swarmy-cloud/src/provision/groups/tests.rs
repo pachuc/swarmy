@@ -1165,3 +1165,23 @@ fn elastic_group_is_not_a_laptop_opentofu_group() {
     f.spec.groups.get_mut("control").unwrap().module = Module::Existing;
     assert!(!has_module_groups(&f.spec));
 }
+
+#[test]
+fn scaleway_module_environment_has_only_its_three_provider_keys() {
+    let credential = CloudCredential::from_env(CloudProvider::Scaleway, |name| {
+        Some(match name {
+            "SCW_DEFAULT_PROJECT_ID" => "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into(),
+            _ => "test-value".into(),
+        })
+    })
+    .unwrap();
+    let mut credentials = CloudCredentials::default();
+    credentials.set(credential);
+    let env = module_credential_env(&credentials, &Module::Scaleway, false).unwrap();
+    assert_eq!(
+        env.names()
+            .filter(|name| name.starts_with("SCW_"))
+            .collect::<Vec<_>>(),
+        ["SCW_ACCESS_KEY", "SCW_DEFAULT_PROJECT_ID", "SCW_SECRET_KEY"]
+    );
+}

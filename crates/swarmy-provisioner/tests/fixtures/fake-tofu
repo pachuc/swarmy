@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+fixture=$(dirname "$0")
+group=$(basename "$PWD")
+printf 'call %s %s\n' "$group" "$1" >> "$fixture/tofu.log"
+for name in HCLOUD_TOKEN SCW_ACCESS_KEY SCW_SECRET_KEY SCW_DEFAULT_PROJECT_ID AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE AWS_EC2_METADATA_DISABLED; do
+    eval 'value=${'"$name"'-}'
+    if [ -n "$value" ]; then printf 'env %s\n' "$name" >> "$fixture/tofu.log"; fi
+done
+case "$1" in
+ init) exit 0 ;;
+ apply)
+    count=$(python3 -c 'import json; print(json.load(open("swarmy.tfvars.json"))["machine_count"])')
+    printf 'apply machine_count=%s\n' "$count" >> "$fixture/tofu.log"
+    if [ -f "$fixture/fail-apply" ]; then echo 'injected apply failure' >&2; exit 1; fi
+    if [ -f "$fixture/fail-apply-partial" ]; then
+        python3 -c 'import json, os; path="terraform.tfstate"; old=json.load(open(path))["count"] if os.path.exists(path) else 0; json.dump({"count":old+1},open(path,"w"))'
+        echo 'injected partial apply failure' >&2; exit 1
+    fi
+    python3 -c 'import json,sys; json.dump({"count":int(sys.argv[1])},open("terraform.tfstate","w"))' "$count" ;;
+ output)
+    python3 - <<'PY'
+import json
+vars=json.load(open('swarmy.tfvars.json'))
+count=json.load(open('terraform.tfstate'))['count']
+machines=[{'name':f'{vars["swarm"]}-{vars["group"]}-{i}', 'public_ipv4':f'203.0.113.{10+i}', 'public_ipv6':None, 'private_ip':None, 'ssh_user':'root'} for i in range(1,count+1)]
+print(json.dumps({'machines':{'value':machines},'network_id':{'value':None}}))
+PY
+ ;;
+ *) exit 0 ;;
+esac

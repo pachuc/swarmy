@@ -47,6 +47,9 @@ check_release_bundle "$bundle" node
 if check_release_bundle "$bundle" stack 2>/dev/null; then echo 'stack accepted missing client' >&2; exit 1; fi
 printf '#!/bin/sh\n' > "$bundle/swarmy"
 chmod +x "$bundle/swarmy"
+if check_release_bundle "$bundle" stack 2>/dev/null; then echo 'stack accepted missing provisioner' >&2; exit 1; fi
+printf '#!/bin/sh\n' > "$bundle/swarmy-provisioner"
+chmod +x "$bundle/swarmy-provisioner"
 check_release_bundle "$bundle" stack
 rm "$bundle/libfdb_c.so"
 if check_release_bundle "$bundle" node 2>/dev/null; then echo 'accepted missing library' >&2; exit 1; fi
@@ -146,7 +149,9 @@ swarmyd.service enabled'
 SWARMY_TEST_INSTALLED='swarmy-tunnel.service enabled
 swarmy-gateway.service enabled'
 [[ $(list_installed_control_units) == 'swarmy-gateway.service' ]]
-SWARMY_TEST_INSTALLED='swarmy-stack.service enabled'
+SWARMY_TEST_INSTALLED='swarmy-provisioner.service enabled'
+[[ $(list_installed_control_units) == 'swarmy-provisioner.service' ]]
+SWARMY_TEST_INSTALLED='swarmy-stack.service enabled' 
 [[ $(list_installed_control_units) == 'swarmy-stack.service' ]]
 SWARMY_TEST_INSTALLED='swarmy-stack.service enabled
 swarmyd.service enabled
@@ -208,6 +213,14 @@ node_text=$(render_unit swarmyd.service)
 stack_text=$(render_unit swarmy-stack.service)
 [[ $stack_text == *'User=deploy-user'* ]]
 [[ $stack_text == *'ExecStart=/bin/bash /home/deploy-user/swarmy/scripts/dev-stack.sh start'* ]]
+provisioner_text=$(render_unit "$(swarmy_provisioner_unit)")
+[[ $provisioner_text == *'ExecStart=/usr/local/bin/swarmy-provisioner'* ]]
+[[ $provisioner_text == *'KillMode=mixed'* ]]
+[[ $provisioner_text == *'Requires=swarmy-stack.service'* ]]
+[[ $(swarmy_mode_binaries stack) == $'swarmy\nswarmy-core\nswarmy-provisioner' ]]
+[[ $(swarmy_mode_binaries node) == 'swarmy-core' ]]
+[[ $(swarmy_mode_build_args stack) == $'-p\nswarmy-core-bin\n-p\nswarmy-provisioner' ]]
+[[ $(swarmy_mode_build_args node) == $'-p\nswarmy-core-bin' ]]
 scheduler_text=$(render_unit swarmy-scheduler.service)
 [[ $scheduler_text == *'ExecStart=/usr/local/bin/swarmy-core scheduler'* ]]
 [[ $scheduler_text == *'Requires=swarmy-stack.service'* ]]
