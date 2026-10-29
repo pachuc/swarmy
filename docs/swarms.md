@@ -376,8 +376,9 @@ See [REMOTE.md](REMOTE.md#draining-a-node) for how draining works on a node.
 
 A node runs `nvidia-smi`, NVIDIA's driver command-line tool, once at startup to
 list installed cards. It advertises their model, memory in MiB, and count in its
-node record. A missing command, failed query, or malformed output means the node
-advertises no cards. `swarmy doctor` lists cards on live nodes.
+node record. A missing command, a query that fails or runs longer than 10 seconds,
+or malformed output means the node advertises no cards. `swarmy doctor` lists
+cards on live nodes.
 
 Agents set `--gpu none|shared|dedicated`. None can use any sandbox node, but
 prefers nodes without cards. Shared needs at least one card and can share the
@@ -391,8 +392,10 @@ fails and retries as with any full swarm; a durable capacity wait is planned.
 For tests and dev stacks only, `[node.fake_gpu]` with `model`, `memory_mib`, and
 `count` or `SWARMY_NODE_FAKE_GPU="MODEL,MEMORY_MIB,COUNT"` advertises fake cards
 without probing. Local services do not inherit shell variables, so use the TOML
-form for local swarms. The override advertises cards only: GPUs are not yet
-visible inside sandboxes. Exposing the devices is later work.
+form for local swarms. The override only advertises cards; it exposes no device.
+
+Placement and admission are in place, but cards are not yet visible inside
+sandboxes, even on real GPU nodes; exposing the devices is later work.
 
 ## Model provider credentials
 

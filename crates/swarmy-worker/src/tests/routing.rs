@@ -1439,17 +1439,28 @@ async fn gpu_agent_is_placed_on_the_card_node_despite_scratch_elsewhere() {
 }
 
 #[tokio::test]
-async fn cpu_agent_avoids_the_card_node_while_a_cpu_node_is_free() {
+async fn cpu_agent_leaves_scratch_on_a_card_node_for_a_free_cpu_node() {
     let Some(f) = Fixture::new().await else {
         return;
     };
     let _session = f.session().await;
     let gpu = add_gpu_node(&f, 2).await;
+    f.store
+        .report_scratch(
+            f.agent,
+            &ScratchRecord {
+                node_id: gpu,
+                bytes: 12,
+            },
+        )
+        .await
+        .unwrap();
     let placement =
         crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
             .await
             .unwrap();
     assert_ne!(placement.node_id, gpu);
+    assert_eq!(placement.gpu, swarmy_core::GpuRequirement::None);
 }
 
 #[tokio::test]

@@ -146,10 +146,11 @@ them in [api-breaks.txt](api-breaks.txt).
 - **Leases, placements, and nodes.** `lease`, `lease_by_expiry`, `node`,
   `placement`, `placement_epoch`, `placement_by_node`, `placement_hosting`,
   `volume_placement`, and `tool_placement` track ownership and where work
-  runs. Node records carry advertised capacity, GPU cards, and heartbeats; placements record the GPU mode admitted. Service
-  heartbeats stay advisory, tool routing fences durable dispatch across
-  worker replicas, and tool claims on agent volumes never publish disk
-  state. Placement filters by GPU requirement before preferring a node holding the agent's scratch data, but
+  runs. Node records carry advertised capacity, GPU cards, and heartbeats;
+  placements record the GPU mode admitted. Service heartbeats stay advisory,
+  tool routing fences durable dispatch across worker replicas, and tool
+  claims on agent volumes never publish disk state. Placement filters by GPU
+  requirement before preferring a node holding the agent's scratch data, but
   after a placement lease expires the previous host is tried last, even if
   it holds that scratch. Capacity admission remains transactional, and a
   placement epoch fences stale node operations

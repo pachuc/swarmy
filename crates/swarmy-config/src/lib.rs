@@ -1341,13 +1341,15 @@ mod tests {
         assert!(text.contains("[node.fake_gpu]"));
         let decoded: Settings = toml::from_str(&text).unwrap();
         assert_eq!(decoded.node.fake_gpu, settings.node.fake_gpu);
-        let mut invalid = Settings::default();
-        invalid.node.fake_gpu = Some(swarmy_core::GpuCards {
-            model: String::new(),
-            memory_mib: 1,
-            count: 1,
-        });
-        assert!(invalid.validate().is_err());
+        for (model, memory_mib, count) in [("", 1, 1), ("x", 0, 1), ("x", 1, 0)] {
+            let mut invalid = Settings::default();
+            invalid.node.fake_gpu = Some(swarmy_core::GpuCards {
+                model: model.into(),
+                memory_mib,
+                count,
+            });
+            assert!(invalid.validate().is_err());
+        }
     }
 
     #[test]
