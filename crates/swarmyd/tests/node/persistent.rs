@@ -242,6 +242,8 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
 /// A requirement release checkpoints and stops hosting even with processes running.
 /// Uses the agent the earlier checks placed: the test node has one sandbox
 /// slot, so a second agent could not be placed while that computer is held.
+/// It writes its own file and leaves /persistent alone, which the crash
+/// check after it still expects to read "durable".
 async fn check_requirement_release(store: &Store, bus: &Bus, node: &Node, agent: AgentId) {
     let job = dispatch(store, bus, node.id, agent, "echo durable >/persistent").await;
     completed(store, &job).await;
@@ -260,7 +262,7 @@ async fn check_requirement_release(store: &Store, bus: &Bus, node: &Node, agent:
         bus,
         node.id,
         agent,
-        "echo after-process >/persistent",
+        "echo after-process >/requirement-release",
     )
     .await;
     completed(store, &job).await;
@@ -274,7 +276,7 @@ async fn check_requirement_release(store: &Store, bus: &Bus, node: &Node, agent:
         agent,
         // PID 1 is the sandbox's own init (`sleep infinity` in images without
         // swarmy-init), so skip it and print every other command line.
-        r#"cat /persistent; echo ---; for f in /proc/[0-9]*/cmdline; do [ "$f" = /proc/1/cmdline ] && continue; tr '\0' ' ' <"$f" 2>/dev/null; echo; done"#,
+        r#"cat /requirement-release; echo ---; for f in /proc/[0-9]*/cmdline; do [ "$f" = /proc/1/cmdline ] && continue; tr '\0' ' ' <"$f" 2>/dev/null; echo; done"#,
     )
     .await;
     let metadata = completed(store, &job).await;
