@@ -141,10 +141,20 @@ pub async fn run(store: &Store) -> anyhow::Result<Option<Decision>> {
     let waits = store.gpu_capacity_waits().await?;
     let machines = load(store, &record).await?;
     let decision = decide(&record, &machines, &waits, store.now());
+    apply_decision(store, &record, &decision, &machines, &waits).await?;
+    Ok(Some(decision))
+}
+async fn apply_decision(
+    store: &Store,
+    record: &ElasticGroupRecord,
+    decision: &Decision,
+    machines: &[MachineLoad],
+    waits: &[GpuCapacityWait],
+) -> anyhow::Result<()> {
     let unmet = waits.iter().filter(|w| !w.placed).count();
     let placed_waits = waits.len() - unmet;
-    let busy = busy(&machines);
-    let needed = machines_needed(record.definition.sandboxes, &machines, &waits);
+    let busy = busy(machines);
+    let needed = machines_needed(record.definition.sandboxes, machines, waits);
     let max = record.definition.max;
     let capped = needed > max;
     let group = &record.definition.group;
@@ -162,7 +172,7 @@ pub async fn run(store: &Store) -> anyhow::Result<Option<Decision>> {
             tracing::debug!(group, from = record.desired, to = record.desired, waiting = unmet, placed_waits, busy, max, capped, reason = %record.desired_cause.reason, "autoscale kept desired");
         }
     }
-    Ok(Some(decision))
+    Ok(())
 }
 async fn load(store: &Store, group: &ElasticGroupRecord) -> anyhow::Result<Vec<MachineLoad>> {
     let mut loads = Vec::new();
