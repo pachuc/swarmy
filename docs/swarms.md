@@ -323,7 +323,7 @@ hosts = [{ address = "203.0.113.10", ssh_user = "root", ssh_key = "/keys/box" }]
 module = "scaleway"
 size = "L4-1-24G"
 location = "fr-par-2"
-count = 0
+count = 1
 sandboxes = 1
 [placement]
 stack = "box"
@@ -335,9 +335,9 @@ Machines get a routed public IPv4, no private network, root login via
 cloud-init, and a 200 GB block-storage root disk. Nodes reach the primary
 through the node tunnel over the internet. The group creates no bucket, so
 the swarm needs a `[bucket]` or a stack that provides object storage. The
-group's security group stays when the group is scaled to zero and is removed
-when the group leaves the spec or the swarm is taken down. Use an API key for
-a dedicated project, with the InstancesFullAccess and BlockStorageFullAccess
+group's security group is removed when the group leaves the spec or the swarm
+is taken down. Use an API key for a dedicated project, with the
+InstancesFullAccess and BlockStorageFullAccess
 permission sets on that project only. The root disk is a Block Storage (SBS)
 volume, and OpenTofu reads and deletes it through the Block Storage API.
 Swarmy uses Scaleway only for node groups; a Scaleway stack or services group
@@ -393,7 +393,7 @@ command; the installed units are reconciled.
 ## Scaling node groups
 
 ```sh
-swarmy swarm scale fleet workers 0
+swarmy swarm scale fleet workers 1
 swarmy swarm scale fleet workers 4
 swarmy swarm scale fleet workers 2 --drain-timeout 1200
 ```
