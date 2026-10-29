@@ -108,4 +108,35 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn exact_decimal_prices() {
+        for (input, normalized) in [
+            ("0.75", "0.75"),
+            ("1", "1"),
+            ("12.345678", "12.345678"),
+            ("0.000001", "0.000001"),
+        ] {
+            let price = HourlyPrice::parse(input, "EUR").unwrap();
+            assert_eq!(price.amount(), normalized);
+            assert_eq!(HourlyPrice::parse(&price.amount(), "EUR").unwrap(), price);
+        }
+        for input in ["", ".5", "1.", "-1", "1.2345678", "1e3"] {
+            assert_eq!(
+                HourlyPrice::parse(input, "EUR").unwrap_err().to_string(),
+                "price_per_hour must be a decimal like 0.75 with at most six decimal places"
+            );
+        }
+        for currency in ["eur", "EU"] {
+            assert_eq!(
+                HourlyPrice::parse("1", currency).unwrap_err().to_string(),
+                "currency must be three uppercase letters like EUR"
+            );
+        }
+        assert_eq!(
+            HourlyPrice::parse("18446744073709551616", "EUR")
+                .unwrap_err()
+                .to_string(),
+            "price_per_hour is too large"
+        );
+    }
 }

@@ -474,6 +474,41 @@ mod tests {
         .unwrap()
     }
     #[test]
+    fn environment_credential_round_trip() {
+        for (provider, values) in [
+            (CloudProvider::HetznerCloud, vec![("HCLOUD_TOKEN", TOKEN)]),
+            (
+                CloudProvider::Aws,
+                vec![
+                    ("AWS_ACCESS_KEY_ID", AWS_ACCESS),
+                    ("AWS_SECRET_ACCESS_KEY", AWS_SECRET),
+                ],
+            ),
+            (
+                CloudProvider::Aws,
+                vec![
+                    ("AWS_ACCESS_KEY_ID", AWS_ACCESS),
+                    ("AWS_SECRET_ACCESS_KEY", AWS_SECRET),
+                    ("AWS_REGION", "eu-central-1"),
+                ],
+            ),
+        ] {
+            let credential = CloudCredential::from_env(provider, |name| {
+                values
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).into())
+            })
+            .unwrap();
+            assert_eq!(credential.env().iter().collect::<Vec<_>>(), values);
+        }
+        let error = CloudCredential::from_env(CloudProvider::HetznerCloud, |_| None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("HCLOUD_TOKEN"));
+        assert!(!error.contains(TOKEN));
+    }
+    #[test]
     fn round_trip_and_modes() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("data/swarmy/cloud-credentials.toml");

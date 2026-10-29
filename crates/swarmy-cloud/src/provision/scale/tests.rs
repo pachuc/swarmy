@@ -636,51 +636,18 @@ async fn lowering_count_by_hand_points_at_scale() {
 }
 
 #[tokio::test]
-async fn module_node_group_scales_to_zero_and_back() {
+async fn module_node_group_cannot_scale_to_zero() {
     let f = Fixture::new();
     let host = FakeHost::new();
     f.up(&host).await.unwrap();
-    let previous = host.calls().len();
     let settings = settings();
-    f.workers(0);
-    let report = scale_swarm_with(&host, request(&f, &settings, 0))
-        .await
-        .unwrap();
-    assert_eq!(report.removed, ["fleet-workers-1"]);
-    assert_eq!((report.from, report.to), (1, 0));
-    assert_eq!(
-        &host.calls()[previous..],
-        [
-            "drain fleet-workers-1 timeout=600 force=false",
-            "revoke fleet-workers-1 primary=fleet-control-1",
-        ]
+    assert!(
+        scale_swarm_with(&host, request(&f, &settings, 0))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("not elastic, so its count must be between 1 and 50")
     );
-    assert!(f.registry.read_record("fleet").unwrap().unwrap().hosts["workers"].is_empty());
-    let spec = f.registry.read_spec("fleet").unwrap().unwrap();
-    assert_eq!(spec.groups["workers"].count, Some(0));
-    let applied: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(f.temp.path().join("applied-workers-2.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(applied["machine_count"], 0);
-    f.workers(1);
-    let report = scale_swarm_with(
-        &host,
-        ScaleRequest {
-            spec: &spec,
-            ..request(&f, &settings, 1)
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(report.added, ["fleet-workers-1"]);
-    assert_eq!(
-        f.registry.read_spec("fleet").unwrap().unwrap().groups["workers"].count,
-        Some(1)
-    );
-    let record = f.registry.read_record("fleet").unwrap().unwrap();
-    assert_eq!(record.hosts["workers"].len(), 1);
-    assert!(record.hosts["workers"][0].provisioned);
 }
 
 #[tokio::test]
@@ -697,7 +664,11 @@ async fn existing_group_cannot_scale_to_zero() {
     let error = scale_swarm_with(&host, request(&f, &settings, 0))
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("cannot be scaled to zero"));
+    assert!(
+        error
+            .to_string()
+            .contains("not elastic, so its count must be between 1 and 50")
+    );
     assert_eq!(
         std::fs::read(f.registry.spec_path("fleet").unwrap()).unwrap(),
         before_spec

@@ -613,3 +613,72 @@ pub(crate) async fn scale(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod elastic_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    #[test]
+    fn scale_requests_and_down_blockers() {
+        let text = r#"
+name = "fleet"
+lifecycle = "persistent"
+[groups.control]
+module = "hetzner-cloud"
+size = "cpx41"
+location = "fsn1"
+count = 1
+[groups.gpu]
+module = "hetzner-cloud"
+size = "cpx41"
+location = "fsn1"
+elastic = true
+max = 2
+price_per_hour = "0.75"
+currency = "EUR"
+[placement]
+stack = "control"
+services = "control"
+nodes = ["gpu"]
+"#;
+        let spec = SwarmSpec::parse(text).unwrap();
+        let (definition, desired) = elastic_scale_requests(&spec, "gpu", 1).unwrap();
+        assert_eq!(definition.swarm, "fleet");
+        assert_eq!(definition.sandboxes, 64);
+        assert_eq!(definition.local_storage, "dir:/srv/swarmy-local");
+        assert_eq!(desired.desired, 1);
+        assert_eq!(desired.reason.as_deref(), Some("swarmy swarm scale"));
+        assert!(
+            elastic_scale_requests(&spec, "gpu", 3)
+                .unwrap_err()
+                .to_string()
+                .contains("max = 2")
+        );
+        assert!(elastic_scale_requests(&spec, "control", 1).is_err());
+        let mut group = swarmy_api_types::ElasticGroup {
+            swarm: "fleet".into(),
+            group: "gpu".into(),
+            module: "hetzner-cloud".into(),
+            size: "cpx41".into(),
+            location: "fsn1".into(),
+            sandboxes: 64,
+            local_storage: "dir:/srv/swarmy-local".into(),
+            max: 2,
+            price_per_hour: "0.75".into(),
+            currency: "EUR".into(),
+            desired: 0,
+            desired_reason: "registered".into(),
+            applied: 0,
+            generation: 0,
+            reconciled_generation: 0,
+            settled: true,
+            updated_at: String::new(),
+        };
+        assert!(elastic_down_blockers(&[group.clone()]).is_empty());
+        group.applied = 1;
+        assert_eq!(elastic_down_blockers(&[group.clone()]), ["gpu: 1 machines"]);
+        group.applied = 0;
+        group.settled = false;
+        assert_eq!(elastic_down_blockers(&[group]), ["gpu: not yet reconciled"]);
+    }
+}
