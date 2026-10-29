@@ -409,7 +409,7 @@ impl SwarmSpec {
             if group.autoscale {
                 if let Some(other) = autoscaled {
                     return Err(Error::Spec(format!(
-                        "groups "{other}" and "{g}" cannot both autoscale; at most one elastic group may autoscale"
+                        "groups \"{other}\" and \"{g}\" cannot both autoscale; at most one elastic group may autoscale"
                     )));
                 }
                 autoscaled = Some(g);
