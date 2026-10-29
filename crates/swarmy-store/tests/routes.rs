@@ -625,7 +625,7 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
     assert!(matches!(outcome.action, FailoverAction::AdvanceTo(1)));
     let record = f.store.fetch_session(id).await.unwrap().unwrap();
     assert_eq!(record.route_step, 1);
-    let wait = f.store.inference_wait(id).await.unwrap().unwrap();
+    let wait = f.store.session_wait(id).await.unwrap().unwrap();
     // The handled failure is recorded so a restarted worker resumes instead
     // of advancing a second step for the same failure.
     assert_eq!(wait.last_failure_seq, 7);
@@ -655,7 +655,7 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
     let record = f.store.fetch_session(id).await.unwrap().unwrap();
     assert_eq!(record.route_step, 0, "exhaustion restarts the chain");
     assert_eq!(record.state, swarmy_core::SessionState::Sleeping);
-    let wait = f.store.inference_wait(id).await.unwrap().unwrap();
+    let wait = f.store.session_wait(id).await.unwrap().unwrap();
     assert_eq!(wait.wake_at, retry_at);
     assert!(
         wait.reasons
@@ -696,7 +696,7 @@ async fn session_step_moves_past_failures_and_parks_exhausted() {
     ));
     // Success restarts the chain for the next turn.
     f.store.clear_inference_wait(id).await.unwrap();
-    assert!(f.store.inference_wait(id).await.unwrap().is_none());
+    assert!(f.store.session_wait(id).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -846,7 +846,7 @@ async fn failover_resume_after_advance_is_a_noop() {
         f.store.fetch_session(id).await.unwrap().unwrap().route_step,
         1
     );
-    let attempts = f.store.inference_wait(id).await.unwrap().unwrap().attempts;
+    let attempts = f.store.session_wait(id).await.unwrap().unwrap().attempts;
     // A resumed worker replays the same failure after a restart or lease
     // lapse: no second advance, no park while the successor request is in
     // flight, and no new wait attempt counted.
@@ -859,7 +859,7 @@ async fn failover_resume_after_advance_is_a_noop() {
         swarmy_core::SessionState::Leased,
         "no park while the successor request is in flight"
     );
-    let wait = f.store.inference_wait(id).await.unwrap().unwrap();
+    let wait = f.store.session_wait(id).await.unwrap().unwrap();
     assert_eq!(wait.last_failure_seq, 7);
     assert_eq!(wait.attempts, attempts, "no new attempt counted");
 }

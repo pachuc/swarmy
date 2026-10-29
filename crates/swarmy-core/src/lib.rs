@@ -53,6 +53,8 @@ pub use tool::{
 mod placement;
 pub use placement::{AgentCallStatus, PlacementChangeReason, PlacementRecord};
 
+mod capacity;
+pub use capacity::{capacity_wait_exceeded, capacity_wait_notice, capacity_wait_reason, node_satisfies};
 mod rebuild;
 pub use rebuild::{UNCLAIMED_DISPATCH_EXPIRED, computer_rebuilt_message};
 

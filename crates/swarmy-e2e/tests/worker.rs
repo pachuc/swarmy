@@ -296,7 +296,7 @@ impl Fixture {
             .env("SWARMY_FAKE_SCRIPT", self.files.path().join("script.json"))
             .env("SWARMY_FAKE_CALL_LOG", self.files.path().join("calls"))
             .env(
-                "SWARMY_INFERENCE_MAX_WAIT_SECONDS",
+                "SWARMY_MAX_SESSION_WAIT_SECONDS",
                 self.max_wait_seconds.to_string(),
             )
             .env(
@@ -695,7 +695,7 @@ async fn rate_limit_waits_without_a_worker_lease_then_recovers() {
         f.wake(id).await;
         let started = std::time::Instant::now();
         f.wait_state(id, SessionState::Sleeping).await;
-        assert!(f.store.inference_wait(id).await.unwrap().unwrap().reasons[0].contains("quota reached"));
+        assert!(f.store.session_wait(id).await.unwrap().unwrap().reasons[0].contains("quota reached"));
         let leases = f.store.scan_expired_leases(
             Timestamp::now().checked_add(Duration::from_secs(60)).unwrap(), None, 64
         ).await.unwrap();
@@ -727,7 +727,7 @@ async fn parked_inference_can_be_interrupted_and_followed_by_a_new_turn() {
                     .then_some(())
             })
             .await;
-            assert!(f.store.inference_wait(id).await.unwrap().is_none());
+            assert!(f.store.session_wait(id).await.unwrap().is_none());
             let head = f.store.fetch_session(id).await.unwrap().unwrap().head_seq;
             let last = f.store.read_events(id, head - 1, 1).await.unwrap();
             assert!(
@@ -820,7 +820,7 @@ async fn missing_gateway_parks_until_it_returns() {
         assert!(events.iter().any(|event| matches!(event,
             Event::InferenceFailed { retryable: true, retry_at: Some(_), error, .. }
             if error.contains("no gateway serves provider openai"))));
-        assert!(f.store.inference_wait(id).await.unwrap().is_some());
+        assert!(f.store.session_wait(id).await.unwrap().is_some());
         f.start("gateway", None);
             let events = f.idle(id).await;
             assert!(events.iter().any(|event| matches!(event, Event::InferenceCompleted { .. })));
@@ -846,7 +846,7 @@ async fn unknown_provider_fails_without_waiting() {
                 assert!(events.iter().any(|event| matches!(event,
                 Event::InferenceFailed { retryable: false, retry_at: None, error, .. }
                 if error.contains(&format!("no gateway serves provider {provider}")))));
-                assert!(f.store.inference_wait(id).await.unwrap().is_none());
+                assert!(f.store.session_wait(id).await.unwrap().is_none());
             }
         })
     })
@@ -871,7 +871,7 @@ async fn missing_gateway_exhausts_wait_budget() {
 }
 
 #[tokio::test]
-async fn inference_wait_budget_ends_a_turn_with_accumulated_reasons() {
+async fn session_wait_budget_ends_a_turn_with_accumulated_reasons() {
     run(|f| {
         Box::pin(async move {
             f.max_wait_seconds = 3;
@@ -1100,9 +1100,9 @@ async fn wait_for_wait_reason(
     id: SessionId,
     first: &str,
     second: &str,
-) -> swarmy_store::InferenceWait {
+) -> swarmy_store::SessionWait {
     swarmy_testkit::eventually("breaker names the entry", WAIT, async || {
-        f.store.inference_wait(id).await.unwrap().filter(|wait| {
+        f.store.session_wait(id).await.unwrap().filter(|wait| {
             wait.reasons
                 .iter()
                 .any(|reason| reason.contains(first) && reason.contains(second))

@@ -308,7 +308,7 @@ impl Worker {
             .interrupt_if_requested(session, lease, &snapshot, events, turn)
             .await?
             || self
-                .handle_inference_wait(session, turn, lease, &snapshot, events)
+                .handle_session_wait(session, turn, lease, &snapshot, events)
                 .await?
         {
             return Ok(None);
@@ -397,7 +397,7 @@ impl Worker {
         Ok(true)
     }
 
-    pub(super) async fn handle_inference_wait(
+    pub(super) async fn handle_session_wait(
         &self,
         session: &mut SessionRecord,
         turn: Option<MessageId>,
@@ -421,10 +421,10 @@ impl Worker {
         ) {
             self.store.clear_inference_wait(id).await?;
         }
-        if let Some(wait) = self.store.inference_wait(id).await?
+        if let Some(wait) = self.store.session_wait(id).await?
             && wait
                 .since
-                .checked_add(self.config.max_inference_wait)
+                .checked_add(self.config.max_session_wait)
                 .is_ok_and(|limit| Timestamp::now() >= limit)
         {
             let request_id = events
@@ -472,7 +472,7 @@ impl Worker {
             )
         }) {
             let now = Timestamp::now();
-            let wait = self.store.inference_wait(id).await?;
+            let wait = self.store.session_wait(id).await?;
             if wait
                 .as_ref()
                 .is_none_or(|wait| wait.last_failure_seq != *seq)
@@ -512,7 +512,7 @@ impl Worker {
                         failure_kind,
                         retry_at,
                         route_step: session.route_step,
-                        max_wait: self.config.max_inference_wait,
+                        max_wait: self.config.max_session_wait,
                     },
                     super::route_selection(session, &self.config, now),
                 )

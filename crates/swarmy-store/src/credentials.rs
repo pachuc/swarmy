@@ -15,7 +15,7 @@ use swarmy_core::{
 };
 
 #[cfg(any(test, feature = "test-support"))]
-use crate::{BreakerCandidate, CredentialKey, inference_wait::Breaker};
+use crate::{BreakerCandidate, CredentialKey, breakers::Breaker};
 use crate::{Result, Store, StoreError, read, scan_all, write};
 use foundationdb::RetryableTransaction;
 
@@ -199,7 +199,7 @@ impl Store {
                     if record.open_until > now {
                         Some(record.open_until)
                     } else if record.probe_until.is_some_and(|until| until > now) {
-                        now.checked_add(crate::inference_wait::BREAKER_PROBE_GRACE)
+                        now.checked_add(crate::breakers::BREAKER_PROBE_GRACE)
                             .ok()
                     } else {
                         None

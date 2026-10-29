@@ -494,7 +494,7 @@ pub(crate) async fn populate_session_detail(
 ) -> Result<(), ApiFailure> {
     if let Some(wait) = state
         .store
-        .inference_wait(record.session_id)
+        .session_wait(record.session_id)
         .await
         .map_err(storage)?
     {

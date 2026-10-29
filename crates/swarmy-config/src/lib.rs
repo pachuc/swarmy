@@ -174,7 +174,7 @@ mod duration {
 const DEFAULT_VOLUME_SNAPSHOT_PERIOD: Duration = Duration::from_secs(600);
 const DEFAULT_VOLUME_SNAPSHOT_RETENTION: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(10).expect("snapshot retention count is nonzero");
-const DEFAULT_INFERENCE_MAX_WAIT: Duration = Duration::from_secs(3600);
+const DEFAULT_MAX_SESSION_WAIT: Duration = Duration::from_secs(3600);
 const DEFAULT_INFERENCE_MAX_BACKOFF: Duration = Duration::from_secs(300);
 const DEFAULT_INFERENCE_GATEWAY_WAIT: Duration = Duration::from_secs(30);
 const DEFAULT_METERING_RAW_RETENTION_DAYS: std::num::NonZeroU64 =
@@ -239,8 +239,6 @@ pub struct GarbageCollection {
 #[serde(default, deny_unknown_fields)]
 pub struct Inference {
     #[serde(with = "duration::secs")]
-    pub max_wait_secs: Duration,
-    #[serde(with = "duration::secs")]
     pub max_backoff_secs: Duration,
     #[serde(with = "duration::secs")]
     pub gateway_wait_secs: Duration,
@@ -250,7 +248,6 @@ pub struct Inference {
 impl Default for Inference {
     fn default() -> Self {
         Self {
-            max_wait_secs: DEFAULT_INFERENCE_MAX_WAIT,
             max_backoff_secs: DEFAULT_INFERENCE_MAX_BACKOFF,
             gateway_wait_secs: DEFAULT_INFERENCE_GATEWAY_WAIT,
             default_route: None,
@@ -420,6 +417,8 @@ pub struct SchedulerSettings {
     pub ephemeral_retention_secs: Duration,
     #[serde(with = "duration::secs")]
     pub placement_lease_secs: Duration,
+    #[serde(with = "duration::secs")]
+    pub max_session_wait_secs: Duration,
 }
 impl Default for SchedulerSettings {
     fn default() -> Self {
@@ -429,6 +428,7 @@ impl Default for SchedulerSettings {
             resend_interval_ms: DEFAULT_SCHEDULER_RESEND_INTERVAL,
             ephemeral_retention_secs: DEFAULT_EPHEMERAL_RETENTION,
             placement_lease_secs: DEFAULT_PLACEMENT_LEASE,
+            max_session_wait_secs: DEFAULT_MAX_SESSION_WAIT,
         }
     }
 }
@@ -1030,7 +1030,7 @@ static ENV_TABLE: &[EnvEntry] = &[
     e!("SWARMY_EPHEMERAL_RETENTION_SECONDS", |s, v, _| assign_duration(&mut s.scheduler.ephemeral_retention_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.scheduler.ephemeral_retention_secs, duration::Unit::Secs))),
     e!("SWARMY_SANDBOX_IDLE_SECONDS", |s, v, _| assign_duration(&mut s.sandbox.idle_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.sandbox.idle_secs, duration::Unit::Secs))),
     e!("SWARMY_PLACEMENT_LEASE_SECONDS", |s, v, _| assign_duration(&mut s.scheduler.placement_lease_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.scheduler.placement_lease_secs, duration::Unit::Secs))),
-    e!("SWARMY_INFERENCE_MAX_WAIT_SECONDS", |s, v, _| assign_duration(&mut s.inference.max_wait_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.inference.max_wait_secs, duration::Unit::Secs))),
+    e!("SWARMY_MAX_SESSION_WAIT_SECONDS", |s, v, _| assign_duration(&mut s.scheduler.max_session_wait_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.scheduler.max_session_wait_secs, duration::Unit::Secs))),
     e!("SWARMY_INFERENCE_MAX_BACKOFF_SECONDS", |s, v, _| assign_duration(&mut s.inference.max_backoff_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.inference.max_backoff_secs, duration::Unit::Secs))),
     e!("SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS", |s, v, _| assign_duration(&mut s.inference.gateway_wait_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.inference.gateway_wait_secs, duration::Unit::Secs))),
     e!("SWARMY_INFERENCE_DEFAULT_ROUTE", |s, v, _| { assign_opt_string(&mut s.inference.default_route, v); Ok(()) }, |s| Some(s.inference.default_route.clone().unwrap_or_default())),
@@ -1611,7 +1611,7 @@ mod tests {
             ("SWARMY_EPHEMERAL_RETENTION_SECONDS", "123"),
             ("SWARMY_SANDBOX_IDLE_SECONDS", "124"),
             ("SWARMY_PLACEMENT_LEASE_SECONDS", "125"),
-            ("SWARMY_INFERENCE_MAX_WAIT_SECONDS", "126"),
+            ("SWARMY_MAX_SESSION_WAIT_SECONDS", "126"),
             ("SWARMY_INFERENCE_MAX_BACKOFF_SECONDS", "127"),
             ("SWARMY_INFERENCE_GATEWAY_WAIT_SECONDS", "128"),
             ("SWARMY_INFERENCE_DEFAULT_ROUTE", "test-route"),

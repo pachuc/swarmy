@@ -239,9 +239,10 @@ impl Store {
                     .await?
                     .is_some()
             {
-                return Err(StoreError::Domain(
-                    crate::DomainError::ActiveSandboxRequirements,
-                ));
+                if agent.requirements.memory_mib != previous_requirements.memory_mib {
+                    return Err(StoreError::Domain(crate::DomainError::ActiveSandboxRequirements));
+                }
+                self.request_release_in(&trx, id).await?;
             }
             write(&trx, &self.keys().agent(id), &agent)?;
             Ok(agent)

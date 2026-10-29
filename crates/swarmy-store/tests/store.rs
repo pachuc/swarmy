@@ -207,10 +207,10 @@ async fn interrupt_sleeping_inference_clears_wait_and_ends_turn() {
         f.store.interrupt_session(id).await.unwrap(),
         InterruptResult::Finished
     );
-    assert!(f.store.inference_wait(id).await.unwrap().is_none());
+    assert!(f.store.session_wait(id).await.unwrap().is_none());
     assert!(
         f.store
-            .scan_due_inference_waits(timestamp(105))
+            .scan_due_waits(timestamp(105))
             .await
             .unwrap()
             .is_empty()
@@ -350,21 +350,21 @@ async fn breaker_grants_one_probe_and_wait_wakes_without_a_lease() {
     );
     assert!(
         f.store
-            .scan_due_inference_waits(timestamp(104))
+            .scan_due_waits(timestamp(104))
             .await
             .unwrap()
             .is_empty()
     );
     assert_eq!(
         f.store
-            .scan_due_inference_waits(timestamp(105))
+            .scan_due_waits(timestamp(105))
             .await
             .unwrap(),
         vec![id]
     );
     assert!(
         f.store
-            .wake_inference_wait(id, timestamp(105))
+            .wake_wait(id, timestamp(105))
             .await
             .unwrap()
     );
@@ -417,7 +417,7 @@ async fn leased_park_rejects_stale_leases_and_dedupes_the_same_sequence() {
     let audit = test.store.lease_audit(&[id]).await.unwrap();
     assert_eq!(audit[0].state, SessionState::Sleeping);
     assert!(audit[0].waiting && !audit[0].leased);
-    let wait = test.store.inference_wait(id).await.unwrap().unwrap();
+    let wait = test.store.session_wait(id).await.unwrap().unwrap();
     assert_eq!(wait.attempts, 1);
     assert_eq!(wait.reasons, ["openai/primary: quota reached"]);
     // A stale lease cannot park through the leased path.
@@ -441,7 +441,7 @@ async fn leased_park_rejects_stale_leases_and_dedupes_the_same_sequence() {
     // records no new attempt: the wait already covers that failure.
     assert!(
         test.store
-            .wake_inference_wait(id, timestamp(160))
+            .wake_wait(id, timestamp(160))
             .await
             .unwrap()
     );
@@ -462,7 +462,7 @@ async fn leased_park_rejects_stale_leases_and_dedupes_the_same_sequence() {
             .await
             .unwrap()
     );
-    let wait = test.store.inference_wait(id).await.unwrap().unwrap();
+    let wait = test.store.session_wait(id).await.unwrap().unwrap();
     assert_eq!(wait.attempts, 1);
     assert_eq!(wait.reasons, ["openai/primary: quota reached"]);
 }
@@ -494,7 +494,7 @@ async fn leased_park_extends_the_wait_on_a_new_sequence() {
     // and reason instead of replacing it.
     assert!(
         test.store
-            .wake_inference_wait(id, timestamp(160))
+            .wake_wait(id, timestamp(160))
             .await
             .unwrap()
     );
@@ -515,7 +515,7 @@ async fn leased_park_extends_the_wait_on_a_new_sequence() {
             .await
             .unwrap()
     );
-    let wait = test.store.inference_wait(id).await.unwrap().unwrap();
+    let wait = test.store.session_wait(id).await.unwrap().unwrap();
     assert_eq!(wait.attempts, 2);
     assert_eq!(
         wait.reasons,

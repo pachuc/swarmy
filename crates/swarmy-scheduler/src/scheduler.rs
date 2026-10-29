@@ -142,7 +142,7 @@ impl Scheduler {
         let Some((until, reason)) = self.breaker_park(session, agent, breakers).await? else {
             return Ok(false);
         };
-        let wait = self.store.inference_wait(session_id).await?;
+        let wait = self.store.session_wait(session_id).await?;
         if self.failure_pending(session, wait.as_ref()).await? || self.wait_expired(wait.as_ref()) {
             return Ok(false);
         }
@@ -153,7 +153,7 @@ impl Scheduler {
                 &reason,
                 until,
                 Timestamp::now(),
-                self.config.max_inference_wait,
+                self.config.max_session_wait,
             )
             .await?)
     }
@@ -164,7 +164,7 @@ impl Scheduler {
     async fn failure_pending(
         &self,
         session: &swarmy_core::SessionRecord,
-        wait: Option<&swarmy_store::InferenceWait>,
+        wait: Option<&swarmy_store::SessionWait>,
     ) -> Result<bool, anyhow::Error> {
         if session.head_seq == 0 {
             return Ok(false);
@@ -182,10 +182,10 @@ impl Scheduler {
 
     /// Whether the inference wait outlasted the maximum gateway wait and the
     /// session must run to observe the timeout.
-    fn wait_expired(&self, wait: Option<&swarmy_store::InferenceWait>) -> bool {
+    fn wait_expired(&self, wait: Option<&swarmy_store::SessionWait>) -> bool {
         wait.is_some_and(|wait| {
             wait.since
-                .checked_add(self.config.max_inference_wait)
+                .checked_add(self.config.max_session_wait)
                 .is_ok_and(|limit| limit <= Timestamp::now())
         })
     }
@@ -224,8 +224,8 @@ impl Scheduler {
     /// Wake every inference wait whose deadline passed. A lost race with the
     /// gateway just nudges a session the worker will find already complete.
     async fn wake_due_waits(&self, now: Timestamp) -> Result<(), StoreError> {
-        for id in self.store.scan_due_inference_waits(now).await? {
-            if self.store.wake_inference_wait(id, now).await? {
+        for id in self.store.scan_due_waits(now).await? {
+            if self.store.wake_wait(id, now).await? {
                 self.nudge(id, false, &mut RouteCache::default()).await;
             }
         }

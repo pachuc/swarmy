@@ -15,9 +15,9 @@ use swarmy_core::{
 };
 
 use crate::{
-    CredentialKey, InferenceFailureWait, InferenceWait, Result, Store, StoreError,
+    CredentialKey, InferenceFailureWait, SessionWait, Result, Store, StoreError,
     credentials::{decode_entry, entry_ready},
-    inference_wait::Breaker,
+    breakers::Breaker,
     read, scan_all, write,
 };
 
@@ -685,7 +685,7 @@ impl Store {
             for (provider, label) in steps {
                 let key = CredentialKey::for_label(provider, label.clone());
                 let breaker: Option<Breaker> = read(&trx, &self.breaker_key(&key)).await?;
-                states.push(crate::inference_wait::open_state(breaker.as_ref(), now));
+                states.push(crate::breakers::open_state(breaker.as_ref(), now));
             }
             Ok(states)
         })
@@ -814,7 +814,7 @@ impl Store {
             let key = CredentialKey::for_label(&step.provider, step.label.clone());
             let breaker: Option<Breaker> = read(trx, &self.breaker_key(&key)).await?;
             let (open_until, reason) =
-                crate::inference_wait::open_state(breaker.as_ref(), selection.now);
+                crate::breakers::open_state(breaker.as_ref(), selection.now);
             steps.push(RouteStepStatus {
                 provider: step.provider,
                 label: step.label,
@@ -870,25 +870,17 @@ impl Store {
         trx.clear(&self.keys().cache_affinity(id));
         self.write_session(trx, &session)?;
         if !reasons.is_empty() {
-            let wait_key = self.keys().inference_wait(id);
-            let mut wait = read::<InferenceWait>(trx, &wait_key)
+            let wait_key = self.keys().session_wait(id);
+            let mut wait = read::<SessionWait>(trx, &wait_key)
                 .await?
-                .unwrap_or(InferenceWait {
-                    since: now,
-                    wake_at: now,
-                    last_failure_seq: 0,
-                    reasons: Vec::new(),
-                    attempts: 0,
-                });
-            if wait.last_failure_seq != seq {
-                wait.attempts = wait.attempts.saturating_add(1);
+                .unwrap_or_else(|| SessionWait::inference_new(now, now));
+            if wait.inference().is_none_or(|h| h.last_failure_seq != seq) {
+                let history = wait.inference_mut();
+                history.attempts = history.attempts.saturating_add(1);
             }
-            wait.last_failure_seq = seq;
+            wait.inference_mut().last_failure_seq = seq;
             for reason in reasons {
-                let summary: String = reason.chars().take(256).collect();
-                if !wait.reasons.contains(&summary) && wait.reasons.len() < 32 {
-                    wait.reasons.push(summary);
-                }
+                wait.inference_mut().record_reason(reason);
             }
             write(trx, &wait_key, &wait)?;
         }
@@ -918,8 +910,8 @@ impl Store {
         self.transaction(|trx| async move {
             self.check_worker_lease(&trx, id, lease, now).await?;
             let stored = self.session(&trx, id).await?;
-            if let Some(wait) = read::<InferenceWait>(&trx, &self.keys().inference_wait(id)).await?
-                && wait.last_failure_seq == seq
+            if let Some(wait) = read::<SessionWait>(&trx, &self.keys().session_wait(id)).await?
+                && wait.inference().is_some_and(|h| h.last_failure_seq == seq)
             {
                 return Ok(FailoverOutcome {
                     action: FailoverAction::AlreadyHandled,

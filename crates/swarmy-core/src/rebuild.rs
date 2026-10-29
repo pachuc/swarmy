@@ -28,6 +28,9 @@ pub fn computer_rebuilt_message(
                 "Your computer recovery began at {recovery_started_at} from the snapshot at {snapshot}, which was {seconds} seconds before recovery.{estimate} Running processes and file changes after that snapshot were lost. The interrupted tool call failed; check external side effects before retrying."
             ))
         }
+        PlacementChangeReason::RequirementChange => Some(format!(
+            "Your computer restarted, and may have moved to another node, because its GPU requirement changed. Recovery began at {recovery_started_at} from its final checkpoint at {snapshot}, which was {seconds} seconds before recovery. Files on the disk up to that checkpoint were kept. Running processes did not survive, and neither did host-local scratch such as the cargo target directory and /tmp, so the next build starts cold. Any interrupted tool call failed; check external side effects before retrying."
+        )),
         PlacementChangeReason::Eviction => Some(format!(
             "Your computer was evicted while idle. Recovery began at {recovery_started_at} from its final checkpoint at {snapshot}, which was {seconds} seconds before recovery. Running processes and file changes after that checkpoint were lost. Any interrupted tool call failed; check external side effects before retrying."
         )),
@@ -38,6 +41,19 @@ pub fn computer_rebuilt_message(
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+
+    #[test]
+    fn requirement_change_notice_reports_lost_processes_and_scratch() {
+        let message = computer_rebuilt_message(
+            PlacementChangeReason::RequirementChange,
+            "2026-09-16T10:00:00Z".parse().unwrap(),
+            "2026-09-16T10:00:05Z".parse().unwrap(),
+            None,
+        ).unwrap();
+        for text in ["GPU requirement changed", "5 seconds before recovery", "Running processes did not survive", "cargo target directory", "/tmp"] {
+            assert!(message.contains(text));
+        }
+    }
 
     #[test]
     fn failure_notice_reports_snapshot_and_loss() {

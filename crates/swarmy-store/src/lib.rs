@@ -22,7 +22,8 @@ pub mod blob;
 mod computers;
 pub mod credentials;
 mod inference;
-mod inference_wait;
+mod breakers;
+mod session_wait;
 mod interrupt;
 mod metrics;
 mod metrics_codec;
@@ -77,8 +78,9 @@ mod volumes;
 pub use volumes::PutImageOptions;
 
 #[cfg(any(test, feature = "test-support"))]
-pub use inference_wait::LeaseAudit;
-pub use inference_wait::{BreakerCandidate, CredentialKey, InferenceFailureWait, InferenceWait};
+pub use session_wait::LeaseAudit;
+pub use breakers::{BreakerCandidate, CredentialKey};
+pub use session_wait::{CAPACITY_WAIT_RETRY, CapacityPark, InferenceFailureWait, InferenceHistory, SessionWait, WaitKind as SessionWaitKind};
 pub use runnable::{RUNNABLE_PARTITIONS, runnable_partition};
 
 use std::{

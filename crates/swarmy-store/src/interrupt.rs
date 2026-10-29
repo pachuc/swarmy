@@ -44,13 +44,13 @@ impl Store {
                     Err(StoreError::Domain(crate::DomainError::NothingToInterrupt))
                 }
                 SessionState::Sleeping => {
-                    let wait = read::<crate::InferenceWait>(&trx, &self.keys().inference_wait(id))
+                    let wait = read::<crate::SessionWait>(&trx, &self.keys().session_wait(id))
                         .await?
-                        .ok_or(StoreError::Domain(crate::DomainError::MissingInferenceWait))?;
-                    let request_id = if wait.last_failure_seq == 0 {
+                        .ok_or(StoreError::Domain(crate::DomainError::MissingSessionWait))?;
+                    let request_id = if wait.inference().map_or(0, |h| h.last_failure_seq) == 0 {
                         RequestId::for_step(id, crate::seq_after(session.head_seq, 1)?)
                     } else {
-                        self.request_from_event(&trx, id, wait.last_failure_seq)
+                        self.request_from_event(&trx, id, wait.inference().map_or(0, |h| h.last_failure_seq))
                             .await?
                             .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?
                     };
@@ -137,7 +137,7 @@ impl Store {
 
     async fn clear_wait_in(&self, trx: &Transaction, id: SessionId) -> Result<()> {
         if let Some(wait) =
-            read::<crate::InferenceWait>(trx, &self.keys().inference_wait(id)).await?
+            read::<crate::SessionWait>(trx, &self.keys().session_wait(id)).await?
         {
             self.clear_wait(trx, id, &wait);
         }

@@ -157,8 +157,8 @@ pub enum DomainError {
     InvalidToolCallArguments(#[source] SandboxArgumentError),
     #[error("invalid transition")]
     InvalidTransition,
-    #[error("missing inference wait")]
-    MissingInferenceWait,
+    #[error("missing session wait")]
+    MissingSessionWait,
     #[error("missing inflight")]
     MissingInflight,
     #[error("missing tool request")]

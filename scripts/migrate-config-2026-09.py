@@ -80,7 +80,7 @@ MOVES = [
     ("volume_snapshots.period_seconds", "volume_snapshots.period_secs"),
     ("gc.grace_seconds", "gc.grace_secs"),
     ("gc.interval_seconds", "gc.interval_secs"),
-    ("inference.max_wait_seconds", "inference.max_wait_secs"),
+    ("inference.max_wait_seconds", "scheduler.max_session_wait_secs"),
     ("inference.max_backoff_seconds", "inference.max_backoff_secs"),
     ("inference.gateway_wait_seconds", "inference.gateway_wait_secs"),
 ]
@@ -141,7 +141,7 @@ KNOWN_LEAVES = {
     "gc.filter_bytes",
     "gc.batch_size",
     "gc.delete_concurrency",
-    "inference.max_wait_secs",
+    "scheduler.max_session_wait_secs",
     "inference.max_backoff_secs",
     "inference.gateway_wait_secs",
     "inference.default_route",

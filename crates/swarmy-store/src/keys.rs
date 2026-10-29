@@ -48,8 +48,8 @@ const INFERENCE_INPUT: &str = "inference_input";
 const INFERENCE_REQUEST: &str = "inference_request";
 const INFERENCE_RETRY: &str = "inference_retry";
 const INFERENCE_RESULT: &str = "inference_result";
-const INFERENCE_WAIT: &str = "inference_wait";
-const INFERENCE_WAIT_DUE: &str = "inference_wait_due";
+const SESSION_WAIT: &str = "session_wait";
+const SESSION_WAIT_DUE: &str = "session_wait_due";
 const INFLIGHT: &str = "inflight";
 const LEASE: &str = "lease";
 const LEASE_BY_EXPIRY: &str = "lease_by_expiry";
@@ -64,6 +64,7 @@ const PLACEMENT_BY_NODE: &str = "placement_by_node";
 const PLACEMENT_COUNT: &str = "placement_count";
 const PLACEMENT_EPOCH: &str = "placement_epoch";
 const PLACEMENT_HOSTING: &str = "placement_hosting";
+const PLACEMENT_NEXT_REASON: &str = "placement_next_reason";
 const REQUEST_TURN: &str = "request_turn";
 const ROUTE: &str = "route";
 const RUNNABLE: &str = "runnable";
@@ -331,21 +332,21 @@ impl<'a> Keys<'a> {
     pub(crate) fn inference_input_space(&self) -> Subspace {
         self.root.subspace(&(INFERENCE_INPUT,))
     }
-    pub(crate) fn inference_wait(&self, id: SessionId) -> Vec<u8> {
-        self.inference_wait_space()
+    pub(crate) fn session_wait(&self, id: SessionId) -> Vec<u8> {
+        self.session_wait_space()
             .pack(&(id.as_ulid().to_bytes().as_slice(),))
     }
-    pub(crate) fn inference_wait_space(&self) -> Subspace {
-        self.root.subspace(&(INFERENCE_WAIT,))
+    pub(crate) fn session_wait_space(&self) -> Subspace {
+        self.root.subspace(&(SESSION_WAIT,))
     }
-    pub(crate) fn inference_wait_due(&self, at: Timestamp, session: SessionId) -> Vec<u8> {
-        self.inference_wait_due_space_root().pack(&(
+    pub(crate) fn session_wait_due(&self, at: Timestamp, session: SessionId) -> Vec<u8> {
+        self.session_wait_due_space_root().pack(&(
             (at.as_second(), at.subsec_nanosecond()),
             session.as_ulid().to_bytes().as_slice(),
         ))
     }
-    pub(crate) fn inference_wait_due_space_root(&self) -> Subspace {
-        self.root.subspace(&(INFERENCE_WAIT_DUE,))
+    pub(crate) fn session_wait_due_space_root(&self) -> Subspace {
+        self.root.subspace(&(SESSION_WAIT_DUE,))
     }
     pub(crate) fn inflight(&self, id: RequestId) -> Vec<u8> {
         self.inflight_space().pack(&(id.as_bytes().as_slice(),))
@@ -755,6 +756,10 @@ impl<'a> Keys<'a> {
     pub(crate) fn scratch_space(&self) -> Subspace {
         self.root.subspace(&(SCRATCH,))
     }
+    pub(crate) fn placement_next_reason(&self, id: AgentId) -> Vec<u8> {
+        self.root.subspace(&(PLACEMENT_NEXT_REASON,)).pack(&(id.as_ulid().to_bytes().as_slice(),))
+    }
+
     pub(crate) fn placement_hosting(&self, id: AgentId) -> Vec<u8> {
         self.placement_hosting_space()
             .pack(&(id.as_ulid().to_bytes().as_slice(),))
@@ -806,8 +811,8 @@ impl<'a> Keys<'a> {
             .subspace(&(scope.to_string(), provider))
     }
 
-    pub(crate) fn inference_wait_due_space(&self, at: Timestamp) -> Subspace {
-        self.inference_wait_due_space_root()
+    pub(crate) fn session_wait_due_space(&self, at: Timestamp) -> Subspace {
+        self.session_wait_due_space_root()
             .subspace(&((at.as_second(), at.subsec_nanosecond()),))
     }
 
