@@ -45,7 +45,7 @@ impl CredentialSummary {
             last_used_at: None,
             expires_at: match record.kind {
                 CredentialKind::OAuth { expires_at, .. } => Some(expires_at),
-                CredentialKind::ApiKey { .. } => None,
+                CredentialKind::ApiKey { .. } | CredentialKind::MachineProvider { .. } => None,
             },
         }
     }
@@ -88,7 +88,7 @@ fn entry_readiness(record: &CredentialRecord, now: Timestamp) -> (bool, Option<T
     let needs_login = record.status(now) == CredentialStatus::NeedsLogin;
     let expires_at = match record.kind {
         CredentialKind::OAuth { expires_at, .. } => Some(expires_at),
-        CredentialKind::ApiKey { .. } => None,
+        CredentialKind::ApiKey { .. } | CredentialKind::MachineProvider { .. } => None,
     };
     (needs_login, expires_at)
 }

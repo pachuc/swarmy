@@ -2283,6 +2283,167 @@
         }
       }
     },
+    "/v1/swarm/groups/{group}": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "show_elastic_group",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ElasticGroup"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "put_elastic_group",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutElasticGroup"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ElasticGroup"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/swarm/groups/{group}/desired": {
+      "put": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "set_elastic_desired",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetElasticDesired"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ElasticGroup"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/usage": {
       "get": {
         "tags": [
@@ -3134,7 +3295,8 @@
         "enum": [
           "subscription",
           "api_key",
-          "cloud"
+          "cloud",
+          "machine_provider"
         ]
       },
       "CredentialStatus": {
@@ -3289,6 +3451,95 @@
             "items": {
               "$ref": "#/components/schemas/DoctorService"
             }
+          }
+        }
+      },
+      "ElasticGroup": {
+        "type": "object",
+        "description": "An elastic group as held by the swarm.",
+        "required": [
+          "swarm",
+          "group",
+          "module",
+          "size",
+          "location",
+          "sandboxes",
+          "local_storage",
+          "max",
+          "price_per_hour",
+          "currency",
+          "desired",
+          "desired_reason",
+          "applied",
+          "generation",
+          "reconciled_generation",
+          "settled",
+          "updated_at"
+        ],
+        "properties": {
+          "applied": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "currency": {
+            "type": "string"
+          },
+          "desired": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "desired_reason": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "group": {
+            "type": "string"
+          },
+          "local_storage": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          },
+          "max": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "module": {
+            "type": "string"
+          },
+          "price_per_hour": {
+            "type": "string"
+          },
+          "reconciled_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sandboxes": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "settled": {
+            "type": "boolean",
+            "description": "Whether the provisioner has acted on the latest desired count."
+          },
+          "size": {
+            "type": "string"
+          },
+          "swarm": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
           }
         }
       },
@@ -4576,6 +4827,58 @@
           "record": {}
         }
       },
+      "PutElasticGroup": {
+        "type": "object",
+        "description": "Register or update an elastic group's definition from the swarm spec.",
+        "required": [
+          "idempotency_key",
+          "swarm",
+          "module",
+          "size",
+          "location",
+          "sandboxes",
+          "local_storage",
+          "max",
+          "price_per_hour",
+          "currency"
+        ],
+        "properties": {
+          "currency": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "local_storage": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          },
+          "max": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "module": {
+            "type": "string"
+          },
+          "price_per_hour": {
+            "type": "string"
+          },
+          "sandboxes": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "size": {
+            "type": "string"
+          },
+          "swarm": {
+            "type": "string"
+          }
+        }
+      },
       "QuotaEntry": {
         "type": "object",
         "description": "One entry's quota with its identity, as listed by `swarmy auth quota`.\nServed in one request by `GET /v1/quotas`, so the JSON round-trips\nthrough these types.",
@@ -4981,6 +5284,30 @@
           "sleeping",
           "completed"
         ]
+      },
+      "SetElasticDesired": {
+        "type": "object",
+        "description": "Set the desired number of machines, between zero and max.",
+        "required": [
+          "idempotency_key",
+          "desired"
+        ],
+        "properties": {
+          "desired": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "SetEntryQuota": {
         "type": "object",

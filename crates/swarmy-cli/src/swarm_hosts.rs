@@ -1,5 +1,5 @@
 //! CLI presentation for swarms on hosts.
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde_json::json;
 use std::path::PathBuf;
 use swarmy_cloud::provision::groups::{self, MachineGroups};
@@ -304,6 +304,50 @@ pub(crate) async fn down(
             spec.name
         );
     }
+    if spec.groups.values().any(|group| group.elastic) {
+        let (client, endpoint) = crate::target::connect_swarm(&spec.name).await.context(
+            "down needs the swarm's API to stop its elastic groups; start the swarm first",
+        )?;
+        let mut records = Vec::new();
+        for (name, group) in &spec.groups {
+            if !group.elastic {
+                continue;
+            }
+            let mut record = match client.elastic_group(name).await {
+                Ok(record) => record,
+                Err(swarmy_client::Error::Api { status, .. }) if status.as_u16() == 404 => {
+                    continue;
+                }
+                Err(error) => return Err(error).context(
+                    "down needs the swarm's API to stop its elastic groups; start the swarm first",
+                ),
+            };
+            if record.desired > 0 {
+                record = swarmy_client::api_client::call(
+                    &endpoint,
+                    client.set_elastic_desired(
+                        name,
+                        &swarmy_api_types::SetElasticDesired {
+                            idempotency_key: ulid::Ulid::generate().to_string(),
+                            desired: 0,
+                            reason: Some("swarmy swarm down".into()),
+                        },
+                    ),
+                )
+                .await?;
+            }
+            records.push(record);
+        }
+        let blockers = elastic_down_blockers(&records);
+        if !blockers.is_empty() {
+            bail!(
+                "swarm {} still has elastic machines or unfinished changes ({}); their desired count is now 0 and the provisioner on the primary destroys them; run swarmy swarm down {} again in a few minutes",
+                spec.name,
+                blockers.join(", "),
+                spec.name
+            );
+        }
+    }
     let tofu_dir = registry.swarm_dir(&spec.name)?.join("tofu");
     let pair = machines_for(registry, spec, tofu_dir.exists()).await?;
     let (removed, destroyed_groups) =
@@ -445,6 +489,97 @@ pub(crate) async fn node_add(
         json_output,
     )
     .await
+}
+
+/// Build the registration and desired-count requests without network access.
+pub(crate) fn elastic_scale_requests(
+    spec: &SwarmSpec,
+    group: &str,
+    count: u32,
+) -> Result<(
+    swarmy_api_types::PutElasticGroup,
+    swarmy_api_types::SetElasticDesired,
+)> {
+    use swarmy_cloud::provision::scale::{GroupKind, check_scalable};
+    if check_scalable(spec, group)? != GroupKind::Elastic {
+        bail!("group \"{group}\" is not elastic");
+    }
+    let selected = &spec.groups[group];
+    let max = selected.max.context("elastic group has no max")?;
+    if count > max {
+        bail!("group \"{group}\" is elastic with max = {max}; scale it between 0 and {max}");
+    }
+    let request = swarmy_api_types::PutElasticGroup {
+        idempotency_key: ulid::Ulid::generate().to_string(),
+        swarm: spec.name.clone(),
+        module: selected.module.clone().into(),
+        size: selected.size.clone().context("elastic group has no size")?,
+        location: selected
+            .location
+            .clone()
+            .context("elastic group has no location")?,
+        sandboxes: selected
+            .sandboxes
+            .unwrap_or(swarmy_config::default_sandboxes()),
+        local_storage: selected
+            .local_storage
+            .clone()
+            .unwrap_or_else(|| "dir:/srv/swarmy-local".into()),
+        max,
+        price_per_hour: selected
+            .price_per_hour
+            .clone()
+            .context("elastic group has no price")?,
+        currency: selected
+            .currency
+            .clone()
+            .context("elastic group has no currency")?,
+    };
+    let desired = swarmy_api_types::SetElasticDesired {
+        idempotency_key: ulid::Ulid::generate().to_string(),
+        desired: count,
+        reason: Some("swarmy swarm scale".into()),
+    };
+    Ok((request, desired))
+}
+/// Apply an elastic scale through the swarm's control plane.
+pub(crate) async fn scale_elastic(
+    spec: &SwarmSpec,
+    group: &str,
+    count: u32,
+    json_output: bool,
+) -> Result<()> {
+    let (definition, desired) = elastic_scale_requests(spec, group, count)?;
+    let (client, endpoint) = crate::target::connect_swarm(&spec.name).await?;
+    swarmy_client::api_client::call(&endpoint, client.put_elastic_group(group, &definition))
+        .await?;
+    let record =
+        swarmy_client::api_client::call(&endpoint, client.set_elastic_desired(group, &desired))
+            .await?;
+    if json_output {
+        println!("{}", serde_json::to_string(&record)?);
+    } else {
+        println!(
+            "group {group}: desired {} of max {}, {} machines now; the provisioner on the primary creates or destroys the rest",
+            record.desired, record.max, record.applied
+        );
+    }
+    Ok(())
+}
+/// Groups that still hold machines or have an unreconciled desired count.
+pub(crate) fn elastic_down_blockers(groups: &[swarmy_api_types::ElasticGroup]) -> Vec<String> {
+    groups
+        .iter()
+        .filter_map(|group| {
+            if group.applied > 0 {
+                Some(format!("{}: {} machines", group.group, group.applied))
+            } else if !group.settled {
+                Some(format!("{}: not yet reconciled", group.group))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Change a node group's size after draining removed machines.

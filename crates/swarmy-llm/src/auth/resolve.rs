@@ -208,6 +208,11 @@ impl Resolver {
         provider: &str,
         mut record: CredentialRecord,
     ) -> Result<CredentialRecord, Error> {
+        if matches!(record.kind, CredentialKind::MachineProvider { .. }) {
+            return Err(Error::Credentials(
+                "this entry holds machine-provider credentials for OpenTofu, not an inference credential",
+            ));
+        }
         if record.status(jiff::Timestamp::now()) == CredentialStatus::NeedsLogin {
             return Err(Error::NeedsLogin(provider.into()));
         }
@@ -261,6 +266,7 @@ fn vertex_from_record(kind: CredentialKind) -> ClientAuth {
     let (secret, mut extra) = match kind {
         CredentialKind::ApiKey { key, extra } => (key, extra),
         CredentialKind::OAuth { access, extra, .. } => (access, extra),
+        CredentialKind::MachineProvider { .. } => (String::new(), BTreeMap::new()),
     };
     if !secret.is_empty()
         && !extra.contains_key("service_account_json")
@@ -285,6 +291,9 @@ fn auth_from_kind(provider: &str, kind: CredentialKind) -> Result<ClientAuth, Er
                 },
             )
         }
+        CredentialKind::MachineProvider { .. } => Err(Error::Credentials(
+            "machine-provider credentials cannot authenticate inference",
+        )),
         CredentialKind::OAuth { access, extra, .. } => Ok(
             match crate::ProviderAuthExtra::from_record(provider, &extra) {
                 Some(extra) => ClientAuth::BearerWithExtra {

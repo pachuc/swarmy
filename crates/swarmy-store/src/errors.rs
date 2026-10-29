@@ -88,6 +88,16 @@ pub enum DomainError {
     MachineNotJoined,
     #[error("credential does not exist")]
     CredentialMissing,
+    #[error("elastic group {group} is not registered; scale it once with swarmy swarm scale")]
+    ElasticGroupMissing { group: String },
+    #[error(
+        "elastic group {group} has machines or a nonzero desired count; scale it to 0 and wait for its machines to go before changing module, size, location or swarm"
+    )]
+    ElasticGroupBusy { group: String },
+    #[error("desired count {desired} is above the group's max of {max}")]
+    DesiredAboveMax { desired: u32, max: u32 },
+    #[error("invalid elastic group: {0}")]
+    InvalidElasticGroup(String),
     #[error("route does not exist")]
     RouteMissing,
     #[error("invalid route: {0}")]

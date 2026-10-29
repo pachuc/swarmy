@@ -35,6 +35,22 @@ impl CloudProvider {
             Self::Scaleway => "scaleway",
         }
     }
+    /// OpenTofu environment names in secret field order, followed by the optional field.
+    #[must_use]
+    pub const fn env_names(self) -> (&'static [&'static str], Option<&'static str>) {
+        match self {
+            Self::HetznerCloud => (&["HCLOUD_TOKEN"], None),
+            Self::HetznerS3 => (&["MINIO_USER", "MINIO_PASSWORD"], None),
+            Self::Aws => (
+                &["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+                Some("AWS_REGION"),
+            ),
+            Self::Scaleway => (
+                &["SCW_ACCESS_KEY", "SCW_SECRET_KEY", "SCW_DEFAULT_PROJECT_ID"],
+                None,
+            ),
+        }
+    }
     /// Secret fields read from stdin, in order.
     #[must_use]
     pub const fn secret_fields(self) -> &'static [&'static str] {
@@ -185,6 +201,31 @@ impl CloudCredential {
         credential.validate()?;
         Ok(credential)
     }
+    /// Build from environment lookups using the same validation as `new`.
+    /// # Errors
+    /// Reports the first missing variable by name, never its value.
+    pub fn from_env(
+        provider: CloudProvider,
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, Error> {
+        let (names, option_name) = provider.env_names();
+        let secrets = names
+            .iter()
+            .map(|name| {
+                lookup(name)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        Error::CloudCredential(format!(
+                            "{provider} needs {name} in the environment"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let option = option_name
+            .and_then(lookup)
+            .filter(|value| !value.is_empty());
+        Self::new(provider, secrets, option)
+    }
     #[must_use]
     pub const fn provider(&self) -> CloudProvider {
         match self {
@@ -206,30 +247,24 @@ impl CloudCredential {
     }
     #[must_use]
     pub fn env(&self) -> ProviderEnv {
-        ProviderEnv {
-            vars: match self {
-                Self::HetznerCloud(c) => vec![("HCLOUD_TOKEN", c.token.clone())],
-                Self::HetznerS3(c) => vec![
-                    ("MINIO_USER", c.access_key.clone()),
-                    ("MINIO_PASSWORD", c.secret_key.clone()),
-                ],
-                Self::Scaleway(c) => vec![
-                    ("SCW_ACCESS_KEY", c.access_key.clone()),
-                    ("SCW_SECRET_KEY", c.secret_key.clone()),
-                    ("SCW_DEFAULT_PROJECT_ID", c.project_id.clone()),
-                ],
-                Self::Aws(c) => {
-                    let mut v = vec![
-                        ("AWS_ACCESS_KEY_ID", c.access_key_id.clone()),
-                        ("AWS_SECRET_ACCESS_KEY", c.secret_access_key.clone()),
-                    ];
-                    if let Some(r) = &c.region {
-                        v.push(("AWS_REGION", r.clone()));
-                    }
-                    v
-                }
-            },
+        let values: Vec<String> = match self {
+            Self::HetznerCloud(c) => vec![c.token.clone()],
+            Self::HetznerS3(c) => vec![c.access_key.clone(), c.secret_key.clone()],
+            Self::Aws(c) => vec![c.access_key_id.clone(), c.secret_access_key.clone()],
+            Self::Scaleway(c) => vec![
+                c.access_key.clone(),
+                c.secret_key.clone(),
+                c.project_id.clone(),
+            ],
+        };
+        let (names, optional) = self.provider().env_names();
+        let mut vars: Vec<_> = names.iter().copied().zip(values).collect();
+        if let (Some(name), Self::Aws(c)) = (optional, self)
+            && let Some(value) = &c.region
+        {
+            vars.push((name, value.clone()));
         }
+        ProviderEnv { vars }
     }
     fn validate(&self) -> Result<(), Error> {
         let check = |provider: CloudProvider, field: &str, value: &str| -> Result<(), Error> {

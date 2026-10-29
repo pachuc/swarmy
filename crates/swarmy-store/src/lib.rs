@@ -21,6 +21,7 @@ pub(crate) use session::{
 pub mod blob;
 mod computers;
 pub mod credentials;
+mod elastic;
 mod inference;
 mod inference_wait;
 mod interrupt;

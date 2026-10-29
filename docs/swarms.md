@@ -243,6 +243,8 @@ running swarm. The file is `~/.local/share/swarmy/cloud-credentials.toml` by
 default; `XDG_DATA_HOME` moves it. It is written mode 0600 and refused if
 readable by other users.
 
+Elastic groups instead read their cloud keys from the swarm encrypted credential store, set separately from this laptop file with `swarmy --swarm hz auth set hetzner-cloud --from-env`.
+
 ```sh
 swarmy cloud login hetzner-cloud            # paste the token at the hidden prompt
 swarmy cloud login hetzner-s3               # access key, then secret key (made in the Hetzner console)
@@ -396,9 +398,7 @@ swarmy swarm scale fleet workers 4
 swarmy swarm scale fleet workers 2 --drain-timeout 1200
 ```
 
-Count is 0 to 50. Zero is allowed only for a node group whose machines
-OpenTofu creates; it removes all machines while keeping the group in the spec
-with `count = 0`. Existing-host groups keep at least one host; stack and
+Non-elastic groups take 1 to 50 machines; elastic groups take 0 to their declared max. Existing-host groups keep at least one host; stack and
 services groups need at least one machine. Growing
 updates the spec and reruns the normal provisioning path; already provisioned
 machines are skipped. Shrinking removes the highest-numbered nodes first. It
@@ -415,6 +415,34 @@ the spec without preserving comments. After a failure, rerun the same scale
 command to finish; hand-lowering `count` and running `up` remains refused.
 
 See [REMOTE.md](REMOTE.md#draining-a-node) for how draining works on a node.
+
+## Elastic groups
+
+An elastic group declares cloud machines in the swarm spec, but the swarm's
+provisioner on the primary owns the machines and runs OpenTofu there (task 6a-ii).
+The laptop never applies that group's OpenTofu module. In a swarm with an existing
+stack group, add `gpu` to `placement.nodes` and declare:
+
+```toml
+[groups.gpu]
+module = "hetzner-cloud"
+size = "cpx41"
+location = "fsn1"
+elastic = true
+max = 1
+price_per_hour = "0.75"
+currency = "EUR"
+
+[placement]
+stack = "box"
+services = "box"
+nodes = ["gpu"]
+```
+
+After adding the group, register it once with `swarmy swarm scale hz gpu 0`.
+Scale accepts 0 through max; down sets desired to 0 and refuses until the
+provisioner has reconciled that change and all machines are gone. The hourly
+price comes from the spec because the module contract has no price output.
 
 ## Machines
 

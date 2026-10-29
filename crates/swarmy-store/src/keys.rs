@@ -37,6 +37,7 @@ const COMPUTER_NOTICE: &str = "computer_notice";
 const COMPUTER_NOTICE_DELIVERED: &str = "computer_notice_delivered";
 const CREDENTIAL_ENTRY: &str = "credential_entry";
 const CREDENTIAL_ENTRY_LEASE: &str = "credential_entry_lease";
+const ELASTIC_GROUP: &str = "elastic_group";
 const ENTRY_QUOTA_CONFIG: &str = "entry_quota_config";
 const ENTRY_QUOTA_OBSERVED: &str = "entry_quota_observed";
 const EVENT: &str = "event";
@@ -546,6 +547,12 @@ impl<'a> Keys<'a> {
     }
     pub(crate) fn request_turn_space(&self) -> Subspace {
         self.root.subspace(&(REQUEST_TURN,))
+    }
+    pub(crate) fn elastic_group(&self, group: &str) -> Vec<u8> {
+        self.elastic_group_space().pack(&(group,))
+    }
+    pub(crate) fn elastic_group_space(&self) -> Subspace {
+        self.root.subspace(&(ELASTIC_GROUP,))
     }
     pub(crate) fn route(&self, value: &str) -> Vec<u8> {
         self.route_space().pack(&(value,))
