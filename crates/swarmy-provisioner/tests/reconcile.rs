@@ -938,6 +938,7 @@ async fn joined(f: &Fixture, machine: &swarmy_core::MachineRecord) {
 #[tokio::test]
 async fn failed_machine_missing_from_state_is_destroyed_and_replaced() {
     let nodes = Arc::new(FakeNodes::default());
+    *nodes.join_error.lock().unwrap() = Some("ssh refused".into());
     let Some(f) = Fixture::with_nodes(1, nodes).await else {
         return;
     };
