@@ -103,6 +103,7 @@ pub struct HostSpec {
 pub enum Module {
     HetznerCloud,
     Aws,
+    Scaleway,
     Existing,
     Local,
     Path(PathBuf),
@@ -113,11 +114,12 @@ impl TryFrom<String> for Module {
         match value.as_str() {
             "hetzner-cloud" => Ok(Self::HetznerCloud),
             "aws" => Ok(Self::Aws),
+            "scaleway" => Ok(Self::Scaleway),
             "existing" => Ok(Self::Existing),
             "local" => Ok(Self::Local),
             _ if value.contains('/') => Ok(Self::Path(PathBuf::from(value))),
             _ => Err(format!(
-                "module \"{value}\" is not one of hetzner-cloud, aws, existing, local; a path to your own module must contain a slash"
+                "module \"{value}\" is not one of hetzner-cloud, aws, scaleway, existing, local; a path to your own module must contain a slash"
             )),
         }
     }
@@ -127,6 +129,7 @@ impl From<Module> for String {
         match m {
             Module::HetznerCloud => "hetzner-cloud".into(),
             Module::Aws => "aws".into(),
+            Module::Scaleway => "scaleway".into(),
             Module::Existing => "existing".into(),
             Module::Local => "local".into(),
             Module::Path(p) => p.to_string_lossy().into_owned(),
@@ -134,6 +137,18 @@ impl From<Module> for String {
     }
 }
 impl Module {
+    /// The stored cloud provider whose keys create this module's machines.
+    /// None for hosts you own, this machine, and your own module paths.
+    #[must_use]
+    pub fn machine_provider(&self) -> Option<crate::cloud::CloudProvider> {
+        use crate::cloud::CloudProvider;
+        match self {
+            Self::HetznerCloud => Some(CloudProvider::HetznerCloud),
+            Self::Aws => Some(CloudProvider::Aws),
+            Self::Scaleway => Some(CloudProvider::Scaleway),
+            Self::Existing | Self::Local | Self::Path(_) => None,
+        }
+    }
     fn label(&self) -> String {
         self.clone().into()
     }
@@ -167,19 +182,19 @@ impl GroupSpec {
         }
     }
 }
-fn group_failure(g: &str, group: &GroupSpec) -> Option<String> {
+fn group_failure(g: &str, group: &GroupSpec, node_only: bool) -> Option<String> {
     if group.stack_dir.is_some() && group.module != Module::Local {
         return Some(format!(
             "group \"{g}\": stack_dir applies only to local groups"
         ));
     }
     match &group.module {
-        Module::HetznerCloud | Module::Aws | Module::Path(_) => {
+        Module::HetznerCloud | Module::Aws | Module::Scaleway | Module::Path(_) => {
             let m = group.module.label();
             if group.count.is_none() {
                 Some(format!("group \"{g}\": module {m} needs count"))
-            } else if group.count == Some(0) {
-                Some(format!("group \"{g}\": count must be at least 1"))
+            } else if group.count == Some(0) && !node_only {
+                Some(format!("group \"{g}\": count must be at least 1; only a group that runs nodes and neither the stack nor the services can have count 0"))
             } else if !group.hosts.is_empty() {
                 Some(format!(
                     "group \"{g}\": only module = \"existing\" groups list hosts"
@@ -306,7 +321,10 @@ impl SwarmSpec {
                     "group name \"{g}\" must be 1-64 letters, digits, hyphens, or underscores"
                 )));
             }
-            if let Some(message) = group_failure(g, group) {
+            let node_only = self.placement.nodes.contains(g)
+                && *g != self.placement.stack
+                && *g != self.placement.services;
+            if let Some(message) = group_failure(g, group, node_only) {
                 return Err(Error::Spec(message));
             }
         }
@@ -372,7 +390,7 @@ mod tests {
 name = "fleet"
 lifecycle = "persistent" # or "ephemeral"
 [groups.control]
-module = "hetzner-cloud" # "hetzner-cloud", "aws", "existing", "local", or a path to your own module
+module = "hetzner-cloud" # "hetzner-cloud", "aws", "scaleway", "existing", "local", or a path to your own module
 size = "cpx41"
 location = "fsn1"
 count = 1
@@ -410,6 +428,35 @@ stack = "box"
 services = "local"
 nodes = ["box"]
 "#;
+    #[test]
+    fn count_zero_is_only_for_module_node_groups() {
+        let mut spec = SwarmSpec::parse(CLOUD).unwrap();
+        spec.groups.get_mut("workers").unwrap().count = Some(0);
+        for module in [
+            Module::HetznerCloud,
+            Module::Scaleway,
+            Module::Path("/m".into()),
+        ] {
+            spec.groups.get_mut("workers").unwrap().module = module;
+            spec.validate().unwrap();
+            let parsed = SwarmSpec::parse(&spec.to_toml().unwrap()).unwrap();
+            assert_eq!(parsed.groups["workers"].count, Some(0));
+            assert_eq!(parsed.groups["workers"].machines(), 0);
+        }
+        spec.groups.get_mut("control").unwrap().count = Some(0);
+        let message = "count must be at least 1; only a group that runs nodes and neither the stack nor the services can have count 0";
+        assert!(spec.validate().unwrap_err().to_string().contains(message));
+        spec.placement.nodes.push("control".into());
+        assert!(spec.validate().unwrap_err().to_string().contains(message));
+        let scaleway = CLOUD.replace(
+            "module = \"hetzner-cloud\"\nsize = \"ccx33\"",
+            "module = \"scaleway\"\nsize = \"L4-1-24G\"",
+        );
+        assert_eq!(
+            SwarmSpec::parse(&scaleway).unwrap().groups["workers"].module,
+            Module::Scaleway
+        );
+    }
     #[test]
     fn new_fields_round_trip_and_defaults() {
         let mut spec = SwarmSpec::parse(EXISTING).unwrap();
@@ -515,7 +562,7 @@ nodes = ["box"]
             SwarmSpec::parse(&invalid)
                 .unwrap_err()
                 .to_string()
-                .contains("module \"hetzner\" is not one of hetzner-cloud, aws, existing, local; a path to your own module must contain a slash")
+                .contains("module \"hetzner\" is not one of hetzner-cloud, aws, scaleway, existing, local; a path to your own module must contain a slash")
         );
     }
     #[test]
@@ -552,7 +599,7 @@ nodes = ["box"]
             ),
             (
                 Box::new(|s| s.groups.get_mut("control").unwrap().count = Some(0)),
-                "group \"control\": count must be at least 1",
+                "group \"control\": count must be at least 1; only a group that runs nodes and neither the stack nor the services can have count 0",
             ),
             (
                 Box::new(|s| {
