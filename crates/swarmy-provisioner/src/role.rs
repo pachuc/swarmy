@@ -60,7 +60,7 @@ fn log_tick(result: anyhow::Result<Tick>, previous_limited: &mut BTreeMap<String
         Ok(Tick::Standby) => tracing::debug!("provisioner lease held elsewhere"),
         Ok(Tick::Reconciled(outcomes)) => {
             for outcome in outcomes {
-                log_outcome(outcome, previous_limited);
+                log_outcome(&outcome, previous_limited);
             }
         }
         Err(error) => {
@@ -69,7 +69,7 @@ fn log_tick(result: anyhow::Result<Tick>, previous_limited: &mut BTreeMap<String
     }
 }
 
-fn log_outcome(outcome: Outcome, previous_limited: &mut BTreeMap<String, bool>) {
+fn log_outcome(outcome: &Outcome, previous_limited: &mut BTreeMap<String, bool>) {
     let was_limited = previous_limited
         .insert(outcome.group.clone(), outcome.limited)
         .unwrap_or(outcome.limited);
