@@ -578,11 +578,14 @@ impl Reconciler {
     ) -> Result<()> {
         let actual = u32::try_from(outputs.len())?;
         for record in active {
+            let Some(n) = number(def, &record.name) else {
+                continue;
+            };
             if matches!(
                 record.state,
                 MachineState::Requested | MachineState::Creating
             ) && !outputs.iter().any(|m| m.name == record.name)
-                && !number(def, &record.name).is_some_and(|n| n > actual && n <= target)
+                && !(n > actual && n <= target)
             {
                 self.transition(
                     record,
