@@ -66,6 +66,8 @@ pub enum FenceError {
     PlacedToolClaimMismatch,
     #[error("gc run lease no longer matches")]
     GcLeaseMismatch,
+    #[error("provisioner lease no longer matches")]
+    ProvisionerLeaseMismatch,
     #[error("credential refresh claim no longer matches")]
     CredentialRefreshMismatch,
     #[error("volume writer lease no longer matches")]

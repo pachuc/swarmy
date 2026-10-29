@@ -187,6 +187,8 @@ swarmy_cli_package() {
 
 swarmy_core_binary() { printf 'swarmy-core\n'; }
 swarmy_core_package() { printf 'swarmy-core-bin\n'; }
+swarmy_provisioner_binary() { printf 'swarmy-provisioner\n'; }
+swarmy_provisioner_package() { printf 'swarmy-provisioner\n'; }
 
 # Every systemd unit provisioning installs: unit, core role, owning modes, and
 # kind (backing service, node agent, or node service). Units that run
@@ -209,6 +211,7 @@ swarmy_unit_table() {
     for service in "${services[@]}"; do
         printf 'swarmy-%s.service:%s:stack:service\n' "$service" "$service"
     done
+    printf '%s\n' 'swarmy-provisioner.service::stack:provisioner'
 }
 
 # One list of the systemd units provisioning installs, in table order.
@@ -220,6 +223,7 @@ swarmy_unit_names() {
 swarmy_binary_names() {
     swarmy_cli_binary
     swarmy_core_binary
+    swarmy_provisioner_binary
 }
 
 # These service binaries were replaced by `swarmy-core <role>`.
@@ -249,6 +253,10 @@ swarmy_service_units() {
 # (empty when the service is unknown, so callers fail loudly).
 swarmy_service_unit() {
     swarmy_unit_table | awk -F: -v unit="swarmy-${1-}.service" '$1 == unit { print $1 }'
+}
+
+swarmy_provisioner_unit() {
+    swarmy_unit_table | awk -F: '$4 == "provisioner" { print $1 }'
 }
 
 # The node agent unit.
@@ -422,6 +430,34 @@ WantedBy=multi-user.target
 UNIT
 }
 
+render_provisioner_unit() {
+    : "${unit_repo:?unit inputs not set}"
+    local stack_unit
+    stack_unit=$(swarmy_mode_backing_unit stack) || return 1
+    cat <<UNIT
+[Unit]
+Description=Swarmy provisioner (elastic machine groups)
+Requires=$stack_unit
+After=network-online.target $stack_unit
+
+[Service]
+Type=exec
+User=$unit_user
+WorkingDirectory=$unit_repo
+EnvironmentFile=/etc/swarmy/node.env
+Environment=HOME=$unit_home
+Environment=TOKIO_WORKER_THREADS=2
+ExecStart=/usr/local/bin/$(swarmy_provisioner_binary)
+Restart=always
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=900
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
 render_unit() {
     local unit=${1-} kind
     kind=$(swarmy_unit_table | awk -F: -v unit="$unit" '$1 == unit { print $4 }')
@@ -431,6 +467,7 @@ render_unit() {
             else render_tunnel_unit; fi ;;
         agent) render_node_unit ;;
         service) render_service_unit "$unit" ;;
+        provisioner) render_provisioner_unit ;;
         *) echo "no renderer for unit $unit" >&2; return 1 ;;
     esac
 }
@@ -471,6 +508,7 @@ swarmy_mode_binaries() {
         swarmy_cli_binary
     fi
     swarmy_core_binary
+    if [[ $mode == stack ]]; then swarmy_provisioner_binary; fi
 }
 
 # Cargo build arguments for the core binary (the CLI builds separately).
@@ -490,6 +528,7 @@ swarmy_mode_build_args() {
         return 1
     }
     printf -- '-p\n%s\n' "$(swarmy_core_package)"
+    if [[ $mode == stack ]]; then printf -- '-p\n%s\n' "$(swarmy_provisioner_package)"; fi
 }
 
 # Read a list function into an array, failing loudly when the producer

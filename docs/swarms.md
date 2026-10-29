@@ -103,6 +103,8 @@ programs keep configuration, data, state and cache. Each location below is a
 | data/swarms/NAME/keys/ | Private swarm SSH keys |
 | data/swarms/NAME/keys/groups/ | Private SSH keys for machine groups |
 | data/swarms/NAME/tofu/GROUP/ | OpenTofu state and working directory per group |
+| data/provisioner/tofu/GROUP/ | Elastic group OpenTofu state and working directory (on the primary) |
+| data/provisioner/keys/groups/ | Elastic group SSH keys (on the primary) |
 | data/swarms/NAME/tunnel/ | On-demand SSH tunnel state |
 | data/swarms/NAME/services.toml | Local service settings, regenerated on up/start |
 | data/swarms/NAME/stack/ | Default local backing stack data |
@@ -430,7 +432,7 @@ See [REMOTE.md](REMOTE.md#draining-a-node) for how draining works on a node.
 ## Elastic groups
 
 An elastic group declares cloud machines in the swarm spec, but the swarm's
-provisioner on the primary owns the machines and runs OpenTofu there.
+provisioner on the primary owns the machines and runs OpenTofu there, within about fifteen seconds of a scale.
 The laptop never applies that group's OpenTofu module. `--force` does not apply;
 the provisioner on the primary drains and destroys elastic machines. In a
 swarm with an existing stack group, add `gpu` to `placement.nodes` and declare:
@@ -455,6 +457,9 @@ After adding the group, register it once with `swarmy swarm scale hz gpu 0`.
 Scale accepts 0 through max; down sets desired to 0 and refuses until the
 provisioner has reconciled that change and all machines are gone. The hourly
 price comes from the spec because the module contract has no price output.
+New machines currently stop in Provisioning until task 6b joins them.
+The creation interlock reserves at most four machine creations per hour per swarm,
+including failed applies; further growth waits for the one-hour window.
 ## GPU nodes
 
 A node runs `nvidia-smi`, NVIDIA's driver command-line tool, once at startup to
@@ -493,12 +498,14 @@ puts its tasky id in the reason.
 
 - Requested: creation has been requested but no cloud machine exists yet.
 - Creating: the cloud create operation is in progress.
-- Provisioning: the cloud machine exists and is being configured.
+- Provisioning: the cloud machine exists and is waiting to be, or being, configured.
 - Joined: the node has joined the swarm and may host agents.
 - Draining: new assignments have stopped while existing work finishes.
 - Destroyed: the machine has been removed; this state is final.
 - Failed: an operation failed; a machine already created keeps costing until destroyed.
 - Orphaned: swarmy lost track of a cloud machine that may still exist and cost money; check the provider and remove it by hand.
+
+The provisioner writes Requested and Creating before the OpenTofu apply, Created (which enters Provisioning) after it sees the machine in state, and DrainRequested before removal and Destroyed after it disappears from state.
 
 The first billing unit starts on creation and is billed immediately. By default
 billing is per started hour; a record can instead specify per started minute.
@@ -511,9 +518,6 @@ swarmy swarm machines
 swarmy swarm machines --all
 swarmy --swarm hz swarm machines --json
 ```
-
-The provisioner writes records in a later task, so these lists remain empty
-until it arrives.
 
 ## Model provider credentials
 

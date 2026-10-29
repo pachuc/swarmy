@@ -1,6 +1,9 @@
 //! Runtime truth for elastic machine groups.
 use crate::{DomainError, Result, StorageError, Store, StoreError, read, write};
+use std::time::Duration;
 use swarmy_core::{ElasticGroupDefinition, ElasticGroupRecord, MAX_ELASTIC_MACHINES};
+
+const CREATION_WINDOW: Duration = Duration::from_hours(1);
 
 impl Store {
     /// Register or update a definition without changing the desired machine count.
@@ -118,5 +121,117 @@ impl Store {
             Ok(record)
         })
         .await
+    }
+}
+
+/// A per-swarm safety interlock, not a spending budget.
+pub const MAX_ELASTIC_CREATIONS_PER_HOUR: u32 = 4;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreationGrant {
+    pub granted: u32,
+    pub used: u32,
+    pub next_free_at: Option<jiff::Timestamp>,
+}
+impl Store {
+    /// Read the creation window without reserving.
+    /// # Errors
+    /// Returns storage failures.
+    pub async fn elastic_creation_slots(&self) -> Result<CreationGrant> {
+        self.transaction(|trx| async move {
+            let now = self.now();
+            let times = live_window(
+                read(&trx, &self.keys().elastic_creations())
+                    .await?
+                    .unwrap_or_default(),
+                now,
+            );
+            Ok(grant(&times, 0))
+        })
+        .await
+    }
+    /// Reserve creation slots, including slots used by failed applies.
+    /// # Errors
+    /// Returns `ProvisionerLeaseMismatch` when the token is stale.
+    pub async fn reserve_elastic_creations(
+        &self,
+        lease: &swarmy_core::Lease,
+        wanted: u32,
+    ) -> Result<CreationGrant> {
+        self.transaction(|trx| async move {
+            self.check_provisioner(&trx, lease).await?;
+            let now = self.now();
+            let key = self.keys().elastic_creations();
+            let mut times = live_window(read(&trx, &key).await?.unwrap_or_default(), now);
+            let count = wanted.min(
+                MAX_ELASTIC_CREATIONS_PER_HOUR
+                    .saturating_sub(u32::try_from(times.len()).unwrap_or(u32::MAX)),
+            );
+            times.extend(std::iter::repeat_n(now, count as usize));
+            write(&trx, &key, &times)?;
+            Ok(grant(&times, count))
+        })
+        .await
+    }
+    /// Record observed count without changing desired or generation.
+    /// # Errors
+    /// Returns `ProvisionerLeaseMismatch` or `ElasticGroupMissing`.
+    pub async fn record_elastic_reconcile(
+        &self,
+        lease: &swarmy_core::Lease,
+        group: &str,
+        applied: u32,
+        generation: u64,
+        settled: bool,
+    ) -> Result<ElasticGroupRecord> {
+        self.transaction(|trx| async move {
+            self.check_provisioner(&trx, lease).await?;
+            let key = self.keys().elastic_group(group);
+            let Some(mut record): Option<ElasticGroupRecord> = read(&trx, &key).await? else {
+                return Err(DomainError::ElasticGroupMissing {
+                    group: group.into(),
+                }
+                .into());
+            };
+            record.applied = applied;
+            if settled && generation == record.generation {
+                record.reconciled_generation = record.reconciled_generation.max(generation);
+            }
+            record.updated_at = self.now();
+            write(&trx, &key, &record)?;
+            Ok(record)
+        })
+        .await
+    }
+    async fn check_provisioner(
+        &self,
+        trx: &foundationdb::Transaction,
+        lease: &swarmy_core::Lease,
+    ) -> Result<()> {
+        if !crate::singleton_lease::is_current(
+            trx,
+            &self.keys().provisioner_lease(),
+            lease,
+            self.now(),
+        )
+        .await?
+        {
+            return Err(crate::FenceError::ProvisionerLeaseMismatch.into());
+        }
+        Ok(())
+    }
+}
+fn live_window(mut times: Vec<jiff::Timestamp>, now: jiff::Timestamp) -> Vec<jiff::Timestamp> {
+    times.retain(|at| *at + CREATION_WINDOW > now);
+    times
+}
+fn grant(times: &[jiff::Timestamp], granted: u32) -> CreationGrant {
+    CreationGrant {
+        granted,
+        used: u32::try_from(times.len()).unwrap_or(u32::MAX),
+        next_free_at: if times.len() >= MAX_ELASTIC_CREATIONS_PER_HOUR as usize {
+            times.first().map(|at| *at + CREATION_WINDOW)
+        } else {
+            None
+        },
     }
 }

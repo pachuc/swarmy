@@ -76,6 +76,7 @@ fn family_key_layout_matches_checked_in_hex() {
             "credential_entry_lease",
             keys.credential_entry_lease(CredentialScope::Cluster, "provider", "label"),
         ),
+        ("elastic_creations", keys.elastic_creations()),
         ("elastic_group", keys.elastic_group("value")),
         (
             "entry_quota_config",
@@ -154,6 +155,8 @@ fn family_key_layout_matches_checked_in_hex() {
         ("placement_epoch", keys.placement_epoch(agentid)),
         ("placement_hosting", keys.placement_hosting(agentid)),
         ("placement_next_reason", keys.placement_next_reason(agentid)),
+        ("provisioner_lease", keys.provisioner_lease()),
+        ("provisioner_sequence", keys.provisioner_sequence()),
         ("request_turn", keys.request_turn(requestid)),
         ("route", keys.route("value")),
         ("runnable", keys.runnable(2, 7, at, sessionid)),

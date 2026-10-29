@@ -6,7 +6,7 @@ and for checkout development see [DEV.md](DEV.md). Each section names its implem
 
 ## Crate map and dependency direction
 
-The workspace holds twenty-nine crates (`members = ["crates/*"]` in
+The workspace holds thirty crates (`members = ["crates/*"]` in
 [Cargo.toml](../Cargo.toml)). These are descriptive tiers, not strict acyclic
 boundaries: sandbox uses store and volume; chat and devtools use the HTTP
 client. The individual manifests in `crates/*/Cargo.toml` are the
@@ -73,8 +73,9 @@ crate in a tier depends on every lower tier.
 - **swarmy-devtools** is a binary for standalone provider login and credential
   import over the HTTP client
   ([source](../crates/swarmy-devtools/src/main.rs)).
-- **swarmy-cloud** provisions SSH-reachable hosts as swarms, upgrades them, opens per-swarm tunnels, and, with the opt-in remote feature, manages a static-key bucket; it is not a server dependency
+- **swarmy-cloud** provisions SSH-reachable hosts as swarms, upgrades them, opens per-swarm tunnels, and, with the opt-in remote feature, manages a static-key bucket; the provisioner is its only server-side user
   ([source](../crates/swarmy-cloud/src/lib.rs)).
+- **swarmy-provisioner** is the primary-only service that reconciles elastic groups with OpenTofu and the machine ledger ([source](../crates/swarmy-provisioner/src/reconcile.rs)).
 - **swarmy-infra** fetches a pinned, checksum-verified OpenTofu release, runs it in a per-swarm working directory with cloud credentials only in the environment, and owns the module output contract and the verified-download helper the swarmy release cache shares ([source](../crates/swarmy-infra/src/lib.rs)), and carries the OpenTofu machine-group modules from infra/modules ([modules](../crates/swarmy-infra/src/modules.rs)).
 
 Services share one bootstrap from `swarmy-config`: `Settings::load` for
@@ -99,7 +100,7 @@ control-plane services flush queued turn metrics before exit
 
 Dependency direction is an intention rather than a CI-enforced rule: most
 services consume storage and transport, while clients normally consume the
-HTTP client. Cloud provisioning is an opt-in CLI feature. The actual edges are
+HTTP client. Cloud provisioning is an opt-in CLI feature; swarmy-cloud and swarmy-infra stay out of swarmy-core, and swarmy-provisioner is the only server-side binary that links them. The actual edges are
 in the [crate manifests](../crates/swarmy-cli/Cargo.toml) and
 [workspace manifest](../Cargo.toml).
 
@@ -163,7 +164,7 @@ them in [api-breaks.txt](api-breaks.txt).
   [services.rs](../crates/swarmy-store/src/services.rs),
   [tool_routing.rs](../crates/swarmy-store/src/tool_routing.rs),
   [placed_tools.rs](../crates/swarmy-store/src/placed_tools.rs)).
-- **Elastic groups.** `elastic_group` holds the swarm-owned definition, desired count, and reconciliation generations ([elastic.rs](../crates/swarmy-store/src/elastic.rs)).
+- **Elastic groups.** `elastic_group` holds the swarm-owned definition, desired count, and reconciliation generations; `elastic_creations` holds the creation safety window, while `provisioner_lease` and `provisioner_sequence` fence the single primary provisioner ([elastic.rs](../crates/swarmy-store/src/elastic.rs)).
 - **Inference, routes, and credentials.** `route`, `credential_entry`,
   `credential_entry_lease`, `inference_request`, `inference_claim`,
   `inference_result`, `inference_breaker`, and the shared `session_wait` connect

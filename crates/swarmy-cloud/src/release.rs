@@ -71,7 +71,7 @@ impl Component {
     #[must_use]
     pub const fn files(self) -> &'static [&'static str] {
         match self {
-            Self::Core => &["swarmy-core", "libfdb_c.so"],
+            Self::Core => &["swarmy-core", "swarmy-provisioner", "libfdb_c.so"],
             Self::Client => &["swarmy"],
             Self::BaseImage => &["disk.ext4", "recipe.toml"],
         }

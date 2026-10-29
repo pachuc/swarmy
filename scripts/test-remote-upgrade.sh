@@ -203,7 +203,7 @@ for role in scheduler worker gateway api; do
 done
 printf 'SWARMY_S3_ENDPOINT=http://127.0.0.1:8333\n' > "$SWARMY_ETC_DIR/node.env"
 printf '[api]\ntoken = "existing"\n' > "$node_repo/.swarmy/config.toml"
-for binary in swarmy swarmy-core libfdb_c.so; do
+for binary in swarmy swarmy-core swarmy-provisioner libfdb_c.so; do
     printf '#!/usr/bin/env bash\necho "[]"\n' > "$node_repo/.swarmy/release/$binary"
     chmod +x "$node_repo/.swarmy/release/$binary"
 done
@@ -217,9 +217,12 @@ with open(sys.argv[1], encoding='utf-8') as file:
     data = json.load(file)
 assert data['units'] == ['swarmyd.service', 'swarmy-scheduler.service',
                          'swarmy-worker.service', 'swarmy-gateway.service',
-                         'swarmy-api.service'], data
+                         'swarmy-api.service', 'swarmy-provisioner.service'], data
 PY
 [[ ! -f $node_repo/.swarmy/upgrade-pending-units ]]
+[[ -f $SWARMY_SYSTEMD_DIR/swarmy-provisioner.service ]]
+grep -q '^enable swarmy-provisioner.service$' "$node_root/systemctl.log"
+grep -q '^restart swarmy-provisioner.service$' "$node_root/systemctl.log"
 for binary in swarmyd swarmy-scheduler swarmy-worker swarmy-gateway swarmy-api; do
     [[ ! -f $node_root/usr/local/bin/$binary ]]
 done

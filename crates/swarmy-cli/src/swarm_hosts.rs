@@ -39,17 +39,7 @@ pub(crate) struct CreateCloud {
 
 // SWARMY_TOFU_BIN is a development and test override of the pinned download.
 async fn tofu(registry: &Registry) -> Result<Tofu> {
-    if let Some(path) = std::env::var_os("SWARMY_TOFU_BIN").filter(|p| !p.is_empty()) {
-        if !std::path::Path::new(&path).is_file() {
-            bail!("SWARMY_TOFU_BIN={} does not exist", path.to_string_lossy());
-        }
-        return Ok(Tofu::from_binary(path, &registry.dirs().cache));
-    }
-    Ok(Tofu::install(
-        &registry.dirs().cache,
-        &swarmy_infra::opentofu::Source::pinned(),
-    )
-    .await?)
+    Ok(Tofu::resolve(&registry.dirs().cache).await?)
 }
 async fn machines_for(
     registry: &Registry,

@@ -63,13 +63,16 @@ systemd_dir=$(swarmy_systemd_dir)
 backing_unit=$(swarmy_mode_backing_unit "$mode")
 node_unit=$(swarmy_agent_unit)
 read_shared_list service_units swarmy_service_units
+provisioner_unit=$(swarmy_provisioner_unit)
 reconcile=()
 if [[ $services != services-only ]]; then reconcile+=("$backing_unit" "$node_unit"); fi
 for unit in "${service_units[@]}"; do
     if [[ -f $systemd_dir/$unit ]]; then reconcile+=("$unit"); fi
 done
+if [[ $mode == stack && -f $systemd_dir/$api_unit ]]; then reconcile+=("$provisioner_unit"); fi
 changed_units=()
 reconcile_units changed_units "${reconcile[@]}"
+if unit_listed "$provisioner_unit" "${changed_units[@]}"; then sudo -n systemctl enable "$provisioner_unit"; fi
 # Persist changed unit text before diagnostics or restart decisions can fail.
 pending_file=.swarmy/upgrade-pending-units
 previous_pending=()
@@ -84,7 +87,7 @@ for unit in "${changed_units[@]}"; do
 done
 if [[ -f $pending_file ]]; then
     while IFS= read -r unit; do
-        if [[ -n $unit ]] && ! unit_listed "$unit" "${restart_units[@]}" && unit_listed "$unit" "$node_unit" "${service_units[@]}"; then
+        if [[ -n $unit ]] && ! unit_listed "$unit" "${restart_units[@]}" && unit_listed "$unit" "$node_unit" "${service_units[@]}" "$provisioner_unit"; then
             restart_units+=("$unit")
         fi
     done < "$pending_file"
@@ -105,6 +108,16 @@ for unit in "${service_units[@]}"; do
         fi
     fi
 done
+if [[ $mode == stack ]] && systemctl cat "$provisioner_unit" >/dev/null 2>&1; then
+    if unit_restart_wanted "$provisioner_unit" "/usr/local/bin/$(swarmy_provisioner_binary)" "${restart_units[@]}"; then
+        sudo -n systemctl restart "$provisioner_unit"
+        restarted+=(provisioner)
+        restarted_units+=("$provisioner_unit")
+    else
+        result=$?
+        (( result == 1 )) || exit "$result"
+    fi
+fi
 # Control nodes serve the API, which rejects every request while its token is
 # empty. Fill a missing token for nodes provisioned before provisioning
 # generated one; never rotate an existing token. A fresh token needs the API
