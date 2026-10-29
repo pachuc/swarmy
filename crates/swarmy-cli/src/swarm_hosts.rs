@@ -583,18 +583,16 @@ pub(crate) async fn scale_elastic(
             .await?;
     if json_output {
         println!("{}", serde_json::to_string(&record)?);
+    } else if record.autoscale {
+        println!(
+            "group {group}: desired {} of max {}, {} machines now; autoscale is on: the provisioner adds machines for sessions waiting for a GPU and removes machines idle for 30 minutes",
+            record.desired, record.max, record.applied
+        );
     } else {
-        if record.autoscale {
-            println!(
-                "group {group}: desired {} of max {}, {} machines now; autoscale is on: the provisioner adds machines for sessions waiting for a GPU and removes machines idle for 30 minutes",
-                record.desired, record.max, record.applied
-            );
-        } else {
-            println!(
-                "group {group}: desired {} of max {}, {} machines now; the provisioner on the primary creates or destroys the rest",
-                record.desired, record.max, record.applied
-            );
-        }
+        println!(
+            "group {group}: desired {} of max {}, {} machines now; the provisioner on the primary creates or destroys the rest",
+            record.desired, record.max, record.applied
+        );
     }
     Ok(())
 }
