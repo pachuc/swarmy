@@ -330,6 +330,7 @@ pub(super) mod tests {
                     max: None,
                     price_per_hour: None,
                     currency: None,
+                    autoscale: false,
                 },
             )]
             .into(),

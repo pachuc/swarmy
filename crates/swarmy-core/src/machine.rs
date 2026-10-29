@@ -104,6 +104,17 @@ pub struct MachineCause {
     pub session: Option<SessionId>,
     pub reason: String,
 }
+impl MachineCause {
+    /// A cause with only a free-text reason, for operator and API changes.
+    #[must_use]
+    pub fn from_reason(reason: impl Into<String>) -> Self {
+        Self {
+            agent: None,
+            session: None,
+            reason: reason.into(),
+        }
+    }
+}
 /// Input for a new machine record; the store stamps `requested_at`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewMachine {

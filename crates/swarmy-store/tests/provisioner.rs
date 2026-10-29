@@ -42,9 +42,13 @@ async fn lease_window_and_reconcile_are_fenced() {
         hourly_price: HourlyPrice::parse("0.75", "EUR").unwrap(),
         primary_address: "192.0.2.1".parse().unwrap(),
         service_user: "swarmy".into(),
+        autoscale: false,
     };
     store.put_elastic_group(&group).await.unwrap();
-    store.set_elastic_desired("gpu", 2, "test").await.unwrap();
+    store
+        .set_elastic_desired("gpu", 2, &swarmy_core::MachineCause::from_reason("test"))
+        .await
+        .unwrap();
     let grant = store.reserve_elastic_creations(&live, 6).await.unwrap();
     assert_eq!((grant.granted, grant.used), (4, 4));
     assert_eq!(

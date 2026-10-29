@@ -100,6 +100,9 @@ pub struct GroupSpec {
     /// ISO 4217 currency code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
+    /// Elastic groups only: the provisioner scales the group for sessions waiting for a GPU.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub autoscale: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -207,10 +210,10 @@ impl GroupSpec {
 }
 fn elastic_failure(swarm: &str, g: &str, group: &GroupSpec) -> Option<String> {
     if !group.elastic {
-        return (group.max.is_some() || group.price_per_hour.is_some() || group.currency.is_some())
+        return (group.max.is_some() || group.price_per_hour.is_some() || group.currency.is_some() || group.autoscale)
             .then(|| {
                 format!(
-                    "group \"{g}\": max, price_per_hour and currency apply only to elastic groups"
+                    "group \"{g}\": max, price_per_hour, currency and autoscale apply only to elastic groups"
                 )
             });
     }
@@ -351,6 +354,7 @@ impl SwarmSpec {
                     max: None,
                     price_per_hour: None,
                     currency: None,
+                    autoscale: false,
                 },
             )]
             .into(),
@@ -523,6 +527,7 @@ nodes = ["box"]
         group.max = Some(2);
         group.price_per_hour = Some("0.75".into());
         group.currency = Some("EUR".into());
+        group.autoscale = true;
         assert_eq!(group.machines(), 0);
         assert_eq!(group.hourly_price().unwrap().amount(), "0.75");
         assert_eq!(SwarmSpec::parse(&spec.to_toml().unwrap()).unwrap(), spec);
@@ -530,7 +535,7 @@ nodes = ["box"]
         let cases: Vec<ElasticCase> = vec![
             (
                 (|s| s.groups.get_mut("workers").unwrap().elastic = false),
-                "max, price_per_hour and currency apply only to elastic groups",
+                "max, price_per_hour, currency and autoscale apply only to elastic groups",
             ),
             (
                 (|s| s.groups.get_mut("workers").unwrap().module = Module::Local),

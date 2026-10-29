@@ -51,6 +51,7 @@ fn group_body(key: &str) -> PutElasticGroup {
         currency: "EUR".into(),
         primary_address: "192.0.2.1".into(),
         service_user: "swarmy".into(),
+        autoscale: false,
     }
 }
 

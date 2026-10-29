@@ -110,6 +110,7 @@ impl Fixture {
                 hourly_price: HourlyPrice::parse("0.75", "EUR").unwrap(),
                 primary_address: "192.0.2.1".parse().unwrap(),
                 service_user: "swarmy".into(),
+                autoscale: false,
             })
             .await
             .unwrap();
@@ -124,7 +125,11 @@ impl Fixture {
     }
     async fn desired(&self, n: u32) {
         self.store
-            .set_elastic_desired("gpu", n, "tasky 01TEST")
+            .set_elastic_desired(
+                "gpu",
+                n,
+                &swarmy_core::MachineCause::from_reason("tasky 01TEST"),
+            )
             .await
             .unwrap();
     }

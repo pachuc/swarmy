@@ -529,7 +529,7 @@ impl Reconciler {
         let (workspace, key) = self.workspace(def, record.applied).await?;
         let outputs = self.outputs(&workspace, def).await?;
         let actual = u32::try_from(outputs.len())?;
-        self.sync(def, &record.desired_reason, &outputs, None)
+        self.sync(def, &record.desired_cause, &outputs, None)
             .await?;
         let active = self
             .store
@@ -557,7 +557,7 @@ impl Reconciler {
                 limited,
             });
         }
-        self.prepare_ledger(def, &record.desired_reason, actual, target)
+        self.prepare_ledger(def, &record.desired_cause, actual, target)
             .await?;
         workspace
             .set_variables(&variables(def, &key, target))
@@ -686,7 +686,7 @@ impl Reconciler {
         if let Ok(ref machines) = after {
             self.sync(
                 def,
-                &record.desired_reason,
+                &record.desired_cause,
                 machines,
                 Some((
                     actual,
@@ -752,7 +752,7 @@ impl Reconciler {
         &self,
         def: &ElasticGroupDefinition,
         n: u32,
-        reason: &str,
+        cause: &MachineCause,
     ) -> Result<MachineRecord> {
         let machine = NewMachine {
             machine_id: MachineId::from_ulid(ulid::Ulid::generate()),
@@ -761,11 +761,7 @@ impl Reconciler {
             module: def.module.clone(),
             size: def.size.clone(),
             location: def.location.clone(),
-            cause: MachineCause {
-                agent: None,
-                session: None,
-                reason: reason.into(),
-            },
+            cause: cause.clone(),
             hourly_price: def.hourly_price.clone(),
             billing: BillingGranularity::default(),
         };
@@ -793,7 +789,7 @@ impl Reconciler {
     async fn sync(
         &self,
         def: &ElasticGroupDefinition,
-        reason: &str,
+        cause: &MachineCause,
         outputs: &[Machine],
         after: Option<(u32, u32, Option<String>)>,
     ) -> Result<()> {
@@ -811,7 +807,11 @@ impl Reconciler {
                     .create(
                         def,
                         u32::try_from(i)? + 1,
-                        &format!("adopted from OpenTofu state; {reason}"),
+                        &MachineCause {
+                            agent: cause.agent,
+                            session: cause.session,
+                            reason: format!("adopted from OpenTofu state; {}", cause.reason),
+                        },
                     )
                     .await?;
                 tracing::warn!(name = %machine.name, "adopted machine; billing starts now");
@@ -946,7 +946,7 @@ impl Reconciler {
     async fn prepare_ledger(
         &self,
         def: &ElasticGroupDefinition,
-        reason: &str,
+        cause: &MachineCause,
         actual: u32,
         target: u32,
     ) -> Result<()> {
@@ -961,7 +961,7 @@ impl Reconciler {
             }) {
                 record.clone()
             } else {
-                self.create(def, n, reason).await?
+                self.create(def, n, cause).await?
             };
             if record.state == MachineState::Requested {
                 self.transition(&record, MachineTransition::Creating)
