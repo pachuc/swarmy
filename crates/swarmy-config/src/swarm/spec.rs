@@ -515,6 +515,7 @@ nodes = ["box"]
 "#;
     #[test]
     fn elastic_group_round_trip_and_validation() {
+        type ElasticCase = (fn(&mut SwarmSpec), &'static str);
         let mut spec = SwarmSpec::parse(CLOUD).unwrap();
         let group = spec.groups.get_mut("workers").unwrap();
         group.elastic = true;
@@ -526,39 +527,39 @@ nodes = ["box"]
         assert_eq!(group.hourly_price().unwrap().amount(), "0.75");
         assert_eq!(SwarmSpec::parse(&spec.to_toml().unwrap()).unwrap(), spec);
         let base = spec.clone();
-        let cases: Vec<(Box<dyn Fn(&mut SwarmSpec)>, &str)> = vec![
+        let cases: Vec<ElasticCase> = vec![
             (
-                Box::new(|s| s.groups.get_mut("workers").unwrap().elastic = false),
+                (|s| s.groups.get_mut("workers").unwrap().elastic = false),
                 "max, price_per_hour and currency apply only to elastic groups",
             ),
             (
-                Box::new(|s| s.groups.get_mut("workers").unwrap().module = Module::Local),
+                (|s| s.groups.get_mut("workers").unwrap().module = Module::Local),
                 "elastic groups need a built-in module that creates machines, not local",
             ),
             (
-                Box::new(|s| s.groups.get_mut("workers").unwrap().count = Some(1)),
+                (|s| s.groups.get_mut("workers").unwrap().count = Some(1)),
                 "an elastic group has no count",
             ),
             (
-                Box::new(|s| s.groups.get_mut("workers").unwrap().max = Some(0)),
+                (|s| s.groups.get_mut("workers").unwrap().max = Some(0)),
                 "an elastic group needs max between 1 and 50",
             ),
             (
-                Box::new(|s| s.groups.get_mut("workers").unwrap().price_per_hour = None),
+                (|s| s.groups.get_mut("workers").unwrap().price_per_hour = None),
                 "an elastic group needs price_per_hour and currency",
             ),
             (
-                Box::new(|s| {
-                    s.groups.get_mut("workers").unwrap().price_per_hour = Some("1e3".into())
-                }),
+                |s| {
+                    s.groups.get_mut("workers").unwrap().price_per_hour = Some("1e3".into());
+                },
                 "price_per_hour must be a decimal",
             ),
             (
-                Box::new(|s| s.name = "Not-OpenTofu".into()),
+                (|s| s.name = "Not-OpenTofu".into()),
                 "elastic groups need swarm and group names of 1-20 lowercase letters",
             ),
             (
-                Box::new(|s| s.placement.nodes = vec!["control".into()]),
+                (|s| s.placement.nodes = vec!["control".into()]),
                 "is elastic, so it must be listed in placement.nodes",
             ),
         ];

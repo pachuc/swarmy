@@ -83,8 +83,15 @@ async fn register_and_set_desired() {
             .amount(),
         "0.5"
     );
-    store
-        .set_elastic_desired("b", 2, "manual")
-        .await
-        .unwrap_err();
+    assert!(matches!(
+        store.set_elastic_desired("b", 2, "manual").await,
+        Err(StoreError::Domain(DomainError::DesiredAboveMax { .. }))
+    ));
+    store.put_elastic_group(&definition("b")).await.unwrap();
+    store.set_elastic_desired("b", 2, "manual").await.unwrap();
+    changed.max = 1;
+    assert!(matches!(
+        store.put_elastic_group(&changed).await,
+        Err(StoreError::Domain(DomainError::DesiredAboveMax { .. }))
+    ));
 }

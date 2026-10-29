@@ -29,8 +29,15 @@ async fn group_routes_and_machine_credentials() {
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let task = tokio::spawn(axum::serve(listener, router(state)).into_future());
     let client = reqwest::Client::new();
-    let group_url = format!("{base}/swarm/groups/gpu");
-    let make = |key: &str| PutElasticGroup {
+    assert_registration(&client, &base).await;
+    assert_desired(&client, &base).await;
+    assert_bad_definitions(&client, &base).await;
+    assert_machine_credentials(&client, &base).await;
+    task.abort();
+}
+
+fn group_body(key: &str) -> PutElasticGroup {
+    PutElasticGroup {
         idempotency_key: key.into(),
         swarm: "fleet".into(),
         module: "hetzner-cloud".into(),
@@ -41,7 +48,11 @@ async fn group_routes_and_machine_credentials() {
         max: 2,
         price_per_hour: "0.75".into(),
         currency: "EUR".into(),
-    };
+    }
+}
+
+async fn assert_registration(client: &reqwest::Client, base: &str) {
+    let group_url = format!("{base}/swarm/groups/gpu");
     let response = client
         .get(&group_url)
         .bearer_auth("test-token")
@@ -52,7 +63,7 @@ async fn group_routes_and_machine_credentials() {
     let response = client
         .put(&group_url)
         .bearer_auth("test-token")
-        .json(&make("register"))
+        .json(&group_body("register"))
         .send()
         .await
         .unwrap();
@@ -72,6 +83,10 @@ async fn group_routes_and_machine_credentials() {
             .unwrap(),
         registered
     );
+}
+
+async fn assert_desired(client: &reqwest::Client, base: &str) {
+    let group_url = format!("{base}/swarm/groups/gpu");
     let desired_url = format!("{group_url}/desired");
     let desired = SetElasticDesired {
         idempotency_key: "desired-one".into(),
@@ -122,7 +137,11 @@ async fn group_routes_and_machine_credentials() {
         rejected.json::<serde_json::Value>().await.unwrap()["code"],
         "desired_above_max"
     );
-    let mut busy = make("busy");
+}
+
+async fn assert_bad_definitions(client: &reqwest::Client, base: &str) {
+    let group_url = format!("{base}/swarm/groups/gpu");
+    let mut busy = group_body("busy");
     busy.size = "different".into();
     assert_eq!(
         client
@@ -135,7 +154,7 @@ async fn group_routes_and_machine_credentials() {
             .status(),
         409
     );
-    let mut invalid = make("invalid");
+    let mut invalid = group_body("invalid");
     invalid.module = "existing".into();
     assert_eq!(
         client
@@ -160,6 +179,9 @@ async fn group_routes_and_machine_credentials() {
         .await
         .unwrap();
     assert_eq!(missing.status(), 404);
+}
+
+async fn assert_machine_credentials(client: &reqwest::Client, base: &str) {
     let cred = CreateCredential {
         idempotency_key: "machine-key".into(),
         provider: "hetzner-cloud".into(),
@@ -208,5 +230,4 @@ async fn group_routes_and_machine_credentials() {
             .status(),
         400
     );
-    task.abort();
 }

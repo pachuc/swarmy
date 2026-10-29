@@ -768,6 +768,50 @@ async fn run_host_observation(
     }
     Ok(())
 }
+/// Scale a node group through either the swarm API or the laptop provisioner.
+async fn run_scale(
+    registry: &Registry,
+    name: &str,
+    group: &str,
+    count: u32,
+    drain_timeout: u64,
+    force: bool,
+    json_output: bool,
+) -> Result<()> {
+    let spec = managed_spec(registry, name)?;
+    if spec.local_group().is_some() {
+        bail!(
+            "swarm \"{name}\" runs on this machine; scale applies to swarms on hosts or cloud machines"
+        );
+    }
+    if spec.groups.get(group).is_some_and(|g| g.elastic) {
+        if force {
+            bail!(
+                "--force applies to groups this client scales; the provisioner on the primary drains and destroys elastic machines"
+            );
+        }
+        Box::pin(crate::swarm_hosts::scale_elastic(
+            &spec,
+            group,
+            count,
+            json_output,
+        ))
+        .await?;
+    } else {
+        Box::pin(crate::swarm_hosts::scale(
+            registry,
+            &spec,
+            group,
+            count,
+            drain_timeout,
+            force,
+            json_output,
+        ))
+        .await?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn run(
     command: Command,
     json_output: bool,
@@ -817,30 +861,9 @@ pub(crate) async fn run(
             drain_timeout,
             force,
         } => {
-            let spec = managed_spec(&registry, &name)?;
-            if spec.local_group().is_some() {
-                bail!(
-                    "swarm \"{name}\" runs on this machine; scale applies to swarms on hosts or cloud machines"
-                );
-            }
-            if spec.groups.get(&group).is_some_and(|g| g.elastic) {
-                if force {
-                    bail!(
-                        "--force applies to groups this client scales; the provisioner on the primary drains and destroys elastic machines"
-                    );
-                }
-                Box::pin(crate::swarm_hosts::scale_elastic(
-                    &spec,
-                    &group,
-                    count,
-                    json_output,
-                ))
-                .await?;
-                return Ok(());
-            }
-            Box::pin(crate::swarm_hosts::scale(
+            Box::pin(run_scale(
                 &registry,
-                &spec,
+                &name,
                 &group,
                 count,
                 drain_timeout,

@@ -32,3 +32,41 @@ impl ElasticGroupRecord {
         self.reconciled_generation == self.generation
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    #[test]
+    fn fixed_elastic_group_bytes() {
+        let record = ElasticGroupRecord {
+            definition: ElasticGroupDefinition {
+                swarm: "s".into(),
+                group: "g".into(),
+                module: "aws".into(),
+                size: "x".into(),
+                location: "eu".into(),
+                sandboxes: 1,
+                local_storage: "dir:/x".into(),
+                max: 2,
+                hourly_price: HourlyPrice::parse("0.75", "EUR").unwrap(),
+            },
+            desired: 1,
+            desired_reason: "manual".into(),
+            generation: 1,
+            applied: 0,
+            reconciled_generation: 0,
+            updated_at: Timestamp::from_second(0).unwrap(),
+        };
+        let bytes = crate::encode(&record).unwrap();
+        assert_eq!(
+            bytes,
+            [
+                1, 1, 115, 1, 103, 3, 97, 119, 115, 1, 120, 2, 101, 117, 1, 6, 100, 105, 114, 58,
+                47, 120, 2, 176, 227, 45, 3, 69, 85, 82, 1, 6, 109, 97, 110, 117, 97, 108, 1, 0, 0,
+                20, 49, 57, 55, 48, 45, 48, 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90
+            ]
+        );
+        assert_eq!(crate::decode::<ElasticGroupRecord>(&bytes).unwrap(), record);
+    }
+}

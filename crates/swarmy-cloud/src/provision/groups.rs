@@ -30,7 +30,7 @@ pub struct MachineGroups<'a> {
 /// True if any group creates machines.
 #[must_use]
 pub fn has_module_groups(spec: &SwarmSpec) -> bool {
-    spec.groups.values().any(|g| opentofu_group(g))
+    spec.groups.values().any(opentofu_group)
 }
 fn opentofu_group(group: &GroupSpec) -> bool {
     !matches!(group.module, Module::Existing | Module::Local) && !group.elastic
@@ -45,7 +45,7 @@ pub fn apply_order(spec: &SwarmSpec) -> Vec<String> {
     order.extend(spec.placement.nodes.iter().cloned());
     let mut result = Vec::new();
     for name in order {
-        if !result.contains(&name) && spec.groups.get(&name).is_some_and(|g| opentofu_group(g)) {
+        if !result.contains(&name) && spec.groups.get(&name).is_some_and(opentofu_group) {
             result.push(name);
         }
     }

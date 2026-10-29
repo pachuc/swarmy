@@ -35,7 +35,7 @@ impl CloudProvider {
             Self::Scaleway => "scaleway",
         }
     }
-    /// OpenTofu environment names in secret field order, followed by the optional field.
+    /// `OpenTofu` environment names in secret field order, followed by the optional field.
     #[must_use]
     pub const fn env_names(self) -> (&'static [&'static str], Option<&'static str>) {
         match self {

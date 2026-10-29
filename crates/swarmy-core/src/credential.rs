@@ -137,6 +137,36 @@ impl CredentialRecord {
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+    #[test]
+    fn empty_machine_provider_needs_login() {
+        let record = CredentialRecord {
+            kind: CredentialKind::MachineProvider {
+                env: BTreeMap::new(),
+            },
+            updated_at: Timestamp::from_second(0).unwrap(),
+            bookkeeping: CredentialBookkeeping::default(),
+        };
+        assert_eq!(
+            record.status(Timestamp::from_second(0).unwrap()),
+            CredentialStatus::NeedsLogin
+        );
+        assert_eq!(record.entry_kind(), CredentialEntryKind::MachineProvider);
+        assert!(!record.needs_refresh(Timestamp::from_second(0).unwrap()));
+    }
+    #[test]
+    fn fixed_machine_provider_bytes() {
+        let kind = CredentialKind::MachineProvider {
+            env: [("HCLOUD_TOKEN".into(), "x".into())].into(),
+        };
+        let bytes = crate::encode(&kind).unwrap();
+        assert_eq!(
+            bytes,
+            [
+                1, 2, 1, 12, 72, 67, 76, 79, 85, 68, 95, 84, 79, 75, 69, 78, 1, 120
+            ]
+        );
+        assert!(crate::decode::<CredentialKind>(&bytes).unwrap() == kind);
+    }
 
     #[test]
     fn credential_record_has_fixed_bytes() {

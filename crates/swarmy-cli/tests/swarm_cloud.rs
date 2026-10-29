@@ -800,3 +800,41 @@ fn non_elastic_workers_cannot_scale_to_zero() {
             .contains("not elastic, so its count must be between 1 and 50")
     );
 }
+
+#[test]
+fn elastic_gpu_is_not_planned_or_applied_on_the_laptop() {
+    let f = setup();
+    credentials(&f);
+    create(&f, &["--lifecycle", "ephemeral"]);
+    let path = f.path().join("config/swarmy/swarms/fleet.toml");
+    let mut spec = SwarmSpec::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let mut gpu = spec.groups["workers"].clone();
+    gpu.count = None;
+    gpu.elastic = true;
+    gpu.max = Some(2);
+    gpu.price_per_hour = Some("0.75".into());
+    gpu.currency = Some("EUR".into());
+    spec.groups.insert("gpu".into(), gpu);
+    spec.placement.nodes.push("gpu".into());
+    spec.validate().unwrap();
+    let dirs = Dirs {
+        config: f.path().join("config/swarmy"),
+        data: f.path().join("data/swarmy"),
+        state: f.path().join("state/swarmy"),
+        cache: f.path().join("cache/swarmy"),
+    };
+    Registry::new(dirs).write_spec(&spec).unwrap();
+    f.ok(&["swarm", "plan", "fleet"]);
+    f.ok(&["swarm", "up", "fleet", "--no-image"]);
+    assert!(
+        !fs::read_to_string(f.path().join("tofu.log"))
+            .unwrap()
+            .contains("gpu")
+    );
+    let output = f.run(&["swarm", "scale", "fleet", "gpu", "3"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("max = 2"));
+    let output = f.run(&["swarm", "scale", "fleet", "workers", "0"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not elastic"));
+}

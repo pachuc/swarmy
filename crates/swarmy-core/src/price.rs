@@ -17,6 +17,8 @@ impl HourlyPrice {
     /// Parse an exact decimal amount and ISO 4217 currency.
     /// # Errors
     /// Returns the violated decimal or currency rule.
+    /// # Panics
+    /// Never panics: the fractional length was checked before computing the scale.
     pub fn parse(amount: &str, currency: &str) -> Result<Self, InvalidPrice> {
         const FORMAT: &str =
             "price_per_hour must be a decimal like 0.75 with at most six decimal places";
@@ -66,7 +68,7 @@ impl HourlyPrice {
         if fractional == 0 {
             return whole.to_string();
         }
-        format!("{whole}.{:06}", fractional)
+        format!("{whole}.{fractional:06}")
             .trim_end_matches('0')
             .to_owned()
     }

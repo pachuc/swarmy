@@ -538,6 +538,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn machine_provider_cannot_resolve_inference() {
+        let record = CredentialRecord {
+            bookkeeping: swarmy_core::CredentialBookkeeping::default(),
+            kind: CredentialKind::MachineProvider {
+                env: [("HCLOUD_TOKEN".into(), "test".into())].into(),
+            },
+            updated_at: jiff::Timestamp::now(),
+        };
+        let error = resolver(Some(record))
+            .resolve_using("openai", |_| None)
+            .await
+            .err()
+            .expect("machine credentials cannot resolve inference");
+        assert!(
+            error
+                .to_string()
+                .contains("machine-provider credentials for OpenTofu")
+        );
+    }
+
+    #[tokio::test]
     async fn expired_bedrock_record_explains_iam_alternative() {
         let record = CredentialRecord {
             bookkeeping: swarmy_core::CredentialBookkeeping::default(),
