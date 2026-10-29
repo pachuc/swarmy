@@ -11,6 +11,6 @@ store_tool!(
 store_tool!(
     ReleaseGpu,
     "release_gpu",
-    "Give up your computer's GPU so it restarts on a node without one and the GPU machine can shut down. Files on your disk are kept; running processes and host-local scratch such as the cargo target directory and /tmp are lost. This call returns at once. It must be the only tool call in its response.",
+    "Give up your computer's GPU so it restarts, preferably on a node without one, and the GPU machine can shut down. Files on your disk are kept; running processes and host-local scratch such as the cargo target directory and /tmp are lost. This call returns at once. It must be the only tool call in its response.",
     super::empty_parameters()
 );

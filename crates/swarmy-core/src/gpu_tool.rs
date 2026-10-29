@@ -8,7 +8,7 @@ pub const MAX_GPU_REASON_CHARS: usize = 500;
 pub const GPU_REQUEST_NOT_ALLOWED: &str = "This agent is not allowed to change its GPU requirement, so nothing changed. An operator can allow it with: swarmy agent set <agent> --allow-gpu-request true";
 pub const GPU_REQUEST_NEEDS_AGENT: &str = "request_gpu and release_gpu work only for named agents. This session's computer belongs to no named agent, so nothing changed.";
 pub const GPU_TOOL_NOT_ALONE: &str = "No tool call in this response ran. request_gpu and release_gpu move your computer, so each must be the only tool call in its response. Call it on its own, then repeat the other calls.";
-pub const GPU_RELEASED: &str = "Your GPU requirement is now none. This call did not wait for the move: your computer will restart on a node without a GPU. Files saved on your disk are kept. Running processes and background commands stop, and host-local scratch, including the cargo target directory (/home/agent/.cargo-target) and /tmp, is lost, so the next build starts cold.";
+pub const GPU_RELEASED: &str = "Your GPU requirement is now none. This call did not wait for the move: your computer will restart on a node without a GPU when one has room. Files saved on your disk are kept. Running processes and background commands stop, and host-local scratch, including the cargo target directory (/home/agent/.cargo-target) and /tmp, is lost, so the next build starts cold.";
 pub const GPU_ALREADY_RELEASED: &str =
     "You have no GPU requirement, so nothing changed and your computer will not move.";
 
@@ -19,10 +19,7 @@ pub fn is_gpu_tool(name: &str) -> bool {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GpuToolCall {
-    Request {
-        mode: GpuRequirement,
-        reason: String,
-    },
+    Request { mode: RequestedMode, reason: String },
     Release,
 }
 
@@ -33,11 +30,20 @@ struct RequestGpuArguments {
     reason: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum RequestedMode {
+pub enum RequestedMode {
     Shared,
     Dedicated,
+}
+
+impl From<RequestedMode> for GpuRequirement {
+    fn from(mode: RequestedMode) -> Self {
+        match mode {
+            RequestedMode::Shared => Self::Shared,
+            RequestedMode::Dedicated => Self::Dedicated,
+        }
+    }
 }
 
 impl GpuToolCall {
@@ -56,12 +62,8 @@ impl GpuToolCall {
                 if reason.is_empty() || reason.chars().count() > MAX_GPU_REASON_CHARS {
                     return Err("reason must be 1-500 characters and not blank".into());
                 }
-                let mode = match args.mode {
-                    RequestedMode::Shared => GpuRequirement::Shared,
-                    RequestedMode::Dedicated => GpuRequirement::Dedicated,
-                };
                 Ok(Self::Request {
-                    mode,
+                    mode: args.mode,
                     reason: reason.into(),
                 })
             }
@@ -83,15 +85,14 @@ fn mode_name(mode: GpuRequirement) -> &'static str {
 }
 
 #[must_use]
-pub fn gpu_requested(mode: GpuRequirement) -> String {
+pub fn gpu_requested(mode: RequestedMode) -> String {
     let first = match mode {
-        GpuRequirement::Shared => {
+        RequestedMode::Shared => {
             "Your GPU requirement is now shared: your computer will use a GPU that other computers may also use."
         }
-        GpuRequirement::Dedicated => {
+        RequestedMode::Dedicated => {
             "Your GPU requirement is now dedicated: no other GPU computer will run on your computer's machine."
         }
-        GpuRequirement::None => "Your GPU requirement is now none.",
     };
     format!(
         "{first} This call did not wait for the move: your computer will restart on a node with a GPU, and your next tool call that uses the computer may wait for GPU capacity, for several minutes if a GPU machine has to start. Files saved on your disk are kept. Running processes and background commands stop, and host-local scratch, including the cargo target directory (/home/agent/.cargo-target) and /tmp, is lost, so the next build starts cold. Call release_gpu when you no longer need the GPU."
@@ -119,14 +120,14 @@ mod tests {
                 json!({"mode":"shared","reason":"  render  "})
             ),
             Ok(GpuToolCall::Request {
-                mode: GpuRequirement::Shared,
+                mode: RequestedMode::Shared,
                 reason: "render".into()
             })
         );
         assert!(matches!(
             GpuToolCall::parse(REQUEST_GPU_TOOL, json!({"mode":"dedicated","reason":"x"})),
             Ok(GpuToolCall::Request {
-                mode: GpuRequirement::Dedicated,
+                mode: RequestedMode::Dedicated,
                 ..
             })
         ));
@@ -155,8 +156,8 @@ mod tests {
     #[test]
     fn gpu_tool_texts_explain_the_move() {
         for text in [
-            gpu_requested(GpuRequirement::Shared),
-            gpu_requested(GpuRequirement::Dedicated),
+            gpu_requested(RequestedMode::Shared),
+            gpu_requested(RequestedMode::Dedicated),
             GPU_RELEASED.into(),
         ] {
             for fragment in [
@@ -168,6 +169,6 @@ mod tests {
                 assert!(text.contains(fragment));
             }
         }
-        assert!(gpu_requested(GpuRequirement::Shared).contains("several minutes"));
+        assert!(gpu_requested(RequestedMode::Shared).contains("several minutes"));
     }
 }

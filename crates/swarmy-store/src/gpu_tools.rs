@@ -82,11 +82,11 @@ impl Store {
         }
         let previous = agent.requirements;
         let output = match change {
-            GpuToolCall::Request { mode, .. } if mode == previous.gpu => {
-                return Ok(Ok(gpu_already(mode)));
+            GpuToolCall::Request { mode, .. } if GpuRequirement::from(mode) == previous.gpu => {
+                return Ok(Ok(gpu_already(mode.into())));
             }
             GpuToolCall::Request { mode, reason } => {
-                agent.requirements.gpu = mode;
+                agent.requirements.gpu = mode.into();
                 agent.gpu_request = Some(GpuRequest {
                     reason,
                     requested_at: now,

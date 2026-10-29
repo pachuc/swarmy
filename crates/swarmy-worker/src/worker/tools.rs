@@ -212,7 +212,7 @@ impl Worker {
                     .await?
             }
             Some(StoreTool::Gpu) => {
-                let event = self
+                let result = self
                     .store
                     .complete_gpu_tool(
                         session.session_id,
@@ -221,10 +221,10 @@ impl Worker {
                         request_id,
                         call,
                     )
-                    .await?;
-                // A subsequent dispatch must re-resolve the changed requirement.
+                    .await;
+                // Invalidate even on error: a commit-unknown failure may have changed the requirement.
                 self.placements.invalidate(session.agent_id).await;
-                event
+                result?
             }
             None => anyhow::bail!("not a store tool: {}", call.tool),
         };

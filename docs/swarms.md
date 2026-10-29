@@ -463,7 +463,7 @@ node record. A missing command, a query that fails or runs longer than 10 second
 or malformed output means the node advertises no cards. `swarmy doctor` lists
 cards on live nodes.
 
-Agents set `--gpu none|shared|dedicated`. An agent allowed with `--allow-gpu-request true` can change the requirement itself with the `request_gpu` and `release_gpu` tools ([agents that ask for a GPU](agent-lifecycle.md#agents-that-ask-for-a-gpu)). None can use any sandbox node, but
+Agents set `--gpu none|shared|dedicated`. None can use any sandbox node, but
 prefers nodes without cards. Shared needs at least one card and can share the
 node with other shared GPU sandboxes, provided no dedicated GPU sandbox is there.
 Dedicated needs a card and no other GPU sandbox on that node; CPU sandboxes can
@@ -471,7 +471,10 @@ still share it. Dedicated reserves the node's whole set of cards, not individual
 cards. A GPU requirement overrides local scratch preference, so moving from a
 scratch host may require a cold cargo target. If no node qualifies, the step
 parks the session in a durable capacity wait, as described in
-[When no node has room](#when-no-node-has-room).
+[When no node has room](#when-no-node-has-room). An agent allowed with
+`--allow-gpu-request true` can change the requirement itself with the
+`request_gpu` and `release_gpu` tools
+([agents that ask for a GPU](agent-lifecycle.md#agents-that-ask-for-a-gpu)).
 
 For tests and dev stacks only, `[node.fake_gpu]` with `model`, `memory_mib`, and
 `count` or `SWARMY_NODE_FAKE_GPU="MODEL,MEMORY_MIB,COUNT"` advertises fake cards
