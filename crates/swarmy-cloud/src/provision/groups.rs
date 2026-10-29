@@ -264,19 +264,19 @@ fn last_variables(dir: &Path) -> Option<Map<String, Value>> {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
-/// Return or generate the group SSH public key.
-/// # Errors
-/// Returns filesystem or key-generation failures.
+fn group_keys_dir(dir: &Path) -> PathBuf {
+    dir.join("keys/groups")
+}
 /// Path of the group SSH identity on the primary.
 #[must_use]
 pub fn group_key_path(dir: &Path, group: &str) -> PathBuf {
-    dir.join("keys/groups").join(group)
+    group_keys_dir(dir).join(group)
 }
+/// Return or generate the group SSH public key.
 /// # Errors
-/// Key generation or file access failures.
+/// Returns filesystem or key-generation failures.
 pub async fn group_key(dir: &Path, swarm: &str, group: &str) -> Result<String> {
-    let keys = dir.join("keys/groups");
-    create_private_dir(&keys)?;
+    create_private_dir(&group_keys_dir(dir))?;
     let key = group_key_path(dir, group);
     let public = if key.is_file() {
         fs::read(key.with_extension("pub"))?

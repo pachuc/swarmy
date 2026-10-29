@@ -292,9 +292,12 @@ pub struct LocalPrimary {
     pub address: std::net::Ipv4Addr,
     pub service_user: String,
 }
-struct PrimaryShell<'a> {
-    primary: Primary<'a>,
-    address: Option<String>,
+enum PrimaryShell<'a> {
+    Remote {
+        machine: &'a Machine,
+        address: String,
+    },
+    Local,
 }
 impl<'a> Primary<'a> {
     fn tunnel_address(self) -> Result<std::net::Ipv4Addr> {
@@ -315,31 +318,24 @@ impl<'a> Primary<'a> {
         }
     }
     async fn shell(self, attempts: u32) -> Result<PrimaryShell<'a>> {
-        let address = match self {
-            Self::Remote(machine) => Some(wait_ssh_for(machine, attempts).await?),
-            Self::Local(_) => None,
-        };
-        Ok(PrimaryShell {
-            primary: self,
-            address,
-        })
+        match self {
+            Self::Remote(machine) => Ok(PrimaryShell::Remote {
+                machine,
+                address: wait_ssh_for(machine, attempts).await?,
+            }),
+            Self::Local(_) => Ok(PrimaryShell::Local),
+        }
     }
 }
 impl PrimaryShell<'_> {
     fn command(&self, remote: &str) -> Result<Command> {
-        match self.primary {
-            Primary::Remote(machine) => {
+        match self {
+            Self::Remote { machine, address } => {
                 let mut command = base(machine)?;
-                command
-                    .arg(
-                        self.address
-                            .as_deref()
-                            .expect("remote primary has SSH address"),
-                    )
-                    .arg(remote);
+                command.arg(address).arg(remote);
                 Ok(command)
             }
-            Primary::Local(_) => {
+            Self::Local => {
                 let mut command = Command::new("sh");
                 command
                     .args(["-c", remote])
@@ -750,12 +746,7 @@ impl Ssh {
             )
             .await?;
         }
-        let service_ip: std::net::Ipv4Addr = match primary {
-            Some(primary) => primary.tunnel_address()?,
-            None => node.private_ip.parse().map_err(|source| {
-                crate::Error::context(source, "private_ip must be an IPv4 address")
-            })?,
-        };
+        let service_ip = primary.unwrap_or(Primary::Remote(node)).tunnel_address()?;
         let mode = if let Some(primary) = primary {
             let shell = primary.shell(90).await?;
             let cluster = shell
@@ -1662,9 +1653,9 @@ mod provisioning_command_tests {
     #[test]
     fn primary_steps_run_over_ssh_or_on_this_host() {
         let remote = node();
-        let remote_shell = super::PrimaryShell {
-            primary: super::Primary::Remote(&remote),
-            address: Some("10.0.0.1".into()),
+        let remote_shell = super::PrimaryShell::Remote {
+            machine: &remote,
+            address: "10.0.0.1".into(),
         };
         let command = remote_shell.command("echo ok").unwrap();
         let args = command
@@ -1674,14 +1665,7 @@ mod provisioning_command_tests {
             .collect::<Vec<_>>();
         assert_eq!(command.as_std().get_program(), "ssh");
         assert_eq!(&args[args.len() - 2..], &["10.0.0.1", "echo ok"]);
-        let local = super::LocalPrimary {
-            address: "192.0.2.1".parse().unwrap(),
-            service_user: "swarmy".into(),
-        };
-        let shell = super::PrimaryShell {
-            primary: super::Primary::Local(&local),
-            address: None,
-        };
+        let shell = super::PrimaryShell::Local;
         let command = shell.command("echo ok").unwrap();
         assert_eq!(command.as_std().get_program(), "sh");
         assert_eq!(

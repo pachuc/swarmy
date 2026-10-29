@@ -1462,6 +1462,7 @@ async fn gpu_placements_on_a_joined_machine_record_assignment_intervals() {
     let b = gpu_agent(&test.store, "gpu-assignment-b", GpuRequirement::Shared).await;
     let c = gpu_agent(&test.store, "gpu-assignment-c", GpuRequirement::None).await;
     let first = test.store.place(a, host, future(60)).await.unwrap();
+    test.store.place(c, host, future(60)).await.unwrap();
     assert!(
         test.store
             .open_machine_assignments(machine)
@@ -1492,15 +1493,6 @@ async fn gpu_placements_on_a_joined_machine_record_assignment_intervals() {
     assert_eq!(open.len(), 2);
     assert!(open.iter().any(|row| row.agent == a));
     assert!(open.iter().any(|row| row.agent == b));
-    test.store.place(c, host, future(60)).await.unwrap();
-    assert_eq!(
-        test.store
-            .open_machine_assignments(machine)
-            .await
-            .unwrap()
-            .len(),
-        2
-    );
     test.store.release(&second).await.unwrap();
     assert!(
         test.store
@@ -1512,7 +1504,7 @@ async fn gpu_placements_on_a_joined_machine_record_assignment_intervals() {
     );
     let old = expire(&test, &first).await;
     let other = gpu_node(&test.store, 2, 1).await.node_id;
-    test.store.take_over(&old, other, future(60)).await.unwrap();
+    let moved = test.store.take_over(&old, other, future(60)).await.unwrap();
     assert!(
         test.store
             .machine_assignments(machine)
@@ -1524,6 +1516,62 @@ async fn gpu_placements_on_a_joined_machine_record_assignment_intervals() {
     assert!(
         test.store
             .open_machine_assignments(other.ledger_machine_id())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let old_from = test
+        .store
+        .machine_assignments(machine)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| row.agent == a)
+        .unwrap()
+        .from;
+    let expired = expire(&test, &moved).await;
+    test.store
+        .take_over(&expired, host, future(60))
+        .await
+        .unwrap();
+    let open = test.store.open_machine_assignments(machine).await.unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].agent, a);
+    assert!(open[0].from > old_from);
+}
+
+#[tokio::test]
+async fn joined_with_a_foreign_node_id_opens_no_intervals() {
+    use swarmy_core::{GpuRequirement, MachineTransition};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (machine, derived_node) = ledger_gpu_node(&test, "gpu-foreign-join").await;
+    let foreign_node = gpu_node(&test.store, 2, 1).await.node_id;
+    assert_ne!(foreign_node, derived_node);
+    let agent = gpu_agent(
+        &test.store,
+        "gpu-foreign-join-agent",
+        GpuRequirement::Shared,
+    )
+    .await;
+    test.store
+        .place(agent, foreign_node, future(60))
+        .await
+        .unwrap();
+    test.store
+        .transition_machine(
+            machine,
+            &MachineTransition::Joined {
+                node_id: foreign_node,
+            },
+            timestamp(5),
+        )
+        .await
+        .unwrap();
+    assert!(
+        test.store
+            .open_machine_assignments(machine)
             .await
             .unwrap()
             .is_empty()
