@@ -112,6 +112,11 @@ pub fn preflight(
     count: u32,
 ) -> Result<(GroupKind, SwarmRecord)> {
     let kind = check_scalable(spec, group)?;
+    if count == 0 && kind == GroupKind::Existing {
+        return Err(Error::other(format!(
+            "group \"{group}\" lists existing hosts and cannot be scaled to zero; keep at least one host (only groups whose machines OpenTofu creates can have zero)"
+        )));
+    }
     let record = read_up_record(registry, spec)?;
     if kind == GroupKind::Existing && count as usize > record.hosts.get(group).map_or(0, Vec::len) {
         return Err(Error::other(format!(

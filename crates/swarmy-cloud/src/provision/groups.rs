@@ -125,18 +125,18 @@ fn credential_env(
     group: &GroupSpec,
     bucket: bool,
 ) -> Result<CredentialEnv> {
-    let providers: Vec<_> = match group.module {
-        Module::HetznerCloud => {
-            let mut providers = vec![CloudProvider::HetznerCloud];
-            if bucket || credentials.get(CloudProvider::HetznerS3).is_some() {
+    let providers: Vec<_> = match &group.module {
+        // Custom modules receive all stored providers: their provider needs are unknown.
+        Module::Path(_) => CloudProvider::ALL.to_vec(),
+        module => {
+            let mut providers: Vec<_> = module.machine_provider().into_iter().collect();
+            if *module == Module::HetznerCloud
+                && (bucket || credentials.get(CloudProvider::HetznerS3).is_some())
+            {
                 providers.push(CloudProvider::HetznerS3);
             }
             providers
         }
-        Module::Aws => vec![CloudProvider::Aws],
-        // Custom modules receive all stored providers: their provider needs are unknown.
-        Module::Path(_) => CloudProvider::ALL.to_vec(),
-        _ => Vec::new(),
     };
     provider_env(
         credentials,
@@ -481,6 +481,7 @@ pub(crate) async fn apply(
         .await?;
         workspace.apply().await?;
         let mut outputs = workspace.outputs().await?;
+        // Scaleway machines have no private network, so their private address is always null.
         if matches!(group.module, Module::HetznerCloud | Module::Aws)
             && outputs.machines.iter().any(|m| m.private_ip.is_none())
         {

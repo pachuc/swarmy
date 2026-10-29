@@ -22,10 +22,11 @@ const PASSTHROUGH: &[&str] = &[
     "no_proxy",
 ];
 const LOCK_TIMEOUT: &str = "-lock-timeout=120s";
-const CLOSED_AWS: [(&str, &str); 3] = [
+const CLOSED: [(&str, &str); 4] = [
     ("AWS_SHARED_CREDENTIALS_FILE", "/dev/null"),
     ("AWS_CONFIG_FILE", "/dev/null"),
     ("AWS_EC2_METADATA_DISABLED", "true"),
+    ("SCW_CONFIG_PATH", "/nonexistent/swarmy/scw-config.yaml"),
 ];
 #[derive(Clone, Default)]
 pub struct CredentialEnv {
@@ -36,10 +37,10 @@ impl CredentialEnv {
     pub fn new() -> Self {
         Self::default()
     }
-    /// Keep the AWS provider off shared files and instance metadata.
+    /// Keep the AWS and Scaleway providers off shared files, local CLI profiles and instance metadata.
     #[must_use]
     pub fn closed() -> Self {
-        CLOSED_AWS
+        CLOSED
             .iter()
             .fold(Self::new(), |env, (name, value)| env.with(*name, *value))
     }
@@ -73,7 +74,7 @@ impl CredentialEnv {
     }
 }
 fn secret_name(name: &str) -> bool {
-    !CLOSED_AWS.iter().any(|(closed, _)| *closed == name)
+    !CLOSED.iter().any(|(closed, _)| *closed == name)
 }
 impl fmt::Debug for CredentialEnv {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

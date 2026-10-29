@@ -28,7 +28,7 @@ use std::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("unknown cloud provider \"{0}\"; expected one of hetzner-cloud, hetzner-s3, aws")]
+    #[error("unknown cloud provider \"{0}\"; expected one of hetzner-cloud, hetzner-s3, aws, scaleway")]
     UnknownCloudProvider(String),
     #[error("cloud credentials: {0}")]
     CloudCredential(String),

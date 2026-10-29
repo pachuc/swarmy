@@ -36,7 +36,7 @@ macro_rules! module {
 }
 
 /// Every carried module, sorted by name.
-pub static MODULES: &[Module] = &[module!("aws"), module!("hetzner-cloud")];
+pub static MODULES: &[Module] = &[module!("aws"), module!("hetzner-cloud"), module!("scaleway")];
 
 /// The carried module with this name.
 #[must_use]
@@ -118,8 +118,9 @@ mod tests {
 
     #[test]
     fn find_knows_only_carried_modules() {
-        assert_eq!(names(), ["aws", "hetzner-cloud"]);
+        assert_eq!(names(), ["aws", "hetzner-cloud", "scaleway"]);
         assert!(find("aws").is_some());
+        assert!(find("scaleway").is_some());
         assert!(find("gcp").is_none());
     }
 

@@ -17,15 +17,17 @@ pub enum CloudProvider {
     HetznerCloud,
     HetznerS3,
     Aws,
+    Scaleway,
 }
 impl CloudProvider {
-    pub const ALL: [Self; 3] = [Self::HetznerCloud, Self::HetznerS3, Self::Aws];
+    pub const ALL: [Self; 4] = [Self::HetznerCloud, Self::HetznerS3, Self::Aws, Self::Scaleway];
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::HetznerCloud => "hetzner-cloud",
             Self::HetznerS3 => "hetzner-s3",
             Self::Aws => "aws",
+            Self::Scaleway => "scaleway",
         }
     }
     /// Secret fields read from stdin, in order.
@@ -35,6 +37,7 @@ impl CloudProvider {
             Self::HetznerCloud => &["token"],
             Self::HetznerS3 => &["access_key", "secret_key"],
             Self::Aws => &["access_key_id", "secret_access_key"],
+            Self::Scaleway => &["access_key", "secret_key", "project_id"],
         }
     }
     /// The optional non-secret field.
@@ -58,6 +61,7 @@ impl FromStr for CloudProvider {
             "hetzner-cloud" => Ok(Self::HetznerCloud),
             "hetzner-s3" => Ok(Self::HetznerS3),
             "aws" => Ok(Self::Aws),
+            "scaleway" => Ok(Self::Scaleway),
             _ => Err(Error::UnknownCloudProvider(s.into())),
         }
     }
@@ -81,6 +85,22 @@ pub struct Aws {
     pub secret_access_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scaleway {
+    pub access_key: String,
+    pub secret_key: String,
+    pub project_id: String,
+}
+impl fmt::Debug for Scaleway {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Scaleway")
+            .field("access_key", &"..redacted..")
+            .field("secret_key", &"..redacted..")
+            .field("project_id", &"..redacted..")
+            .finish()
+    }
 }
 impl fmt::Debug for HetznerCloud {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -112,6 +132,7 @@ pub enum CloudCredential {
     HetznerCloud(HetznerCloud),
     HetznerS3(HetznerS3),
     Aws(Aws),
+    Scaleway(Scaleway),
 }
 impl CloudCredential {
     /// Build and validate, consuming secret values in provider field order.
@@ -150,6 +171,11 @@ impl CloudCredential {
                 secret_access_key: secrets.next().expect("count checked"),
                 region: option,
             }),
+            CloudProvider::Scaleway => Self::Scaleway(Scaleway {
+                access_key: secrets.next().expect("count checked"),
+                secret_key: secrets.next().expect("count checked"),
+                project_id: secrets.next().expect("count checked"),
+            }),
         };
         credential.validate()?;
         Ok(credential)
@@ -160,6 +186,7 @@ impl CloudCredential {
             Self::HetznerCloud(_) => CloudProvider::HetznerCloud,
             Self::HetznerS3(_) => CloudProvider::HetznerS3,
             Self::Aws(_) => CloudProvider::Aws,
+            Self::Scaleway(_) => CloudProvider::Scaleway,
         }
     }
     #[must_use]
@@ -180,6 +207,11 @@ impl CloudCredential {
                 Self::HetznerS3(c) => vec![
                     ("MINIO_USER", c.access_key.clone()),
                     ("MINIO_PASSWORD", c.secret_key.clone()),
+                ],
+                Self::Scaleway(c) => vec![
+                    ("SCW_ACCESS_KEY", c.access_key.clone()),
+                    ("SCW_SECRET_KEY", c.secret_key.clone()),
+                    ("SCW_DEFAULT_PROJECT_ID", c.project_id.clone()),
                 ],
                 Self::Aws(c) => {
                     let mut v = vec![
@@ -211,6 +243,16 @@ impl CloudCredential {
             Self::HetznerS3(c) => {
                 check(self.provider(), "access_key", &c.access_key)?;
                 check(self.provider(), "secret_key", &c.secret_key)?;
+            }
+            Self::Scaleway(c) => {
+                check(self.provider(), "access_key", &c.access_key)?;
+                check(self.provider(), "secret_key", &c.secret_key)?;
+                check(self.provider(), "project_id", &c.project_id)?;
+                if c.project_id.len() != 36 || !c.project_id.bytes().enumerate().all(|(i, b)| {
+                    if [8, 13, 18, 23].contains(&i) { b == b'-' } else { b.is_ascii_hexdigit() }
+                }) {
+                    return Err(Error::CloudCredential("scaleway project_id must be a UUID like 11111111-2222-3333-4444-555555555555".into()));
+                }
             }
             Self::Aws(c) => {
                 check(self.provider(), "access_key_id", &c.access_key_id)?;
@@ -265,6 +307,8 @@ pub struct CloudCredentials {
     hetzner_s3: Option<HetznerS3>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     aws: Option<Aws>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scaleway: Option<Scaleway>,
 }
 impl CloudCredentials {
     #[must_use]
@@ -328,6 +372,7 @@ impl CloudCredentials {
                 .map(CloudCredential::HetznerCloud),
             CloudProvider::HetznerS3 => self.hetzner_s3.clone().map(CloudCredential::HetznerS3),
             CloudProvider::Aws => self.aws.clone().map(CloudCredential::Aws),
+            CloudProvider::Scaleway => self.scaleway.clone().map(CloudCredential::Scaleway),
         }
     }
     pub fn set(&mut self, credential: CloudCredential) {
@@ -335,6 +380,7 @@ impl CloudCredentials {
             CloudCredential::HetznerCloud(c) => self.hetzner_cloud = Some(c),
             CloudCredential::HetznerS3(c) => self.hetzner_s3 = Some(c),
             CloudCredential::Aws(c) => self.aws = Some(c),
+            CloudCredential::Scaleway(c) => self.scaleway = Some(c),
         }
     }
     /// Returns whether an entry was removed.
@@ -343,6 +389,7 @@ impl CloudCredentials {
             CloudProvider::HetznerCloud => self.hetzner_cloud.take().is_some(),
             CloudProvider::HetznerS3 => self.hetzner_s3.take().is_some(),
             CloudProvider::Aws => self.aws.take().is_some(),
+            CloudProvider::Scaleway => self.scaleway.take().is_some(),
         }
     }
     /// # Errors
