@@ -473,6 +473,7 @@ async fn create_agent(
         system_prompt: body.system_prompt,
         memory_mib: body.memory_mib,
         gpu: body.gpu.map(Into::into),
+        allow_gpu_request: body.allow_gpu_request,
         route: body.route,
     };
     let key = IdempotencyKey::parse(&body.idempotency_key)?;
@@ -524,6 +525,7 @@ async fn update_agent(
         system_prompt: body.system_prompt,
         memory_mib: body.memory_mib,
         gpu: body.gpu.map(Into::into),
+        allow_gpu_request: body.allow_gpu_request,
         route: body.route,
     };
     let resets: Vec<swarmy_core::InferenceField> =

@@ -213,6 +213,9 @@ pub struct Agent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
     pub requirements: SandboxRequirements,
+    pub allow_gpu_request: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_request: Option<GpuRequestView>,
     // Everything below hydrates on show/create/update only. List rows omit
     // these keys instead of printing nulls, zeros, or empty arrays as if
     // they were observed values.
@@ -679,6 +682,14 @@ impl From<AgentReset> for swarmy_core::InferenceField {
     }
 }
 
+/// The cause of an agent's current self-requested GPU requirement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct GpuRequestView {
+    pub reason: String,
+    pub requested_at: String,
+    pub session_id: String,
+}
+
 /// Every client mutation has a key that survives retries of the same intent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateAgent {
@@ -696,6 +707,8 @@ pub struct CreateAgent {
     pub memory_mib: Option<u64>,
     #[serde(default)]
     pub gpu: Option<GpuMode>,
+    #[serde(default)]
+    pub allow_gpu_request: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_token: Option<String>,
 }
@@ -713,6 +726,8 @@ pub struct UpdateAgent {
     pub memory_mib: Option<u64>,
     #[serde(default)]
     pub gpu: Option<GpuMode>,
+    #[serde(default)]
+    pub allow_gpu_request: Option<bool>,
     #[serde(default)]
     pub resets: Vec<AgentReset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1562,7 +1577,7 @@ pub mod api_paths {
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
     WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Image, ImageUpload, Model, ProviderApi,
     Provider, ProbeModel, ProbeResult, CredentialKind, CredentialStatus, Credential, PutCredentialRecord, NodeRole, NodeCapacity,
-    Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode, GpuCards,
+    Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode, GpuCards, GpuRequestView,
     StageTiming, InferenceMetric, ToolMetric, ComputerMetric, TurnMetrics, LatencyPercentiles,
     AgentMetrics, StartGcRun, GcRun,
     CreateAgent, UpdateAgent, AgentReset, GpuMode, DeleteRequest,
@@ -1642,7 +1657,7 @@ mod tests {
         }
         check!(WaitingReason, {"wake_at":"2026-09-23T12:00:00Z","reasons":["provider rate limit"]});
         check!(ImageRef, {"name":"base","tag":"dev"});
-        check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s","requirements":{"memory_mib":768,"gpu":"none"}});
+        check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s","requirements":{"memory_mib":768,"gpu":"none"},"allow_gpu_request":false});
         check!(Session, {"id":"s","agent_id":"a","kind":"named","state":"sleeping","log_id":{"kind":"session","id":"s"},"head_sequence":2,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":{"wake_at":null,"reasons":["timer"]},"main":false});
         check!(Session, {"id":"archived","agent_id":"a","kind":"named","state":"completed","log_id":{"kind":"session","id":"archived"},"head_sequence":7,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":null,"main":false,"provider":"fake","model":"scripted","effort":"medium","next_session":"successor"});
         check!(Turn, {"id":"t","session_id":"s","status":"running","started_at":"2026-09-23T12:00:00Z","finished_at":null});

@@ -44,10 +44,11 @@ pub(crate) async fn agent_command(command: agent_command::Command, json: bool) -
                 || inference.route.is_some()
                 || inference.memory.is_some()
                 || inference.gpu.is_some()
+                || inference.allow_gpu_request.is_some()
                 || github_token.is_some()
                 || *clear_github_token,
             "agent set requires --system-prompt, --system-prompt-file, --provider, --model, --effort, \
-                  --route, --memory, --gpu, --github-token, or --clear-github-token"
+                  --route, --memory, --gpu, --allow-gpu-request, --github-token, or --clear-github-token"
         );
     }
     let (client, endpoint) = crate::target::connect().await?;
@@ -545,7 +546,7 @@ async fn show_session(client: &Client, endpoint: &str, session_id: Ulid, json: b
 
 fn settings_text(agent: &swarmy_api_types::Agent) -> String {
     format!(
-        "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nroute={}\nsandbox_memory_mib={}\nsandbox_gpu={}",
+        "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nroute={}\nsandbox_memory_mib={}\nsandbox_gpu={}\nallow_gpu_request={}\ngpu_request={}",
         agent.provider.as_deref().unwrap_or("(stack default)"),
         agent.system_prompt.as_deref().unwrap_or("(stack default)"),
         agent.model.as_deref().unwrap_or("(stack default)"),
@@ -553,6 +554,14 @@ fn settings_text(agent: &swarmy_api_types::Agent) -> String {
         agent.route.as_deref().unwrap_or("(stack default)"),
         agent.requirements.memory_mib,
         agent.requirements.gpu.as_str(),
+        agent.allow_gpu_request,
+        agent.gpu_request.as_ref().map_or_else(
+            || "-".into(),
+            |r| format!(
+                "{} (session {} at {})",
+                r.reason, r.session_id, r.requested_at
+            )
+        ),
     )
 }
 struct AgentFlags {
@@ -563,6 +572,7 @@ struct AgentFlags {
     system_prompt: Option<String>,
     memory_mib: Option<u64>,
     gpu: Option<swarmy_api_types::GpuMode>,
+    allow_gpu_request: Option<bool>,
     resets: Vec<swarmy_api_types::AgentReset>,
 }
 fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<AgentFlags> {
@@ -604,6 +614,7 @@ fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<AgentFl
         system_prompt,
         memory_mib: args.memory,
         gpu,
+        allow_gpu_request: args.allow_gpu_request,
         resets,
     })
 }
@@ -784,6 +795,7 @@ async fn agent_create(
             route: flags.route,
             memory_mib: flags.memory_mib,
             gpu: flags.gpu,
+            allow_gpu_request: flags.allow_gpu_request,
             github_token: token,
         }),
     )
@@ -852,6 +864,7 @@ async fn agent(
                     route: flags.route,
                     memory_mib: flags.memory_mib,
                     gpu: flags.gpu,
+                    allow_gpu_request: flags.allow_gpu_request,
                     resets: flags.resets,
                     github_token,
                     clear_github_token,

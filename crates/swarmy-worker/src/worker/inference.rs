@@ -128,6 +128,12 @@ impl Worker {
                     request.system_prompt = prompt;
                 }
             }
+            if !summarizing {
+                apply_gpu_tools(
+                    request,
+                    record.as_ref().is_some_and(|agent| agent.allow_gpu_request),
+                );
+            }
             warn_on_route_fallback(session, snapshot.name.as_deref(), &snapshot.skipped);
             let selection = session.inference.resolve(&defaults);
             return self
@@ -160,6 +166,9 @@ impl Worker {
                 selection.model.clone(),
             )
         };
+        if !summarizing {
+            apply_gpu_tools(request, false);
+        }
         self.finish_prepare(
             session,
             request,
@@ -732,5 +741,14 @@ mod legacy_notice_tests {
             }],
         };
         assert!(is_effort_notice(&message));
+    }
+}
+
+/// Only agents allowed to request a GPU see request_gpu and release_gpu.
+pub(super) fn apply_gpu_tools(request: &mut swarmy_llm::Request, allowed: bool) {
+    if !allowed {
+        request
+            .tools
+            .retain(|tool| !swarmy_core::is_gpu_tool(&tool.name));
     }
 }
