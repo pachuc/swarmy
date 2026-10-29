@@ -2,17 +2,23 @@
 use foundationdb::{Database, tuple::Subspace};
 use jiff::Timestamp;
 use object_store::{ObjectStore, memory::InMemory, path::Path};
+use std::time::Duration;
 use std::{
     fs,
     sync::{Arc, Mutex},
 };
+use swarmy_cloud::{
+    provision::Machine,
+    ssh::{Drain, LocalPrimary},
+};
 use swarmy_config::Keyring;
 use swarmy_core::{
-    CredentialKind, CredentialRecord, CredentialScope, ElasticGroupDefinition, HourlyPrice,
-    MachineState,
+    AgentId, CredentialKind, CredentialRecord, CredentialScope, ElasticGroupDefinition,
+    GpuRequirement, HourlyPrice, LeaseOwnerId, MachineState, MachineTransition, NodeCapacity,
+    NodeRecord, NodeRole, SessionId, SessionRecord, SessionState,
 };
 use swarmy_infra::Tofu;
-use swarmy_provisioner::{Holder, Reconciler, Tick};
+use swarmy_provisioner::{Holder, Nodes, Reconciler, Tick};
 use swarmy_store::{MachineFilter, Store, blob::MemoryBlobStore};
 
 struct Fixture {
@@ -25,6 +31,18 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(with_credentials: bool, max: u32) -> Option<Self> {
+        Self::build(with_credentials, max, None).await
+    }
+    async fn with_nodes(max: u32, nodes: Arc<FakeNodes>) -> Option<Self> {
+        let fixture = Self::build(true, max, Some(nodes.clone())).await?;
+        nodes.set_store(fixture.store.clone(), fixture.temp.path().join("tofu.log"));
+        Some(fixture)
+    }
+    async fn build(
+        with_credentials: bool,
+        max: u32,
+        nodes: Option<Arc<dyn Nodes>>,
+    ) -> Option<Self> {
         let stack = swarmy_testkit::Stack::load("provisioner-reconcile")?;
         let db = Arc::new(Database::new(Some(&stack.cluster)).unwrap());
         let root = Subspace::all().subspace(&(stack.prefix.clone(),));
@@ -75,6 +93,11 @@ impl Fixture {
             temp.path().join("cache"),
         )
         .with_tofu(Tofu::from_binary(link, &temp.path().join("cache")));
+        let reconciler = if let Some(nodes) = nodes {
+            reconciler.with_nodes(nodes, None)
+        } else {
+            reconciler
+        };
         store
             .put_elastic_group(&ElasticGroupDefinition {
                 swarm: "fleet".into(),
@@ -114,6 +137,83 @@ impl Fixture {
             .list_machines(Some("gpu"), MachineFilter::All)
             .await
             .unwrap()
+    }
+}
+#[derive(Default)]
+struct FakeNodes {
+    store: Mutex<Option<Store>>,
+    log: Mutex<Option<std::path::PathBuf>>,
+    calls: Mutex<Vec<String>>,
+    join_error: Mutex<Option<String>>,
+    drain_fails: Mutex<bool>,
+}
+impl FakeNodes {
+    fn set_store(&self, store: Store, log: std::path::PathBuf) {
+        *self.store.lock().unwrap() = Some(store);
+        *self.log.lock().unwrap() = Some(log);
+    }
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+    fn applies(&self) -> usize {
+        let path = self.log.lock().unwrap().clone().unwrap();
+        fs::read_to_string(path)
+            .unwrap_or_default()
+            .matches("apply machine_count")
+            .count()
+    }
+}
+#[async_trait::async_trait]
+impl Nodes for FakeNodes {
+    async fn join(&self, node: &Machine, _primary: &LocalPrimary) -> anyhow::Result<()> {
+        self.calls.lock().unwrap().push(format!(
+            "join {} {} {} sandboxes={} storage={} node={}",
+            node.name,
+            node.public_ip,
+            node.ssh_user,
+            node.sandboxes,
+            node.local_storage,
+            node.node_id.unwrap()
+        ));
+        if let Some(error) = self.join_error.lock().unwrap().clone() {
+            anyhow::bail!("{error}")
+        }
+        let store = self.store.lock().unwrap().clone().unwrap();
+        store
+            .put_node(&NodeRecord {
+                node_id: node.node_id.unwrap(),
+                roles: vec![NodeRole::Sandbox],
+                capacity: NodeCapacity {
+                    cpu_millis: 1000,
+                    memory_bytes: 1024,
+                    disk_bytes: 1024,
+                    sandboxes: 1,
+                },
+                last_heartbeat: store.now(),
+                cached_images: vec![],
+                gpu: None,
+            })
+            .await?;
+        Ok(())
+    }
+    async fn drain(&self, node: &Machine, timeout: Duration) -> anyhow::Result<Drain> {
+        self.calls.lock().unwrap().push(format!(
+            "drain {} {} applies={}",
+            node.name,
+            timeout.as_secs(),
+            self.applies()
+        ));
+        if *self.drain_fails.lock().unwrap() {
+            anyhow::bail!("unreachable")
+        }
+        Ok(Drain::default())
+    }
+    async fn revoke(&self, node: &Machine, _primary: &LocalPrimary) -> anyhow::Result<()> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("revoke {} applies={}", node.name, self.applies()));
+        Ok(())
     }
 }
 #[tokio::test]
@@ -584,4 +684,215 @@ async fn new_generation_bypasses_failure_backoff() {
     f.reconciler.tick(&mut holder).await.unwrap();
     assert!(f.log().contains("apply machine_count=2"));
     assert_eq!(f.records().await.len(), 3);
+}
+
+fn test_session() -> SessionRecord {
+    SessionRecord {
+        interrupt_requested: false,
+        session_id: SessionId::from_ulid(ulid::Ulid::generate()),
+        agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
+        state: SessionState::Runnable,
+        head_seq: 0,
+        snapshot_ref: None,
+        inference: swarmy_core::InferenceSelection::default(),
+        route: None,
+        route_step: 0,
+        kind: swarmy_core::SessionKind::Ephemeral,
+        computer_deleted: false,
+        plan: Vec::new(),
+    }
+}
+#[tokio::test]
+async fn new_machine_joins_and_wakes_capacity_waits() {
+    let nodes = Arc::new(FakeNodes::default());
+    let Some(f) = Fixture::with_nodes(1, nodes.clone()).await else {
+        return;
+    };
+    let session = test_session();
+    f.store
+        .create_session(
+            &session,
+            f.store.now(),
+            swarmy_testkit::image(&f.store).await,
+        )
+        .await
+        .unwrap();
+    let lease = f
+        .store
+        .claim_lease(
+            session.session_id,
+            LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
+            f.store.now(),
+        )
+        .await
+        .unwrap();
+    f.store
+        .park_for_capacity(
+            session.session_id,
+            &lease,
+            GpuRequirement::Shared,
+            f.store.now(),
+            Duration::from_hours(1),
+        )
+        .await
+        .unwrap();
+    f.desired(1).await;
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    let row = &f.records().await[0];
+    assert_eq!(
+        nodes.calls(),
+        vec![format!(
+            "join fleet-gpu-1 203.0.113.11 root sandboxes=1 storage=dir:/tmp node={}",
+            row.machine_id.joined_node_id()
+        )]
+    );
+    assert_eq!(row.state, MachineState::Joined);
+    assert!(row.provisioned_at.is_some() && row.joined_at.is_some());
+    assert_eq!(row.node_id, Some(row.machine_id.joined_node_id()));
+    assert_eq!(
+        f.store
+            .fetch_session(session.session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        SessionState::Runnable
+    );
+}
+#[tokio::test]
+async fn join_failures_retry_until_the_timeout_then_the_machine_is_replaced() {
+    let nodes = Arc::new(FakeNodes::default());
+    *nodes.join_error.lock().unwrap() = Some("ssh refused".into());
+    let Some(f) = Fixture::with_nodes(1, nodes.clone()).await else {
+        return;
+    };
+    f.desired(1).await;
+    let mut holder = Holder::new();
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(f.records().await[0].state, MachineState::Provisioning);
+    assert_eq!(nodes.calls().len(), 1);
+    *f.clock.lock().unwrap() += Duration::from_mins(14);
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(nodes.calls().len(), 2);
+    assert_eq!(f.records().await[0].state, MachineState::Provisioning);
+    *f.clock.lock().unwrap() += Duration::from_mins(1);
+    f.reconciler.tick(&mut holder).await.unwrap();
+    let failed = &f.records().await[0];
+    assert_eq!(failed.state, MachineState::Failed);
+    assert!(
+        failed
+            .failure
+            .as_ref()
+            .unwrap()
+            .contains("did not join within 15 minutes")
+    );
+    assert!(failed.failure.as_ref().unwrap().contains("ssh refused"));
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert!(
+        nodes
+            .calls()
+            .iter()
+            .any(|call| call == "drain fleet-gpu-1 600 applies=1")
+    );
+    assert!(
+        nodes
+            .calls()
+            .iter()
+            .any(|call| call == "revoke fleet-gpu-1 applies=1")
+    );
+    assert!(f.log().contains("apply machine_count=0"));
+    assert_eq!(f.records().await[0].state, MachineState::Destroyed);
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(f.log().matches("apply machine_count=1").count(), 2);
+    assert!(
+        f.records()
+            .await
+            .iter()
+            .any(|r| r.name == "fleet-gpu-1" && r.state == MachineState::Provisioning)
+    );
+}
+#[tokio::test]
+async fn provisioned_machine_joins_after_restart_without_reprovisioning() {
+    let nodes = Arc::new(FakeNodes::default());
+    let Some(f) = Fixture::with_nodes(1, nodes.clone()).await else {
+        return;
+    };
+    f.desired(1).await;
+    let machine = seed(&f, 1, MachineState::Provisioning).await;
+    f.store
+        .transition_machine(
+            machine.machine_id,
+            &MachineTransition::Provisioned,
+            f.store.now(),
+        )
+        .await
+        .unwrap();
+    state(&f, 1);
+    let lease = f
+        .store
+        .acquire_provisioner_lease(
+            LeaseOwnerId::from_ulid(5u128.into()),
+            Duration::from_mins(15),
+        )
+        .await
+        .unwrap();
+    f.store
+        .record_elastic_reconcile(&lease, "gpu", 1, 1, true)
+        .await
+        .unwrap();
+    f.store.release_provisioner_lease(&lease).await.unwrap();
+    f.store
+        .put_node(&NodeRecord {
+            node_id: machine.machine_id.joined_node_id(),
+            roles: vec![NodeRole::Sandbox],
+            capacity: NodeCapacity {
+                cpu_millis: 1000,
+                memory_bytes: 1024,
+                disk_bytes: 1024,
+                sandboxes: 1,
+            },
+            last_heartbeat: f.store.now(),
+            cached_images: vec![],
+            gpu: None,
+        })
+        .await
+        .unwrap();
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    assert_eq!(f.records().await[0].state, MachineState::Joined);
+    assert!(nodes.calls().is_empty());
+}
+async fn scale_down_case(unreachable: bool) {
+    let nodes = Arc::new(FakeNodes::default());
+    let Some(f) = Fixture::with_nodes(1, nodes.clone()).await else {
+        return;
+    };
+    f.desired(1).await;
+    let mut holder = Holder::new();
+    f.reconciler.tick(&mut holder).await.unwrap();
+    *nodes.drain_fails.lock().unwrap() = unreachable;
+    f.desired(0).await;
+    f.reconciler.tick(&mut holder).await.unwrap();
+    let calls = nodes.calls();
+    assert_eq!(
+        &calls[calls.len() - 2..],
+        [
+            "drain fleet-gpu-1 600 applies=1",
+            "revoke fleet-gpu-1 applies=1"
+        ]
+    );
+    assert!(f.log().contains("apply machine_count=0"));
+    let row = &f.records().await[0];
+    assert_eq!(row.state, MachineState::Destroyed);
+    assert!(row.requested_at <= f.store.now());
+    assert!(row.created_at.is_some() && row.provisioned_at.is_some() && row.joined_at.is_some());
+    assert!(row.drain_requested_at.is_some() && row.destroyed_at.is_some());
+    assert_eq!(row.cost_micros(f.store.now()), 750_000);
+}
+#[tokio::test]
+async fn scale_down_drains_and_revokes_before_destroying() {
+    scale_down_case(false).await
+}
+#[tokio::test]
+async fn unreachable_node_is_still_destroyed() {
+    scale_down_case(true).await
 }
