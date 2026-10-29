@@ -48,7 +48,7 @@ impl Store {
                         .await?
                         .ok_or(StoreError::Domain(crate::DomainError::MissingSessionWait))?;
                     if wait.capacity().is_some() {
-                        self.clear_wait(&trx, id, &wait);
+                        trx.clear(&self.keys().session_wait_due(wait.wake_at, id));
                         let mut session = session;
                         session.interrupt_requested = true;
                         self.transition(&trx, session, SessionState::Runnable, self.now())
