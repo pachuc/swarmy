@@ -723,6 +723,101 @@ async fn populate_agent_detail(
     Ok(())
 }
 
+/// One snapshot clock and agent-name cache shared by all machine views.
+pub(crate) struct MachineContext<'a> {
+    pub as_of: Timestamp,
+    pub window: Option<(Timestamp, Timestamp)>,
+    pub names: &'a std::collections::HashMap<swarmy_core::AgentId, Option<String>>,
+}
+fn stamp(value: Option<Timestamp>) -> Option<String> {
+    value.map(|at| at.to_string())
+}
+#[must_use]
+pub(crate) fn machine_view(
+    record: &swarmy_core::MachineRecord,
+    open: &[swarmy_core::MachineAssignment],
+    context: &MachineContext<'_>,
+) -> api::Machine {
+    let cost_micros = record.cost_micros(context.as_of);
+    let window_cost_micros = context
+        .window
+        .map(|(from, to)| record.cost_micros_between(from, to, context.as_of));
+    api::Machine {
+        id: record.machine_id.to_string(),
+        group: record.group.clone(),
+        name: record.name.clone(),
+        module: record.module.clone(),
+        size: record.size.clone(),
+        location: record.location.clone(),
+        address: record.address.clone(),
+        node_id: record.node_id.map(|id| id.to_string()),
+        state: match record.state {
+            swarmy_core::MachineState::Requested => api::MachineState::Requested,
+            swarmy_core::MachineState::Creating => api::MachineState::Creating,
+            swarmy_core::MachineState::Provisioning => api::MachineState::Provisioning,
+            swarmy_core::MachineState::Joined => api::MachineState::Joined,
+            swarmy_core::MachineState::Draining => api::MachineState::Draining,
+            swarmy_core::MachineState::Destroyed => api::MachineState::Destroyed,
+            swarmy_core::MachineState::Failed => api::MachineState::Failed,
+            swarmy_core::MachineState::Orphaned => api::MachineState::Orphaned,
+        },
+        requested_at: record.requested_at.to_string(),
+        created_at: stamp(record.created_at),
+        provisioned_at: stamp(record.provisioned_at),
+        joined_at: stamp(record.joined_at),
+        drain_requested_at: stamp(record.drain_requested_at),
+        destroyed_at: stamp(record.destroyed_at),
+        cause: api::MachineCause {
+            agent_id: record.cause.agent.map(|id| id.to_string()),
+            agent_name: record
+                .cause
+                .agent
+                .and_then(|id| context.names.get(&id).cloned().flatten()),
+            session_id: record.cause.session.map(|id| id.to_string()),
+            reason: record.cause.reason.clone(),
+        },
+        hourly_price_micros: record.hourly_price.micros,
+        currency: record.hourly_price.currency.clone(),
+        billing: match record.billing {
+            swarmy_core::BillingGranularity::PerStartedHour => {
+                api::BillingGranularity::PerStartedHour
+            }
+            swarmy_core::BillingGranularity::PerStartedMinute => {
+                api::BillingGranularity::PerStartedMinute
+            }
+        },
+        failure: record.failure.clone(),
+        cost_micros,
+        cost: swarmy_core::format_micros(cost_micros),
+        window_cost_micros,
+        window_cost: window_cost_micros.map(swarmy_core::format_micros),
+        current_agents: open
+            .iter()
+            .map(|assignment| api::MachineAgent {
+                agent_id: assignment.agent.to_string(),
+                agent_name: context.names.get(&assignment.agent).cloned().flatten(),
+                since: assignment.from.to_string(),
+            })
+            .collect(),
+    }
+}
+#[must_use]
+pub(crate) fn machine_totals(machines: &[api::Machine]) -> Vec<api::MachineCostTotal> {
+    let mut totals = std::collections::BTreeMap::<String, u64>::new();
+    for machine in machines {
+        let value = totals.entry(machine.currency.clone()).or_default();
+        *value = value.saturating_add(machine.window_cost_micros.unwrap_or(machine.cost_micros));
+    }
+    totals
+        .into_iter()
+        .map(|(currency, cost_micros)| api::MachineCostTotal {
+            currency,
+            cost_micros,
+            cost: swarmy_core::format_micros(cost_micros),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]

@@ -68,16 +68,14 @@ fn machine_refs(pair: Option<&(Tofu, CloudCredentials)>) -> Option<MachineGroups
     pair.map(|(tofu, credentials)| MachineGroups { tofu, credentials })
 }
 
+const ON_MODULES: &str = "--on takes hetzner-cloud, aws, scaleway, or an absolute path to your own module; use --host for machines you own and --local for this machine";
+
 pub(crate) fn cloud_spec(name: &str, args: &CreateCloud) -> Result<SwarmSpec> {
-    let module = Module::try_from(args.module.clone()).map_err(|_| anyhow::anyhow!(
-        "--on takes hetzner-cloud, aws, or an absolute path to your own module; use --host for machines you own and --local for this machine"
-    ))?;
+    let module = Module::try_from(args.module.clone()).map_err(|_| anyhow::anyhow!(ON_MODULES))?;
     if matches!(module, Module::Existing | Module::Local)
         || matches!(&module, Module::Path(p) if !p.is_absolute())
     {
-        bail!(
-            "--on takes hetzner-cloud, aws, or an absolute path to your own module; use --host for machines you own and --local for this machine"
-        );
+        bail!(ON_MODULES);
     }
     if args.nodes == 0 && args.node_size.is_some() {
         bail!("--node-size requires --nodes greater than 0");
@@ -139,18 +137,11 @@ pub(crate) fn cloud_spec(name: &str, args: &CreateCloud) -> Result<SwarmSpec> {
 pub(crate) fn cloud_next(registry: &Registry, spec: &SwarmSpec) -> Result<Vec<String>> {
     let mut next = Vec::new();
     let creds = CloudCredentials::load(&CloudCredentials::path(registry.dirs()))?;
-    for provider in [
-        CloudProvider::HetznerCloud,
-        CloudProvider::HetznerS3,
-        CloudProvider::Aws,
-    ] {
-        let needed = match provider {
-            CloudProvider::HetznerCloud | CloudProvider::HetznerS3 => spec
-                .groups
-                .values()
-                .any(|g| g.module == Module::HetznerCloud),
-            CloudProvider::Aws => spec.groups.values().any(|g| g.module == Module::Aws),
-        };
+    for provider in CloudProvider::ALL {
+        let needed = spec.groups.values().any(|g| {
+            g.module.machine_provider() == Some(provider)
+                || (provider == CloudProvider::HetznerS3 && g.module == Module::HetznerCloud)
+        });
         if needed && creds.get(provider).is_none() {
             next.push(format!("next: swarmy cloud login {provider}"));
         }

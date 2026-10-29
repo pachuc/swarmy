@@ -106,8 +106,8 @@ pub(crate) enum Command {
         name: String,
         /// A group listed in placement.nodes that runs neither the stack nor the services
         group: String,
-        /// New number of machines (1-50)
-        #[arg(value_parser = clap::value_parser!(u32).range(1..=50))]
+        /// New number of machines (0-50; 0 only for node groups whose machines `OpenTofu` creates)
+        #[arg(value_parser = clap::value_parser!(u32).range(0..=50))]
         count: u32,
         /// Seconds to wait on each removed node for running sandbox commands to finish
         #[arg(long, default_value_t = 600)]
@@ -178,6 +178,12 @@ pub(crate) enum Command {
     Supervise { state: PathBuf, core: PathBuf },
     /// List registered swarms; `*` marks the current one
     Ls,
+    /// List elastic machines with state, age, node, cost and cause
+    Machines {
+        /// Include destroyed and failed-before-creation machines
+        #[arg(long)]
+        all: bool,
+    },
     /// Show a swarm's API, record, and spec (default: the swarm this command would use)
     Show {
         #[arg(value_parser = parse_name)]
@@ -833,6 +839,7 @@ pub(crate) async fn run(
             crate::swarm_hosts::plan(&registry, &spec, json_output).await?;
         }
         Command::Ls => list(&registry, json_output)?,
+        Command::Machines { all } => crate::machines::list(all, json_output).await?,
         Command::Show { name } => {
             if let Some(name) = name {
                 show(&registry, &registry.read(&name)?, json_output)?;

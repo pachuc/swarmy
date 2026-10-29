@@ -48,6 +48,7 @@ pinned, checksum-verified release on first use.
 | `existing` | hosts you list | never deleted, only cleaned |
 | `hetzner-cloud` | created by OpenTofu | destroyed on `down` |
 | `aws` | created by OpenTofu | destroyed on `down` |
+| `scaleway` | created by OpenTofu | destroyed on `down` |
 | a path | your OpenTofu module | destroyed on `down` |
 
 ```toml
@@ -246,6 +247,7 @@ readable by other users.
 swarmy cloud login hetzner-cloud            # paste the token at the hidden prompt
 swarmy cloud login hetzner-s3               # access key, then secret key (made in the Hetzner console)
 swarmy cloud login aws --region eu-central-1
+swarmy cloud login scaleway  # access key, secret key, then project id
 swarmy cloud ls
 swarmy cloud logout aws
 ```
@@ -256,6 +258,7 @@ Pipe one value per line for unattended use, for example:
 printf '%s\n' "$HCLOUD_TOKEN" | swarmy cloud login hetzner-cloud
 ```
 
+The Scaleway project id is not a secret, but is read the same way so it stays out of shell history.
 Secrets are never accepted as arguments: arguments can appear in shell
 history and process lists. Ctrl-C during a hidden prompt may leave terminal
 echo off; run `stty echo` or `reset` to restore it.
@@ -265,6 +268,7 @@ echo off; run `stty echo` or `reset` to restore it.
 | hetzner-cloud | `HCLOUD_TOKEN` |
 | hetzner-s3 | `MINIO_USER`, `MINIO_PASSWORD` |
 | aws | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_REGION` |
+| scaleway | `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID` |
 
 Values reach OpenTofu only through the environment of each run. The Hetzner S3
 endpoint comes from the bucket location in the swarm specification, not from
@@ -273,10 +277,10 @@ credentials.
 ## Swarms on cloud machines
 
 An OpenTofu group describes machines created and tracked by OpenTofu, an
-infrastructure-as-code tool. A group's `module` is `"hetzner-cloud"`, `"aws"`,
+infrastructure-as-code tool. A group's `module` is `"hetzner-cloud"`, `"aws"`, `"scaleway"`,
 or an absolute path to your own module. Hetzner Cloud needs credentials from
 `swarmy cloud login hetzner-cloud`, and its stack bucket also needs
-`swarmy cloud login hetzner-s3`; AWS needs `swarmy cloud login aws`.
+`swarmy cloud login hetzner-s3`; AWS needs `swarmy cloud login aws`. Scaleway needs `swarmy cloud login scaleway`.
 Credentials reach OpenTofu only through its environment. They are not put in
 tfvars, the files
 that supply module input values.
@@ -292,14 +296,50 @@ directory. It generates one SSH key per group and shares a network between
 groups of the same module. It creates a bucket only when the stack group uses
 hetzner-cloud and the spec has no `[bucket]` section.
 
-Groups of the same module share one network, so they must be in the same
-Hetzner network zone (fsn1, nbg1 and hel1 count as one zone) or the same AWS
-region; otherwise up refuses. Swarmy waits for SSH and cloud-init, the
+Hetzner and AWS groups of the same module share a network, so they must be
+in the same Hetzner network zone (fsn1, nbg1 and hel1 count as one zone) or
+the same AWS region; otherwise up refuses. Scaleway groups create no private
+network. Swarmy waits for SSH and cloud-init, the
 machine's first-boot configuration service, before provisioning hosts. Cloud
 and existing-host groups can coexist in a mixed swarm. Down destroys OpenTofu
 groups in reverse order and removes the bucket with the data.
 `SWARMY_TOFU_BIN` is a development and test override for the pinned,
 checksum-verified OpenTofu download.
+
+### Scaleway node groups
+
+Scaleway is a French cloud provider. An existing stack host can run with a
+Scaleway GPU node group:
+
+```toml
+name = "fleet"
+lifecycle = "persistent"
+[groups.box]
+module = "existing"
+hosts = [{ address = "203.0.113.10", ssh_user = "root", ssh_key = "/keys/box" }]
+[groups.gpu]
+module = "scaleway"
+size = "L4-1-24G"
+location = "fr-par-2"
+count = 0
+sandboxes = 1
+[placement]
+stack = "box"
+services = "box"
+nodes = ["box", "gpu"]
+```
+
+Machines get a routed public IPv4, no private network, root login via
+cloud-init, and a 200 GB block-storage root disk. Nodes reach the primary
+through the node tunnel over the internet. The group creates no bucket, so
+the swarm needs a `[bucket]` or a stack that provides object storage. The
+group's security group stays when the group is scaled to zero and is removed
+when the group leaves the spec or the swarm is taken down. Use an API key for
+a dedicated project, with the InstancesFullAccess and BlockStorageFullAccess
+permission sets on that project only. The root disk is a Block Storage (SBS)
+volume, and OpenTofu reads and deletes it through the Block Storage API.
+Swarmy uses Scaleway only for node groups; a Scaleway stack or services group
+has not been tried.
 
 ## Planning changes
 
@@ -351,11 +391,15 @@ command; the installed units are reconciled.
 ## Scaling node groups
 
 ```sh
+swarmy swarm scale fleet workers 0
 swarmy swarm scale fleet workers 4
 swarmy swarm scale fleet workers 2 --drain-timeout 1200
 ```
 
-Count must be between 1 and 50, so a group cannot be scaled to zero. Growing
+Count is 0 to 50. Zero is allowed only for a node group whose machines
+OpenTofu creates; it removes all machines while keeping the group in the spec
+with `count = 0`. Existing-host groups keep at least one host; stack and
+services groups need at least one machine. Growing
 updates the spec and reruns the normal provisioning path; already provisioned
 machines are skipped. Shrinking removes the highest-numbered nodes first. It
 waits up to `--drain-timeout` seconds per node (600 by default) for running
@@ -396,6 +440,37 @@ form for local swarms. The override only advertises cards; it exposes no device.
 
 Placement and admission are in place, but cards are not yet visible inside
 sandboxes, even on real GPU nodes; exposing the devices is later work.
+
+## Machines
+
+Swarmy records every machine created for an elastic group: its group, OpenTofu machine name, size,
+location, state, lifecycle timestamps, hourly price and currency, and cause.
+The cause includes an agent, a session and a free-text reason; the fleet driver
+puts its tasky id in the reason.
+
+- Requested: creation has been requested but no cloud machine exists yet.
+- Creating: the cloud create operation is in progress.
+- Provisioning: the cloud machine exists and is being configured.
+- Joined: the node has joined the swarm and may host agents.
+- Draining: new assignments have stopped while existing work finishes.
+- Destroyed: the machine has been removed; this state is final.
+- Failed: an operation failed; a machine already created keeps costing until destroyed.
+- Orphaned: swarmy lost track of a cloud machine that may still exist and cost money; check the provider and remove it by hand.
+
+The first billing unit starts on creation and is billed immediately. By default
+billing is per started hour; a record can instead specify per started minute.
+Cost is computed when the record is read, not periodically written. Assignment
+intervals track each agent's use of the machine, and current agents come from
+open intervals.
+
+```sh
+swarmy swarm machines
+swarmy swarm machines --all
+swarmy --swarm hz swarm machines --json
+```
+
+The provisioner writes records in a later task, so these lists remain empty
+until it arrives.
 
 ## Model provider credentials
 

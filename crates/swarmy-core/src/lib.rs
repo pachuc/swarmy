@@ -8,7 +8,12 @@ mod encoding;
 mod error;
 mod event;
 mod id;
+mod machine;
 mod message;
+pub use machine::{
+    BillingGranularity, InvalidMachineTransition, MachineAssignment, MachineCause, MachineRecord,
+    MachineState, MachineTransition, NewMachine,
+};
 mod scheduler;
 mod selection;
 mod session;
@@ -21,8 +26,8 @@ pub use encoding::{json, trailing};
 pub use error::error_chain;
 pub use event::{Event, FailureKind, InferenceCompletion, interrupted_event};
 pub use id::{
-    AgentId, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, ProcessId, RequestId,
-    SessionId, TimerId, VolumeId,
+    AgentId, ImageTag, LeaseOwnerId, MachineId, ManifestId, MessageId, NodeId, ProcessId,
+    RequestId, SessionId, TimerId, VolumeId,
 };
 pub use message::{Message, MessageRole, NoticeKind, Part, ToolCallId, ToolCallRecord, ToolResult};
 pub use scheduler::{Nudge, RUNNABLE_PARTITIONS, WakeReply, WakeRequest, runnable_partition};
@@ -49,6 +54,9 @@ pub use tool::{
     SandboxArguments, SandboxRecord, ToolJob, WebFetchArguments, WriteStdinArguments,
     cap_tool_output, tool_spill_path,
 };
+
+mod price;
+pub use price::HourlyPrice;
 
 mod placement;
 pub use placement::{AgentCallStatus, PlacementChangeReason, PlacementRecord};
@@ -94,7 +102,7 @@ pub mod quota;
 pub mod time;
 
 mod usage;
-pub use usage::{TokenUsage, UsageTotals};
+pub use usage::{TokenUsage, UsageTotals, format_micros};
 
 /// An ephemeral token update on the live bus, without a durable cursor.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

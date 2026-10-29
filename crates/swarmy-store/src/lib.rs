@@ -24,6 +24,8 @@ pub mod credentials;
 mod inference;
 mod inference_wait;
 mod interrupt;
+mod machines;
+pub use machines::MachineFilter;
 mod metrics;
 mod metrics_codec;
 mod metrics_model;
