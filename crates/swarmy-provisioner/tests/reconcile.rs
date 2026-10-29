@@ -205,8 +205,8 @@ impl Nodes for FakeNodes {
         }
         let store = self.store.lock().unwrap().clone().unwrap();
         let mut record = sandbox_node(node.node_id.unwrap(), store.now());
-        record.capacity.sandboxes = node.sandboxes;
         if *self.card.lock().unwrap() {
+            record.capacity.sandboxes = node.sandboxes;
             record.gpu = Some(swarmy_core::GpuCards {
                 model: "NVIDIA L4".into(),
                 memory_mib: 23034,
@@ -1284,6 +1284,8 @@ async fn dedicated_waits_beyond_max_keep_waiting_and_block_lowering() {
     let (a, _) = gpu_waiter(&f, "a", "dedicated", "tasky first").await;
     let (_, b) = gpu_waiter(&f, "b", "dedicated", "tasky second").await;
     f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    assert_eq!(desired_count(&f).await, 1);
+    assert_eq!(f.records().await.len(), 1);
     let machine = f.records().await[0].machine_id;
     let placement = f
         .store

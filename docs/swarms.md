@@ -439,9 +439,9 @@ swarm with an existing stack group, add `gpu` to `placement.nodes` and declare:
 
 ```toml
 [groups.gpu]
-module = "hetzner-cloud"
-size = "cpx41"
-location = "fsn1"
+module = "scaleway"
+size = "L4-1-24G"
+location = "fr-par-2"
 elastic = true
 autoscale = true
 sandboxes = 1
@@ -455,6 +455,8 @@ services = "box"
 nodes = ["gpu"]
 ```
 
+Autoscale buys machines only for GPU waits, so turn it on only for a group whose size has a GPU.
+
 After adding the group, register it once with `swarmy swarm scale hz gpu 0`.
 Scale accepts 0 through max; down sets desired to 0 and refuses until the
 provisioner has reconciled that change and all machines are gone. The hourly
@@ -467,7 +469,7 @@ Every 15 seconds the provisioner counts sessions waiting for a GPU. Each dedicat
 
 Desired falls only when no session waits for a GPU, and only from the top. The highest-numbered machine goes once it has had no GPU computer for 30 minutes, counted from its join or from when its last GPU computer left, or when it was never created. An idle machine below a busy one stays. CPU computers on a GPU machine do not keep it alive; they are drained and move. Only one group per swarm may autoscale, and the default is off.
 
-`swarmy swarm scale` on an autoscaled group sets desired once, and autoscale adjusts it from there. To scale by hand, set `autoscale = false` and run scale again. `swarmy swarm down` turns autoscale off first. The node's own 30-minute idle eviction (`[sandbox] idle_secs`) means a quiet GPU worker's machine goes about 60 minutes after its last command. A released fleet task's machine goes about 30 minutes after release.
+`swarmy swarm scale` on an autoscaled group sets desired once; after the provisioner has applied it, autoscale adjusts it from there. To scale by hand, set `autoscale = false` and run scale again. `swarmy swarm down` turns autoscale off first. The node's own 30-minute idle eviction (`[sandbox] idle_secs`) means a quiet GPU worker's machine goes about 60 minutes after its last command. A released fleet task's machine goes about 30 minutes after release.
 ## GPU nodes
 
 A node runs `nvidia-smi`, NVIDIA's driver command-line tool, once at startup to

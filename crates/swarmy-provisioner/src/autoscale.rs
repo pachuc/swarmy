@@ -7,6 +7,7 @@ use swarmy_store::{GpuCapacityWait, MachineFilter, Store};
 
 /// Time a joined machine must have no GPU computer before removal.
 pub const IDLE_TIMEOUT: Duration = Duration::from_mins(30);
+const LOWERED: &str = "autoscale: lowered";
 
 /// One active machine of the group, as autoscale sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,35 +26,54 @@ pub enum Decision {
     Raise { desired: u32, cause: MachineCause },
     Lower { desired: u32, cause: MachineCause },
 }
-fn busy(machines: &[MachineLoad]) -> u32 {
-    u32::try_from(machines.iter().filter(|m| !m.gpu.is_empty()).count()).unwrap_or(u32::MAX)
+/// Counts used by both the decision and its structured log.
+#[derive(Clone, Copy, Debug)]
+struct Demand {
+    unmet: usize,
+    placed: usize,
+    busy: u32,
+    needed: u32,
+}
+impl Demand {
+    fn from_load(sandboxes: u32, machines: &[MachineLoad], waits: &[GpuCapacityWait]) -> Self {
+        let k = sandboxes.max(1);
+        let busy = u32::try_from(machines.iter().filter(|m| !m.gpu.is_empty()).count())
+            .unwrap_or(u32::MAX);
+        let free = machines
+            .iter()
+            .filter(|m| !m.gpu.is_empty() && !m.gpu.contains(&GpuRequirement::Dedicated))
+            .map(|m| k.saturating_sub(m.placements))
+            .fold(0u32, u32::saturating_add);
+        let mut dedicated = 0u32;
+        let mut shared = 0u32;
+        let mut unmet = 0usize;
+        let mut placed = 0usize;
+        for wait in waits {
+            if wait.placed {
+                placed = placed.saturating_add(1);
+            } else {
+                unmet = unmet.saturating_add(1);
+                match wait.requirement {
+                    GpuRequirement::Dedicated => dedicated = dedicated.saturating_add(1),
+                    GpuRequirement::Shared => shared = shared.saturating_add(1),
+                    GpuRequirement::None => {}
+                }
+            }
+        }
+        Self {
+            unmet,
+            placed,
+            busy,
+            needed: busy
+                .saturating_add(dedicated)
+                .saturating_add(shared.saturating_sub(free).div_ceil(k)),
+        }
+    }
 }
 /// Busy machines plus machines for unmet waits, before the max cap.
 #[must_use]
 pub fn machines_needed(sandboxes: u32, machines: &[MachineLoad], waits: &[GpuCapacityWait]) -> u32 {
-    let k = sandboxes.max(1);
-    let free = machines
-        .iter()
-        .filter(|m| !m.gpu.is_empty() && !m.gpu.contains(&GpuRequirement::Dedicated))
-        .map(|m| k.saturating_sub(m.placements))
-        .fold(0u32, u32::saturating_add);
-    let dedicated = u32::try_from(
-        waits
-            .iter()
-            .filter(|w| !w.placed && w.requirement == GpuRequirement::Dedicated)
-            .count(),
-    )
-    .unwrap_or(u32::MAX);
-    let shared = u32::try_from(
-        waits
-            .iter()
-            .filter(|w| !w.placed && w.requirement == GpuRequirement::Shared)
-            .count(),
-    )
-    .unwrap_or(u32::MAX);
-    busy(machines)
-        .saturating_add(dedicated)
-        .saturating_add(shared.saturating_sub(free).div_ceil(k))
+    Demand::from_load(sandboxes, machines, waits).needed
 }
 /// Choose one change in desired from the current snapshot.
 #[must_use]
@@ -63,9 +83,22 @@ pub fn decide(
     waits: &[GpuCapacityWait],
     now: Timestamp,
 ) -> Decision {
-    let unmet = waits.iter().filter(|w| !w.placed).count();
-    let target =
-        machines_needed(group.definition.sandboxes, machines, waits).min(group.definition.max);
+    decide_with_demand(
+        group,
+        machines,
+        waits,
+        now,
+        Demand::from_load(group.definition.sandboxes, machines, waits),
+    )
+}
+fn decide_with_demand(
+    group: &ElasticGroupRecord,
+    machines: &[MachineLoad],
+    waits: &[GpuCapacityWait],
+    now: Timestamp,
+    demand: Demand,
+) -> Decision {
+    let target = demand.needed.min(group.definition.max);
     if target > group.desired
         && let Some(first) = waits
             .iter()
@@ -80,18 +113,16 @@ pub fn decide(
                 reason: format!(
                     "{} (autoscale: {} session(s) waiting for GPU capacity)",
                     first_reason(first),
-                    unmet
+                    demand.unmet
                 ),
             },
         };
     }
-    if !waits.is_empty()
-        || (!group.settled() && !group.desired_cause.reason.starts_with("autoscale:"))
-    {
+    if !waits.is_empty() || manual_scale_pending(group) {
         return Decision::Keep;
     }
     let mut n = group.desired;
-    let floor = busy(machines);
+    let floor = demand.busy;
     while n > floor {
         let removable = machines
             .iter()
@@ -117,11 +148,18 @@ pub fn decide(
         Decision::Lower {
             desired: n,
             cause: MachineCause::from_reason(format!(
-                "autoscale: lowered from {} to {n}: no session waits for GPU capacity and the removed machines had no GPU computer for 30 minutes or were never created",
+                "{LOWERED} from {} to {n}: no session waits for GPU capacity and the removed machines had no GPU computer for 30 minutes or were never created",
                 group.desired
             )),
         }
     }
+}
+/// A desired count set by hand (swarm scale or the API) that reconcile has not applied yet.
+/// Autoscale's raises name an agent and its lowers start with LOWERED; anything else is manual.
+fn manual_scale_pending(group: &ElasticGroupRecord) -> bool {
+    !group.settled()
+        && group.desired_cause.agent.is_none()
+        && !group.desired_cause.reason.starts_with(LOWERED)
 }
 /// Read demand and load, then adjust the sole autoscaled group's desired.
 /// # Errors
@@ -140,21 +178,21 @@ pub async fn run(store: &Store) -> anyhow::Result<Option<Decision>> {
     }
     let waits = store.gpu_capacity_waits().await?;
     let machines = load(store, &record).await?;
-    let decision = decide(&record, &machines, &waits, store.now());
-    apply_decision(store, &record, &decision, &machines, &waits).await?;
+    let demand = Demand::from_load(record.definition.sandboxes, &machines, &waits);
+    let decision = decide_with_demand(&record, &machines, &waits, store.now(), demand);
+    apply_decision(store, &record, &decision, demand).await?;
     Ok(Some(decision))
 }
 async fn apply_decision(
     store: &Store,
     record: &ElasticGroupRecord,
     decision: &Decision,
-    machines: &[MachineLoad],
-    waits: &[GpuCapacityWait],
+    demand: Demand,
 ) -> anyhow::Result<()> {
-    let unmet = waits.iter().filter(|w| !w.placed).count();
-    let placed_waits = waits.len() - unmet;
-    let busy = busy(machines);
-    let needed = machines_needed(record.definition.sandboxes, machines, waits);
+    let unmet = demand.unmet;
+    let placed_waits = demand.placed;
+    let busy = demand.busy;
+    let needed = demand.needed;
     let max = record.definition.max;
     let capped = needed > max;
     let group = &record.definition.group;
@@ -438,5 +476,39 @@ mod tests {
             ),
             Decision::Keep
         );
+    }
+    #[test]
+    fn an_unapplied_autoscale_raise_is_cancelled_when_its_waits_go() {
+        let mut pending = group(1, 1, 1);
+        pending.generation = 1;
+        pending.reconciled_generation = 0;
+        let agent = wait(GpuRequirement::Shared).agent_id;
+        pending.desired_cause = MachineCause {
+            agent: Some(agent),
+            session: None,
+            reason: "tasky 01AAA: render (autoscale: 1 session(s) waiting for GPU capacity)".into(),
+        };
+        assert!(matches!(
+            decide(&pending, &[], &[], at(0)),
+            Decision::Lower { desired: 0, .. }
+        ));
+        let failed = machine(1, MachineState::Failed, vec![], 0, None);
+        assert!(matches!(
+            decide(&pending, &[failed], &[], at(0)),
+            Decision::Lower { desired: 0, .. }
+        ));
+    }
+    #[test]
+    fn a_manual_scale_waits_for_its_first_reconcile() {
+        let mut pending = group(1, 1, 1);
+        pending.generation = 1;
+        pending.reconciled_generation = 0;
+        pending.desired_cause = MachineCause::from_reason("swarmy swarm scale");
+        assert_eq!(decide(&pending, &[], &[], at(0)), Decision::Keep);
+        pending.reconciled_generation = pending.generation;
+        assert!(matches!(
+            decide(&pending, &[], &[], at(0)),
+            Decision::Lower { desired: 0, .. }
+        ));
     }
 }

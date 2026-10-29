@@ -9,8 +9,8 @@
 //! | S5 | Draining or Failed | no | Destroyed |
 //! | S6 | Draining or Failed | yes | Lower the target below the lowest such machine |
 //! | S6a | Orphaned | yes | None |
+//! | A1 | Autoscaled group, before every rule here | any | Raise desired for parked GPU waits, lower it for idle top machines (see autoscale.rs) |
 //! | J1 | Provisioning, no `provisioned_at` | yes | Provision over SSH, then Provisioned |
-//! | Autoscaled group | before the rules above | desired raised for parked GPU waits and lowered for idle top machines (see autoscale.rs) |
 //! | J2 | Provisioning, `provisioned_at` set, node registered | yes | Joined, wake capacity waits |
 //! | J3 | Provisioning past `JOIN_TIMEOUT` | yes | Failed |
 //! | D1 | Provisioning, Joined, Draining or Failed at or above lowest removed | yes | `DrainRequested` if needed, drain and revoke before apply |
