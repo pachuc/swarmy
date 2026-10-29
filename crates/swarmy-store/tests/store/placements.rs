@@ -721,6 +721,115 @@ async fn sixteen_default_or_four_large_sandboxes_fill_standard_budget() {
     ));
 }
 
+#[tokio::test]
+async fn gpu_change_requests_release_and_next_placement_records_it() {
+    use swarmy_core::{AgentSettings, GpuRequirement};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let image = swarmy_testkit::image(&test.store).await;
+    let agent = test
+        .store
+        .create_agent("gpu-change", image, "", timestamp(0), None)
+        .await
+        .unwrap()
+        .agent_id;
+    let host = node(&test.store, 2).await.node_id;
+    let first = test.store.place(agent, host, future(60)).await.unwrap();
+    test.store.claim_placement(&first).await.unwrap();
+    test.store
+        .set_agent_with_resets(
+            agent,
+            &AgentSettings {
+                gpu: Some(GpuRequirement::Shared),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(
+        test.store
+            .placement_release_requested(&first)
+            .await
+            .unwrap()
+    );
+    let renewed = test.store.renew(&first, future(120)).await.unwrap();
+    assert!(
+        test.store
+            .placement_release_requested(&renewed)
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        test.store
+            .set_agent_with_resets(
+                agent,
+                &AgentSettings {
+                    memory_mib: Some(2048),
+                    ..Default::default()
+                },
+                &[]
+            )
+            .await,
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::ActiveSandboxRequirements
+        ))
+    ));
+    test.store.release(&renewed).await.unwrap();
+    let gpu_host = gpu_node(&test.store, 2, 1).await.node_id;
+    let second = test
+        .store
+        .place(agent, gpu_host, future(180))
+        .await
+        .unwrap();
+    assert_eq!(
+        second.last_change_reason,
+        PlacementChangeReason::RequirementChange
+    );
+    assert!(
+        !test
+            .store
+            .placement_release_requested(&second)
+            .await
+            .unwrap()
+    );
+    test.store.release(&second).await.unwrap();
+    let third = test
+        .store
+        .place(agent, gpu_host, future(180))
+        .await
+        .unwrap();
+    assert_eq!(third.last_change_reason, PlacementChangeReason::Eviction);
+}
+
+#[tokio::test]
+async fn requirement_change_without_placement_requests_nothing() {
+    use swarmy_core::{AgentSettings, GpuRequirement};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let image = swarmy_testkit::image(&test.store).await;
+    let agent = test
+        .store
+        .create_agent("gpu-unplaced", image, "", timestamp(0), None)
+        .await
+        .unwrap()
+        .agent_id;
+    test.store
+        .set_agent_with_resets(
+            agent,
+            &AgentSettings {
+                gpu: Some(GpuRequirement::Shared),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(!test.store.request_placement_release(agent).await.unwrap());
+}
+
 async fn gpu_node(store: &Store, sandboxes: u32, cards: u32) -> NodeRecord {
     let mut record = node(store, sandboxes).await;
     record.capacity.memory_bytes = 16 * 1024 * 1024 * 1024;

@@ -103,6 +103,21 @@ pub(crate) async fn resolve_at(
         if let Some(current) = &old
             && current.expires_at > now
         {
+            if requirement.needs_card()
+                && !store
+                    .get_node(current.node_id)
+                    .await?
+                    .is_some_and(|node| swarmy_core::node_satisfies(&node, requirement))
+            {
+                // A placement that raced the requirement change has no release
+                // request; ask for one so the node lets it go.
+                store.request_placement_release(agent).await?;
+                return Err(NoEligibleNode {
+                    requirement,
+                    rejection: None,
+                }
+                .into());
+            }
             return Ok(current.clone());
         }
         // The disk writer can outlive the placement. Granting a new epoch before
@@ -177,7 +192,7 @@ fn order_candidates(
     nodes.retain(|node| {
         node.roles.contains(&NodeRole::Sandbox)
             && node.capacity.sandboxes > 0
-            && (!requirement.needs_card() || node.gpu_count() > 0)
+            && swarmy_core::node_satisfies(node, requirement)
     });
     // Admission remains transactional. A CPU node beats scratch on a card node
     // for CPU work; ineligible nodes are filtered before scratch can win.

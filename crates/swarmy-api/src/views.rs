@@ -514,13 +514,13 @@ pub(crate) async fn populate_session_detail(
 ) -> Result<(), ApiFailure> {
     if let Some(wait) = state
         .store
-        .inference_wait(record.session_id)
+        .session_wait(record.session_id)
         .await
         .map_err(storage)?
     {
         result.waiting = Some(api::WaitingReason {
             wake_at: Some(wait.wake_at.to_string()),
-            reasons: wait.reasons,
+            reasons: wait.reasons(),
         });
     }
     let usage = state

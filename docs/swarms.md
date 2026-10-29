@@ -388,6 +388,15 @@ uncommitted changes are refused unless `--allow-dirty` is set. Machines
 provisioned before the `swarmy-core` binary should be upgraded with the same
 command; the installed units are reconciled.
 
+## When no node has room
+
+A full swarm, or a GPU requirement no node meets, parks sessions instead of
+failing their calls. The scheduler retries every 30 seconds and sessions
+continue on their own when capacity appears. After the configured maximum
+session wait (one hour by default), pending calls fail without running.
+
+Elastic groups will later add machines for these waits.
+
 ## Scaling node groups
 
 ```sh
@@ -431,7 +440,8 @@ Dedicated needs a card and no other GPU sandbox on that node; CPU sandboxes can
 still share it. Dedicated reserves the node's whole set of cards, not individual
 cards. A GPU requirement overrides local scratch preference, so moving from a
 scratch host may require a cold cargo target. If no node qualifies, the step
-fails and retries as with any full swarm; a durable capacity wait is planned.
+parks the session in a durable capacity wait, as described in
+[When no node has room](#when-no-node-has-room).
 
 For tests and dev stacks only, `[node.fake_gpu]` with `model`, `memory_mib`, and
 `count` or `SWARMY_NODE_FAKE_GPU="MODEL,MEMORY_MIB,COUNT"` advertises fake cards

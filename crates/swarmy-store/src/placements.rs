@@ -23,6 +23,8 @@ pub(crate) struct PlacementHosting {
     claimed: Option<Timestamp>,
     last_renewed: Option<Timestamp>,
     pub(crate) failure_estimate: Option<Timestamp>,
+    /// Set when requirements changed; the hosting node releases at its next renewal.
+    pub(crate) release_requested: Option<Timestamp>,
 }
 
 /// A node's current placement commitments.
@@ -114,6 +116,47 @@ impl Store {
                 .read_placement_hosting(&trx, expected)
                 .await?
                 .and_then(|hosting| hosting.failure_estimate))
+        })
+        .await
+    }
+
+    pub(crate) async fn request_release_in(
+        &self,
+        trx: &Transaction,
+        agent: AgentId,
+    ) -> Result<bool> {
+        if read::<PlacementRecord>(trx, &self.keys().placement(agent))
+            .await?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        let mut hosting = read::<PlacementHosting>(trx, &self.keys().placement_hosting(agent))
+            .await?
+            .unwrap_or_default();
+        hosting.release_requested.get_or_insert_with(|| self.now());
+        write(trx, &self.keys().placement_hosting(agent), &hosting)?;
+        Ok(true)
+    }
+
+    /// Ask the hosting node to checkpoint and release its computer on renewal.
+    /// # Errors
+    /// Returns storage failures.
+    pub async fn request_placement_release(&self, agent: AgentId) -> Result<bool> {
+        self.transaction(|trx| async move { self.request_release_in(&trx, agent).await })
+            .await
+    }
+
+    /// Whether this placement's node was asked to release it.
+    /// # Errors
+    /// Rejects replaced placements and storage failures.
+    pub async fn placement_release_requested(&self, placement: &PlacementRecord) -> Result<bool> {
+        self.transaction(|trx| async move {
+            self.checked_placement(&trx, placement).await?;
+            Ok(self
+                .read_placement_hosting(&trx, placement)
+                .await?
+                .is_some_and(|h| h.release_requested.is_some()))
         })
         .await
     }
@@ -358,7 +401,8 @@ impl Store {
 
     /// Place an absent computer, advancing its retained epoch counter.
     /// Checking absence and the counter in one transaction prevents duplicate grants.
-    /// Recreating after release records Eviction; the first placement records Initial.
+    /// Recreating after release records `Eviction`, or `RequirementChange` after
+    /// a requested release; the first placement records `Initial`.
     /// Expired placements still consume capacity until released or taken over.
     /// # Errors
     /// Rejects existing placements, invalid expiry, missing or full nodes,
@@ -385,16 +429,19 @@ impl Store {
                 .await?
                 .unwrap_or(0);
             let gpu = self.reserve_computer(&trx, node, agent).await?;
+            let next: Option<PlacementChangeReason> =
+                read(&trx, &self.keys().placement_next_reason(agent)).await?;
+            trx.clear(&self.keys().placement_next_reason(agent));
             let record = PlacementRecord {
                 agent_id: agent,
                 node_id: node,
                 epoch: crate::seq_after(epoch, 1)?,
                 expires_at,
-                last_change_reason: if epoch == 0 {
+                last_change_reason: next.unwrap_or(if epoch == 0 {
                     PlacementChangeReason::Initial
                 } else {
                     PlacementChangeReason::Eviction
-                },
+                }),
                 last_changed_at: now,
                 gpu,
             };
@@ -451,6 +498,17 @@ impl Store {
             let current = self.checked_placement(&trx, expected).await?;
             if current.expires_at <= self.now() {
                 return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
+            }
+            if self
+                .read_placement_hosting(&trx, &current)
+                .await?
+                .is_some_and(|h| h.release_requested.is_some())
+            {
+                write(
+                    &trx,
+                    &self.keys().placement_next_reason(current.agent_id),
+                    &PlacementChangeReason::RequirementChange,
+                )?;
             }
             self.free_computer(&trx, current.node_id, current.agent_id)
                 .await?;
@@ -572,6 +630,7 @@ impl Store {
         trx: &Transaction,
         agent: AgentId,
     ) -> Result<()> {
+        trx.clear(&self.keys().placement_next_reason(agent));
         if let Some(current) = read::<PlacementRecord>(trx, &self.keys().placement(agent)).await? {
             self.free_computer(trx, current.node_id, agent).await?;
             trx.clear(&self.keys().placement(agent));

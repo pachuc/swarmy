@@ -118,7 +118,7 @@ pub enum DomainError {
     NodeAtCapacity { detail: String },
     #[error("node cannot host this GPU sandbox: {detail}")]
     GpuUnavailable { detail: String },
-    #[error("sandbox requirements can only change after the current placement is evicted")]
+    #[error("the memory requirement can only change after the current placement is evicted")]
     ActiveSandboxRequirements,
     #[error("placement already exists")]
     PlacementExists,
@@ -171,8 +171,8 @@ pub enum DomainError {
     InvalidToolCallArguments(#[source] SandboxArgumentError),
     #[error("invalid transition")]
     InvalidTransition,
-    #[error("missing inference wait")]
-    MissingInferenceWait,
+    #[error("missing session wait")]
+    MissingSessionWait,
     #[error("missing inflight")]
     MissingInflight,
     #[error("missing tool request")]
