@@ -143,9 +143,9 @@ impl Store {
             ));
         }
         if session.interrupt_requested
-            && !read::<crate::SessionWait>(trx, &self.keys().session_wait(id))
+            && read::<crate::SessionWait>(trx, &self.keys().session_wait(id))
                 .await?
-                .is_some_and(|wait| wait.capacity().is_some())
+                .is_none_or(|wait| wait.capacity().is_none())
         {
             return Err(StoreError::Domain(crate::DomainError::InterruptPending));
         }
