@@ -92,14 +92,8 @@ async fn lease_window_and_reconcile_are_fenced() {
     ));
     let new = store.acquire_provisioner_lease(second, ttl).await.unwrap();
     assert!(new.seq > live.seq);
-    assert_eq!(
-        store
-            .reserve_elastic_creations(&new, 4)
-            .await
-            .unwrap()
-            .granted,
-        4
-    );
+    let grant = store.reserve_elastic_creations(&new, 4).await.unwrap();
+    assert_eq!(grant.granted, 4);
     store.release_provisioner_lease(&live).await.unwrap();
     assert!(matches!(
         store.acquire_provisioner_lease(first, ttl).await,
