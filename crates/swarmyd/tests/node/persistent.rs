@@ -266,15 +266,23 @@ async fn check_requirement_release(store: &Store, bus: &Bus, node: &Node, agent:
     completed(store, &job).await;
     assert!(store.request_placement_release(agent).await.unwrap());
     evicted(store, agent).await;
+    // Print the file and every process name so a failure says which half broke.
     let job = dispatch(
         store,
         bus,
         node.id,
         agent,
-        r#"test "$(cat /persistent)" = after-process && ! grep -qsx sleep /proc/[0-9]*/comm"#,
+        r#"cat /persistent; echo ---; for f in /proc/[0-9]*/comm; do read -r c <"$f" 2>/dev/null && echo "$c"; done"#,
     )
     .await;
-    completed(store, &job).await;
+    let metadata = completed(store, &job).await;
+    let out = metadata["stdout"].as_str().unwrap_or_default();
+    let (file, processes) = out.split_once("---\n").unwrap_or((out, ""));
+    assert_eq!(file.trim(), "after-process", "final checkpoint lost: {out}");
+    assert!(
+        !processes.lines().any(|name| name == "sleep"),
+        "a process survived the requirement release: {processes}"
+    );
     let placement = store.get_by_agent(agent).await.unwrap().unwrap();
     assert_eq!(
         placement.last_change_reason,
