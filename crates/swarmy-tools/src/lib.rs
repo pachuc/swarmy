@@ -229,6 +229,13 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::BashArguments;
+    #[test]
+    fn gpu_tool_names_match_core() {
+        assert_eq!(RequestGpu.name(), swarmy_core::REQUEST_GPU_TOOL);
+        assert_eq!(ReleaseGpu.name(), swarmy_core::RELEASE_GPU_TOOL);
+        assert!(!RequestGpu.sandbox_bound());
+        assert!(!ReleaseGpu.sandbox_bound());
+    }
 
     /// Anthropic, Bedrock, xAI, and Azure reject combinators at the top level of a
     /// tool schema, so every registered tool must be a plain object there.

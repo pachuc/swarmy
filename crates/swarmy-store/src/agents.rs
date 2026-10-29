@@ -250,7 +250,7 @@ impl Store {
     /// write through here so a requirement change has one implementation.
     pub(crate) async fn write_agent_requirements_in(
         &self,
-        trx: &foundationdb::Transaction,
+        trx: &Transaction,
         agent: &AgentRecord,
         previous: swarmy_core::SandboxRequirements,
     ) -> Result<()> {

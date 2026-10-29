@@ -637,6 +637,7 @@ async fn agent_show_reports_placement_and_committed_snapshot() {
                 last_heartbeat: Timestamp::now(),
                 cached_images: vec![],
                 gpu: None,
+                allow_gpu_request: None,
             })
             .await
             .unwrap();
@@ -1368,6 +1369,7 @@ async fn create_agent_with_unknown_model_reports_the_catalog_explanation() {
             route: None,
             memory_mib: None,
             gpu: None,
+            allow_gpu_request: None,
             github_token: None,
         };
         let error = client

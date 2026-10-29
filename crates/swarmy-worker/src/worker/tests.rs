@@ -2,7 +2,7 @@
 use super::*;
 #[cfg(test)]
 use super::{
-    inference::{apply_display_tools, omit_unsupported_images},
+    inference::{apply_display_tools, apply_gpu_tools, omit_unsupported_images},
     summarize::{estimate_message_tokens, select_side_tail},
 };
 
@@ -11,6 +11,37 @@ mod image_tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::{Message, MessageRole, Part};
+
+    #[test]
+    fn gpu_tool_schemas_follow_the_flag() {
+        use swarmy_llm::ToolDefinition;
+        let request = || swarmy_llm::Request {
+            no_cache: false,
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            tools: ["bash", "request_gpu", "release_gpu"]
+                .into_iter()
+                .map(|name| ToolDefinition {
+                    name: name.into(),
+                    description: String::new(),
+                    parameters: serde_json::json!({"type":"object"}),
+                })
+                .collect(),
+            settings: swarmy_llm::GenerationSettings::default(),
+        };
+        let mut off = request();
+        apply_gpu_tools(&mut off, false);
+        assert_eq!(
+            off.tools
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>(),
+            ["bash"]
+        );
+        let mut on = request();
+        apply_gpu_tools(&mut on, true);
+        assert_eq!(on.tools.len(), 3);
+    }
 
     #[test]
     fn display_image_controls_tool_schema_and_prompt() {

@@ -85,6 +85,23 @@ and `/tmp`, are lost; the next build starts cold. Every session gets a notice
 explaining that the GPU requirement changed and describing the restore point.
 A memory requirement still cannot change until the placement is evicted.
 
+### Agents that ask for a GPU
+
+An operator can set `agent create|set NAME --allow-gpu-request true|false` (default
+false). Only named agents with the flag see `request_gpu` (shared or dedicated,
+with a reason of 1-500 characters) and `release_gpu`; the store refuses calls
+from other agents or ephemeral sessions. Each GPU tool must be the only tool
+call in its response. If combined with another call, every call in that
+response fails without running.
+
+The tool returns immediately; the hosting node releases the computer at its
+next renewal, and the next sandbox call waits for capacity if no matching node
+is ready. A repeated request for the current mode changes nothing. The reason,
+session and time stay on the agent record and appear in `agent show`; `release_gpu`
+or an operator `--gpu` change clears the reason. Turning the flag off does not
+reset the requirement: use `--gpu none` for that. Once autoscale lands, machine
+records will use this reason as the cause of the GPU machine.
+
 ## Waiting for a node
 
 When no eligible node has room, a tool dispatch parks the session rather than

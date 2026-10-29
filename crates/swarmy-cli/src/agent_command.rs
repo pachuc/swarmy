@@ -151,6 +151,27 @@ mod tests {
             );
         }
         for command in ["create", "set"] {
+            for value in ["true", "false"] {
+                assert!(
+                    crate::Cli::try_parse_from([
+                        "swarmy",
+                        "agent",
+                        command,
+                        "tommy",
+                        "--allow-gpu-request",
+                        value
+                    ])
+                    .is_ok()
+                );
+            }
+            for args in [
+                vec!["--allow-gpu-request", "yes"],
+                vec!["--allow-gpu-request"],
+            ] {
+                let mut cmd = vec!["swarmy", "agent", command, "tommy"];
+                cmd.extend(args);
+                assert!(crate::Cli::try_parse_from(cmd).is_err());
+            }
             assert!(
                 crate::Cli::try_parse_from([
                     "swarmy", "agent", command, "tommy", "--memory", "2048", "--gpu", "shared"

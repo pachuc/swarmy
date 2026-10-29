@@ -189,6 +189,14 @@ impl Fixture {
         config
             .harness
             .tools
+            .register(Box::new(swarmy_tools::RequestGpu));
+        config
+            .harness
+            .tools
+            .register(Box::new(swarmy_tools::ReleaseGpu));
+        config
+            .harness
+            .tools
             .register(Box::new(swarmy_tools::UpdatePlan));
         config.partitions = (0..256).collect();
         config.bus.ack_wait = Duration::from_millis(200);
@@ -304,6 +312,11 @@ impl Fixture {
     }
 
     async fn request(&self, id: SessionId) {
+        self.request_calls(id, &[("bash", json!({"command": "echo hello"}))])
+            .await;
+    }
+
+    async fn request_calls(&self, id: SessionId, calls: &[(&str, serde_json::Value)]) {
         let head = self
             .store
             .fetch_session(id)
@@ -334,11 +347,15 @@ impl Fixture {
                         message: Message {
                             id: MessageId::from_ulid(Ulid::generate()),
                             role: MessageRole::Assistant,
-                            parts: vec![Part::ToolCall {
-                                call_id: ToolCallId(format!("shell-{head}")),
-                                tool: "bash".into(),
-                                input: json!({"command": "echo hello"}),
-                            }],
+                            parts: calls
+                                .iter()
+                                .enumerate()
+                                .map(|(index, (tool, input))| Part::ToolCall {
+                                    call_id: ToolCallId(format!("{tool}-{head}-{index}")),
+                                    tool: (*tool).into(),
+                                    input: input.clone(),
+                                })
+                                .collect(),
                         },
                         provider: String::new(),
                         model: String::new(),

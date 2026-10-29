@@ -46,7 +46,7 @@ measured numbers with raw samples.
   (`docs/agent-lifecycle.md`). Tools (`swarmy-tools`): bash with a 10 s yield
   and background continuation, process control, read, write, edit (exact
   match with whitespace fallbacks, no fuzzy matching), glob, grep, ls,
-  web_fetch, checkpoint, update_plan, timers, get_time. Proof: an agent
+  web_fetch, checkpoint, update_plan, timers, get_time, and, for agents allowed to, request_gpu and release_gpu. Proof: an agent
   cloned this repository and opened a pull request through a node kill in
   146 s (`docs/proofs/`).
 - **Inference providers** (`swarmy-llm`, `docs/providers.md`). A catalog

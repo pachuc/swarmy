@@ -342,6 +342,7 @@ async fn agent_inference_settings_create_and_independent_updates() {
         memory_mib: None,
         gpu: None,
         route: None,
+        allow_gpu_request: Some(true),
     };
     let mut expected = store
         .create_agent(
@@ -356,6 +357,7 @@ async fn agent_inference_settings_create_and_independent_updates() {
         )
         .await
         .unwrap();
+    assert!(expected.allow_gpu_request);
     assert_eq!(expected.system_prompt, settings.system_prompt);
     assert_eq!(expected.model, settings.model);
     assert_eq!(expected.reasoning_effort, settings.reasoning_effort);
@@ -364,6 +366,10 @@ async fn agent_inference_settings_create_and_independent_updates() {
         Some(expected.clone())
     );
     for patch in [
+        AgentSettings {
+            allow_gpu_request: Some(false),
+            ..Default::default()
+        },
         AgentSettings {
             system_prompt: Some(String::new()),
             ..Default::default()
@@ -377,6 +383,9 @@ async fn agent_inference_settings_create_and_independent_updates() {
             ..Default::default()
         },
     ] {
+        if let Some(allow) = patch.allow_gpu_request {
+            expected.allow_gpu_request = allow;
+        }
         if let Some(prompt) = &patch.system_prompt {
             expected.system_prompt = Some(prompt.clone());
         }

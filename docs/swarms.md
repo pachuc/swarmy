@@ -433,7 +433,7 @@ node record. A missing command, a query that fails or runs longer than 10 second
 or malformed output means the node advertises no cards. `swarmy doctor` lists
 cards on live nodes.
 
-Agents set `--gpu none|shared|dedicated`. None can use any sandbox node, but
+Agents set `--gpu none|shared|dedicated`. An agent allowed with `--allow-gpu-request true` can change the requirement itself with the `request_gpu` and `release_gpu` tools ([agents that ask for a GPU](agent-lifecycle.md#agents-that-ask-for-a-gpu)). None can use any sandbox node, but
 prefers nodes without cards. Shared needs at least one card and can share the
 node with other shared GPU sandboxes, provided no dedicated GPU sandbox is there.
 Dedicated needs a card and no other GPU sandbox on that node; CPU sandboxes can
