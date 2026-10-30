@@ -844,7 +844,7 @@ async fn join_failures_retry_until_the_timeout_then_the_machine_is_replaced() {
             .iter()
             .any(|call| call == "revoke fleet-gpu-1 applies=1")
     );
-    assert!(f.log().contains("apply machine_count=0"));
+    assert!(f.log().contains("call gpu destroy"));
     assert_eq!(f.records().await[0].state, MachineState::Destroyed);
     f.reconciler.tick(&mut holder).await.unwrap();
     assert_eq!(f.log().matches("apply machine_count=1").count(), 2);
@@ -915,7 +915,7 @@ async fn scale_down_case(unreachable: bool) {
             "revoke fleet-gpu-1 applies=1"
         ]
     );
-    assert!(f.log().contains("apply machine_count=0"));
+    assert!(f.log().contains("call gpu destroy"));
     let row = &f.records().await[0];
     assert_eq!(row.state, MachineState::Destroyed);
     assert!(row.requested_at <= f.store.now());
@@ -1097,7 +1097,7 @@ async fn failed_lower_machine_removes_healthy_ones_above_then_regrows() {
             "revoke fleet-gpu-1 applies=0"
         ]
     );
-    assert!(f.log().contains("apply machine_count=0"));
+    assert!(f.log().contains("call gpu destroy"));
     assert!(
         f.records()
             .await
@@ -1273,7 +1273,7 @@ async fn an_idle_machine_is_removed_after_thirty_minutes() {
     );
     assert!(nodes.calls().iter().any(|c| c.starts_with("drain")));
     assert!(nodes.calls().iter().any(|c| c.starts_with("revoke")));
-    assert!(f.log().contains("apply machine_count=0"));
+    assert!(f.log().contains("call gpu destroy"));
     assert_eq!(f.records().await[0].state, MachineState::Destroyed);
 }
 #[tokio::test]

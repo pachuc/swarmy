@@ -676,6 +676,20 @@ impl Reconciler {
         };
         self.backup(workspace, &def.group).await;
         let after = self.outputs(workspace, def).await;
+        if applied.is_err()
+            && after.as_ref().is_ok_and(Vec::is_empty)
+            && workspace.dir().join("terraform.tfstate").exists()
+        {
+            match workspace.state_resources().await {
+                Ok(resources) if !resources.is_empty() => {
+                    tracing::warn!(group = %def.group, resources = ?resources, "failed apply left OpenTofu resources without machines; scale to zero to destroy them or retry the group");
+                }
+                Err(error) => {
+                    tracing::warn!(group = %def.group, error = %swarmy_core::error_chain(&error), "could not inspect resources left by failed apply");
+                }
+                _ => {}
+            }
+        }
         if applied.is_ok() && after.is_err() {
             self.store
                 .record_elastic_reconcile(
