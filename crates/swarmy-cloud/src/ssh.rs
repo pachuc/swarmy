@@ -1520,8 +1520,13 @@ mod provisioning_command_tests {
             .collect();
         assert_eq!(args, ["--rsync-path=sudo -n rsync"]);
 
-        let root_args: Vec<_> = super::rsync_command(&node()).as_std().get_args().collect();
-        assert!(root_args.is_empty());
+        assert!(
+            super::rsync_command(&node())
+                .as_std()
+                .get_args()
+                .next()
+                .is_none()
+        );
     }
 
     #[test]
