@@ -33,6 +33,14 @@ The image has a 64 GiB virtual disk (sparse, so unused space costs nothing), eno
 several clones, and a target directory that the worker prunes when it passes
 40 GiB (see the fleet worker rules in `AGENTS.md`). A full workspace test build needs about 30 GiB, which is why 32 GiB was too small.
 
+## Display
+
+The image runs `images/common/desktop-setup.sh` and sets `display = true`, so
+sessions have an X display on `:99`, Chromium, and the browser and screen tools.
+The display runs on the card in a GPU sandbox and on the CPU otherwise; see
+[graphics.md](../../docs/graphics.md). Workers created before this change keep
+their old image until they are recreated.
+
 ## Rebuilding from a new source commit
 
 Update `source_commit` in `recipe.toml` to the new full commit hash and set

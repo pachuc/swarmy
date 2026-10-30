@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-SETUP = pathlib.Path(__file__).resolve().parents[1] / 'setup.sh'
+SETUP = pathlib.Path(__file__).resolve().parents[2] / 'common' / 'desktop-setup.sh'
 text = SETUP.read_text().split("cat > /usr/local/libexec/swarmy-browser <<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
 namespace = {'__name__': 'browser_helper_test'}
 exec(compile(text, 'swarmy-browser', 'exec'), namespace)

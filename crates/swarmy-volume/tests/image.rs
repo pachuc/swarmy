@@ -109,6 +109,17 @@ fn recipes_reject_typos_and_invalid_dimensions() {
         ),
         "swarmy-dev rebuilds must pin their debootstrap source commit"
     );
+    assert!(
+        recipe.sandbox.display,
+        "fleet workers run swarmy-dev and need its display and screen tools"
+    );
+    for display_recipe in [&desktop_recipe, &recipe] {
+        assert!(
+            matches!(&display_recipe.source, Source::Debootstrap { scripts, .. }
+                if scripts.iter().any(|script| script == Path::new("../common/desktop-setup.sh"))),
+            "both display images share the one desktop setup script"
+        );
+    }
 }
 
 #[test]

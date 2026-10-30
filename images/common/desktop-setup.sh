@@ -1,9 +1,21 @@
 set -eu
 
 if [ "$(uname -m)" != x86_64 ]; then
-    echo 'base-desktop requires x86-64 (Chromium snapshot and lavapipe ICD)' >&2
+    echo 'the desktop setup requires x86-64 (Chromium snapshot and lavapipe ICD)' >&2
     exit 1
 fi
+
+# The display stack shared by base-desktop and swarmy-dev. No NVIDIA package is
+# installed: on a GPU node the container runtime mounts the host driver's own
+# libraries into the sandbox (CDI), so they always match the host's kernel
+# module. glvnd and the Vulkan loader pick NVIDIA's libraries up from there.
+env DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends -- \
+    x11-utils xvfb xserver-xorg-core openbox util-linux unzip scrot wmctrl \
+    fonts-dejavu-core fonts-liberation \
+    libglvnd0 libgl1 libglx-mesa0 libegl1 libegl-mesa0 libgles2 libgl1-mesa-dri mesa-utils \
+    libvulkan1 mesa-vulkan-drivers vulkan-tools \
+    libnss3 libatk-bridge2.0-0 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
+    libasound2t64 libcups2t64 libxss1 libgtk-3-0t64
 
 # Ubuntu's chromium-browser package is a snap launcher, which cannot work in
 # this container. Pin an official Chromium snapshot instead of installing snapd.
@@ -25,8 +37,12 @@ cat > /usr/local/bin/chromium <<'SH'
 #!/bin/sh
 set -eu
 export DISPLAY=${DISPLAY:-:99}
-export LIBGL_ALWAYS_SOFTWARE=1
-export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+# On the software display, keep Chromium on Mesa's CPU renderers, as before.
+# On the NVIDIA display, let it find the card.
+if [ "$(cat /run/swarmy-display/renderer 2>/dev/null || :)" != nvidia ]; then
+    export LIBGL_ALWAYS_SOFTWARE=1
+    export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+fi
 # The sandbox is already isolated by runc; Chromium's namespace sandbox is
 # unavailable there. Do not run the browser as root. --test-type hides the
 # unsupported --no-sandbox infobar without changing the container boundary.
@@ -45,22 +61,112 @@ cat > /etc/swarmy/environment <<'ENV'
 DISPLAY=:99
 LIBGL_ALWAYS_SOFTWARE=1
 GALLIUM_DRIVER=llvmpipe
-VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 ENV
+cat > /usr/local/libexec/swarmy-display-select <<'SH'
+#!/bin/sh
+# Print the renderer for this sandbox's display: "nvidia" when the card's
+# device node and the NVIDIA X driver, X GLX module and GLX client library are
+# all present (the container runtime injects them on a GPU node), otherwise
+# "software". Arguments, for tests: a device directory, then library
+# directories. swarmy-init passes none and gets the defaults below.
+set -u
+dev=/dev
+if [ "$#" -gt 0 ]; then
+    dev=$1
+    shift
+fi
+if [ "$#" -eq 0 ]; then
+    set -- /usr/lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu/nvidia/xorg \
+        /usr/lib/xorg/modules/drivers /usr/lib/xorg/modules/extensions
+fi
+present() {
+    name=$1
+    shift
+    for dir in "$@"; do
+        for file in "$dir/$name"*; do
+            if [ -e "$file" ]; then
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+if [ -e "$dev/nvidia0" ] && present nvidia_drv.so "$@" \
+    && present libglxserver_nvidia.so "$@" && present libGLX_nvidia.so "$@"; then
+    echo nvidia
+else
+    echo software
+fi
+SH
+chmod 755 /usr/local/libexec/swarmy-display-select
+mkdir -p /etc/X11
+cat > /etc/X11/swarmy-nvidia.conf <<'CONF'
+# Xorg on the NVIDIA driver with a virtual screen and no monitor. swarmy-init
+# uses this only when swarmy-display-select prints nvidia.
+Section "ServerFlags"
+    Option "AutoAddDevices" "false"
+    Option "AutoAddGPU" "false"
+    Option "DontVTSwitch" "true"
+EndSection
+
+Section "Files"
+    ModulePath "/usr/lib/x86_64-linux-gnu/nvidia/xorg,/usr/lib/xorg/modules"
+EndSection
+
+Section "Device"
+    Identifier "card"
+    Driver "nvidia"
+    Option "AllowEmptyInitialConfiguration" "true"
+    Option "UseDisplayDevice" "None"
+EndSection
+
+Section "Screen"
+    Identifier "screen"
+    Device "card"
+    DefaultDepth 24
+    SubSection "Display"
+        Depth 24
+        Virtual 1280 800
+    EndSubSection
+EndSection
+
+Section "ServerLayout"
+    Identifier "layout"
+    Screen "screen"
+EndSection
+CONF
+chmod 644 /etc/X11/swarmy-nvidia.conf
 cat > /usr/local/libexec/swarmy-init <<'SH'
 #!/bin/sh
-# PID 1 keeps the display alive even if an application kills Xvfb.
+# PID 1 keeps the display alive even if an application kills the X server.
+# The renderer is chosen once per sandbox start: Xorg on the NVIDIA driver
+# when the card and its libraries are present, otherwise the Xvfb software
+# display. /run/swarmy-display/renderer records the choice.
 set -u
 export DISPLAY=:99
-export LIBGL_ALWAYS_SOFTWARE=1
-export GALLIUM_DRIVER=llvmpipe
-export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+renderer=$(/usr/local/libexec/swarmy-display-select)
+mkdir -p /run/swarmy-display
+chmod 755 /run/swarmy-display
+printf '%s\n' "$renderer" > /run/swarmy-display/renderer
+chmod 644 /run/swarmy-display/renderer
+if [ "$renderer" != nvidia ]; then
+    export LIBGL_ALWAYS_SOFTWARE=1
+    export GALLIUM_DRIVER=llvmpipe
+    export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+fi
 trap 'kill "$xpid" "$wpid" 2>/dev/null || :; wait 2>/dev/null || :; exit 0' TERM INT
 while :; do
     mkdir -p /tmp/.X11-unix
     chmod 1777 /tmp/.X11-unix
     rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
-    setpriv --reuid agent --regid agent --clear-groups Xvfb :99 -screen 0 1280x800x24 -nolisten tcp &
+    if [ "$renderer" = nvidia ]; then
+        # Xorg must run as root to open the card. The sandbox has no virtual
+        # terminals, so it must not switch or claim one.
+        Xorg :99 -config /etc/X11/swarmy-nvidia.conf -nolisten tcp -noreset \
+            -novtswitch -sharevts -logfile /run/swarmy-display/Xorg.99.log &
+    else
+        setpriv --reuid agent --regid agent --clear-groups Xvfb :99 -screen 0 1280x800x24 -nolisten tcp &
+    fi
     xpid=$!
     # Wait until clients can connect before starting the window manager.
     while kill -0 "$xpid" 2>/dev/null && ! xdpyinfo -display :99 >/dev/null 2>&1; do

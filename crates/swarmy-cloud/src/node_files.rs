@@ -28,16 +28,16 @@ pub const FILES: &[(&str, &str)] = &[
         include_str!("../../../images/base-desktop/recipe.toml"),
     ),
     (
-        "images/base-desktop/setup.sh",
-        include_str!("../../../images/base-desktop/setup.sh"),
-    ),
-    (
         "images/base-ubuntu/recipe.toml",
         include_str!("../../../images/base-ubuntu/recipe.toml"),
     ),
     (
         "images/common/agent-setup.sh",
         include_str!("../../../images/common/agent-setup.sh"),
+    ),
+    (
+        "images/common/desktop-setup.sh",
+        include_str!("../../../images/common/desktop-setup.sh"),
     ),
     (
         "images/swarmy-dev/recipe.toml",
