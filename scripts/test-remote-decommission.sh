@@ -50,7 +50,10 @@ while IFS= read -r binary; do
     touch "$fake/usr/local/bin/$binary"
 done < <(retired_binary_names)
 printf 'nbd\nublk_drv\n' > "$fake/etc/modules-load.d/swarmy.conf"
-touch "$fake/usr/local/lib/swarmy/libfdb_c.so" "$fake/etc/ld.so.conf.d/swarmy.conf"
+managed_host_file /etc/modules-load.d/swarmy-provisioned.conf $'nbd\nublk_drv'
+printf 'host-owned\n' > "$fake/etc/ld.so.conf.d/swarmy.conf"
+managed_host_file /etc/ld.so.conf.d/swarmy-provisioned.conf /usr/local/lib/swarmy
+touch "$fake/usr/local/lib/swarmy/libfdb_c.so"
 printf 'secret=fixture\n' > "$fake/etc/swarmy/node.env"
 touch "$fake/home/decomm-swarmy/swarmy/checkout-marker"
 printf 'LABEL=swarmy-local /mnt/swarmy-local ext4 defaults,nofail 0 2\n' > "$fake/etc/fstab"
@@ -72,9 +75,11 @@ grep -qxF "daemon-reload" "$fake/systemctl.log" || { echo "units never reloaded"
 # No swarmy unit, binary, module config, node environment, or checkout remains.
 [[ -z $(ls -A "$fake/etc/systemd/system") ]] || { echo "unit files remain" >&2; exit 1; }
 [[ -z $(ls -A "$fake/usr/local/bin") ]] || { echo "binaries remain" >&2; exit 1; }
-[[ ! -e $fake/usr/local/lib/swarmy && ! -e $fake/etc/ld.so.conf.d/swarmy.conf ]]
+[[ ! -e $fake/usr/local/lib/swarmy && ! -e $fake/etc/ld.so.conf.d/swarmy-provisioned.conf ]]
 grep -qx ldconfig "$fake/ldconfig.log"
-[[ ! -e $fake/etc/modules-load.d/swarmy.conf ]] || { echo "modules config remains" >&2; exit 1; }
+[[ ! -e $fake/etc/modules-load.d/swarmy-provisioned.conf ]] || { echo "managed modules config remains" >&2; exit 1; }
+[[ $(cat "$fake/etc/modules-load.d/swarmy.conf") == $'nbd\nublk_drv' ]] || { echo "host modules config changed" >&2; exit 1; }
+[[ $(cat "$fake/etc/ld.so.conf.d/swarmy.conf") == host-owned ]] || { echo "host linker config changed" >&2; exit 1; }
 [[ ! -e $fake/etc/swarmy ]] || { echo "node environment remains" >&2; exit 1; }
 [[ ! -e $fake/home/decomm-swarmy/swarmy ]] || { echo "checkout remains" >&2; exit 1; }
 
@@ -89,7 +94,7 @@ mkdir -p "$fake/src"
 touch "$fake/src/libfdb_c.so"
 (cd "$fake/src" && install_core_library libfdb_c.so)
 [[ -f $fake/usr/local/lib/swarmy/libfdb_c.so ]]
-[[ $(cat "$fake/etc/ld.so.conf.d/swarmy.conf") == /usr/local/lib/swarmy ]]
+[[ $(tail -n 1 "$fake/etc/ld.so.conf.d/swarmy-provisioned.conf") == /usr/local/lib/swarmy ]]
 
 # The piped probe with no checkout: a leftover swarmyd.service unit file
 # fails with the checkout-is-missing error (the glob must cover swarmyd,

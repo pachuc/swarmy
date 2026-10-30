@@ -71,6 +71,22 @@ fn credentials(f: &Fixture) {
     login(f, "hetzner-s3", "s3-access-7a1e\ns3-secret-91d0\n");
 }
 #[test]
+fn down_reports_each_elastic_group() {
+    let f = setup();
+    credentials(&f);
+    create(&f, &["--lifecycle", "ephemeral"]);
+    f.ok(&["--json", "swarm", "up", "fleet", "--no-image"]);
+    let down = f.ok(&["swarm", "down", "fleet"]);
+    let text = String::from_utf8(down.stdout).unwrap();
+    assert!(text.contains("destroyed elastic group workers"), "{text}");
+    assert!(text.contains("destroyed elastic group control"), "{text}");
+    assert!(
+        text.find("destroyed elastic group workers").unwrap()
+            < text.find("destroyed elastic group control").unwrap()
+    );
+}
+
+#[test]
 fn create_plan_up_status_down_on_hetzner_cloud() {
     let f = setup();
     credentials(&f);

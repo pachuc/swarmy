@@ -58,7 +58,7 @@ sudo apt-get update
 packages=(curl rsync runc passt iproute2 util-linux e2fsprogs debootstrap)
 if [[ $prebuilt == false ]]; then packages+=(build-essential pkg-config libssl-dev clang libclang-dev); fi
 sudo -E apt-get install -y "${packages[@]}"
-printf 'nbd\nublk_drv\n' | sudo tee /etc/modules-load.d/swarmy.conf >/dev/null
+managed_host_file /etc/modules-load.d/swarmy-provisioned.conf $'nbd\nublk_drv'
 # Some Ubuntu kernels ship these drivers outside the base package.
 if ! sudo modprobe nbd nbds_max=64 || ! sudo modprobe ublk_drv; then
     sudo -E apt-get install -y "linux-modules-extra-$(uname -r)"

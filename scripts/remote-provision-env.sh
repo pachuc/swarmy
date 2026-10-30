@@ -44,13 +44,30 @@ check_release_bundle() {
     [[ -f $dir/libfdb_c.so ]] || { echo "Missing uploaded libfdb_c.so in $dir" >&2; return 1; }
 }
 
+# These files have dedicated names and a signature. Never overwrite a host's
+# file with the same name, or remove one whose contents are not ours.
+managed_host_file() {
+    local path=$1 content=$2
+    if sudo -n test -e "$path" && ! sudo -n grep -qxF '# Managed by swarmy remote provisioning' "$path"; then
+        echo "Refusing to overwrite host file: $path" >&2
+        return 1
+    fi
+    printf '# Managed by swarmy remote provisioning\n%s\n' "$content" | sudo -n tee "$path" >/dev/null
+}
+remove_managed_host_file() {
+    local path=$1
+    if sudo -n test -e "$path" && sudo -n grep -qxF '# Managed by swarmy remote provisioning' "$path"; then
+        sudo -n rm -f "$path"
+    fi
+}
+
 swarmy_core_library_dir() { printf '/usr/local/lib/swarmy\n'; }
 install_core_library() {
     local dir
     dir=$(swarmy_core_library_dir)
     sudo -n install -d -m 0755 "$dir" /etc/ld.so.conf.d
     sudo -n install -m 0644 "$1" "$dir/libfdb_c.so"
-    printf '%s\n' "$dir" | sudo -n tee /etc/ld.so.conf.d/swarmy.conf >/dev/null
+    managed_host_file /etc/ld.so.conf.d/swarmy-provisioned.conf "$dir"
     sudo -n ldconfig
 }
 
@@ -564,9 +581,9 @@ decommission_remove() {
     done
     remove_retired_binaries
     sudo rm -rf "$(swarmy_core_library_dir)"
-    sudo rm -f /etc/ld.so.conf.d/swarmy.conf
+    remove_managed_host_file /etc/ld.so.conf.d/swarmy-provisioned.conf
     sudo ldconfig
-    sudo rm -f /etc/modules-load.d/swarmy.conf
+    remove_managed_host_file /etc/modules-load.d/swarmy-provisioned.conf
     sudo rm -rf /etc/swarmy
     service_repo=$(service_repo_for "$service_user")
     sudo rm -rf "$service_repo"
