@@ -462,7 +462,7 @@ pub struct NodeSettings {
     /// Advertise these cards instead of probing nvidia-smi; for CPU-only tests and the dev stack.
     pub fake_gpu: Option<swarmy_core::GpuCards>,
     /// JSON CDI spec for real GPU sandboxes, read once at node start.
-    pub cdi_spec: std::path::PathBuf,
+    pub cdi_spec: PathBuf,
     #[serde(with = "duration::ms")]
     pub heartbeat_interval_ms: Duration,
 }
