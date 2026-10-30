@@ -13,12 +13,31 @@ case "$1" in
     count=$(python3 -c 'import json; print(json.load(open("swarmy.tfvars.json"))["machine_count"])')
     printf 'apply machine_count=%s\n' "$count" >> "$fixture/tofu.log"
     touch "$fixture/applied"
+    if [ -f "$fixture/fail-apply-orphans" ]; then
+        printf '{"resources":["scaleway_instance_security_group.group","scaleway_instance_ip.routed"]}' > terraform.tfstate
+        echo 'injected quota exceeded after creating network resources' >&2
+        exit 1
+    fi
     if [ -f "$fixture/fail-apply" ]; then echo 'injected apply failure' >&2; exit 1; fi
     if [ -f "$fixture/fail-apply-partial" ]; then
         python3 -c 'import json, os; path="terraform.tfstate"; old=json.load(open(path))["count"] if os.path.exists(path) else 0; json.dump({"count":old+1},open(path,"w"))'
         echo 'injected partial apply failure' >&2; exit 1
     fi
     python3 -c 'import json,sys; json.dump({"count":int(sys.argv[1])},open("terraform.tfstate","w"))' "$count" ;;
+ destroy)
+    printf 'destroy
+' >> "$fixture/tofu.log"
+    printf '{"resources":[]}' > terraform.tfstate ;;
+ state)
+    python3 - <<'PYTHON'
+import json
+state=json.load(open('terraform.tfstate'))
+if 'resources' in state:
+    print('\n'.join(state['resources']))
+else:
+    print('\n'.join(f'machine.{i}' for i in range(state['count'])))
+PYTHON
+    ;;
  output)
     if [ -f "$fixture/applied" ] && [ -f "$fixture/fail-output" ]; then
         echo 'injected output failure' >&2; exit 1
@@ -26,7 +45,11 @@ case "$1" in
     python3 - <<'PY'
 import json
 vars=json.load(open('swarmy.tfvars.json'))
-count=json.load(open('terraform.tfstate'))['count']
+state=json.load(open('terraform.tfstate'))
+if 'count' not in state:
+    print('{}')
+    raise SystemExit
+count=state['count']
 machines=[{'name':f'{vars["swarm"]}-{vars["group"]}-{i}', 'public_ipv4':f'203.0.113.{10+i}', 'public_ipv6':None, 'private_ip':None, 'ssh_user':'root'} for i in range(1,count+1)]
 print(json.dumps({'machines':{'value':machines},'network_id':{'value':None}}))
 PY

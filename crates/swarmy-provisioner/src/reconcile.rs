@@ -46,7 +46,7 @@ use swarmy_core::{
     ElasticGroupRecord, Lease, LeaseOwnerId, MachineCause, MachineId, MachineRecord, MachineState,
     MachineTransition, NewMachine,
 };
-use swarmy_infra::{Machine, Tofu, Workspace};
+use swarmy_infra::{Machine, OutputError, Tofu, Workspace};
 use swarmy_store::{
     FenceError, MAX_ELASTIC_CREATIONS_PER_HOUR, MachineFilter, Store, StoreError,
     credentials::CredentialStore,
@@ -543,7 +543,12 @@ impl Reconciler {
             .target(lease, record, actual, &outputs, &active)
             .await?;
         self.fail_unneeded(def, &outputs, target, &active).await?;
-        if target == actual {
+        let resources = if target == 0 && workspace.dir().join("terraform.tfstate").exists() {
+            workspace.state_resources().await?
+        } else {
+            Vec::new()
+        };
+        if target == actual && resources.is_empty() {
             self.store
                 .record_elastic_reconcile(
                     lease,
@@ -560,6 +565,9 @@ impl Reconciler {
                 desired: record.desired,
                 limited,
             });
+        }
+        if !resources.is_empty() && actual == 0 {
+            tracing::warn!(group = %def.group, resources = ?resources, "OpenTofu tracks resources without machines; destroying partial infrastructure");
         }
         self.prepare_ledger(def, &record.desired_cause, actual, target)
             .await?;
@@ -661,7 +669,11 @@ impl Reconciler {
         target: u32,
     ) -> Result<()> {
         let def = &record.definition;
-        let applied = workspace.apply().await;
+        let applied = if target == 0 {
+            workspace.destroy().await
+        } else {
+            workspace.apply().await
+        };
         self.backup(workspace, &def.group).await;
         let after = self.outputs(workspace, def).await;
         if applied.is_ok() && after.is_err() {
@@ -732,7 +744,11 @@ impl Reconciler {
         if !workspace.dir().join("terraform.tfstate").exists() {
             return Ok(Vec::new());
         }
-        let machines = workspace.outputs().await?.machines;
+        let machines = match workspace.outputs().await {
+            Ok(outputs) => outputs.machines,
+            Err(swarmy_infra::Error::Output(OutputError::Missing("machines"))) => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
         for (i, machine) in machines.iter().enumerate() {
             if machine.name != name(def, u32::try_from(i)? + 1) {
                 bail!(

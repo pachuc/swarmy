@@ -311,6 +311,16 @@ impl Workspace<'_> {
     pub async fn destroy(&self) -> Result<()> {
         self.run(Subcommand::Destroy).await.map(|_| ())
     }
+    /// Names of all resources tracked in state, including resources without module outputs.
+    /// # Errors
+    /// Returns process failures.
+    pub async fn state_resources(&self) -> Result<Vec<String>> {
+        let (bytes, _) = self.run(Subcommand::StateList).await?;
+        Ok(String::from_utf8_lossy(&bytes)
+            .lines()
+            .map(str::to_owned)
+            .collect())
+    }
     /// # Errors
     /// Returns process and contract failures.
     pub async fn outputs(&self) -> Result<ModuleOutputs> {
@@ -370,6 +380,7 @@ enum Subcommand<'a> {
     Apply,
     ApplyTargets(&'a [&'a str]),
     Destroy,
+    StateList,
     Output,
 }
 impl Subcommand<'_> {
@@ -379,6 +390,7 @@ impl Subcommand<'_> {
             Self::Plan => "plan",
             Self::Apply | Self::ApplyTargets(_) => "apply",
             Self::Destroy => "destroy",
+            Self::StateList => "state list",
             Self::Output => "output",
         }
     }
@@ -409,6 +421,7 @@ impl Subcommand<'_> {
                 LOCK_TIMEOUT,
                 "-var-file=swarmy.tfvars.json",
             ],
+            Self::StateList => &["state", "list", "-no-color"],
             Self::Output => &["output", "-no-color", "-json"],
         }
     }

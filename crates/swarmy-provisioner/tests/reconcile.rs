@@ -1354,3 +1354,73 @@ async fn manual_scale_on_an_autoscaled_group_is_a_starting_point() {
     f.reconciler.tick(&mut holder).await.unwrap();
     assert_eq!(desired_count(&f).await, 0);
 }
+
+#[tokio::test]
+async fn first_apply_partial_resources_are_destroyed_at_zero_and_can_regrow() {
+    let Some(f) = Fixture::new(true, 2).await else {
+        return;
+    };
+    f.desired(1).await;
+    fs::write(f.temp.path().join("fail-apply-orphans"), "").unwrap();
+    let mut holder = Holder::new();
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert!(f.log().contains("apply machine_count=1"));
+    assert_eq!(f.records().await[0].state, MachineState::Failed);
+    assert_eq!(
+        f.store
+            .get_elastic_group("gpu")
+            .await
+            .unwrap()
+            .unwrap()
+            .applied,
+        0
+    );
+    // The missing machines output must not mask the resources left by the failed apply.
+    f.desired(0).await;
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert!(f.log().contains("call gpu state"));
+    assert!(f.log().contains("call gpu destroy"));
+    assert!(
+        f.store
+            .get_elastic_group("gpu")
+            .await
+            .unwrap()
+            .unwrap()
+            .settled()
+    );
+    let before = f.log();
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(f.log().matches("call gpu destroy").count(), 1);
+    assert!(f.log().len() >= before.len());
+    fs::remove_file(f.temp.path().join("fail-apply-orphans")).unwrap();
+    *f.clock.lock().unwrap() += Duration::from_mins(5);
+    f.desired(1).await;
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(
+        f.records().await.last().unwrap().state,
+        MachineState::Provisioning
+    );
+}
+
+#[tokio::test]
+async fn manually_emptied_partial_state_does_not_block_zero() {
+    let Some(f) = Fixture::new(true, 2).await else {
+        return;
+    };
+    fs::create_dir_all(f.temp.path().join("data/tofu/gpu")).unwrap();
+    fs::write(
+        f.temp.path().join("data/tofu/gpu/terraform.tfstate"),
+        r#"{"resources":[]}"#,
+    )
+    .unwrap();
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    assert!(
+        f.store
+            .get_elastic_group("gpu")
+            .await
+            .unwrap()
+            .unwrap()
+            .settled()
+    );
+    assert!(!f.log().contains("call gpu destroy"));
+}
