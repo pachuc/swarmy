@@ -12,24 +12,14 @@ impl Store {
     /// Rejects a live collector, invalid expiry, and transaction failures.
     pub async fn acquire_gc_lease(&self, run: &GcRun, expires_at: Timestamp) -> Result<Lease> {
         self.transaction(|trx| async move {
-            let now = self.now();
-            let key = self.keys().gc_lease();
-            if expires_at <= now
-                || read::<Lease>(&trx, &key)
-                    .await?
-                    .is_some_and(|lease| lease.expires_at > now)
-            {
-                return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
-            }
-            let sequence_key = self.keys().gc_sequence();
-            let seq = crate::seq_after(read::<u64>(&trx, &sequence_key).await?.unwrap_or(0), 1)?;
-            let lease = Lease {
-                owner: run.owner,
-                expires_at,
-                seq,
+            let keys = crate::singleton_lease::SingletonKeys {
+                lease: self.keys().gc_lease(),
+                sequence: self.keys().gc_sequence(),
             };
-            write(&trx, &sequence_key, &seq)?;
-            write(&trx, &key, &lease)?;
+            let lease =
+                crate::singleton_lease::claim(&trx, &keys, run.owner, self.now(), expires_at)
+                    .await?
+                    .ok_or(crate::FenceError::GcLeaseMismatch)?;
             write(&trx, &self.keys().gc_run(run.owner), run)?;
             Ok(lease)
         })
@@ -41,18 +31,14 @@ impl Store {
     /// Rejects expired or replaced leases and transaction failures.
     pub async fn renew_gc_lease(&self, expected: &Lease, expires_at: Timestamp) -> Result<Lease> {
         self.transaction(|trx| async move {
-            let key = self.keys().gc_lease();
-            if read::<Lease>(&trx, &key).await?.as_ref() != Some(expected)
-                || expected.expires_at <= self.now()
-                || expires_at <= expected.expires_at
-            {
-                return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
-            }
-            let lease = Lease {
-                expires_at,
-                ..expected.clone()
+            let keys = crate::singleton_lease::SingletonKeys {
+                lease: self.keys().gc_lease(),
+                sequence: self.keys().gc_sequence(),
             };
-            write(&trx, &key, &lease)?;
+            let lease =
+                crate::singleton_lease::extend(&trx, &keys, expected, self.now(), expires_at)
+                    .await?
+                    .ok_or(crate::FenceError::GcLeaseMismatch)?;
             Ok(lease)
         })
         .await
@@ -64,8 +50,7 @@ impl Store {
     pub async fn finish_gc_run(&self, expected: &Lease, run: &GcRun) -> Result<()> {
         self.transaction(|trx| async move {
             let key = self.keys().gc_lease();
-            if read::<Lease>(&trx, &key).await?.as_ref() != Some(expected)
-                || expected.expires_at <= self.now()
+            if !crate::singleton_lease::is_current(&trx, &key, expected, self.now()).await?
                 || expected.owner != run.owner
             {
                 return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));

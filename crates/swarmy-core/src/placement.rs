@@ -10,6 +10,8 @@ pub enum PlacementChangeReason {
     Eviction,
     /// The previous placement expired before a node claimed it for hosting.
     Unstarted,
+    /// The agent's GPU requirement changed and its node released the computer.
+    RequirementChange,
 }
 
 /// Authority to host an agent's computer. Renewals preserve the epoch and its last-change metadata.
@@ -21,6 +23,9 @@ pub struct PlacementRecord {
     pub expires_at: Timestamp,
     pub last_change_reason: PlacementChangeReason,
     pub last_changed_at: Timestamp,
+    /// The GPU mode this placement was admitted under. Admission counts GPU
+    /// sandboxes from this field, so it stays right while the agent's requirement changes.
+    pub gpu: crate::GpuRequirement,
 }
 
 /// A node's recent observation of calls sharing one computer, not execution authority.
@@ -53,6 +58,7 @@ mod tests {
             expires_at: Timestamp::UNIX_EPOCH,
             last_change_reason: PlacementChangeReason::Initial,
             last_changed_at: Timestamp::UNIX_EPOCH,
+            gpu: crate::GpuRequirement::None,
         };
         let bytes = encode(&record).unwrap();
         assert_eq!(
@@ -62,10 +68,29 @@ mod tests {
                 48, 48, 48, 48, 48, 48, 48, 26, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
                 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 49, 1, 20, 49, 57, 55, 48, 45, 48,
                 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90, 0, 20, 49, 57, 55, 48, 45,
-                48, 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90
+                48, 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90, 0
             ]
         );
         assert_eq!(decode::<PlacementRecord>(&bytes).unwrap(), record);
+    }
+
+    #[test]
+    fn placement_change_reasons_have_fixed_bytes() {
+        // Reasons live in placement records, so pin their postcard variant indices.
+        for (index, reason) in [
+            PlacementChangeReason::Initial,
+            PlacementChangeReason::Failure,
+            PlacementChangeReason::Eviction,
+            PlacementChangeReason::Unstarted,
+            PlacementChangeReason::RequirementChange,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let bytes = encode(&reason).unwrap();
+            assert_eq!(bytes, [1, u8::try_from(index).unwrap()]);
+            assert_eq!(decode::<PlacementChangeReason>(&bytes).unwrap(), reason);
+        }
     }
 
     #[test]

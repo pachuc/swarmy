@@ -1,7 +1,9 @@
 //! Sandbox execution backed by durable virtual disks.
+mod cdi;
 mod credentials;
 mod runc;
-pub use runc::{RuncRuntime, ScratchPolicy, pasta_pid_file};
+pub use cdi::{GpuEdits, NodeGpu};
+pub use runc::{RuncRuntime, RuntimeOptions, ScratchPolicy, pasta_pid_file};
 pub use swarmy_core::{
     BlockDevice, ExecOutput, ExecRequest, ExecResult, PauseHandle, RuntimeCaps, Sandbox,
     SandboxSpec,

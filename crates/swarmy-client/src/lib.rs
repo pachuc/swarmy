@@ -736,6 +736,21 @@ impl Client {
         }
         self.get("usage", &query).await
     }
+    /// List elastic machines; `all` includes destroyed rows and `window` adds window costs.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn machines(
+        &self,
+        all: bool,
+        window: Option<(&str, &str)>,
+    ) -> Result<api::MachineList, Error> {
+        let mut query = vec![("state", if all { "all" } else { "active" }.to_owned())];
+        if let Some((from, to)) = window {
+            query.push(("from", from.to_owned()));
+            query.push(("to", to.to_owned()));
+        }
+        self.get("machines", &query).await
+    }
     /// Read full catalog model rows for CLI rendering.
     /// # Errors
     /// Returns transport, API, or decoding failures.
@@ -787,6 +802,43 @@ impl Client {
     pub async fn set_route(&self, name: &str, body: &api::SetRoute) -> Result<api::Route, Error> {
         self.send(Method::POST, &format!("routes/{}", segment(name)), body)
             .await
+    }
+    /// Read an elastic group.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn elastic_group(&self, group: &str) -> Result<api::ElasticGroup, Error> {
+        self.get(&format!("swarm/groups/{}", segment(group)), &[])
+            .await
+    }
+    /// Register an elastic group definition.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn put_elastic_group(
+        &self,
+        group: &str,
+        body: &api::PutElasticGroup,
+    ) -> Result<api::ElasticGroup, Error> {
+        self.send(
+            Method::PUT,
+            &format!("swarm/groups/{}", segment(group)),
+            body,
+        )
+        .await
+    }
+    /// Set the desired elastic machine count.
+    /// # Errors
+    /// Returns transport, API, or decoding failures.
+    pub async fn set_elastic_desired(
+        &self,
+        group: &str,
+        body: &api::SetElasticDesired,
+    ) -> Result<api::ElasticGroup, Error> {
+        self.send(
+            Method::PUT,
+            &format!("swarm/groups/{}/desired", segment(group)),
+            body,
+        )
+        .await
     }
     /// Remove a named inference route.
     /// # Errors

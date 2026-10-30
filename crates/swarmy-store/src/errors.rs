@@ -66,6 +66,8 @@ pub enum FenceError {
     PlacedToolClaimMismatch,
     #[error("gc run lease no longer matches")]
     GcLeaseMismatch,
+    #[error("provisioner lease no longer matches")]
+    ProvisionerLeaseMismatch,
     #[error("credential refresh claim no longer matches")]
     CredentialRefreshMismatch,
     #[error("volume writer lease no longer matches")]
@@ -74,8 +76,30 @@ pub enum FenceError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DomainError {
+    #[error("machine does not exist")]
+    MachineMissing,
+    #[error("machine id already exists")]
+    MachineExists,
+    #[error("an active machine in this group already has that name")]
+    MachineNameInUse,
+    #[error("invalid machine record: {0}")]
+    InvalidMachine(String),
+    #[error(transparent)]
+    InvalidMachineTransition(#[from] swarmy_core::InvalidMachineTransition),
+    #[error("machine is not joined; only a joined machine takes new assignments")]
+    MachineNotJoined,
     #[error("credential does not exist")]
     CredentialMissing,
+    #[error("elastic group {group} is not registered; scale it once with swarmy swarm scale")]
+    ElasticGroupMissing { group: String },
+    #[error(
+        "elastic group {group} has machines or unfinished changes; scale it to 0 and wait until its machines are gone and the provisioner has reconciled before changing module, size, location or swarm"
+    )]
+    ElasticGroupBusy { group: String },
+    #[error("desired count {desired} is above the group's max of {max}")]
+    DesiredAboveMax { desired: u32, max: u32 },
+    #[error("invalid elastic group: {0}")]
+    InvalidElasticGroup(String),
     #[error("route does not exist")]
     RouteMissing,
     #[error("invalid route: {0}")]
@@ -104,8 +128,12 @@ pub enum DomainError {
     NodeMissing,
     #[error("node has no computer capacity available: {detail}")]
     NodeAtCapacity { detail: String },
-    #[error("sandbox requirements can only change after the current placement is evicted")]
+    #[error("node cannot host this GPU sandbox: {detail}")]
+    GpuUnavailable { detail: String },
+    #[error("the memory requirement can only change after the current placement is evicted")]
     ActiveSandboxRequirements,
+    #[error("a GPU reason needs a shared or dedicated GPU requirement in the same change")]
+    GpuReasonWithoutCard,
     #[error("placement already exists")]
     PlacementExists,
     #[error("volume does not exist")]
@@ -157,8 +185,8 @@ pub enum DomainError {
     InvalidToolCallArguments(#[source] SandboxArgumentError),
     #[error("invalid transition")]
     InvalidTransition,
-    #[error("missing inference wait")]
-    MissingInferenceWait,
+    #[error("missing session wait")]
+    MissingSessionWait,
     #[error("missing inflight")]
     MissingInflight,
     #[error("missing tool request")]

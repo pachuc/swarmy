@@ -47,10 +47,12 @@ Completed. A named main session cannot be closed by this API.
 
 `swarmy session interrupt SESSION_ID` ends the current turn without closing the
 session. A parked inference wait ends immediately with a non-retryable
-`InferenceFailed` event. A running turn ends at its next worker step boundary;
-an active provider request may have to return first. `session show` displays a
-pending interruption, including `interrupt_requested` in JSON output. Idle and
-Completed sessions have no turn to interrupt, so the command exits with an error.
+`InferenceFailed` event. A capacity wait hands its pending calls to a worker;
+those calls fail without running and the turn ends. A running turn ends at its
+next worker step boundary; an active provider request may have to return first.
+`session show` displays a pending interruption, including
+`interrupt_requested` in JSON output. Idle and Completed sessions have no
+turn to interrupt, so the command exits with an error.
 If a sandbox tool returns a managed process while interruption is pending, the
 node stops that process before committing the tool result.
 
@@ -71,3 +73,38 @@ with `agent create` or `agent set`; `agent set --provider default`,
 preserve the agent's identity, computer, and sessions and apply to the next
 inference request. Ephemeral sessions instead persist an `inference` selection
 when created. See [choosing a model](providers.md#choosing-and-inspecting-models).
+
+## Changing the GPU requirement
+
+Changing a placed agent's GPU requirement requests a release at the hosting
+node's next lease renewal. The node finishes its current call, takes a final
+disk checkpoint, and releases the placement even if processes remain running.
+The next call places the computer on a node that satisfies the new requirement.
+Running processes and host-local scratch, including the cargo target directory
+and `/tmp`, are lost; the next build starts cold. Every session gets a notice
+explaining that the GPU requirement changed and describing the restore point.
+A memory requirement still cannot change until the placement is evicted.
+
+### Agents that ask for a GPU
+
+An operator can set `agent create|set NAME --allow-gpu-request true|false` (default
+false). Only named agents with the flag see `request_gpu` (shared or dedicated,
+with a reason of 1-500 characters) and `release_gpu`; the store refuses calls
+from other agents or ephemeral sessions. Each GPU tool must be the only tool
+call in its response. If combined with another call, every call in that
+response fails without running.
+
+The tool returns immediately; the hosting node releases the computer at its
+next renewal, and the next sandbox call waits for capacity if no matching node
+is ready. A repeated request for the current mode changes nothing. The reason,
+session and time stay on the agent record and appear in `agent show`; `release_gpu`
+or an operator `--gpu` change without `--gpu-reason` clears the reason; an operator change with `--gpu-reason` replaces it and records no session. Turning the flag off does not
+reset the requirement: use `--gpu none` for that. When the swarm has an autoscaled GPU group, the waiting call makes the provisioner start a machine, and the machine record's cause names this agent, its session and this reason. The first command may wait 5 to 15 minutes while the machine starts.
+
+## Waiting for a node
+
+When no eligible node has room, a tool dispatch parks the session rather than
+failing the step. The conversation receives one system notice per capacity
+wait, and `session show` prints "Waiting until ...". The scheduler retries
+every 30 seconds. After `[scheduler] max_session_wait_secs` (default 3600),
+the pending calls fail without running, and the turn continues.

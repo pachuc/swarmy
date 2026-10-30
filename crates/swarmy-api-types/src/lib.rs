@@ -213,6 +213,9 @@ pub struct Agent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
     pub requirements: SandboxRequirements,
+    pub allow_gpu_request: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_request: Option<GpuRequestView>,
     // Everything below hydrates on show/create/update only. List rows omit
     // these keys instead of printing nulls, zeros, or empty arrays as if
     // they were observed values.
@@ -424,6 +427,7 @@ pub enum CredentialKind {
     Subscription,
     ApiKey,
     Cloud,
+    MachineProvider,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -441,6 +445,7 @@ impl CredentialKind {
             Self::Subscription => "subscription",
             Self::ApiKey => "api_key",
             Self::Cloud => "cloud",
+            Self::MachineProvider => "machine_provider",
         }
     }
 }
@@ -533,6 +538,14 @@ pub struct DoctorSnapshot {
     pub nodes: Vec<DoctorNode>,
 }
 
+/// Cards offered by one node.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct GpuCards {
+    pub model: String,
+    pub memory_mib: u64,
+    pub count: u32,
+}
+
 /// One registered node and its committed sandbox memory in bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DoctorNode {
@@ -541,6 +554,8 @@ pub struct DoctorNode {
     pub capacity: NodeCapacity,
     pub last_heartbeat: String,
     pub committed_memory_bytes: u64,
+    /// Cards the node advertises; null without cards.
+    pub gpu: Option<GpuCards>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -669,6 +684,16 @@ impl From<AgentReset> for swarmy_core::InferenceField {
     }
 }
 
+/// The cause of an agent's current GPU requirement, from `request_gpu` or an operator's `gpu_reason`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct GpuRequestView {
+    pub reason: String,
+    pub requested_at: String,
+    /// The session that called `request_gpu`; absent when an operator gave the reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
 /// Every client mutation has a key that survives retries of the same intent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CreateAgent {
@@ -686,6 +711,12 @@ pub struct CreateAgent {
     pub memory_mib: Option<u64>,
     #[serde(default)]
     pub gpu: Option<GpuMode>,
+    #[serde(default)]
+    pub allow_gpu_request: Option<bool>,
+    /// Why the operator set `gpu`; needs `gpu` shared or dedicated in the same request.
+    /// Recorded as the agent's GPU request with no session.
+    #[serde(default)]
+    pub gpu_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_token: Option<String>,
 }
@@ -703,6 +734,12 @@ pub struct UpdateAgent {
     pub memory_mib: Option<u64>,
     #[serde(default)]
     pub gpu: Option<GpuMode>,
+    #[serde(default)]
+    pub allow_gpu_request: Option<bool>,
+    /// Why the operator set `gpu`; needs `gpu` shared or dedicated in the same request.
+    /// Recorded as the agent's GPU request with no session.
+    #[serde(default)]
+    pub gpu_reason: Option<String>,
     #[serde(default)]
     pub resets: Vec<AgentReset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -856,6 +893,65 @@ pub struct ProbeResult {
     pub cost_micros: u64,
     pub effort: ReasoningEffort,
     pub elapsed_seconds: f64,
+}
+
+/// An elastic group as held by the swarm.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ElasticGroup {
+    pub swarm: String,
+    pub group: String,
+    pub module: String,
+    pub size: String,
+    pub location: String,
+    pub sandboxes: u32,
+    pub local_storage: String,
+    pub max: u32,
+    pub autoscale: bool,
+    pub price_per_hour: String,
+    pub currency: String,
+    pub desired: u32,
+    pub desired_reason: String,
+    /// Agent whose waiting session caused the latest desired change, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desired_agent: Option<String>,
+    /// Session that caused the latest desired change, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desired_session: Option<String>,
+    pub applied: u32,
+    pub generation: u64,
+    pub reconciled_generation: u64,
+    /// Whether the provisioner has acted on the latest desired count.
+    pub settled: bool,
+    pub updated_at: String,
+}
+/// Register or update an elastic group's definition from the swarm spec.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PutElasticGroup {
+    pub idempotency_key: String,
+    pub swarm: String,
+    pub module: String,
+    pub size: String,
+    pub location: String,
+    pub sandboxes: u32,
+    pub local_storage: String,
+    pub max: u32,
+    pub price_per_hour: String,
+    pub currency: String,
+    /// Public IPv4 address of the stack host; elastic machines tunnel to it.
+    pub primary_address: String,
+    /// Service login that owns swarmy on the stack host.
+    pub service_user: String,
+    /// Whether the provisioner scales this group for sessions waiting for a GPU.
+    #[serde(default)]
+    pub autoscale: bool,
+}
+/// Set the desired number of machines, between zero and max.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SetElasticDesired {
+    pub idempotency_key: String,
+    pub desired: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// One route step: the provider, the entry label (`*` for every entry of
@@ -1105,6 +1201,8 @@ pub struct SandboxRequirements {
 pub struct PlacementView {
     pub node_id: String,
     pub epoch: u64,
+    /// GPU mode the placement was admitted under.
+    pub gpu: GpuMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -1136,16 +1234,112 @@ impl SandboxState {
     }
 }
 
+/// Lifecycle state of one elastic machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineState {
+    Requested,
+    Creating,
+    Provisioning,
+    Joined,
+    Draining,
+    Destroyed,
+    Failed,
+    Orphaned,
+}
+impl MachineState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Requested => "requested",
+            Self::Creating => "creating",
+            Self::Provisioning => "provisioning",
+            Self::Joined => "joined",
+            Self::Draining => "draining",
+            Self::Destroyed => "destroyed",
+            Self::Failed => "failed",
+            Self::Orphaned => "orphaned",
+        }
+    }
+}
+/// Provider's billing-unit size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BillingGranularity {
+    PerStartedHour,
+    PerStartedMinute,
+}
+/// Why this machine was requested.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MachineCause {
+    pub agent_id: Option<String>,
+    pub agent_name: Option<String>,
+    pub session_id: Option<String>,
+    pub reason: String,
+}
+/// An agent with an open assignment on the machine.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MachineAgent {
+    pub agent_id: String,
+    pub agent_name: Option<String>,
+    pub since: String,
+}
+/// An elastic machine, priced as of `MachineList.as_of`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Machine {
+    pub id: String,
+    pub group: String,
+    pub name: String,
+    pub module: String,
+    pub size: String,
+    pub location: String,
+    pub address: Option<String>,
+    pub node_id: Option<String>,
+    pub state: MachineState,
+    pub requested_at: String,
+    pub created_at: Option<String>,
+    pub provisioned_at: Option<String>,
+    pub joined_at: Option<String>,
+    pub drain_requested_at: Option<String>,
+    pub destroyed_at: Option<String>,
+    pub cause: MachineCause,
+    pub hourly_price_micros: u64,
+    pub currency: String,
+    pub billing: BillingGranularity,
+    pub failure: Option<String>,
+    pub cost_micros: u64,
+    pub cost: String,
+    pub window_cost_micros: Option<u64>,
+    pub window_cost: Option<String>,
+    pub current_agents: Vec<MachineAgent>,
+}
+/// A per-currency cost total.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MachineCostTotal {
+    pub currency: String,
+    pub cost_micros: u64,
+    pub cost: String,
+}
+/// Machines as of one instant, with optional window totals.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct MachineList {
+    pub as_of: String,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub machines: Vec<Machine>,
+    pub totals: Vec<MachineCostTotal>,
+}
+
 /// Versioned resource routes. These signatures are mirrored by the server router.
 pub mod api_paths {
     use super::{
         Agent, AgentDeleted, AgentMetrics, ApiError, AppendMessage, AppendedMessage, CloseSession,
         CreateAgent, CreateCredential, CreateSession, Credential, CredentialDeleted, DeleteRequest,
-        DoctorSnapshot, EntryQuotaView, Event, GcRun, HealthResponse, Image, ImageUpload,
-        InterruptOutcome, InterruptSession, Model, ProbeModel, ProbeResult, Provider,
-        PutCredentialRecord, QuotaEntry, Route, RouteDeleted, Session, SessionClosed,
-        SetEntryQuota, SetRoute, SetSessionRoute, StartGcRun, Subscription, TurnMetrics,
-        UpdateAgent, UsageResponse,
+        DoctorSnapshot, ElasticGroup, EntryQuotaView, Event, GcRun, HealthResponse, Image,
+        ImageUpload, InterruptOutcome, InterruptSession, MachineList, Model, ProbeModel,
+        ProbeResult, Provider, PutCredentialRecord, PutElasticGroup, QuotaEntry, Route,
+        RouteDeleted, Session, SessionClosed, SetElasticDesired, SetEntryQuota, SetRoute,
+        SetSessionRoute, StartGcRun, Subscription, TurnMetrics, UpdateAgent, UsageResponse,
     };
     #[utoipa::path(get, path = "/v1/health",
         responses((status = 200, body = HealthResponse)))]
@@ -1209,6 +1403,20 @@ pub mod api_paths {
         request_body = SetSessionRoute,
         responses((status = 200, body = Session), (status = 404, body = ApiError)))]
     pub fn set_session_route() {}
+    #[utoipa::path(get, path = "/v1/swarm/groups/{group}",
+        params(("group" = String, Path, description = "Group name")),
+        responses((status = 200, body = ElasticGroup), (status = 404, body = ApiError)))]
+    pub fn show_elastic_group() {}
+    #[utoipa::path(put, path = "/v1/swarm/groups/{group}",
+        params(("group" = String, Path, description = "Group name")),
+        request_body = PutElasticGroup,
+        responses((status = 200, body = ElasticGroup), (status = 400, body = ApiError), (status = 409, body = ApiError)))]
+    pub fn put_elastic_group() {}
+    #[utoipa::path(put, path = "/v1/swarm/groups/{group}/desired",
+        params(("group" = String, Path, description = "Group name")),
+        request_body = SetElasticDesired,
+        responses((status = 200, body = ElasticGroup), (status = 400, body = ApiError), (status = 404, body = ApiError)))]
+    pub fn set_elastic_desired() {}
     #[utoipa::path(get, path = "/v1/routes",
         responses((status = 200, body = Vec<Route>), (status = 401, body = ApiError)))]
     pub fn list_routes() {}
@@ -1409,6 +1617,14 @@ pub mod api_paths {
         ),
         responses((status = 200, body = UsageResponse), (status = 400, body = ApiError)))]
     pub fn usage() {}
+    #[utoipa::path(get, path = "/v1/machines",
+        params(
+            ("state" = Option<String>, Query, description = "active (default) lists machines that may still cost money or are in progress; all includes destroyed ones"),
+            ("from" = Option<String>, Query, description = "Window start for window_cost, in the same forms as /v1/usage; requires to"),
+            ("to" = Option<String>, Query, description = "Window end, exclusive; requires from"),
+        ),
+        responses((status = 200, body = MachineList), (status = 400, body = ApiError), (status = 401, body = ApiError)))]
+    pub fn list_machines() {}
     #[utoipa::path(get, path = "/v1/quotas",
         responses((status = 200, body = Vec<QuotaEntry>), (status = 401, body = ApiError)))]
     pub fn quotas() {}
@@ -1437,7 +1653,8 @@ pub mod api_paths {
         api_paths::check_credential, api_paths::remove_credential,
         api_paths::check_credential_entry, api_paths::remove_credential_entry,
         api_paths::entry_quota, api_paths::set_entry_quota, api_paths::quotas,
-        api_paths::usage,
+        api_paths::usage, api_paths::list_machines,
+        api_paths::show_elastic_group, api_paths::put_elastic_group, api_paths::set_elastic_desired,
         api_paths::list_routes, api_paths::set_route, api_paths::show_route,
         api_paths::delete_route, api_paths::set_session_route,
 
@@ -1446,7 +1663,7 @@ pub mod api_paths {
     LogId, Cursor, Subscription, TurnStatus, SessionKind, SessionState, ReasoningEffort,
     WaitingReason, ImageRef, Agent, Session, Turn, MessageRole, Image, ImageUpload, Model, ProviderApi,
     Provider, ProbeModel, ProbeResult, CredentialKind, CredentialStatus, Credential, PutCredentialRecord, NodeRole, NodeCapacity,
-    Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode,
+    Node, ServiceHealth, HealthResponse, DoctorSnapshot, DoctorService, DoctorNode, GpuCards, GpuRequestView,
     StageTiming, InferenceMetric, ToolMetric, ComputerMetric, TurnMetrics, LatencyPercentiles,
     AgentMetrics, StartGcRun, GcRun,
     CreateAgent, UpdateAgent, AgentReset, GpuMode, DeleteRequest,
@@ -1455,8 +1672,9 @@ pub mod api_paths {
     InterruptStatus, InterruptOutcome, SessionClosed,
     CreateImage, CreateCredential, CredentialDeleted, AgentDeleted, SetEntryQuota, EntryQuotaView, QuotaEntry, EntryQuotaDetail,
     UsageTotalsView, UsageGroupView, UsageResponse, EntryUsageView,
+    MachineState, BillingGranularity, MachineCause, MachineAgent, Machine, MachineCostTotal, MachineList,
     Event, EventPayload, ApiError,
-    Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute
+    Route, RouteStep, SetRoute, RouteDeleted, SetSessionRoute, ElasticGroup, PutElasticGroup, SetElasticDesired
 )))]
 pub struct ApiDocument;
 
@@ -1481,6 +1699,24 @@ mod tests {
 
     #[test]
     fn resource_json_contract() {
+        check!(GpuCards, {"model":"NVIDIA L4","memory_mib":23034,"count":1});
+        check!(PlacementView, {"node_id":"n","epoch":1,"gpu":"dedicated"});
+        for state in [
+            "requested",
+            "creating",
+            "provisioning",
+            "joined",
+            "draining",
+            "destroyed",
+            "failed",
+            "orphaned",
+        ] {
+            check!(MachineState, state);
+        }
+        for billing in ["per_started_hour", "per_started_minute"] {
+            check!(BillingGranularity, billing);
+        }
+        check!(MachineList, {"as_of":"2026-10-29T12:00:00Z","from":null,"to":null,"machines":[{"id":"01JC0000000000000000000001","group":"gpu","name":"fleet-gpu-1","module":"scaleway","size":"L4","location":"par","address":null,"node_id":null,"state":"requested","requested_at":"2026-10-29T12:00:00Z","created_at":null,"provisioned_at":null,"joined_at":null,"drain_requested_at":null,"destroyed_at":null,"cause":{"agent_id":null,"agent_name":null,"session_id":null,"reason":"task"},"hourly_price_micros":750_000,"currency":"EUR","billing":"per_started_hour","failure":null,"cost_micros":0,"cost":"0.0000","window_cost_micros":null,"window_cost":null,"current_agents":[]}],"totals":[{"currency":"EUR","cost_micros":0,"cost":"0.0000"}]});
         check!(LogId, {"kind":"session","id":"s"});
         check!(LogId, {"kind":"timeline","id":"s"});
         check!(Cursor, {"log_id":{"kind":"session","id":"s"},"sequence":0});
@@ -1507,7 +1743,9 @@ mod tests {
         }
         check!(WaitingReason, {"wake_at":"2026-09-23T12:00:00Z","reasons":["provider rate limit"]});
         check!(ImageRef, {"name":"base","tag":"dev"});
-        check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s","requirements":{"memory_mib":768,"gpu":"none"}});
+        check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s","requirements":{"memory_mib":768,"gpu":"none"},"allow_gpu_request":false});
+        check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s","requirements":{"memory_mib":768,"gpu":"none"},"allow_gpu_request":false});
+        check!(Agent, {"id":"a","name":"worker","description":"coding agent","image":{"name":"base","tag":"dev"},"provider":"openai","model":"gpt","effort":"high","system_prompt":null,"created_at":"2026-09-23T12:00:00Z","main_session_id":"s","requirements":{"memory_mib":768,"gpu":"shared"},"allow_gpu_request":true,"gpu_request":{"reason":"render test","requested_at":"2026-10-29T12:00:00Z","session_id":"s"}});
         check!(Session, {"id":"s","agent_id":"a","kind":"named","state":"sleeping","log_id":{"kind":"session","id":"s"},"head_sequence":2,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":{"wake_at":null,"reasons":["timer"]},"main":false});
         check!(Session, {"id":"archived","agent_id":"a","kind":"named","state":"completed","log_id":{"kind":"session","id":"archived"},"head_sequence":7,"created_at":"2026-09-23T12:00:00Z","computer_deleted":false,"waiting":null,"main":false,"provider":"fake","model":"scripted","effort":"medium","next_session":"successor"});
         check!(Turn, {"id":"t","session_id":"s","status":"running","started_at":"2026-09-23T12:00:00Z","finished_at":null});

@@ -187,6 +187,8 @@ swarmy_cli_package() {
 
 swarmy_core_binary() { printf 'swarmy-core\n'; }
 swarmy_core_package() { printf 'swarmy-core-bin\n'; }
+swarmy_provisioner_binary() { printf 'swarmy-provisioner\n'; }
+swarmy_provisioner_package() { printf 'swarmy-provisioner\n'; }
 
 # Every systemd unit provisioning installs: unit, core role, owning modes, and
 # kind (backing service, node agent, or node service). Units that run
@@ -209,6 +211,7 @@ swarmy_unit_table() {
     for service in "${services[@]}"; do
         printf 'swarmy-%s.service:%s:stack:service\n' "$service" "$service"
     done
+    printf '%s\n' 'swarmy-provisioner.service::stack:provisioner'
 }
 
 # One list of the systemd units provisioning installs, in table order.
@@ -220,6 +223,7 @@ swarmy_unit_names() {
 swarmy_binary_names() {
     swarmy_cli_binary
     swarmy_core_binary
+    swarmy_provisioner_binary
 }
 
 # These service binaries were replaced by `swarmy-core <role>`.
@@ -249,6 +253,10 @@ swarmy_service_units() {
 # (empty when the service is unknown, so callers fail loudly).
 swarmy_service_unit() {
     swarmy_unit_table | awk -F: -v unit="swarmy-${1-}.service" '$1 == unit { print $1 }'
+}
+
+swarmy_provisioner_unit() {
+    swarmy_unit_table | awk -F: '$4 == "provisioner" { print $1 }'
 }
 
 # The node agent unit.
@@ -422,6 +430,34 @@ WantedBy=multi-user.target
 UNIT
 }
 
+render_provisioner_unit() {
+    : "${unit_repo:?unit inputs not set}"
+    local stack_unit
+    stack_unit=$(swarmy_mode_backing_unit stack) || return 1
+    cat <<UNIT
+[Unit]
+Description=Swarmy provisioner (elastic machine groups)
+Requires=$stack_unit
+After=network-online.target $stack_unit
+
+[Service]
+Type=exec
+User=$unit_user
+WorkingDirectory=$unit_repo
+EnvironmentFile=/etc/swarmy/node.env
+Environment=HOME=$unit_home
+Environment=TOKIO_WORKER_THREADS=2
+ExecStart=/usr/local/bin/$(swarmy_provisioner_binary)
+Restart=always
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=900
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
 render_unit() {
     local unit=${1-} kind
     kind=$(swarmy_unit_table | awk -F: -v unit="$unit" '$1 == unit { print $4 }')
@@ -431,6 +467,7 @@ render_unit() {
             else render_tunnel_unit; fi ;;
         agent) render_node_unit ;;
         service) render_service_unit "$unit" ;;
+        provisioner) render_provisioner_unit ;;
         *) echo "no renderer for unit $unit" >&2; return 1 ;;
     esac
 }
@@ -471,6 +508,7 @@ swarmy_mode_binaries() {
         swarmy_cli_binary
     fi
     swarmy_core_binary
+    if [[ $mode == stack ]]; then swarmy_provisioner_binary; fi
 }
 
 # Cargo build arguments for the core binary (the CLI builds separately).
@@ -490,6 +528,7 @@ swarmy_mode_build_args() {
         return 1
     }
     printf -- '-p\n%s\n' "$(swarmy_core_package)"
+    if [[ $mode == stack ]]; then printf -- '-p\n%s\n' "$(swarmy_provisioner_package)"; fi
 }
 
 # Read a list function into an array, failing loudly when the producer
@@ -697,4 +736,41 @@ SWARMY_GC_GRACE_SECONDS=1800
 SWARMY_GC_INTERVAL_SECONDS=600
 LD_LIBRARY_PATH=$(dirname "$repo_dir")/.local/lib
 ENV
+}
+
+# NVIDIA's PCI vendor id is 0x10de; display controllers have class 0x03xxxx.
+nvidia_card_present() {
+    local device
+    for device in "${SWARMY_PCI_DEVICES_DIR:-/sys/bus/pci/devices}"/*; do
+        [[ -r $device/vendor && -r $device/class ]] || continue
+        if [[ $(<"$device/vendor") == 0x10de && $(<"$device/class") == 0x03* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+# The full driver package includes the X.Org driver and GLX libraries.
+nvidia_driver_package() { printf 'nvidia-driver-570-server\n'; }
+# swarmyd's default JSON CDI spec path.
+nvidia_cdi_spec() { printf '/etc/cdi/nvidia.json\n'; }
+# Regenerate on every run because driver upgrades rename libraries.
+provision_nvidia() {
+    if ! command -v nvidia-smi >/dev/null; then
+        sudo -E apt-get install -y "$(nvidia_driver_package)"
+        if ! sudo modprobe nvidia || ! nvidia-smi >/dev/null; then
+            echo 'The NVIDIA driver is installed but not loaded; reboot the machine and rerun provisioning.' >&2
+            return 1
+        fi
+    fi
+    if ! command -v nvidia-ctk >/dev/null; then
+        local keyring=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --batch --yes --dearmor -o "$keyring"
+        curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+            | sed "s#deb https://#deb [signed-by=$keyring] https://#g" \
+            | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
+        sudo apt-get update
+        sudo -E apt-get install -y nvidia-container-toolkit
+    fi
+    sudo install -d -m 0755 "$(dirname "$(nvidia_cdi_spec)")"
+    sudo nvidia-ctk cdi generate --output="$(nvidia_cdi_spec)" --format=json
 }

@@ -70,6 +70,11 @@ ulid_id!(
     ManifestId
 );
 
+ulid_id!(
+    /// Identifies one elastic machine created for a machine group.
+    MachineId
+);
+
 /// A human-readable version of a named base image.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

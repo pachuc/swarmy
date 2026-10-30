@@ -17,15 +17,38 @@ pub enum CloudProvider {
     HetznerCloud,
     HetznerS3,
     Aws,
+    Scaleway,
 }
 impl CloudProvider {
-    pub const ALL: [Self; 3] = [Self::HetznerCloud, Self::HetznerS3, Self::Aws];
+    pub const ALL: [Self; 4] = [
+        Self::HetznerCloud,
+        Self::HetznerS3,
+        Self::Aws,
+        Self::Scaleway,
+    ];
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::HetznerCloud => "hetzner-cloud",
             Self::HetznerS3 => "hetzner-s3",
             Self::Aws => "aws",
+            Self::Scaleway => "scaleway",
+        }
+    }
+    /// `OpenTofu` environment names in secret field order, followed by the optional field.
+    #[must_use]
+    pub const fn env_names(self) -> (&'static [&'static str], Option<&'static str>) {
+        match self {
+            Self::HetznerCloud => (&["HCLOUD_TOKEN"], None),
+            Self::HetznerS3 => (&["MINIO_USER", "MINIO_PASSWORD"], None),
+            Self::Aws => (
+                &["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+                Some("AWS_REGION"),
+            ),
+            Self::Scaleway => (
+                &["SCW_ACCESS_KEY", "SCW_SECRET_KEY", "SCW_DEFAULT_PROJECT_ID"],
+                None,
+            ),
         }
     }
     /// Secret fields read from stdin, in order.
@@ -35,6 +58,7 @@ impl CloudProvider {
             Self::HetznerCloud => &["token"],
             Self::HetznerS3 => &["access_key", "secret_key"],
             Self::Aws => &["access_key_id", "secret_access_key"],
+            Self::Scaleway => &["access_key", "secret_key", "project_id"],
         }
     }
     /// The optional non-secret field.
@@ -58,6 +82,7 @@ impl FromStr for CloudProvider {
             "hetzner-cloud" => Ok(Self::HetznerCloud),
             "hetzner-s3" => Ok(Self::HetznerS3),
             "aws" => Ok(Self::Aws),
+            "scaleway" => Ok(Self::Scaleway),
             _ => Err(Error::UnknownCloudProvider(s.into())),
         }
     }
@@ -81,6 +106,22 @@ pub struct Aws {
     pub secret_access_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scaleway {
+    pub access_key: String,
+    pub secret_key: String,
+    pub project_id: String,
+}
+impl fmt::Debug for Scaleway {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Scaleway")
+            .field("access_key", &"..redacted..")
+            .field("secret_key", &"..redacted..")
+            .field("project_id", &"..redacted..")
+            .finish()
+    }
 }
 impl fmt::Debug for HetznerCloud {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -112,6 +153,7 @@ pub enum CloudCredential {
     HetznerCloud(HetznerCloud),
     HetznerS3(HetznerS3),
     Aws(Aws),
+    Scaleway(Scaleway),
 }
 impl CloudCredential {
     /// Build and validate, consuming secret values in provider field order.
@@ -150,9 +192,39 @@ impl CloudCredential {
                 secret_access_key: secrets.next().expect("count checked"),
                 region: option,
             }),
+            CloudProvider::Scaleway => Self::Scaleway(Scaleway {
+                access_key: secrets.next().expect("count checked"),
+                secret_key: secrets.next().expect("count checked"),
+                project_id: secrets.next().expect("count checked"),
+            }),
         };
         credential.validate()?;
         Ok(credential)
+    }
+    /// Build from environment lookups using the same validation as `new`.
+    /// # Errors
+    /// Reports the first missing variable by name, never its value.
+    pub fn from_env(
+        provider: CloudProvider,
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, Error> {
+        let (names, option_name) = provider.env_names();
+        let secrets = names
+            .iter()
+            .map(|name| {
+                lookup(name)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        Error::CloudCredential(format!(
+                            "{provider} needs {name} in the environment"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let option = option_name
+            .and_then(lookup)
+            .filter(|value| !value.is_empty());
+        Self::new(provider, secrets, option)
     }
     #[must_use]
     pub const fn provider(&self) -> CloudProvider {
@@ -160,6 +232,7 @@ impl CloudCredential {
             Self::HetznerCloud(_) => CloudProvider::HetznerCloud,
             Self::HetznerS3(_) => CloudProvider::HetznerS3,
             Self::Aws(_) => CloudProvider::Aws,
+            Self::Scaleway(_) => CloudProvider::Scaleway,
         }
     }
     #[must_use]
@@ -174,25 +247,24 @@ impl CloudCredential {
     }
     #[must_use]
     pub fn env(&self) -> ProviderEnv {
-        ProviderEnv {
-            vars: match self {
-                Self::HetznerCloud(c) => vec![("HCLOUD_TOKEN", c.token.clone())],
-                Self::HetznerS3(c) => vec![
-                    ("MINIO_USER", c.access_key.clone()),
-                    ("MINIO_PASSWORD", c.secret_key.clone()),
-                ],
-                Self::Aws(c) => {
-                    let mut v = vec![
-                        ("AWS_ACCESS_KEY_ID", c.access_key_id.clone()),
-                        ("AWS_SECRET_ACCESS_KEY", c.secret_access_key.clone()),
-                    ];
-                    if let Some(r) = &c.region {
-                        v.push(("AWS_REGION", r.clone()));
-                    }
-                    v
-                }
-            },
+        let values: Vec<String> = match self {
+            Self::HetznerCloud(c) => vec![c.token.clone()],
+            Self::HetznerS3(c) => vec![c.access_key.clone(), c.secret_key.clone()],
+            Self::Aws(c) => vec![c.access_key_id.clone(), c.secret_access_key.clone()],
+            Self::Scaleway(c) => vec![
+                c.access_key.clone(),
+                c.secret_key.clone(),
+                c.project_id.clone(),
+            ],
+        };
+        let (names, optional) = self.provider().env_names();
+        let mut vars: Vec<_> = names.iter().copied().zip(values).collect();
+        if let (Some(name), Self::Aws(c)) = (optional, self)
+            && let Some(value) = &c.region
+        {
+            vars.push((name, value.clone()));
         }
+        ProviderEnv { vars }
     }
     fn validate(&self) -> Result<(), Error> {
         let check = |provider: CloudProvider, field: &str, value: &str| -> Result<(), Error> {
@@ -211,6 +283,22 @@ impl CloudCredential {
             Self::HetznerS3(c) => {
                 check(self.provider(), "access_key", &c.access_key)?;
                 check(self.provider(), "secret_key", &c.secret_key)?;
+            }
+            Self::Scaleway(c) => {
+                check(self.provider(), "access_key", &c.access_key)?;
+                check(self.provider(), "secret_key", &c.secret_key)?;
+                check(self.provider(), "project_id", &c.project_id)?;
+                if c.project_id.len() != 36
+                    || !c.project_id.bytes().enumerate().all(|(i, b)| {
+                        if [8, 13, 18, 23].contains(&i) {
+                            b == b'-'
+                        } else {
+                            b.is_ascii_hexdigit()
+                        }
+                    })
+                {
+                    return Err(Error::CloudCredential("scaleway project_id must be a UUID like 11111111-2222-3333-4444-555555555555".into()));
+                }
             }
             Self::Aws(c) => {
                 check(self.provider(), "access_key_id", &c.access_key_id)?;
@@ -265,6 +353,8 @@ pub struct CloudCredentials {
     hetzner_s3: Option<HetznerS3>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     aws: Option<Aws>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scaleway: Option<Scaleway>,
 }
 impl CloudCredentials {
     #[must_use]
@@ -328,6 +418,7 @@ impl CloudCredentials {
                 .map(CloudCredential::HetznerCloud),
             CloudProvider::HetznerS3 => self.hetzner_s3.clone().map(CloudCredential::HetznerS3),
             CloudProvider::Aws => self.aws.clone().map(CloudCredential::Aws),
+            CloudProvider::Scaleway => self.scaleway.clone().map(CloudCredential::Scaleway),
         }
     }
     pub fn set(&mut self, credential: CloudCredential) {
@@ -335,6 +426,7 @@ impl CloudCredentials {
             CloudCredential::HetznerCloud(c) => self.hetzner_cloud = Some(c),
             CloudCredential::HetznerS3(c) => self.hetzner_s3 = Some(c),
             CloudCredential::Aws(c) => self.aws = Some(c),
+            CloudCredential::Scaleway(c) => self.scaleway = Some(c),
         }
     }
     /// Returns whether an entry was removed.
@@ -343,6 +435,7 @@ impl CloudCredentials {
             CloudProvider::HetznerCloud => self.hetzner_cloud.take().is_some(),
             CloudProvider::HetznerS3 => self.hetzner_s3.take().is_some(),
             CloudProvider::Aws => self.aws.take().is_some(),
+            CloudProvider::Scaleway => self.scaleway.take().is_some(),
         }
     }
     /// # Errors
@@ -369,6 +462,9 @@ mod tests {
     const S3_SECRET: &str = "s3-secret-9e4a";
     const AWS_ACCESS: &str = "aws-akid-3b8f";
     const AWS_SECRET: &str = "aws-secret-6d2e";
+    const SCW_ACCESS: &str = "SCWEXAMPLEACCESS0001";
+    const SCW_SECRET: &str = "scw-secret-4f1a";
+    const SCW_PROJECT: &str = "11111111-2222-3333-4444-555555555555";
     fn entry(p: CloudProvider, secrets: &[&str], option: Option<&str>) -> CloudCredential {
         CloudCredential::new(
             p,
@@ -376,6 +472,41 @@ mod tests {
             option.map(str::to_owned),
         )
         .unwrap()
+    }
+    #[test]
+    fn environment_credential_round_trip() {
+        for (provider, values) in [
+            (CloudProvider::HetznerCloud, vec![("HCLOUD_TOKEN", TOKEN)]),
+            (
+                CloudProvider::Aws,
+                vec![
+                    ("AWS_ACCESS_KEY_ID", AWS_ACCESS),
+                    ("AWS_SECRET_ACCESS_KEY", AWS_SECRET),
+                ],
+            ),
+            (
+                CloudProvider::Aws,
+                vec![
+                    ("AWS_ACCESS_KEY_ID", AWS_ACCESS),
+                    ("AWS_SECRET_ACCESS_KEY", AWS_SECRET),
+                    ("AWS_REGION", "eu-central-1"),
+                ],
+            ),
+        ] {
+            let credential = CloudCredential::from_env(provider, |name| {
+                values
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).into())
+            })
+            .unwrap();
+            assert_eq!(credential.env().iter().collect::<Vec<_>>(), values);
+        }
+        let error = CloudCredential::from_env(CloudProvider::HetznerCloud, |_| None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("HCLOUD_TOKEN"));
+        assert!(!error.contains(TOKEN));
     }
     #[test]
     fn round_trip_and_modes() {
@@ -392,6 +523,11 @@ mod tests {
             CloudProvider::Aws,
             &[AWS_ACCESS, AWS_SECRET],
             Some("eu-central-1"),
+        ));
+        store.set(entry(
+            CloudProvider::Scaleway,
+            &[SCW_ACCESS, SCW_SECRET, SCW_PROJECT],
+            None,
         ));
         store.save(&path).unwrap();
         assert_eq!(CloudCredentials::load(&path).unwrap(), store);
@@ -463,9 +599,14 @@ mod tests {
         }
     }
     #[test]
-    fn validation_and_mapping() {
+    fn mapping_and_redaction() {
         let hc = entry(CloudProvider::HetznerCloud, &[TOKEN], None);
         let s3 = entry(CloudProvider::HetznerS3, &[S3_ACCESS, S3_SECRET], None);
+        let scw = entry(
+            CloudProvider::Scaleway,
+            &[SCW_ACCESS, SCW_SECRET, SCW_PROJECT],
+            None,
+        );
         let aws = entry(
             CloudProvider::Aws,
             &[AWS_ACCESS, AWS_SECRET],
@@ -486,6 +627,88 @@ mod tests {
                 ("AWS_SECRET_ACCESS_KEY", AWS_SECRET),
                 ("AWS_REGION", "eu-central-1")
             ]
+        );
+        assert_eq!(
+            scw.env().iter().collect::<Vec<_>>(),
+            vec![
+                ("SCW_ACCESS_KEY", SCW_ACCESS),
+                ("SCW_SECRET_KEY", SCW_SECRET),
+                ("SCW_DEFAULT_PROJECT_ID", SCW_PROJECT)
+            ]
+        );
+        assert_eq!(scw.set_fields(), ["access_key", "secret_key", "project_id"]);
+        let aws_without_region = entry(CloudProvider::Aws, &[AWS_ACCESS, AWS_SECRET], None);
+        assert_eq!(
+            aws_without_region.env().iter().collect::<Vec<_>>(),
+            vec![
+                ("AWS_ACCESS_KEY_ID", AWS_ACCESS),
+                ("AWS_SECRET_ACCESS_KEY", AWS_SECRET)
+            ]
+        );
+        assert_eq!(hc.set_fields(), ["token"]);
+        assert_eq!(s3.set_fields(), ["access_key", "secret_key"]);
+        assert_eq!(
+            aws.set_fields(),
+            ["access_key_id", "secret_access_key", "region"]
+        );
+        assert_eq!(
+            aws_without_region.set_fields(),
+            ["access_key_id", "secret_access_key"]
+        );
+        for env in [&hc.env(), &s3.env(), &aws.env(), &scw.env()] {
+            let debug = format!("{env:?}");
+            for secret in [
+                TOKEN,
+                S3_ACCESS,
+                S3_SECRET,
+                AWS_ACCESS,
+                AWS_SECRET,
+                SCW_ACCESS,
+                SCW_SECRET,
+                SCW_PROJECT,
+            ] {
+                assert!(!debug.contains(secret));
+            }
+        }
+        assert!(format!("{aws:?}").contains("eu-central-1"));
+        for c in [hc, s3, aws, scw] {
+            let debug = format!("{c:?}");
+            for secret in [
+                TOKEN,
+                S3_ACCESS,
+                S3_SECRET,
+                AWS_ACCESS,
+                AWS_SECRET,
+                SCW_ACCESS,
+                SCW_SECRET,
+                SCW_PROJECT,
+            ] {
+                assert!(!debug.contains(secret));
+            }
+            assert!(debug.contains("..redacted.."));
+        }
+    }
+    #[test]
+    fn credential_validation() {
+        assert_eq!(
+            CloudCredential::new(
+                CloudProvider::Scaleway,
+                vec![SCW_ACCESS.into(), SCW_SECRET.into(), "not-a-uuid".into()],
+                None
+            )
+            .unwrap_err()
+            .to_string(),
+            "cloud credentials: scaleway project_id must be a UUID like 11111111-2222-3333-4444-555555555555"
+        );
+        assert_eq!(
+            CloudCredential::new(
+                CloudProvider::Scaleway,
+                vec![SCW_ACCESS.into(), SCW_SECRET.into()],
+                None
+            )
+            .unwrap_err()
+            .to_string(),
+            "cloud credentials: scaleway expected 3 secret fields, got 2"
         );
         for (p, secret, field) in [
             (CloudProvider::HetznerCloud, "", "token"),
@@ -527,38 +750,6 @@ mod tests {
                 .to_string(),
             "cloud credentials: hetzner-s3 expected 2 secret fields, got 1"
         );
-        let aws_without_region = entry(CloudProvider::Aws, &[AWS_ACCESS, AWS_SECRET], None);
-        assert_eq!(
-            aws_without_region.env().iter().collect::<Vec<_>>(),
-            vec![
-                ("AWS_ACCESS_KEY_ID", AWS_ACCESS),
-                ("AWS_SECRET_ACCESS_KEY", AWS_SECRET)
-            ]
-        );
-        assert_eq!(hc.set_fields(), ["token"]);
-        assert_eq!(s3.set_fields(), ["access_key", "secret_key"]);
-        assert_eq!(
-            aws.set_fields(),
-            ["access_key_id", "secret_access_key", "region"]
-        );
-        assert_eq!(
-            aws_without_region.set_fields(),
-            ["access_key_id", "secret_access_key"]
-        );
-        for env in [&hc.env(), &s3.env(), &aws.env()] {
-            let debug = format!("{env:?}");
-            for secret in [TOKEN, S3_ACCESS, S3_SECRET, AWS_ACCESS, AWS_SECRET] {
-                assert!(!debug.contains(secret));
-            }
-        }
-        assert!(format!("{aws:?}").contains("eu-central-1"));
-        for c in [hc, s3, aws] {
-            let debug = format!("{c:?}");
-            for secret in [TOKEN, S3_ACCESS, S3_SECRET, AWS_ACCESS, AWS_SECRET] {
-                assert!(!debug.contains(secret));
-            }
-            assert!(debug.contains("..redacted.."));
-        }
     }
     #[test]
     fn names_replace_and_remove() {
@@ -576,7 +767,7 @@ mod tests {
                 .parse::<CloudProvider>()
                 .unwrap_err()
                 .to_string(),
-            "unknown cloud provider \"digitalocean\"; expected one of hetzner-cloud, hetzner-s3, aws"
+            "unknown cloud provider \"digitalocean\"; expected one of hetzner-cloud, hetzner-s3, aws, scaleway"
         );
         store.set(entry(CloudProvider::HetznerCloud, &[TOKEN], None));
         store.set(entry(

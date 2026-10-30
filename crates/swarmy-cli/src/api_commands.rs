@@ -44,10 +44,11 @@ pub(crate) async fn agent_command(command: agent_command::Command, json: bool) -
                 || inference.route.is_some()
                 || inference.memory.is_some()
                 || inference.gpu.is_some()
+                || inference.allow_gpu_request.is_some()
                 || github_token.is_some()
                 || *clear_github_token,
             "agent set requires --system-prompt, --system-prompt-file, --provider, --model, --effort, \
-                  --route, --memory, --gpu, --github-token, or --clear-github-token"
+                  --route, --memory, --gpu, --allow-gpu-request, --github-token, or --clear-github-token"
         );
     }
     let (client, endpoint) = crate::target::connect().await?;
@@ -165,9 +166,26 @@ impl UsageRow<'_> {
     }
 }
 
-fn print_usage(response: &swarmy_api_types::UsageResponse, json: bool) -> Result<()> {
+#[derive(serde::Serialize)]
+struct CostReport<'a> {
+    #[serde(flatten)]
+    usage: &'a swarmy_api_types::UsageResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    machines: Option<&'a swarmy_api_types::MachineList>,
+}
+fn print_usage(
+    response: &swarmy_api_types::UsageResponse,
+    machines: Option<&swarmy_api_types::MachineList>,
+    json: bool,
+) -> Result<()> {
     if json {
-        println!("{}", serde_json::to_string(response)?);
+        println!(
+            "{}",
+            serde_json::to_string(&CostReport {
+                usage: response,
+                machines
+            })?
+        );
         return Ok(());
     }
     for group in &response.groups {
@@ -205,6 +223,9 @@ fn print_usage(response: &swarmy_api_types::UsageResponse, json: bool) -> Result
         }
         .render()
     );
+    if let Some(section) = machines.and_then(crate::machines::render_cost_section) {
+        println!("\n{section}");
+    }
     Ok(())
 }
 
@@ -225,7 +246,18 @@ async fn cost(client: &Client, endpoint: &str, args: cost_command::Args, json: b
         ),
     )
     .await?;
-    print_usage(&response, json)
+    let machines = if key.is_none() {
+        Some(
+            request(
+                endpoint,
+                client.machines(true, Some((&since.to_string(), &until.to_string()))),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    print_usage(&response, machines.as_ref(), json)
 }
 
 async fn close_session(
@@ -490,7 +522,7 @@ async fn show_session(client: &Client, endpoint: &str, session_id: Ulid, json: b
             && let Some(wait) = &record.waiting
         {
             println!(
-                "WaitingForInference until {}: {}",
+                "Waiting until {}: {}",
                 wait.wake_at.as_deref().unwrap_or("-"),
                 wait.reasons.join("; ")
             );
@@ -512,9 +544,23 @@ async fn show_session(client: &Client, endpoint: &str, session_id: Ulid, json: b
     Ok(())
 }
 
+fn gpu_request_text(request: Option<&swarmy_api_types::GpuRequestView>) -> String {
+    request.map_or_else(
+        || "-".into(),
+        |r| {
+            format!(
+                "{} (session {} at {})",
+                r.reason,
+                r.session_id.as_deref().unwrap_or("-"),
+                r.requested_at
+            )
+        },
+    )
+}
+
 fn settings_text(agent: &swarmy_api_types::Agent) -> String {
     format!(
-        "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nroute={}\nsandbox_memory_mib={}\nsandbox_gpu={}",
+        "\nprovider={}\nsystem_prompt={}\nmodel={}\nreasoning_effort={}\nroute={}\nsandbox_memory_mib={}\nsandbox_gpu={}\nallow_gpu_request={}\ngpu_request={}",
         agent.provider.as_deref().unwrap_or("(stack default)"),
         agent.system_prompt.as_deref().unwrap_or("(stack default)"),
         agent.model.as_deref().unwrap_or("(stack default)"),
@@ -522,6 +568,8 @@ fn settings_text(agent: &swarmy_api_types::Agent) -> String {
         agent.route.as_deref().unwrap_or("(stack default)"),
         agent.requirements.memory_mib,
         agent.requirements.gpu.as_str(),
+        agent.allow_gpu_request,
+        gpu_request_text(agent.gpu_request.as_ref()),
     )
 }
 struct AgentFlags {
@@ -532,6 +580,8 @@ struct AgentFlags {
     system_prompt: Option<String>,
     memory_mib: Option<u64>,
     gpu: Option<swarmy_api_types::GpuMode>,
+    allow_gpu_request: Option<bool>,
+    gpu_reason: Option<String>,
     resets: Vec<swarmy_api_types::AgentReset>,
 }
 fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<AgentFlags> {
@@ -573,6 +623,8 @@ fn inference(args: agent_command::InferenceArgs, update: bool) -> Result<AgentFl
         system_prompt,
         memory_mib: args.memory,
         gpu,
+        allow_gpu_request: args.allow_gpu_request,
+        gpu_reason: args.gpu_reason,
         resets,
     })
 }
@@ -692,7 +744,7 @@ async fn update_agent(
         .context("agent update timed out")?
         .map_err(|error| match &error {
             swarmy_client::Error::Api { body, .. } if body.code == "agent_computer_placed" => {
-                anyhow::anyhow!("the agent's computer is placed; retry after it is released")
+                anyhow::anyhow!("the memory requirement can only change after the agent's computer is released; a GPU change restarts it instead")
             }
             _ => swarmy_client::api_client::api_error(error, endpoint).into(),
         })
@@ -753,6 +805,8 @@ async fn agent_create(
             route: flags.route,
             memory_mib: flags.memory_mib,
             gpu: flags.gpu,
+            allow_gpu_request: flags.allow_gpu_request,
+            gpu_reason: flags.gpu_reason,
             github_token: token,
         }),
     )
@@ -821,6 +875,8 @@ async fn agent(
                     route: flags.route,
                     memory_mib: flags.memory_mib,
                     gpu: flags.gpu,
+                    allow_gpu_request: flags.allow_gpu_request,
+                    gpu_reason: flags.gpu_reason,
                     resets: flags.resets,
                     github_token,
                     clear_github_token,
@@ -1070,6 +1126,51 @@ pub(crate) fn auth_display(summary: &swarmy_api_types::Credential, json: bool, e
         );
     }
 }
+async fn set_machine_credential(
+    client: &Client,
+    endpoint: &str,
+    args: &auth_command::Set,
+    machine: swarmy_config::cloud::CloudProvider,
+    json: bool,
+) -> Result<()> {
+    let (names, _) = machine.env_names();
+    let instruction = format!(
+        "{machine} is a machine provider for elastic groups: export {} and run swarmy auth set {machine} --from-env",
+        names.join(", ")
+    );
+    ensure!(
+        args.source.from_env
+            && args.source.api_key.is_none()
+            && args.source.file.is_none()
+            && args.extra.is_empty()
+            && args.label.is_none()
+            && args.limit.is_none()
+            && args.window.is_none(),
+        "{instruction}"
+    );
+    let credential =
+        swarmy_config::cloud::CloudCredential::from_env(machine, |name| std::env::var(name).ok())?;
+    let extra = credential
+        .env()
+        .iter()
+        .map(|(name, value)| (name.into(), value.into()))
+        .collect();
+    request(
+        endpoint,
+        client.set_credential(&swarmy_api_types::CreateCredential {
+            idempotency_key: Ulid::generate().to_string(),
+            provider: machine.name().into(),
+            kind: swarmy_api_types::CredentialKind::MachineProvider,
+            label: "default".into(),
+            secret: String::new(),
+            extra,
+        }),
+    )
+    .await?;
+    auth_report("saved", machine.name(), json);
+    Ok(())
+}
+
 pub(crate) async fn auth_set(
     client: &Client,
     endpoint: &str,
@@ -1088,6 +1189,9 @@ pub(crate) async fn auth_set(
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
         "invalid provider id"
     );
+    if let Ok(machine) = provider.parse::<swarmy_config::cloud::CloudProvider>() {
+        return set_machine_credential(client, endpoint, &args, machine, json).await;
+    }
     validate_auth_set_sources(&args)?;
     let has_source = auth_set_has_source(&args);
     let has_quota = args.limit.is_some() || args.window.is_some();
@@ -1220,7 +1324,7 @@ pub(crate) async fn quota(
             );
         } else {
             println!("{}", quota_line(view));
-            print_usage(&response, false)?;
+            print_usage(&response, None, false)?;
         }
         return Ok(());
     }
@@ -1300,4 +1404,72 @@ pub(crate) async fn routes(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod machine_cost_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    #[test]
+    fn cost_report_json_keeps_usage_fields_at_top_level() {
+        let usage = swarmy_api_types::UsageResponse {
+            by: "agent".into(),
+            key: None,
+            group: "day".into(),
+            from: "from".into(),
+            to: "to".into(),
+            groups: vec![],
+            total: swarmy_api_types::UsageTotalsView {
+                input_tokens: 0,
+                cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+                total_tokens: 0,
+                cost_micros: 0,
+                cost_dollars: "0.0000".into(),
+                completions: 0,
+            },
+        };
+        let machines = swarmy_api_types::MachineList {
+            as_of: "now".into(),
+            from: None,
+            to: None,
+            machines: vec![],
+            totals: vec![],
+        };
+        let value = serde_json::to_value(CostReport {
+            usage: &usage,
+            machines: Some(&machines),
+        })
+        .unwrap();
+        assert_eq!(value["total"]["cost_dollars"], "0.0000");
+        assert!(value.get("machines").is_some());
+        let value = serde_json::to_value(CostReport {
+            usage: &usage,
+            machines: None,
+        })
+        .unwrap();
+        assert!(value.get("machines").is_none());
+    }
+}
+
+#[cfg(test)]
+mod gpu_request_text_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::gpu_request_text;
+    use swarmy_api_types::GpuRequestView;
+
+    #[test]
+    fn displays_operator_and_tool_reasons() {
+        assert_eq!(gpu_request_text(None), "-");
+        let mut request = GpuRequestView {
+            reason: "r".into(),
+            requested_at: "t".into(),
+            session_id: None,
+        };
+        assert_eq!(gpu_request_text(Some(&request)), "r (session - at t)");
+        request.session_id = Some("s".into());
+        assert_eq!(gpu_request_text(Some(&request)), "r (session s at t)");
+    }
 }

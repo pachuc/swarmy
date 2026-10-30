@@ -3,8 +3,8 @@
 use foundationdb::tuple::Subspace;
 use jiff::Timestamp;
 use swarmy_core::{
-    AgentId, CredentialScope, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, RequestId,
-    SessionId, TimerId, VolumeId,
+    AgentId, CredentialScope, ImageTag, LeaseOwnerId, MachineId, ManifestId, MessageId, NodeId,
+    RequestId, SessionId, TimerId, VolumeId,
 };
 
 use crate::keys::Keys;
@@ -42,6 +42,7 @@ fn family_key_layout_matches_checked_in_hex() {
     let sessionid = SessionId::from_ulid(u128::from_be_bytes([34; 16]).into());
     let nodeid = NodeId::from_ulid(u128::from_be_bytes([51; 16]).into());
     let volumeid = VolumeId::from_ulid(u128::from_be_bytes([68; 16]).into());
+    let machineid = MachineId::from_ulid(u128::from_be_bytes([187; 16]).into());
     let manifestid = ManifestId::from_ulid(u128::from_be_bytes([85; 16]).into());
     let leaseownerid = LeaseOwnerId::from_ulid(u128::from_be_bytes([102; 16]).into());
     let timerid = TimerId::from_ulid(u128::from_be_bytes([119; 16]).into());
@@ -75,6 +76,8 @@ fn family_key_layout_matches_checked_in_hex() {
             "credential_entry_lease",
             keys.credential_entry_lease(CredentialScope::Cluster, "provider", "label"),
         ),
+        ("elastic_creations", keys.elastic_creations()),
+        ("elastic_group", keys.elastic_group("value")),
         (
             "entry_quota_config",
             keys.entry_quota_config("provider", "label"),
@@ -113,11 +116,26 @@ fn family_key_layout_matches_checked_in_hex() {
         ("inference_request", keys.inference_request(requestid)),
         ("inference_retry", keys.inference_retry(requestid)),
         ("inference_result", keys.inference_result(requestid)),
-        ("inference_wait", keys.inference_wait(sessionid)),
-        ("inference_wait_due", keys.inference_wait_due(at, sessionid)),
         ("inflight", keys.inflight(requestid)),
         ("lease", keys.lease(sessionid)),
         ("lease_by_expiry", keys.lease_by_expiry(at, sessionid)),
+        ("machine", keys.machine(machineid)),
+        (
+            "machine_assignment",
+            keys.machine_assignment(machineid, agentid, at),
+        ),
+        (
+            "machine_assignment_by_agent",
+            keys.machine_assignment_by_agent(agentid, machineid, at),
+        ),
+        (
+            "machine_assignment_open",
+            keys.machine_assignment_open(machineid, agentid),
+        ),
+        (
+            "machine_by_group",
+            keys.machine_by_group("g", "n", machineid),
+        ),
         ("manifest", keys.manifest(manifestid)),
         ("manifest_parent", keys.manifest_parent(manifestid)),
         (
@@ -136,6 +154,9 @@ fn family_key_layout_matches_checked_in_hex() {
         ("placement_count", keys.placement_count(nodeid)),
         ("placement_epoch", keys.placement_epoch(agentid)),
         ("placement_hosting", keys.placement_hosting(agentid)),
+        ("placement_next_reason", keys.placement_next_reason(agentid)),
+        ("provisioner_lease", keys.provisioner_lease()),
+        ("provisioner_sequence", keys.provisioner_sequence()),
         ("request_turn", keys.request_turn(requestid)),
         ("route", keys.route("value")),
         ("runnable", keys.runnable(2, 7, at, sessionid)),
@@ -156,6 +177,8 @@ fn family_key_layout_matches_checked_in_hex() {
         ("queued_counter", keys.queued_counter(sessionid)),
         ("queued_replay", keys.queued_replay("value")),
         ("session_tools", keys.session_tools(sessionid, requestid)),
+        ("session_wait", keys.session_wait(sessionid)),
+        ("session_wait_due", keys.session_wait_due(at, sessionid)),
         ("snapshot", keys.snapshot(sessionid, 5)),
         ("timer", keys.timer(agentid, timerid)),
         ("timer_active", keys.timer_active(agentid, timerid)),

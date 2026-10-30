@@ -276,6 +276,13 @@ it, so `--until month` ends with last month. Without a key the series is
 the fleet total, the same for every `by`. Rollups are stored key first,
 so one key's series reads only that key's hours.
 
+Without a key filter, `swarmy cost` adds a machines section listing each
+elastic machine's cost for the same window, with a total per currency. Window
+cost counts billing units that started in the window, so adjacent windows add
+up to the total. The section appears only when a machine cost money in that
+window. `--json` adds a `machines` field alongside the usage fields, and
+`GET /v1/machines` serves the same machine data.
+
 ```sh
 # What did the coder agent cost each week this quarter?
 swarmy cost --agent coder --group week --since 3months

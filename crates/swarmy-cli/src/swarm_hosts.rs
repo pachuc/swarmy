@@ -1,12 +1,12 @@
 //! CLI presentation for swarms on hosts.
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde_json::json;
 use std::path::PathBuf;
 use swarmy_cloud::provision::groups::{self, MachineGroups};
 use swarmy_cloud::provision::{self, UpRequest};
 use swarmy_config::cloud::{CloudCredentials, CloudProvider};
 use swarmy_config::swarm::{
-    GroupSpec, HostSpec, Lifecycle, Module, Placement, Registry, SwarmSpec,
+    GroupSpec, HostSpec, Lifecycle, Module, Placement, RecordedHost, Registry, SwarmSpec,
 };
 use swarmy_infra::Tofu;
 
@@ -39,17 +39,7 @@ pub(crate) struct CreateCloud {
 
 // SWARMY_TOFU_BIN is a development and test override of the pinned download.
 async fn tofu(registry: &Registry) -> Result<Tofu> {
-    if let Some(path) = std::env::var_os("SWARMY_TOFU_BIN").filter(|p| !p.is_empty()) {
-        if !std::path::Path::new(&path).is_file() {
-            bail!("SWARMY_TOFU_BIN={} does not exist", path.to_string_lossy());
-        }
-        return Ok(Tofu::from_binary(path, &registry.dirs().cache));
-    }
-    Ok(Tofu::install(
-        &registry.dirs().cache,
-        &swarmy_infra::opentofu::Source::pinned(),
-    )
-    .await?)
+    Ok(Tofu::resolve(&registry.dirs().cache).await?)
 }
 async fn machines_for(
     registry: &Registry,
@@ -68,16 +58,14 @@ fn machine_refs(pair: Option<&(Tofu, CloudCredentials)>) -> Option<MachineGroups
     pair.map(|(tofu, credentials)| MachineGroups { tofu, credentials })
 }
 
+const ON_MODULES: &str = "--on takes hetzner-cloud, aws, scaleway, or an absolute path to your own module; use --host for machines you own and --local for this machine";
+
 pub(crate) fn cloud_spec(name: &str, args: &CreateCloud) -> Result<SwarmSpec> {
-    let module = Module::try_from(args.module.clone()).map_err(|_| anyhow::anyhow!(
-        "--on takes hetzner-cloud, aws, or an absolute path to your own module; use --host for machines you own and --local for this machine"
-    ))?;
+    let module = Module::try_from(args.module.clone()).map_err(|_| anyhow::anyhow!(ON_MODULES))?;
     if matches!(module, Module::Existing | Module::Local)
         || matches!(&module, Module::Path(p) if !p.is_absolute())
     {
-        bail!(
-            "--on takes hetzner-cloud, aws, or an absolute path to your own module; use --host for machines you own and --local for this machine"
-        );
+        bail!(ON_MODULES);
     }
     if args.nodes == 0 && args.node_size.is_some() {
         bail!("--node-size requires --nodes greater than 0");
@@ -104,6 +92,12 @@ pub(crate) fn cloud_spec(name: &str, args: &CreateCloud) -> Result<SwarmSpec> {
         } else {
             None
         },
+
+        elastic: false,
+        max: None,
+        price_per_hour: None,
+        currency: None,
+        autoscale: false,
     };
     let mut groups = std::collections::BTreeMap::new();
     groups.insert("control".into(), group(size.clone(), 1, args.nodes == 0));
@@ -139,18 +133,11 @@ pub(crate) fn cloud_spec(name: &str, args: &CreateCloud) -> Result<SwarmSpec> {
 pub(crate) fn cloud_next(registry: &Registry, spec: &SwarmSpec) -> Result<Vec<String>> {
     let mut next = Vec::new();
     let creds = CloudCredentials::load(&CloudCredentials::path(registry.dirs()))?;
-    for provider in [
-        CloudProvider::HetznerCloud,
-        CloudProvider::HetznerS3,
-        CloudProvider::Aws,
-    ] {
-        let needed = match provider {
-            CloudProvider::HetznerCloud | CloudProvider::HetznerS3 => spec
-                .groups
-                .values()
-                .any(|g| g.module == Module::HetznerCloud),
-            CloudProvider::Aws => spec.groups.values().any(|g| g.module == Module::Aws),
-        };
+    for provider in CloudProvider::ALL {
+        let needed = spec.groups.values().any(|g| {
+            g.module.machine_provider() == Some(provider)
+                || (provider == CloudProvider::HetznerS3 && g.module == Module::HetznerCloud)
+        });
         if needed && creds.get(provider).is_none() {
             next.push(format!("next: swarmy cloud login {provider}"));
         }
@@ -222,6 +209,12 @@ pub(crate) fn host_spec(registry: &Registry, name: &str, args: &CreateHost) -> R
                     ssh_key: std::fs::canonicalize(&args.ssh_key)?,
                     private_address: args.private_address.clone(),
                 }],
+
+                elastic: false,
+                max: None,
+                price_per_hour: None,
+                currency: None,
+                autoscale: false,
             },
         )]
         .into(),
@@ -295,6 +288,8 @@ pub(crate) async fn down(
     if spec.lifecycle == Lifecycle::Persistent && !destroy {
         let what = if groups::has_module_groups(spec) {
             "down destroys its machines, database and bucket"
+        } else if spec.groups.values().any(|group| group.elastic) {
+            "down destroys its elastic machines and deletes its database and swarmy's files on every host"
         } else {
             "down deletes its database and swarmy's files on every host (the machines keep running)"
         };
@@ -302,6 +297,59 @@ pub(crate) async fn down(
             "swarm \"{0}\" is persistent: {what}. Stop it with swarmy swarm stop {0}, or pass --destroy",
             spec.name
         );
+    }
+    if spec.groups.values().any(|group| group.elastic) {
+        let (client, endpoint) = crate::target::connect_swarm(&spec.name).await.context(
+            "down needs the swarm's API to stop its elastic groups; start the swarm first",
+        )?;
+        let mut records = Vec::new();
+        for (name, group) in &spec.groups {
+            if !group.elastic {
+                continue;
+            }
+            let mut record = match client.elastic_group(name).await {
+                Ok(record) => record,
+                Err(swarmy_client::Error::Api { status, .. }) if status.as_u16() == 404 => {
+                    continue;
+                }
+                Err(error) => return Err(error).context(
+                    "down needs the swarm's API to stop its elastic groups; start the swarm first",
+                ),
+            };
+            if record.autoscale {
+                let definition =
+                    autoscale_off_request(&record, &stack_primary(registry, spec)?, spec);
+                record = swarmy_client::api_client::call(
+                    &endpoint,
+                    client.put_elastic_group(name, &definition),
+                )
+                .await?;
+            }
+            if record.desired > 0 {
+                record = swarmy_client::api_client::call(
+                    &endpoint,
+                    client.set_elastic_desired(
+                        name,
+                        &swarmy_api_types::SetElasticDesired {
+                            idempotency_key: ulid::Ulid::generate().to_string(),
+                            desired: 0,
+                            reason: Some("swarmy swarm down".into()),
+                        },
+                    ),
+                )
+                .await?;
+            }
+            records.push(record);
+        }
+        let blockers = elastic_down_blockers(&records);
+        if !blockers.is_empty() {
+            bail!(
+                "swarm {} still has elastic machines or unfinished changes ({}); their desired count is now 0 and the provisioner on the primary destroys them; run swarmy swarm down {} again in a few minutes",
+                spec.name,
+                blockers.join(", "),
+                spec.name
+            );
+        }
     }
     let tofu_dir = registry.swarm_dir(&spec.name)?.join("tofu");
     let pair = machines_for(registry, spec, tofu_dir.exists()).await?;
@@ -446,6 +494,144 @@ pub(crate) async fn node_add(
     .await
 }
 
+/// Build the registration and desired-count requests without network access.
+pub(crate) fn elastic_scale_requests(
+    spec: &SwarmSpec,
+    primary: &RecordedHost,
+    group: &str,
+    count: u32,
+) -> Result<(
+    swarmy_api_types::PutElasticGroup,
+    swarmy_api_types::SetElasticDesired,
+)> {
+    use swarmy_cloud::provision::scale::{GroupKind, check_scalable};
+    if check_scalable(spec, group)? != GroupKind::Elastic {
+        bail!("group \"{group}\" is not elastic");
+    }
+    let selected = &spec.groups[group];
+    let max = selected.max.context("elastic group has no max")?;
+    if count > max {
+        bail!("group \"{group}\" is elastic with max = {max}; scale it between 0 and {max}");
+    }
+    let request = swarmy_api_types::PutElasticGroup {
+        idempotency_key: ulid::Ulid::generate().to_string(),
+        swarm: spec.name.clone(),
+        module: selected.module.clone().into(),
+        size: selected.size.clone().context("elastic group has no size")?,
+        location: selected
+            .location
+            .clone()
+            .context("elastic group has no location")?,
+        sandboxes: selected
+            .sandboxes
+            .unwrap_or(swarmy_config::default_sandboxes()),
+        local_storage: selected
+            .local_storage
+            .clone()
+            .unwrap_or_else(|| swarmy_config::DEFAULT_CREATED_LOCAL_STORAGE.into()),
+        max,
+        price_per_hour: selected
+            .price_per_hour
+            .clone()
+            .context("elastic group has no price")?,
+        currency: selected
+            .currency
+            .clone()
+            .context("elastic group has no currency")?,
+        primary_address: primary.public_address.clone(),
+        service_user: provision::user(spec).into(),
+        autoscale: selected.autoscale,
+    };
+    let desired = swarmy_api_types::SetElasticDesired {
+        idempotency_key: ulid::Ulid::generate().to_string(),
+        desired: count,
+        reason: Some("swarmy swarm scale".into()),
+    };
+    Ok((request, desired))
+}
+fn autoscale_off_request(
+    record: &swarmy_api_types::ElasticGroup,
+    primary: &RecordedHost,
+    spec: &SwarmSpec,
+) -> swarmy_api_types::PutElasticGroup {
+    swarmy_api_types::PutElasticGroup {
+        idempotency_key: ulid::Ulid::generate().to_string(),
+        swarm: record.swarm.clone(),
+        module: record.module.clone(),
+        size: record.size.clone(),
+        location: record.location.clone(),
+        sandboxes: record.sandboxes,
+        local_storage: record.local_storage.clone(),
+        max: record.max,
+        price_per_hour: record.price_per_hour.clone(),
+        currency: record.currency.clone(),
+        primary_address: primary.public_address.clone(),
+        service_user: provision::user(spec).into(),
+        autoscale: false,
+    }
+}
+fn stack_primary(registry: &Registry, spec: &SwarmSpec) -> Result<RecordedHost> {
+    let record = registry.read_record(&spec.name)?;
+    record
+        .as_ref()
+        .and_then(|record| record.hosts.get(&spec.placement.stack))
+        .and_then(|hosts| hosts.first())
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "swarm {} is not up; run swarmy swarm up {} first",
+                spec.name,
+                spec.name
+            )
+        })
+}
+/// Apply an elastic scale through the swarm's control plane.
+pub(crate) async fn scale_elastic(
+    registry: &Registry,
+    spec: &SwarmSpec,
+    group: &str,
+    count: u32,
+    json_output: bool,
+) -> Result<()> {
+    let primary = stack_primary(registry, spec)?;
+    let (definition, desired) = elastic_scale_requests(spec, &primary, group, count)?;
+    let (client, endpoint) = crate::target::connect_swarm(&spec.name).await?;
+    swarmy_client::api_client::call(&endpoint, client.put_elastic_group(group, &definition))
+        .await?;
+    let record =
+        swarmy_client::api_client::call(&endpoint, client.set_elastic_desired(group, &desired))
+            .await?;
+    if json_output {
+        println!("{}", serde_json::to_string(&record)?);
+    } else if record.autoscale {
+        println!(
+            "group {group}: desired {} of max {}, {} machines now; autoscale is on: the provisioner adds machines for sessions waiting for a GPU and removes machines idle for 30 minutes",
+            record.desired, record.max, record.applied
+        );
+    } else {
+        println!(
+            "group {group}: desired {} of max {}, {} machines now; the provisioner on the primary creates or destroys the rest",
+            record.desired, record.max, record.applied
+        );
+    }
+    Ok(())
+}
+/// Groups that still hold machines or have an unreconciled desired count.
+pub(crate) fn elastic_down_blockers(groups: &[swarmy_api_types::ElasticGroup]) -> Vec<String> {
+    groups
+        .iter()
+        .filter_map(|group| {
+            if group.applied > 0 {
+                Some(format!("{}: {} machines", group.group, group.applied))
+            } else if !group.settled {
+                Some(format!("{}: not yet reconciled", group.group))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Change a node group's size after draining removed machines.
 pub(crate) async fn scale(
     registry: &Registry,
@@ -476,4 +662,101 @@ pub(crate) async fn scale(
         println!("{}", serde_json::to_string(&report)?);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod elastic_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    #[test]
+    fn scale_requests_and_down_blockers() {
+        let text = r#"
+name = "fleet"
+lifecycle = "persistent"
+[groups.control]
+module = "hetzner-cloud"
+size = "cpx41"
+location = "fsn1"
+count = 1
+[groups.gpu]
+module = "hetzner-cloud"
+size = "cpx41"
+location = "fsn1"
+elastic = true
+max = 2
+price_per_hour = "0.75"
+currency = "EUR"
+autoscale = true
+[placement]
+stack = "control"
+services = "control"
+nodes = ["gpu"]
+"#;
+        let spec = SwarmSpec::parse(text).unwrap();
+        let primary = RecordedHost {
+            name: "control".into(),
+            public_address: "198.51.100.7".into(),
+            private_address: None,
+            ssh_user: "root".into(),
+            ssh_key: "key".into(),
+            provisioned: true,
+        };
+        let (definition, desired) = elastic_scale_requests(&spec, &primary, "gpu", 1).unwrap();
+        assert_eq!(definition.primary_address, "198.51.100.7");
+        assert_eq!(definition.service_user, "swarmy");
+        assert!(definition.autoscale);
+        assert_eq!(definition.swarm, "fleet");
+        assert_eq!(definition.sandboxes, 64);
+        assert_eq!(definition.local_storage, "dir:/srv/swarmy-local");
+        assert_eq!(desired.desired, 1);
+        assert_eq!(desired.reason.as_deref(), Some("swarmy swarm scale"));
+        assert!(
+            elastic_scale_requests(&spec, &primary, "gpu", 3)
+                .unwrap_err()
+                .to_string()
+                .contains("max = 2")
+        );
+        assert!(elastic_scale_requests(&spec, &primary, "control", 1).is_err());
+        let mut group = swarmy_api_types::ElasticGroup {
+            swarm: "fleet".into(),
+            group: "gpu".into(),
+            module: "hetzner-cloud".into(),
+            size: "cpx41".into(),
+            location: "fsn1".into(),
+            sandboxes: 64,
+            local_storage: swarmy_config::DEFAULT_CREATED_LOCAL_STORAGE.into(),
+            max: 2,
+            autoscale: false,
+            price_per_hour: "0.75".into(),
+            currency: "EUR".into(),
+            desired: 0,
+            desired_reason: "registered".into(),
+            desired_agent: None,
+            desired_session: None,
+            applied: 0,
+            generation: 0,
+            reconciled_generation: 0,
+            settled: true,
+            updated_at: String::new(),
+        };
+        group.autoscale = true;
+        group.desired = 1;
+        group.size = "other-size".into();
+        group.location = "other-location".into();
+        group.module = "scaleway".into();
+        group.max = 1;
+        let off = autoscale_off_request(&group, &primary, &spec);
+        assert!(!off.autoscale);
+        assert_eq!(off.size, group.size);
+        assert_eq!(off.location, group.location);
+        assert_eq!(off.module, group.module);
+        assert_eq!(off.max, group.max);
+        assert_eq!(off.primary_address, primary.public_address);
+        assert!(elastic_down_blockers(&[group.clone()]).is_empty());
+        group.applied = 1;
+        assert_eq!(elastic_down_blockers(&[group.clone()]), ["gpu: 1 machines"]);
+        group.applied = 0;
+        group.settled = false;
+        assert_eq!(elastic_down_blockers(&[group]), ["gpu: not yet reconciled"]);
+    }
 }

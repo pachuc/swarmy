@@ -34,7 +34,21 @@ and systemd unit files in private node state. On a stack+services host, the unit
 | `swarmy-scheduler` | Scheduling |
 | `swarmy-worker` | Step execution |
 | `swarmy-gateway` | Inference gateway |
+| `swarmy-provisioner` | Elastic machine groups; primary only |
 | `swarmy-tunnel` | Host tunnel endpoint |
+
+The swarmy-provisioner service runs OpenTofu for elastic groups on the primary.
+It keeps local state under `~<service-user>/.local/share/swarmy/provisioner/tofu/GROUP/`
+and group SSH keys under `~<service-user>/.local/share/swarmy/provisioner/keys/groups/`.
+SSH runs from the primary as the service user. Node tunnel keys are added to and
+removed from `~<service-user>/.ssh/authorized_keys` on the primary.
+A provisioner restart resumes interrupted joins. Follow joins in the same journal.
+After every apply it copies state to the private bucket at
+`tofu-state/GROUP/terraform.tfstate`. To recover after losing the local state,
+stop `swarmy-provisioner.service`, copy that object back to the local path,
+and start the unit. Follow it with `sudo journalctl -u swarmy-provisioner -f`.
+The creation interlock allows at most four machine creations per hour per swarm;
+a blocked group logs `creation limit reached` with the next available slot.
 
 ## Object storage permissions
 

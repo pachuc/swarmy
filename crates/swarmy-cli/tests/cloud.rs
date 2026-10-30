@@ -10,6 +10,9 @@ const S3_ACCESS: &str = "s3-access-7c1d";
 const S3_SECRET: &str = "s3-secret-9e4a";
 const AWS_ACCESS: &str = "aws-akid-3b8f";
 const AWS_SECRET: &str = "aws-secret-6d2e";
+const SCW_ACCESS: &str = "SCWEXAMPLEACCESS0001";
+const SCW_SECRET: &str = "scw-secret-4f1a";
+const SCW_PROJECT: &str = "99999999-aaaa-bbbb-cccc-dddddddddddd";
 fn run(root: &std::path::Path, args: &[&str], input: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_swarmy"))
         .env_clear()
@@ -37,7 +40,16 @@ fn run(root: &std::path::Path, args: &[&str], input: &str) -> Output {
     output
 }
 fn assert_no_secret(output: &Output) {
-    for secret in [TOKEN, S3_ACCESS, S3_SECRET, AWS_ACCESS, AWS_SECRET] {
+    for secret in [
+        TOKEN,
+        S3_ACCESS,
+        S3_SECRET,
+        AWS_ACCESS,
+        AWS_SECRET,
+        SCW_ACCESS,
+        SCW_SECRET,
+        SCW_PROJECT,
+    ] {
         for bytes in [&output.stdout, &output.stderr] {
             assert!(!String::from_utf8_lossy(bytes).contains(secret));
         }
@@ -88,7 +100,7 @@ fn login_from_stdin_then_ls() {
     assert!(text(&out.stdout).contains("aws           not set"));
     let out = run(tmp.path(), &["--json", "cloud", "ls"], "");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json.as_array().unwrap().len(), 3);
+    assert_eq!(json.as_array().unwrap().len(), 4);
     assert_eq!(json[0]["set"], true);
     assert_eq!(json[2]["set"], false);
     for dir in ["home", "config", "state", "cache"] {
@@ -123,8 +135,35 @@ fn s3_and_aws_options() {
     assert!(!listing.contains("eu-central-1"));
 }
 #[test]
+fn scaleway_login_reads_three_lines() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = run(
+        tmp.path(),
+        &["cloud", "login", "scaleway"],
+        &format!("{SCW_ACCESS}\n{SCW_SECRET}\n{SCW_PROJECT}\n"),
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let listing = text(&run(tmp.path(), &["cloud", "ls"], "").stdout);
+    assert!(listing.contains("access_key, secret_key, project_id"));
+    assert!(
+        fs::read_to_string(path(tmp.path()))
+            .unwrap()
+            .contains("[scaleway]")
+    );
+}
+#[test]
 fn wrong_flags_and_input_are_refused() {
     for (args, input, error) in [
+        (
+            vec!["cloud", "login", "scaleway"],
+            "a\nb\n",
+            "expected 3 lines",
+        ),
+        (
+            vec!["cloud", "login", "scaleway"],
+            "a\nb\nnot-a-uuid\n",
+            "project_id must be a UUID",
+        ),
         (
             vec!["cloud", "login", "hetzner-cloud", "--region", "x"],
             TOKEN,
@@ -148,7 +187,7 @@ fn wrong_flags_and_input_are_refused() {
         (
             vec!["cloud", "login", "digitalocean"],
             "",
-            "hetzner-cloud, hetzner-s3, aws",
+            "hetzner-cloud, hetzner-s3, aws, scaleway",
         ),
     ] {
         let tmp = tempfile::tempdir().unwrap();

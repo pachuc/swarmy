@@ -71,6 +71,18 @@ fn parse_image_environment(content: &str) -> Result<Vec<String>> {
     Ok(variables)
 }
 
+/// Replace an environment entry of the same key.
+pub(crate) fn set_env(env: &mut Vec<String>, variable: String) {
+    let prefix = format!(
+        "{}=",
+        variable
+            .split_once('=')
+            .map_or(variable.as_str(), |(key, _)| key)
+    );
+    env.retain(|existing| !existing.starts_with(&prefix));
+    env.push(variable);
+}
+
 #[cfg(test)]
 mod image_environment_tests {
     #![deny(clippy::disallowed_methods)]
@@ -134,6 +146,7 @@ pub struct RuncRuntime {
     root: PathBuf,
     scratch_root: PathBuf,
     scratch_policy: ScratchPolicy,
+    gpu: crate::NodeGpu,
     config: ServerConfig,
     sandboxes: Mutex<BTreeMap<AgentId, Arc<Mutex<Running>>>>,
     lifecycle: Mutex<()>,
@@ -159,6 +172,14 @@ impl Default for ScratchPolicy {
     }
 }
 
+/// Node-wide runtime settings beyond the directories.
+#[derive(Clone, Default)]
+pub struct RuntimeOptions {
+    pub scratch: ScratchPolicy,
+    /// What GPU sandboxes get on this node.
+    pub gpu: crate::NodeGpu,
+}
+
 impl RuncRuntime {
     /// Address reused in each sandbox's independent network namespace.
     pub const NETWORK_ADDRESS: std::net::Ipv4Addr = std::net::Ipv4Addr::new(10, 0, 2, 2);
@@ -167,17 +188,18 @@ impl RuncRuntime {
     /// # Errors
     /// Returns locking, filesystem, or stale-container cleanup errors.
     pub async fn open(root: PathBuf, config: ServerConfig) -> Result<Self> {
-        Self::open_with_scratch(root, config, ScratchPolicy::default()).await
+        Self::open_with(root, config, RuntimeOptions::default()).await
     }
 
-    /// Open with the node's scratch eviction thresholds.
+    /// Open with the node's scratch thresholds and GPU devices.
     /// # Errors
     /// Returns invalid settings, locking, filesystem, or stale-container cleanup errors.
-    pub async fn open_with_scratch(
+    pub async fn open_with(
         root: PathBuf,
         config: ServerConfig,
-        scratch_policy: ScratchPolicy,
+        options: RuntimeOptions,
     ) -> Result<Self> {
+        let scratch_policy = options.scratch;
         if scratch_policy.low_water >= scratch_policy.high_water || scratch_policy.high_water > 100
         {
             return Err(Error::Operation(
@@ -203,6 +225,7 @@ impl RuncRuntime {
             root,
             scratch_root,
             scratch_policy,
+            gpu: options.gpu,
             config,
             sandboxes: Mutex::new(BTreeMap::new()),
             lifecycle: Mutex::new(()),
@@ -614,12 +637,18 @@ impl RuncRuntime {
         Ok(process)
     }
 
-    async fn start(&self, id: AgentId, scratch: &[String], memory_mib: u64) -> Result<()> {
+    async fn start(
+        &self,
+        id: AgentId,
+        scratch: &[String],
+        requirements: swarmy_core::SandboxRequirements,
+    ) -> Result<()> {
         let bundle = self.bundle(id);
         checked(self.command().args(["spec", "--bundle"]).arg(&bundle)).await?;
         let path = bundle.join("config.json");
         let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
-        let bytes = memory_mib
+        let bytes = requirements
+            .memory_mib
             .checked_mul(1024 * 1024)
             .and_then(|bytes| i64::try_from(bytes).ok())
             .filter(|bytes| *bytes > 0)
@@ -672,9 +701,7 @@ impl RuncRuntime {
         .await?;
         if let Some(image_environment) = image_environment {
             for variable in parse_image_environment(&image_environment)? {
-                let key = variable.split_once('=').ok_or(Error::State)?.0;
-                env.retain(|existing| !existing.starts_with(&format!("{key}=")));
-                env.push(variable);
+                set_env(&mut env, variable);
             }
         }
         config["process"]["env"] = serde_json::json!(env);
@@ -694,6 +721,8 @@ impl RuncRuntime {
         for (index, destination) in scratch.iter().enumerate() {
             mounts.push(serde_json::json!({"destination": destination, "type": "bind", "source": self.scratch_root.join(id.to_string()).join(index.to_string()), "options": ["bind", "rw", "nosuid", "nodev"]}));
         }
+        // GPU sandboxes get the host CDI spec's devices, mounts, environment and hooks.
+        crate::cdi::apply(&mut config, requirements.gpu, &self.gpu)?;
         std::fs::write(path, serde_json::to_vec_pretty(&config)?)?;
         // Init outlives runc create, so it must not inherit pipes that the
         // host command helper waits to drain before starting the container.
@@ -883,11 +912,7 @@ impl RuncRuntime {
             self.sweep_scratch().await?;
         }
         let lifecycle = self.lifecycle.lock().await;
-        let (id, scratch, memory_mib) = (
-            spec.agent_id,
-            spec.scratch.clone(),
-            spec.requirements.memory_mib,
-        );
+        let (id, scratch, requirements) = (spec.agent_id, spec.scratch.clone(), spec.requirements);
         if self.sandboxes.lock().await.contains_key(&id) {
             return Err(Error::State);
         }
@@ -960,7 +985,7 @@ impl RuncRuntime {
             )?;
             self.running(id).await?.lock().await.credentials = Some(credentials);
             self.prepare_scratch(id, &scratch).await?;
-            self.start(id, &scratch, memory_mib).await?;
+            self.start(id, &scratch, requirements).await?;
             if !scratch.is_empty() {
                 self.config
                     .store

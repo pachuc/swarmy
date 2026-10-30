@@ -13,9 +13,11 @@ use serde::Deserialize;
 use std::sync::Arc;
 mod api_failure;
 mod conversation;
+mod elastic;
 mod gc;
 mod idempotency;
 pub mod images;
+mod machines;
 mod models;
 pub mod role;
 mod stream;
@@ -124,6 +126,13 @@ pub(crate) fn invalid_selection(failure: &swarmy_llm::selection::SelectionError)
         failure.to_string(),
     )
 }
+/// Validate an operator GPU reason with the same rule as `request_gpu`.
+fn gpu_reason(text: Option<&str>) -> Result<Option<swarmy_core::GpuReason>, ApiFailure> {
+    text.map(swarmy_core::GpuReason::parse)
+        .transpose()
+        .map_err(|message| ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_request", message))
+}
+
 #[expect(
     clippy::needless_pass_by_value,
     reason = "`map_err` passes the owned error; taking a reference would require closures at every call site"
@@ -145,8 +154,22 @@ fn storage(value: swarmy_store::StoreError) -> ApiFailure {
             ApiFailure::new(StatusCode::NOT_FOUND, "image_not_found", message)
         }
         StoreError::Domain(
-            swarmy_store::DomainError::InvalidAgentName | swarmy_store::DomainError::InvalidImage,
+            swarmy_store::DomainError::InvalidAgentName
+            | swarmy_store::DomainError::InvalidImage
+            | swarmy_store::DomainError::GpuReasonWithoutCard,
         ) => ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_request", message),
+        StoreError::Domain(swarmy_store::DomainError::ElasticGroupMissing { .. }) => {
+            ApiFailure::new(StatusCode::NOT_FOUND, "elastic_group_not_found", message)
+        }
+        StoreError::Domain(swarmy_store::DomainError::ElasticGroupBusy { .. }) => {
+            ApiFailure::new(StatusCode::CONFLICT, "elastic_group_busy", message)
+        }
+        StoreError::Domain(swarmy_store::DomainError::DesiredAboveMax { .. }) => {
+            ApiFailure::new(StatusCode::BAD_REQUEST, "desired_above_max", message)
+        }
+        StoreError::Domain(swarmy_store::DomainError::InvalidElasticGroup(_)) => {
+            ApiFailure::new(StatusCode::BAD_REQUEST, "invalid_elastic_group", message)
+        }
         StoreError::Domain(swarmy_store::DomainError::RouteMissing) => {
             ApiFailure::new(StatusCode::BAD_REQUEST, "route_not_found", message)
         }
@@ -251,6 +274,14 @@ pub fn router(state: AppState) -> Router {
             "/v1/credentials/{provider}/{label}",
             get(check_credential_entry).delete(remove_credential_entry),
         )
+        .route(
+            "/v1/swarm/groups/{group}",
+            get(elastic::show).put(elastic::put),
+        )
+        .route(
+            "/v1/swarm/groups/{group}/desired",
+            axum::routing::put(elastic::set_desired),
+        )
         .route("/v1/routes", get(list_routes))
         .route(
             "/v1/routes/{name}",
@@ -261,6 +292,7 @@ pub fn router(state: AppState) -> Router {
             get(entry_quota).post(set_entry_quota),
         )
         .route("/v1/usage", get(usage))
+        .route("/v1/machines", get(machines::list))
         .route("/v1/quotas", get(quotas))
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize));
     // Health, the OpenAPI document, and the rendered reference are public so
@@ -389,6 +421,7 @@ async fn registered_nodes(state: &AppState) -> Result<Vec<api::DoctorNode>, ApiF
                 capacity: views::node_capacity(&record.capacity),
                 last_heartbeat: record.last_heartbeat.to_string(),
                 committed_memory_bytes: committed,
+                gpu: record.gpu.as_ref().map(views::gpu_cards),
             });
         }
         after = next;
@@ -470,6 +503,8 @@ async fn create_agent(
         system_prompt: body.system_prompt,
         memory_mib: body.memory_mib,
         gpu: body.gpu.map(Into::into),
+        allow_gpu_request: body.allow_gpu_request,
+        gpu_reason: gpu_reason(body.gpu_reason.as_deref())?,
         route: body.route,
     };
     let key = IdempotencyKey::parse(&body.idempotency_key)?;
@@ -521,12 +556,14 @@ async fn update_agent(
         system_prompt: body.system_prompt,
         memory_mib: body.memory_mib,
         gpu: body.gpu.map(Into::into),
+        allow_gpu_request: body.allow_gpu_request,
+        gpu_reason: gpu_reason(body.gpu_reason.as_deref())?,
         route: body.route,
     };
     let resets: Vec<swarmy_core::InferenceField> =
         body.resets.into_iter().map(Into::into).collect();
     let mut merged = record.clone();
-    settings.apply_to(&mut merged, &resets);
+    settings.apply_to(&mut merged, &resets, Timestamp::now());
     swarmy_llm::selection::validate(
         &state.catalog,
         &swarmy_core::InferenceSelection {
@@ -1016,6 +1053,19 @@ async fn check_credential(
         })?;
     Ok(Json(views::credential(summary)))
 }
+fn unknown_machine_provider() -> ApiFailure {
+    let names = swarmy_config::cloud::CloudProvider::ALL
+        .iter()
+        .map(|provider| provider.name())
+        .collect::<Vec<_>>()
+        .join(", ");
+    ApiFailure::new(
+        StatusCode::BAD_REQUEST,
+        "unknown_machine_provider",
+        format!("machine providers are {names}"),
+    )
+}
+
 async fn set_credential(
     State(state): State<AppState>,
     Json(body): Json<api::CreateCredential>,
@@ -1028,6 +1078,38 @@ async fn set_credential(
             "add subscription credentials with swarmy auth login",
         ));
     }
+    let machine_env = if body.kind == api::CredentialKind::MachineProvider {
+        let provider = body
+            .provider
+            .parse::<swarmy_config::cloud::CloudProvider>()
+            .map_err(|_| unknown_machine_provider())?;
+        if body.label != "default" {
+            return Err(ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "machine provider label must be default",
+            ));
+        }
+        let credential = swarmy_config::cloud::CloudCredential::from_env(provider, |name| {
+            body.extra.get(name).cloned()
+        })
+        .map_err(|error| {
+            ApiFailure::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_machine_credential",
+                error.to_string(),
+            )
+        })?;
+        Some(
+            credential
+                .env()
+                .iter()
+                .map(|(name, value)| (name.into(), value.into()))
+                .collect(),
+        )
+    } else {
+        None
+    };
     let store = credential_store(&state)?;
     let record = CredentialRecord {
         bookkeeping: swarmy_core::CredentialBookkeeping {
@@ -1035,9 +1117,13 @@ async fn set_credential(
             label: Some(body.label.clone()),
             ..Default::default()
         },
-        kind: CredentialKind::ApiKey {
-            key: body.secret,
-            extra: body.extra,
+        kind: if let Some(env) = machine_env {
+            CredentialKind::MachineProvider { env }
+        } else {
+            CredentialKind::ApiKey {
+                key: body.secret,
+                extra: body.extra,
+            }
         },
         updated_at: Timestamp::now(),
     };
@@ -1288,6 +1374,16 @@ struct UsageParams {
     to: Timestamp,
 }
 
+pub(crate) fn time_bound(
+    value: &str,
+    now: Timestamp,
+    code: &'static str,
+    message: &'static str,
+) -> Result<Timestamp, ApiFailure> {
+    swarmy_core::time::parse_bound(value, now)
+        .ok_or_else(|| ApiFailure::new(StatusCode::BAD_REQUEST, code, message))
+}
+
 fn usage_params(query: &UsageQuery) -> Result<UsageParams, ApiFailure> {
     let sent_by = query.by.clone().unwrap_or_else(|| "agent".into());
     let dimension = swarmy_store::MeteringDimension::parse(&sent_by).ok_or_else(|| {
@@ -1314,29 +1410,13 @@ fn usage_params(query: &UsageQuery) -> Result<UsageParams, ApiFailure> {
     let to = query
         .to
         .as_deref()
-        .map(|bound| {
-            swarmy_core::time::parse_bound(bound, now).ok_or_else(|| {
-                ApiFailure::new(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_to",
-                    "to is not a valid time",
-                )
-            })
-        })
+        .map(|bound| time_bound(bound, now, "invalid_to", "to is not a valid time"))
         .transpose()?
         .unwrap_or(now);
     let from = query
         .from
         .as_deref()
-        .map(|bound| {
-            swarmy_core::time::parse_bound(bound, now).ok_or_else(|| {
-                ApiFailure::new(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_from",
-                    "from is not a valid time",
-                )
-            })
-        })
+        .map(|bound| time_bound(bound, now, "invalid_from", "from is not a valid time"))
         .transpose()?
         .unwrap_or_else(|| {
             to.checked_add(jiff::Span::new().hours(-30 * 24))

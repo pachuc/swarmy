@@ -1,16 +1,25 @@
-use super::step::{PendingCall, pending_tools};
+use super::step::{PendingCall, pending_tools, tool_requests};
 use super::{
     Bus, Context, Event, HeldLease, KillPoint, MAX_SCAN_LIMIT, MessageId, RequestId, Result,
     SandboxArguments, SessionId, SessionRecord, StoreError, ToolCallRecord, ToolJob, TurnStage,
     WorkQueue, Worker, execution_result, runnable_partition,
 };
+use swarmy_core::GpuRequirement;
+use swarmy_store::CapacityPark;
+
+pub(super) enum DispatchOutcome {
+    Sent,
+    Parked,
+    Failed,
+}
 
 enum StoreTool {
     Plan,
     Timer,
+    Gpu,
 }
 
-enum Dispatch<'a> {
+pub(super) enum Dispatch<'a> {
     Calls(&'a [ToolCallRecord]),
     Pending(&'a [ToolJob]),
 }
@@ -36,8 +45,11 @@ impl Worker {
         if jobs.is_empty() {
             return Ok(false);
         }
-        self.dispatch_pending(session, lease, jobs, turn).await?;
-        Ok(true)
+        Ok(!matches!(
+            self.dispatch_pending(session, lease, events, jobs, turn)
+                .await?,
+            DispatchOutcome::Failed
+        ))
     }
 
     /// Store-side tools (plan, timers) complete without leaving the worker.
@@ -47,6 +59,7 @@ impl Worker {
         match tool {
             "update_plan" => Some(StoreTool::Plan),
             "set_timer" | "list_timers" | "cancel_timer" => Some(StoreTool::Timer),
+            name if swarmy_core::is_gpu_tool(name) => Some(StoreTool::Gpu),
             _ => None,
         }
     }
@@ -198,6 +211,21 @@ impl Worker {
                     )
                     .await?
             }
+            Some(StoreTool::Gpu) => {
+                let result = self
+                    .store
+                    .complete_gpu_tool(
+                        session.session_id,
+                        session.head_seq,
+                        token,
+                        request_id,
+                        call,
+                    )
+                    .await;
+                // Invalidate even on error: a commit-unknown failure may have changed the requirement.
+                self.placements.invalidate(session.agent_id).await;
+                result?
+            }
             None => anyhow::bail!("not a store tool: {}", call.tool),
         };
         Ok(event)
@@ -205,39 +233,42 @@ impl Worker {
 
     pub(super) async fn dispatch_calls(
         &self,
-        session: &SessionRecord,
+        session: &mut SessionRecord,
         lease: &HeldLease,
+        events: &mut Vec<Event>,
         calls: &[ToolCallRecord],
         turn: Option<MessageId>,
-    ) -> Result<()> {
-        self.dispatch(session, lease, Dispatch::Calls(calls), turn)
+    ) -> Result<DispatchOutcome> {
+        self.dispatch(session, lease, events, Dispatch::Calls(calls), turn)
             .await
     }
 
     pub(super) async fn dispatch_pending(
         &self,
-        session: &SessionRecord,
+        session: &mut SessionRecord,
         lease: &HeldLease,
+        events: &mut Vec<Event>,
         jobs: Vec<ToolJob>,
         turn: Option<MessageId>,
-    ) -> Result<()> {
-        self.dispatch(session, lease, Dispatch::Pending(&jobs), turn)
+    ) -> Result<DispatchOutcome> {
+        self.dispatch(session, lease, events, Dispatch::Pending(&jobs), turn)
             .await
     }
 
     async fn dispatch(
         &self,
-        session: &SessionRecord,
+        session: &mut SessionRecord,
         lease: &HeldLease,
+        live_events: &mut Vec<Event>,
         dispatch: Dispatch<'_>,
         turn: Option<MessageId>,
-    ) -> Result<()> {
+    ) -> Result<DispatchOutcome> {
         let mut retried = false;
         let (placement, events, jobs) = loop {
             // The failed transaction made no changes; an eviction may have
             // released a cached placement before its expiry, so the first
             // placement or lease fence invalidates the cache and retries once.
-            let placement = self
+            let placement = match self
                 .placements
                 .resolve_at(
                     &self.store,
@@ -245,7 +276,25 @@ impl Worker {
                     self.config.placement_lease,
                     self.now(),
                 )
-                .await?;
+                .await
+            {
+                Ok(placement) => placement,
+                Err(error) => {
+                    let Some(no_room) = error.downcast_ref::<crate::placement::NoEligibleNode>()
+                    else {
+                        return Err(error);
+                    };
+                    return self
+                        .wait_for_capacity(
+                            session,
+                            lease,
+                            live_events,
+                            &dispatch,
+                            no_room.requirement,
+                        )
+                        .await;
+                }
+            };
             let mut token = lease.lock().await;
             let result = match dispatch {
                 Dispatch::Calls(calls) => {
@@ -289,7 +338,116 @@ impl Worker {
         self.kill(KillPoint::AfterRelease);
         self.publish_events(session.session_id, &events).await?;
         self.publish_tools(session.session_id, &placement, jobs, turn)
-            .await
+            .await?;
+        Ok(DispatchOutcome::Sent)
+    }
+
+    async fn wait_for_capacity(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        events: &mut Vec<Event>,
+        dispatch: &Dispatch<'_>,
+        requirement: GpuRequirement,
+    ) -> Result<DispatchOutcome> {
+        let id = session.session_id;
+        let mut token = lease.lock().await;
+        let outcome = self
+            .store
+            .park_for_capacity(
+                id,
+                token.as_ref().context("lease released")?,
+                requirement,
+                self.now(),
+                self.config.max_session_wait,
+            )
+            .await?;
+        match outcome {
+            CapacityPark::Parked { notice } => {
+                token.release();
+                drop(token);
+                if let Some(event) = notice {
+                    session.head_seq = event.seq();
+                    self.publish_events(id, std::slice::from_ref(&event))
+                        .await?;
+                    events.push(*event);
+                }
+                tracing::info!(session_id = %id, ?requirement, "no node can host the computer; waiting for capacity");
+                Ok(DispatchOutcome::Parked)
+            }
+            CapacityPark::Expired => {
+                drop(token);
+                let error =
+                    swarmy_core::capacity_wait_exceeded(requirement, self.config.max_session_wait);
+                self.fail_dispatch(session, lease, events, dispatch, &error)
+                    .await?;
+                Ok(DispatchOutcome::Failed)
+            }
+        }
+    }
+
+    /// Refuse every call in a mixed GPU response in a single append.
+    pub(super) async fn refuse_mixed_gpu_batch(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        events: &mut Vec<Event>,
+        calls: &[ToolCallRecord],
+    ) -> Result<bool> {
+        if calls.len() > 1
+            && calls
+                .iter()
+                .any(|call| swarmy_core::is_gpu_tool(&call.tool))
+        {
+            self.fail_dispatch(
+                session,
+                lease,
+                events,
+                &Dispatch::Calls(calls),
+                swarmy_core::GPU_TOOL_NOT_ALONE,
+            )
+            .await?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    pub(super) async fn fail_dispatch(
+        &self,
+        session: &mut SessionRecord,
+        lease: &HeldLease,
+        events: &mut Vec<Event>,
+        dispatch: &Dispatch<'_>,
+        error: &str,
+    ) -> Result<()> {
+        let mut batch = Vec::new();
+        match dispatch {
+            Dispatch::Calls(calls) => {
+                let requests = tool_requests(session, calls);
+                for (event, call) in requests.iter().zip(*calls) {
+                    if let Event::ToolCallRequested { request_id, .. } = event {
+                        batch.push(Event::ToolCallCompleted {
+                            seq: 0,
+                            request_id: *request_id,
+                            call_id: call.call_id.clone(),
+                            result: execution_result(&call.tool, Err(error.to_owned())),
+                        });
+                    }
+                }
+                batch.splice(0..0, requests);
+            }
+            Dispatch::Pending(jobs) => {
+                for job in *jobs {
+                    batch.push(Event::ToolCallCompleted {
+                        seq: 0,
+                        request_id: job.request_id,
+                        call_id: job.call_id.clone(),
+                        result: execution_result(job.arguments.name(), Err(error.to_owned())),
+                    });
+                }
+            }
+        }
+        self.append(session, lease, events, &batch).await
     }
 
     pub(super) async fn publish_tools(

@@ -1069,3 +1069,119 @@ fn only_a_not_empty_bucket_retries_destroy() {
         "Error: Server Type \"cpx41\" is unavailable"
     ));
 }
+
+fn log_sections(log: &str) -> BTreeMap<String, String> {
+    let mut sections = BTreeMap::<String, String>::new();
+    let mut current = None;
+    for line in log.lines() {
+        if let Some(group) = line
+            .strip_prefix("call ")
+            .and_then(|rest| rest.split_whitespace().next())
+        {
+            current = Some(group.to_owned());
+        }
+        if let Some(group) = &current {
+            let section = sections.entry(group.clone()).or_default();
+            section.push_str(line);
+            section.push('\n');
+        }
+    }
+    sections
+}
+
+#[tokio::test]
+async fn scaleway_node_group_gets_only_scaleway_keys_and_no_network() {
+    let mut f = Fixture::new();
+    let group = f.spec.groups.get_mut("workers").unwrap();
+    group.module = Module::Scaleway;
+    group.size = Some("L4-1-24G".into());
+    group.location = Some("fr-par-2".into());
+    fs::write(f.temp.path().join("outputs-workers.json"), serde_json::json!({
+        "machines": {"value": [{"name":"fleet-workers-1", "public_ipv4":"203.0.113.11", "public_ipv6":null, "private_ip":null, "ssh_user":"root"}]},
+        "network_id": {"value":null}
+    }).to_string()).unwrap();
+    let host = FakeHost::new();
+    let error = f.up(&host).await.unwrap_err();
+    assert!(error.to_string().contains("swarmy cloud login scaleway"));
+    assert!(f.log().is_empty());
+    f.credentials.set(
+        CloudCredential::new(
+            CloudProvider::Scaleway,
+            vec![
+                "SCWEXAMPLEACCESS0001".into(),
+                "scw-secret-4f1a".into(),
+                "11111111-2222-3333-4444-555555555555".into(),
+            ],
+            None,
+        )
+        .unwrap(),
+    );
+    f.up(&host).await.unwrap();
+    let sections = log_sections(&f.log());
+    let workers = &sections["workers"];
+    assert!(workers.contains("SCW_ACCESS_KEY=SCWEXAMPLEACCESS0001"));
+    assert!(workers.contains("SCW_SECRET_KEY=scw-secret-4f1a"));
+    assert!(workers.contains("SCW_DEFAULT_PROJECT_ID=11111111-2222-3333-4444-555555555555"));
+    assert!(workers.contains("SCW_CONFIG_PATH=/nonexistent/swarmy/scw-config.yaml"));
+    for absent in ["HCLOUD_TOKEN", "MINIO_USER", "AWS_ACCESS_KEY_ID"] {
+        assert!(!workers.contains(absent));
+    }
+    assert!(!sections["control"].contains("SCW_ACCESS_KEY"));
+    assert_eq!(
+        workers
+            .lines()
+            .filter(|line| line.starts_with("call "))
+            .collect::<Vec<_>>(),
+        [
+            "call workers init",
+            "call workers apply",
+            "call workers output"
+        ]
+    );
+    let vars: Value =
+        serde_json::from_slice(&fs::read(f.temp.path().join("applied-workers-1.json")).unwrap())
+            .unwrap();
+    assert_eq!(vars["network_id"], "");
+    assert_eq!(vars["bucket_name"], "");
+    let record = f.registry.read_record("fleet").unwrap().unwrap();
+    assert_eq!(record.hosts["workers"][0].private_address, None);
+}
+
+#[test]
+fn elastic_group_is_not_a_laptop_opentofu_group() {
+    let mut f = Fixture::new();
+    let mut gpu = f.spec.groups["workers"].clone();
+    gpu.count = None;
+    gpu.elastic = true;
+    gpu.max = Some(2);
+    gpu.price_per_hour = Some("0.75".into());
+    gpu.currency = Some("EUR".into());
+    f.spec.groups.insert("gpu".into(), gpu);
+    f.spec.placement.nodes.push("gpu".into());
+    f.spec.validate().unwrap();
+    assert_eq!(apply_order(&f.spec), ["control", "workers"]);
+    f.spec.groups.get_mut("workers").unwrap().module = Module::Existing;
+    assert!(has_module_groups(&f.spec)); // control still creates machines
+    f.spec.groups.get_mut("control").unwrap().module = Module::Existing;
+    assert!(!has_module_groups(&f.spec));
+}
+
+#[test]
+fn scaleway_module_environment_has_only_its_three_provider_keys() {
+    let credential = CloudCredential::from_env(CloudProvider::Scaleway, |name| {
+        Some(match name {
+            "SCW_DEFAULT_PROJECT_ID" => "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".into(),
+            _ => "test-value".into(),
+        })
+    })
+    .unwrap();
+    let mut credentials = CloudCredentials::default();
+    credentials.set(credential);
+    let env = module_credential_env(&credentials, &Module::Scaleway, false).unwrap();
+    assert_eq!(
+        env.names()
+            .filter(|name| name.starts_with("SCW_") && *name != "SCW_CONFIG_PATH")
+            .collect::<Vec<_>>(),
+        ["SCW_ACCESS_KEY", "SCW_SECRET_KEY", "SCW_DEFAULT_PROJECT_ID"]
+    );
+}

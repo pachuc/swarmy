@@ -40,7 +40,7 @@ impl Worker {
                 turn,
                 swarmy_store::MetricPatch::Wait {
                     request_id: job.request_id.to_string(),
-                    kind: swarmy_store::WaitKind::MissingGateway,
+                    kind: swarmy_store::MetricWaitKind::MissingGateway,
                 },
             );
             if !retryable && let Event::InferenceFailed { error, .. } = event {

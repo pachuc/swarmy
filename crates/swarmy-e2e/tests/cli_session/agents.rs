@@ -636,6 +636,7 @@ async fn agent_show_reports_placement_and_committed_snapshot() {
                 },
                 last_heartbeat: Timestamp::now(),
                 cached_images: vec![],
+                gpu: None,
             })
             .await
             .unwrap();
@@ -668,6 +669,7 @@ async fn agent_show_reports_placement_and_committed_snapshot() {
         .unwrap();
         assert_eq!(shown["placement"]["node_id"], node.to_string());
         assert_eq!(shown["placement"]["epoch"], placement.epoch);
+        assert_eq!(shown["placement"]["gpu"], "none");
         assert!(shown["last_snapshot_at"].is_string());
         assert!(shown["last_snapshot_age_seconds"].is_number());
         // Placement must not be presented as an observed running sandbox.
@@ -1366,6 +1368,8 @@ async fn create_agent_with_unknown_model_reports_the_catalog_explanation() {
             route: None,
             memory_mib: None,
             gpu: None,
+            allow_gpu_request: None,
+            gpu_reason: None,
             github_token: None,
         };
         let error = client

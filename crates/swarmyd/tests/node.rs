@@ -786,6 +786,11 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
         .put_manifest(base, &images.get_manifest(base).await.unwrap().unwrap())
         .await
         .unwrap();
+    settings.node.fake_gpu = Some(swarmy_core::GpuCards {
+        model: "Fake L4".into(),
+        memory_mib: 23034,
+        count: 1,
+    });
     let mut node = Node::new(settings);
     let before = jiff::Timestamp::now();
     node.start();
@@ -975,6 +980,7 @@ async fn root_dev_stack_uses_sandbox_loopback() {
 async fn registration(node: &Node, store: &Store) {
     let first = store.get_node(node.id).await.unwrap().unwrap();
     assert_eq!(first.roles, node.settings.node.roles);
+    assert_eq!(first.gpu, node.settings.node.fake_gpu);
     assert_eq!(first.capacity, node.settings.node.capacity);
     let second = swarmy_testkit::eventually(
         "node heartbeat advances",

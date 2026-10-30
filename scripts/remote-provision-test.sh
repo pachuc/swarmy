@@ -47,6 +47,9 @@ check_release_bundle "$bundle" node
 if check_release_bundle "$bundle" stack 2>/dev/null; then echo 'stack accepted missing client' >&2; exit 1; fi
 printf '#!/bin/sh\n' > "$bundle/swarmy"
 chmod +x "$bundle/swarmy"
+if check_release_bundle "$bundle" stack 2>/dev/null; then echo 'stack accepted missing provisioner' >&2; exit 1; fi
+printf '#!/bin/sh\n' > "$bundle/swarmy-provisioner"
+chmod +x "$bundle/swarmy-provisioner"
 check_release_bundle "$bundle" stack
 rm "$bundle/libfdb_c.so"
 if check_release_bundle "$bundle" node 2>/dev/null; then echo 'accepted missing library' >&2; exit 1; fi
@@ -146,6 +149,8 @@ swarmyd.service enabled'
 SWARMY_TEST_INSTALLED='swarmy-tunnel.service enabled
 swarmy-gateway.service enabled'
 [[ $(list_installed_control_units) == 'swarmy-gateway.service' ]]
+SWARMY_TEST_INSTALLED='swarmy-provisioner.service enabled'
+[[ $(list_installed_control_units) == 'swarmy-provisioner.service' ]]
 SWARMY_TEST_INSTALLED='swarmy-stack.service enabled'
 [[ $(list_installed_control_units) == 'swarmy-stack.service' ]]
 SWARMY_TEST_INSTALLED='swarmy-stack.service enabled
@@ -208,6 +213,14 @@ node_text=$(render_unit swarmyd.service)
 stack_text=$(render_unit swarmy-stack.service)
 [[ $stack_text == *'User=deploy-user'* ]]
 [[ $stack_text == *'ExecStart=/bin/bash /home/deploy-user/swarmy/scripts/dev-stack.sh start'* ]]
+provisioner_text=$(render_unit "$(swarmy_provisioner_unit)")
+[[ $provisioner_text == *'ExecStart=/usr/local/bin/swarmy-provisioner'* ]]
+[[ $provisioner_text == *'KillMode=mixed'* ]]
+[[ $provisioner_text == *'Requires=swarmy-stack.service'* ]]
+[[ $(swarmy_mode_binaries stack) == $'swarmy\nswarmy-core\nswarmy-provisioner' ]]
+[[ $(swarmy_mode_binaries node) == 'swarmy-core' ]]
+[[ $(swarmy_mode_build_args stack) == $'-p\nswarmy-core-bin\n-p\nswarmy-provisioner' ]]
+[[ $(swarmy_mode_build_args node) == $'-p\nswarmy-core-bin' ]]
 scheduler_text=$(render_unit swarmy-scheduler.service)
 [[ $scheduler_text == *'ExecStart=/usr/local/bin/swarmy-core scheduler'* ]]
 [[ $scheduler_text == *'Requires=swarmy-stack.service'* ]]
@@ -238,4 +251,51 @@ printf 'b09dbe0\n' > "$commit_dir/.swarmy-source-commit"
 printf 'not a commit\n' > "$commit_dir/.swarmy-source-commit"
 [[ -z $(source_git_commit "$commit_dir") ]]
 rm -rf "$commit_dir"
+# GPU provisioning: card detection reads a fake sysfs tree.
+pci=$(mktemp -d)
+pci_device() { mkdir -p "$pci/$1"; printf '%s\n' "$2" >"$pci/$1/vendor"; printf '%s\n' "$3" >"$pci/$1/class"; }
+if SWARMY_PCI_DEVICES_DIR=$pci nvidia_card_present; then echo 'found a card in an empty bus' >&2; exit 1; fi
+pci_device 0000:00:02.0 0x8086 0x030000
+pci_device 0000:31:00.1 0x10de 0x040300
+if SWARMY_PCI_DEVICES_DIR=$pci nvidia_card_present; then echo 'counted an Intel display or an NVIDIA audio function as a card' >&2; exit 1; fi
+pci_device 0000:31:00.0 0x10de 0x030200
+SWARMY_PCI_DEVICES_DIR=$pci nvidia_card_present
+rm -rf "$pci"
+
+# Stub sudo logs commands; a driver install provides nvidia-smi unless broken.
+stub=$(mktemp -d)
+for tool in sed dirname chmod cat; do ln -s "$(command -v "$tool")" "$stub/$tool"; done
+printf '#!/bin/sh\nexit 0\n' >"$stub/curl"
+cat >"$stub/sudo" <<'EOS'
+#!/bin/bash
+printf '%s\n' "$*" >>"$STUB_LOG"
+if [[ $* == *"apt-get install -y nvidia-driver-570-server"* && -z ${STUB_BROKEN_DRIVER:-} ]]; then
+    printf '#!/bin/sh\nexit 0\n' >"$STUB_DIR/nvidia-smi"
+    chmod +x "$STUB_DIR/nvidia-smi"
+fi
+EOS
+chmod +x "$stub/curl" "$stub/sudo"
+export STUB_DIR=$stub STUB_LOG=$stub/log
+generate='nvidia-ctk cdi generate --output=/etc/cdi/nvidia.json --format=json'
+printf '#!/bin/sh\nexit 0\n' >"$stub/nvidia-smi"; printf '#!/bin/sh\nexit 0\n' >"$stub/nvidia-ctk"; chmod +x "$stub/nvidia-smi" "$stub/nvidia-ctk"
+: >"$STUB_LOG"; ( PATH=$stub; provision_nvidia )
+[[ $(<"$STUB_LOG") == "install -d -m 0755 /etc/cdi"$'\n'"$generate" ]]
+rm "$stub/nvidia-ctk"
+: >"$STUB_LOG"; ( PATH=$stub; provision_nvidia )
+grep -qx -- '-E apt-get install -y nvidia-container-toolkit' "$STUB_LOG"
+grep -q 'tee /etc/apt/sources.list.d/nvidia-container-toolkit.list' "$STUB_LOG"
+if grep -q 'nvidia-driver' "$STUB_LOG"; then echo 'installed a driver although nvidia-smi was present' >&2; exit 1; fi
+[[ $(tail -n 1 "$STUB_LOG") == "$generate" ]]
+rm "$stub/nvidia-smi"
+: >"$STUB_LOG"; ( PATH=$stub; provision_nvidia )
+[[ $(head -n 1 "$STUB_LOG") == '-E apt-get install -y nvidia-driver-570-server' ]]
+grep -qx 'modprobe nvidia' "$STUB_LOG"
+[[ $(tail -n 1 "$STUB_LOG") == "$generate" ]]
+rm "$stub/nvidia-smi"
+: >"$STUB_LOG"
+if ( PATH=$stub; export STUB_BROKEN_DRIVER=1; provision_nvidia ) 2>"$stub/err"; then echo 'continued with an unloaded driver' >&2; exit 1; fi
+grep -q 'reboot' "$stub/err"
+if grep -q 'cdi generate' "$STUB_LOG"; then echo 'wrote a spec with an unloaded driver' >&2; exit 1; fi
+rm -rf "$stub"
+printf 'GPU provisioning: ok\n'
 echo 'remote provision argument and environment tests passed'

@@ -286,7 +286,7 @@ fn environment(
             f.files.path().join("keyring").display().to_string(),
         ),
         ("SWARMY_INFERENCE_DEFAULT_ROUTE", ROUTE.into()),
-        ("SWARMY_INFERENCE_MAX_WAIT_SECONDS", "600".into()),
+        ("SWARMY_MAX_SESSION_WAIT_SECONDS", "600".into()),
         ("SWARMY_WORKER_PARTITIONS", "0-255".into()),
         ("SWARMY_SCHEDULER_PARTITIONS", "0-255".into()),
         ("SWARMY_GATEWAY_CONCURRENCY", "1".into()),

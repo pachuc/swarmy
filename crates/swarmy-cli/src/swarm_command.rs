@@ -106,8 +106,8 @@ pub(crate) enum Command {
         name: String,
         /// A group listed in placement.nodes that runs neither the stack nor the services
         group: String,
-        /// New number of machines (1-50)
-        #[arg(value_parser = clap::value_parser!(u32).range(1..=50))]
+        /// New number of machines (0-50, 0 only for node groups whose machines `OpenTofu` creates; 0 to max for an elastic group)
+        #[arg(value_parser = clap::value_parser!(u32).range(0..=50))]
         count: u32,
         /// Seconds to wait on each removed node for running sandbox commands to finish
         #[arg(long, default_value_t = 600)]
@@ -178,6 +178,12 @@ pub(crate) enum Command {
     Supervise { state: PathBuf, core: PathBuf },
     /// List registered swarms; `*` marks the current one
     Ls,
+    /// List elastic machines with state, age, node, cost and cause
+    Machines {
+        /// Include destroyed and failed-before-creation machines
+        #[arg(long)]
+        all: bool,
+    },
     /// Show a swarm's API, record, and spec (default: the swarm this command would use)
     Show {
         #[arg(value_parser = parse_name)]
@@ -762,6 +768,51 @@ async fn run_host_observation(
     }
     Ok(())
 }
+/// Scale a node group through either the swarm API or the laptop provisioner.
+async fn run_scale(
+    registry: &Registry,
+    name: &str,
+    group: &str,
+    count: u32,
+    drain_timeout: u64,
+    force: bool,
+    json_output: bool,
+) -> Result<()> {
+    let spec = managed_spec(registry, name)?;
+    if spec.local_group().is_some() {
+        bail!(
+            "swarm \"{name}\" runs on this machine; scale applies to swarms on hosts or cloud machines"
+        );
+    }
+    if spec.groups.get(group).is_some_and(|g| g.elastic) {
+        if force {
+            bail!(
+                "--force applies to groups this client scales; the provisioner on the primary drains and destroys elastic machines"
+            );
+        }
+        Box::pin(crate::swarm_hosts::scale_elastic(
+            registry,
+            &spec,
+            group,
+            count,
+            json_output,
+        ))
+        .await?;
+    } else {
+        Box::pin(crate::swarm_hosts::scale(
+            registry,
+            &spec,
+            group,
+            count,
+            drain_timeout,
+            force,
+            json_output,
+        ))
+        .await?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn run(
     command: Command,
     json_output: bool,
@@ -811,15 +862,9 @@ pub(crate) async fn run(
             drain_timeout,
             force,
         } => {
-            let spec = managed_spec(&registry, &name)?;
-            if spec.local_group().is_some() {
-                bail!(
-                    "swarm \"{name}\" runs on this machine; scale applies to swarms on hosts or cloud machines"
-                );
-            }
-            Box::pin(crate::swarm_hosts::scale(
+            Box::pin(run_scale(
                 &registry,
-                &spec,
+                &name,
                 &group,
                 count,
                 drain_timeout,
@@ -833,6 +878,7 @@ pub(crate) async fn run(
             crate::swarm_hosts::plan(&registry, &spec, json_output).await?;
         }
         Command::Ls => list(&registry, json_output)?,
+        Command::Machines { all } => crate::machines::list(all, json_output).await?,
         Command::Show { name } => {
             if let Some(name) = name {
                 show(&registry, &registry.read(&name)?, json_output)?;

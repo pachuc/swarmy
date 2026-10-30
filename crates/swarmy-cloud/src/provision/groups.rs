@@ -30,10 +30,10 @@ pub struct MachineGroups<'a> {
 /// True if any group creates machines.
 #[must_use]
 pub fn has_module_groups(spec: &SwarmSpec) -> bool {
-    spec.groups.values().any(|g| is_module(&g.module))
+    spec.groups.values().any(opentofu_group)
 }
-fn is_module(module: &Module) -> bool {
-    !matches!(module, Module::Existing | Module::Local)
+fn opentofu_group(group: &GroupSpec) -> bool {
+    !matches!(group.module, Module::Existing | Module::Local) && !group.elastic
 }
 /// Module groups in placement order.
 #[must_use]
@@ -45,7 +45,7 @@ pub fn apply_order(spec: &SwarmSpec) -> Vec<String> {
     order.extend(spec.placement.nodes.iter().cloned());
     let mut result = Vec::new();
     for name in order {
-        if !result.contains(&name) && spec.groups.get(&name).is_some_and(|g| is_module(&g.module)) {
+        if !result.contains(&name) && spec.groups.get(&name).is_some_and(opentofu_group) {
             result.push(name);
         }
     }
@@ -65,16 +65,10 @@ pub(crate) struct Applied {
 fn root(dir: &Path) -> PathBuf {
     dir.join("tofu")
 }
-fn group_dir(dir: &Path, group: &str) -> PathBuf {
+/// Working directory for one machine group.
+#[must_use]
+pub fn group_dir(dir: &Path, group: &str) -> PathBuf {
     root(dir).join(group)
-}
-fn valid_name(name: &str) -> bool {
-    name.len() <= 20
-        && name.starts_with(|c: char| c.is_ascii_lowercase())
-        && name.ends_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && name
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
 }
 fn module_name(module: &Module) -> String {
     module.clone().into()
@@ -120,29 +114,28 @@ fn provider_env(
     }
     Ok(env)
 }
-fn credential_env(
+/// Environment variables required by a module, excluding secret values from files.
+/// # Errors
+/// Returns `CloudNotLoggedIn` when a required provider is absent.
+pub fn module_credential_env(
     credentials: &CloudCredentials,
-    group: &GroupSpec,
+    module: &Module,
     bucket: bool,
 ) -> Result<CredentialEnv> {
-    let providers: Vec<_> = match group.module {
-        Module::HetznerCloud => {
-            let mut providers = vec![CloudProvider::HetznerCloud];
-            if bucket || credentials.get(CloudProvider::HetznerS3).is_some() {
+    let providers: Vec<_> = match module {
+        // Custom modules receive all stored providers: their provider needs are unknown.
+        Module::Path(_) => CloudProvider::ALL.to_vec(),
+        module => {
+            let mut providers: Vec<_> = module.machine_provider().into_iter().collect();
+            if *module == Module::HetznerCloud
+                && (bucket || credentials.get(CloudProvider::HetznerS3).is_some())
+            {
                 providers.push(CloudProvider::HetznerS3);
             }
             providers
         }
-        Module::Aws => vec![CloudProvider::Aws],
-        // Custom modules receive all stored providers: their provider needs are unknown.
-        Module::Path(_) => CloudProvider::ALL.to_vec(),
-        _ => Vec::new(),
     };
-    provider_env(
-        credentials,
-        &providers,
-        !matches!(group.module, Module::Path(_)),
-    )
+    provider_env(credentials, &providers, !matches!(module, Module::Path(_)))
 }
 fn network_zone(location: &str) -> Option<&'static str> {
     match location {
@@ -175,7 +168,7 @@ pub fn check_credentials(spec: &SwarmSpec, credentials: &CloudCredentials) -> Re
     for name in apply_order(spec) {
         let group = &spec.groups[&name];
         let bucket = name == spec.placement.stack && creates_bucket(spec);
-        let _ = credential_env(credentials, group, bucket)?;
+        let _ = module_credential_env(credentials, &group.module, bucket)?;
     }
     Ok(())
 }
@@ -201,13 +194,13 @@ pub(crate) fn preflight(
             )));
         }
         seen.push(name.clone());
-        if !valid_name(&spec.name) {
+        if !swarmy_config::is_opentofu_name(&spec.name) {
             return Err(Error::other(format!(
                 "swarm \"{}\": OpenTofu groups need a swarm name of 1-20 lowercase letters, digits and hyphens that starts with a letter and does not end with a hyphen",
                 spec.name
             )));
         }
-        if !valid_name(&name) {
+        if !swarmy_config::is_opentofu_name(&name) {
             return Err(Error::other(format!(
                 "group \"{name}\": OpenTofu groups need a group name of 1-20 lowercase letters, digits and hyphens that starts with a letter and does not end with a hyphen"
             )));
@@ -271,10 +264,20 @@ fn last_variables(dir: &Path) -> Option<Map<String, Value>> {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
-async fn group_key(dir: &Path, swarm: &str, group: &str) -> Result<String> {
-    let keys = dir.join("keys/groups");
-    create_private_dir(&keys)?;
-    let key = keys.join(group);
+fn group_keys_dir(dir: &Path) -> PathBuf {
+    dir.join("keys/groups")
+}
+/// Path of the group SSH identity on the primary.
+#[must_use]
+pub fn group_key_path(dir: &Path, group: &str) -> PathBuf {
+    group_keys_dir(dir).join(group)
+}
+/// Return or generate the group SSH public key.
+/// # Errors
+/// Returns filesystem or key-generation failures.
+pub async fn group_key(dir: &Path, swarm: &str, group: &str) -> Result<String> {
+    create_private_dir(&group_keys_dir(dir))?;
+    let key = group_key_path(dir, group);
     let public = if key.is_file() {
         fs::read(key.with_extension("pub"))?
     } else {
@@ -282,35 +285,41 @@ async fn group_key(dir: &Path, swarm: &str, group: &str) -> Result<String> {
     };
     Ok(String::from_utf8(public)?.trim().to_owned())
 }
-fn variables(
-    spec: &SwarmSpec,
-    name: &str,
-    group: &GroupSpec,
-    key: &str,
-    bucket: &str,
-    network: &str,
-) -> Map<String, Value> {
+pub struct GroupInputs<'a> {
+    pub swarm: &'a str,
+    pub group: &'a str,
+    pub machine_count: u32,
+    pub size: Option<&'a str>,
+    pub location: Option<&'a str>,
+    pub ssh_public_key: &'a str,
+    pub bucket: &'a str,
+    pub network: &'a str,
+}
+/// Module variables shared by the client and the primary's provisioner.
+#[must_use]
+pub fn group_variables(inputs: &GroupInputs<'_>) -> Map<String, Value> {
     let mut vars = Map::new();
     for (k, v) in [
-        ("swarm", json!(spec.name)),
-        ("group", json!(name)),
-        ("machine_count", json!(group.count.unwrap_or_default())),
-        ("ssh_public_key", json!(key)),
+        ("swarm", json!(inputs.swarm)),
+        ("group", json!(inputs.group)),
+        ("machine_count", json!(inputs.machine_count)),
+        ("ssh_public_key", json!(inputs.ssh_public_key)),
         ("ssh_allowed_cidrs", json!(["0.0.0.0/0", "::/0"])),
-        ("bucket_name", json!(bucket)),
+        ("bucket_name", json!(inputs.bucket)),
         ("bucket_force_destroy", json!(false)),
-        ("network_id", json!(network)),
+        ("network_id", json!(inputs.network)),
     ] {
         vars.insert(k.into(), v);
     }
-    if let Some(size) = &group.size {
+    if let Some(size) = inputs.size {
         vars.insert("size".into(), json!(size));
     }
-    if let Some(location) = &group.location {
+    if let Some(location) = inputs.location {
         vars.insert("location".into(), json!(location));
     }
     vars
 }
+
 struct ModuleSet {
     files: Vec<(String, Vec<u8>)>,
 }
@@ -377,15 +386,44 @@ fn hosts_from(
             )));
         }
     }
-    outputs.machines.iter().map(|m| {
-        let public = m.public_ipv4.ok_or_else(|| Error::other(format!("group {group}: machine {} has no public IPv4 address; swarmy provisions over IPv4", m.name)))?;
-        let private_address = match m.private_ip {
-            Some(IpAddr::V4(ip)) => Some(ip.to_string()),
-            Some(address) => return Err(Error::other(format!("group {group}: machine {}: private address {address} must be IPv4", m.name))),
-            None => None,
-        };
-        Ok(RecordedHost { name: m.name.clone(), public_address: public.to_string(), private_address, ssh_user: m.ssh_user.clone(), ssh_key: key.into(), provisioned: previous.iter().any(|h| h.name == m.name && h.provisioned) })
-    }).collect()
+    outputs
+        .machines
+        .iter()
+        .map(|m| {
+            let mut host = recorded_host(group, m, key)?;
+            host.provisioned = previous.iter().any(|h| h.name == m.name && h.provisioned);
+            Ok(host)
+        })
+        .collect()
+}
+/// One `OpenTofu` machine as a host record, not yet provisioned. Swarmy provisions over IPv4.
+/// # Errors
+/// Missing public IPv4 or non-IPv4 private address.
+pub fn recorded_host(group: &str, m: &swarmy_infra::Machine, key: &Path) -> Result<RecordedHost> {
+    let public = m.public_ipv4.ok_or_else(|| {
+        Error::other(format!(
+            "group {group}: machine {} has no public IPv4 address; swarmy provisions over IPv4",
+            m.name
+        ))
+    })?;
+    let private_address = match m.private_ip {
+        Some(IpAddr::V4(ip)) => Some(ip.to_string()),
+        Some(address) => {
+            return Err(Error::other(format!(
+                "group {group}: machine {}: private address {address} must be IPv4",
+                m.name
+            )));
+        }
+        None => None,
+    };
+    Ok(RecordedHost {
+        name: m.name.clone(),
+        public_address: public.to_string(),
+        private_address,
+        ssh_user: m.ssh_user.clone(),
+        ssh_key: key.into(),
+        provisioned: false,
+    })
 }
 pub(crate) fn bucket_from(
     record: &SwarmRecord,
@@ -426,8 +464,21 @@ async fn prepare_group<'a>(
         .iter()
         .find(|(kind, _)| kind == &group.module)
         .map_or("", |(_, id)| id.as_str());
-    let vars = variables(spec, name, group, key, group_bucket, network);
-    let env = credential_env(machines.credentials, group, !group_bucket.is_empty())?;
+    let vars = group_variables(&GroupInputs {
+        swarm: &spec.name,
+        group: name,
+        machine_count: group.count.unwrap_or_default(),
+        size: group.size.as_deref(),
+        location: group.location.as_deref(),
+        ssh_public_key: key,
+        bucket: group_bucket,
+        network,
+    });
+    let env = module_credential_env(
+        machines.credentials,
+        &group.module,
+        !group_bucket.is_empty(),
+    )?;
     let workspace = machines.tofu.workspace(group_dir(dir, name), env);
     let module = module_files(name, group)?;
     workspace.prepare(&module.borrowed(), &vars).await?;
@@ -481,6 +532,7 @@ pub(crate) async fn apply(
         .await?;
         workspace.apply().await?;
         let mut outputs = workspace.outputs().await?;
+        // Scaleway machines have no private network, so their private address is always null.
         if matches!(group.module, Module::HetznerCloud | Module::Aws)
             && outputs.machines.iter().any(|m| m.private_ip.is_none())
         {
@@ -618,7 +670,7 @@ fn destroy_env(
                     .map(str::to_owned)
             })
             .is_some_and(|s| !s.is_empty());
-        return credential_env(credentials, group, bucket);
+        return module_credential_env(credentials, &group.module, bucket);
     }
     provider_env(credentials, &CloudProvider::ALL, false)
 }

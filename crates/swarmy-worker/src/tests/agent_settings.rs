@@ -149,6 +149,8 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
                         memory_mib: None,
                         gpu: None,
                         route: None,
+                        allow_gpu_request: None,
+                        gpu_reason: None,
                     }),
                     ..Default::default()
                 }),
@@ -175,6 +177,8 @@ async fn named_agent_overrides_and_ephemeral_defaults_reach_durable_inference() 
                     memory_mib: None,
                     gpu: None,
                     route: None,
+                    allow_gpu_request: None,
+                    gpu_reason: None,
                 },
                 &[],
             )
@@ -325,7 +329,7 @@ async fn session_selection_routes_and_missing_gateway_waits() {
                     f.store.fetch_session(id).await.unwrap().unwrap().state,
                     SessionState::Sleeping
                 );
-                assert!(f.store.inference_wait(id).await.unwrap().is_some());
+                assert!(f.store.session_wait(id).await.unwrap().is_some());
             }
         }
         let fake = f.infer(f.session(None).await).await;

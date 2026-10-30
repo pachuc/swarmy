@@ -77,16 +77,6 @@ fn ssh_with(program: &OsStr, options: &[String]) -> Command {
     command
 }
 
-// The service home is private to its owner. A bootstrap login other than root
-// must elevate the remote receiver, including when rsync creates a directory.
-fn rsync_command(node: &Machine) -> Command {
-    let mut command = Command::new("rsync");
-    if node.ssh_user != "root" {
-        command.arg("--rsync-path=sudo -n rsync");
-    }
-    command
-}
-
 fn base(node: &Machine) -> Result<Command> {
     Ok(ssh_with(OsStr::new("ssh"), &arguments(node)?))
 }
@@ -289,6 +279,80 @@ pub async fn adopt_key(node: &Machine, source: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Where a joining node's primary-side steps run: over SSH from the client, or on the
+/// primary itself by the provisioner. Both run the same shell commands.
+#[derive(Clone, Copy)]
+pub enum Primary<'a> {
+    Remote(&'a Machine),
+    Local(&'a LocalPrimary),
+}
+/// The primary as seen by a provisioner running on it.
+#[derive(Clone, Debug)]
+pub struct LocalPrimary {
+    pub address: std::net::Ipv4Addr,
+    pub service_user: String,
+}
+enum PrimaryShell<'a> {
+    Remote {
+        machine: &'a Machine,
+        address: String,
+    },
+    Local,
+}
+impl<'a> Primary<'a> {
+    fn tunnel_address(self) -> Result<std::net::Ipv4Addr> {
+        match self {
+            Self::Remote(machine) => machine.private_ip.parse().map_err(|source| {
+                crate::Error::context(source, "private_ip must be an IPv4 address")
+            }),
+            Self::Local(primary) => Ok(primary.address),
+        }
+    }
+    fn user(self) -> Result<String> {
+        match self {
+            Self::Remote(machine) => service_user(machine),
+            Self::Local(primary) => {
+                swarmy_config::validate_service_user(&primary.service_user)?;
+                Ok(primary.service_user.clone())
+            }
+        }
+    }
+    async fn shell(self, attempts: u32) -> Result<PrimaryShell<'a>> {
+        match self {
+            Self::Remote(machine) => Ok(PrimaryShell::Remote {
+                machine,
+                address: wait_ssh_for(machine, attempts).await?,
+            }),
+            Self::Local(_) => Ok(PrimaryShell::Local),
+        }
+    }
+}
+impl PrimaryShell<'_> {
+    fn command(&self, remote: &str) -> Result<Command> {
+        match self {
+            Self::Remote { machine, address } => {
+                let mut command = base(machine)?;
+                command.arg(address).arg(remote);
+                Ok(command)
+            }
+            Self::Local => {
+                let mut command = Command::new("sh");
+                command
+                    .args(["-c", remote])
+                    .stdin(Stdio::null())
+                    .kill_on_drop(true);
+                Ok(command)
+            }
+        }
+    }
+    async fn output(&self, remote: &str, action: &str) -> Result<std::process::Output> {
+        run_output(&mut self.command(remote)?, action).await
+    }
+    async fn checked(&self, remote: &str, action: &str) -> Result<()> {
+        checked(&mut self.command(remote)?, action).await
+    }
+}
+
 /// Where a node's swarmy binaries come from.
 pub enum Binaries {
     /// Verified release binaries cached locally.
@@ -296,8 +360,42 @@ pub enum Binaries {
         release: crate::release::Release,
         cache: PathBuf,
     },
+    /// The build this process runs: swarmy-core beside the current executable, and the
+    /// `libfdb_c.so` this process loaded. The provisioner uploads it to nodes it joins.
+    Installed { core: PathBuf, library: PathBuf },
     /// Development checkout copied into the node's source directory.
     Build { checkout: PathBuf },
+}
+
+impl Binaries {
+    /// Discover the running primary's core and loaded `FoundationDB` library.
+    /// # Errors
+    /// Missing swarmy-core beside the executable, or no loaded `libfdb_c.so`.
+    pub fn installed() -> Result<Self> {
+        Self::installed_from(
+            &std::env::current_exe()?,
+            &std::fs::read_to_string("/proc/self/maps")?,
+        )
+    }
+    fn installed_from(exe: &Path, maps: &str) -> Result<Self> {
+        let core = exe
+            .parent()
+            .ok_or_else(|| crate::Error::other("executable has no parent"))?
+            .join("swarmy-core");
+        crate::Error::ensure(
+            core.is_file(),
+            format!("missing swarmy-core at {}", core.display()),
+        )?;
+        let library = maps
+            .lines()
+            .filter_map(|line| line.split_whitespace().last())
+            .find(|path| Path::new(path).file_name() == Some(OsStr::new("libfdb_c.so")))
+            .ok_or_else(|| crate::Error::other("this process has no libfdb_c.so loaded"))?;
+        Ok(Self::Installed {
+            core,
+            library: library.into(),
+        })
+    }
 }
 
 /// Provisions nodes from bundled files and optional binaries.
@@ -384,18 +482,56 @@ impl Ssh {
             .await?;
         let mut sources = vec![core.join("swarmy-core"), core.join("libfdb_c.so")];
         if stack {
+            sources.push(core.join("swarmy-provisioner"));
             let client = release
                 .ensure(cache, crate::release::Component::Client, target)
                 .await?;
             sources.push(client.join("swarmy"));
         }
+        Self::upload_bundle(node, address, node_dir, &sources).await
+    }
+
+    async fn upload_installed(
+        node: &Machine,
+        address: &str,
+        node_dir: &str,
+        core: &Path,
+        library: &Path,
+    ) -> Result<()> {
+        let target = Self::node_target(node, address).await?;
+        let host = crate::release::Target::host()?;
+        crate::Error::ensure(
+            target == host,
+            format!(
+                "node {} is {}, but this primary runs {}; the provisioner uploads its own build",
+                node.name,
+                target.triple(),
+                host.triple()
+            ),
+        )?;
+        cloud_out!("Uploading this primary's swarmy-core build");
+        Self::upload_bundle(
+            node,
+            address,
+            node_dir,
+            &[core.to_owned(), library.to_owned()],
+        )
+        .await
+    }
+
+    async fn upload_bundle(
+        node: &Machine,
+        address: &str,
+        node_dir: &str,
+        sources: &[PathBuf],
+    ) -> Result<()> {
         let mut transport = vec!["ssh".to_owned()];
         transport.extend(arguments(node)?);
         checked(
-            rsync_command(node)
+            Command::new("rsync")
                 .args(["-a", "--mkpath", "-e"])
                 .arg(shell_words::join(transport))
-                .args(&sources)
+                .args(sources)
                 .arg(format!("{address}:{node_dir}/.swarmy/release/")),
             "upload release binaries",
         )
@@ -479,6 +615,11 @@ impl Ssh {
         match binaries {
             Binaries::Release { release, cache } => {
                 Self::upload_release(node, address, &node_dir, release, cache, stack).await?;
+                Ok(true)
+            }
+            Binaries::Installed { core, library } => {
+                crate::Error::ensure(!stack, "installed binaries join sandbox nodes only")?;
+                Self::upload_installed(node, address, &node_dir, core, library).await?;
                 Ok(true)
             }
             Binaries::Build { checkout } => {
@@ -595,26 +736,25 @@ impl Ssh {
     /// # Errors
     ///
     /// Reports unreachable hosts and provisioning script failures.
-    pub async fn provision(&self, node: &Machine, primary: Option<&Machine>) -> Result<String> {
+    pub async fn provision(&self, node: &Machine, primary: Option<Primary<'_>>) -> Result<String> {
         let address = wait_ssh(node).await?;
         let prebuilt = self.stage(node, &address, primary.is_none()).await?;
-        let service_ip: std::net::Ipv4Addr =
-            primary
-                .unwrap_or(node)
-                .private_ip
-                .parse()
-                .map_err(|source| {
-                    crate::Error::context(source, "private_ip must be an IPv4 address")
-                })?;
-        let mode = if let Some(primary) = primary {
-            let source = wait_ssh(primary).await?;
-            let cluster = run_output(
-                base(primary)?
-                    .arg(&source)
-                    .arg(read_cluster_command(primary)?),
-                "read primary cluster file",
+        if let Some(id) = node.node_id {
+            checked(
+                base(node)?.arg(&address).arg(node_id_command(node, id)?),
+                "write node id",
             )
             .await?;
+        }
+        let service_ip = primary.unwrap_or(Primary::Remote(node)).tunnel_address()?;
+        let mode = if let Some(primary) = primary {
+            let shell = primary.shell(90).await?;
+            let cluster = shell
+                .output(
+                    &read_cluster_command(&primary.user()?),
+                    "read primary cluster file",
+                )
+                .await?;
             let cluster = String::from_utf8(cluster.stdout)?;
             crate::Error::ensure(
                 cluster.trim().ends_with("@127.0.0.1:4500"),
@@ -627,7 +767,7 @@ impl Ssh {
                 "copy primary cluster file",
             )
             .await?;
-            install_tunnel(node, &address, primary, &source).await?;
+            install_tunnel(node, &address, primary, &shell).await?;
             "node"
         } else {
             "stack"
@@ -730,7 +870,7 @@ async fn upload_node_files(node: &Machine, address: &str, node_dir: &str) -> Res
     let args = node_files_rsync_args(temp.path(), &format!("{address}:{node_dir}"));
     let split = args.len() - 2;
     checked(
-        rsync_command(node)
+        Command::new("rsync")
             .args(&args[..split])
             .arg("-e")
             .arg(shell_words::join(transport))
@@ -761,7 +901,7 @@ async fn copy_source(node: &Machine, address: &str, node_dir: &str, checkout: &P
     transport.extend(arguments(node)?);
     let settings = swarmy_config::Settings::load_base()?.settings;
     let credential = &settings.selection.credential_file;
-    let mut copy = rsync_command(node);
+    let mut copy = Command::new("rsync");
     for relative in
         credential_excludes(checkout, credential)
             .into_iter()
@@ -792,7 +932,7 @@ async fn copy_source(node: &Machine, address: &str, node_dir: &str, checkout: &P
     let marker = format!("{node_dir}/source/.swarmy-source-commit");
     checked(
         base(node)?.arg(address).arg(format!(
-            "printf '%s\\n' {} | sudo tee {} >/dev/null",
+            "printf '%s\\n' {} > {}",
             shell_words::quote(&commit),
             shell_words::quote(&marker)
         )),
@@ -991,7 +1131,7 @@ pub async fn drain_node(node: &Machine, timeout: Duration, force: bool) -> Resul
 /// Remove a node's tunnel key from the primary's service-user `authorized_keys`.
 /// # Errors
 /// SSH failures, or a node without a tunnel key.
-pub async fn revoke_tunnel(node: &Machine, primary: &Machine) -> Result<()> {
+pub async fn revoke_tunnel(node: &Machine, primary: Primary<'_>) -> Result<()> {
     let user = service_user(node)?;
     let key = run_output(
         base(node)?
@@ -1001,14 +1141,13 @@ pub async fn revoke_tunnel(node: &Machine, primary: &Machine) -> Result<()> {
     )
     .await?;
     let authorization = tunnel_authorization(&String::from_utf8(key.stdout)?)?;
-    let command = authorized_keys_command(primary, &authorization, true)?;
-    checked(
-        base(primary)?
-            .arg(wait_ssh_for(primary, 6).await?)
-            .arg(command),
-        "revoke joining node tunnel key",
-    )
-    .await
+    let shell = primary.shell(6).await?;
+    shell
+        .checked(
+            &authorized_keys_command(&primary.user()?, &authorization, true),
+            "revoke joining node tunnel key",
+        )
+        .await
 }
 
 fn image_build_command(user: &str, recipe: &Path, tag: &str) -> Result<String> {
@@ -1050,9 +1189,8 @@ print('export SWARMY_API_TOKEN=' + shlex.quote(api.get('token', '')))";
 /// the provisioning futures. Each validates the service user first and
 /// resolves its home through `~user` on the host, keeping one path
 /// implementation in bash.
-fn read_cluster_command(primary: &Machine) -> Result<String> {
-    let user = service_user(primary)?;
-    Ok(format!("cat {}/.dev/fdb.cluster", tilde_repo(&user)))
+fn read_cluster_command(user: &str) -> String {
+    format!("cat {}/.dev/fdb.cluster", tilde_repo(user))
 }
 
 fn copy_cluster_command(node: &Machine, cluster: &str) -> Result<String> {
@@ -1061,6 +1199,14 @@ fn copy_cluster_command(node: &Machine, cluster: &str) -> Result<String> {
     Ok(format!(
         "mkdir -p {repo}/.dev && printf %s {} > {repo}/.dev/fdb.cluster && chown -R {user}:{user} {repo}/.dev",
         shell_words::quote(cluster),
+    ))
+}
+
+fn node_id_command(node: &Machine, id: swarmy_core::NodeId) -> Result<String> {
+    let user = service_user(node)?;
+    let repo = tilde_repo(&user);
+    Ok(format!(
+        "umask 077; mkdir -p {repo}/.swarmy && printf %s {id} > {repo}/.swarmy/node-id && chown {user}:{user} {repo}/.swarmy {repo}/.swarmy/node-id"
     ))
 }
 
@@ -1083,8 +1229,7 @@ fn pin_primary_key_command(node: &Machine, known_host: &str) -> Result<String> {
 
 // The service user's authorized_keys lives at its account home, not at the
 // bootstrap login's home. Both installation and revocation use this path.
-fn authorized_keys_command(primary: &Machine, authorization: &str, revoke: bool) -> Result<String> {
-    let user = service_user(primary)?;
+fn authorized_keys_command(user: &str, authorization: &str, revoke: bool) -> String {
     let home = format!("~{user}");
     let file = format!("{home}/.ssh/authorized_keys");
     let line = shell_words::quote(authorization);
@@ -1093,14 +1238,11 @@ fn authorized_keys_command(primary: &Machine, authorization: &str, revoke: bool)
         let inner = format!(
             "umask 077; grep -vxF -- {line} {file} > {file}.tmp; status=$?; if [ \"$status\" -le 1 ]; then mv {file}.tmp {file}; else rm -f {file}.tmp; exit \"$status\"; fi"
         );
-        Ok(format!(
-            "sudo -u {user} sh -c {}",
-            shell_words::quote(&inner)
-        ))
+        format!("sudo -u {user} sh -c {}", shell_words::quote(&inner))
     } else {
-        Ok(format!(
+        format!(
             "service_user={user}; service_home={home}; umask 077; sudo -u $service_user mkdir -p $service_home/.ssh && sudo -u $service_user touch $service_home/.ssh/authorized_keys && (sudo -u $service_user grep -qxF -- {line} $service_home/.ssh/authorized_keys || printf '%s\\n' {line} | sudo -u $service_user tee -a $service_home/.ssh/authorized_keys >/dev/null)"
-        ))
+        )
     }
 }
 
@@ -1108,8 +1250,8 @@ fn authorized_keys_command(primary: &Machine, authorization: &str, revoke: bool)
 async fn install_tunnel(
     node: &Machine,
     address: &str,
-    primary: &Machine,
-    source: &str,
+    primary: Primary<'_>,
+    shell: &PrimaryShell<'_>,
 ) -> Result<()> {
     let output = run_output(
         base(node)?.arg(address).arg(tunnel_key_command(node)?),
@@ -1120,23 +1262,21 @@ async fn install_tunnel(
     let authorization = tunnel_authorization(&key)?;
     // The tunnel unit connects as the service user, so its key belongs in the
     // service user's authorized_keys, not the bootstrap login's.
-    checked(
-        base(primary)?
-            .arg(source)
-            .arg(authorized_keys_command(primary, &authorization, false)?),
-        "authorize joining node tunnel",
-    )
-    .await?;
+    shell
+        .checked(
+            &authorized_keys_command(&primary.user()?, &authorization, false),
+            "authorize joining node tunnel",
+        )
+        .await?;
     // Obtain the host key over the already authenticated provisioning connection.
-    let host_key = run_output(
-        base(primary)?
-            .arg(source)
-            .arg("cat /etc/ssh/ssh_host_ed25519_key.pub"),
-        "read primary SSH host key",
-    )
-    .await?;
+    let host_key = shell
+        .output(
+            "cat /etc/ssh/ssh_host_ed25519_key.pub",
+            "read primary SSH host key",
+        )
+        .await?;
     let host_key = String::from_utf8(host_key.stdout)?;
-    let known_host = format!("{} {}", primary.private_ip, host_key.trim());
+    let known_host = format!("{} {}", primary.tunnel_address()?, host_key.trim());
     checked(
         base(node)?
             .arg(address)
@@ -1506,33 +1646,91 @@ mod provisioning_command_tests {
             sandboxes: 4,
             bucket: None,
             services: true,
+            node_id: None,
         }
     }
 
     #[test]
-    fn rsync_receiver_elevates_non_root_ssh_login() {
-        let mut non_root = node();
-        non_root.ssh_user = "ubuntu".into();
-        let args: Vec<_> = super::rsync_command(&non_root)
+    fn primary_steps_run_over_ssh_or_on_this_host() {
+        let remote = node();
+        let remote_shell = super::PrimaryShell::Remote {
+            machine: &remote,
+            address: "10.0.0.1".into(),
+        };
+        let command = remote_shell.command("echo ok").unwrap();
+        let args = command
             .as_std()
             .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(args, ["--rsync-path=sudo -n rsync"]);
-
-        assert!(
-            super::rsync_command(&node())
-                .as_std()
-                .get_args()
-                .next()
-                .is_none()
+            .map(|arg| arg.to_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(command.as_std().get_program(), "ssh");
+        assert_eq!(&args[args.len() - 2..], &["10.0.0.1", "echo ok"]);
+        let shell = super::PrimaryShell::Local;
+        let command = shell.command("echo ok").unwrap();
+        assert_eq!(command.as_std().get_program(), "sh");
+        assert_eq!(
+            command.as_std().get_args().collect::<Vec<_>>(),
+            ["-c", "echo ok"]
         );
     }
 
     #[test]
+    fn local_primary_tunnels_to_its_given_address() {
+        let local = super::LocalPrimary {
+            address: "192.0.2.1".parse().unwrap(),
+            service_user: "swarmy".into(),
+        };
+        assert_eq!(
+            super::Primary::Local(&local).tunnel_address().unwrap(),
+            local.address
+        );
+    }
+
+    #[test]
+    fn node_id_command_writes_the_persisted_id_file() {
+        let id = swarmy_core::NodeId::from_ulid(ulid::Ulid::generate());
+        let text = super::node_id_command(&node(), id).unwrap();
+        let words = shell_words::split(&text).unwrap();
+        assert!(
+            words
+                .iter()
+                .any(|word| word == "~swarmy/swarmy/.swarmy/node-id")
+        );
+        assert!(words.iter().any(|word| word == &id.to_string()));
+    }
+
+    #[test]
+    fn installed_binaries_come_from_the_executable_dir_and_loaded_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("swarmy-provisioner");
+        assert!(
+            super::Binaries::installed_from(&exe, "")
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("swarmy-core")
+        );
+        std::fs::write(dir.path().join("swarmy-core"), "binary").unwrap();
+        assert!(
+            super::Binaries::installed_from(&exe, "")
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("no libfdb_c.so loaded")
+        );
+        let maps = "00400000-00452000 r-xp 00000000 00:00 0 /opt/x/libfdb_c.so";
+        let super::Binaries::Installed { core, library } =
+            super::Binaries::installed_from(&exe, maps).unwrap()
+        else {
+            panic!("expected installed binaries")
+        };
+        assert_eq!(core, dir.path().join("swarmy-core"));
+        assert_eq!(library, std::path::Path::new("/opt/x/libfdb_c.so"));
+    }
+
+    #[test]
     fn revoke_only_moves_authorized_keys_after_a_successful_grep() {
-        let command =
-            super::authorized_keys_command(&node(), "ssh-ed25519 AAAA test", true).unwrap();
+        let command = super::authorized_keys_command("swarmy", "ssh-ed25519 AAAA test", true);
         let words = shell_words::split(&command).unwrap();
         assert_eq!(&words[..4], &["sudo", "-u", "swarmy", "sh"]);
         let inner = words.last().unwrap();

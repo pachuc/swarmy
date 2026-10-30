@@ -48,6 +48,9 @@ pub enum CredentialKind {
         expires_at: Timestamp,
         extra: BTreeMap<String, String>,
     },
+    MachineProvider {
+        env: BTreeMap<String, String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +73,7 @@ pub enum CredentialEntryKind {
     Subscription,
     ApiKey,
     Cloud,
+    MachineProvider,
 }
 
 impl CredentialEntryKind {
@@ -79,6 +83,7 @@ impl CredentialEntryKind {
             Self::Subscription => "subscription",
             Self::ApiKey => "api-key",
             Self::Cloud => "cloud",
+            Self::MachineProvider => "machine-provider",
         }
     }
 }
@@ -90,12 +95,16 @@ impl CredentialRecord {
             CredentialKind::OAuth { .. } => CredentialEntryKind::Subscription,
             CredentialKind::ApiKey { .. } if self.bookkeeping.cloud => CredentialEntryKind::Cloud,
             CredentialKind::ApiKey { .. } => CredentialEntryKind::ApiKey,
+            CredentialKind::MachineProvider { .. } => CredentialEntryKind::MachineProvider,
         }
     }
 
     #[must_use]
     pub fn status(&self, now: Timestamp) -> CredentialStatus {
         match &self.kind {
+            CredentialKind::MachineProvider { env } if env.is_empty() => {
+                CredentialStatus::NeedsLogin
+            }
             CredentialKind::ApiKey { key, .. }
                 if key.is_empty() || self.bookkeeping.needs_login =>
             {
@@ -128,6 +137,36 @@ impl CredentialRecord {
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+    #[test]
+    fn empty_machine_provider_needs_login() {
+        let record = CredentialRecord {
+            kind: CredentialKind::MachineProvider {
+                env: BTreeMap::new(),
+            },
+            updated_at: Timestamp::from_second(0).unwrap(),
+            bookkeeping: CredentialBookkeeping::default(),
+        };
+        assert_eq!(
+            record.status(Timestamp::from_second(0).unwrap()),
+            CredentialStatus::NeedsLogin
+        );
+        assert_eq!(record.entry_kind(), CredentialEntryKind::MachineProvider);
+        assert!(!record.needs_refresh(Timestamp::from_second(0).unwrap()));
+    }
+    #[test]
+    fn fixed_machine_provider_bytes() {
+        let kind = CredentialKind::MachineProvider {
+            env: [("HCLOUD_TOKEN".into(), "x".into())].into(),
+        };
+        let bytes = crate::encode(&kind).unwrap();
+        assert_eq!(
+            bytes,
+            [
+                1, 2, 1, 12, 72, 67, 76, 79, 85, 68, 95, 84, 79, 75, 69, 78, 1, 120
+            ]
+        );
+        assert!(crate::decode::<CredentialKind>(&bytes).unwrap() == kind);
+    }
 
     #[test]
     fn credential_record_has_fixed_bytes() {
