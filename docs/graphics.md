@@ -7,6 +7,10 @@ OpenGL and Vulkan. It requires no GPU. Mesa is the standard open-source OpenGL a
 its llvmpipe (OpenGL) and lavapipe (Vulkan) drivers run on the CPU. GPU
 rendering is not covered here.
 
+## GPU sandboxes
+
+On a GPU node, a sandbox with a GPU requirement sees the node's NVIDIA cards ([GPU nodes](swarms.md#gpu-nodes)). The device nodes let any process in the sandbox run work on the card and see other processes using it; the driver keeps their memory apart. For a fleet of the owner's own agents this is acceptable; use `dedicated` when a sandbox must not share the card. The display stack described below still renders in software.
+
 ## The display image
 
 Xvfb is an X11 display server that draws into memory, rather than on a physical

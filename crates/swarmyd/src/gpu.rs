@@ -1,7 +1,9 @@
 //! Detect the NVIDIA cards this node offers to GPU sandboxes.
 use anyhow::{Result, bail};
+use std::sync::Arc;
 use std::{io::ErrorKind, process::Stdio, time::Duration};
 use swarmy_core::GpuCards;
+use swarmy_sandbox::{GpuEdits, NodeGpu};
 use tokio::process::Command;
 
 pub(crate) const QUERY: [&str; 2] = [
@@ -116,6 +118,30 @@ pub(crate) fn parse_cards(stdout: &str) -> Result<Option<GpuCards>> {
     Ok(first)
 }
 
+/// Advertise real cards only when a usable CDI spec can expose them.
+pub(crate) async fn devices(
+    node: &swarmy_config::NodeSettings,
+    query: Command,
+) -> (Option<GpuCards>, NodeGpu) {
+    if node.fake_gpu.is_some() {
+        return (detect(node.fake_gpu.as_ref(), query).await, NodeGpu::Fake);
+    }
+    let Some(cards) = detect(None, query).await else {
+        return (None, NodeGpu::Absent);
+    };
+    match GpuEdits::load(&node.cdi_spec) {
+        Ok(edits) => {
+            tracing::info!(path = %node.cdi_spec.display(), "GPU sandboxes get the devices in the CDI spec");
+            (Some(cards), NodeGpu::Cdi(Arc::new(edits)))
+        }
+        Err(error) => {
+            tracing::error!(path = %node.cdi_spec.display(), error = %swarmy_core::error_chain(&error),
+                "GPU cards found, but the CDI spec is unusable; advertising no cards. Rerun provisioning, which installs the NVIDIA container toolkit and writes the spec");
+            (None, NodeGpu::Absent)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
@@ -185,5 +211,56 @@ mod tests {
         let mut q = Command::new("sh");
         q.args(["-c", "printf 'NVIDIA L4, 23034\n'"]);
         assert_eq!(detect(Some(&fake), q).await, Some(fake));
+    }
+    const SPEC: &str = r#"{"cdiVersion":"0.5.0","kind":"nvidia.com/gpu","devices":[{"name":"all","containerEdits":{"deviceNodes":[{"path":"/dev/nvidia0","type":"c","major":195,"minor":0}]}}]}"#;
+    fn node(spec: &std::path::Path) -> swarmy_config::NodeSettings {
+        swarmy_config::NodeSettings {
+            cdi_spec: spec.to_path_buf(),
+            ..Default::default()
+        }
+    }
+    fn l4_query() -> Command {
+        let mut q = Command::new("sh");
+        q.args(["-c", "printf 'NVIDIA L4, 23034\n'"]);
+        q
+    }
+    #[tokio::test]
+    async fn devices_cards_with_a_spec_are_advertised() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nvidia.json");
+        std::fs::write(&path, SPEC).unwrap();
+        let (cards, gpu) = devices(&node(&path), l4_query()).await;
+        assert_eq!(cards, Some(l4(1)));
+        assert!(matches!(gpu, NodeGpu::Cdi(_)));
+    }
+    #[tokio::test]
+    async fn devices_cards_without_a_spec_are_not_advertised() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cards, gpu) = devices(&node(&dir.path().join("nvidia.json")), l4_query()).await;
+        assert_eq!(cards, None);
+        assert!(matches!(gpu, NodeGpu::Absent));
+    }
+    #[tokio::test]
+    async fn devices_without_cards_skip_the_spec() {
+        let (cards, gpu) = devices(
+            &node(std::path::Path::new("/missing.json")),
+            Command::new("/nonexistent/nvidia-smi"),
+        )
+        .await;
+        assert_eq!(cards, None);
+        assert!(matches!(gpu, NodeGpu::Absent));
+    }
+    #[tokio::test]
+    async fn devices_fake_cards_expose_no_device() {
+        let mut settings = node(std::path::Path::new("/missing.json"));
+        let fake = GpuCards {
+            model: "Fake L4".into(),
+            memory_mib: 1000,
+            count: 2,
+        };
+        settings.fake_gpu = Some(fake.clone());
+        let (cards, gpu) = devices(&settings, l4_query()).await;
+        assert_eq!(cards, Some(fake));
+        assert!(matches!(gpu, NodeGpu::Fake));
     }
 }
