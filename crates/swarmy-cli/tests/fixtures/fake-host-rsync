@@ -1,2 +1,3 @@
 #!/bin/bash
+printf '%s\n' "$*" >> "$(dirname "$(dirname "$0")")/rsync-commands"
 exit 0

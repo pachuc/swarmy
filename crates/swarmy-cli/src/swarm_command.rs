@@ -41,7 +41,7 @@ pub(crate) enum Command {
         /// Worker machine size (defaults to --size)
         #[arg(long, requires = "on")]
         node_size: Option<String>,
-        /// SSH login on the host (default: root)
+        /// SSH login on the host (default: root; any other login needs passwordless sudo)
         #[arg(long, default_value = "root", requires = "host", conflicts_with = "on")]
         ssh_user: String,
         /// Private SSH key for the host
@@ -235,6 +235,7 @@ pub(crate) enum NodeCommand {
         group: String,
         #[arg(long)]
         host: String,
+        /// SSH login on the host (default: root; any other login needs passwordless sudo)
         #[arg(long, default_value = "root")]
         ssh_user: String,
         #[arg(long)]

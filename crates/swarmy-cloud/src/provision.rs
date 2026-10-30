@@ -1013,13 +1013,13 @@ pub async fn logs(
     let machine = node(selected, user(spec), bucket.as_ref());
     let address = ssh::reachable_address(&machine).await?;
     let command = "host journalctl".to_owned();
-    let mut child = ssh::command(&machine)?
-        .arg(address)
-        .arg(format!(
-            "journalctl --unit {unit} --follow --no-pager --lines 100"
-        ))
-        .spawn()
-        .map_err(Error::ssh(&command))?;
+    let mut child = ssh::node_command(
+        &machine,
+        &address,
+        &format!("journalctl --unit {unit} --follow --no-pager --lines 100"),
+    )?
+    .spawn()
+    .map_err(Error::ssh(&command))?;
     tokio::select! {
         result = child.wait() => {
             let status = result.map_err(Error::ssh(&command))?;

@@ -4,6 +4,92 @@ mod fake_host;
 use fake_host::Fixture;
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 #[test]
+fn root_login_sends_node_commands_unwrapped() {
+    let f = Fixture::new();
+    f.create();
+    f.ok(&["swarm", "up", "box", "--no-image"]);
+    let raw = fs::read(f.path().join("ssh-raw-commands")).unwrap();
+    assert!(
+        !raw.split(|byte| *byte == 0)
+            .filter(|piece| !piece.is_empty())
+            .any(|piece| piece.starts_with(b"sudo -n bash -c "))
+    );
+    let rsync = fs::read_to_string(f.path().join("rsync-commands")).unwrap();
+    assert!(rsync.lines().count() >= 2);
+    assert!(rsync.lines().all(|line| !line.contains("--rsync-path")));
+}
+
+#[test]
+fn non_root_login_runs_every_node_command_and_rsync_through_sudo() {
+    let f = Fixture::new();
+    create_ubuntu(&f);
+    f.ok(&["swarm", "up", "box", "--no-image"]);
+    f.ok(&["swarm", "logs", "box"]);
+    f.ok(&["swarm", "down", "box", "--destroy"]);
+    let raw = fs::read(f.path().join("ssh-raw-commands")).unwrap();
+    let commands = raw
+        .split(|byte| *byte == 0)
+        .filter(|piece| !piece.is_empty())
+        .map(|piece| std::str::from_utf8(piece).unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        commands.iter().all(|command| *command == "true"
+            || command.starts_with("sudo -n bash -c ")
+            || command.starts_with("sudo -n sh -c ")),
+        "{commands:?}"
+    );
+    assert!(commands.iter().any(|command| command.starts_with(
+        "sudo -n bash -c 'cd ~swarmy/swarmy && bash scripts/remote-provision.sh stack"
+    )));
+    assert!(commands.contains(&"sudo -n bash -c 'bash -s'"));
+    let unwrapped = fs::read_to_string(f.path().join("ssh-commands")).unwrap();
+    for command in [
+        "bash scripts/remote-provision.sh stack",
+        "bash scripts/remote-services.sh",
+        "journalctl --unit swarmyd --follow --no-pager --lines 100",
+    ] {
+        assert!(unwrapped.contains(command), "missing {command}");
+    }
+    let rsync = fs::read_to_string(f.path().join("rsync-commands")).unwrap();
+    assert!(rsync.lines().count() >= 2);
+    assert!(
+        rsync
+            .lines()
+            .all(|line| line.contains("--rsync-path=sudo -n rsync"))
+    );
+}
+
+#[test]
+fn login_without_passwordless_sudo_is_refused_clearly() {
+    let f = Fixture::new();
+    create_ubuntu(&f);
+    fs::write(f.path().join("fail-sudo"), "").unwrap();
+    let output = f.run(&["swarm", "up", "box", "--no-image"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("a login other than root needs passwordless sudo")
+    );
+    assert!(!f.path().join("rsync-commands").exists());
+}
+
+fn create_ubuntu(f: &Fixture) {
+    f.ok(&[
+        "swarm",
+        "create",
+        "box",
+        "--host",
+        "203.0.113.10",
+        "--ssh-user",
+        "ubuntu",
+        "--ssh-key",
+        f.key.to_str().unwrap(),
+        "--local-storage",
+        "dir:/srv/swarmy-local",
+    ]);
+}
+
+#[test]
 fn create_up_status_stop_start_down_on_one_host() {
     let f = Fixture::new();
     f.create();
