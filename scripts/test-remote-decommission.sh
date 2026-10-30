@@ -87,8 +87,14 @@ grep -qx ldconfig "$fake/ldconfig.log"
 [[ -d $fake/home/decomm-swarmy ]] || { echo "service home removed" >&2; exit 1; }
 grep -qxF 'LABEL=swarmy-local /mnt/swarmy-local ext4 defaults,nofail 0 2' "$fake/etc/fstab" || { echo "fstab line changed" >&2; exit 1; }
 
+# A host file with the managed name but without our marker is not ours.
+printf 'host-owned\n' > "$fake/etc/modules-load.d/swarmy-provisioned.conf"
+printf 'host-owned\n' > "$fake/etc/ld.so.conf.d/swarmy-provisioned.conf"
 # Rerunning after a complete teardown still succeeds (a retried down is a no-op).
 bash scripts/remote-decommission.sh decomm-swarmy
+[[ $(cat "$fake/etc/modules-load.d/swarmy-provisioned.conf") == host-owned ]]
+[[ $(cat "$fake/etc/ld.so.conf.d/swarmy-provisioned.conf") == host-owned ]]
+rm "$fake/etc/ld.so.conf.d/swarmy-provisioned.conf"
 
 mkdir -p "$fake/src"
 touch "$fake/src/libfdb_c.so"
