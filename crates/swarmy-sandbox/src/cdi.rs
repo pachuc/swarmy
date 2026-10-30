@@ -152,7 +152,10 @@ impl GpuEdits {
         text: &[u8],
         stat: &impl Fn(&Path) -> std::io::Result<HostDevice>,
     ) -> std::result::Result<Self, String> {
-        let spec: Spec = serde_json::from_slice(text).map_err(|error| error.to_string())?;
+        let spec: Spec = match serde_json::from_slice(text) {
+            Ok(spec) => spec,
+            Err(error) => return Err(error.to_string()),
+        };
         if spec.kind != CDI_KIND {
             return Err(format!("kind is {:?}, expected {CDI_KIND:?}", spec.kind));
         }
@@ -233,8 +236,10 @@ fn resolve(
         (Some(kind), Some(major), Some(minor)) => (kind, major, minor),
         (kind, major, minor) => {
             let host = node.host_path.as_deref().unwrap_or(&node.path);
-            let found =
-                stat(Path::new(host)).map_err(|error| format!("device node {host}: {error}"))?;
+            let found = match stat(Path::new(host)) {
+                Ok(found) => found,
+                Err(error) => return Err(format!("device node {host}: {error}")),
+            };
             (
                 kind.unwrap_or_else(|| found.kind.to_string()),
                 major.unwrap_or(found.major),
