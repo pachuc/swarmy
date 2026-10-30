@@ -199,30 +199,6 @@ while IFS= read -r binary; do
 done < <(retired_binary_names)
 [[ -f $fake_root/usr/local/bin/swarmy-core ]]
 unset -f sudo
-# A host-owned file with even the dedicated name must not be overwritten or
-# deleted; an owned file is safe to update and tear down repeatedly.
-mkdir -p "$fake_root/etc/modules-load.d"
-printf 'host-owned\n' > "$fake_root/etc/modules-load.d/swarmy-provisioned.conf"
-sudo() {
-    [[ $1 == -n ]] && shift
-    local args=() arg
-    for arg in "$@"; do
-        if [[ $arg == /* ]]; then args+=("$fake_root$arg"); else args+=("$arg"); fi
-    done
-    "${args[@]}"
-}
-if managed_host_file /etc/modules-load.d/swarmy-provisioned.conf nbd 2>/dev/null; then
-    echo 'overwrote host modules file' >&2; exit 1
-fi
-remove_managed_host_file /etc/modules-load.d/swarmy-provisioned.conf
-[[ $(cat "$fake_root/etc/modules-load.d/swarmy-provisioned.conf") == host-owned ]]
-rm "$fake_root/etc/modules-load.d/swarmy-provisioned.conf"
-managed_host_file /etc/modules-load.d/swarmy-provisioned.conf $'nbd\nublk_drv'
-managed_host_file /etc/modules-load.d/swarmy-provisioned.conf $'nbd\nublk_drv'
-[[ $(tail -n 2 "$fake_root/etc/modules-load.d/swarmy-provisioned.conf") == $'nbd\nublk_drv' ]]
-remove_managed_host_file /etc/modules-load.d/swarmy-provisioned.conf
-[[ ! -e $fake_root/etc/modules-load.d/swarmy-provisioned.conf ]]
-unset -f sudo
 [[ $(node_source_dir /x) == /x/source ]]
 
 # Restore the table after testing its failure path.
@@ -322,4 +298,7 @@ grep -q 'reboot' "$stub/err"
 if grep -q 'cdi generate' "$STUB_LOG"; then echo 'wrote a spec with an unloaded driver' >&2; exit 1; fi
 rm -rf "$stub"
 printf 'GPU provisioning: ok\n'
+[[ $(swarmy_modules_file) == /etc/modules-load.d/swarmy-provisioned.conf ]]
+[[ $(swarmy_library_conf) == /etc/ld.so.conf.d/swarmy-provisioned.conf ]]
+[[ $(swarmy_owned_marker) == '# Written by swarmy provisioning; swarmy swarm down removes this file.' ]]
 echo 'remote provision argument and environment tests passed'

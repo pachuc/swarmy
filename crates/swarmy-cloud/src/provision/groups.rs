@@ -757,10 +757,7 @@ pub(crate) async fn destroy(
                 ),
             ));
         }
-        if had_state {
-            cloud_out!("destroyed elastic group {name}");
-            count += 1;
-        }
+        count += usize::from(had_state);
     }
     Ok(count)
 }

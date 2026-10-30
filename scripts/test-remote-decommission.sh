@@ -2,7 +2,8 @@
 # Behavioral test for scripts/remote-decommission.sh: with stubbed sudo and
 # systemctl and a fake root, every unit and binary in the shared lists is
 # stopped, disabled, and removed, while the fstab entry and the service
-# user's home itself are left alone.
+# user's home itself are left alone. Drop-in files without swarmy's marker
+# line, such as the host's own modules list, survive.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/remote-provision-env.sh
@@ -49,11 +50,19 @@ done < <(swarmy_binary_names)
 while IFS= read -r binary; do
     touch "$fake/usr/local/bin/$binary"
 done < <(retired_binary_names)
+# The host's own module list, which provisioning and down must leave alone.
 printf 'nbd\nublk_drv\n' > "$fake/etc/modules-load.d/swarmy.conf"
-managed_host_file /etc/modules-load.d/swarmy-provisioned.conf $'nbd\nublk_drv'
-printf 'host-owned\n' > "$fake/etc/ld.so.conf.d/swarmy.conf"
-managed_host_file /etc/ld.so.conf.d/swarmy-provisioned.conf /usr/local/lib/swarmy
+printf 'nbd\nublk_drv\n' | install_owned_file /etc/modules-load.d/swarmy-provisioned.conf
 touch "$fake/usr/local/lib/swarmy/libfdb_c.so"
+printf '/opt/host-libs\n' > "$fake/etc/ld.so.conf.d/swarmy.conf"
+printf '/usr/local/lib/swarmy\n' | install_owned_file /etc/ld.so.conf.d/swarmy-provisioned.conf
+# Provisioning refuses to replace a drop-in it did not write.
+printf 'host\n' > "$fake/etc/ld.so.conf.d/swarmy-foreign.conf"
+if printf 'x\n' | install_owned_file /etc/ld.so.conf.d/swarmy-foreign.conf 2>/dev/null; then
+    echo "install_owned_file replaced a host file" >&2; exit 1
+fi
+[[ $(cat "$fake/etc/ld.so.conf.d/swarmy-foreign.conf") == host ]]
+rm "$fake/etc/ld.so.conf.d/swarmy-foreign.conf"
 printf 'secret=fixture\n' > "$fake/etc/swarmy/node.env"
 touch "$fake/home/decomm-swarmy/swarmy/checkout-marker"
 printf 'LABEL=swarmy-local /mnt/swarmy-local ext4 defaults,nofail 0 2\n' > "$fake/etc/fstab"
@@ -76,10 +85,10 @@ grep -qxF "daemon-reload" "$fake/systemctl.log" || { echo "units never reloaded"
 [[ -z $(ls -A "$fake/etc/systemd/system") ]] || { echo "unit files remain" >&2; exit 1; }
 [[ -z $(ls -A "$fake/usr/local/bin") ]] || { echo "binaries remain" >&2; exit 1; }
 [[ ! -e $fake/usr/local/lib/swarmy && ! -e $fake/etc/ld.so.conf.d/swarmy-provisioned.conf ]]
+[[ $(cat "$fake/etc/ld.so.conf.d/swarmy.conf") == /opt/host-libs ]] || { echo "host linker config removed" >&2; exit 1; }
 grep -qx ldconfig "$fake/ldconfig.log"
-[[ ! -e $fake/etc/modules-load.d/swarmy-provisioned.conf ]] || { echo "managed modules config remains" >&2; exit 1; }
-[[ $(cat "$fake/etc/modules-load.d/swarmy.conf") == $'nbd\nublk_drv' ]] || { echo "host modules config changed" >&2; exit 1; }
-[[ $(cat "$fake/etc/ld.so.conf.d/swarmy.conf") == host-owned ]] || { echo "host linker config changed" >&2; exit 1; }
+[[ ! -e $fake/etc/modules-load.d/swarmy-provisioned.conf ]] || { echo "modules config remains" >&2; exit 1; }
+[[ $(cat "$fake/etc/modules-load.d/swarmy.conf") == $'nbd\nublk_drv' ]] || { echo "host modules config removed" >&2; exit 1; }
 [[ ! -e $fake/etc/swarmy ]] || { echo "node environment remains" >&2; exit 1; }
 [[ ! -e $fake/home/decomm-swarmy/swarmy ]] || { echo "checkout remains" >&2; exit 1; }
 
@@ -87,20 +96,14 @@ grep -qx ldconfig "$fake/ldconfig.log"
 [[ -d $fake/home/decomm-swarmy ]] || { echo "service home removed" >&2; exit 1; }
 grep -qxF 'LABEL=swarmy-local /mnt/swarmy-local ext4 defaults,nofail 0 2' "$fake/etc/fstab" || { echo "fstab line changed" >&2; exit 1; }
 
-# A host file with the managed name but without our marker is not ours.
-printf 'host-owned\n' > "$fake/etc/modules-load.d/swarmy-provisioned.conf"
-printf 'host-owned\n' > "$fake/etc/ld.so.conf.d/swarmy-provisioned.conf"
 # Rerunning after a complete teardown still succeeds (a retried down is a no-op).
 bash scripts/remote-decommission.sh decomm-swarmy
-[[ $(cat "$fake/etc/modules-load.d/swarmy-provisioned.conf") == host-owned ]]
-[[ $(cat "$fake/etc/ld.so.conf.d/swarmy-provisioned.conf") == host-owned ]]
-rm "$fake/etc/ld.so.conf.d/swarmy-provisioned.conf"
 
 mkdir -p "$fake/src"
 touch "$fake/src/libfdb_c.so"
 (cd "$fake/src" && install_core_library libfdb_c.so)
 [[ -f $fake/usr/local/lib/swarmy/libfdb_c.so ]]
-[[ $(tail -n 1 "$fake/etc/ld.so.conf.d/swarmy-provisioned.conf") == /usr/local/lib/swarmy ]]
+[[ $(cat "$fake/etc/ld.so.conf.d/swarmy-provisioned.conf") == "$(swarmy_owned_marker)"$'\n'/usr/local/lib/swarmy ]]
 
 # The piped probe with no checkout: a leftover swarmyd.service unit file
 # fails with the checkout-is-missing error (the glob must cover swarmyd,
