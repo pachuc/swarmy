@@ -179,7 +179,7 @@ pub fn is_display_name(name: &str) -> bool {
     name.starts_with("browser_") || name.starts_with("screen_")
 }
 
-pub const DISPLAY_PROMPT: &str = "## Browser and screen tools\nFor browser pages, prefer browser_snapshot and its element refs over screenshots: accessibility text is faster and more reliable for navigation. Use browser_screenshot when visual layout matters. Use screen_screenshot and screen_windows for non-browser applications.";
+pub const DISPLAY_PROMPT: &str = "## Browser and screen tools\nFor browser pages, prefer browser_snapshot and its element refs over screenshots: accessibility text is faster and more reliable for navigation. Use browser_screenshot when visual layout matters. Use screen_screenshot and screen_windows for non-browser applications. `cat /run/swarmy-display/renderer` prints nvidia when the display runs on the GPU and software when it runs on the CPU.";
 
 pub fn register_display(tools: &mut ToolRegistry) {
     tools.register(Box::new(BrowserNavigate));

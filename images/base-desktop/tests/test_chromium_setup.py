@@ -8,7 +8,7 @@ import types
 import unittest
 from unittest import mock
 
-SETUP = pathlib.Path(__file__).resolve().parents[1] / 'setup.sh'
+SETUP = pathlib.Path(__file__).resolve().parents[2] / 'common' / 'desktop-setup.sh'
 
 
 class ChromiumSetupTests(unittest.TestCase):

@@ -18,7 +18,7 @@ const PORT: u16 = 8765;
 const USER: &str = "desk";
 const PASSWORD: &str = "desk-pass-7341";
 const DONE: &str = "Logged in, saved Theme = Dark, and took screenshots. CODE: unknown (a scripted agent cannot read pixels).";
-const MOVES: [&str; 16] = [
+const MOVES: [&str; 17] = [
     "write",
     "bash",
     "browser_navigate",
@@ -35,6 +35,7 @@ const MOVES: [&str; 16] = [
     "screen_windows",
     "screen_screenshot",
     "bash",
+    "bash",
 ];
 const APP_START: usize = 1;
 const VIEW_WAIT: usize = 6;
@@ -44,6 +45,7 @@ const BROWSER_IMAGE: usize = 12;
 const WINDOWS: usize = 13;
 const SCREEN_IMAGE: usize = 14;
 const MEMORY_PEAK: usize = 15;
+const RENDERER: usize = 16;
 
 pub(crate) fn script() -> serde_json::Map<String, Value> {
     let url = format!("http://127.0.0.1:{PORT}");
@@ -67,6 +69,7 @@ pub(crate) fn script() -> serde_json::Map<String, Value> {
         json!({}),
         json!({}),
         json!({"command":"cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo unavailable"}),
+        json!({"command":"cat /run/swarmy-display/renderer && glxinfo -B | grep 'OpenGL renderer string' && vulkaninfo --summary 2>/dev/null | grep -E 'deviceType|driverID'"}),
     ];
     let mut responses: serde_json::Map<_, _> = inputs
         .into_iter()
@@ -223,7 +226,7 @@ fn verify_tools(events: &[Event]) -> Result<(Vec<&str>, ToolCompletions<'_>)> {
         let ToolResult::Completed { output, .. } = result else {
             anyhow::bail!("desktop tool {} failed: {result:?}", expected[index]);
         };
-        if [APP_START, VIEW_WAIT, SAVE_WAIT, MEMORY_PEAK].contains(&index) {
+        if [APP_START, VIEW_WAIT, SAVE_WAIT, MEMORY_PEAK, RENDERER].contains(&index) {
             let bash: swarmy_core::BashResult = serde_json::from_str(output)
                 .with_context(|| format!("desktop bash result at step {index} invalid"))?;
             ensure!(
@@ -237,6 +240,9 @@ fn verify_tools(events: &[Event]) -> Result<(Vec<&str>, ToolCompletions<'_>)> {
                     bash.stdout.contains("listening"),
                     "desktop app did not report listening"
                 );
+            }
+            if index == RENDERER {
+                verify_software_renderer(&bash.stdout)?;
             }
         }
         if index == SETTINGS_SNAPSHOT {
@@ -253,6 +259,26 @@ fn verify_tools(events: &[Event]) -> Result<(Vec<&str>, ToolCompletions<'_>)> {
         }
     }
     Ok((names, results))
+}
+
+/// The suite node has no card, so the display must be the software one:
+/// Xvfb with Mesa's llvmpipe for OpenGL and lavapipe for Vulkan.
+fn verify_software_renderer(stdout: &str) -> Result<()> {
+    ensure!(
+        stdout.lines().next() == Some("software"),
+        "desktop renderer is not software: {stdout}"
+    );
+    ensure!(
+        stdout.contains("OpenGL renderer string: llvmpipe"),
+        "desktop OpenGL is not llvmpipe: {stdout}"
+    );
+    ensure!(
+        stdout.contains("DRIVER_ID_MESA_LLVMPIPE")
+            && stdout.contains("PHYSICAL_DEVICE_TYPE_CPU")
+            && !stdout.contains("PHYSICAL_DEVICE_TYPE_DISCRETE_GPU"),
+        "desktop Vulkan is not lavapipe alone: {stdout}"
+    );
+    Ok(())
 }
 
 fn verify_record(
@@ -392,6 +418,18 @@ mod tests {
     use futures::StreamExt;
     use swarmy_core::{Message, MessageId, MessageRole, Part};
     use swarmy_llm::{Delta, GenerationSettings, Provider, Request};
+
+    #[test]
+    fn software_renderer_check_accepts_llvmpipe_and_lavapipe_only() {
+        let good = "software\nOpenGL renderer string: llvmpipe (LLVM 17.0.6, 256 bits)\n\tdeviceType         = PHYSICAL_DEVICE_TYPE_CPU\n\tdriverID           = DRIVER_ID_MESA_LLVMPIPE\n";
+        verify_software_renderer(good).unwrap();
+        let nvidia = good.replacen("software", "nvidia", 1);
+        assert!(verify_software_renderer(&nvidia).is_err());
+        let card = format!("{good}\tdeviceType         = PHYSICAL_DEVICE_TYPE_DISCRETE_GPU\n");
+        assert!(verify_software_renderer(&card).is_err());
+        let hardware_gl = good.replace("llvmpipe (LLVM", "NVIDIA L4/PCIe/SSE2 (");
+        assert!(verify_software_renderer(&hardware_gl).is_err());
+    }
 
     #[test]
     fn inference_failure_is_visible_in_sequence_error() {
