@@ -458,7 +458,7 @@ Autoscale buys machines only for GPU waits, so turn it on only for a group whose
 
 After adding the group, register it once with `swarmy swarm scale hz gpu 0`.
 Scale accepts 0 through max; down sets desired to 0 and refuses until the
-provisioner has reconciled that change and all machines are gone. The hourly
+provisioner has reconciled that change and all machines are gone. It then prints one line for each elastic group it tore down (`elastic_groups` in `--json` output). The hourly
 price comes from the spec because the module contract has no price output.
 The provisioner joins each machine over SSH from the primary using the primary's own swarmy-core build. A machine that has not joined within 15 minutes of creation is failed, destroyed and replaced within the creation limit. Shrinking drains each removed node for up to 10 minutes, then stops it anyway, revokes its tunnel key and destroys it.
 The creation interlock reserves at most four machine creations per hour per swarm,

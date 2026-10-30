@@ -45,12 +45,39 @@ check_release_bundle() {
 }
 
 swarmy_core_library_dir() { printf '/usr/local/lib/swarmy\n'; }
+
+# Files provisioning places in shared system drop-in directories start with
+# this line. Down removes such a file only when it still starts with it, and
+# provisioning never replaces a file without it, so a file the host's own
+# setup wrote is never overwritten or deleted.
+swarmy_owned_marker() { printf '# Written by swarmy provisioning; swarmy swarm down removes this file.\n'; }
+swarmy_modules_file() { printf '/etc/modules-load.d/swarmy-provisioned.conf\n'; }
+swarmy_library_conf() { printf '/etc/ld.so.conf.d/swarmy-provisioned.conf\n'; }
+owned_by_swarmy() {
+    [[ $(sudo -n head -n 1 "${1:?path}" 2>/dev/null) == "$(swarmy_owned_marker)" ]]
+}
+# Write stdin to PATH after the marker line. Refuses a file swarmy did not write.
+install_owned_file() {
+    local path=${1:?path} body
+    body=$(cat)
+    if sudo -n test -e "$path" && ! owned_by_swarmy "$path"; then
+        echo "$path exists and was not written by swarmy provisioning; move it away and rerun" >&2
+        return 1
+    fi
+    { swarmy_owned_marker; printf '%s\n' "$body"; } | sudo -n tee "$path" >/dev/null
+}
+remove_owned_file() {
+    local path=${1:?path}
+    if owned_by_swarmy "$path"; then
+        sudo -n rm -f "$path"
+    fi
+}
 install_core_library() {
     local dir
     dir=$(swarmy_core_library_dir)
     sudo -n install -d -m 0755 "$dir" /etc/ld.so.conf.d
     sudo -n install -m 0644 "$1" "$dir/libfdb_c.so"
-    printf '%s\n' "$dir" | sudo -n tee /etc/ld.so.conf.d/swarmy.conf >/dev/null
+    printf '%s\n' "$dir" | install_owned_file "$(swarmy_library_conf)"
     sudo -n ldconfig
 }
 
@@ -586,7 +613,8 @@ disable_previous_units() {
 # Remove every installed unit, binary, environment, and node directory named in
 # the shared table. Idempotent: every removal tolerates a missing file so
 # a failed `down` can retry. Needs no node directory beyond this file itself, so
-# both the installed script and piped use call it.
+# both the installed script and piped use call it. Drop-in files under
+# /etc/modules-load.d and /etc/ld.so.conf.d go only when they carry swarmy's marker line.
 decommission_remove() {
     local service_user=${1-}
     validate_service_user "$service_user" || return 1
@@ -603,9 +631,9 @@ decommission_remove() {
     done
     remove_retired_binaries
     sudo rm -rf "$(swarmy_core_library_dir)"
-    sudo rm -f /etc/ld.so.conf.d/swarmy.conf
+    remove_owned_file "$(swarmy_library_conf)"
     sudo ldconfig
-    sudo rm -f /etc/modules-load.d/swarmy.conf
+    remove_owned_file "$(swarmy_modules_file)"
     sudo rm -rf /etc/swarmy
     service_repo=$(service_repo_for "$service_user")
     sudo rm -rf "$service_repo"

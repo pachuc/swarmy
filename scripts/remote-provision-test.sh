@@ -298,4 +298,7 @@ grep -q 'reboot' "$stub/err"
 if grep -q 'cdi generate' "$STUB_LOG"; then echo 'wrote a spec with an unloaded driver' >&2; exit 1; fi
 rm -rf "$stub"
 printf 'GPU provisioning: ok\n'
+[[ $(swarmy_modules_file) == /etc/modules-load.d/swarmy-provisioned.conf ]]
+[[ $(swarmy_library_conf) == /etc/ld.so.conf.d/swarmy-provisioned.conf ]]
+[[ $(swarmy_owned_marker) == '# Written by swarmy provisioning; swarmy swarm down removes this file.' ]]
 echo 'remote provision argument and environment tests passed'

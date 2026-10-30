@@ -298,11 +298,11 @@ pub(crate) async fn down(
             spec.name
         );
     }
+    let mut elastic = Vec::new();
     if spec.groups.values().any(|group| group.elastic) {
         let (client, endpoint) = crate::target::connect_swarm(&spec.name).await.context(
             "down needs the swarm's API to stop its elastic groups; start the swarm first",
         )?;
-        let mut records = Vec::new();
         for (name, group) in &spec.groups {
             if !group.elastic {
                 continue;
@@ -339,9 +339,9 @@ pub(crate) async fn down(
                 )
                 .await?;
             }
-            records.push(record);
+            elastic.push(record);
         }
-        let blockers = elastic_down_blockers(&records);
+        let blockers = elastic_down_blockers(&elastic);
         if !blockers.is_empty() {
             bail!(
                 "swarm {} still has elastic machines or unfinished changes ({}); their desired count is now 0 and the provisioner on the primary destroys them; run swarmy swarm down {} again in a few minutes",
@@ -349,6 +349,11 @@ pub(crate) async fn down(
                 blockers.join(", "),
                 spec.name
             );
+        }
+        if !json_output {
+            for line in elastic_down_report(&elastic) {
+                println!("{line}");
+            }
         }
     }
     let tofu_dir = registry.swarm_dir(&spec.name)?.join("tofu");
@@ -358,7 +363,7 @@ pub(crate) async fn down(
     if json_output {
         println!(
             "{}",
-            json!({"swarm":spec.name,"removed":removed.iter().map(|r| &r.name).collect::<Vec<_>>(),"destroyed_groups":destroyed_groups})
+            json!({"swarm":spec.name,"removed":removed.iter().map(|r| &r.name).collect::<Vec<_>>(),"destroyed_groups":destroyed_groups,"elastic_groups":elastic.iter().map(|r| &r.group).collect::<Vec<_>>()})
         );
     }
     Ok(())
@@ -616,6 +621,19 @@ pub(crate) async fn scale_elastic(
     }
     Ok(())
 }
+/// One line for each elastic group down brought to zero machines.
+pub(crate) fn elastic_down_report(groups: &[swarmy_api_types::ElasticGroup]) -> Vec<String> {
+    groups
+        .iter()
+        .map(|group| {
+            format!(
+                "elastic group {}: torn down; the provisioner on the primary destroyed its machines",
+                group.group
+            )
+        })
+        .collect()
+}
+
 /// Groups that still hold machines or have an unreconciled desired count.
 pub(crate) fn elastic_down_blockers(groups: &[swarmy_api_types::ElasticGroup]) -> Vec<String> {
     groups
@@ -753,6 +771,11 @@ nodes = ["gpu"]
         assert_eq!(off.max, group.max);
         assert_eq!(off.primary_address, primary.public_address);
         assert!(elastic_down_blockers(&[group.clone()]).is_empty());
+        assert_eq!(
+            elastic_down_report(std::slice::from_ref(&group)),
+            ["elastic group gpu: torn down; the provisioner on the primary destroyed its machines"]
+        );
+        assert!(elastic_down_report(&[]).is_empty());
         group.applied = 1;
         assert_eq!(elastic_down_blockers(&[group.clone()]), ["gpu: 1 machines"]);
         group.applied = 0;

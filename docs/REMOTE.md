@@ -112,6 +112,16 @@ directory with installed units can be restored with
 `swarmy swarm rm demo --force` forgets the local registration; it does not
 decommission hosts.
 
+Down removes the drop-in files provisioning wrote only while they start with
+the line `# Written by swarmy provisioning; swarmy swarm down removes this file.`:
+`/etc/modules-load.d/swarmy-provisioned.conf` and
+`/etc/ld.so.conf.d/swarmy-provisioned.conf`. A file at either path without that
+line belongs to the host: provisioning refuses to replace it and down leaves
+it. Hosts provisioned before October 30, 2026 may also keep
+`/etc/modules-load.d/swarmy.conf` and `/etc/ld.so.conf.d/swarmy.conf` from older
+provisioning. Down no longer removes those names, so delete them by hand if
+the host does not need them.
+
 ## Draining a node
 
 Before stopping a node, swarmy checks for running sandbox commands and
