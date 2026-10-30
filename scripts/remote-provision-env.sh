@@ -737,3 +737,40 @@ SWARMY_GC_INTERVAL_SECONDS=600
 LD_LIBRARY_PATH=$(dirname "$repo_dir")/.local/lib
 ENV
 }
+
+# NVIDIA's PCI vendor id is 0x10de; display controllers have class 0x03xxxx.
+nvidia_card_present() {
+    local device
+    for device in "${SWARMY_PCI_DEVICES_DIR:-/sys/bus/pci/devices}"/*; do
+        [[ -r $device/vendor && -r $device/class ]] || continue
+        if [[ $(<"$device/vendor") == 0x10de && $(<"$device/class") == 0x03* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+# The full driver package includes the X.Org driver and GLX libraries.
+nvidia_driver_package() { printf 'nvidia-driver-570-server\n'; }
+# swarmyd's default JSON CDI spec path.
+nvidia_cdi_spec() { printf '/etc/cdi/nvidia.json\n'; }
+# Regenerate on every run because driver upgrades rename libraries.
+provision_nvidia() {
+    if ! command -v nvidia-smi >/dev/null; then
+        sudo -E apt-get install -y "$(nvidia_driver_package)"
+        if ! sudo modprobe nvidia || ! nvidia-smi >/dev/null; then
+            echo 'The NVIDIA driver is installed but not loaded; reboot the machine and rerun provisioning.' >&2
+            return 1
+        fi
+    fi
+    if ! command -v nvidia-ctk >/dev/null; then
+        local keyring=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --batch --yes --dearmor -o "$keyring"
+        curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+            | sed "s#deb https://#deb [signed-by=$keyring] https://#g" \
+            | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
+        sudo apt-get update
+        sudo -E apt-get install -y nvidia-container-toolkit
+    fi
+    sudo install -d -m 0755 "$(dirname "$(nvidia_cdi_spec)")"
+    sudo nvidia-ctk cdi generate --output="$(nvidia_cdi_spec)" --format=json
+}
