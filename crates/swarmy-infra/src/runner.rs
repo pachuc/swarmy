@@ -509,7 +509,7 @@ mod tests {
             {"mode":"managed","module":"module.net","type":"x","name":"y","instances":[{"index_key":"a"}]}
         ]}"#;
         assert_eq!(
-            super::managed_instances(state).unwrap(),
+            managed_instances(state).unwrap(),
             [
                 "scaleway_instance_security_group.this",
                 "scaleway_instance_ip.this[0]",
@@ -518,11 +518,11 @@ mod tests {
             ]
         );
         assert!(
-            super::managed_instances(br#"{"version":4,"resources":[]}"#)
+            managed_instances(br#"{"version":4,"resources":[]}"#)
                 .unwrap()
                 .is_empty()
         );
-        assert!(super::managed_instances(b"state").is_err());
+        assert!(managed_instances(b"state").is_err());
     }
 
     use super::*;
