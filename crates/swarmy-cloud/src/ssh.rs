@@ -491,7 +491,7 @@ impl Ssh {
 
     async fn node_target(node: &Machine, address: &str) -> Result<crate::release::Target> {
         let output = run_output(
-            node_command(node, address, "uname -m")?,
+            &mut node_command(node, address, "uname -m")?,
             "read node architecture",
         )
         .await?;
@@ -571,7 +571,7 @@ impl Ssh {
         .await?;
         let user = service_user(node)?;
         checked(
-            node_command(
+            &mut node_command(
                 node,
                 address,
                 &format!(
@@ -643,7 +643,7 @@ impl Ssh {
             .await?;
         }
         // Dedicated servers boot without cloud-init, so wait only when it is present.
-        checked(node_command(node, address,
+        checked(&mut node_command(node, address,
             "command -v rsync >/dev/null || (if command -v cloud-init >/dev/null 2>&1; then sudo cloud-init status --wait; fi; sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y rsync)")?, "prepare remote rsync").await?;
         let home = self
             .ensure_service_user(node, address, &service_user(node)?)
@@ -726,7 +726,7 @@ impl Ssh {
         let output = run_output(
             // A node provisioned before swarmy-core still has the per-role
             // binaries; report their version so upgrade can replace them.
-            node_command(
+            &mut node_command(
                 node,
                 address,
                 "/usr/local/bin/swarmy-core --version 2>/dev/null \
@@ -788,7 +788,7 @@ impl Ssh {
         let prebuilt = self.stage(node, &address, primary.is_none()).await?;
         if let Some(id) = node.node_id {
             checked(
-                node_command(node, &address, &node_id_command(node, id)?)?,
+                &mut node_command(node, &address, &node_id_command(node, id)?)?,
                 "write node id",
             )
             .await?;
@@ -808,7 +808,7 @@ impl Ssh {
                 "primary cluster file does not advertise loopback port 4500; recreate this remote",
             )?;
             checked(
-                node_command(node, &address, &copy_cluster_command(node, &cluster)?)?,
+                &mut node_command(node, &address, &copy_cluster_command(node, &cluster)?)?,
                 "copy primary cluster file",
             )
             .await?;
@@ -829,7 +829,7 @@ impl Ssh {
         // node environment without printing them.
         crate::services::upload_bucket_keys(node, &address).await?;
         checked(
-            node_command(node, &address, &{
+            &mut node_command(node, &address, &{
                 let spec = node.bucket_spec();
                 provisioning_command(
                     mode,
@@ -922,7 +922,7 @@ async fn upload_node_files(node: &Machine, address: &str, node_dir: &str) -> Res
     .await?;
     let user = service_user(node)?;
     checked(
-        node_command(
+        &mut node_command(
             node,
             address,
             &format!(
@@ -974,7 +974,7 @@ async fn copy_source(node: &Machine, address: &str, node_dir: &str, checkout: &P
     let commit = source_commit(checkout).await?;
     let marker = format!("{node_dir}/source/.swarmy-source-commit");
     checked(
-        node_command(
+        &mut node_command(
             node,
             address,
             &format!(
@@ -990,7 +990,7 @@ async fn copy_source(node: &Machine, address: &str, node_dir: &str, checkout: &P
     // The user already exists from the bootstrap, so the chown cannot fail
     // on a missing login.
     checked(
-        node_command(
+        &mut node_command(
             node,
             address,
             &format!(
@@ -1076,7 +1076,7 @@ pub async fn build_image_tagged(
     tag: &str,
 ) -> Result<()> {
     checked(
-        node_command(
+        &mut node_command(
             node,
             address,
             &image_build_command(&service_user(node)?, recipe, tag)?,
@@ -1092,7 +1092,7 @@ pub async fn build_image_tagged(
 pub async fn api_token(node: &Machine, address: &str) -> Result<String> {
     let user = service_user(node)?;
     let output = run_output(
-        node_command(
+        &mut node_command(
             node,
             address,
             &format!("cat ~{user}/swarmy/.swarmy/config.toml"),
@@ -1190,7 +1190,7 @@ pub async fn revoke_tunnel(node: &Machine, primary: Primary<'_>) -> Result<()> {
     let user = service_user(node)?;
     let address = wait_ssh_for(node, 6).await?;
     let key = run_output(
-        node_command(
+        &mut node_command(
             node,
             &address,
             &format!("cat {}/.swarmy/tunnel-key.pub", tilde_repo(&user)),
@@ -1312,7 +1312,7 @@ async fn install_tunnel(
     shell: &PrimaryShell<'_>,
 ) -> Result<()> {
     let output = run_output(
-        node_command(node, address, &tunnel_key_command(node)?)?,
+        &mut node_command(node, address, &tunnel_key_command(node)?)?,
         "generate joining node tunnel key",
     )
     .await?;
@@ -1336,7 +1336,7 @@ async fn install_tunnel(
     let host_key = String::from_utf8(host_key.stdout)?;
     let known_host = format!("{} {}", primary.tunnel_address()?, host_key.trim());
     checked(
-        node_command(node, address, &pin_primary_key_command(node, &known_host)?)?,
+        &mut node_command(node, address, &pin_primary_key_command(node, &known_host)?)?,
         "pin primary SSH host key",
     )
     .await
@@ -2019,7 +2019,7 @@ mod provisioning_command_tests {
 /// Returns SSH and cloud-init failures.
 pub async fn wait_boot(node: &Machine) -> Result<()> {
     let address = wait_ssh(node).await?;
-    run_output(node_command(node, &address, "command -v cloud-init >/dev/null 2>&1 || exit 0; cloud-init status --wait >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 2 ]")?, "wait for cloud-init").await?;
+    run_output(&mut node_command(node, &address, "command -v cloud-init >/dev/null 2>&1 || exit 0; cloud-init status --wait >/dev/null 2>&1; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 2 ]")?, "wait for cloud-init").await?;
     if node.private_ip != node.public_ip {
         run_output(
             base(node)?
