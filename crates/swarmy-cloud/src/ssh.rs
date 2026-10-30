@@ -77,6 +77,16 @@ fn ssh_with(program: &OsStr, options: &[String]) -> Command {
     command
 }
 
+// The service home is private to its owner. A bootstrap login other than root
+// must elevate the remote receiver, including when rsync creates a directory.
+fn rsync_command(node: &Machine) -> Command {
+    let mut command = Command::new("rsync");
+    if node.ssh_user != "root" {
+        command.arg("--rsync-path=sudo -n rsync");
+    }
+    command
+}
+
 fn base(node: &Machine) -> Result<Command> {
     Ok(ssh_with(OsStr::new("ssh"), &arguments(node)?))
 }
@@ -382,7 +392,7 @@ impl Ssh {
         let mut transport = vec!["ssh".to_owned()];
         transport.extend(arguments(node)?);
         checked(
-            Command::new("rsync")
+            rsync_command(node)
                 .args(["-a", "--mkpath", "-e"])
                 .arg(shell_words::join(transport))
                 .args(&sources)
@@ -720,7 +730,7 @@ async fn upload_node_files(node: &Machine, address: &str, node_dir: &str) -> Res
     let args = node_files_rsync_args(temp.path(), &format!("{address}:{node_dir}"));
     let split = args.len() - 2;
     checked(
-        Command::new("rsync")
+        rsync_command(node)
             .args(&args[..split])
             .arg("-e")
             .arg(shell_words::join(transport))
@@ -751,7 +761,7 @@ async fn copy_source(node: &Machine, address: &str, node_dir: &str, checkout: &P
     transport.extend(arguments(node)?);
     let settings = swarmy_config::Settings::load_base()?.settings;
     let credential = &settings.selection.credential_file;
-    let mut copy = Command::new("rsync");
+    let mut copy = rsync_command(node);
     for relative in
         credential_excludes(checkout, credential)
             .into_iter()
@@ -782,7 +792,7 @@ async fn copy_source(node: &Machine, address: &str, node_dir: &str, checkout: &P
     let marker = format!("{node_dir}/source/.swarmy-source-commit");
     checked(
         base(node)?.arg(address).arg(format!(
-            "printf '%s\\n' {} > {}",
+            "printf '%s\\n' {} | sudo tee {} >/dev/null",
             shell_words::quote(&commit),
             shell_words::quote(&marker)
         )),
@@ -1497,6 +1507,21 @@ mod provisioning_command_tests {
             bucket: None,
             services: true,
         }
+    }
+
+    #[test]
+    fn rsync_receiver_elevates_non_root_ssh_login() {
+        let mut non_root = node();
+        non_root.ssh_user = "ubuntu".into();
+        let args: Vec<_> = super::rsync_command(&non_root)
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["--rsync-path=sudo -n rsync"]);
+
+        let root_args: Vec<_> = super::rsync_command(&node()).as_std().get_args().collect();
+        assert!(root_args.is_empty());
     }
 
     #[test]

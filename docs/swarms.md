@@ -177,8 +177,10 @@ swarmy swarm status demo
 The SSH key is copied to the private record directory. SSH and rsync must
 reach the host with a login able to prepare local storage. Systemd starts
 and supervises services on Linux hosts; provisioning installs its units. `--ssh-user`
-sets that login; `--service-user` sets the account that owns the node checkout
-and runs services (default `swarmy`). Set `--private-address` when hosts talk
+sets that login (default `root`). A non-root login needs passwordless sudo:
+provisioning uses it to install packages, write service files, and receive
+rsync uploads into the service account's private home. `--service-user` sets
+the account that owns the node checkout and runs services (default `swarmy`). Set `--private-address` when hosts talk
 over a separate internal interface. `--sandboxes` sets node capacity. A node
 group may be extended with:
 
