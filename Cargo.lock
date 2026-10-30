@@ -4150,6 +4150,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "swarmy-provisioner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "foundationdb",
+ "jiff",
+ "object_store",
+ "serde_json",
+ "swarmy-cloud",
+ "swarmy-config",
+ "swarmy-core",
+ "swarmy-infra",
+ "swarmy-store",
+ "swarmy-testkit",
+ "swarmy-version",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "ulid",
+]
+
+[[package]]
 name = "swarmy-sandbox"
 version = "0.1.0"
 dependencies = [

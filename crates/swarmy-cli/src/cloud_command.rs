@@ -5,7 +5,7 @@ use swarmy_config::cloud::{CloudCredential, CloudCredentials, CloudProvider};
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
-    /// Store cloud API keys for creating machines (hetzner-cloud, hetzner-s3, aws); secrets are read from stdin
+    /// Store cloud API keys for creating machines (hetzner-cloud, hetzner-s3, aws, scaleway); secrets are read from stdin
     Login {
         #[arg(value_parser = parse_provider)]
         provider: CloudProvider,
@@ -172,6 +172,10 @@ mod tests {
         assert_eq!(
             split_stdin("a\nb\n", CloudProvider::HetznerS3).unwrap(),
             ["a", "b"]
+        );
+        assert_eq!(
+            split_stdin("a\nb\nc\n", CloudProvider::Scaleway).unwrap(),
+            ["a", "b", "c"]
         );
         for (text, count) in [("", 0), ("a\n", 1), ("a\nb\nc\n", 3)] {
             assert_eq!(

@@ -16,6 +16,10 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG = Path(os.environ.get("FLEET_CONFIG") or Path(__file__).with_name("fleet.toml"))
 AGENTS = ROOT / "AGENTS.md"
 TARGET_LIMIT_GIB = 40
+GPU_MODES = ("none", "shared", "dedicated")
+# A parked session's wait reasons distinguish capacity from inference waits.
+CAPACITY_WAIT = re.compile(r"waiting for (GPU|computer) capacity\b")
+TASKY_REASON = re.compile(r"tasky ([A-Za-z0-9]+)\b")
 
 
 def command(args, *, input=None):
@@ -63,6 +67,9 @@ def load():
             raise RuntimeError(f"{CONFIG}: missing {key}")
     data.setdefault("swarm", "")
     data.setdefault("workers", 4)
+    data.setdefault("allow_gpu", False)
+    if not isinstance(data["allow_gpu"], bool):
+        raise RuntimeError(f"{CONFIG}: allow_gpu must be true or false")
     return data
 
 
@@ -109,7 +116,25 @@ def task_fields(task):
             task.get("test_plan") or task.get("testPlan") or "")
 
 
-def prompt(task_id, task, config, branch):
+def gpu_prompt(task_id, task, gpu, allow_gpu):
+    """GPU paragraphs, framed by blank lines; empty for ordinary tasks."""
+    parts = []
+    if gpu != "none":
+        parts.append(f"This task starts with a {gpu} GPU requirement, so your computer runs on a machine "
+                     "with an NVIDIA GPU. Your first command may wait several minutes while such a machine starts.")
+    if allow_gpu:
+        full_id = full_task_id(task, task_id)
+        parts.append(f"""GPU access: you have two extra tools, request_gpu and release_gpu, that move your computer to a machine with an NVIDIA GPU and back. GPU machines are rented by the hour, so ask for one only when a step of this task needs the card: running or testing a graphical program, rendering, or GPU compute. Building, ordinary tests and reading code do not need it.
+- Before calling request_gpu, commit and push your work. The move restarts your computer: files on your disk are kept, but running processes, /tmp and the cargo target directory are lost, so the next build starts cold, and your next command may wait several minutes while a GPU machine starts.
+- Use mode "shared" unless the task body says the work needs a card to itself; then use "dedicated".
+- The reason must start with this task's id, in exactly this form: "tasky {full_id}: <why you need the GPU>", for example "tasky {full_id}: run the GPUI example on the card". The operator uses that prefix to charge the machine's cost to this task. Keep the whole reason under 400 characters.
+- request_gpu and release_gpu must each be the only tool call in its response.
+- Call release_gpu as soon as you no longer need the card, and in any case before your final message.
+- Say in your final report whether you used a GPU, in which mode, and for what.""")
+    return "".join("\n" + part + "\n" for part in parts)
+
+
+def prompt(task_id, task, config, branch, *, gpu="none", allow_gpu=False):
     title, body, tests = task_fields(task)
     return f"""You are a long-lived swarmy development worker. Your computer persists between tasks, so keep it tidy: every task gets a fresh clone in its own directory, one new branch from master, and you leave nothing uncommitted behind.
 
@@ -130,7 +155,7 @@ Task body:
 
 Test plan:
 {tests}
-
+{gpu_prompt(task_id, task, gpu, allow_gpu)}
 Read the repository's AGENTS.md and docs/ARCHITECTURE.md before changing files. Implement only this task, following the task body's steps in order. Goals are built as a batch (AGENTS.md, "Delivering a task"): do NOT open a pull request and do not run the full per-pull-request command list; the operator integrates and validates the batch. While iterating run `cargo test --locked -p <each crate changed>`. At the end run exactly the task body's "Done when" commands (with the dev stack running and .dev/env sourced when they need it), commit with an imperative subject and a body explaining why, and push {branch} to origin. Do not commit logs or generated output. When a long build or test runs, check on it every few minutes with short commands rather than one long sleep. When you are done, stop the dev stack with scripts/dev-stack.sh stop. Finish with a last message that reports: the branch name, the head SHA, the full output of every "Done when" command, every place you departed from the task body and why, and anything you could not verify and why. Never include credentials.
 """
 
@@ -185,6 +210,24 @@ def tasky_task(task_id):
     return one(command(tasky("show", task_id, json_output=True)))
 
 
+def full_task_id(record, task_id):
+    """The full tasky id from a `tasky task show` record."""
+    full_id = record.get("id") or record.get("task", {}).get("id")
+    if not full_id:
+        raise RuntimeError(f"tasky did not report an id for {task_id}")
+    return full_id
+
+
+def launch_gpu_reason(task, task_id, gpu):
+    """The GPU reason for a worker launched with a GPU requirement, or None without one.
+
+    An autoscaled machine takes its cause from this reason, and fleet status
+    charges a machine to a task whose reason starts with `tasky <id>`."""
+    if gpu == "none":
+        return None
+    return f"tasky {full_task_id(task, task_id)}: launched with --gpu"
+
+
 def workers_path(config):
     return state_path(config) / "workers.json"
 
@@ -210,11 +253,31 @@ def selection_args(args, config):
     return provider, model, effort, selection
 
 
-def create_worker(name, config, selection, image):
+def gpu_args(gpu, allow, reason):
+    """Agent create/set flags for the GPU requirement and request flag."""
+    args = ["--gpu", gpu, "--allow-gpu-request", "true" if allow else "false"]
+    if reason:
+        args += ["--gpu-reason", reason]
+    return args
+
+
+def set_worker_gpu(config, name, gpu, allow, reason):
+    """Match a worker's GPU state, skipping the write when it already matches."""
+    detail = one(command(swarmy(config, "agent", "show", name, "--json")))
+    current = (detail.get("requirements") or {}).get("gpu") or "none"
+    current_reason = (detail.get("gpu_request") or {}).get("reason")
+    if current == gpu and bool(detail.get("allow_gpu_request")) == allow and (reason is None or current_reason == reason):
+        return False
+    command(swarmy(config, "agent", "set", name, *gpu_args(gpu, allow, reason)))
+    return True
+
+
+def create_worker(name, config, selection, image, gpu, allow, reason):
     extra = ["--image", image] if image else []
     # A worker builds the workspace; the sandbox default of 768 MiB would be
     # enforced as a cgroup limit and kill cargo.
     extra += ["--memory", str(config.get("memory_mib", 6144))]
+    extra += gpu_args(gpu, allow, reason)
     command(swarmy(config, "agent", "create", name, *extra, "--description", "fleet worker",
                    *selection, "--github-token-stdin"), input=config["github_token"] + "\n")
 
@@ -228,34 +291,35 @@ def worker_meta(config, name):
     return json.loads(path.read_text()) if path.exists() else {}
 
 
-def pick_worker(config, selection, image, provider, model):
+def pick_worker(config, selection, image, provider, model, gpu, allow, reason):
     """Prefer an idle worker created with the requested provider and model.
 
     A worker's selection is fixed when it is created (run --agent takes no
     overrides), so a task that asks for ChatGPT must not land on an
     OpenRouter worker. Any idle worker is used only when none matches and
-    the pool is full."""
+    the pool is full. created says whether the worker was just created with
+    GPU flags; a reused worker still needs set_worker_gpu."""
     workers = load_workers(config)
     idle = [name for name, assigned in sorted(workers.items()) if assigned is None]
     for name in idle:
         meta = worker_meta(config, name)
         if meta.get("provider") == provider and meta.get("model") == model:
-            return name, workers
+            return name, workers, False
     if len(workers) < int(config["workers"]):
         # The first free number, so a reset worker's name is reused rather
         # than colliding with a live one when the pool has gaps.
         name = next(f"worker-{n}" for n in range(1, int(config["workers"]) + 1) if f"worker-{n}" not in workers)
-        create_worker(name, config, selection, image)
+        create_worker(name, config, selection, image, gpu, allow, reason)
         workers[name] = None
         save_workers(config, workers)
         save(worker_meta_path(config, name), {"provider": provider, "model": model, "image": image})
-        return name, workers
+        return name, workers, True
     if idle:
         name = idle[0]
         meta = worker_meta(config, name)
         print(f"note: {name} runs {meta.get('provider') or '?'}/{meta.get('model') or '?'}, not the requested "
               f"{provider}/{model}; pool is full", file=sys.stderr)
-        return name, workers
+        return name, workers, False
     raise RuntimeError(f"all {len(workers)} workers are busy; release a task or raise workers in {CONFIG}")
 
 
@@ -276,6 +340,11 @@ def launch(args, config):
     image = args.image or config.get("image")
     if image and ":" not in image:
         raise RuntimeError("image must be NAME:TAG, for example swarmy-dev:dev")
+    gpu = args.gpu
+    allow_gpu = config["allow_gpu"] if args.allow_gpu is None else args.allow_gpu
+    # Build before choosing a worker so a missing task id costs no worker.
+    text = prompt(args.task_id, task, config, branch, gpu=gpu, allow_gpu=allow_gpu)
+    gpu_reason = launch_gpu_reason(task, args.task_id, gpu)
     if getattr(args, "worker", None):
         # A task that must run on a particular worker, for example to pick up
         # files an earlier session left on that worker's disk.
@@ -285,8 +354,11 @@ def launch(args, config):
         if workers[args.worker]:
             raise RuntimeError(f"{args.worker} still holds {workers[args.worker]}; release it first")
         worker = args.worker
+        set_worker_gpu(config, worker, gpu, allow_gpu, gpu_reason)
     else:
-        worker, workers = pick_worker(config, selection, image, provider, model)
+        worker, workers, created = pick_worker(config, selection, image, provider, model, gpu, allow_gpu, gpu_reason)
+        if not created:
+            set_worker_gpu(config, worker, gpu, allow_gpu, gpu_reason)
     log = state_path(config) / (suffix + ".jsonl")
     log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with log.open("w") as stream:
@@ -297,7 +369,7 @@ def launch(args, config):
         # and memory files, empty context, so a metered provider is not billed
         # for every earlier task on every turn.
         process = subprocess.Popen(swarmy(config, "run", "--agent", worker, "--new",
-                                          "--json", prompt(args.task_id, task, config, branch)),
+                                          "--json", text),
                                    stdout=stream, stderr=subprocess.DEVNULL,
                                    start_new_session=True)
     session = None
@@ -316,8 +388,8 @@ def launch(args, config):
     save_workers(config, workers)
     save(path, {"task_id": args.task_id, "worker": worker, "branch": branch,
                 "session_id": session, "provider": provider, "model": model,
-                "effort": effort, "started_at": datetime.now(timezone.utc).isoformat()})
-    print(f"launched {args.task_id} on {worker} session={session}")
+                "effort": effort, "gpu": gpu, "allow_gpu": allow_gpu, "started_at": datetime.now(timezone.utc).isoformat()})
+    print(f"launched {args.task_id} on {worker} session={session}" + (f" gpu={gpu}" if gpu != "none" else "") + (" allow_gpu" if allow_gpu else ""))
 
 
 def assignment(config, task_id):
@@ -445,8 +517,10 @@ def state_for(session, events, log):
         (item.get("waiting") for item in events if item.get("waiting")),
         None,
     )
+    capacity = [reason for reason in (waiting or {}).get("reasons") or []
+                if CAPACITY_WAIT.match(reason)]
     if state == "sleeping" and waiting:
-        state = "waiting_inference"
+        state = "waiting_capacity" if capacity else "waiting_inference"
     if state is None:
         return "unknown", ""
     outcomes = [item for item in log if item.get("event") == "run_outcome"]
@@ -456,6 +530,8 @@ def state_for(session, events, log):
         if outcomes and outcomes[-1].get("outcome") == "failed":
             return "failed", ""
         return "idle", ""
+    if state == "waiting_capacity":
+        return state, "; ".join(capacity)
     reasons = (
         "; ".join((waiting or {}).get("reasons", []))
         if waiting and state == "waiting_inference"
@@ -506,6 +582,7 @@ def status(config):
     if not math.isfinite(threshold) or threshold <= 0:
         raise ValueError("stall_minutes must be positive")
     stalled = False
+    machines = machine_list(config)
     for name, task_id in sorted(workers.items()):
         detail = one(command(swarmy(config, "agent", "show", name, "--json")))
         data = {}
@@ -522,6 +599,7 @@ def status(config):
         session = sessions.get(session_id)
         state, reasons = state_for(session, events, logged) if task_id else ("idle", "")
         age = state_age(session)
+        # A capacity wait is not a stall: the scheduler bounds it and a GPU machine takes minutes to start.
         if task_id and state in ("waiting_inference", "leased") and age is not None and age > threshold:
             state_label = f"STALLED {state} {age_label(age)}"
             stalled = True
@@ -536,7 +614,7 @@ def status(config):
         elapsed = int((datetime.now(timezone.utc) - datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds()) if started else 0
         cost = (detail.get("usage") or {}).get("cost_dollars", "0")
         print(f"{name}\t{task_id or '-'}\t{detail.get('provider') or '-'}\t{detail.get('model') or '-'}\t"
-              f"{state_label}\t{elapsed}s\t${cost}")
+              f"{state_label}\t{elapsed}s\t${cost}\t{gpu_cells(detail, task_id, machines)}")
     day, month = fleet_cost(config)
     if day is not None and month is not None:
         print(f"cost today=${day} this_month=${month}")
@@ -562,6 +640,58 @@ def fleet_cost(config):
             raise
         return None, None
     return day.get("total", {}).get("cost_dollars"), month.get("total", {}).get("cost_dollars")
+
+
+def machine_list(config):
+    """Active elastic machines from the swarm's machine ledger."""
+    return one(command(swarmy(config, "swarm", "machines", "--json"))).get("machines") or []
+
+
+def task_machines(machines, task_id, agent_id):
+    """Charge a machine by its tasky reason or its current worker agent."""
+    suffix = task_suffix(task_id) if task_id else None
+    charged = []
+    for machine in machines:
+        match = TASKY_REASON.match((machine.get("cause") or {}).get("reason") or "")
+        named = suffix is not None and match is not None and task_suffix(match.group(1)) == suffix
+        on_it = agent_id is not None and any(item.get("agent_id") == agent_id
+                                             for item in machine.get("current_agents") or [])
+        if named or on_it:
+            charged.append(machine)
+    return charged
+
+
+def format_micros(micros):
+    """Micro-units with four decimals, rounded half up like swarmy_core::format_micros."""
+    units = micros // 100 + (micros % 100 >= 50)
+    return f"{units // 10_000}.{units % 10_000:04}"
+
+
+def machine_cost(machines):
+    """Cost so far summed per currency; '-' without machines."""
+    totals = {}
+    for machine in machines:
+        currency = machine.get("currency") or "?"
+        totals[currency] = totals.get(currency, 0) + int(machine.get("cost_micros") or 0)
+    return "+".join(f"{currency} {format_micros(micros)}"
+                    for currency, micros in sorted(totals.items())) or "-"
+
+
+def node_card(machines, node_id):
+    """The ledger machine size for a node, or '-' on other nodes."""
+    if not node_id:
+        return "-"
+    return next((machine["size"] for machine in machines
+                 if machine.get("node_id") == node_id and machine.get("size")), "-")
+
+
+def gpu_cells(detail, task_id, machines):
+    """The node, card, GPU mode and machine cost cells of one status line."""
+    node = (detail.get("placement") or {}).get("node_id")
+    gpu = (detail.get("requirements") or {}).get("gpu") or "none"
+    charged = task_machines(machines, task_id, detail.get("id"))
+    return (f"node={node or '-'}\tcard={node_card(machines, node)}\tgpu={gpu}\t"
+            f"machines={machine_cost(charged)}")
 
 
 def assistant_texts(events):
@@ -654,9 +784,7 @@ def release(task_id, config, *, into=None, force=False):
         if not integration:
             raise RuntimeError("pass --into BRANCH or set integration in fleet.toml, or pass --force")
         record = tasky_task(task_id)
-        full_id = record.get("id") or record.get("task", {}).get("id")
-        if not full_id:
-            raise RuntimeError(f"tasky did not report an id for {task_id}")
+        full_id = full_task_id(record, task_id)
         sha = integrating_commit(full_id, integration)
         if not sha:
             raise RuntimeError(f"no commit on origin/{integration} names tasky {full_id}; "
@@ -665,11 +793,15 @@ def release(task_id, config, *, into=None, force=False):
         note = f" (integrated in {sha[:12]} on {integration})"
     workers = load_workers(config)
     held = workers.get(data["worker"])
+    reset = False
     if held and task_suffix(held) == task_suffix(task_id):
+        # Reset before freeing, so failure leaves the assignment retryable.
+        reset = set_worker_gpu(config, data["worker"], "none", False, None)
         workers[data["worker"]] = None
         save_workers(config, workers)
     path.unlink()
-    print(f"released {data['worker']} from {task_id}{note}")
+    print(f"released {data['worker']} from {task_id}{note}"
+          + ("; its GPU requirement is back to none" if reset else ""))
 
 
 def kill(task_id, config, timeout_seconds):
@@ -1207,13 +1339,17 @@ def main():
     launch_parser.add_argument("--effort")
     launch_parser.add_argument("--image", help="registered image as NAME:TAG for a newly created worker; default is the swarm's default image")
     launch_parser.add_argument("--worker", help="run on this idle worker instead of the first free one, for example to reuse files on its disk")
-    sub.add_parser("status", help="one line per worker: task, provider, model, state age, elapsed, cost; exits 2 on a stall")
+    launch_parser.add_argument("--gpu", choices=GPU_MODES, default="none",
+                               help="the worker's GPU requirement from the start (default none); release and kill reset it to none")
+    launch_parser.add_argument("--allow-gpu", action=argparse.BooleanOptionalAction, default=None,
+                               help="let the worker move itself to a GPU machine and back with request_gpu and release_gpu (default: allow_gpu in fleet.toml, else off)")
+    sub.add_parser("status", help="one line per worker: task, provider, model, state age, elapsed, cost, node, card, GPU mode, machine cost; exits 2 on a stall")
     sub.add_parser("collect", help="check the worker's pushed branch, link its head in tasky, move the task to testing, and print the worker's report").add_argument("task_id")
     resume_parser = sub.add_parser("resume", help="send a follow-up message to the worker on this task")
     resume_parser.add_argument("task_id")
     resume_parser.add_argument("message")
     resume_parser.add_argument("--interrupt", action="store_true", help="stop the current turn before sending")
-    release_parser = sub.add_parser("release", aliases=["rm"], help="free the worker once a commit on the integration branch names the task (tasky <TASK_ID>)")
+    release_parser = sub.add_parser("release", aliases=["rm"], help="free the worker once a commit on the integration branch names the task (tasky <TASK_ID>), and reset its GPU requirement to none")
     release_parser.add_argument("task_id")
     release_parser.add_argument("--into", metavar="BRANCH", help="integration branch to check; default is integration in fleet.toml")
     release_parser.add_argument("--force", action="store_true", help="free the worker without checking integration (fleet resume no longer works for the task)")

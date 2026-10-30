@@ -22,10 +22,11 @@ const PASSTHROUGH: &[&str] = &[
     "no_proxy",
 ];
 const LOCK_TIMEOUT: &str = "-lock-timeout=120s";
-const CLOSED_AWS: [(&str, &str); 3] = [
+const CLOSED: [(&str, &str); 4] = [
     ("AWS_SHARED_CREDENTIALS_FILE", "/dev/null"),
     ("AWS_CONFIG_FILE", "/dev/null"),
     ("AWS_EC2_METADATA_DISABLED", "true"),
+    ("SCW_CONFIG_PATH", "/nonexistent/swarmy/scw-config.yaml"),
 ];
 #[derive(Clone, Default)]
 pub struct CredentialEnv {
@@ -36,10 +37,10 @@ impl CredentialEnv {
     pub fn new() -> Self {
         Self::default()
     }
-    /// Keep the AWS provider off shared files and instance metadata.
+    /// Keep the AWS and Scaleway providers off shared files, local CLI profiles and instance metadata.
     #[must_use]
     pub fn closed() -> Self {
-        CLOSED_AWS
+        CLOSED
             .iter()
             .fold(Self::new(), |env, (name, value)| env.with(*name, *value))
     }
@@ -73,7 +74,7 @@ impl CredentialEnv {
     }
 }
 fn secret_name(name: &str) -> bool {
-    !CLOSED_AWS.iter().any(|(closed, _)| *closed == name)
+    !CLOSED.iter().any(|(closed, _)| *closed == name)
 }
 impl fmt::Debug for CredentialEnv {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -97,6 +98,29 @@ pub struct Tofu {
     plugin_cache: PathBuf,
 }
 impl Tofu {
+    /// The test override when set and non-empty, otherwise the pinned verified download.
+    /// # Errors
+    /// Returns `TofuBinMissing` for a missing override, or download errors.
+    pub async fn resolve(cache: &Path) -> Result<Self> {
+        Self::resolve_with(std::env::var_os("SWARMY_TOFU_BIN").as_deref(), cache).await
+    }
+    /// Resolve with an explicit override so tests do not mutate process environment.
+    /// # Errors
+    /// Returns `TofuBinMissing` for a missing override, or download errors.
+    pub async fn resolve_with(
+        override_bin: Option<&std::ffi::OsStr>,
+        cache: &Path,
+    ) -> Result<Self> {
+        if let Some(path) = override_bin.filter(|value| !value.is_empty()) {
+            let path = PathBuf::from(path);
+            if !path.is_file() {
+                return Err(Error::TofuBinMissing(path));
+            }
+            return Ok(Self::from_binary(path, cache));
+        }
+        Self::install(cache, &opentofu::Source::pinned()).await
+    }
+
     /// # Errors
     /// Returns installation or platform errors.
     pub async fn install(cache: &Path, source: &opentofu::Source) -> Result<Self> {

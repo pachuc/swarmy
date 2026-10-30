@@ -133,6 +133,7 @@ swarmy-image = { path = "crates/swarmy-image" }
 swarmy-bus = { path = "crates/swarmy-bus" }
 swarmy-cloud = { path = "crates/swarmy-cloud" }
 swarmy-infra = { path = "crates/swarmy-infra" }
+swarmy-provisioner = { path = "crates/swarmy-provisioner" }
 # Dependents get no swarmy-llm default features. swarmy-api and swarmy-gateway
 # turn the cloud providers back on through their own default features (for
 # direct model probes and inference); every other crate needs only model

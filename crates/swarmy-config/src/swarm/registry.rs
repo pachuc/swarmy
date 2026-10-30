@@ -325,6 +325,12 @@ pub(super) mod tests {
                         ssh_user: "root".into(),
                         ssh_key: "/keys/box".into(),
                     }],
+
+                    elastic: false,
+                    max: None,
+                    price_per_hour: None,
+                    currency: None,
+                    autoscale: false,
                 },
             )]
             .into(),

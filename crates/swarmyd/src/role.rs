@@ -1,10 +1,10 @@
-use crate::{hosting, memory, service, tools, upgrade, vol};
+use crate::{gpu, hosting, memory, service, tools, upgrade, vol};
 use std::ffi::OsString;
 
 use anyhow::{Result, ensure};
 use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
 use swarmy_core::{NodeRecord, ignore_best_effort};
-use swarmy_sandbox::{RuncRuntime, ScratchPolicy};
+use swarmy_sandbox::{RuncRuntime, RuntimeOptions, ScratchPolicy};
 use swarmy_store::Store;
 use swarmy_volume::server::ServerConfig;
 use tokio::{net::UnixListener, task::JoinSet};
@@ -55,7 +55,16 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     let root = loaded.root.join(".swarmy/node");
     std::fs::create_dir_all(&root)?;
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
-    let runtime = open_runtime(&loaded, root.clone(), node, store.clone(), objects).await?;
+    let (cards, node_gpu) = gpu::devices(&settings.node, gpu::nvidia_smi()).await;
+    let runtime = open_runtime(
+        &loaded,
+        root.clone(),
+        node,
+        store.clone(),
+        objects,
+        node_gpu,
+    )
+    .await?;
     let hosting = hosting::Hosting::new(store.clone(), runtime.clone(), node, settings).await?;
     let socket = root.join("control.sock");
     if socket.exists() {
@@ -69,6 +78,7 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
         capacity: settings.node.capacity.clone(),
         last_heartbeat: jiff::Timestamp::now(),
         cached_images: Vec::new(),
+        gpu: cards,
     };
     if let Some(reserve) = settings.node.memory_reserve_mib {
         record.capacity.memory_bytes = advertised_memory(reserve)?;
@@ -134,10 +144,11 @@ async fn open_runtime(
     node: swarmy_core::NodeId,
     store: Store,
     objects: Arc<dyn object_store::ObjectStore>,
+    gpu: swarmy_sandbox::NodeGpu,
 ) -> Result<Arc<RuncRuntime>> {
     let settings = &loaded.settings;
     Ok(Arc::new(
-        RuncRuntime::open_with_scratch(
+        RuncRuntime::open_with(
             root,
             ServerConfig {
                 directory: loaded.root.join(".swarmy/volumes"),
@@ -145,10 +156,13 @@ async fn open_runtime(
                 store,
                 objects,
             },
-            ScratchPolicy {
-                idle_days: settings.sandbox.scratch_idle_days,
-                high_water: settings.sandbox.scratch_high_water,
-                low_water: settings.sandbox.scratch_low_water,
+            RuntimeOptions {
+                scratch: ScratchPolicy {
+                    idle_days: settings.sandbox.scratch_idle_days,
+                    high_water: settings.sandbox.scratch_high_water,
+                    low_water: settings.sandbox.scratch_low_water,
+                },
+                gpu,
             },
         )
         .await?,

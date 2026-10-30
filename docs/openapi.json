@@ -1172,6 +1172,75 @@
         }
       }
     },
+    "/v1/machines": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "list_machines",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "description": "active (default) lists machines that may still cost money or are in progress; all includes destroyed ones",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Window start for window_cost, in the same forms as /v1/usage; requires to",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Window end, exclusive; requires from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MachineList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/models": {
       "get": {
         "tags": [
@@ -2214,6 +2283,167 @@
         }
       }
     },
+    "/v1/swarm/groups/{group}": {
+      "get": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "show_elastic_group",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ElasticGroup"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "put_elastic_group",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutElasticGroup"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ElasticGroup"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/swarm/groups/{group}/desired": {
+      "put": {
+        "tags": [
+          "api_paths"
+        ],
+        "operationId": "set_elastic_desired",
+        "parameters": [
+          {
+            "name": "group",
+            "in": "path",
+            "description": "Group name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetElasticDesired"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ElasticGroup"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/usage": {
       "get": {
         "tags": [
@@ -2302,9 +2532,13 @@
           "description",
           "image",
           "created_at",
-          "requirements"
+          "requirements",
+          "allow_gpu_request"
         ],
         "properties": {
+          "allow_gpu_request": {
+            "type": "boolean"
+          },
           "call_status": {
             "oneOf": [
               {
@@ -2336,6 +2570,16 @@
             "items": {
               "$ref": "#/components/schemas/EntryUsageView"
             }
+          },
+          "gpu_request": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GpuRequestView"
+              }
+            ]
           },
           "id": {
             "type": "string"
@@ -2670,6 +2914,14 @@
           }
         }
       },
+      "BillingGranularity": {
+        "type": "string",
+        "description": "Provider's billing-unit size.",
+        "enum": [
+          "per_started_hour",
+          "per_started_minute"
+        ]
+      },
       "CloseSession": {
         "type": "object",
         "required": [
@@ -2771,6 +3023,12 @@
           "image"
         ],
         "properties": {
+          "allow_gpu_request": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "description": {
             "type": "string"
           },
@@ -2799,6 +3057,13 @@
                 "$ref": "#/components/schemas/GpuMode"
               }
             ]
+          },
+          "gpu_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the operator set `gpu`; needs `gpu` shared or dedicated in the same request.\nRecorded as the agent's GPU request with no session."
           },
           "idempotency_key": {
             "type": "string"
@@ -3057,7 +3322,8 @@
         "enum": [
           "subscription",
           "api_key",
-          "cloud"
+          "cloud",
+          "machine_provider"
         ]
       },
       "CredentialStatus": {
@@ -3116,6 +3382,17 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "gpu": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GpuCards",
+                "description": "Cards the node advertises; null without cards."
+              }
+            ]
           },
           "last_heartbeat": {
             "type": "string"
@@ -3212,6 +3489,113 @@
             "items": {
               "$ref": "#/components/schemas/DoctorService"
             }
+          }
+        }
+      },
+      "ElasticGroup": {
+        "type": "object",
+        "description": "An elastic group as held by the swarm.",
+        "required": [
+          "swarm",
+          "group",
+          "module",
+          "size",
+          "location",
+          "sandboxes",
+          "local_storage",
+          "max",
+          "autoscale",
+          "price_per_hour",
+          "currency",
+          "desired",
+          "desired_reason",
+          "applied",
+          "generation",
+          "reconciled_generation",
+          "settled",
+          "updated_at"
+        ],
+        "properties": {
+          "applied": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "autoscale": {
+            "type": "boolean"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "desired": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "desired_agent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Agent whose waiting session caused the latest desired change, if any."
+          },
+          "desired_reason": {
+            "type": "string"
+          },
+          "desired_session": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Session that caused the latest desired change, if any."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "group": {
+            "type": "string"
+          },
+          "local_storage": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          },
+          "max": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "module": {
+            "type": "string"
+          },
+          "price_per_hour": {
+            "type": "string"
+          },
+          "reconciled_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sandboxes": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "settled": {
+            "type": "boolean",
+            "description": "Whether the provisioner has acted on the latest desired count."
+          },
+          "size": {
+            "type": "string"
+          },
+          "swarm": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
           }
         }
       },
@@ -3516,6 +3900,30 @@
           }
         }
       },
+      "GpuCards": {
+        "type": "object",
+        "description": "Cards offered by one node.",
+        "required": [
+          "model",
+          "memory_mib",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "memory_mib": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "model": {
+            "type": "string"
+          }
+        }
+      },
       "GpuMode": {
         "type": "string",
         "enum": [
@@ -3523,6 +3931,29 @@
           "shared",
           "dedicated"
         ]
+      },
+      "GpuRequestView": {
+        "type": "object",
+        "description": "The cause of an agent's current GPU requirement, from `request_gpu` or an operator's `gpu_reason`.",
+        "required": [
+          "reason",
+          "requested_at"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "requested_at": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The session that called `request_gpu`; absent when an operator gave the reason."
+          }
+        }
       },
       "HealthResponse": {
         "type": "object",
@@ -3890,6 +4321,269 @@
         ],
         "description": "A log namespace."
       },
+      "Machine": {
+        "type": "object",
+        "description": "An elastic machine, priced as of `MachineList.as_of`.",
+        "required": [
+          "id",
+          "group",
+          "name",
+          "module",
+          "size",
+          "location",
+          "state",
+          "requested_at",
+          "cause",
+          "hourly_price_micros",
+          "currency",
+          "billing",
+          "cost_micros",
+          "cost",
+          "current_agents"
+        ],
+        "properties": {
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "billing": {
+            "$ref": "#/components/schemas/BillingGranularity"
+          },
+          "cause": {
+            "$ref": "#/components/schemas/MachineCause"
+          },
+          "cost": {
+            "type": "string"
+          },
+          "cost_micros": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": "string"
+          },
+          "current_agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MachineAgent"
+            }
+          },
+          "destroyed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "drain_requested_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group": {
+            "type": "string"
+          },
+          "hourly_price_micros": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "joined_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location": {
+            "type": "string"
+          },
+          "module": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provisioned_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_at": {
+            "type": "string"
+          },
+          "size": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MachineState"
+          },
+          "window_cost": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "window_cost_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "MachineAgent": {
+        "type": "object",
+        "description": "An agent with an open assignment on the machine.",
+        "required": [
+          "agent_id",
+          "since"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "agent_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since": {
+            "type": "string"
+          }
+        }
+      },
+      "MachineCause": {
+        "type": "object",
+        "description": "Why this machine was requested.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agent_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "MachineCostTotal": {
+        "type": "object",
+        "description": "A per-currency cost total.",
+        "required": [
+          "currency",
+          "cost_micros",
+          "cost"
+        ],
+        "properties": {
+          "cost": {
+            "type": "string"
+          },
+          "cost_micros": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "currency": {
+            "type": "string"
+          }
+        }
+      },
+      "MachineList": {
+        "type": "object",
+        "description": "Machines as of one instant, with optional window totals.",
+        "required": [
+          "as_of",
+          "machines",
+          "totals"
+        ],
+        "properties": {
+          "as_of": {
+            "type": "string"
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "machines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Machine"
+            }
+          },
+          "to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "totals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MachineCostTotal"
+            }
+          }
+        }
+      },
+      "MachineState": {
+        "type": "string",
+        "description": "Lifecycle state of one elastic machine.",
+        "enum": [
+          "requested",
+          "creating",
+          "provisioning",
+          "joined",
+          "draining",
+          "destroyed",
+          "failed",
+          "orphaned"
+        ]
+      },
       "MessageRole": {
         "type": "string",
         "enum": [
@@ -4079,13 +4773,18 @@
         "type": "object",
         "required": [
           "node_id",
-          "epoch"
+          "epoch",
+          "gpu"
         ],
         "properties": {
           "epoch": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "gpu": {
+            "$ref": "#/components/schemas/GpuMode",
+            "description": "GPU mode the placement was admitted under."
           },
           "node_id": {
             "type": "string"
@@ -4234,6 +4933,72 @@
             "type": "string"
           },
           "record": {}
+        }
+      },
+      "PutElasticGroup": {
+        "type": "object",
+        "description": "Register or update an elastic group's definition from the swarm spec.",
+        "required": [
+          "idempotency_key",
+          "swarm",
+          "module",
+          "size",
+          "location",
+          "sandboxes",
+          "local_storage",
+          "max",
+          "price_per_hour",
+          "currency",
+          "primary_address",
+          "service_user"
+        ],
+        "properties": {
+          "autoscale": {
+            "type": "boolean",
+            "description": "Whether the provisioner scales this group for sessions waiting for a GPU."
+          },
+          "currency": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "local_storage": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          },
+          "max": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "module": {
+            "type": "string"
+          },
+          "price_per_hour": {
+            "type": "string"
+          },
+          "primary_address": {
+            "type": "string",
+            "description": "Public IPv4 address of the stack host; elastic machines tunnel to it."
+          },
+          "sandboxes": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "service_user": {
+            "type": "string",
+            "description": "Service login that owns swarmy on the stack host."
+          },
+          "size": {
+            "type": "string"
+          },
+          "swarm": {
+            "type": "string"
+          }
         }
       },
       "QuotaEntry": {
@@ -4642,6 +5407,30 @@
           "completed"
         ]
       },
+      "SetElasticDesired": {
+        "type": "object",
+        "description": "Set the desired number of machines, between zero and max.",
+        "required": [
+          "idempotency_key",
+          "desired"
+        ],
+        "properties": {
+          "desired": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "SetEntryQuota": {
         "type": "object",
         "description": "Operator-configured quota for an entry without published quotas.",
@@ -4981,6 +5770,12 @@
           "idempotency_key"
         ],
         "properties": {
+          "allow_gpu_request": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "clear_github_token": {
             "type": "boolean"
           },
@@ -5015,6 +5810,13 @@
                 "$ref": "#/components/schemas/GpuMode"
               }
             ]
+          },
+          "gpu_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the operator set `gpu`; needs `gpu` shared or dedicated in the same request.\nRecorded as the agent's GPU request with no session."
           },
           "idempotency_key": {
             "type": "string"

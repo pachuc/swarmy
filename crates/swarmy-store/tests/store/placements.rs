@@ -22,6 +22,7 @@ async fn node(store: &Store, capacity: u32) -> NodeRecord {
         },
         last_heartbeat: Timestamp::now(),
         cached_images: vec![],
+        gpu: None,
     };
     store.put_node(&record).await.unwrap();
     record
@@ -718,4 +719,1109 @@ async fn sixteen_default_or_four_large_sandboxes_fill_standard_budget() {
             swarmy_store::DomainError::NodeAtCapacity { .. }
         ))
     ));
+}
+
+#[tokio::test]
+async fn gpu_change_requests_release_and_next_placement_records_it() {
+    use swarmy_core::{AgentSettings, GpuRequirement};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let image = swarmy_testkit::image(&test.store).await;
+    let agent = test
+        .store
+        .create_agent("gpu-change", image, "", timestamp(0), None)
+        .await
+        .unwrap()
+        .agent_id;
+    let host = node(&test.store, 2).await.node_id;
+    let first = test.store.place(agent, host, future(60)).await.unwrap();
+    test.store.claim_placement(&first).await.unwrap();
+    test.store
+        .set_agent_with_resets(
+            agent,
+            &AgentSettings {
+                gpu: Some(GpuRequirement::Shared),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(
+        test.store
+            .placement_release_requested(&first)
+            .await
+            .unwrap()
+    );
+    let renewed = test.store.renew(&first, future(120)).await.unwrap();
+    assert!(
+        test.store
+            .placement_release_requested(&renewed)
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        test.store
+            .set_agent_with_resets(
+                agent,
+                &AgentSettings {
+                    memory_mib: Some(2048),
+                    ..Default::default()
+                },
+                &[]
+            )
+            .await,
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::ActiveSandboxRequirements
+        ))
+    ));
+    test.store.release(&renewed).await.unwrap();
+    let gpu_host = gpu_node(&test.store, 2, 1).await.node_id;
+    let second = test
+        .store
+        .place(agent, gpu_host, future(180))
+        .await
+        .unwrap();
+    assert_eq!(
+        second.last_change_reason,
+        PlacementChangeReason::RequirementChange
+    );
+    assert!(
+        !test
+            .store
+            .placement_release_requested(&second)
+            .await
+            .unwrap()
+    );
+    test.store.release(&second).await.unwrap();
+    let third = test
+        .store
+        .place(agent, gpu_host, future(180))
+        .await
+        .unwrap();
+    assert_eq!(third.last_change_reason, PlacementChangeReason::Eviction);
+}
+
+#[tokio::test]
+async fn requirement_change_without_placement_requests_nothing() {
+    use swarmy_core::{AgentSettings, GpuRequirement};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let image = swarmy_testkit::image(&test.store).await;
+    let agent = test
+        .store
+        .create_agent("gpu-unplaced", image, "", timestamp(0), None)
+        .await
+        .unwrap()
+        .agent_id;
+    test.store
+        .set_agent_with_resets(
+            agent,
+            &AgentSettings {
+                gpu: Some(GpuRequirement::Shared),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(!test.store.request_placement_release(agent).await.unwrap());
+}
+
+async fn gpu_node(store: &Store, sandboxes: u32, cards: u32) -> NodeRecord {
+    let mut record = node(store, sandboxes).await;
+    record.capacity.memory_bytes = 16 * 1024 * 1024 * 1024;
+    record.gpu = (cards > 0).then(|| swarmy_core::GpuCards {
+        model: "NVIDIA L4".into(),
+        memory_mib: 23034,
+        count: cards,
+    });
+    store.put_node(&record).await.unwrap();
+    record
+}
+
+async fn gpu_agent(store: &Store, name: &str, mode: swarmy_core::GpuRequirement) -> AgentId {
+    let image = swarmy_testkit::image(store).await;
+    let settings = swarmy_core::AgentSettings {
+        gpu: Some(mode),
+        ..Default::default()
+    };
+    store
+        .create_agent(
+            name,
+            image,
+            "",
+            Timestamp::now(),
+            Some(swarmy_store::CreateAgentOptions {
+                settings: Some(&settings),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap()
+        .agent_id
+}
+
+fn gpu_unavailable(error: &StoreError) {
+    assert!(
+        matches!(
+            error,
+            StoreError::Domain(swarmy_store::DomainError::GpuUnavailable { .. })
+        ),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn shared_gpu_sandboxes_share_a_card_node_and_never_land_without_one() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let card = gpu_node(&test.store, 4, 1).await;
+    for name in ["s1", "s2", "s3"] {
+        let agent = gpu_agent(&test.store, name, swarmy_core::GpuRequirement::Shared).await;
+        let placement = test
+            .store
+            .place(agent, card.node_id, future(60))
+            .await
+            .unwrap();
+        assert_eq!(placement.gpu, swarmy_core::GpuRequirement::Shared);
+    }
+    let cpu = test
+        .store
+        .place(session().agent_id, card.node_id, future(60))
+        .await
+        .unwrap();
+    assert_eq!(cpu.gpu, swarmy_core::GpuRequirement::None);
+    let empty = gpu_node(&test.store, 4, 0).await;
+    let agent = gpu_agent(&test.store, "s4", swarmy_core::GpuRequirement::Shared).await;
+    gpu_unavailable(
+        &test
+            .store
+            .place(agent, empty.node_id, future(60))
+            .await
+            .unwrap_err(),
+    );
+}
+
+#[tokio::test]
+async fn dedicated_gpu_excludes_other_gpu_sandboxes_in_both_directions() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let node = gpu_node(&test.store, 4, 1).await.node_id;
+    let dedicated = gpu_agent(&test.store, "d1", swarmy_core::GpuRequirement::Dedicated).await;
+    let dedicated2 = gpu_agent(&test.store, "d2", swarmy_core::GpuRequirement::Dedicated).await;
+    let shared = gpu_agent(&test.store, "s1", swarmy_core::GpuRequirement::Shared).await;
+    let first = test.store.place(dedicated, node, future(60)).await.unwrap();
+    gpu_unavailable(
+        &test
+            .store
+            .place(shared, node, future(60))
+            .await
+            .unwrap_err(),
+    );
+    gpu_unavailable(
+        &test
+            .store
+            .place(dedicated2, node, future(60))
+            .await
+            .unwrap_err(),
+    );
+    let cpu = test
+        .store
+        .place(session().agent_id, node, future(60))
+        .await
+        .unwrap();
+    assert_eq!(cpu.gpu, swarmy_core::GpuRequirement::None);
+    test.store.release(&first).await.unwrap();
+    let shared_placement = test.store.place(shared, node, future(60)).await.unwrap();
+    gpu_unavailable(
+        &test
+            .store
+            .place(dedicated2, node, future(60))
+            .await
+            .unwrap_err(),
+    );
+    test.store.release(&shared_placement).await.unwrap();
+    let second = test
+        .store
+        .place(dedicated2, node, future(60))
+        .await
+        .unwrap();
+    assert_eq!(second.gpu, swarmy_core::GpuRequirement::Dedicated);
+}
+
+#[tokio::test]
+async fn gpu_takeover_readmits_on_the_new_node() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let card = gpu_node(&test.store, 4, 1).await.node_id;
+    let cpu = gpu_node(&test.store, 4, 0).await.node_id;
+    let agent = gpu_agent(&test.store, "d1", swarmy_core::GpuRequirement::Dedicated).await;
+    let first = test.store.place(agent, card, future(60)).await.unwrap();
+    test.store.claim_placement(&first).await.unwrap();
+    let expired = expire(&test, &first).await;
+    gpu_unavailable(
+        &test
+            .store
+            .take_over(&expired, cpu, future(60))
+            .await
+            .unwrap_err(),
+    );
+    let replacement = test
+        .store
+        .take_over(&expired, card, future(60))
+        .await
+        .unwrap();
+    assert_eq!(replacement.gpu, swarmy_core::GpuRequirement::Dedicated);
+}
+
+#[tokio::test]
+async fn gpu_rejection_leaves_counts_unchanged() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let node = gpu_node(&test.store, 2, 0).await.node_id;
+    let agent = gpu_agent(&test.store, "s1", swarmy_core::GpuRequirement::Shared).await;
+    gpu_unavailable(&test.store.place(agent, node, future(60)).await.unwrap_err());
+    assert_eq!(test.store.committed_memory(node).await.unwrap(), 0);
+    let cpu = test
+        .store
+        .place(session().agent_id, node, future(60))
+        .await
+        .unwrap();
+    assert_eq!(cpu.gpu, swarmy_core::GpuRequirement::None);
+    let another = test
+        .store
+        .place(session().agent_id, node, future(60))
+        .await
+        .unwrap();
+    assert_eq!(another.gpu, swarmy_core::GpuRequirement::None);
+}
+
+async fn gpu_tool_session(
+    store: &Store,
+    name: &str,
+    allow: bool,
+) -> (AgentId, SessionId, swarmy_core::Lease) {
+    use swarmy_core::AgentSettings;
+    let agent = store
+        .create_agent(
+            name,
+            swarmy_testkit::image(store).await,
+            "",
+            Timestamp::now(),
+            Some(swarmy_store::CreateAgentOptions {
+                settings: Some(&AgentSettings {
+                    allow_gpu_request: Some(allow),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap()
+        .agent_id;
+    let (id, _) = store
+        .open_main_session(agent, Timestamp::now())
+        .await
+        .unwrap();
+    store.wake_session(id, Timestamp::now()).await.unwrap();
+    let lease = store.claim_lease(id, owner(), future(60)).await.unwrap();
+    (agent, id, lease)
+}
+
+async fn gpu_tool(
+    store: &Store,
+    id: SessionId,
+    lease: &swarmy_core::Lease,
+    tool: &str,
+    args: serde_json::Value,
+) -> swarmy_core::ToolResult {
+    use swarmy_core::{Event, RequestId, ToolCallId, ToolCallRecord};
+    let head = store.fetch_session(id).await.unwrap().unwrap().head_seq;
+    let event = store
+        .complete_gpu_tool(
+            id,
+            head,
+            lease,
+            RequestId::for_step(id, head),
+            &ToolCallRecord {
+                call_id: ToolCallId(tool.into()),
+                tool: tool.into(),
+                arguments: args,
+                result: None,
+            },
+        )
+        .await
+        .unwrap();
+    let Event::ToolCallCompleted { result, .. } = event else {
+        panic!("wrong event")
+    };
+    result
+}
+
+fn gpu_output(result: swarmy_core::ToolResult) -> String {
+    let swarmy_core::ToolResult::Completed { output, .. } = result else {
+        panic!("{result:?}")
+    };
+    output
+}
+
+#[tokio::test]
+async fn gpu_tool_request_sets_requirement_records_reason_and_requests_release() {
+    use serde_json::json;
+    use swarmy_core::GpuRequirement;
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (agent, id, lease) = gpu_tool_session(&test.store, "gpu-request", true).await;
+    let host = node(&test.store, 2).await.node_id;
+    let placement = test.store.place(agent, host, future(60)).await.unwrap();
+    test.store.claim_placement(&placement).await.unwrap();
+    assert_eq!(
+        gpu_output(
+            gpu_tool(
+                &test.store,
+                id,
+                &lease,
+                "request_gpu",
+                json!({"mode":"shared","reason":"  build the GPUI example  "})
+            )
+            .await
+        ),
+        swarmy_core::gpu_requested(swarmy_core::RequestedMode::Shared)
+    );
+    let record = test.store.get_agent(agent).await.unwrap().unwrap();
+    assert_eq!(record.requirements.gpu, GpuRequirement::Shared);
+    let cause = record.gpu_request.unwrap();
+    assert_eq!(cause.reason, "build the GPUI example");
+    assert_eq!(cause.session_id, Some(id));
+    assert!(
+        test.store
+            .placement_release_requested(&placement)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn gpu_tool_repeated_request_is_a_no_op() {
+    use serde_json::json;
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (agent, id, lease) = gpu_tool_session(&test.store, "gpu-repeat", true).await;
+    gpu_tool(
+        &test.store,
+        id,
+        &lease,
+        "request_gpu",
+        json!({"mode":"shared","reason":"first"}),
+    )
+    .await;
+    let before = test.store.get_agent(agent).await.unwrap().unwrap();
+    assert_eq!(
+        gpu_output(
+            gpu_tool(
+                &test.store,
+                id,
+                &lease,
+                "request_gpu",
+                json!({"mode":"shared","reason":"second"})
+            )
+            .await
+        ),
+        swarmy_core::gpu_already(swarmy_core::GpuRequirement::Shared)
+    );
+    assert_eq!(test.store.get_agent(agent).await.unwrap().unwrap(), before);
+}
+
+#[tokio::test]
+async fn gpu_tool_mode_change_records_the_new_reason() {
+    use serde_json::json;
+    use swarmy_core::{GpuRequirement, RequestedMode};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (agent, id, lease) = gpu_tool_session(&test.store, "gpu-mode-change", true).await;
+    let cpu = node(&test.store, 2).await.node_id;
+    let first = test.store.place(agent, cpu, future(60)).await.unwrap();
+    test.store.claim_placement(&first).await.unwrap();
+    assert_eq!(
+        gpu_output(
+            gpu_tool(
+                &test.store,
+                id,
+                &lease,
+                "request_gpu",
+                json!({"mode":"shared","reason":"first"}),
+            )
+            .await
+        ),
+        swarmy_core::gpu_requested(RequestedMode::Shared)
+    );
+    test.store.release(&first).await.unwrap();
+    let gpu = gpu_node(&test.store, 2, 1).await.node_id;
+    let placement = test.store.place(agent, gpu, future(60)).await.unwrap();
+    test.store.claim_placement(&placement).await.unwrap();
+    assert_eq!(
+        gpu_output(
+            gpu_tool(
+                &test.store,
+                id,
+                &lease,
+                "request_gpu",
+                json!({"mode":"dedicated","reason":"second"})
+            )
+            .await
+        ),
+        swarmy_core::gpu_requested(RequestedMode::Dedicated)
+    );
+    let record = test.store.get_agent(agent).await.unwrap().unwrap();
+    assert_eq!(record.requirements.gpu, GpuRequirement::Dedicated);
+    assert_eq!(record.gpu_request.unwrap().reason, "second");
+    assert!(
+        test.store
+            .placement_release_requested(&placement)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn gpu_tool_release_resets_requirement_and_clears_reason() {
+    use serde_json::json;
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (agent, id, lease) = gpu_tool_session(&test.store, "gpu-release", true).await;
+    gpu_tool(
+        &test.store,
+        id,
+        &lease,
+        "request_gpu",
+        json!({"mode":"shared","reason":"test"}),
+    )
+    .await;
+    assert_eq!(
+        gpu_output(gpu_tool(&test.store, id, &lease, "release_gpu", json!({})).await),
+        swarmy_core::GPU_RELEASED
+    );
+    let record = test.store.get_agent(agent).await.unwrap().unwrap();
+    assert_eq!(record.requirements.gpu, swarmy_core::GpuRequirement::None);
+    assert!(record.gpu_request.is_none());
+    assert_eq!(
+        gpu_output(gpu_tool(&test.store, id, &lease, "release_gpu", json!({})).await),
+        swarmy_core::GPU_ALREADY_RELEASED
+    );
+}
+
+#[tokio::test]
+async fn gpu_tool_refused_without_the_flag() {
+    use serde_json::json;
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (agent, id, lease) = gpu_tool_session(&test.store, "gpu-refused", false).await;
+    let host = node(&test.store, 2).await.node_id;
+    let placement = test.store.place(agent, host, future(60)).await.unwrap();
+    test.store.claim_placement(&placement).await.unwrap();
+    for (tool, args) in [
+        ("request_gpu", json!({"mode":"shared","reason":"x"})),
+        ("release_gpu", json!({})),
+    ] {
+        assert_eq!(
+            gpu_tool(&test.store, id, &lease, tool, args).await,
+            swarmy_core::ToolResult::Error {
+                error: swarmy_core::GPU_REQUEST_NOT_ALLOWED.into()
+            }
+        );
+    }
+    let record = test.store.get_agent(agent).await.unwrap().unwrap();
+    assert_eq!(record.requirements.gpu, swarmy_core::GpuRequirement::None);
+    assert!(record.gpu_request.is_none());
+    assert!(
+        !test
+            .store
+            .placement_release_requested(&placement)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn gpu_tool_invalid_arguments_change_nothing() {
+    use serde_json::json;
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (agent, id, lease) = gpu_tool_session(&test.store, "gpu-invalid", true).await;
+    let before = test.store.get_agent(agent).await.unwrap().unwrap();
+    for args in [
+        json!({"mode":"none","reason":"x"}),
+        json!({"mode":"shared","reason":" "}),
+        json!({"mode":"shared","reason":"x".repeat(501)}),
+    ] {
+        assert!(matches!(
+            gpu_tool(&test.store, id, &lease, "request_gpu", args).await,
+            swarmy_core::ToolResult::Error { .. }
+        ));
+        assert_eq!(test.store.get_agent(agent).await.unwrap().unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn gpu_tool_refused_for_ephemeral_sessions() {
+    use serde_json::json;
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = SessionId::from_ulid(Ulid::generate());
+    let image = swarmy_testkit::image(&test.store).await.to_owned();
+    test.store
+        .create_agent_session(
+            id,
+            None,
+            Timestamp::now(),
+            Some(swarmy_store::AgentSessionOptions {
+                image: Some(&image),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    test.store.wake_session(id, Timestamp::now()).await.unwrap();
+    let lease = test
+        .store
+        .claim_lease(id, owner(), future(60))
+        .await
+        .unwrap();
+    assert_eq!(
+        gpu_tool(
+            &test.store,
+            id,
+            &lease,
+            "request_gpu",
+            json!({"mode":"shared","reason":"x"})
+        )
+        .await,
+        swarmy_core::ToolResult::Error {
+            error: swarmy_core::GPU_REQUEST_NEEDS_AGENT.into()
+        }
+    );
+}
+
+#[tokio::test]
+async fn gpu_tool_stale_head_cannot_apply_twice() {
+    use serde_json::json;
+    use swarmy_core::{RequestId, ToolCallId, ToolCallRecord};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (_, id, lease) = gpu_tool_session(&test.store, "gpu-stale", true).await;
+    let head = test
+        .store
+        .fetch_session(id)
+        .await
+        .unwrap()
+        .unwrap()
+        .head_seq;
+    let call = ToolCallRecord {
+        call_id: ToolCallId("gpu".into()),
+        tool: "request_gpu".into(),
+        arguments: json!({"mode":"shared","reason":"x"}),
+        result: None,
+    };
+    test.store
+        .complete_gpu_tool(id, head, &lease, RequestId::for_step(id, head), &call)
+        .await
+        .unwrap();
+    assert!(
+        test.store
+            .complete_gpu_tool(id, head, &lease, RequestId::for_step(id, head), &call)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        test.store
+            .fetch_session(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .head_seq,
+        head + 1
+    );
+}
+
+#[tokio::test]
+async fn gpu_tool_operator_gpu_change_clears_the_reason() {
+    use serde_json::json;
+    use swarmy_core::{AgentSettings, GpuRequirement};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (agent, id, lease) = gpu_tool_session(&test.store, "gpu-operator", true).await;
+    gpu_output(
+        gpu_tool(
+            &test.store,
+            id,
+            &lease,
+            "request_gpu",
+            json!({"mode":"shared","reason":"x"}),
+        )
+        .await,
+    );
+    let before = test
+        .store
+        .get_agent(agent)
+        .await
+        .unwrap()
+        .unwrap()
+        .gpu_request
+        .expect("request_gpu records a reason");
+    let still = test
+        .store
+        .set_agent_with_resets(
+            agent,
+            &AgentSettings {
+                allow_gpu_request: Some(true),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(still.gpu_request, Some(before));
+    let changed = test
+        .store
+        .set_agent_with_resets(
+            agent,
+            &AgentSettings {
+                gpu: Some(GpuRequirement::Dedicated),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(changed.gpu_request.is_none());
+}
+
+#[tokio::test]
+async fn operator_gpu_reason_is_recorded_without_a_session_and_cleared_by_none() {
+    use swarmy_core::{AgentSettings, GpuReason, GpuRequirement};
+    use swarmy_store::CreateAgentOptions;
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let image = swarmy_testkit::image(&test.store).await;
+    let settings = AgentSettings {
+        gpu: Some(GpuRequirement::Shared),
+        gpu_reason: Some(GpuReason::parse("  tasky 01X: launched with --gpu  ").unwrap()),
+        ..Default::default()
+    };
+    let agent = test
+        .store
+        .create_agent(
+            "operator-reason",
+            image,
+            "",
+            Timestamp::now(),
+            Some(CreateAgentOptions {
+                settings: Some(&settings),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let cause = agent.gpu_request.unwrap();
+    assert_eq!(cause.reason, "tasky 01X: launched with --gpu");
+    assert!(cause.session_id.is_none());
+    let changed = test
+        .store
+        .set_agent_with_resets(
+            agent.agent_id,
+            &AgentSettings {
+                gpu: Some(GpuRequirement::Dedicated),
+                gpu_reason: Some(GpuReason::parse("second").unwrap()),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(changed.requirements.gpu, GpuRequirement::Dedicated);
+    assert_eq!(changed.gpu_request.unwrap().reason, "second");
+    let cleared = test
+        .store
+        .set_agent_with_resets(
+            agent.agent_id,
+            &AgentSettings {
+                gpu: Some(GpuRequirement::None),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(cleared.gpu_request.is_none());
+}
+
+#[tokio::test]
+async fn operator_gpu_reason_without_card_mode_is_refused() {
+    use swarmy_core::{AgentSettings, GpuReason, GpuRequirement};
+    use swarmy_store::{CreateAgentOptions, DomainError};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let image = swarmy_testkit::image(&test.store).await;
+    let reason = GpuReason::parse("task reason").unwrap();
+    for gpu in [None, Some(GpuRequirement::None)] {
+        let settings = AgentSettings {
+            gpu,
+            gpu_reason: Some(reason.clone()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            test.store
+                .create_agent(
+                    "invalid-reason",
+                    image,
+                    "",
+                    Timestamp::now(),
+                    Some(CreateAgentOptions {
+                        settings: Some(&settings),
+                        ..Default::default()
+                    })
+                )
+                .await,
+            Err(StoreError::Domain(DomainError::GpuReasonWithoutCard))
+        ));
+        assert!(
+            test.store
+                .get_agent_by_name("invalid-reason")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    let agent = gpu_agent(&test.store, "valid-reason", GpuRequirement::Shared).await;
+    let before = test.store.get_agent(agent).await.unwrap().unwrap();
+    for gpu in [None, Some(GpuRequirement::None)] {
+        let settings = AgentSettings {
+            gpu,
+            gpu_reason: Some(reason.clone()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            test.store
+                .set_agent_with_resets(agent, &settings, &[])
+                .await,
+            Err(StoreError::Domain(DomainError::GpuReasonWithoutCard))
+        ));
+        assert_eq!(test.store.get_agent(agent).await.unwrap().unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn operator_reason_for_the_current_mode_keeps_the_computer_placed() {
+    use swarmy_core::{AgentSettings, GpuReason, GpuRequirement};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let agent = gpu_agent(&test.store, "placed-reason", GpuRequirement::Shared).await;
+    let host = gpu_node(&test.store, 2, 1).await;
+    let placement = test
+        .store
+        .place(agent, host.node_id, future(60))
+        .await
+        .unwrap();
+    test.store.claim_placement(&placement).await.unwrap();
+    let changed = test
+        .store
+        .set_agent_with_resets(
+            agent,
+            &AgentSettings {
+                gpu: Some(GpuRequirement::Shared),
+                gpu_reason: Some(GpuReason::parse("tasky 01Y: launched with --gpu").unwrap()),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        changed.gpu_request.unwrap().reason,
+        "tasky 01Y: launched with --gpu"
+    );
+    assert!(
+        !test
+            .store
+            .placement_release_requested(&placement)
+            .await
+            .unwrap()
+    );
+}
+
+async fn ledger_gpu_node(test: &TestStore, group: &str) -> (swarmy_core::MachineId, NodeId) {
+    use swarmy_core::MachineTransition;
+    let machine = machines::machine(group);
+    let mut host = gpu_node(&test.store, 5, 1).await;
+    host.node_id = machine.machine_id.joined_node_id();
+    test.store.put_node(&host).await.unwrap();
+    test.store
+        .create_machine(&machine, timestamp(1))
+        .await
+        .unwrap();
+    test.store
+        .transition_machine(
+            machine.machine_id,
+            &MachineTransition::Creating,
+            timestamp(2),
+        )
+        .await
+        .unwrap();
+    test.store
+        .transition_machine(
+            machine.machine_id,
+            &MachineTransition::Created {
+                address: "address".into(),
+            },
+            timestamp(3),
+        )
+        .await
+        .unwrap();
+    test.store
+        .transition_machine(
+            machine.machine_id,
+            &MachineTransition::Provisioned,
+            timestamp(4),
+        )
+        .await
+        .unwrap();
+    (machine.machine_id, host.node_id)
+}
+
+#[tokio::test]
+async fn gpu_placements_on_a_joined_machine_record_assignment_intervals() {
+    use swarmy_core::{GpuRequirement, MachineTransition};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (machine, host) = ledger_gpu_node(&test, "gpu-assignment").await;
+    let a = gpu_agent(&test.store, "gpu-assignment-a", GpuRequirement::Shared).await;
+    let b = gpu_agent(&test.store, "gpu-assignment-b", GpuRequirement::Shared).await;
+    let c = gpu_agent(&test.store, "gpu-assignment-c", GpuRequirement::None).await;
+    let first = test.store.place(a, host, future(60)).await.unwrap();
+    test.store.place(c, host, future(60)).await.unwrap();
+    assert!(
+        test.store
+            .open_machine_assignments(machine)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    test.store
+        .transition_machine(
+            machine,
+            &MachineTransition::Joined { node_id: host },
+            timestamp(5),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        test.store
+            .open_machine_assignments(machine)
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.agent)
+            .collect::<Vec<_>>(),
+        [a]
+    );
+    let second = test.store.place(b, host, future(60)).await.unwrap();
+    let open = test.store.open_machine_assignments(machine).await.unwrap();
+    assert_eq!(open.len(), 2);
+    assert!(open.iter().any(|row| row.agent == a));
+    assert!(open.iter().any(|row| row.agent == b));
+    test.store.release(&second).await.unwrap();
+    assert!(
+        test.store
+            .machine_assignments(machine)
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.agent == b && row.to.is_some())
+    );
+    let old = expire(&test, &first).await;
+    let other = gpu_node(&test.store, 2, 1).await.node_id;
+    let moved = test.store.take_over(&old, other, future(60)).await.unwrap();
+    assert!(
+        test.store
+            .machine_assignments(machine)
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.agent == a && row.to.is_some())
+    );
+    assert!(
+        test.store
+            .open_machine_assignments(other.ledger_machine_id())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let old_from = test
+        .store
+        .machine_assignments(machine)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| row.agent == a)
+        .unwrap()
+        .from;
+    let expired = expire(&test, &moved).await;
+    test.store
+        .take_over(&expired, host, future(60))
+        .await
+        .unwrap();
+    let open = test.store.open_machine_assignments(machine).await.unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].agent, a);
+    assert!(open[0].from > old_from);
+}
+
+#[tokio::test]
+async fn joined_with_a_foreign_node_id_opens_no_intervals() {
+    use swarmy_core::{GpuRequirement, MachineTransition};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (machine, derived_node) = ledger_gpu_node(&test, "gpu-foreign-join").await;
+    let foreign_node = gpu_node(&test.store, 2, 1).await.node_id;
+    assert_ne!(foreign_node, derived_node);
+    let agent = gpu_agent(
+        &test.store,
+        "gpu-foreign-join-agent",
+        GpuRequirement::Shared,
+    )
+    .await;
+    test.store
+        .place(agent, foreign_node, future(60))
+        .await
+        .unwrap();
+    test.store
+        .transition_machine(
+            machine,
+            &MachineTransition::Joined {
+                node_id: foreign_node,
+            },
+            timestamp(5),
+        )
+        .await
+        .unwrap();
+    assert!(
+        test.store
+            .open_machine_assignments(machine)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_gpu_computer_closes_its_interval() {
+    use swarmy_core::{GpuRequirement, MachineTransition};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (machine, host) = ledger_gpu_node(&test, "gpu-deleted").await;
+    test.store
+        .transition_machine(
+            machine,
+            &MachineTransition::Joined { node_id: host },
+            timestamp(5),
+        )
+        .await
+        .unwrap();
+    let agent = gpu_agent(&test.store, "gpu-deleted-agent", GpuRequirement::Shared).await;
+    test.store.place(agent, host, future(60)).await.unwrap();
+    test.store.delete_agent(agent).await.unwrap();
+    assert!(
+        test.store
+            .open_machine_assignments(machine)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        test.store
+            .machine_assignments(machine)
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.agent == agent && row.to.is_some())
+    );
+}
+
+#[tokio::test]
+async fn gpu_capacity_waits_list_gpu_waits_with_their_cause() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (agent_a, id_a, lease_a) = gpu_tool_session(&test.store, "wait-a", true).await;
+    gpu_output(
+        gpu_tool(
+            &test.store,
+            id_a,
+            &lease_a,
+            "request_gpu",
+            serde_json::json!({"mode":"shared", "reason":"tasky 01AAA: render"}),
+        )
+        .await,
+    );
+    test.store
+        .park_for_capacity(
+            id_a,
+            &lease_a,
+            swarmy_core::GpuRequirement::Shared,
+            Timestamp::now(),
+            Duration::from_hours(1),
+        )
+        .await
+        .unwrap();
+    let (_, id_b, lease_b) = gpu_tool_session(&test.store, "wait-b", true).await;
+    test.store
+        .park_for_capacity(
+            id_b,
+            &lease_b,
+            swarmy_core::GpuRequirement::None,
+            Timestamp::now(),
+            Duration::from_hours(1),
+        )
+        .await
+        .unwrap();
+    let waits = test.store.gpu_capacity_waits().await.unwrap();
+    assert_eq!(waits.len(), 1);
+    assert_eq!(waits[0].session_id, id_a);
+    assert_eq!(waits[0].requirement, swarmy_core::GpuRequirement::Shared);
+    assert_eq!(waits[0].agent_name.as_deref(), Some("wait-a"));
+    assert_eq!(
+        waits[0].gpu_request.as_ref().unwrap().reason,
+        "tasky 01AAA: render"
+    );
+    assert!(!waits[0].placed);
+    let card = gpu_node(&test.store, 2, 1).await;
+    test.store
+        .place(agent_a, card.node_id, future(60))
+        .await
+        .unwrap();
+    assert!(test.store.gpu_capacity_waits().await.unwrap()[0].placed);
+    test.store.clear_session_wait(id_a).await.unwrap();
+    assert!(test.store.gpu_capacity_waits().await.unwrap().is_empty());
 }

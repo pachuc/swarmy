@@ -358,6 +358,12 @@ fn mixed_cloud_stack_and_existing_nodes() {
                 ssh_key: f.key.clone(),
                 private_address: None,
             }],
+
+            elastic: false,
+            max: None,
+            price_per_hour: None,
+            currency: None,
+            autoscale: false,
         },
     );
     spec.placement.nodes = vec!["box".into()];
@@ -798,4 +804,71 @@ fn scale_requires_a_provisioned_stack_before_cloud_login() {
             .contains("swarm fleet is not up; run swarmy swarm up fleet first")
     );
     assert!(!f.path().join("cache/swarmy/tofu").exists());
+}
+
+#[test]
+fn scale_workers_to_zero_and_back() {
+    let f = setup();
+    single_worker(&f);
+    worker_outputs(&f, 0);
+    let output = f.ok(&["--json", "swarm", "scale", "fleet", "workers", "0"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["to"], 0);
+    assert_eq!(report["removed"], serde_json::json!(["fleet-workers-1"]));
+    let spec = SwarmSpec::parse(
+        &fs::read_to_string(f.path().join("config/swarmy/swarms/fleet.toml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(spec.groups["workers"].count, Some(0));
+    let vars: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            f.path()
+                .join("data/swarmy/swarms/fleet/tofu/workers/swarmy.tfvars.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(vars["machine_count"], 0);
+    worker_outputs(&f, 1);
+    let output = f.ok(&["--json", "swarm", "scale", "fleet", "workers", "1"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["added"], serde_json::json!(["fleet-workers-1"]));
+    let refused = f.run(&["swarm", "scale", "fleet", "workers", "51"]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("51"));
+}
+
+#[test]
+fn elastic_gpu_is_not_planned_or_applied_on_the_laptop() {
+    let f = setup();
+    credentials(&f);
+    create(&f, &["--lifecycle", "ephemeral"]);
+    let path = f.path().join("config/swarmy/swarms/fleet.toml");
+    let mut spec = SwarmSpec::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let mut gpu = spec.groups["workers"].clone();
+    gpu.count = None;
+    gpu.elastic = true;
+    gpu.max = Some(2);
+    gpu.price_per_hour = Some("0.75".into());
+    gpu.currency = Some("EUR".into());
+    spec.groups.insert("gpu".into(), gpu);
+    spec.placement.nodes.push("gpu".into());
+    spec.validate().unwrap();
+    let dirs = Dirs {
+        config: f.path().join("config/swarmy"),
+        data: f.path().join("data/swarmy"),
+        state: f.path().join("state/swarmy"),
+        cache: f.path().join("cache/swarmy"),
+    };
+    Registry::new(dirs).write_spec(&spec).unwrap();
+    f.ok(&["swarm", "plan", "fleet"]);
+    f.ok(&["swarm", "up", "fleet", "--no-image"]);
+    assert!(
+        !fs::read_to_string(f.path().join("tofu.log"))
+            .unwrap()
+            .contains("gpu")
+    );
+    let output = f.run(&["swarm", "scale", "fleet", "gpu", "3"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("max = 2"));
 }

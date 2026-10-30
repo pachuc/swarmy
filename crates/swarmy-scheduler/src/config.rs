@@ -5,7 +5,7 @@ pub(crate) struct Config {
     pub scan_interval: Duration,
     pub resend_interval: Duration,
     pub provider: String,
-    pub max_inference_wait: Duration,
+    pub max_session_wait: Duration,
     pub default_route: Option<String>,
 }
 
@@ -17,7 +17,7 @@ impl Config {
             scan_interval: settings.scheduler.scan_interval_ms,
             resend_interval: settings.scheduler.resend_interval_ms,
             provider: settings.selection.provider,
-            max_inference_wait: settings.inference.max_wait_secs,
+            max_session_wait: settings.scheduler.max_session_wait_secs,
             default_route: settings.inference.default_route,
         })
     }

@@ -3,7 +3,7 @@ use jiff::Timestamp;
 use serde::Serialize;
 use swarmy_core::{Event, InflightRecord, Lease, RequestId, SessionId, SessionState, SnapshotRef};
 
-use crate::{InferenceWait, Result, Store, StoreError, read, write};
+use crate::{Result, SessionWait, Store, StoreError, read, write};
 
 /// Route position to persist with the inference handoff. The submitter
 /// resolved the route against open breakers before building the request, so
@@ -177,21 +177,12 @@ impl Store {
         if route.reasons.is_empty() {
             return Ok(());
         }
-        let wait_key = self.keys().inference_wait(id);
-        let mut wait = read::<InferenceWait>(trx, &wait_key)
+        let wait_key = self.keys().session_wait(id);
+        let mut wait = read::<SessionWait>(trx, &wait_key)
             .await?
-            .unwrap_or(InferenceWait {
-                since: now,
-                wake_at: now,
-                last_failure_seq: 0,
-                reasons: Vec::new(),
-                attempts: 0,
-            });
+            .unwrap_or_else(|| SessionWait::inference_new(now, now));
         for reason in &route.reasons {
-            let summary: String = reason.chars().take(256).collect();
-            if !wait.reasons.contains(&summary) && wait.reasons.len() < 32 {
-                wait.reasons.push(summary);
-            }
+            wait.inference_mut().record_reason(reason);
         }
         write(trx, &wait_key, &wait)?;
         Ok(())
@@ -220,6 +211,7 @@ impl Store {
                 self.check_worker_lease(&trx, id, lease, now).await?;
                 let mut session = self.session(&trx, id).await?;
                 crate::check_head(session.head_seq, expected_head)?;
+                self.clear_capacity_wait_in(&trx, id).await?;
                 if session.interrupt_requested
                     && !self
                         .last_event_is_operator_interrupt(&trx, id, expected_head)

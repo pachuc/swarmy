@@ -189,6 +189,14 @@ impl Fixture {
         config
             .harness
             .tools
+            .register(Box::new(swarmy_tools::RequestGpu));
+        config
+            .harness
+            .tools
+            .register(Box::new(swarmy_tools::ReleaseGpu));
+        config
+            .harness
+            .tools
             .register(Box::new(swarmy_tools::UpdatePlan));
         config.partitions = (0..256).collect();
         config.bus.ack_wait = Duration::from_millis(200);
@@ -218,6 +226,7 @@ impl Fixture {
                     },
                     last_heartbeat: Timestamp::now(),
                     cached_images: Vec::new(),
+                    gpu: None,
                 })
                 .await
                 .unwrap();
@@ -303,6 +312,11 @@ impl Fixture {
     }
 
     async fn request(&self, id: SessionId) {
+        self.request_calls(id, &[("bash", json!({"command": "echo hello"}))])
+            .await;
+    }
+
+    async fn request_calls(&self, id: SessionId, calls: &[(&str, Value)]) {
         let head = self
             .store
             .fetch_session(id)
@@ -333,11 +347,15 @@ impl Fixture {
                         message: Message {
                             id: MessageId::from_ulid(Ulid::generate()),
                             role: MessageRole::Assistant,
-                            parts: vec![Part::ToolCall {
-                                call_id: ToolCallId(format!("shell-{head}")),
-                                tool: "bash".into(),
-                                input: json!({"command": "echo hello"}),
-                            }],
+                            parts: calls
+                                .iter()
+                                .enumerate()
+                                .map(|(index, (tool, input))| Part::ToolCall {
+                                    call_id: ToolCallId(format!("{tool}-{head}-{index}")),
+                                    tool: (*tool).into(),
+                                    input: input.clone(),
+                                })
+                                .collect(),
                         },
                         provider: String::new(),
                         model: String::new(),
@@ -1370,4 +1388,701 @@ async fn cache_affinity_requires_same_model() {
         affinity_entry(&f, id, Some(value), 0).await.as_deref(),
         Some("a")
     );
+}
+
+async fn add_live_node(f: &Fixture, id: NodeId) -> NodeId {
+    let mut node = f.store.get_node(f.nodes[0]).await.unwrap().unwrap();
+    node.node_id = id;
+    node.last_heartbeat = f.now();
+    f.store.put_node(&node).await.unwrap();
+    id
+}
+
+async fn refresh_nodes(f: &Fixture) {
+    for id in f.nodes {
+        let mut node = f.store.get_node(id).await.unwrap().unwrap();
+        node.last_heartbeat = f.now();
+        f.store.put_node(&node).await.unwrap();
+    }
+}
+
+async fn fill_nodes(f: &Fixture) {
+    for id in f.nodes {
+        f.store
+            .place(
+                AgentId::from_ulid(Ulid::generate()),
+                id,
+                f.now().checked_add(Duration::from_secs(7200)).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn full_swarm_parks_for_capacity_then_runs_when_a_node_appears() {
+    use swarmy_core::GpuRequirement;
+    use swarmy_store::{CAPACITY_WAIT_RETRY, WaitKind};
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    fill_nodes(&f).await;
+    let id = f.session().await;
+    f.step(id).await;
+    let audit = f.store.lease_audit(&[id]).await.unwrap();
+    assert_eq!(audit[0].state, SessionState::Sleeping);
+    assert!(audit[0].waiting && !audit[0].leased);
+    assert!(matches!(
+        f.store.session_wait(id).await.unwrap().unwrap().kind,
+        WaitKind::Capacity {
+            requirement: GpuRequirement::None
+        }
+    ));
+    let events = f.store.read_events(id, 0, 64).await.unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::ToolCallRequested { .. }))
+    );
+    assert_eq!(events.iter().filter(|e| matches!(e, Event::MessageAppended { message, .. } if message.parts.iter().any(|p| matches!(p, Part::Text { text } if text.contains("waiting for computer capacity"))))).count(), 1);
+    f.advance(CAPACITY_WAIT_RETRY + Duration::from_secs(1));
+    let node = add_live_node(&f, NodeId::from_ulid(Ulid::from_parts(1, 3))).await;
+    assert!(f.store.scan_due_waits(f.now()).await.unwrap().contains(&id));
+    assert!(f.store.wake_wait(id, f.now()).await.unwrap());
+    f.step(id).await;
+    let delivery = f.delivery(node).await;
+    assert_eq!(
+        f.store
+            .get_by_agent(f.agent)
+            .await
+            .unwrap()
+            .unwrap()
+            .node_id,
+        node
+    );
+    assert!(f.store.session_wait(id).await.unwrap().is_none());
+    assert_eq!(
+        f.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::WaitingTools
+    );
+    delivery.acknowledge().await.unwrap();
+}
+
+#[tokio::test]
+async fn gpu_requirement_change_moves_the_computer_and_explains_it() {
+    use swarmy_core::{AgentSettings, GpuRequirement};
+    use swarmy_store::{CAPACITY_WAIT_RETRY, WaitKind};
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    let first = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(first, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    f.request(first).await;
+    f.step(first).await;
+    let placement = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
+    let delivery = f.delivery(placement.node_id).await;
+    let claim = f.claim(delivery.value.clone(), placement.clone()).await;
+    f.complete(&claim).await.unwrap();
+    delivery.acknowledge().await.unwrap();
+    f.store
+        .set_agent_with_resets(
+            f.agent,
+            &AgentSettings {
+                gpu: Some(GpuRequirement::Shared),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(
+        f.store
+            .placement_release_requested(&placement)
+            .await
+            .unwrap()
+    );
+    f.store.release(&placement).await.unwrap();
+    let second = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(second, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    f.request(second).await;
+    f.step(second).await;
+    assert!(matches!(
+        f.store.session_wait(second).await.unwrap().unwrap().kind,
+        WaitKind::Capacity {
+            requirement: GpuRequirement::Shared
+        }
+    ));
+    let events = f.store.read_events(second, 0, 64).await.unwrap();
+    assert_eq!(events.iter().filter(|event| matches!(event, Event::MessageAppended { message, .. }
+        if message.role == MessageRole::System && message.parts.iter().any(|part| matches!(part, Part::Text { text } if text.contains("waiting for GPU capacity"))))).count(), 1);
+    f.store
+        .set_agent_with_resets(
+            f.agent,
+            &AgentSettings {
+                gpu: Some(GpuRequirement::None),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    f.advance(CAPACITY_WAIT_RETRY + Duration::from_secs(1));
+    refresh_nodes(&f).await;
+    assert!(f.store.wake_wait(second, f.now()).await.unwrap());
+    f.step(second).await;
+    let placement = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
+    assert_eq!(
+        placement.last_change_reason,
+        PlacementChangeReason::RequirementChange
+    );
+    let delivery = f.delivery(placement.node_id).await;
+    let events = f.store.read_events(second, 0, 64).await.unwrap();
+    assert!(events.iter().any(|e| matches!(e, Event::MessageAppended { message, .. } if message.parts.iter().any(|p| matches!(p, Part::Text { text } if text.contains("GPU requirement changed"))))));
+    delivery.acknowledge().await.unwrap();
+}
+
+#[tokio::test]
+async fn capacity_wait_past_the_max_fails_the_calls_and_continues() {
+    use swarmy_core::GpuRequirement;
+    use swarmy_store::CAPACITY_WAIT_RETRY;
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    fill_nodes(&f).await;
+    let id = f.session().await;
+    f.step(id).await;
+    let audit = f.store.lease_audit(&[id]).await.unwrap();
+    assert_eq!(audit[0].state, SessionState::Sleeping);
+    assert!(audit[0].waiting && !audit[0].leased);
+    assert!(matches!(
+        f.store.session_wait(id).await.unwrap().unwrap().kind,
+        swarmy_store::WaitKind::Capacity {
+            requirement: GpuRequirement::None
+        }
+    ));
+    f.advance(CAPACITY_WAIT_RETRY + Duration::from_secs(1));
+    assert!(f.store.wake_wait(id, f.now()).await.unwrap());
+    f.advance(Duration::from_secs(3601));
+    f.step(id).await;
+    let events = f.store.read_events(id, 0, 64).await.unwrap();
+    let error =
+        swarmy_core::capacity_wait_exceeded(GpuRequirement::None, Duration::from_secs(3600));
+    assert_eq!(events.iter().filter(|e| matches!(e, Event::ToolCallCompleted { result: ToolResult::Error { error: actual }, .. } if actual == &error)).count(), 1);
+    assert!(f.store.session_wait(id).await.unwrap().is_none());
+    assert_eq!(
+        f.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::WaitingInference
+    );
+}
+
+#[tokio::test]
+async fn interrupting_a_capacity_wait_fails_its_calls_and_does_not_rerun_them() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    fill_nodes(&f).await;
+    let id = f.session().await;
+    f.step(id).await;
+    assert_eq!(
+        f.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Sleeping
+    );
+    assert_eq!(
+        f.store.interrupt_session(id).await.unwrap(),
+        swarmy_store::InterruptResult::Requested
+    );
+    assert!(!f.store.finish_runnable_interrupt(id).await.unwrap());
+    f.step(id).await;
+    let events = f.store.read_events(id, 0, 64).await.unwrap();
+    let requests = events
+        .iter()
+        .filter(|event| matches!(event, Event::ToolCallRequested { .. }))
+        .count();
+    assert_eq!(requests, 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::ToolCallCompleted {
+        result: ToolResult::Error { error }, ..
+    } if error == "The tool call did not run: the operator interrupted the turn."))
+            .count(),
+        requests
+    );
+    let session = f.store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(session.state, SessionState::Idle);
+    assert!(f.store.session_wait(id).await.unwrap().is_none());
+    add_live_node(&f, NodeId::from_ulid(Ulid::from_parts(1, 3))).await;
+    f.store
+        .append_user_message(
+            id,
+            session.head_seq,
+            &Message {
+                id: MessageId::from_ulid(Ulid::generate()),
+                role: MessageRole::User,
+                parts: vec![Part::Text {
+                    text: "continue".into(),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    f.step(id).await;
+    let events = f.store.read_events(id, 0, 64).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::ToolCallRequested { .. }))
+            .count(),
+        requests
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::InferenceRequested { .. }))
+    );
+}
+
+async fn add_gpu_node(f: &Fixture, sandboxes: u32) -> NodeId {
+    let node_id = NodeId::from_ulid(Ulid::from_parts(1, 3));
+    f.store
+        .put_node(&NodeRecord {
+            node_id,
+            roles: vec![NodeRole::Sandbox],
+            capacity: NodeCapacity {
+                cpu_millis: 1000,
+                memory_bytes: 16 * 1024 * 1024 * 1024,
+                disk_bytes: 1024,
+                sandboxes,
+            },
+            last_heartbeat: f.now(),
+            cached_images: Vec::new(),
+            gpu: Some(swarmy_core::GpuCards {
+                model: "NVIDIA L4".into(),
+                memory_mib: 23034,
+                count: 1,
+            }),
+        })
+        .await
+        .unwrap();
+    node_id
+}
+
+async fn set_gpu(f: &Fixture, mode: swarmy_core::GpuRequirement) {
+    f.store
+        .set_agent_with_resets(
+            f.agent,
+            &swarmy_core::AgentSettings {
+                gpu: Some(mode),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn shared_gpu_agent_waits_for_a_card_node_then_resumes_on_it() {
+    use swarmy_core::GpuRequirement;
+    use swarmy_store::{CAPACITY_WAIT_RETRY, WaitKind};
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    set_gpu(&f, GpuRequirement::Shared).await;
+    let id = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(id, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    f.request(id).await;
+    f.step(id).await;
+    assert_eq!(
+        f.store.fetch_session(id).await.unwrap().unwrap().state,
+        SessionState::Sleeping
+    );
+    assert!(matches!(
+        f.store.session_wait(id).await.unwrap().unwrap().kind,
+        WaitKind::Capacity {
+            requirement: GpuRequirement::Shared
+        }
+    ));
+    f.advance(CAPACITY_WAIT_RETRY + Duration::from_secs(1));
+    let gpu = add_gpu_node(&f, 2).await;
+    assert!(f.store.wake_wait(id, f.now()).await.unwrap());
+    f.step(id).await;
+    let placement = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
+    assert_eq!(placement.node_id, gpu);
+    assert_eq!(placement.gpu, GpuRequirement::Shared);
+    assert!(f.store.session_wait(id).await.unwrap().is_none());
+    let delivery = f.delivery(gpu).await;
+    delivery.acknowledge().await.unwrap();
+}
+
+#[tokio::test]
+async fn gpu_agent_is_placed_on_the_card_node_despite_scratch_elsewhere() {
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    set_gpu(&f, swarmy_core::GpuRequirement::Dedicated).await;
+    let gpu = add_gpu_node(&f, 2).await;
+    f.store
+        .report_scratch(
+            f.agent,
+            &ScratchRecord {
+                node_id: f.nodes[0],
+                bytes: 12,
+            },
+        )
+        .await
+        .unwrap();
+    let placement =
+        crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
+            .await
+            .unwrap();
+    assert_eq!(placement.node_id, gpu);
+    assert_eq!(placement.gpu, swarmy_core::GpuRequirement::Dedicated);
+}
+
+#[tokio::test]
+async fn cpu_agent_leaves_scratch_on_a_card_node_for_a_free_cpu_node() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let _session = f.session().await;
+    let gpu = add_gpu_node(&f, 2).await;
+    f.store
+        .report_scratch(
+            f.agent,
+            &ScratchRecord {
+                node_id: gpu,
+                bytes: 12,
+            },
+        )
+        .await
+        .unwrap();
+    let placement =
+        crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
+            .await
+            .unwrap();
+    assert_ne!(placement.node_id, gpu);
+    assert_eq!(placement.gpu, swarmy_core::GpuRequirement::None);
+}
+
+#[tokio::test]
+async fn gpu_agent_without_card_nodes_gets_no_eligible_node() {
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    set_gpu(&f, swarmy_core::GpuRequirement::Shared).await;
+    let error = crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
+        .await
+        .unwrap_err();
+    let no_node = error
+        .downcast_ref::<crate::placement::NoEligibleNode>()
+        .unwrap();
+    assert_eq!(no_node.requirement, swarmy_core::GpuRequirement::Shared);
+    assert!(no_node.rejection.is_none());
+}
+
+#[tokio::test]
+async fn busy_dedicated_node_gets_no_eligible_node_with_the_refusal() {
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    set_gpu(&f, swarmy_core::GpuRequirement::Dedicated).await;
+    let gpu = add_gpu_node(&f, 2).await;
+    let holder = f
+        .store
+        .create_agent("holder", "routing:test", "", Timestamp::now(), None)
+        .await
+        .unwrap()
+        .agent_id;
+    f.store
+        .set_agent_with_resets(
+            holder,
+            &swarmy_core::AgentSettings {
+                gpu: Some(swarmy_core::GpuRequirement::Dedicated),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    f.store
+        .place(
+            holder,
+            gpu,
+            f.now().checked_add(Duration::from_secs(30)).unwrap(),
+        )
+        .await
+        .unwrap();
+    let error = crate::placement::resolve_at(&f.store, f.agent, Duration::from_secs(30), f.now())
+        .await
+        .unwrap_err();
+    let no_node = error
+        .downcast_ref::<crate::placement::NoEligibleNode>()
+        .unwrap();
+    assert!(matches!(
+        no_node.rejection,
+        Some(StoreError::Domain(
+            swarmy_store::DomainError::GpuUnavailable { .. }
+        ))
+    ));
+}
+
+async fn allow_gpu(f: &Fixture) {
+    f.store
+        .set_agent_with_resets(
+            f.agent,
+            &swarmy_core::AgentSettings {
+                allow_gpu_request: Some(true),
+                ..Default::default()
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn gpu_tool_mixed_with_other_calls_runs_nothing() {
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    allow_gpu(&f).await;
+    let id = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(id, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    f.request_calls(
+        id,
+        &[
+            ("bash", json!({"command":"echo hi"})),
+            ("request_gpu", json!({"mode":"shared","reason":"x"})),
+        ],
+    )
+    .await;
+    f.step(id).await;
+    let events = f.store.read_events(id, 0, 64).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, Event::ToolCallRequested { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(events.iter().filter(|e| matches!(e, Event::ToolCallCompleted { result: ToolResult::Error { error }, .. } if error == swarmy_core::GPU_TOOL_NOT_ALONE)).count(), 2);
+    assert_eq!(
+        f.store
+            .get_agent(f.agent)
+            .await
+            .unwrap()
+            .unwrap()
+            .requirements
+            .gpu,
+        swarmy_core::GpuRequirement::None
+    );
+    assert!(f.store.get_by_agent(f.agent).await.unwrap().is_none());
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::InferenceRequested { .. }))
+    );
+}
+
+#[tokio::test]
+async fn gpu_tools_are_advertised_only_to_allowed_agents() {
+    use swarmy_llm::ToolDefinition;
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    let named = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(named, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    let request = || swarmy_llm::Request {
+        no_cache: false,
+        system_prompt: String::new(),
+        messages: Vec::new(),
+        tools: ["bash", "request_gpu", "release_gpu"]
+            .into_iter()
+            .map(|name| ToolDefinition {
+                name: name.into(),
+                description: String::new(),
+                parameters: json!({"type":"object"}),
+            })
+            .collect(),
+        settings: GenerationSettings {
+            model: "test-model".into(),
+            ..Default::default()
+        },
+    };
+    let mut off = request();
+    f.worker
+        .prepare_request(
+            &f.store.fetch_session(named).await.unwrap().unwrap(),
+            &mut off,
+            &mut Vec::new(),
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        off.tools
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
+        ["bash"]
+    );
+    allow_gpu(&f).await;
+    let mut on = request();
+    f.worker
+        .prepare_request(
+            &f.store.fetch_session(named).await.unwrap().unwrap(),
+            &mut on,
+            &mut Vec::new(),
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(on.tools.len(), 3);
+    let ephemeral = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(
+            ephemeral,
+            None,
+            f.now(),
+            Some(swarmy_store::AgentSessionOptions {
+                image: Some("routing:test"),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let mut anonymous = request();
+    f.worker
+        .prepare_request(
+            &f.store.fetch_session(ephemeral).await.unwrap().unwrap(),
+            &mut anonymous,
+            &mut Vec::new(),
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        anonymous
+            .tools
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
+        ["bash"]
+    );
+}
+
+#[tokio::test]
+async fn gpu_tool_moves_the_computer_then_next_call_waits_and_runs_on_a_gpu_node() {
+    use swarmy_core::GpuRequirement;
+    use swarmy_store::{CAPACITY_WAIT_RETRY, WaitKind};
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.named_agent().await;
+    allow_gpu(&f).await;
+    let first = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(first, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    f.request(first).await;
+    f.step(first).await;
+    let placement = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
+    let delivery = f.delivery(placement.node_id).await;
+    let claim = f.claim(delivery.value.clone(), placement.clone()).await;
+    f.complete(&claim).await.unwrap();
+    delivery.acknowledge().await.unwrap();
+
+    let second = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(second, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    f.request_calls(
+        second,
+        &[(
+            "request_gpu",
+            json!({"mode":"shared","reason":"render test"}),
+        )],
+    )
+    .await;
+    f.step(second).await;
+    let events = f.store.read_events(second, 0, 64).await.unwrap();
+    assert_eq!(events.iter().filter(|e| matches!(e, Event::ToolCallCompleted { result: ToolResult::Completed { output, .. }, .. } if output.contains("did not wait"))).count(), 1);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::InferenceRequested { .. }))
+    );
+    let agent = f.store.get_agent(f.agent).await.unwrap().unwrap();
+    assert_eq!(agent.requirements.gpu, GpuRequirement::Shared);
+    assert_eq!(agent.gpu_request.unwrap().reason, "render test");
+    assert!(
+        f.store
+            .placement_release_requested(&placement)
+            .await
+            .unwrap()
+    );
+
+    let third = SessionId::from_ulid(Ulid::generate());
+    f.store
+        .create_agent_session(third, Some(f.agent), f.now(), None)
+        .await
+        .unwrap();
+    f.request(third).await;
+    f.step(third).await;
+    assert!(matches!(
+        f.store.session_wait(third).await.unwrap().unwrap().kind,
+        WaitKind::Capacity {
+            requirement: GpuRequirement::Shared
+        }
+    ));
+    let events = f.store.read_events(third, 0, 64).await.unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::ToolCallRequested { .. }))
+    );
+    assert_eq!(events.iter().filter(|e| matches!(e, Event::MessageAppended { message, .. } if message.role == MessageRole::System && message.parts.iter().any(|p| matches!(p, Part::Text { text } if text.contains("waiting for GPU capacity"))))).count(), 1);
+    f.store.release(&placement).await.unwrap();
+    f.advance(CAPACITY_WAIT_RETRY + Duration::from_secs(1));
+    let gpu = add_gpu_node(&f, 2).await;
+    assert!(f.store.wake_wait(third, f.now()).await.unwrap());
+    f.step(third).await;
+    let moved = f.store.get_by_agent(f.agent).await.unwrap().unwrap();
+    assert_eq!(moved.node_id, gpu);
+    assert_eq!(moved.gpu, GpuRequirement::Shared);
+    assert_eq!(
+        moved.last_change_reason,
+        PlacementChangeReason::RequirementChange
+    );
+    assert!(f.store.session_wait(third).await.unwrap().is_none());
+    assert_eq!(
+        f.store.fetch_session(third).await.unwrap().unwrap().state,
+        SessionState::WaitingTools
+    );
+    f.delivery(gpu).await.acknowledge().await.unwrap();
 }

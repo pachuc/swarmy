@@ -66,6 +66,11 @@ if ! sudo modprobe nbd nbds_max=64 || ! sudo modprobe ublk_drv; then
     sudo modprobe ublk_drv
 fi
 
+# Prepare the driver, toolkit and CDI spec only on machines with NVIDIA cards.
+if nvidia_card_present; then
+    provision_nvidia
+fi
+
 # Sandbox scratch lives on local storage; control-only nodes keep everything
 # on the root disk. A device is formatted once and mounted by label, while an
 # existing directory (already partitioned server disks) is used directly.

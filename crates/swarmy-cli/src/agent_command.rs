@@ -25,9 +25,15 @@ pub(crate) struct InferenceArgs {
     /// Sandbox memory limit in MiB
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     pub memory: Option<u64>,
-    /// GPU requirement for placement
+    /// GPU requirement for placement; changing it restarts a placed computer on a node that satisfies it
     #[arg(long, value_enum)]
     pub gpu: Option<GpuArg>,
+    /// Why this GPU requirement is set (1-500 characters); shown in `agent show` and used as an autoscaled machine's cause. Needs --gpu shared or dedicated
+    #[arg(long, requires = "gpu", value_name = "TEXT")]
+    pub gpu_reason: Option<String>,
+    /// Let the agent change its own GPU requirement with `request_gpu` and `release_gpu`
+    #[arg(long, value_name = "true|false", value_parser = clap::value_parser!(bool))]
+    pub allow_gpu_request: Option<bool>,
 }
 
 /// GPU requirement for placement, parsed once by clap instead of matched as a string.
@@ -111,6 +117,36 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn gpu_reason_requires_gpu_on_create_and_set() {
+        for command in ["create", "set"] {
+            assert!(
+                crate::Cli::try_parse_from([
+                    "swarmy",
+                    "agent",
+                    command,
+                    "tommy",
+                    "--gpu",
+                    "shared",
+                    "--gpu-reason",
+                    "tasky X: launched with --gpu"
+                ])
+                .is_ok()
+            );
+            assert!(
+                crate::Cli::try_parse_from([
+                    "swarmy",
+                    "agent",
+                    command,
+                    "tommy",
+                    "--gpu-reason",
+                    "x"
+                ])
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn agent_inference_flags_validate_without_connecting_to_the_stack() {
         for command in ["create", "set"] {
             for effort in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
@@ -148,6 +184,27 @@ mod tests {
             );
         }
         for command in ["create", "set"] {
+            for value in ["true", "false"] {
+                assert!(
+                    crate::Cli::try_parse_from([
+                        "swarmy",
+                        "agent",
+                        command,
+                        "tommy",
+                        "--allow-gpu-request",
+                        value
+                    ])
+                    .is_ok()
+                );
+            }
+            for args in [
+                vec!["--allow-gpu-request", "yes"],
+                vec!["--allow-gpu-request"],
+            ] {
+                let mut cmd = vec!["swarmy", "agent", command, "tommy"];
+                cmd.extend(args);
+                assert!(crate::Cli::try_parse_from(cmd).is_err());
+            }
             assert!(
                 crate::Cli::try_parse_from([
                     "swarmy", "agent", command, "tommy", "--memory", "2048", "--gpu", "shared"

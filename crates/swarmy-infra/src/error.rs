@@ -2,6 +2,8 @@ use crate::{contract::OutputError, download};
 use std::{path::PathBuf, process::ExitStatus};
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("SWARMY_TOFU_BIN={} does not exist", .0.display())]
+    TofuBinMissing(PathBuf),
     #[error("invalid OpenTofu release base URL")]
     BaseUrl(#[source] download::Error),
     #[error("downloading OpenTofu")]

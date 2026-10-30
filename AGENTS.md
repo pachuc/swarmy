@@ -4,7 +4,7 @@ swarmy is infrastructure for running very large numbers of long-lived coding
 agents on ordinary cloud compute. The promise: no single machine failure loses
 an agent, its conversation, or its disk; turns feel immediate; agents keep
 working for weeks with memory, timers, and a persistent computer; any model
-provider can serve them. Written in Rust, organized as twenty-nine crates in one
+provider can serve them. Written in Rust, organized as thirty crates in one
 workspace.
 
 Read `docs/ARCHITECTURE.md` before changing anything: it explains the concepts, the
@@ -46,7 +46,7 @@ measured numbers with raw samples.
   (`docs/agent-lifecycle.md`). Tools (`swarmy-tools`): bash with a 10 s yield
   and background continuation, process control, read, write, edit (exact
   match with whitespace fallbacks, no fuzzy matching), glob, grep, ls,
-  web_fetch, checkpoint, update_plan, timers, get_time. Proof: an agent
+  web_fetch, checkpoint, update_plan, timers, get_time, and, for agents allowed to, request_gpu and release_gpu. Proof: an agent
   cloned this repository and opened a pull request through a node kill in
   146 s (`docs/proofs/`).
 - **Inference providers** (`swarmy-llm`, `docs/providers.md`). A catalog
@@ -122,6 +122,7 @@ Cancelled: channels (slice 5, see `backlog/chaty.md`), sandbox-pause-resume
 
 ## Decisions made, and why
 
+- **Provisioning is a separate binary on the primary.** `swarmy-provisioner` runs OpenTofu and SSH provisioning for elastic groups. It alone links swarmy-cloud and swarmy-infra on the server side, so `swarmy-core` carries neither the OpenTofu download nor the SSH provisioning code.
 - **FoundationDB as truth, NATS as transport.** The safety argument is "every
   write checks its lease in the same transaction", which needs serializable
   transactions over arbitrary keys; the bus is allowed to lose or duplicate.

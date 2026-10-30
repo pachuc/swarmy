@@ -121,6 +121,7 @@ impl Store {
                     write(&trx, &self.keys().tool_placement(job.request_id), placement)?;
                     write(&trx, &self.keys().session_tools(id, job.request_id), &())?;
                 }
+                self.clear_capacity_wait_in(&trx, id).await?;
                 let session = self.session(&trx, id).await?;
                 self.transition(&trx, session, SessionState::WaitingTools, self.now())
                     .await

@@ -8,7 +8,12 @@ mod encoding;
 mod error;
 mod event;
 mod id;
+mod machine;
 mod message;
+pub use machine::{
+    BillingGranularity, InvalidMachineTransition, MachineAssignment, MachineCause, MachineRecord,
+    MachineState, MachineTransition, NewMachine,
+};
 mod scheduler;
 mod selection;
 mod session;
@@ -21,8 +26,8 @@ pub use encoding::{json, trailing};
 pub use error::error_chain;
 pub use event::{Event, FailureKind, InferenceCompletion, interrupted_event};
 pub use id::{
-    AgentId, ImageTag, LeaseOwnerId, ManifestId, MessageId, NodeId, ProcessId, RequestId,
-    SessionId, TimerId, VolumeId,
+    AgentId, ImageTag, LeaseOwnerId, MachineId, ManifestId, MessageId, NodeId, ProcessId,
+    RequestId, SessionId, TimerId, VolumeId,
 };
 pub use message::{Message, MessageRole, NoticeKind, Part, ToolCallId, ToolCallRecord, ToolResult};
 pub use scheduler::{Nudge, RUNNABLE_PARTITIONS, WakeReply, WakeRequest, runnable_partition};
@@ -35,7 +40,7 @@ pub use store::{IdempotencyRecord, IdempotencyState, InflightRecord, RunnableEnt
 pub use volume::{CHUNK_SIZE, ContentHash, GcRun, ImageRecord, ManifestHeader, VolumeRecord};
 
 mod node;
-pub use node::{NodeCapacity, NodeRecord, NodeRole};
+pub use node::{GpuCards, NodeCapacity, NodeRecord, NodeRole};
 mod sandbox;
 pub use sandbox::{
     BlockDevice, ExecOutput, ExecRequest, ExecResult, GpuRequirement, PauseHandle, RuntimeCaps,
@@ -50,9 +55,18 @@ pub use tool::{
     cap_tool_output, tool_spill_path,
 };
 
+mod price;
+pub use price::{HourlyPrice, InvalidPrice};
+pub mod elastic;
+pub use elastic::{ElasticGroupDefinition, ElasticGroupRecord, MAX_ELASTIC_MACHINES};
+
 mod placement;
 pub use placement::{AgentCallStatus, PlacementChangeReason, PlacementRecord};
 
+mod capacity;
+pub use capacity::{
+    capacity_wait_exceeded, capacity_wait_notice, capacity_wait_reason, node_satisfies,
+};
 mod rebuild;
 pub use rebuild::{UNCLAIMED_DISPATCH_EXPIRED, computer_rebuilt_message};
 
@@ -60,7 +74,13 @@ mod turn;
 pub use turn::{TurnEvent, TurnStage};
 
 mod agent;
-pub use agent::{AgentRecord, AgentSettings};
+pub use agent::{AgentRecord, AgentSettings, GpuRequest};
+mod gpu_tool;
+pub use gpu_tool::{
+    GPU_ALREADY_RELEASED, GPU_RELEASED, GPU_REQUEST_NEEDS_AGENT, GPU_REQUEST_NOT_ALLOWED,
+    GPU_TOOL_NOT_ALONE, GpuReason, GpuToolCall, MAX_GPU_REASON_CHARS, RELEASE_GPU_TOOL,
+    REQUEST_GPU_TOOL, RequestedMode, gpu_already, gpu_requested, is_gpu_tool,
+};
 pub mod best_effort;
 pub use best_effort::ignore_best_effort;
 pub mod route;
@@ -94,7 +114,7 @@ pub mod quota;
 pub mod time;
 
 mod usage;
-pub use usage::{TokenUsage, UsageTotals};
+pub use usage::{TokenUsage, UsageTotals, format_micros};
 
 /// An ephemeral token update on the live bus, without a durable cursor.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

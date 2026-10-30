@@ -332,6 +332,8 @@ impl Hosting {
         Ok(())
     }
 
+    /// A requirement release stops hosting between calls even if processes run:
+    /// card devices belong to the sandbox created for the old requirement.
     async fn host(&self, agent: AgentId, mut calls: mpsc::Receiver<Call>) -> Result<()> {
         let Some(mut first) = calls.recv().await else {
             return Ok(());
@@ -352,13 +354,14 @@ impl Hosting {
             .expect("activity lock poisoned")
             .placement = Some(placement.clone());
         let mut shutdown = self.shutdown.subscribe();
+        let (release, mut released) = watch::channel(false);
         let serving = async {
             anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
             self.boot_computer(agent, &placement, &first, placement_started)
                 .await?;
             self.execute(&placement, first).await?;
             loop {
-                if *shutdown.borrow() {
+                if *shutdown.borrow() || *released.borrow() {
                     break;
                 }
                 tokio::select! {
@@ -371,11 +374,12 @@ impl Hosting {
                         if !crate::tools::has_processes(&self.runtime, &placement).await? { break; }
                     },
                     _ = shutdown.changed() => break,
+                    _ = released.changed() => break,
                 }
             }
             Ok::<_, anyhow::Error>(())
         };
-        let renew = self.renew(placement.clone());
+        let renew = self.renew(placement.clone(), &release);
         tokio::pin!(renew);
         let serving = tokio::select! {
             result = serving => result,
@@ -386,6 +390,11 @@ impl Hosting {
         };
         // Keep renewing throughout the final checkpoint, which can take longer
         // than a lease on a heavily written disk.
+        let cause = if *released.borrow() {
+            "requirement change"
+        } else {
+            "eviction"
+        };
         let cleanup = async {
             if self
                 .runtime
@@ -400,7 +409,7 @@ impl Hosting {
                 self.store.release(&placement).await?;
                 self.previous.lock().await.remove(&agent);
                 self.computer_sampled.lock().await.remove(&agent);
-                tracing::info!(%agent, epoch = placement.epoch, reason = "eviction", "placement released");
+                tracing::info!(%agent, epoch = placement.epoch, reason = cause, "placement released");
             } else {
                 self.runtime.discard_if_present(agent).await?;
             }
@@ -463,7 +472,11 @@ impl Hosting {
         Ok(())
     }
 
-    async fn renew(&self, mut placement: PlacementRecord) -> anyhow::Error {
+    async fn renew(
+        &self,
+        mut placement: PlacementRecord,
+        release: &watch::Sender<bool>,
+    ) -> anyhow::Error {
         loop {
             let remaining: Duration = placement
                 .expires_at
@@ -486,10 +499,17 @@ impl Hosting {
                     .checked_add(self.lease)?
                     .max(current.expires_at.checked_add(Duration::from_millis(1))?);
                 // Keep the original epoch token even if the read saw a takeover.
-                Ok::<_, anyhow::Error>(self.store.renew(&placement, expiry).await?)
+                let renewed = self.store.renew(&placement, expiry).await?;
+                let requested = self.store.placement_release_requested(&renewed).await?;
+                Ok::<_, anyhow::Error>((renewed, requested))
             };
             match tokio::time::timeout(budget, renewal).await {
-                Ok(Ok(current)) => placement = current,
+                Ok(Ok((current, requested))) => {
+                    placement = current;
+                    if requested {
+                        release.send_replace(true);
+                    }
+                }
                 Ok(Err(error)) => {
                     return anyhow::anyhow!("placement lease renewal failed: {error}");
                 }
