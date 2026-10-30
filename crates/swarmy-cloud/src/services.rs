@@ -186,9 +186,7 @@ pub(crate) async fn install(node: &Machine, address: &str, options: &Options) ->
     } else {
         // Without a copied keyring the API still needs one to store provider
         // keys. Create it on the host, where it stays; never replace one.
-        let status = super::ssh::command(node)?
-            .arg(address)
-            .arg(new_keyring_script(&user, &home))
+        let status = super::ssh::node_command(node, address, &new_keyring_script(&user, &home))?
             .stdin(Stdio::null())
             .stdout(std::io::stderr())
             .status()
@@ -201,17 +199,19 @@ pub(crate) async fn install(node: &Machine, address: &str, options: &Options) ->
             });
         }
     }
-    let status = super::ssh::command(node)?
-        .arg(address)
-        .arg(format!(
+    let status = super::ssh::node_command(
+        node,
+        address,
+        &format!(
             "cd {repo} && bash {} {}",
             crate::node_files::SERVICES,
             shell_words::quote(&user),
-        ))
-        .stdout(std::io::stderr())
-        .status()
-        .await
-        .map_err(crate::Error::ssh("start node services"))?;
+        ),
+    )?
+    .stdout(std::io::stderr())
+    .status()
+    .await
+    .map_err(crate::Error::ssh("start node services"))?;
     if !status.success() {
         return Err(crate::Error::SshStatus {
             command: "start node services".to_owned(),

@@ -177,8 +177,7 @@ swarmy --swarm demo doctor
 swarmy swarm status demo
 ```
 
-The SSH key is copied to the private record directory. SSH and rsync must
-reach the host with a login able to prepare local storage. Systemd starts
+The SSH key is copied to the private record directory. SSH and rsync must reach the host with a login that is root or has passwordless sudo (`sudo -n true` must succeed). For any login other than root, swarmy runs every host command through `sudo -n` and the receiving rsync as `sudo -n rsync`, so files land as they would with a root login. Provisioning refuses a login without passwordless sudo before it copies anything. Systemd starts
 and supervises services on Linux hosts; provisioning installs its units. `--ssh-user`
 sets that login; `--service-user` sets the account that owns the node checkout
 and runs services (default `swarmy`). Set `--private-address` when hosts talk
