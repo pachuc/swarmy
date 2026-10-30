@@ -554,12 +554,84 @@ async fn seed(f: &Fixture, n: u32, state: MachineState) -> swarmy_core::MachineR
 fn state(f: &Fixture, count: u32) {
     let dir = f.temp.path().join("data/tofu/gpu");
     fs::create_dir_all(&dir).unwrap();
+    let status = std::process::Command::new(f.temp.path().join("fake-tofu"))
+        .args(["write-state", "fleet", "gpu", &count.to_string()])
+        .current_dir(&dir)
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+#[tokio::test]
+async fn a_failed_first_apply_leaves_resources_that_scale_to_zero_destroys() {
+    let Some(f) = Fixture::new(true, 2).await else {
+        return;
+    };
+    let state_path = f.temp.path().join("data/tofu/gpu/terraform.tfstate");
+    f.desired(1).await;
+    fs::write(f.temp.path().join("fail-apply-leak"), "").unwrap();
+    let mut holder = Holder::new();
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert!(
+        fs::read_to_string(&state_path)
+            .unwrap()
+            .contains("scaleway_instance_ip")
+    );
+    assert!(
+        f.records()
+            .await
+            .iter()
+            .all(|r| r.state == MachineState::Failed)
+    );
+    // The next attempt reads that state as zero machines and reaches the apply,
+    // instead of failing on the missing machines output.
+    let error = f
+        .reconciler
+        .reconcile(
+            holder.lease().unwrap(),
+            &f.store.get_elastic_group("gpu").await.unwrap().unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("OpenTofu apply"), "{error:#}");
+    fs::remove_file(f.temp.path().join("fail-apply-leak")).unwrap();
+    f.desired(0).await;
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(f.log().matches("call gpu destroy").count(), 1);
+    let state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(state["resources"], serde_json::json!([]));
+    let group = f.store.get_elastic_group("gpu").await.unwrap().unwrap();
+    assert!(group.settled());
+    assert_eq!(group.applied, 0);
+    assert!(f.records().await.iter().all(|r| !r.is_active()));
+    f.reconciler.tick(&mut holder).await.unwrap();
+    assert_eq!(f.log().matches("call gpu destroy").count(), 1);
+}
+
+#[tokio::test]
+async fn an_emptied_state_settles_at_zero_without_reading_outputs() {
+    let Some(f) = Fixture::new(true, 2).await else {
+        return;
+    };
+    let dir = f.temp.path().join("data/tofu/gpu");
+    fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("terraform.tfstate"),
-        format!("{{\"count\":{count}}}"),
+        r#"{"version":4,"resources":[],"outputs":{}}"#,
     )
     .unwrap();
+    f.desired(1).await;
+    settled(&f, 1).await;
+    f.desired(0).await;
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    let group = f.store.get_elastic_group("gpu").await.unwrap().unwrap();
+    assert!(group.settled());
+    assert_eq!(group.applied, 0);
+    let log = f.log();
+    assert!(!log.contains("call gpu output"), "{log}");
+    assert!(!log.contains("call gpu destroy"), "{log}");
+    assert!(!log.contains("apply machine_count"), "{log}");
 }
+
 #[tokio::test]
 async fn restart_reuses_creating_record_without_state() {
     let Some(f) = Fixture::new(true, 3).await else {
@@ -1353,74 +1425,4 @@ async fn manual_scale_on_an_autoscaled_group_is_a_starting_point() {
     *f.clock.lock().unwrap() += Duration::from_mins(1);
     f.reconciler.tick(&mut holder).await.unwrap();
     assert_eq!(desired_count(&f).await, 0);
-}
-
-#[tokio::test]
-async fn first_apply_partial_resources_are_destroyed_at_zero_and_can_regrow() {
-    let Some(f) = Fixture::new(true, 2).await else {
-        return;
-    };
-    f.desired(1).await;
-    fs::write(f.temp.path().join("fail-apply-orphans"), "").unwrap();
-    let mut holder = Holder::new();
-    f.reconciler.tick(&mut holder).await.unwrap();
-    assert!(f.log().contains("apply machine_count=1"));
-    assert_eq!(f.records().await[0].state, MachineState::Failed);
-    assert_eq!(
-        f.store
-            .get_elastic_group("gpu")
-            .await
-            .unwrap()
-            .unwrap()
-            .applied,
-        0
-    );
-    // The missing machines output must not mask the resources left by the failed apply.
-    f.desired(0).await;
-    f.reconciler.tick(&mut holder).await.unwrap();
-    assert!(f.log().contains("call gpu state"));
-    assert!(f.log().contains("call gpu destroy"));
-    assert!(
-        f.store
-            .get_elastic_group("gpu")
-            .await
-            .unwrap()
-            .unwrap()
-            .settled()
-    );
-    let before = f.log();
-    f.reconciler.tick(&mut holder).await.unwrap();
-    assert_eq!(f.log().matches("call gpu destroy").count(), 1);
-    assert!(f.log().len() >= before.len());
-    fs::remove_file(f.temp.path().join("fail-apply-orphans")).unwrap();
-    *f.clock.lock().unwrap() += Duration::from_mins(5);
-    f.desired(1).await;
-    f.reconciler.tick(&mut holder).await.unwrap();
-    assert_eq!(
-        f.records().await.last().unwrap().state,
-        MachineState::Provisioning
-    );
-}
-
-#[tokio::test]
-async fn manually_emptied_partial_state_does_not_block_zero() {
-    let Some(f) = Fixture::new(true, 2).await else {
-        return;
-    };
-    fs::create_dir_all(f.temp.path().join("data/tofu/gpu")).unwrap();
-    fs::write(
-        f.temp.path().join("data/tofu/gpu/terraform.tfstate"),
-        r#"{"resources":[]}"#,
-    )
-    .unwrap();
-    f.reconciler.tick(&mut Holder::new()).await.unwrap();
-    assert!(
-        f.store
-            .get_elastic_group("gpu")
-            .await
-            .unwrap()
-            .unwrap()
-            .settled()
-    );
-    assert!(!f.log().contains("call gpu destroy"));
 }

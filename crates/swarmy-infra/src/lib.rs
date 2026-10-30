@@ -9,4 +9,6 @@ mod runner;
 
 pub use contract::{Bucket, Machine, ModuleOutputs, OutputError, parse_outputs};
 pub use error::{Error, Result};
-pub use runner::{CredentialEnv, ModuleFile, PlanOutcome, Tofu, VARIABLES_FILE, Workspace};
+pub use runner::{
+    CredentialEnv, ModuleFile, PlanOutcome, STATE_FILE, Tofu, VARIABLES_FILE, Workspace,
+};
