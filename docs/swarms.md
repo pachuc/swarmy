@@ -518,6 +518,8 @@ puts its tasky id in the reason.
 
 The provisioner writes Requested and Creating before the OpenTofu apply, Created (which enters Provisioning) after it sees the machine in state, Provisioned after SSH configuration, Joined after node registration, Failed after the join timeout, and DrainRequested before removal and Destroyed after it disappears from state.
 
+When desired reaches 0, the provisioner runs `tofu destroy` instead of an apply, so the group also loses resources that do not depend on the machine count, such as its security group. An apply can fail after creating some resources, for example a public IP before the provider refuses the machine for quota. The provisioner then logs the resources left in state, counts the group as having no machines, and destroys those resources at the next scale to 0 or `swarmy swarm down`.
+
 The first billing unit starts on creation and is billed immediately. By default
 billing is per started hour; a record can instead specify per started minute.
 Cost is computed when the record is read, not periodically written. Assignment

@@ -6,6 +6,7 @@ use std::{
 };
 use tokio::{fs, process::Command};
 pub const VARIABLES_FILE: &str = "swarmy.tfvars.json";
+pub const STATE_FILE: &str = "terraform.tfstate";
 const PASSTHROUGH: &[&str] = &[
     "PATH",
     "HOME",
@@ -166,6 +167,51 @@ fn io(action: &'static str, path: &Path, source: std::io::Error) -> Error {
         source,
     }
 }
+#[derive(serde::Deserialize)]
+struct StateFile {
+    #[serde(default)]
+    resources: Vec<StateResource>,
+}
+#[derive(serde::Deserialize)]
+struct StateResource {
+    mode: String,
+    #[serde(rename = "type")]
+    kind: String,
+    name: String,
+    #[serde(default)]
+    module: Option<String>,
+    #[serde(default)]
+    instances: Vec<StateInstance>,
+}
+#[derive(serde::Deserialize)]
+struct StateInstance {
+    #[serde(default)]
+    index_key: Option<serde_json::Value>,
+}
+/// Managed resource instances in an `OpenTofu` state file, as addresses such as
+/// `scaleway_instance_ip.this[0]`. Data sources are left out because destroying
+/// the group does not remove them and they cost nothing.
+fn managed_instances(json: &[u8]) -> serde_json::Result<Vec<String>> {
+    let state: StateFile = serde_json::from_slice(json)?;
+    Ok(state
+        .resources
+        .iter()
+        .filter(|resource| resource.mode == "managed")
+        .flat_map(|resource| {
+            let base = match &resource.module {
+                Some(module) => format!("{module}.{}.{}", resource.kind, resource.name),
+                None => format!("{}.{}", resource.kind, resource.name),
+            };
+            resource
+                .instances
+                .iter()
+                .map(move |instance| match &instance.index_key {
+                    Some(key) => format!("{base}[{key}]"),
+                    None => base.clone(),
+                })
+        })
+        .collect())
+}
 impl Workspace<'_> {
     #[must_use]
     pub fn dir(&self) -> &Path {
@@ -317,6 +363,19 @@ impl Workspace<'_> {
         let (bytes, _) = self.run(Subcommand::Output).await?;
         Ok(parse_outputs(&String::from_utf8_lossy(&bytes))?)
     }
+    /// Managed resource instances recorded in this workspace's local state.
+    /// Empty when there is no state file yet.
+    /// # Errors
+    /// Returns filesystem failures and a state file that is not `OpenTofu` JSON.
+    pub async fn state_resources(&self) -> Result<Vec<String>> {
+        let path = self.dir.join(STATE_FILE);
+        let bytes = match fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(io("reading", &path, error)),
+        };
+        managed_instances(&bytes).map_err(|source| Error::State { path, source })
+    }
     async fn run(&self, sub: Subcommand<'_>) -> Result<(Vec<u8>, Option<i32>)> {
         fs::create_dir_all(&self.tofu.plugin_cache)
             .await
@@ -441,6 +500,31 @@ pub(crate) fn stderr_summary(stderr: &str) -> String {
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
+    #[test]
+    fn state_lists_managed_instances_only() {
+        let state = br#"{"version":4,"resources":[
+            {"mode":"data","type":"aws_ssm_parameter","name":"ubuntu","instances":[{}]},
+            {"mode":"managed","type":"scaleway_instance_security_group","name":"this","instances":[{"schema_version":0,"attributes":{}}]},
+            {"mode":"managed","type":"scaleway_instance_ip","name":"this","instances":[{"index_key":0},{"index_key":1}]},
+            {"mode":"managed","module":"module.net","type":"x","name":"y","instances":[{"index_key":"a"}]}
+        ]}"#;
+        assert_eq!(
+            managed_instances(state).unwrap(),
+            [
+                "scaleway_instance_security_group.this",
+                "scaleway_instance_ip.this[0]",
+                "scaleway_instance_ip.this[1]",
+                "module.net.x.y[\"a\"]",
+            ]
+        );
+        assert!(
+            managed_instances(br#"{"version":4,"resources":[]}"#)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(managed_instances(b"state").is_err());
+    }
+
     use super::*;
     #[test]
     fn summaries() {

@@ -50,6 +50,12 @@ pub enum Error {
     },
     #[error("tofu output -json")]
     Output(#[from] OutputError),
+    #[error("reading OpenTofu state {}", path.display())]
+    State {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
     #[error("serializing OpenTofu variables")]
     Variables(#[source] serde_json::Error),
 }

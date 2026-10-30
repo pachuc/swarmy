@@ -16,6 +16,7 @@
 //! | D1 | Provisioning, Joined, Draining or Failed at or above lowest removed | yes | `DrainRequested` if needed, drain and revoke before apply |
 //! | S7 | Orphaned | no | None |
 //! | S8 | No active record | yes | Adopt as Creating, Created |
+//! | Z1 | Target 0 | any managed resource | tofu destroy instead of apply, so the group owns nothing at 0 |
 //!
 //! Replaying these rules against state before applying makes every interrupted step recoverable.
 //! Reservations and group results check the lease in their transactions. Ledger transitions
@@ -543,7 +544,7 @@ impl Reconciler {
             .target(lease, record, actual, &outputs, &active)
             .await?;
         self.fail_unneeded(def, &outputs, target, &active).await?;
-        if target == actual {
+        if target == actual && (target > 0 || workspace.state_resources().await?.is_empty()) {
             self.store
                 .record_elastic_reconcile(
                     lease,
@@ -661,7 +662,15 @@ impl Reconciler {
         target: u32,
     ) -> Result<()> {
         let def = &record.definition;
-        let applied = workspace.apply().await;
+        let verb = if target == 0 { "destroy" } else { "apply" };
+        let applied = if target == 0 {
+            workspace.destroy().await
+        } else {
+            workspace.apply().await
+        };
+        if applied.is_err() {
+            log_leftovers(workspace, &def.group, verb).await;
+        }
         self.backup(workspace, &def.group).await;
         let after = self.outputs(workspace, def).await;
         if applied.is_ok() && after.is_err() {
@@ -715,7 +724,7 @@ impl Reconciler {
                 applied.is_ok() && length == record.desired,
             )
             .await?;
-        applied.with_context(|| format!("OpenTofu apply for elastic group {}", def.group))?;
+        applied.with_context(|| format!("OpenTofu {verb} for elastic group {}", def.group))?;
         if length != target {
             bail!(
                 "OpenTofu reported {length} machines after applying machine_count = {target} for elastic group {}",
@@ -729,10 +738,18 @@ impl Reconciler {
         workspace: &Workspace<'_>,
         def: &ElasticGroupDefinition,
     ) -> Result<Vec<Machine>> {
-        if !workspace.dir().join("terraform.tfstate").exists() {
+        let resources = workspace.state_resources().await?;
+        if resources.is_empty() {
             return Ok(Vec::new());
         }
-        let machines = workspace.outputs().await?.machines;
+        let machines = match workspace.outputs().await {
+            Ok(outputs) => outputs.machines,
+            Err(swarmy_infra::Error::Output(swarmy_infra::OutputError::Missing("machines"))) => {
+                tracing::warn!(group = %def.group, ?resources, "OpenTofu state holds resources but no machines output, as a failed first apply leaves it; counting zero machines");
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(error.into()),
+        };
         for (i, machine) in machines.iter().enumerate() {
             if machine.name != name(def, u32::try_from(i)? + 1) {
                 bail!(
@@ -984,7 +1001,7 @@ impl Reconciler {
         Ok(())
     }
     async fn backup(&self, workspace: &Workspace<'_>, group: &str) {
-        let file = workspace.dir().join("terraform.tfstate");
+        let file = workspace.dir().join(swarmy_infra::STATE_FILE);
         if FilePath::new(&file).exists() {
             let result: Result<()> = async {
                 let bytes = tokio::fs::read(&file).await?;
@@ -1046,6 +1063,22 @@ fn log_drain(victim: &MachineRecord, result: Result<ssh::Drain>) {
         }
         Err(error) => {
             tracing::warn!(name = %victim.name, error = %swarmy_core::error_chain(error.as_ref()), "could not reach node to drain it; removing without draining");
+        }
+    }
+}
+/// Name every resource a failed apply or destroy left in state, so a leak that keeps billing is visible.
+async fn log_leftovers(workspace: &Workspace<'_>, group: &str, verb: &str) {
+    match workspace.state_resources().await {
+        Ok(resources) if !resources.is_empty() => {
+            tracing::warn!(
+                group,
+                ?resources,
+                "OpenTofu {verb} failed; these resources stay in state and may cost money until the group is scaled to 0 or swarm down destroys it"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(group, error = %swarmy_core::error_chain(&error), "could not read OpenTofu state after a failed {verb}");
         }
     }
 }
