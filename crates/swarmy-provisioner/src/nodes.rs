@@ -11,7 +11,7 @@ pub trait Nodes: Send + Sync {
     async fn join(&self, node: &Machine, primary: &LocalPrimary) -> anyhow::Result<()>;
     /// Stop the agent after allowing its commands to finish for `timeout`.
     async fn drain(&self, node: &Machine, timeout: Duration) -> anyhow::Result<Drain>;
-    /// Remove the tunnel key from the primary.
+    /// Revoke the node's tunnel key and node API credential on the primary.
     async fn revoke(&self, node: &Machine, primary: &LocalPrimary) -> anyhow::Result<()>;
 }
 
