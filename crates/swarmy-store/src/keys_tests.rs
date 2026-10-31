@@ -188,6 +188,7 @@ fn family_key_layout_matches_checked_in_hex() {
         ("tool_job", keys.tool_job(requestid)),
         ("tool_placement", keys.tool_placement(requestid)),
         ("turn", keys.turn(sessionid)),
+        ("turn_computer", keys.turn_computer(sessionid, messageid)),
         (
             "turn_inference",
             keys.turn_inference(sessionid, messageid, "request"),

@@ -57,6 +57,7 @@ fn unbounded_turn_keeps_every_row_and_derives_idle() {
         },
         inference: BTreeMap::new(),
         tools: BTreeMap::new(),
+        computer: None,
     };
     let event = |stage: TurnStage, request: Option<swarmy_core::RequestId>, ns: i128| TurnEvent {
         session_id: session,
@@ -200,11 +201,13 @@ fn batched_patches_equal_sequential_writes() {
         summary: StoredTurnSummaryCurrent::default(),
         inference: BTreeMap::new(),
         tools: BTreeMap::new(),
+        computer: None,
     };
     let mut sequential = TurnWrite {
         summary: StoredTurnSummaryCurrent::default(),
         inference: BTreeMap::new(),
         tools: BTreeMap::new(),
+        computer: None,
     };
     for (index, name) in ["a", "b", "c"].iter().enumerate() {
         let request = swarmy_core::RequestId::for_step(session, u64::try_from(index).unwrap() + 1);

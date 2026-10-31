@@ -1066,6 +1066,14 @@ async fn read<T: DeserializeOwned>(trx: &Transaction, key: &[u8]) -> Result<Opti
         .transpose()
 }
 
+/// Conflict with a write to `key` without reading it.
+fn add_read_conflict_key(trx: &Transaction, key: &[u8]) -> Result<()> {
+    let mut end = key.to_vec();
+    end.push(0);
+    trx.add_conflict_range(key, &end, foundationdb::options::ConflictRangeType::Read)?;
+    Ok(())
+}
+
 fn write<T: Serialize>(trx: &Transaction, key: &[u8], value: &T) -> Result<()> {
     let bytes = encode(value)?;
     if bytes.len() > INLINE_LIMIT {
