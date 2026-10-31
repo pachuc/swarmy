@@ -28,7 +28,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use swarmy_bus::{Bus, Config as BusConfig, SubjectToken};
 use swarmy_core::{
-    Event, Message, MessageId, MessageRole, Part, SessionId, SessionState, WakeReply,
+    Event, Message, MessageId, MessageRole, NodeRole, Part, SessionId, SessionState, WakeReply,
 };
 use swarmy_store::{
     AgentSessionOptions, MAX_SCAN_LIMIT, Store, blob::ObjectBlobStore, runnable_partition,
@@ -226,6 +226,13 @@ impl Fixture {
             }
         }
         self.ready().await?;
+        if self
+            .processes
+            .iter()
+            .any(|process| process.kind == Kind::Node)
+        {
+            self.node_ready().await?;
+        }
         self.environment = environment;
         if config.scenario == Some(Scenario::Desktop) {
             Ok(())
@@ -351,6 +358,31 @@ impl Fixture {
         })
         .await
         .context("scheduler startup timed out")?
+    }
+
+    /// Wait until a sandbox node this fixture started has registered, so the
+    /// first tool call finds capacity instead of parking for the capacity retry.
+    async fn node_ready(&mut self) -> Result<()> {
+        timeout(Duration::from_secs(60), async {
+            loop {
+                for process in &mut self.processes {
+                    process.check()?;
+                }
+                let since = Timestamp::now()
+                    .checked_sub(Duration::from_secs(60))
+                    .context("node liveness window")?;
+                let (nodes, _) = self.store.scan_live_nodes(None, since, 100).await?;
+                if nodes
+                    .iter()
+                    .any(|node| node.roles.contains(&NodeRole::Sandbox))
+                {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .context("sandbox node registration timed out")?
     }
 
     async fn create_sessions(&mut self, count: usize, shared: bool) -> Result<()> {
