@@ -70,6 +70,10 @@ async fn cloud_swarm_applies_in_order_and_provisions_through_the_shared_path() {
     assert_eq!(control["bucket_name"], bucket);
     assert_eq!(workers["bucket_name"], "");
     assert_eq!(workers["network_id"], "4711");
+    assert_eq!(
+        record.tofu_networks,
+        BTreeMap::from([("control".to_owned(), "4711".to_owned())])
+    );
     assert!(
         control["ssh_public_key"]
             .as_str()
@@ -1209,5 +1213,116 @@ fn scaleway_module_environment_has_only_its_three_provider_keys() {
             .filter(|name| name.starts_with("SCW_") && *name != "SCW_CONFIG_PATH")
             .collect::<Vec<_>>(),
         ["SCW_ACCESS_KEY", "SCW_SECRET_KEY", "SCW_DEFAULT_PROJECT_ID"]
+    );
+}
+
+#[tokio::test]
+async fn second_up_keeps_the_first_group_creating_its_network() {
+    let mut f = Fixture::new();
+    let host = FakeHost::new();
+    f.up(&host).await.unwrap();
+    f.up(&host).await.unwrap();
+    let control: Value =
+        serde_json::from_slice(&fs::read(f.temp.path().join("applied-control-2.json")).unwrap())
+            .unwrap();
+    let workers: Value =
+        serde_json::from_slice(&fs::read(f.temp.path().join("applied-workers-2.json")).unwrap())
+            .unwrap();
+    assert_eq!(control["network_id"], "");
+    assert_eq!(workers["network_id"], "4711");
+}
+
+#[test]
+fn elastic_group_joins_the_first_applied_group_of_its_module() {
+    let mut f = Fixture::new();
+    let mut gpu = f.spec.groups["workers"].clone();
+    gpu.count = None;
+    gpu.elastic = true;
+    gpu.max = Some(2);
+    gpu.price_per_hour = Some("0.75".into());
+    gpu.currency = Some("EUR".into());
+    f.spec.groups.insert("gpu".into(), gpu);
+    f.spec.placement.nodes.push("gpu".into());
+    let mut record = f
+        .registry
+        .read_record("fleet")
+        .unwrap()
+        .unwrap_or_else(|| SwarmRecord {
+            name: "fleet".into(),
+            created_at: jiff::Timestamp::now(),
+            api: SwarmApi::default(),
+            bucket_keys: None,
+            hosts: BTreeMap::new(),
+            tofu_state: None,
+            tofu_bucket: None,
+            tofu_bucket_endpoint: None,
+            tofu_bucket_region: None,
+            tofu_networks: BTreeMap::new(),
+        });
+    record.tofu_networks.insert("control".into(), "4711".into());
+    assert_eq!(joined_network(&f.spec, &record, "gpu"), "4711");
+    assert_eq!(joined_network(&f.spec, &record, "control"), "");
+    assert_eq!(joined_network(&f.spec, &record, "workers"), "4711");
+    f.spec.groups.get_mut("gpu").unwrap().module = Module::Scaleway;
+    assert_eq!(joined_network(&f.spec, &record, "gpu"), "");
+}
+
+#[tokio::test]
+async fn elastic_group_in_another_network_zone_is_refused() {
+    let mut f = Fixture::new();
+    let mut gpu = f.spec.groups["workers"].clone();
+    gpu.count = None;
+    gpu.elastic = true;
+    gpu.max = Some(2);
+    gpu.price_per_hour = Some("0.75".into());
+    gpu.currency = Some("EUR".into());
+    gpu.location = Some("ash".into());
+    f.spec.groups.insert("gpu".into(), gpu);
+    f.spec.placement.nodes.push("gpu".into());
+    let error = f.up(&FakeHost::new()).await.unwrap_err();
+    let text = error.to_string();
+    assert!(
+        text.contains("control")
+            && text.contains("gpu")
+            && text.contains("fsn1")
+            && text.contains("ash"),
+        "{text}"
+    );
+    assert!(f.log().is_empty());
+}
+
+#[tokio::test]
+async fn group_image_reaches_the_module_and_is_immutable() {
+    let mut f = Fixture::new();
+    f.spec.groups.get_mut("workers").unwrap().image = Some("ubuntu-22.04".into());
+    let host = FakeHost::new();
+    f.up(&host).await.unwrap();
+    let workers: Value =
+        serde_json::from_slice(&fs::read(f.temp.path().join("applied-workers-1.json")).unwrap())
+            .unwrap();
+    let control: Value =
+        serde_json::from_slice(&fs::read(f.temp.path().join("applied-control-1.json")).unwrap())
+            .unwrap();
+    assert_eq!(workers["image"], "ubuntu-22.04");
+    assert!(control.get("image").is_none());
+    let prior = f
+        .log()
+        .lines()
+        .filter(|line| line.contains(" apply"))
+        .count();
+    f.spec.groups.get_mut("workers").unwrap().image = Some("debian-12".into());
+    let error = f.up(&host).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("image changed from ubuntu-22.04 to debian-12"),
+        "{error}"
+    );
+    assert_eq!(
+        f.log()
+            .lines()
+            .filter(|line| line.contains(" apply"))
+            .count(),
+        prior
     );
 }

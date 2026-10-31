@@ -742,15 +742,22 @@ nodes = ["gpu"]
             tofu_bucket: None,
             tofu_bucket_endpoint: None,
             tofu_bucket_region: None,
-            tofu_networks: BTreeMap::new(),
+            tofu_networks: std::collections::BTreeMap::new(),
         };
         (spec, primary, record)
     }
     #[test]
     fn scale_requests_and_down_blockers() {
-        let (spec, primary, mut record) = scale_fixture();
+        let (mut spec, primary, mut record) = scale_fixture();
         let (definition, desired) = elastic_scale_requests(&spec, &record, "gpu", 1).unwrap();
         assert!(!definition.external_bucket);
+        assert_eq!(definition.network_id, "");
+        assert_eq!(definition.image, None);
+        record.tofu_networks.insert("control".into(), "4711".into());
+        spec.groups.get_mut("gpu").unwrap().image = Some("ubuntu-24.04".into());
+        let updated = elastic_scale_requests(&spec, &record, "gpu", 1).unwrap().0;
+        assert_eq!(updated.network_id, "4711");
+        assert_eq!(updated.image.as_deref(), Some("ubuntu-24.04"));
         record.tofu_bucket = Some("swarmy-fleet-000000000001".into());
         assert!(
             elastic_scale_requests(&spec, &record, "gpu", 1)
@@ -807,6 +814,8 @@ nodes = ["gpu"]
             settled: true,
             updated_at: String::new(),
             external_bucket: true,
+            network_id: "4711".into(),
+            image: Some("ubuntu-24.04".into()),
         };
         group.autoscale = true;
         group.desired = 1;
@@ -817,6 +826,8 @@ nodes = ["gpu"]
         let off = autoscale_off_request(&group, &primary, &spec);
         assert!(!off.autoscale);
         assert!(off.external_bucket);
+        assert_eq!(off.network_id, "4711");
+        assert_eq!(off.image.as_deref(), Some("ubuntu-24.04"));
         assert_eq!(off.size, group.size);
         assert_eq!(off.location, group.location);
         assert_eq!(off.module, group.module);

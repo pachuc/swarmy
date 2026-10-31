@@ -51,10 +51,19 @@ run "explicit_ami_skips_the_lookup" {
   command = plan
   variables { image = "ami-0fedcba9876543210" }
   assert {
-    condition     = length(data.aws_ssm_parameter.ubuntu) == 0 && alltrue([for instance in aws_instance.this : instance.ami == "ami-0fedcba9876543210"])
+    condition     = length(data.aws_ssm_parameter.image) == 0 && alltrue([for instance in aws_instance.this : instance.ami == "ami-0fedcba9876543210"])
     error_message = "An AMI id is used as given."
   }
 }
+run "ssm_parameter_image_is_looked_up" {
+  command = plan
+  variables { image = "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id" }
+  assert {
+    condition     = data.aws_ssm_parameter.image[0].name == "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id" && alltrue([for instance in aws_instance.this : instance.ami == "ami-0123456789abcdef0"])
+    error_message = "An SSM parameter path is resolved to the AMI id it holds."
+  }
+}
+
 run "creates_the_group" {
   assert {
     condition     = [for machine in output.machines : machine.name] == ["fleet-workers-1", "fleet-workers-2"]
@@ -65,7 +74,7 @@ run "creates_the_group" {
     error_message = "Machines must use the size, image, subnet, and group's key pair."
   }
   assert {
-    condition     = data.aws_ssm_parameter.ubuntu[0].name == "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+    condition     = data.aws_ssm_parameter.image[0].name == "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
     error_message = "x86 instance types must get the amd64 image."
   }
   assert {
@@ -163,7 +172,7 @@ run "arm_instance_types_get_the_arm_image" {
     values = { supported_architectures = ["arm64"] }
   }
   assert {
-    condition     = data.aws_ssm_parameter.ubuntu[0].name == "/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id"
+    condition     = data.aws_ssm_parameter.image[0].name == "/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id"
     error_message = "arm64 instance types must get arm64 image."
   }
 }

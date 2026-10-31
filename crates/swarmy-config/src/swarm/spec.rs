@@ -843,6 +843,26 @@ nodes = ["box"]
         }
     }
     #[test]
+    fn cloud_image_round_trip_and_empty_validation() {
+        let mut spec = SwarmSpec::parse(CLOUD).unwrap();
+        let group = spec.groups.get_mut("workers").unwrap();
+        group.image = Some(String::new());
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("image must not be empty")
+        );
+        spec.groups.get_mut("workers").unwrap().image = Some("ubuntu-24.04".into());
+        let text = toml::to_string(&spec).unwrap();
+        assert_eq!(
+            SwarmSpec::parse(&text).unwrap().groups["workers"]
+                .image
+                .as_deref(),
+            Some("ubuntu-24.04")
+        );
+    }
+    #[test]
     fn existing_and_local_validation() {
         for (text, change, expected) in [
             (
@@ -859,6 +879,11 @@ nodes = ["box"]
                 EXISTING,
                 "size",
                 "group \"box\": size and location apply only to groups that create machines",
+            ),
+            (
+                EXISTING,
+                "image",
+                "group \"box\": image applies only to groups that create machines",
             ),
             (
                 EXISTING,
@@ -881,6 +906,7 @@ nodes = ["box"]
                 "hosts" => spec.groups.get_mut("box").unwrap().hosts.clear(),
                 "count" => spec.groups.get_mut("box").unwrap().count = Some(1),
                 "size" => spec.groups.get_mut("box").unwrap().size = Some("x".into()),
+                "image" => spec.groups.get_mut("box").unwrap().image = Some("x".into()),
                 "address" => spec.groups.get_mut("box").unwrap().hosts[0].address.clear(),
                 "local fields" => spec.groups.get_mut("local").unwrap().count = Some(1),
                 "local nodes" => spec.placement.nodes = vec!["local".into()],
