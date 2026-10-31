@@ -39,7 +39,11 @@ pub(crate) fn check_node_logs(files: &Path, max_ms: u64) -> Result<()> {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default();
-        if name.starts_with("node-") && name.ends_with(".log") {
+        if name.starts_with("node-")
+            && path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("log"))
+        {
             let log = std::fs::read_to_string(&path)
                 .with_context(|| format!("read {}", path.display()))?;
             timings.extend(log.lines().filter_map(parse));
