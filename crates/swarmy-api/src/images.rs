@@ -168,17 +168,21 @@ pub(crate) async fn upload(
     let (_spool, path) = spool(&state, validated.size, body).await?;
     let store = state.store.clone();
     let objects = state.objects.clone();
-    let built = swarmy_volume::image::upload_image_protected(&path, objects, Arc::new(store.clone()))
-        .await
-        .map_err(|failure| match failure {
-            swarmy_volume::image::ImageError::Volume(inner) => volume(inner),
-            other => ApiFailure::caused(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "storage_error",
-                "image upload failed",
-                &other,
-            ),
-        })?;
+    let built = swarmy_volume::image::upload_image_protected(
+        &path,
+        objects,
+        std::sync::Arc::new(store.clone()),
+    )
+    .await
+    .map_err(|failure| match failure {
+        swarmy_volume::image::ImageError::Volume(inner) => volume(inner),
+        other => ApiFailure::caused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_error",
+            "image upload failed",
+            &other,
+        ),
+    })?;
     let manifest_id = ManifestId::from_ulid(ulid::Ulid::generate());
     store
         .put_manifest(manifest_id, &built.header)

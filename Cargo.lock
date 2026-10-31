@@ -4176,6 +4176,7 @@ name = "swarmy-sandbox"
 version = "0.1.0"
 dependencies = [
  "fs2",
+ "object_store",
  "serde",
  "serde_json",
  "swarmy-core",
@@ -4200,7 +4201,6 @@ dependencies = [
  "swarmy-core",
  "swarmy-store",
  "swarmy-version",
- "swarmy-volume",
  "tokio",
  "tracing",
  "ulid",

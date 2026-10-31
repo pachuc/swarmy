@@ -1,7 +1,7 @@
 #![deny(clippy::disallowed_methods)]
 use foundationdb::{Database, tuple::Subspace};
 use jiff::Timestamp;
-use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc};
+use std::{collections::BTreeSet, num::NonZeroUsize, sync::Arc, time::Duration};
 use swarmy_core::{
     CHUNK_SIZE, ContentHash, ImageTag, Lease, LeaseOwnerId, ManifestHeader, ManifestId, VolumeId,
     ignore_best_effort,
@@ -53,8 +53,7 @@ impl Fixture {
                 id,
                 LeaseOwnerId::from_ulid(Ulid::generate()),
                 now,
-                now.checked_add(std::time::Duration::from_secs(120))
-                    .unwrap(),
+                now.checked_add(Duration::from_secs(120)).unwrap(),
             )
             .await
             .unwrap();
@@ -102,7 +101,7 @@ fn manifest_id() -> ManifestId {
 async fn tick(
     received: &mut tokio::sync::mpsc::UnboundedReceiver<Option<ManifestId>>,
 ) -> Option<ManifestId> {
-    tokio::time::timeout(std::time::Duration::from_secs(5), received.recv())
+    tokio::time::timeout(Duration::from_secs(5), received.recv())
         .await
         .unwrap()
         .unwrap()
@@ -124,10 +123,19 @@ async fn periodic_snapshots_skip_idle_staged_changes_publish_and_checkpoint_is_i
     )
     .await
     .unwrap();
-    let writer = VolumeWriter::new(device.clone(), Arc::new(test.store.clone()), id, swarmy_volume::WriterLease::fixed(lease, tokio::time::Instant::now() + Duration::from_secs(3600)), base);
+    let writer = VolumeWriter::new(
+        device.clone(),
+        Arc::new(test.store.clone()),
+        id,
+        swarmy_volume::WriterLease::fixed(
+            lease,
+            tokio::time::Instant::now() + Duration::from_secs(3600),
+        ),
+        base,
+    );
     let (ticks, mut received) = tokio::sync::mpsc::unbounded_channel();
     let task_writer = writer.clone();
-    let periodic = SnapshotLoop::spawn(std::time::Duration::from_millis(20), move || {
+    let periodic = SnapshotLoop::spawn(Duration::from_millis(20), move || {
         let writer = task_writer.clone();
         let ticks = ticks.clone();
         async move {
@@ -167,15 +175,14 @@ async fn periodic_snapshots_skip_idle_staged_changes_publish_and_checkpoint_is_i
     drop(periodic);
     // Checkpoint is independent of the configured timer, even on an idle disk.
     let task_writer = writer.clone();
-    let _long_period = SnapshotLoop::spawn(std::time::Duration::from_secs(600), move || {
+    let _long_period = SnapshotLoop::spawn(Duration::from_secs(600), move || {
         let writer = task_writer.clone();
         async move { writer.flush_if_dirty().await.map(|_| ()) }
     });
-    let checkpoint =
-        tokio::time::timeout(std::time::Duration::from_secs(5), writer.checkpoint(None))
-            .await
-            .unwrap()
-            .unwrap();
+    let checkpoint = tokio::time::timeout(Duration::from_secs(5), writer.checkpoint(None))
+        .await
+        .unwrap()
+        .unwrap();
     assert_ne!(checkpoint, published);
     assert_eq!(
         test.store

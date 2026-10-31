@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use object_store::ObjectStore;
 use swarmy_config::{GarbageCollection, Metering};
-use swarmy_store::{Store, StoreError};
 use swarmy_store::collector::CollectError;
+use swarmy_store::{Store, StoreError};
 
 pub(crate) async fn run(
     store: &Store,

@@ -113,7 +113,12 @@ pub(crate) async fn start(
                     swarmy_store::FenceError::GcLeaseMismatch,
                 )) => busy(),
                 swarmy_store::collector::CollectError::Store(inner) => storage(inner),
-                other => ApiFailure::caused(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", "garbage collection failed", &other),
+                other => ApiFailure::caused(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "storage_error",
+                    "garbage collection failed",
+                    &other,
+                ),
             });
         }
     };

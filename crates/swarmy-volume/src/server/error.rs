@@ -6,7 +6,7 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
-    Store(#[from] crate::MetadataError),
+    Metadata(#[from] crate::MetadataError),
     #[error(transparent)]
     Volume(#[from] crate::VolumeError),
     #[error(transparent)]

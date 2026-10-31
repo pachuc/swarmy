@@ -1,4 +1,3 @@
-use swarmy_store::collector::collect;
 #![deny(clippy::disallowed_methods)]
 use std::{
     num::NonZeroUsize,
@@ -8,6 +7,7 @@ use std::{
     },
     time::Duration,
 };
+use swarmy_store::collector::collect;
 
 use foundationdb::{Database, tuple::Subspace};
 use futures::{TryStreamExt, stream::BoxStream};
@@ -21,9 +21,7 @@ use swarmy_core::{
     CHUNK_SIZE, ContentHash, GcRun, ImageTag, Lease, LeaseOwnerId, ManifestId, VolumeId,
 };
 use swarmy_store::{Store, StoreError, blob::MemoryBlobStore};
-use swarmy_volume::{
-    ChunkStore, Manifest, ManifestBuilder, VolumeDevice, VolumeWriter,
-};
+use swarmy_volume::{ChunkStore, Manifest, ManifestBuilder, VolumeDevice, VolumeWriter};
 use ulid::Ulid;
 
 struct Fixture {
@@ -360,7 +358,16 @@ async fn background_upload_survives_sweep_before_manifest_publication() {
     )
     .await
     .unwrap();
-    let writer = VolumeWriter::new(device.clone(), Arc::new(test.store.clone()), volume, swarmy_volume::WriterLease::fixed(lease, tokio::time::Instant::now() + Duration::from_secs(3600)), head);
+    let writer = VolumeWriter::new(
+        device.clone(),
+        Arc::new(test.store.clone()),
+        volume,
+        swarmy_volume::WriterLease::fixed(
+            lease,
+            tokio::time::Instant::now() + Duration::from_secs(3600),
+        ),
+        head,
+    );
     let uploader = writer.background(Duration::from_millis(5));
     let data = vec![42; CHUNK_SIZE as usize];
     device.write(0, &data).await.unwrap();
@@ -426,9 +433,9 @@ async fn collector_lease_excludes_competitors_and_recovers_after_crash() {
     let lease = a.or(b).unwrap();
     assert!(matches!(
         collect(&test.store, test.objects.clone(), policy(), false).await,
-        Err(swarmy_store::collector::CollectError::Store(StoreError::Fence(
-            swarmy_store::FenceError::GcLeaseMismatch
-        )))
+        Err(swarmy_store::collector::CollectError::Store(
+            StoreError::Fence(swarmy_store::FenceError::GcLeaseMismatch)
+        ))
     ));
     *clock.lock().unwrap() = expires.checked_add(Duration::from_millis(100)).unwrap();
     let next = run_record();

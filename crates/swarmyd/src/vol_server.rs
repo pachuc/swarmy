@@ -7,12 +7,15 @@ async fn config() -> Result<(ServerConfig, swarmy_store::Store)> {
     let loaded = swarmy_config::Settings::load()?;
     let settings = &loaded.settings;
     let store = crate::vol::store().await?;
-    Ok((ServerConfig {
-        directory: loaded.root.join(".swarmy/volumes"),
-        node: loaded.node_id()?,
-        metadata: std::sync::Arc::new(store.clone()),
-        objects: swarmy_volume::objects::from_settings(settings)?,
-    }, store))
+    Ok((
+        ServerConfig {
+            directory: loaded.root.join(".swarmy/volumes"),
+            node: loaded.node_id()?,
+            metadata: std::sync::Arc::new(store.clone()),
+            objects: swarmy_volume::objects::from_settings(settings)?,
+        },
+        store,
+    ))
 }
 
 pub(crate) async fn control(
@@ -41,7 +44,9 @@ pub(crate) async fn attach(
     );
     let (config, store) = config().await?;
     let node = config.node;
-    let grant = store.open_volume_writer(id, swarmy_core::LeaseOwnerId::from_ulid(node.as_ulid())).await?;
+    let grant = store
+        .open_volume_writer(id, swarmy_core::LeaseOwnerId::from_ulid(node.as_ulid()))
+        .await?;
     let stop = swarmy_config::shutdown_signal();
     server::attach(
         config,

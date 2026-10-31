@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use swarmy_core::{ManifestHeader, ManifestId, NodeId, VolumeId};
+use swarmy_core::{ManifestHeader, ManifestId, NodeId, VolumeId, ignore_best_effort};
 
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -231,8 +231,9 @@ pub async fn attach(
     )
     .await;
     if result.is_err()
-        && let Err(error) = crate::metadata::with_current_lease(&lease, |lease| async {
-            config.metadata.release_writer_lease(id, &lease).await
+        && let Err(error) = crate::metadata::with_current_lease(&lease, |lease| {
+            let metadata = config.metadata.clone();
+            async move { metadata.release_writer_lease(id, &lease).await }
         })
         .await
     {

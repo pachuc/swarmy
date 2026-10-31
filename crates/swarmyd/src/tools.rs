@@ -290,7 +290,10 @@ async fn require_display(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
 
 /// Move an inline base64 screenshot out of the result metadata into blob
 /// storage, replacing it with the object key the worker downloads.
-async fn extract_image_blob(objects: &dyn object_store::ObjectStore, result: &mut ToolResult) -> Result<()> {
+async fn extract_image_blob(
+    objects: &dyn object_store::ObjectStore,
+    result: &mut ToolResult,
+) -> Result<()> {
     if let ToolResult::Completed { metadata, .. } = result {
         metadata.remove("image_object_key");
         if let Some(encoded) = metadata.remove("image_base64") {
@@ -1090,14 +1093,6 @@ mod display_tests {
 
     #[tokio::test]
     async fn sandbox_supplied_image_key_is_removed() {
-        let Some(stack) = swarmy_testkit::Stack::load("node-image-key") else {
-            return;
-        };
-        let (store, _guard) = stack
-            .open_store(std::sync::Arc::new(
-                swarmy_store::blob::MemoryBlobStore::default(),
-            ))
-            .await;
         let mut result = ToolResult::Completed {
             output: String::new(),
             title: String::new(),

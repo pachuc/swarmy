@@ -45,11 +45,13 @@ crate in a tier depends on every lower tier.
 
 - **swarmy-store** implements FoundationDB transactions, indexes, lease checks,
   object-store metadata and metering ([source](../crates/swarmy-store/src/lib.rs),
-  [keys](../crates/swarmy-store/src/keys.rs)).
+  [keys](../crates/swarmy-store/src/keys.rs), and the chunk collector
+  [collector.rs](../crates/swarmy-store/src/collector.rs)).
 - **swarmy-bus** publishes JetStream work nudges and live events; durable
   ownership remains in the store ([source](../crates/swarmy-bus/src/lib.rs)).
 - **swarmy-volume** manages chunked disk manifests, snapshots and the NBD
-  server ([source](../crates/swarmy-volume/src/lib.rs)).
+  server and reaches durable metadata only through its `VolumeMetadata` trait
+  ([source](../crates/swarmy-volume/src/lib.rs)).
 
 ### Services
 
@@ -206,6 +208,7 @@ them in [api-breaks.txt](api-breaks.txt).
   [gpu_tools.rs](../crates/swarmy-store/src/gpu_tools.rs) for GPU requirement changes by agent tools,
   [tools.rs](../crates/swarmy-store/src/tools.rs),
   [gc.rs](../crates/swarmy-store/src/gc.rs),
+  [collector.rs](../crates/swarmy-store/src/collector.rs),
   [api_idempotency.rs](../crates/swarmy-store/src/api_idempotency.rs)).
 
 ### Context compaction

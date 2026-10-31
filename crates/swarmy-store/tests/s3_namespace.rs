@@ -1,8 +1,8 @@
-use swarmy_store::collector::collect;
 #![deny(clippy::disallowed_methods)]
 //! Uses a dedicated empty bucket because the empty-prefix collector owns the
 //! whole bucket. Set `SWARMY_S3_TEST_BUCKET` in addition to the usual S3/FDB env.
 use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
+use swarmy_store::collector::collect;
 
 use bytes::Bytes;
 use foundationdb::tuple::Subspace;

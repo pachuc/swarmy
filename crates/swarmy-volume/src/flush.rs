@@ -132,10 +132,13 @@ impl VolumeWriter {
             .device
             .publish(|header| async move {
                 loop {
-                    match with_current_lease(&self.lease, |lease| async {
-                        self.metadata
-                            .publish(self.id, &lease, previous, next, &header, self.retention)
-                            .await
+                    match with_current_lease(&self.lease, |lease| {
+                        let header = header.clone();
+                        async move {
+                            self.metadata
+                                .publish(self.id, &lease, previous, next, &header, self.retention)
+                                .await
+                        }
                     })
                     .await
                     {

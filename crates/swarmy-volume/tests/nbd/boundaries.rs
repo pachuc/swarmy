@@ -62,7 +62,10 @@ async fn continuous_writes_and_retained_crash_images() {
         device.clone(),
         Arc::new(store.clone()),
         volume,
-        swarmy_volume::WriterLease::fixed(lease, tokio::time::Instant::now() + std::time::Duration::from_secs(3600)),
+        swarmy_volume::WriterLease::fixed(
+            lease,
+            tokio::time::Instant::now() + Duration::from_secs(3600),
+        ),
         base_id,
         std::num::NonZeroUsize::new(4).unwrap(),
     );

@@ -184,14 +184,20 @@ pub struct RuntimeOptions {
 impl RuncRuntime {
     /// Object client shared by chunks and tool images.
     #[must_use]
-    pub fn objects(&self) -> &dyn object_store::ObjectStore { &*self.config.objects }
+    pub fn objects(&self) -> &dyn object_store::ObjectStore {
+        &*self.config.objects
+    }
     /// Address reused in each sandbox's independent network namespace.
     pub const NETWORK_ADDRESS: std::net::Ipv4Addr = std::net::Ipv4Addr::new(10, 0, 2, 2);
     /// Clean up this node's containers and mounts from an earlier incarnation.
     /// Old writer leases are left to expire; recovery never steals a live lease.
     /// # Errors
     /// Returns locking, filesystem, or stale-container cleanup errors.
-    pub async fn open(root: PathBuf, config: ServerConfig, store: swarmy_store::Store) -> Result<Self> {
+    pub async fn open(
+        root: PathBuf,
+        config: ServerConfig,
+        store: swarmy_store::Store,
+    ) -> Result<Self> {
         Self::open_with(root, config, store, RuntimeOptions::default()).await
     }
 
@@ -334,10 +340,7 @@ impl RuncRuntime {
             > Duration::from_secs(self.scratch_policy.idle_days.saturating_mul(86_400));
         if deleted || moved || idle {
             self.evict_scratch(id, bytes)?;
-            self.config
-                .store
-                .clear_scratch(id, self.config.node)
-                .await?;
+            self.store.clear_scratch(id, self.config.node).await?;
             return Ok(None);
         }
         self.store
@@ -373,10 +376,7 @@ impl RuncRuntime {
                 break;
             }
             self.evict_scratch(id, bytes)?;
-            self.config
-                .store
-                .clear_scratch(id, self.config.node)
-                .await?;
+            self.store.clear_scratch(id, self.config.node).await?;
         }
         Ok(())
     }
@@ -919,7 +919,13 @@ impl RuncRuntime {
         if self.sandboxes.lock().await.contains_key(&id) {
             return Err(Error::State);
         }
-        let grant = self.store.open_volume_writer(disk.volume_id, swarmy_core::LeaseOwnerId::from_ulid(self.config.node.as_ulid())).await?;
+        let grant = self
+            .store
+            .open_volume_writer(
+                disk.volume_id,
+                swarmy_core::LeaseOwnerId::from_ulid(self.config.node.as_ulid()),
+            )
+            .await?;
         let bundle = self.bundle(id);
         std::fs::create_dir(&bundle)?;
         let journal = Journal { spec, disk };
@@ -991,8 +997,7 @@ impl RuncRuntime {
             self.prepare_scratch(id, &scratch).await?;
             self.start(id, &scratch, requirements).await?;
             if !scratch.is_empty() {
-                self.config
-                    .store
+                self.store
                     .report_scratch(
                         id,
                         &ScratchRecord {
