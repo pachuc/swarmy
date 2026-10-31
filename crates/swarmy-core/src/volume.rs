@@ -98,3 +98,20 @@ pub struct GcRun {
     pub bytes_freed: u64,
     pub duration_ms: u64,
 }
+
+/// Object-store key of a content-addressed payload.
+#[must_use]
+pub fn blob_key(bytes: &[u8]) -> String {
+    format!("blobs/{}", blake3::hash(bytes).to_hex())
+}
+
+/// Whether `key` has the shape `blob_key` produces. It does not check content.
+#[must_use]
+pub fn is_blob_key(key: &str) -> bool {
+    key.strip_prefix("blobs/").is_some_and(|hash| {
+        hash.len() == 64
+            && hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}

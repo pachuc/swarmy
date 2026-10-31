@@ -168,7 +168,7 @@ pub(crate) async fn upload(
     let (_spool, path) = spool(&state, validated.size, body).await?;
     let store = state.store.clone();
     let objects = state.objects.clone();
-    let built = swarmy_volume::image::upload_image_protected(&path, objects, store.clone())
+    let built = swarmy_volume::image::upload_image_protected(&path, objects, Arc::new(store.clone()))
         .await
         .map_err(|failure| match failure {
             swarmy_volume::image::ImageError::Volume(inner) => volume(inner),

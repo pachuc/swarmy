@@ -613,9 +613,10 @@ mod tests {
             swarmy_volume::server::ServerConfig {
                 directory: root.join("volumes"),
                 node: node_id,
-                store: store.clone(),
+                metadata: Arc::new(store.clone()),
                 objects: Arc::new(object_store::memory::InMemory::new()),
             },
+            store.clone(),
         )
         .await
         .unwrap();

@@ -124,7 +124,7 @@ async fn periodic_snapshots_skip_idle_staged_changes_publish_and_checkpoint_is_i
     )
     .await
     .unwrap();
-    let writer = VolumeWriter::new(device.clone(), test.store.clone(), id, lease, base);
+    let writer = VolumeWriter::new(device.clone(), Arc::new(test.store.clone()), id, swarmy_volume::WriterLease::fixed(lease, tokio::time::Instant::now() + Duration::from_secs(3600)), base);
     let (ticks, mut received) = tokio::sync::mpsc::unbounded_channel();
     let task_writer = writer.clone();
     let periodic = SnapshotLoop::spawn(std::time::Duration::from_millis(20), move || {

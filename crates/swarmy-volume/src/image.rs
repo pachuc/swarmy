@@ -53,7 +53,7 @@ pub async fn upload_image(path: &Path, objects: Arc<dyn ObjectStore>) -> Result<
 pub async fn upload_image_protected(
     path: &Path,
     objects: Arc<dyn ObjectStore>,
-    metadata: swarmy_store::Store,
+    metadata: Arc<dyn crate::VolumeMetadata>,
 ) -> Result<ImageManifest> {
     upload_image_inner(path, objects, Some(metadata)).await
 }
@@ -61,7 +61,7 @@ pub async fn upload_image_protected(
 async fn upload_image_inner(
     path: &Path,
     objects: Arc<dyn ObjectStore>,
-    metadata: Option<swarmy_store::Store>,
+    metadata: Option<Arc<dyn crate::VolumeMetadata>>,
 ) -> Result<ImageManifest> {
     let mut file = File::open(path)?;
     let size = file.metadata()?.len();

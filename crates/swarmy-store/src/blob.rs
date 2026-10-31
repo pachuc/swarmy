@@ -6,15 +6,10 @@ use bytes::Bytes;
 use object_store::{ObjectStore, path::Path};
 use tokio::sync::RwLock;
 
-/// Object-store key of a content-addressed payload: the blake3 hash of its bytes.
-/// Every blob written through the store, and every snapshot, uses this key.
-#[must_use]
-pub fn blob_key(bytes: &[u8]) -> String {
-    format!("blobs/{}", blake3::hash(bytes).to_hex())
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum BlobError {
+    #[error(transparent)]
+    Objects(#[from] swarmy_volume::objects::ObjectsError),
     #[error("blob not found: {0}")]
     Missing(String),
     #[error(transparent)]
@@ -77,7 +72,7 @@ impl ObjectBlobStore {
     }
 
     pub(crate) fn from_settings(settings: &swarmy_config::Settings) -> Result<Self, BlobError> {
-        Ok(Self::new(crate::objects::from_settings(settings)?))
+        Ok(Self::new(swarmy_volume::objects::from_settings(settings)?))
     }
 
     #[must_use]

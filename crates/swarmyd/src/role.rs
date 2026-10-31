@@ -153,9 +153,10 @@ async fn open_runtime(
             ServerConfig {
                 directory: loaded.root.join(".swarmy/volumes"),
                 node,
-                store,
+                metadata: Arc::new(store.clone()),
                 objects,
             },
+            store,
             RuntimeOptions {
                 scratch: ScratchPolicy {
                     idle_days: settings.sandbox.scratch_idle_days,

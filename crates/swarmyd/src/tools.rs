@@ -262,7 +262,7 @@ async fn produce(
     require_display(store, claim).await?;
     let outcome = run_command(store, runtime, &sandbox, claim).await?;
     let mut result = outcome.result;
-    extract_image_blob(store, &mut result).await?;
+    extract_image_blob(runtime.objects(), &mut result).await?;
     cap_completed_output(runtime, &sandbox, claim, &mut result).await;
     if store.interrupt_requested(claim.job.session_id).await? {
         stop_result_process(runtime, &sandbox, claim.placement.epoch, &result).await?;
@@ -290,13 +290,13 @@ async fn require_display(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
 
 /// Move an inline base64 screenshot out of the result metadata into blob
 /// storage, replacing it with the object key the worker downloads.
-async fn extract_image_blob(store: &Store, result: &mut ToolResult) -> Result<()> {
+async fn extract_image_blob(objects: &dyn object_store::ObjectStore, result: &mut ToolResult) -> Result<()> {
     if let ToolResult::Completed { metadata, .. } = result {
         metadata.remove("image_object_key");
         if let Some(encoded) = metadata.remove("image_base64") {
             let encoded = encoded.as_str().context("image payload must be base64")?;
             let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
-            let key = store.put_tool_blob(bytes).await?;
+            let key = swarmy_volume::put_tool_blob(objects, bytes).await?;
             metadata.insert("image_object_key".into(), serde_json::json!(key));
         }
     }
@@ -1106,7 +1106,7 @@ mod display_tests {
                 serde_json::json!("blobs/untrusted"),
             )]),
         };
-        super::extract_image_blob(&store, &mut result)
+        super::extract_image_blob(&object_store::memory::InMemory::new(), &mut result)
             .await
             .unwrap();
         let ToolResult::Completed { metadata, .. } = result else {

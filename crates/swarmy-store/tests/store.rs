@@ -22,7 +22,7 @@ async fn large_tool_image_blob_round_trips_without_inline_bytes() {
         return;
     };
     let image = vec![42_u8; 2 * 1024 * 1024];
-    let key = f.store.put_tool_blob(image.clone()).await.unwrap();
+    let key = { let key = swarmy_core::blob_key(&image); blobs.put(&key, image.clone().into()).await.unwrap(); key };
     assert!(key.starts_with("blobs/"));
     assert_eq!(blobs.get(&key).await.unwrap().as_ref(), image.as_slice());
     assert_eq!(
@@ -37,7 +37,7 @@ async fn tool_blob_refuses_wrong_content_hash() {
     let Some(f) = TestStore::new(blobs.clone()) else {
         return;
     };
-    let key = f.store.put_tool_blob(b"original".to_vec()).await.unwrap();
+    let key = { let key = swarmy_core::blob_key(b"original"); blobs.put(&key, bytes::Bytes::from_static(b"original")).await.unwrap(); key };
     blobs
         .put(&key, bytes::Bytes::from_static(b"modified"))
         .await
@@ -51,7 +51,7 @@ async fn tool_blob_refuses_wrong_content_hash() {
         Err(StoreError::Storage(swarmy_store::StorageError::Corrupt))
     ));
     let oversized = vec![0_u8; 5 * 1024 * 1024 + 1];
-    let oversized_key = f.store.put_tool_blob(oversized).await.unwrap();
+    let oversized_key = { let key = swarmy_core::blob_key(&oversized); blobs.put(&key, oversized.into()).await.unwrap(); key };
     assert!(matches!(
         f.store.get_tool_blob(&oversized_key).await,
         Err(StoreError::Storage(swarmy_store::StorageError::Corrupt))

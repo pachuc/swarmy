@@ -148,6 +148,7 @@ pub struct RuncRuntime {
     scratch_policy: ScratchPolicy,
     gpu: crate::NodeGpu,
     config: ServerConfig,
+    store: swarmy_store::Store,
     sandboxes: Mutex<BTreeMap<AgentId, Arc<Mutex<Running>>>>,
     lifecycle: Mutex<()>,
     _lock: File,
@@ -181,14 +182,17 @@ pub struct RuntimeOptions {
 }
 
 impl RuncRuntime {
+    /// Object client shared by chunks and tool images.
+    #[must_use]
+    pub fn objects(&self) -> &dyn object_store::ObjectStore { &*self.config.objects }
     /// Address reused in each sandbox's independent network namespace.
     pub const NETWORK_ADDRESS: std::net::Ipv4Addr = std::net::Ipv4Addr::new(10, 0, 2, 2);
     /// Clean up this node's containers and mounts from an earlier incarnation.
     /// Old writer leases are left to expire; recovery never steals a live lease.
     /// # Errors
     /// Returns locking, filesystem, or stale-container cleanup errors.
-    pub async fn open(root: PathBuf, config: ServerConfig) -> Result<Self> {
-        Self::open_with(root, config, RuntimeOptions::default()).await
+    pub async fn open(root: PathBuf, config: ServerConfig, store: swarmy_store::Store) -> Result<Self> {
+        Self::open_with(root, config, store, RuntimeOptions::default()).await
     }
 
     /// Open with the node's scratch thresholds and GPU devices.
@@ -197,6 +201,7 @@ impl RuncRuntime {
     pub async fn open_with(
         root: PathBuf,
         config: ServerConfig,
+        store: swarmy_store::Store,
         options: RuntimeOptions,
     ) -> Result<Self> {
         let scratch_policy = options.scratch;
@@ -227,6 +232,7 @@ impl RuncRuntime {
             scratch_policy,
             gpu: options.gpu,
             config,
+            store,
             sandboxes: Mutex::new(BTreeMap::new()),
             lifecycle: Mutex::new(()),
             _lock: lock,
@@ -284,12 +290,11 @@ impl RuncRuntime {
     /// whose sandbox still runs on this node.
     async fn refresh_hosted(&self, id: AgentId, path: &Path) -> Result<()> {
         std::fs::write(path.join(".hosted"), b"")?;
-        if self.config.store.is_computer_deleted(id).await? {
+        if self.store.is_computer_deleted(id).await? {
             return Ok(());
         }
         let bytes = directory_bytes(path)?;
         if let Err(error) = self
-            .config
             .store
             .report_scratch(
                 id,
@@ -319,9 +324,8 @@ impl RuncRuntime {
             .or_else(|_| entry.metadata())?
             .modified()?;
         let bytes = directory_bytes(&path)?;
-        let deleted = self.config.store.is_computer_deleted(id).await?;
+        let deleted = self.store.is_computer_deleted(id).await?;
         let moved = self
-            .config
             .store
             .get_by_agent(id)
             .await?
@@ -336,8 +340,7 @@ impl RuncRuntime {
                 .await?;
             return Ok(None);
         }
-        self.config
-            .store
+        self.store
             .report_scratch(
                 id,
                 &ScratchRecord {
@@ -916,6 +919,7 @@ impl RuncRuntime {
         if self.sandboxes.lock().await.contains_key(&id) {
             return Err(Error::State);
         }
+        let grant = self.store.open_volume_writer(disk.volume_id, swarmy_core::LeaseOwnerId::from_ulid(self.config.node.as_ulid())).await?;
         let bundle = self.bundle(id);
         std::fs::create_dir(&bundle)?;
         let journal = Journal { spec, disk };
@@ -934,7 +938,7 @@ impl RuncRuntime {
         // ast-grep-ignore: no-spawn-in-libraries
         let mut server = ServerTask(tokio::spawn(server::attach(
             config,
-            disk.volume_id,
+            grant,
             None,
             true,
             move |path| {
@@ -980,7 +984,7 @@ impl RuncRuntime {
             .await?;
             let credentials = crate::credentials::Credentials::start(
                 &bundle.join("guest/github.sock"),
-                self.config.store.clone(),
+                self.store.clone(),
                 id,
             )?;
             self.running(id).await?.lock().await.credentials = Some(credentials);

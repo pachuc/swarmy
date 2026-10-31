@@ -30,6 +30,7 @@ postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 swarmy-core.workspace = true
+swarmy-volume.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

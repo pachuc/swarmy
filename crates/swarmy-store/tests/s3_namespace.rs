@@ -1,3 +1,4 @@
+use swarmy_store::collector::collect;
 #![deny(clippy::disallowed_methods)]
 //! Uses a dedicated empty bucket because the empty-prefix collector owns the
 //! whole bucket. Set `SWARMY_S3_TEST_BUCKET` in addition to the usual S3/FDB env.
@@ -13,7 +14,7 @@ use swarmy_store::{
     Store,
     blob::{BlobStore, ObjectBlobStore},
 };
-use swarmy_volume::{ChunkStore, Manifest, ManifestBuilder, gc::collect};
+use swarmy_volume::{ChunkStore, Manifest, ManifestBuilder};
 
 const OBJECTS: usize = 1005;
 
@@ -57,7 +58,7 @@ async fn wait_orphans_aged(objects: &Arc<dyn ObjectStore>, paths: &[Path]) {
 }
 
 async fn exercise(settings: &Settings, store: &Store, sibling: &dyn ObjectStore) {
-    let objects = swarmy_store::objects::from_settings(settings).unwrap();
+    let objects = swarmy_volume::objects::from_settings(settings).unwrap();
     let (chunks, live) = seed_live_image(&objects, store).await;
     let paths = seed_orphans(&objects, sibling).await;
     check_listings(settings, &*objects, &paths).await;
@@ -254,7 +255,7 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
         !settings.s3.bucket.contains('/'),
         "test bucket must be a physical bucket"
     );
-    let raw = swarmy_store::objects::from_settings(&settings).unwrap();
+    let raw = swarmy_volume::objects::from_settings(&settings).unwrap();
     assert!(
         raw.list(None).try_next().await.unwrap().is_none(),
         "SWARMY_S3_TEST_BUCKET must be empty and dedicated to this test"
@@ -265,13 +266,13 @@ async fn s3_empty_and_nested_namespaces_paginate_and_collect() {
         settings.s3.prefix = prefix.parse().unwrap();
         let mut sibling_settings = settings.clone();
         sibling_settings.s3.prefix = "runs/nested-sibling".parse().unwrap();
-        let sibling = swarmy_store::objects::from_settings(&sibling_settings).unwrap();
+        let sibling = swarmy_volume::objects::from_settings(&sibling_settings).unwrap();
         let root = Subspace::all().subspace(&(format!("s3-test-{}", ulid::Ulid::generate()),));
         let store = Store::with_subspace(
             db.clone(),
             root.clone(),
             Arc::new(ObjectBlobStore::new(
-                swarmy_store::objects::from_settings(&settings).unwrap(),
+                swarmy_volume::objects::from_settings(&settings).unwrap(),
             )),
         );
         let result = AssertUnwindSafe(exercise(&settings, &store, &*sibling))
@@ -330,7 +331,7 @@ async fn bucket_spec_with_static_keys_round_trips_objects() {
         let mut settings = Settings::default();
         owned.apply_to_settings(&mut settings);
         settings.s3.conditional_create = conditional_create;
-        let store = swarmy_store::objects::from_settings(&settings).unwrap();
+        let store = swarmy_volume::objects::from_settings(&settings).unwrap();
         let scope = format!("bucket-spec-test-{}", ulid::Ulid::generate());
         let path = Path::from(format!("{scope}/object"));
         store.put(&path, "payload".into()).await.unwrap();
@@ -368,12 +369,12 @@ async fn s3_namespace_lists_relative_keys_and_keeps_siblings() {
     settings.s3.prefix = format!("prefix-test-{}", ulid::Ulid::generate())
         .parse()
         .unwrap();
-    let raw = swarmy_store::objects::from_settings(&settings).unwrap();
+    let raw = swarmy_volume::objects::from_settings(&settings).unwrap();
     let root = ObjectBlobStore::new(raw.clone());
     settings.s3.prefix = format!("{}/inside", settings.s3.prefix.as_str())
         .parse()
         .unwrap();
-    let scoped_raw = swarmy_store::objects::from_settings(&settings).unwrap();
+    let scoped_raw = swarmy_volume::objects::from_settings(&settings).unwrap();
     let scoped = ObjectBlobStore::new(scoped_raw.clone());
     let payload = Bytes::from_static(b"prefix regression");
     let outside = root.put("outside", payload.clone()).await;

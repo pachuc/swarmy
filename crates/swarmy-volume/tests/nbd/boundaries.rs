@@ -60,9 +60,9 @@ async fn continuous_writes_and_retained_crash_images() {
     .unwrap();
     let writer = VolumeWriter::with_retention(
         device.clone(),
-        store.clone(),
+        Arc::new(store.clone()),
         volume,
-        lease,
+        swarmy_volume::WriterLease::fixed(lease, tokio::time::Instant::now() + std::time::Duration::from_secs(3600)),
         base_id,
         std::num::NonZeroUsize::new(4).unwrap(),
     );

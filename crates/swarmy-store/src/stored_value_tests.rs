@@ -14,7 +14,7 @@ fn blob_values_match_by_content_address_without_a_download() {
     let large = "x".repeat(INLINE_LIMIT + 1);
     let (stored, blob) = stored_encoding(&large).unwrap();
     let (key, bytes) = blob.unwrap();
-    assert_eq!(key, blob::blob_key(&bytes));
+    assert_eq!(key, swarmy_core::blob_key(&bytes));
     assert!(stored_matches(&stored, &large).unwrap());
     let mut other = large;
     other.replace_range(0..1, "y");

@@ -106,7 +106,6 @@ impl AppState {
 
 pub(crate) fn volume(value: swarmy_volume::VolumeError) -> ApiFailure {
     match value {
-        swarmy_volume::VolumeError::Store(inner) => storage(inner),
         other => ApiFailure::caused(
             StatusCode::INTERNAL_SERVER_ERROR,
             "storage_error",
@@ -137,7 +136,7 @@ fn gpu_reason(text: Option<&str>) -> Result<Option<swarmy_core::GpuReason>, ApiF
     clippy::needless_pass_by_value,
     reason = "`map_err` passes the owned error; taking a reference would require closures at every call site"
 )]
-fn storage(value: swarmy_store::StoreError) -> ApiFailure {
+pub(crate) fn storage(value: swarmy_store::StoreError) -> ApiFailure {
     use swarmy_store::StoreError;
     let message = value.to_string();
     match &value {

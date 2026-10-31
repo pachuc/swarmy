@@ -1,3 +1,4 @@
+use swarmy_store::collector::collect;
 #![deny(clippy::disallowed_methods)]
 use std::{
     num::NonZeroUsize,
@@ -21,7 +22,7 @@ use swarmy_core::{
 };
 use swarmy_store::{Store, StoreError, blob::MemoryBlobStore};
 use swarmy_volume::{
-    ChunkStore, Manifest, ManifestBuilder, VolumeDevice, VolumeError, VolumeWriter, gc::collect,
+    ChunkStore, Manifest, ManifestBuilder, VolumeDevice, VolumeWriter,
 };
 use ulid::Ulid;
 
@@ -359,7 +360,7 @@ async fn background_upload_survives_sweep_before_manifest_publication() {
     )
     .await
     .unwrap();
-    let writer = VolumeWriter::new(device.clone(), test.store.clone(), volume, lease, head);
+    let writer = VolumeWriter::new(device.clone(), Arc::new(test.store.clone()), volume, swarmy_volume::WriterLease::fixed(lease, tokio::time::Instant::now() + Duration::from_secs(3600)), head);
     let uploader = writer.background(Duration::from_millis(5));
     let data = vec![42; CHUNK_SIZE as usize];
     device.write(0, &data).await.unwrap();
@@ -425,7 +426,7 @@ async fn collector_lease_excludes_competitors_and_recovers_after_crash() {
     let lease = a.or(b).unwrap();
     assert!(matches!(
         collect(&test.store, test.objects.clone(), policy(), false).await,
-        Err(VolumeError::Store(StoreError::Fence(
+        Err(swarmy_store::collector::CollectError::Store(StoreError::Fence(
             swarmy_store::FenceError::GcLeaseMismatch
         )))
     ));
@@ -506,7 +507,7 @@ async fn deduplicated_old_chunk_is_protected_before_new_manifest_exists() {
         return;
     };
     let data = vec![83; CHUNK_SIZE as usize];
-    let chunks = ChunkStore::with_gc_protection(test.objects.clone(), test.store.clone());
+    let chunks = ChunkStore::with_gc_protection(test.objects.clone(), Arc::new(test.store.clone()));
     let old = chunks.put_chunk(&data).await.unwrap();
     test.age_chunks().await;
     let local = tempfile::tempdir().unwrap();
@@ -537,7 +538,7 @@ async fn reuse_waits_for_reserved_deletion_then_recreates_the_chunk() {
         return;
     };
     let data = vec![91; CHUNK_SIZE as usize];
-    let chunks = ChunkStore::with_gc_protection(test.objects.clone(), test.store.clone());
+    let chunks = ChunkStore::with_gc_protection(test.objects.clone(), Arc::new(test.store.clone()));
     let old = chunks.put_chunk(&data).await.unwrap();
     test.age_chunks().await;
     let run = run_record();

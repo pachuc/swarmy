@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 swarmy-core.workspace = true
 swarmy-store.workspace = true
+object_store.workspace = true
 swarmy-volume.workspace = true
 thiserror.workspace = true
 serde.workspace = true
