@@ -233,7 +233,7 @@ impl Report {
         for p in &self.placements {
             writeln!(
                 out,
-                "{} {} {} {} {} {} chunks={} bytes={}",
+                "{} {} {} {} {} {} {} chunks={} bytes={}",
                 p.session,
                 p.turn,
                 p.request_id.as_deref().unwrap_or("-"),
@@ -318,4 +318,128 @@ pub(crate) async fn report(store: &Store, sessions: &[SessionId], gates: &Gates)
         .lock()
         .write_all(report.render().as_bytes())?;
     report.check(gates)
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use swarmy_store::{ComputerMetric, ToolMetric};
+
+    fn turn() -> TurnMetrics {
+        TurnMetrics {
+            session_id: "session".into(),
+            turn_id: "turn".into(),
+            tools: vec![ToolMetric {
+                request_id: "request-A".into(),
+                name: "bash".into(),
+                dispatched_ns: Some(1_000_000_000),
+                delivered_ns: Some(1_100_000_000),
+                claimed_ns: Some(1_300_000_000),
+                started_ns: Some(1_310_000_000),
+                process_wall_ms: Some(50.0),
+                completed_ns: Some(1_420_000_000),
+                woken_ns: Some(1_520_000_000),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+    fn gates() -> Gates {
+        Gates {
+            max_warm_overhead_ms: None,
+            max_cold_start_ms: None,
+            require_stamps: false,
+        }
+    }
+    #[test]
+    fn columns_partition_the_total() {
+        let report = build(&[turn()]);
+        let c = &report.calls[0];
+        assert_eq!(
+            [
+                c.delivery_ms,
+                c.claim_ms,
+                c.run_ms,
+                c.complete_ms,
+                c.wake_ms,
+                c.total_ms,
+                c.overhead_ms
+            ],
+            [
+                Some(100.0),
+                Some(200.0),
+                Some(60.0),
+                Some(60.0),
+                Some(100.0),
+                Some(520.0),
+                Some(470.0)
+            ]
+        );
+    }
+    #[test]
+    fn booting_call_is_cold_and_reports_the_placement() {
+        let mut t = turn();
+        t.computer = Some(ComputerMetric {
+            placement_ms: Some(900.0),
+            open_ms: Some(400.0),
+            boot_ms: Some(450.0),
+            ..Default::default()
+        });
+        let mut second = t.tools[0].clone();
+        second.request_id = "request-B".into();
+        second.delivered_ns = Some(1_200_000_000);
+        t.tools.push(second);
+        let r = build(&[t]);
+        assert!(r.calls[0].cold);
+        assert!(!r.calls[1].cold);
+        assert_eq!(r.placements[0].cold_start_ms, Some(470.0));
+    }
+    #[test]
+    fn rows_without_delivery_are_not_node_calls() {
+        let mut t = turn();
+        t.tools[0].delivered_ns = None;
+        assert!(build(&[t]).calls.is_empty());
+    }
+    #[test]
+    fn warm_gate_names_the_slow_call() {
+        let r = build(&[turn()]);
+        let mut g = gates();
+        g.max_warm_overhead_ms = Some(400);
+        assert!(r.check(&g).unwrap_err().to_string().contains("request-A"));
+        g.max_warm_overhead_ms = Some(500);
+        assert!(r.check(&g).is_ok());
+        assert!(r.check(&gates()).is_ok());
+    }
+    #[test]
+    fn cold_gate_fails_without_a_placement() {
+        let mut g = gates();
+        g.max_cold_start_ms = Some(1000);
+        assert!(build(&[turn()]).check(&g).is_err());
+    }
+    #[test]
+    fn stamps_check_names_missing_fields() {
+        let mut t = turn();
+        t.tools[0].woken_ns = None;
+        let r = build(&[t]);
+        let mut g = gates();
+        g.require_stamps = true;
+        assert!(r.check(&g).unwrap_err().to_string().contains("woken_ns"));
+        assert!(r.check(&gates()).is_ok());
+    }
+    #[test]
+    fn render_ends_with_one_json_line() {
+        let s = build(&[turn()]).render();
+        assert!(s.starts_with("== tool timings"));
+        let last = s.lines().last().unwrap();
+        assert!(last.starts_with("TOOL_TIMINGS "));
+        serde_json::from_str::<serde_json::Value>(last.strip_prefix("TOOL_TIMINGS ").unwrap())
+            .unwrap();
+    }
+    #[test]
+    fn percentile_is_nearest_rank() {
+        assert_eq!(percentile(&[1.0, 2.0, 3.0, 4.0], 0.5), Some(2.0));
+        assert_eq!(percentile(&[1.0, 2.0, 3.0, 4.0], 0.95), Some(4.0));
+        assert_eq!(percentile(&[], 0.5), None);
+    }
 }
