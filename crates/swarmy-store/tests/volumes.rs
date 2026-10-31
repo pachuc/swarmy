@@ -422,19 +422,26 @@ async fn publish_through_the_trait_is_fenced() {
         .await
         .unwrap();
     let grant = test.store.open_volume_writer(id, old.owner).await.unwrap();
-    let lease = grant.lease.current().unwrap();
-    let next = manifest_id();
-    VolumeMetadata::publish(
-        &test.store,
-        id,
-        &lease,
-        grant.head,
-        next,
-        &header,
-        NonZeroUsize::new(4).unwrap(),
+    let objects = Arc::new(object_store::memory::InMemory::new());
+    let device = VolumeDevice::open(
+        ChunkStore::new(objects.clone()),
+        Manifest::load(&*objects, header.clone()).await.unwrap(),
+        test.directory.join("trait-cache"),
+        test.directory.join("trait-dirty"),
+        0,
     )
     .await
     .unwrap();
+    let writer = VolumeWriter::new(
+        device.clone(),
+        Arc::new(test.store.clone()),
+        id,
+        grant.lease.clone(),
+        grant.head,
+    );
+    device.write(0, &[3; 4096]).await.unwrap();
+    let next = writer.flush(None).await.unwrap().manifest_id;
+    let lease = grant.lease.current().unwrap();
     VolumeMetadata::release_writer_lease(&test.store, id, &lease)
         .await
         .unwrap();
