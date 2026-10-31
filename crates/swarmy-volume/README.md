@@ -326,3 +326,14 @@ tracing event, and background batches emit a debug event with their counters.
 For release and debug installation measurements and serial request latency,
 see `scripts/benchmarks/volume.py --help`, the `cloud-object-requests` example,
 and the dated procedure in `docs/volume-benchmarks.md`.
+
+## Boot sets
+
+An attachment records demand-read chunk hashes in first-read order, including
+cache hits but excluding zero blocks, dirty data and readahead. Recording stops
+at the `boot_set` control query and caps at 4,096 chunks (1 GiB). A set is
+stored as `bootsets/<blake3 hex>`; its object bytes are verified on lookup.
+The server prefetches leaves in parallel, then chunks with
+`[sandbox] boot_prefetch_concurrency` requests (default 32). Its 1,024 striped
+fill locks deduplicate overlapping fetches without putting unrelated demand
+reads behind boot requests. Bad or stale entries do not stop demand reads.

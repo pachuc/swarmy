@@ -164,7 +164,7 @@ mod codec_tests {
     /// Checked-in current tool-row bytes.
     const CURRENT_TOOL_HEX: &str = "01020163046261736800000000000000000000";
 
-    const CURRENT_COMPUTER_HEX: &str = "0103010000000000002940010100000000000000000000";
+    const CURRENT_COMPUTER_HEX: &str = "01030100000000000029400101000000000000000000000000";
 
     fn fixture_computer() -> ComputerMetric {
         ComputerMetric {

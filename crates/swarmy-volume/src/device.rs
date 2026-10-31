@@ -893,6 +893,205 @@ mod tests {
     use super::*;
     use object_store::memory::InMemory;
 
+    fn hash(byte: u8) -> ContentHash {
+        ContentHash([byte; 32])
+    }
+
+    #[test]
+    fn recorder_keeps_first_read_order_without_repeats_or_zeros() {
+        let mut recorder = Recorder::new(4096);
+        for (leaf, hash) in [
+            (3, hash(3)),
+            (1, hash(1)),
+            (3, hash(3)),
+            (2, ContentHash::ZERO),
+            (2, hash(2)),
+        ] {
+            recorder.note(leaf, hash);
+        }
+        assert_eq!(
+            recorder.finish(),
+            BootSet {
+                leaves: vec![1, 2, 3],
+                chunks: vec![hash(3), hash(1), hash(2)]
+            }
+        );
+        let mut capped = Recorder::new(2);
+        for hash in [hash(3), hash(1), hash(3), ContentHash::ZERO, hash(2)] {
+            capped.note(0, hash);
+        }
+        assert_eq!(capped.finish().chunks, vec![hash(3), hash(1)]);
+    }
+
+    async fn populated_device(
+        count: u8,
+        objects: Arc<InMemory>,
+        dir: &tempfile::TempDir,
+    ) -> (Arc<VolumeDevice>, Vec<ContentHash>) {
+        let store = ChunkStore::new(objects.clone());
+        let mut builder = ManifestBuilder::new(
+            objects,
+            Manifest::empty(u64::from(count) * u64::from(CHUNK_SIZE)).unwrap(),
+        );
+        let mut hashes = Vec::new();
+        for number in 0..count {
+            let hash = store
+                .put_chunk(&vec![number + 1; CHUNK_SIZE as usize])
+                .await
+                .unwrap()
+                .hash;
+            builder.set_chunk(u64::from(number), hash).unwrap();
+            hashes.push(hash);
+        }
+        let manifest = builder.build().await.unwrap();
+        let device = VolumeDevice::open(
+            store,
+            manifest,
+            dir.path().join("cache"),
+            dir.path().join("dirty"),
+            0,
+        )
+        .await
+        .unwrap();
+        (device, hashes)
+    }
+
+    #[tokio::test]
+    async fn device_records_demand_reads_until_taken() {
+        let objects = Arc::new(InMemory::new());
+        let dir = tempfile::tempdir().unwrap();
+        let (device, hashes) = populated_device(8, objects, &dir).await;
+        for number in [5, 2, 5, 7] {
+            device
+                .read(number * u64::from(CHUNK_SIZE), 4096)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            device.take_boot_set(),
+            BootSet {
+                leaves: vec![0],
+                chunks: vec![hashes[5], hashes[2], hashes[7]]
+            }
+        );
+        device.read(0, 4096).await.unwrap();
+        assert_eq!(device.take_boot_set(), BootSet::default());
+    }
+
+    #[tokio::test]
+    async fn writes_are_not_recorded() {
+        let objects = Arc::new(InMemory::new());
+        let dir = tempfile::tempdir().unwrap();
+        let (device, _) = populated_device(8, objects, &dir).await;
+        device
+            .write(3 * u64::from(CHUNK_SIZE), &vec![9; CHUNK_SIZE as usize])
+            .await
+            .unwrap();
+        device.read(3 * u64::from(CHUNK_SIZE), 4096).await.unwrap();
+        assert_eq!(device.take_boot_set(), BootSet::default());
+    }
+
+    #[tokio::test]
+    async fn prefetch_fills_the_cache_and_counts() {
+        let objects = Arc::new(InMemory::new());
+        let dir = tempfile::tempdir().unwrap();
+        let (device, hashes) = populated_device(6, objects, &dir).await;
+        let set = BootSet {
+            leaves: vec![0],
+            chunks: hashes.clone(),
+        };
+        device.prefetch_boot_set(&set, 4).await;
+        for hash in hashes {
+            assert!(dir.path().join("cache").join(hash.to_string()).exists());
+        }
+        assert_eq!(device.stats().boot_prefetch_chunks, 6);
+        assert_eq!(
+            device.stats().boot_prefetch_bytes,
+            6 * u64::from(CHUNK_SIZE)
+        );
+        assert!(device.stats().boot_prefetch_ms.is_some());
+        for number in 0..6 {
+            device
+                .read(number * u64::from(CHUNK_SIZE), 4096)
+                .await
+                .unwrap();
+        }
+        assert_eq!(device.stats().cold_reads, 0);
+        assert_eq!(device.stats().cache_hits, 6);
+        device.prefetch_boot_set(&set, 4).await;
+        assert_eq!(device.stats().boot_prefetch_chunks, 6);
+    }
+
+    #[tokio::test]
+    async fn prefetch_runs_requests_in_parallel() {
+        use object_store::throttle::{ThrottleConfig, ThrottledStore};
+        let objects = Arc::new(ThrottledStore::new(
+            InMemory::new(),
+            ThrottleConfig {
+                wait_get_per_call: Duration::from_millis(50),
+                ..ThrottleConfig::default()
+            },
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let (device, hashes) = populated_device(32, objects, &dir).await;
+        let start = Instant::now();
+        device
+            .prefetch_boot_set(
+                &BootSet {
+                    leaves: vec![0],
+                    chunks: hashes,
+                },
+                8,
+            )
+            .await;
+        let elapsed = start.elapsed();
+        eprintln!("parallel boot prefetch elapsed: {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(1), "elapsed: {elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn demand_read_waits_for_an_in_flight_boot_fetch() {
+        use object_store::throttle::{ThrottleConfig, ThrottledStore};
+        let objects = Arc::new(ThrottledStore::new(
+            InMemory::new(),
+            ThrottleConfig {
+                wait_get_per_call: Duration::from_millis(50),
+                ..ThrottleConfig::default()
+            },
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let (device, hashes) = populated_device(8, objects, &dir).await;
+        device.read(0, 4096).await.unwrap();
+        let set = BootSet {
+            leaves: vec![],
+            chunks: vec![hashes[4]],
+        };
+        let (_, read) = tokio::join!(device.prefetch_boot_set(&set, 1), async {
+            tokio::task::yield_now().await;
+            device.read(4 * u64::from(CHUNK_SIZE), 4096).await
+        });
+        read.unwrap();
+        assert_eq!(device.stats().fetched_chunks, 2);
+        assert_eq!(device.stats().cold_reads, 1);
+    }
+
+    #[tokio::test]
+    async fn stale_entries_are_skipped() {
+        let objects = Arc::new(InMemory::new());
+        let dir = tempfile::tempdir().unwrap();
+        let (device, hashes) = populated_device(2, objects, &dir).await;
+        device
+            .prefetch_boot_set(
+                &BootSet {
+                    leaves: vec![u32::MAX],
+                    chunks: vec![hashes[0], hash(99)],
+                },
+                4,
+            )
+            .await;
+        assert_eq!(device.stats().boot_prefetch_chunks, 1);
+    }
+
     #[tokio::test]
     async fn publication_counts_new_deduplicated_zero_and_staged_chunks() {
         let objects = Arc::new(InMemory::new());

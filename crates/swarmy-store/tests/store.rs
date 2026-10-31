@@ -16,6 +16,20 @@ use swarmy_store::{
 };
 
 #[tokio::test]
+async fn boot_set_first_writer_wins() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let manifest = ManifestId::from_ulid(ulid::Ulid::generate());
+    let first = format!("bootsets/{}", "a".repeat(64));
+    let second = format!("bootsets/{}", "b".repeat(64));
+    assert_eq!(test.store.boot_set(manifest).await.unwrap(), None);
+    assert!(test.store.record_boot_set(manifest, &first).await.unwrap());
+    assert!(!test.store.record_boot_set(manifest, &second).await.unwrap());
+    assert_eq!(test.store.boot_set(manifest).await.unwrap(), Some(first));
+}
+
+#[tokio::test]
 async fn large_tool_image_blob_round_trips_without_inline_bytes() {
     let blobs = Arc::new(MemoryBlobStore::default());
     let Some(f) = TestStore::new(blobs.clone()) else {

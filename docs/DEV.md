@@ -264,7 +264,7 @@ plain-PUT fallback is safe. Additional settings are
 `[scheduler] ephemeral_retention_secs`, `[scheduler] placement_lease_secs`,
 `[worker] lease_ms`, `[worker] recovery_interval_ms`, `[bus] ack_wait_ms`,
 `[bus] max_deliver`, `[gateway] concurrency`, `[node] heartbeat_interval_ms`,
-`[sandbox] idle_secs`, `[gc] grace_secs`, `[gc] interval_secs`,
+`[sandbox] idle_secs`, `[sandbox] boot_prefetch_concurrency` (default 32, clamped to 1 when zero), `[gc] grace_secs`, `[gc] interval_secs`,
 `[scheduler] max_session_wait_secs`, `[inference] max_backoff_secs`,
 `[inference] gateway_wait_secs`, `[volume_snapshots] period_secs`, and
 `[context] system_prompt`. The optional `[context] summarize_at` and

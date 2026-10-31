@@ -102,6 +102,12 @@ pub struct ComputerMetric {
     /// Milliseconds spent creating the sandbox, including volume attach.
     #[serde(default)]
     pub boot_ms: Option<f64>,
+    /// Bytes fetched by the boot-set prefetch for this boot.
+    #[serde(default)]
+    pub prefetch_bytes: Option<u64>,
+    /// Milliseconds the boot-set prefetch ran; absent while it is running.
+    #[serde(default)]
+    pub prefetch_ms: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]

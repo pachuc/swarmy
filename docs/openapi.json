@@ -3026,6 +3026,23 @@
               "null"
             ],
             "format": "double"
+          },
+          "prefetch_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Bytes fetched by the boot-set prefetch for this boot.",
+            "minimum": 0
+          },
+          "prefetch_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Milliseconds the boot-set prefetch ran; absent while it is running."
           }
         }
       },

@@ -41,3 +41,12 @@ The node reports scratch directories and their occupancy. The server decides del
 ## GitHub credential
 
 `POST /node/v1/credentials/github` returns a token only when the agent has a live placement on the calling node according to the server clock. Other placements return `NotYours`; the secret is never logged and its response debug representation is redacted.
+
+## Boot sets
+
+`hosting/open` returns the boot-set key recorded for the opened volume head,
+or falls back to the session's pinned image manifest. A node reports the
+object it wrote with `POST /node/v1/hosting/boot-set`, echoing its placement,
+session, head and content-addressed key. The API checks placement ownership
+and key shape, then records it against the head and image with first writer
+wins. Object bytes are read directly from object storage, not through the API.

@@ -147,6 +147,17 @@ mod blob_key_tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     #[test]
+    fn boot_set_key_shape() {
+        assert!(is_boot_set_key(&boot_set_key(b"x")));
+        assert!(!is_boot_set_key(&blob_key(b"x")));
+        assert!(!is_blob_key(&boot_set_key(b"x")));
+        assert!(!is_boot_set_key("bootsets/"));
+        assert!(!is_boot_set_key(&format!("bootsets/{}", "A".repeat(64))));
+        assert!(!is_boot_set_key(&format!("bootsets/{}", "a".repeat(63))));
+        assert!(!is_boot_set_key(&"a".repeat(64)));
+        assert!(is_blob_key(&blob_key(b"x")));
+    }
+    #[test]
     fn blob_key_shape() {
         assert!(is_blob_key(&blob_key(b"x")));
         assert!(!is_blob_key("blobs/"));
