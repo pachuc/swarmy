@@ -923,6 +923,9 @@ pub struct ElasticGroup {
     /// Whether the provisioner has acted on the latest desired count.
     pub settled: bool,
     pub updated_at: String,
+    /// Whether joined machines use the swarm's external bucket; false means
+    /// the tunnel to the stack host's own object store.
+    pub external_bucket: bool,
 }
 /// Register or update an elastic group's definition from the swarm spec.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -944,6 +947,9 @@ pub struct PutElasticGroup {
     /// Whether the provisioner scales this group for sessions waiting for a GPU.
     #[serde(default)]
     pub autoscale: bool,
+    /// Whether joined machines use the swarm's external bucket; false means
+    /// the tunnel to the stack host's own object store.
+    pub external_bucket: bool,
 }
 /// Set the desired number of machines, between zero and max.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

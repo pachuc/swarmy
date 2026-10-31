@@ -851,6 +851,7 @@ pub(crate) fn elastic_group(record: &swarmy_core::ElasticGroupRecord) -> api::El
         reconciled_generation: record.reconciled_generation,
         settled: record.settled(),
         updated_at: record.updated_at.to_string(),
+        external_bucket: definition.external_bucket,
     }
 }
 

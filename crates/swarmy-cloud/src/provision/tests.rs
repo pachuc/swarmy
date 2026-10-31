@@ -1100,3 +1100,31 @@ fn upgrade_summary_accepts_old_json() {
             .unwrap();
     assert!(summary.units.is_empty());
 }
+
+#[test]
+fn nodes_use_an_external_bucket_only_when_the_swarm_has_one() {
+    let (_tmp, _registry, mut spec) = fixture();
+    let mut record = SwarmRecord {
+        name: spec.name.clone(),
+        created_at: jiff::Timestamp::now(),
+        api: SwarmApi::default(),
+        hosts: BTreeMap::new(),
+        bucket_keys: None,
+        tofu_state: None,
+        tofu_bucket: None,
+        tofu_bucket_endpoint: None,
+        tofu_bucket_region: None,
+    };
+    assert!(!external_bucket(&spec, &record));
+    record.tofu_bucket = Some("swarmy-fleet-000000000001".into());
+    assert!(external_bucket(&spec, &record));
+    record.tofu_bucket = None;
+    spec.bucket = Some(swarmy_config::swarm::SwarmBucket {
+        name: "fleet-bucket".into(),
+        endpoint: "https://objects.example.com".into(),
+        region: "eu-central".into(),
+        prefix: swarmy_config::ObjectPrefix::default(),
+        conditional_create: true,
+    });
+    assert!(external_bucket(&spec, &record));
+}
