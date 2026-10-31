@@ -62,6 +62,9 @@ async fn start() -> Result<(), Error> {
         result = server => result,
         () = async { swarmy_config::shutdown_signal().await; tokio::time::sleep(Duration::from_secs(5)).await; } => Ok(()),
     };
+    if let Err(error) = store.flush_turn_metrics().await {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "node api metrics flush failed");
+    }
     heartbeat.abort();
     swarmy_core::ignore_best_effort(heartbeat.await, "stop node API heartbeat task");
     if let Err(error) = store

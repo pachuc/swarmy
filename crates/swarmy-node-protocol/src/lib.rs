@@ -3,13 +3,20 @@
 use std::time::Duration;
 mod client;
 mod refusal;
+mod sync;
 mod types;
 pub use client::{ClientError, NodeClient};
 pub use refusal::{Failure, FenceKind, NodeRefusal};
+pub use sync::{
+    EvictReason, HostedPlacement, MetricBatch, NodeMetric, PlacementRenewal, Renewal, ScratchEntry,
+    ScratchVerdict, SyncRequest, SyncResponse, WriterToken,
+};
 pub use types::{
     LeaseLengths, NodeAdvert, PlacementOccupancy, PlacementsResponse, RegisterRequest,
     RegisterResponse,
 };
+/// Sync all periodic node state.
+pub const SYNC_PATH: &str = "/node/v1/sync";
 /// Register a node.
 pub const REGISTER_PATH: &str = "/node/v1/register";
 /// Read a node's placements.
