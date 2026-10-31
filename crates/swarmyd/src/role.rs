@@ -156,7 +156,7 @@ async fn open_runtime(
                 metadata: Arc::new(store.clone()),
                 objects,
             },
-            store,
+            swarmy_store::StoreSandboxMetadata::new(store, node),
             RuntimeOptions {
                 scratch: ScratchPolicy {
                     idle_days: settings.sandbox.scratch_idle_days,

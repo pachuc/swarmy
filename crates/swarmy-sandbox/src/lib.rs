@@ -1,8 +1,10 @@
 //! Sandbox execution backed by durable virtual disks.
 mod cdi;
 mod credentials;
+mod metadata;
 mod runc;
 pub use cdi::{GpuEdits, NodeGpu};
+pub use metadata::SandboxMetadata;
 pub use runc::{RuncRuntime, RuntimeOptions, ScratchPolicy, pasta_pid_file};
 pub use swarmy_core::{
     BlockDevice, ExecOutput, ExecRequest, ExecResult, PauseHandle, RuntimeCaps, Sandbox,
@@ -12,7 +14,7 @@ pub use swarmy_core::{
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    Store(#[from] swarmy_store::StoreError),
+    Metadata(#[from] swarmy_volume::MetadataError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
