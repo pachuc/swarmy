@@ -126,14 +126,14 @@ async fn renew_placement(
         idempotent(|| state.store.renew_hosted(&hosted.placement, at_least)),
         idempotent(|| state.store.put_agent_call_status(&status)),
     );
-    if let Err(error) = reported {
-        if !matches!(
+    if let Err(error) = reported
+        && !matches!(
             error,
             StoreError::Fence(FenceError::PlacementMismatch)
                 | StoreError::Domain(DomainError::ComputerDeleted)
-        ) {
-            tracing::warn!(error = %swarmy_core::error_chain(&error), "node call status failed");
-        }
+        )
+    {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "node call status failed");
     }
     match renewed {
         Ok((placement, release_requested)) => Renewal::Renewed(PlacementRenewal {
