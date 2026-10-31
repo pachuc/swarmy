@@ -4,7 +4,7 @@ set -eu
 group=$(basename "$PWD")
 printf 'call %s %s\n' "$group" "$1" >> "$fixture/tofu.log"
 case " $* " in *" -target="*) printf 'target %s %s\n' "$group" "$*" >> "$fixture/tofu.log";; esac
-env | grep -E '^(HCLOUD_TOKEN|MINIO_USER|MINIO_PASSWORD|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SHARED_CREDENTIALS_FILE|AWS_CONFIG_FILE|AWS_EC2_METADATA_DISABLED|SCW_ACCESS_KEY|SCW_SECRET_KEY|SCW_DEFAULT_PROJECT_ID|SCW_CONFIG_PATH)=' >> "$fixture/tofu.log" || true
+env | grep -E '^(HCLOUD_TOKEN|MINIO_USER|MINIO_PASSWORD|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_REGION|AWS_SHARED_CREDENTIALS_FILE|AWS_CONFIG_FILE|AWS_EC2_METADATA_DISABLED|SCW_ACCESS_KEY|SCW_SECRET_KEY|SCW_DEFAULT_PROJECT_ID|SCW_CONFIG_PATH)=' >> "$fixture/tofu.log" || true
 case "$1" in
   init) exit 0 ;;
   plan) echo "plan for $group"; exit 2 ;;

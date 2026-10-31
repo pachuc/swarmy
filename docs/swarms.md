@@ -255,6 +255,11 @@ swarmy cloud ls
 swarmy cloud logout aws
 ```
 
+The AWS region is a plain setting, not a secret. Swarmy passes it to OpenTofu
+as `AWS_REGION` with the keys but never treats it as a credential, so it may
+equal a group's location. The built-in AWS module ignores it and uses each
+group's `location`; it matters only to a custom module that reads it.
+
 Pipe one value per line for unattended use, for example:
 
 ```sh

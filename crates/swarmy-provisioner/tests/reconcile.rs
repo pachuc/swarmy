@@ -1377,6 +1377,57 @@ async fn dedicated_waits_beyond_max_keep_waiting_and_block_lowering() {
     assert_eq!(desired_count(&f).await, 1);
 }
 #[tokio::test]
+async fn aws_group_whose_location_equals_the_stored_region_applies() {
+    let Some(f) = Fixture::new(false, 1).await else {
+        return;
+    };
+    let credentials = f.store.credentials(Keyring::from_bytes([7; 32]));
+    let env = [
+        ("AWS_ACCESS_KEY_ID".into(), "test-access".into()),
+        ("AWS_SECRET_ACCESS_KEY".into(), "test-secret".into()),
+        ("AWS_REGION".into(), "us-west-2".into()),
+    ]
+    .into();
+    credentials
+        .put_entry(
+            CredentialScope::Cluster,
+            "aws",
+            "default",
+            &CredentialRecord {
+                kind: CredentialKind::MachineProvider { env },
+                bookkeeping: swarmy_core::CredentialBookkeeping::default(),
+                updated_at: f.store.now(),
+            },
+        )
+        .await
+        .unwrap();
+    let definition = f
+        .store
+        .get_elastic_group("gpu")
+        .await
+        .unwrap()
+        .unwrap()
+        .definition;
+    f.store
+        .put_elastic_group(&ElasticGroupDefinition {
+            module: "aws".into(),
+            size: "t3.large".into(),
+            location: "us-west-2".into(),
+            ..definition
+        })
+        .await
+        .unwrap();
+    f.desired(1).await;
+    let Tick::Reconciled(outcomes) = f.reconciler.tick(&mut Holder::new()).await.unwrap() else {
+        panic!("standby")
+    };
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].after, 1);
+    assert!(f.log().contains("apply machine_count=1"));
+    assert!(f.log().contains("env AWS_REGION"));
+}
+
+#[tokio::test]
 async fn autoscale_respects_the_creation_limit() {
     let Some(f) = Fixture::autoscaled(6, Arc::new(FakeNodes::default())).await else {
         return;

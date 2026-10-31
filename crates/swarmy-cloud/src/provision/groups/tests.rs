@@ -677,6 +677,32 @@ async fn failed_apply_can_be_destroyed() {
 }
 
 #[tokio::test]
+async fn aws_region_equal_to_the_location_reaches_tofu() {
+    let mut f = Fixture::new();
+    f.spec.groups.remove("workers");
+    f.spec.placement.nodes.clear();
+    let control = f.spec.groups.get_mut("control").unwrap();
+    control.module = Module::Aws;
+    control.location = Some("us-west-2".into());
+    f.credentials.set(
+        CloudCredential::new(
+            CloudProvider::Aws,
+            vec!["aws-access-example".into(), "aws-secret-example".into()],
+            Some("us-west-2".into()),
+        )
+        .unwrap(),
+    );
+    f.up(&FakeHost::new()).await.unwrap();
+    let vars: Value =
+        serde_json::from_slice(&fs::read(f.temp.path().join("applied-control-1.json")).unwrap())
+            .unwrap();
+    assert_eq!(vars["location"], "us-west-2");
+    let log = f.log();
+    assert!(log.contains("AWS_REGION=us-west-2"));
+    assert!(log.contains("AWS_ACCESS_KEY_ID=aws-access-example"));
+}
+
+#[tokio::test]
 async fn aws_receives_only_aws_credentials_and_no_bucket() {
     let mut f = Fixture::new();
     f.spec.groups.remove("workers");
