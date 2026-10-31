@@ -8,6 +8,7 @@ mod measure;
 mod persistent;
 mod process;
 mod saturation;
+mod transactions;
 
 use std::{
     ffi::OsString,
@@ -195,6 +196,7 @@ impl Fixture {
             })?,
         )?;
         let environment = self.service_environment(config)?;
+        let node_environment = node_environment(&environment, config);
         for (kind, count) in [
             (Kind::Scheduler, config.schedulers),
             (Kind::Worker, config.workers),
@@ -208,12 +210,18 @@ impl Fixture {
             ),
         ] {
             for index in 0..count {
-                self.processes.push(Process::start(
+                let (slot_environment, netns) = if kind == Kind::Node {
+                    (node_environment.as_slice(), config.node_netns.as_deref())
+                } else {
+                    (environment.as_slice(), None)
+                };
+                self.processes.push(Process::start_in(
                     kind,
                     index,
                     binaries,
                     self.files.path(),
-                    &environment,
+                    slot_environment,
+                    netns,
                 )?);
             }
         }
@@ -569,7 +577,13 @@ async fn exercise_suite(
             Ok(0)
         }
         Some(Scenario::Saturation) => unreachable!("saturation starts its own services above"),
-        None => fixture.exercise(config, seed).await,
+        None => {
+            let calls = fixture.exercise(config, seed).await?;
+            if let Some(max_ms) = config.max_node_transaction_ms {
+                transactions::check_node_logs(fixture.files.path(), max_ms)?;
+            }
+            Ok(calls)
+        }
     }
 }
 
@@ -609,6 +623,18 @@ fn settle_cleanup(cleanup: Result<()>, result: Result<usize>) -> Result<()> {
     }
     result?;
     Ok(())
+}
+
+/// Override logging for the node only, leaving other services at their shared level.
+fn node_environment(shared: &[(OsString, OsString)], config: &Config) -> Vec<(OsString, OsString)> {
+    let mut environment = shared.to_vec();
+    if config.max_node_transaction_ms.is_some() {
+        environment.push((
+            "RUST_LOG".into(),
+            "info,swarmy_store::transaction=debug".into(),
+        ));
+    }
+    environment
 }
 
 fn call_count(files: &Path) -> Result<usize> {
