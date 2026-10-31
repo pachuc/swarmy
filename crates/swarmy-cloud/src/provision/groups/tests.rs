@@ -1218,7 +1218,7 @@ fn scaleway_module_environment_has_only_its_three_provider_keys() {
 
 #[tokio::test]
 async fn second_up_keeps_the_first_group_creating_its_network() {
-    let mut f = Fixture::new();
+    let f = Fixture::new();
     let host = FakeHost::new();
     f.up(&host).await.unwrap();
     f.up(&host).await.unwrap();

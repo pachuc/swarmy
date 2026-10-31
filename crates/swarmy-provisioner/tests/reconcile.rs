@@ -259,7 +259,7 @@ async fn scale_up_down_and_backup() {
     assert_eq!(f.log().matches("apply machine_count=2").count(), 1);
     let path = swarmy_cloud::provision::groups::group_dir(&f.temp.path().join("data"), "gpu")
         .join(swarmy_infra::VARIABLES_FILE);
-    let vars: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let vars: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(vars["network_id"], "");
     assert!(vars.get("image").is_none());
     assert!(f.log().contains("env SCW_ACCESS_KEY"));
@@ -1542,7 +1542,7 @@ async fn elastic_group_joins_the_swarm_network_with_its_image() {
     f.reconciler.tick(&mut Holder::new()).await.unwrap();
     let path = swarmy_cloud::provision::groups::group_dir(&f.temp.path().join("data"), "gpu")
         .join(swarmy_infra::VARIABLES_FILE);
-    let vars: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let vars: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(vars["network_id"], "4711");
     assert_eq!(vars["image"], "ubuntu_jammy");
 }
