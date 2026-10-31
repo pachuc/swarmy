@@ -28,7 +28,7 @@ pub struct SwarmRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Region returned for the stack group's OpenTofu-created bucket.
     pub tofu_bucket_region: Option<String>,
-    /// `network_id` output of each applied OpenTofu group, by group name.
+    /// `network_id` output of each applied `OpenTofu` group, by group name.
     /// Later groups of the same module, including elastic groups, join it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tofu_networks: BTreeMap<String, String>,
