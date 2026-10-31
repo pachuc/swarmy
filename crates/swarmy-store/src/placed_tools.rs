@@ -2,10 +2,20 @@
 use crate::{Result, Store, StoreError, read, scan, write};
 use foundationdb::Transaction;
 use jiff::Timestamp;
+#[cfg(any(test, feature = "test-support"))]
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+};
 use swarmy_core::{
     Event, LeaseOwnerId, PlacedToolClaim, PlacementRecord, SessionId, SessionState, ToolJob,
     ToolResult, VolumeId, VolumeRecord,
 };
+#[cfg(any(test, feature = "test-support"))]
+use tokio::sync::Mutex;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct StoredPlacedClaim {
@@ -99,47 +109,84 @@ impl Store {
     /// # Errors
     /// Rejects mismatched jobs, sessions, placements, and storage failures.
     pub async fn claim_placed_tool(&self, claim: &PlacedToolClaim) -> Result<bool> {
-        self.transaction(|trx| async move {
-            let job_key = self.keys().tool_job(claim.job.request_id);
-            let key = self.keys().placed_tool_claim(claim.job.request_id);
-            let (live, dispatch, value, session, current) = futures::join!(
-                self.check_live_placement(&trx, &claim.placement),
-                self.check_tool_dispatch(&trx, &claim.job, &claim.placement),
-                trx.get(&job_key, false),
-                self.session(&trx, claim.job.session_id),
-                read::<StoredPlacedClaim>(&trx, &key),
-            );
-            live?;
-            dispatch?;
-            let Some(value) = value? else {
-                return Ok(false);
-            };
-            let session = session?;
-            if session.agent_id != claim.placement.agent_id
-                || session.state != SessionState::WaitingTools
-                || claim.expires_at <= self.now()
-            {
-                return Err(StoreError::Fence(crate::FenceError::ToolClaimMismatch));
-            }
-            if !crate::stored_matches(&value, &claim.job)? {
-                return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
-            }
-            if current?.is_some_and(|old| old.expires_at > self.now()) {
-                return Ok(false);
-            }
-            write(
-                &trx,
-                &key,
-                &StoredPlacedClaim {
-                    owner: claim.owner,
-                    placement: claim.placement.clone(),
-                    expires_at: claim.expires_at,
-                    job_digest: job_digest(&claim.job)?,
-                },
-            )?;
-            Ok(true)
-        })
-        .await
+        self.transaction(|trx| async move { self.claim_placed_tool_in(&trx, claim).await })
+            .await
+    }
+
+    async fn claim_placed_tool_in(
+        &self,
+        trx: &Transaction,
+        claim: &PlacedToolClaim,
+    ) -> Result<bool> {
+        let job_key = self.keys().tool_job(claim.job.request_id);
+        let key = self.keys().placed_tool_claim(claim.job.request_id);
+        let (live, dispatch, value, session, current) = futures::join!(
+            self.check_live_placement(trx, &claim.placement),
+            self.check_tool_dispatch(trx, &claim.job, &claim.placement),
+            trx.get(&job_key, false),
+            self.session(trx, claim.job.session_id),
+            read::<StoredPlacedClaim>(trx, &key),
+        );
+        live?;
+        dispatch?;
+        let Some(value) = value? else {
+            return Ok(false);
+        };
+        let session = session?;
+        if session.agent_id != claim.placement.agent_id
+            || session.state != SessionState::WaitingTools
+            || claim.expires_at <= self.now()
+        {
+            return Err(StoreError::Fence(crate::FenceError::ToolClaimMismatch));
+        }
+        if !crate::stored_matches(&value, &claim.job)? {
+            return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
+        }
+        if current?.is_some_and(|old| old.expires_at > self.now()) {
+            return Ok(false);
+        }
+        write(
+            trx,
+            &key,
+            &StoredPlacedClaim {
+                owner: claim.owner,
+                placement: claim.placement.clone(),
+                expires_at: claim.expires_at,
+                job_digest: job_digest(&claim.job)?,
+            },
+        )?;
+        Ok(true)
+    }
+
+    /// Claim like `claim_placed_tool`, but await `race` after the claim's reads
+    /// and before its commit on the first attempt. Returns the result and attempt count.
+    /// Test-only entry point, also available with the `test-support` feature.
+    /// # Errors
+    /// Rejects mismatched jobs, sessions, placements, and storage failures.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn claim_placed_tool_racing(
+        &self,
+        claim: &PlacedToolClaim,
+        race: impl Future<Output = ()>,
+    ) -> Result<(bool, u32)> {
+        let race = Arc::new(Mutex::new(Some(Box::pin(race))));
+        let attempts = AtomicU32::new(0);
+        let claimed = self
+            .transaction(|trx| {
+                let race = Arc::clone(&race);
+                let attempts = &attempts;
+                async move {
+                    attempts.fetch_add(1, Ordering::Relaxed);
+                    let claimed = self.claim_placed_tool_in(&trx, claim).await?;
+                    let first = race.lock().await.take();
+                    if let Some(first) = first {
+                        first.await;
+                    }
+                    Ok(claimed)
+                }
+            })
+            .await?;
+        Ok((claimed, attempts.load(Ordering::Relaxed)))
     }
 
     async fn check_placed_tool(

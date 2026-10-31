@@ -151,6 +151,7 @@ pub(crate) struct Worker {
     placements: crate::placement::Cache,
     snapshots: Mutex<HashMap<String, Snapshot>>,
     display: Mutex<DisplayCache>,
+    republish: republish::Republish,
     pub owner: LeaseOwnerId,
     clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
     #[cfg(test)]
@@ -168,6 +169,7 @@ impl Worker {
             placements: crate::placement::Cache::default(),
             snapshots: Mutex::default(),
             display: Mutex::default(),
+            republish: republish::Republish::default(),
             owner: LeaseOwnerId::from_ulid(Ulid::generate()),
             clock: Arc::new(Timestamp::now),
             #[cfg(test)]
@@ -280,6 +282,7 @@ mod handoff;
 mod inference;
 mod inflight;
 mod overflow;
+pub(crate) mod republish;
 mod step;
 mod summarize;
 #[cfg(test)]

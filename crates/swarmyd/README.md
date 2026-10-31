@@ -109,8 +109,11 @@ Cleanup guards stop containers and unmount after a test failure.
 Start a disk-backed session with `swarmy run --image base-ubuntu:TAG "PROMPT"`.
 The CLI pins the image manifest before waking the session. The worker records
 sandbox tool request events, asks the scheduler for a live sandbox node, and atomically
-stores tool jobs while releasing the session into `WaitingTools`. A recovery
-scan republishes pending jobs if a process dies before publishing to NATS.
+stores tool jobs while releasing the session into `WaitingTools`. A recovery scan on every worker re-checks each pending job's placement on every tick.
+It republishes a job at once the first time a worker sees it without having
+published it (repairing a publish lost when a process died before reaching
+NATS), then with backoff from 5 s doubling to 60 s. It never rewrites the
+job's dispatch fence, so it cannot conflict with the node's claim.
 
 The node places an unplaced agent locally, accepts a live placement assigned to
 this node, or takes over an expired epoch. It refuses live placements on other

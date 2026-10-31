@@ -114,8 +114,10 @@ impl Store {
         .await
     }
 
-    /// Resolve a pending dispatch against the current placement on every retry.
+    /// Resolve a pending dispatch against the current placement on every recovery scan.
     /// A changed epoch completes the old call as failed instead of repeating its effects.
+    /// An unchanged fence is left as is, so routing writes nothing in the
+    /// normal case and never conflicts with the node's claim.
     /// Returns false when the job was completed or recovered and must not be published.
     /// # Errors
     /// Rejects stale placements, changed job inputs, and storage failures.
@@ -138,17 +140,19 @@ impl Store {
             let notice = self
                 .deliver_computer_notice(&trx, job.session_id, placement)
                 .await?;
-            if dispatched
-                .is_some_and(|old| old.epoch != placement.epoch || old.node_id != placement.node_id)
-            {
-                // A dispatch can expire without any node hosting its epoch.
-                // Fail the fenced call without inventing a computer loss.
-                let explanation =
-                    notice.unwrap_or_else(|| swarmy_core::UNCLAIMED_DISPATCH_EXPIRED.into());
-                self.fail_lost_tool(&trx, job, explanation).await?;
-                return Ok(false);
+            match dispatched {
+                Some(old) if old.epoch != placement.epoch || old.node_id != placement.node_id => {
+                    // A dispatch can expire without any node hosting its epoch.
+                    // Fail the fenced call without inventing a computer loss.
+                    let explanation =
+                        notice.unwrap_or_else(|| swarmy_core::UNCLAIMED_DISPATCH_EXPIRED.into());
+                    self.fail_lost_tool(&trx, job, explanation).await?;
+                    return Ok(false);
+                }
+                // Rewriting the same fence conflicts with claims and completions.
+                Some(_) => {}
+                None => write(&trx, &key, placement)?,
             }
-            write(&trx, &key, placement)?;
             Ok(true)
         })
         .await
