@@ -44,7 +44,6 @@ async fn continuous_writes_and_retained_crash_images() {
         .acquire_writer_lease(
             volume,
             LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
-            now,
             now.checked_add(Duration::from_secs(300)).unwrap(),
         )
         .await

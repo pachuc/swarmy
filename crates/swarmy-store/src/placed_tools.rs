@@ -21,6 +21,13 @@ fn job_digest(job: &ToolJob) -> Result<[u8; 32]> {
     Ok(*blake3::hash(&swarmy_core::encode(job)?).as_bytes())
 }
 
+/// Committed tool completion outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlacedToolCompletion {
+    pub head_seq: u64,
+    pub state: SessionState,
+}
+
 impl Store {
     /// Resolve the shared agent volume, initializing it from the session image.
     /// Existing slice 2 disks are imported once from their published head.
@@ -85,7 +92,7 @@ impl Store {
         trx: &Transaction,
         id: VolumeId,
         owner: LeaseOwnerId,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // Agent volumes share their agent's id; prefetch the fence with the binding.
         let agent = swarmy_core::AgentId::from_ulid(id.as_ulid());
         let binding_key = self.keys().volume_placement(id);
@@ -94,16 +101,17 @@ impl Store {
             self.read_placement_fence(trx, agent),
         );
         let Some(placement) = binding? else {
-            return Ok(());
+            return Ok(false);
         };
         if owner.as_ulid() != placement.node_id.as_ulid() {
             return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
         }
         if placement.agent_id == agent {
-            self.check_placement_fence(trx, fence, placement.node_id, placement.epoch)
+            self.check_placement_fence(trx, fence, placement.node_id, placement.epoch)?;
         } else {
-            self.check_live_placement(trx, &placement).await
+            self.check_live_placement(trx, &placement).await?;
         }
+        Ok(true)
     }
 
     /// Claim a pending job without creating an attempt volume.
@@ -143,8 +151,12 @@ impl Store {
         if !crate::stored_matches(&value, &claim.job)? {
             return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
         }
-        if current?.is_some_and(|old| old.expires_at > self.now()) {
-            return Ok(false);
+        if let Some(old) = current?
+            && old.expires_at > self.now()
+        {
+            return Ok(old.owner == claim.owner
+                && old.job_digest == job_digest(&claim.job)?
+                && old.placement.same_grant(&claim.placement));
         }
         write(
             trx,
@@ -193,7 +205,7 @@ impl Store {
         ))?;
         if current.owner != claim.owner
             || current.job_digest != job_digest(&claim.job)?
-            || current.placement != claim.placement
+            || !current.placement.same_grant(&claim.placement)
             || current.expires_at <= self.now()
         {
             return Err(StoreError::Fence(
@@ -209,20 +221,19 @@ impl Store {
         &self,
         claim: &PlacedToolClaim,
         expires_at: Timestamp,
-    ) -> Result<()> {
+    ) -> Result<Timestamp> {
         self.transaction(|trx| async move {
             let mut current = self.check_placed_tool(&trx, claim).await?;
             if expires_at <= current.expires_at {
-                return Err(StoreError::Fence(
-                    crate::FenceError::PlacedToolClaimMismatch,
-                ));
+                return Ok(current.expires_at);
             }
             current.expires_at = expires_at;
             write(
                 &trx,
                 &self.keys().placed_tool_claim(claim.job.request_id),
                 &current,
-            )
+            )?;
+            Ok(expires_at)
         })
         .await
     }
@@ -236,7 +247,7 @@ impl Store {
         claim: &PlacedToolClaim,
         expected_head: u64,
         result: &ToolResult,
-    ) -> Result<()> {
+    ) -> Result<PlacedToolCompletion> {
         let event = self
             .prepare_completion(claim, expected_head, result)
             .await?;
@@ -271,7 +282,7 @@ impl Store {
         claim: &PlacedToolClaim,
         expected_head: u64,
         event: &[u8],
-    ) -> Result<()> {
+    ) -> Result<PlacedToolCompletion> {
         let job = &claim.job;
         let head = crate::seq_after(expected_head, 1)?;
         let pending = self.keys().session_tools_space(job.session_id);
@@ -297,12 +308,18 @@ impl Store {
         write(trx, &self.keys().tool_done(job.request_id), &true)?;
         trx.clear(&own);
         session.head_seq = head;
-        if others_pending {
-            self.write_session(trx, &session)
+        let state = if others_pending {
+            self.write_session(trx, &session)?;
+            SessionState::WaitingTools
         } else {
             self.transition(trx, session, SessionState::Runnable, self.now())
-                .await
-        }
+                .await?;
+            SessionState::Runnable
+        };
+        Ok(PlacedToolCompletion {
+            head_seq: head,
+            state,
+        })
     }
 
     /// Race completion against a concurrent writer. Returns attempt count.
@@ -320,7 +337,7 @@ impl Store {
         let event = self
             .prepare_completion(claim, expected_head, result)
             .await?;
-        Ok(self
+        let (_, attempts) = self
             .transaction_racing(
                 |trx| {
                     let event = &event;
@@ -331,7 +348,7 @@ impl Store {
                 },
                 race,
             )
-            .await?
-            .1)
+            .await?;
+        Ok(attempts)
     }
 }

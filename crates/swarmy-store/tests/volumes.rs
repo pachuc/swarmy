@@ -52,7 +52,6 @@ impl Fixture {
             .acquire_writer_lease(
                 id,
                 LeaseOwnerId::from_ulid(Ulid::generate()),
-                now,
                 now.checked_add(std::time::Duration::from_secs(120))
                     .unwrap(),
             )
@@ -277,14 +276,11 @@ async fn live_roots_are_retained_snapshots_attached_heads_and_images_only() {
         )
         .await
         .unwrap();
-    test.store
-        .release_writer_lease(id, &lease, Timestamp::now())
-        .await
-        .unwrap();
+    test.store.release_writer_lease(id, &lease).await.unwrap();
     let (attached, attached_head, _, _) = test.volume().await;
     let (detached, detached_head, _, detached_lease) = test.volume().await;
     test.store
-        .release_writer_lease(detached, &detached_lease, Timestamp::now())
+        .release_writer_lease(detached, &detached_lease)
         .await
         .unwrap();
     // Independently exercise the attached-head rule with no retained snapshots.

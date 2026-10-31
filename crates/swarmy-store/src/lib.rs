@@ -74,6 +74,10 @@ pub use routes::{
 mod nodes;
 pub mod objects;
 mod placed_tools;
+pub use placed_tools::PlacedToolCompletion;
+mod hosting;
+pub use hosting::OpenHosting;
+mod node_credentials;
 mod placements;
 pub use placements::ScratchRecord;
 mod gpu_tools;

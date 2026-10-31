@@ -129,7 +129,6 @@ impl Fixture {
             .acquire_writer_lease(
                 id,
                 owner(),
-                now,
                 now.checked_add(Duration::from_secs(600)).unwrap(),
             )
             .await

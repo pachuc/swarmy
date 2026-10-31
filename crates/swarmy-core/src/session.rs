@@ -162,6 +162,14 @@ pub struct Lease {
     pub seq: u64,
 }
 
+impl Lease {
+    /// Whether another token names the same writer grant, ignoring expiry.
+    #[must_use]
+    pub fn same_grant(&self, other: &Self) -> bool {
+        self.owner == other.owner && self.seq == other.seq
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     #![deny(clippy::disallowed_methods)]

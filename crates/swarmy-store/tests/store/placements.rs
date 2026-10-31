@@ -1855,3 +1855,122 @@ async fn hosted_renewal_extends_past_stored_expiry_and_reports_release_requests(
         ))
     ));
 }
+
+fn hosting_job(agent: AgentId) -> swarmy_core::ToolJob {
+    let id = SessionId::from_ulid(agent.as_ulid());
+    swarmy_core::ToolJob {
+        session_id: id,
+        step: 1,
+        request_id: RequestId::for_step(id, 1),
+        call_id: swarmy_core::ToolCallId("hosting".into()),
+        arguments: swarmy_core::SandboxArguments::Bash(swarmy_core::BashArguments {
+            command: "true".into(),
+            timeout_ms: 1000,
+            yield_seconds: 10,
+            output_budget_bytes: 32768,
+        }),
+    }
+}
+
+#[tokio::test]
+async fn release_repeats_at_the_same_epoch() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let node = node(&test.store, 2).await.node_id;
+    let agent = session().agent_id;
+    let first = test.store.place(agent, node, future(60)).await.unwrap();
+    test.store.release(&first).await.unwrap();
+    test.store.release(&first).await.unwrap();
+    let second = test.store.place(agent, node, future(60)).await.unwrap();
+    assert_eq!(second.epoch, first.epoch + 1);
+    assert!(matches!(
+        test.store.release(&first).await,
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
+    ));
+}
+
+#[tokio::test]
+async fn open_hosting_places_then_renews_and_reports_other_nodes() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let a = node(&test.store, 2).await.node_id;
+    let b = node(&test.store, 2).await.node_id;
+    let agent = session().agent_id;
+    let job = hosting_job(agent);
+    let first = match test
+        .store
+        .open_hosting(a, agent, &job, None, Duration::from_secs(60))
+        .await
+        .unwrap()
+    {
+        swarmy_store::OpenHosting::Opened(p) => p,
+        other => panic!("unexpected: {other:?}"),
+    };
+    assert_eq!(first.epoch, 1);
+    let renewed = match test
+        .store
+        .open_hosting(a, agent, &job, None, Duration::from_secs(60))
+        .await
+        .unwrap()
+    {
+        swarmy_store::OpenHosting::Opened(p) => p,
+        other => panic!("unexpected: {other:?}"),
+    };
+    assert_eq!(renewed.epoch, 1);
+    assert!(renewed.expires_at >= first.expires_at);
+    assert_eq!(
+        test.store
+            .open_hosting(b, agent, &job, None, Duration::from_secs(60))
+            .await
+            .unwrap(),
+        swarmy_store::OpenHosting::PlacedElsewhere { node: a, epoch: 1 }
+    );
+}
+
+#[tokio::test]
+async fn open_hosting_refuses_a_stopped_epoch_without_renewing() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let a = node(&test.store, 2).await.node_id;
+    let agent = session().agent_id;
+    let job = hosting_job(agent);
+    let first = match test
+        .store
+        .open_hosting(a, agent, &job, None, Duration::from_secs(60))
+        .await
+        .unwrap()
+    {
+        swarmy_store::OpenHosting::Opened(p) => p,
+        other => panic!("unexpected: {other:?}"),
+    };
+    for _ in 0..2 {
+        assert_eq!(
+            test.store
+                .open_hosting(a, agent, &job, Some(1), Duration::from_secs(120))
+                .await
+                .unwrap(),
+            swarmy_store::OpenHosting::EpochStopped { epoch: 1 }
+        );
+        assert_eq!(
+            test.store.get_by_agent(agent).await.unwrap(),
+            Some(first.clone())
+        );
+    }
+    expire(&test, &first).await;
+    let second = match test
+        .store
+        .open_hosting(a, agent, &job, Some(1), Duration::from_secs(60))
+        .await
+        .unwrap()
+    {
+        swarmy_store::OpenHosting::Opened(p) => p,
+        other => panic!("unexpected: {other:?}"),
+    };
+    assert_eq!(second.epoch, 2);
+    assert_eq!(second.last_change_reason, PlacementChangeReason::Failure);
+}

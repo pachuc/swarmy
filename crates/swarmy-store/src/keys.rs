@@ -73,6 +73,7 @@ const MANIFEST: &str = "manifest";
 const MANIFEST_PARENT: &str = "manifest_parent";
 const METERING_HOUR: &str = "metering_hour";
 const NODE: &str = "node";
+const NODE_CREDENTIAL: &str = "node_credential";
 const PLACED_TOOL_CLAIM: &str = "placed_tool_claim";
 const PLACEMENT: &str = "placement";
 const PLACEMENT_ADDRESS: &str = "placement_address";
@@ -523,6 +524,13 @@ impl<'a> Keys<'a> {
     }
     pub(crate) fn node_space(&self) -> Subspace {
         self.root.subspace(&(NODE,))
+    }
+    pub(crate) fn node_credential(&self, id: NodeId) -> Vec<u8> {
+        self.node_credential_space()
+            .pack(&(id.as_ulid().to_bytes().as_slice(),))
+    }
+    pub(crate) fn node_credential_space(&self) -> Subspace {
+        self.root.subspace(&(NODE_CREDENTIAL,))
     }
     pub(crate) fn placement(&self, id: AgentId) -> Vec<u8> {
         self.placement_space()

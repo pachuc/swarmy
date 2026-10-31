@@ -222,7 +222,6 @@ pub async fn attach(
         .acquire_writer_lease(
             id,
             LeaseOwnerId::from_ulid(node.as_ulid()),
-            now,
             now.checked_add(LEASE_DURATION)?,
         )
         .await?;
@@ -238,9 +237,7 @@ pub async fn attach(
     // Setup errors must not strand a lease. The running server releases its
     // renewed token itself, so this fallback can only release the initial grant.
     if result.is_err()
-        && let Err(error) = store
-            .release_writer_lease(id, &lease, Timestamp::now())
-            .await
+        && let Err(error) = store.release_writer_lease(id, &lease).await
     {
         tracing::warn!(error = %swarmy_core::error_chain(&error), "writer lease release after setup failure failed");
     }

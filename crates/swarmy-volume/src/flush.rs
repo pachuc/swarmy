@@ -233,9 +233,7 @@ impl VolumeWriter {
     /// Rejects a lost lease or returns database errors.
     pub async fn release(&self) -> Result<()> {
         let lease = self.lease.lock().await;
-        self.store
-            .release_writer_lease(self.id, &lease, Timestamp::now())
-            .await?;
+        self.store.release_writer_lease(self.id, &lease).await?;
         Ok(())
     }
 
