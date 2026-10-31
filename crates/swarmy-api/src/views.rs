@@ -288,6 +288,7 @@ pub(crate) fn service_role(value: &store::ServiceRole) -> api::ServiceRole {
         store::ServiceRole::Gateway => api::ServiceRole::Gateway,
         store::ServiceRole::Api => api::ServiceRole::Api,
         store::ServiceRole::Node => api::ServiceRole::Node,
+        store::ServiceRole::NodeApi => api::ServiceRole::NodeApi,
     }
 }
 

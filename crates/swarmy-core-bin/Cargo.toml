@@ -23,4 +23,5 @@ swarmy-scheduler.workspace = true
 swarmy-worker.workspace = true
 swarmy-gateway.workspace = true
 swarmy-api.workspace = true
+swarmy-node-api.workspace = true
 swarmyd.workspace = true

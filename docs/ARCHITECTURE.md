@@ -6,7 +6,7 @@ and for checkout development see [DEV.md](DEV.md). Each section names its implem
 
 ## Crate map and dependency direction
 
-The workspace holds thirty crates (`members = ["crates/*"]` in
+The workspace holds thirty-two crates (`members = ["crates/*"]` in
 [Cargo.toml](../Cargo.toml)). These are descriptive tiers, not strict acyclic
 boundaries: sandbox uses store and volume; chat and devtools use the HTTP
 client. The individual manifests in `crates/*/Cargo.toml` are the
@@ -15,7 +15,7 @@ crate in a tier depends on every lower tier.
 
 ### Libraries
 
-- **swarmy-core-bin** dispatches `swarmy-core` to the scheduler, worker, gateway, API, node, or volume role ([source](../crates/swarmy-core-bin/src/main.rs)).
+- **swarmy-core-bin** dispatches `swarmy-core` to the scheduler, worker, gateway, API, node API, node, or volume role, and handles the node-credential command ([source](../crates/swarmy-core-bin/src/main.rs)).
 - **swarmy-core** defines session, agent, event, request, lease, and placement
   types shared across processes ([source](../crates/swarmy-core/src/lib.rs)).
 - **swarmy-api-types** owns the JSON request and response contracts rather
@@ -43,6 +43,7 @@ crate in a tier depends on every lower tier.
 
 ### Storage and transport
 
+- **swarmy-node-protocol** holds the node API wire types and the HTTP/2 client nodes use, without linking FoundationDB ([source](../crates/swarmy-node-protocol/src/lib.rs)).
 - **swarmy-store** implements FoundationDB transactions, indexes, lease checks,
   object-store metadata and metering ([source](../crates/swarmy-store/src/lib.rs),
   [keys](../crates/swarmy-store/src/keys.rs)).
@@ -59,6 +60,7 @@ crate in a tier depends on every lower tier.
   work ([source](../crates/swarmy-worker/src/role.rs)).
 - **swarmy-gateway** handles inference requests and durable replies
   ([source](../crates/swarmy-gateway/src/role.rs)).
+- **swarmy-node-api** authenticates sandbox nodes by their own token and runs their store operations on the primary ([source](../crates/swarmy-node-api/src/role.rs)).
 - **swarmy-api** exposes HTTP JSON mutations and cursor-based event streams
   ([source](../crates/swarmy-api/src/role.rs)).
 - **swarmyd** hosts placements, volumes and sandbox commands on a node
