@@ -64,9 +64,7 @@ impl Process {
         let binary = binaries.join("swarmy-core");
         let mut command = if let Some(netns) = netns {
             let mut command = Command::new("nsenter");
-            command
-                .arg(format!("--net=/run/netns/{netns}"))
-                .arg(binary);
+            command.arg(format!("--net=/run/netns/{netns}")).arg(binary);
             command
         } else {
             Command::new(binary)

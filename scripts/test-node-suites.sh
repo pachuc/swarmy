@@ -84,6 +84,12 @@ cat > "$tmp/.cargo/bin/ip" <<'EOF'
 if [ "${1:-}" = netns ] && [ "${2:-}" = exec ]; then shift 3; exec "$@"; fi
 exit 0
 EOF
+# Stub nsenter: drop the --net=PATH option and run the command in place.
+cat > "$tmp/.cargo/bin/nsenter" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in --net=*) shift ;; esac
+exec "$@"
+EOF
 cat > "$tmp/.cargo/bin/tc" <<'EOF'
 #!/usr/bin/env bash
 [ -z "${FAKE_IP_LOG:-}" ] || echo "tc $*" >> "$FAKE_IP_LOG"
@@ -126,9 +132,12 @@ exit 0
 EOF
 
 : > "$tmp/chaos/.dev/env"
+# latency.sh packages the recipe next to the built disk.
+mkdir -p "$tmp/chaos/images/base-ubuntu"
+: > "$tmp/chaos/images/base-ubuntu/recipe.toml"
 
 chmod +x "$tmp/.cargo/bin/git" "$tmp/.cargo/bin/cargo" "$tmp/.cargo/bin/sudo" \
-  "$tmp/.cargo/bin/systemctl" "$tmp/.cargo/bin/ip" "$tmp/.cargo/bin/tc" \
+  "$tmp/.cargo/bin/systemctl" "$tmp/.cargo/bin/ip" "$tmp/.cargo/bin/tc" "$tmp/.cargo/bin/nsenter" \
   "$tmp/.cargo/bin/modprobe" "$tmp/chaos/target/debug/swarmy-chaos" "$tmp/chaos/scripts/dev-stack.sh" \
   "$tmp/chaos/scripts/chaos-ci.sh" "$tmp/chaos/target/debug/swarmy"
 
