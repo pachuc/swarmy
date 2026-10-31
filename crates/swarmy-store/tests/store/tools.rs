@@ -5,8 +5,9 @@ use swarmy_core::{
     ToolCallRecord, ToolJob,
 };
 
-async fn setup(
+async fn setup_with(
     store: &Store,
+    command: &str,
 ) -> (
     SessionId,
     ManifestId,
@@ -61,7 +62,7 @@ async fn setup(
         )
         .await
         .unwrap();
-    let (jobs, events) = tool_jobs(id);
+    let (jobs, events) = tool_jobs(id, command);
     store
         .append_events_leased(id, 0, &events, &lease, Timestamp::now())
         .await
@@ -88,7 +89,19 @@ async fn setup(
     (id, image, node, jobs, placement)
 }
 
-fn tool_jobs(id: SessionId) -> (Vec<ToolJob>, Vec<Event>) {
+async fn setup(
+    store: &Store,
+) -> (
+    SessionId,
+    ManifestId,
+    NodeRecord,
+    Vec<ToolJob>,
+    swarmy_core::PlacementRecord,
+) {
+    setup_with(store, "echo test").await
+}
+
+fn tool_jobs(id: SessionId, command: &str) -> (Vec<ToolJob>, Vec<Event>) {
     let jobs: Vec<_> = (1..=2)
         .map(|step| ToolJob {
             session_id: id,
@@ -96,7 +109,7 @@ fn tool_jobs(id: SessionId) -> (Vec<ToolJob>, Vec<Event>) {
             request_id: RequestId::for_step(id, step),
             call_id: ToolCallId(format!("bash-{step}")),
             arguments: swarmy_core::SandboxArguments::Bash(BashArguments {
-                command: "echo test".into(),
+                command: command.into(),
                 timeout_ms: 1000,
                 yield_seconds: 10,
                 output_budget_bytes: 32768,
@@ -402,4 +415,101 @@ async fn tool_requests_and_dispatch_commit_together_with_both_fences() {
             .await,
         Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
+}
+
+/// Memory blobs that count downloads, so a test can prove a path reads no object storage.
+#[derive(Default)]
+struct CountingBlobs {
+    inner: MemoryBlobStore,
+    gets: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl BlobStore for CountingBlobs {
+    async fn put(
+        &self,
+        key: &str,
+        value: bytes::Bytes,
+    ) -> Result<(), swarmy_store::blob::BlobError> {
+        self.inner.put(key, value).await
+    }
+    async fn get(&self, key: &str) -> Result<bytes::Bytes, swarmy_store::blob::BlobError> {
+        self.gets.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.get(key).await
+    }
+}
+
+impl CountingBlobs {
+    fn gets(&self) -> usize {
+        self.gets.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+fn large_command(fill: char) -> String {
+    std::iter::repeat_n(fill, 100 * 1024).collect()
+}
+
+#[tokio::test]
+async fn large_tool_jobs_are_routed_and_claimed_without_object_storage_reads() {
+    let blobs = Arc::new(CountingBlobs::default());
+    let Some(test) = TestStore::new(blobs.clone()) else {
+        return;
+    };
+    let store = &test.store;
+    let (_, _, _, jobs, placement) = setup_with(store, &large_command('a')).await;
+    let mut wrong = jobs[0].clone();
+    wrong.arguments = swarmy_core::SandboxArguments::Bash(BashArguments {
+        command: large_command('b'),
+        timeout_ms: 1000,
+        yield_seconds: 10,
+        output_budget_bytes: 32768,
+    });
+    let expires_at = Timestamp::now()
+        .checked_add(Duration::from_secs(30))
+        .unwrap();
+    let claim = |job: &ToolJob| swarmy_core::PlacedToolClaim {
+        job: job.clone(),
+        owner: owner(),
+        placement: placement.clone(),
+        expires_at,
+    };
+    let before = blobs.gets();
+    assert!(store.route_tool_job(&jobs[0], &placement).await.unwrap());
+    assert!(matches!(
+        store.route_tool_job(&wrong, &placement).await,
+        Err(StoreError::Fence(swarmy_store::FenceError::ToolJobMismatch))
+    ));
+    assert!(matches!(
+        store.claim_placed_tool(&claim(&wrong)).await,
+        Err(StoreError::Fence(swarmy_store::FenceError::ToolJobMismatch))
+    ));
+    assert!(store.claim_placed_tool(&claim(&jobs[0])).await.unwrap());
+    assert_eq!(
+        blobs.gets(),
+        before,
+        "tool routing and claims must not read object storage"
+    );
+}
+
+#[tokio::test]
+async fn large_tool_job_fails_after_computer_deletion_without_object_storage_reads() {
+    let blobs = Arc::new(CountingBlobs::default());
+    let Some(test) = TestStore::new(blobs.clone()) else {
+        return;
+    };
+    let store = &test.store;
+    let (session, _, _, jobs, placement) = setup_with(store, &large_command('a')).await;
+    store.delete_computer(placement.agent_id).await.unwrap();
+    let before = blobs.gets();
+    assert!(store.fail_deleted_computer_tool(&jobs[0]).await.unwrap());
+    assert_eq!(
+        blobs.gets(),
+        before,
+        "failing a deleted computer's call must not read object storage"
+    );
+    assert!(store.tool_completed(jobs[0].request_id).await.unwrap());
+    assert_eq!(
+        store.fetch_session(session).await.unwrap().unwrap().state,
+        SessionState::WaitingTools
+    );
 }

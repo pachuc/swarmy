@@ -109,7 +109,7 @@ impl Store {
             {
                 return Err(StoreError::Fence(crate::FenceError::ToolClaimMismatch));
             }
-            if self.hydrate::<ToolJob>(&value).await? != claim.job {
+            if !crate::stored_matches(&value, &claim.job)? {
                 return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
             }
             let key = self.keys().placed_tool_claim(claim.job.request_id);

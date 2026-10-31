@@ -430,7 +430,7 @@ impl Gateway {
                 .expected_head
                 .checked_add(2)
                 .ok_or(crate::Error::Internal("sequence overflow"))?,
-            object_key: format!("blobs/{}", blake3::hash(&bytes).to_hex()),
+            object_key: swarmy_store::blob::blob_key(&bytes),
         };
         self.blobs.put(&snapshot.object_key, bytes.into()).await?;
         Ok(Some(snapshot))

@@ -64,6 +64,8 @@ mod leases;
 mod routes;
 #[cfg(test)]
 mod routes_affinity_tests;
+#[cfg(test)]
+mod stored_value_tests;
 pub use routes::{
     CacheAffinity, ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteCache,
     RouteFailure, RouteSelection, RouteSnapshot, RouteStepStatus,
@@ -160,6 +162,40 @@ pub fn database(cluster_file: &std::path::Path) -> Result<Database> {
 enum StoredValue {
     Inline(Vec<u8>),
     Blob(String),
+}
+
+/// The stored form of `value` as `Store::prepare` writes it, and the blob
+/// that must exist under its key when the value is too large to inline.
+fn stored_encoding<T: Serialize>(value: &T) -> Result<(Vec<u8>, Option<(String, Vec<u8>)>)> {
+    let bytes = encode(value)?;
+    if bytes.len() > INLINE_LIMIT {
+        let key = blob::blob_key(&bytes);
+        Ok((encode(&StoredValue::Blob(key.clone()))?, Some((key, bytes))))
+    } else {
+        Ok((encode(&StoredValue::Inline(bytes))?, None))
+    }
+}
+
+/// The stored form of a value written inside a transaction, where no upload
+/// may happen. Refuses a value too large to inline.
+fn prepare_inline<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+    match stored_encoding(value)? {
+        (stored, None) => Ok(stored),
+        (_, Some(_)) => Err(StoreError::Storage(StorageError::TooLarge)),
+    }
+}
+
+/// Whether a value written by `Store::prepare` holds `expected`, without
+/// reading object storage. Inline values are decoded and compared; blob
+/// values compare content addresses, because the encoding is deterministic.
+fn stored_matches<T: Serialize + DeserializeOwned + PartialEq>(
+    stored: &[u8],
+    expected: &T,
+) -> Result<bool> {
+    match decode::<StoredValue>(stored)? {
+        StoredValue::Inline(bytes) => Ok(decode::<T>(&bytes)? == *expected),
+        StoredValue::Blob(key) => Ok(key == blob::blob_key(&encode(expected)?)),
+    }
 }
 
 /// Receiver for the metrics queue, held until the drain task starts.
@@ -418,7 +454,7 @@ impl Store {
     /// # Errors
     /// Returns an error if object storage rejects the upload.
     pub async fn put_tool_blob(&self, bytes: Vec<u8>) -> Result<String> {
-        let key = format!("blobs/{}", blake3::hash(&bytes).to_hex());
+        let key = blob::blob_key(&bytes);
         self.blobs.put(&key, bytes.into()).await?;
         Ok(key)
     }
@@ -438,24 +474,18 @@ impl Store {
             return Err(StoreError::Storage(StorageError::Corrupt));
         }
         let bytes = self.blobs.get(key).await?;
-        if bytes.len() > 5 * 1024 * 1024
-            || key != format!("blobs/{}", blake3::hash(&bytes).to_hex())
-        {
+        if bytes.len() > 5 * 1024 * 1024 || key != blob::blob_key(&bytes) {
             return Err(StoreError::Storage(StorageError::Corrupt));
         }
         Ok(bytes)
     }
 
     async fn prepare<T: Serialize>(&self, value: &T) -> Result<Vec<u8>> {
-        let bytes = encode(value)?;
-        let stored = if bytes.len() > INLINE_LIMIT {
-            let key = format!("blobs/{}", blake3::hash(&bytes).to_hex());
+        let (stored, blob) = stored_encoding(value)?;
+        if let Some((key, bytes)) = blob {
             self.blobs.put(&key, bytes.into()).await?;
-            StoredValue::Blob(key)
-        } else {
-            StoredValue::Inline(bytes)
-        };
-        Ok(encode(&stored)?)
+        }
+        Ok(stored)
     }
 
     async fn hydrate<T: DeserializeOwned>(&self, value: &[u8]) -> Result<T> {
@@ -463,7 +493,7 @@ impl Store {
             StoredValue::Inline(bytes) => Ok(decode(&bytes)?),
             StoredValue::Blob(key) => {
                 let bytes = self.blobs.get(&key).await?;
-                if key != format!("blobs/{}", blake3::hash(&bytes).to_hex()) {
+                if key != blob::blob_key(&bytes) {
                     return Err(StoreError::Storage(StorageError::Corrupt));
                 }
                 Ok(decode(&bytes)?)
