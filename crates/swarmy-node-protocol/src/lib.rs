@@ -5,6 +5,8 @@ mod client;
 mod credentials;
 mod hosting;
 mod refusal;
+#[cfg(test)]
+mod roundtrip;
 mod sync;
 mod tools;
 mod types;
