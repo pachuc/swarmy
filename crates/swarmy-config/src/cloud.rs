@@ -657,23 +657,8 @@ mod tests {
                 ("SCW_DEFAULT_PROJECT_ID", SCW_PROJECT)
             ]
         );
-        assert_eq!(
-            aws.env().secrets().collect::<Vec<_>>(),
-            [
-                ("AWS_ACCESS_KEY_ID", AWS_ACCESS),
-                ("AWS_SECRET_ACCESS_KEY", AWS_SECRET),
-            ]
-        );
-        assert_eq!(
-            aws.env().settings().collect::<Vec<_>>(),
-            [("AWS_REGION", "eu-central-1")]
-        );
-        for credential in [&hc, &s3, &scw] {
-            assert_eq!(credential.env().settings().count(), 0);
-        }
         assert_eq!(scw.set_fields(), ["access_key", "secret_key", "project_id"]);
         let aws_without_region = entry(CloudProvider::Aws, &[AWS_ACCESS, AWS_SECRET], None);
-        assert_eq!(aws_without_region.env().settings().count(), 0);
         assert_eq!(
             aws_without_region.env().iter().collect::<Vec<_>>(),
             vec![
@@ -723,6 +708,37 @@ mod tests {
             }
             assert!(debug.contains("..redacted.."));
         }
+    }
+    #[test]
+    fn environment_classifies_secrets_and_settings() {
+        let hc = entry(CloudProvider::HetznerCloud, &[TOKEN], None);
+        let s3 = entry(CloudProvider::HetznerS3, &[S3_ACCESS, S3_SECRET], None);
+        let scw = entry(
+            CloudProvider::Scaleway,
+            &[SCW_ACCESS, SCW_SECRET, SCW_PROJECT],
+            None,
+        );
+        let aws = entry(
+            CloudProvider::Aws,
+            &[AWS_ACCESS, AWS_SECRET],
+            Some("eu-central-1"),
+        );
+        assert_eq!(
+            aws.env().secrets().collect::<Vec<_>>(),
+            [
+                ("AWS_ACCESS_KEY_ID", AWS_ACCESS),
+                ("AWS_SECRET_ACCESS_KEY", AWS_SECRET),
+            ]
+        );
+        assert_eq!(
+            aws.env().settings().collect::<Vec<_>>(),
+            [("AWS_REGION", "eu-central-1")]
+        );
+        for credential in [&hc, &s3, &scw] {
+            assert_eq!(credential.env().settings().count(), 0);
+        }
+        let aws_without_region = entry(CloudProvider::Aws, &[AWS_ACCESS, AWS_SECRET], None);
+        assert_eq!(aws_without_region.env().settings().count(), 0);
     }
     #[test]
     fn credential_validation() {
