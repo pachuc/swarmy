@@ -112,16 +112,16 @@ mod tests {
     #[tokio::test]
     async fn guards_queued_behind_a_running_batch_share_the_next_one() {
         let batcher = ReuseBatcher::default();
-        let batches = Mutex::new(Vec::<Vec<ContentHash>>::new());
+        let recorded = Mutex::new(Vec::<Vec<ContentHash>>::new());
         let (open, gate) = oneshot::channel::<()>();
         let gate = tokio::sync::Mutex::new(Some(gate));
         let protect = |hashes: Vec<ContentHash>| {
-            let (batches, gate) = (&batches, &gate);
+            let (recorded, gate) = (&recorded, &gate);
             async move {
                 if let Some(gate) = gate.lock().await.take() {
                     gate.await.expect("the test opens the gate");
                 }
-                batches.lock().unwrap().push(hashes);
+                recorded.lock().unwrap().push(hashes);
                 Ok(Vec::new())
             }
         };
@@ -138,7 +138,7 @@ mod tests {
         let (guarded, ()) = tokio::join!(guards, opener);
         guarded.unwrap();
         assert_eq!(
-            *batches.lock().unwrap(),
+            *recorded.lock().unwrap(),
             vec![vec![hashes[0]], hashes[1..].to_vec()]
         );
     }
