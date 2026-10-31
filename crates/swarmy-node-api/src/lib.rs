@@ -26,7 +26,7 @@ mod volumes;
 /// Maximum lifetime of a cached positive credential verification.
 pub const CREDENTIAL_CACHE_TTL: Duration = Duration::from_secs(10);
 /// Server policy derived from settings.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct NodeApiPolicy {
     pub placement_lease: Duration,
     pub snapshot_retention: NonZeroUsize,
