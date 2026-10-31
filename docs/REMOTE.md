@@ -112,6 +112,12 @@ directory with installed units can be restored with
 `swarmy swarm rm demo --force` forgets the local registration; it does not
 decommission hosts.
 
+On the stack host, down also removes the provisioner's working data under
+the service user's `~/.local/share/swarmy/provisioner` (each elastic group's
+OpenTofu directory, empty by then because down waits until every elastic
+group is at zero machines, and the group SSH keys) and its OpenTofu download
+cache, `~/.cache/swarmy/tofu`. The rest of the service user's home stays.
+
 Down removes the drop-in files provisioning wrote only while they start with
 the line `# Written by swarmy provisioning; swarmy swarm down removes this file.`:
 `/etc/modules-load.d/swarmy-provisioned.conf` and
@@ -128,7 +134,10 @@ Before stopping a node, swarmy checks for running sandbox commands and
 turns. It waits for them to finish, then stops the node agent cleanly so
 computers checkpoint and release. Swarmy does not cordon the node (mark it
 unavailable for new work) before draining. See
-[scaling](swarms.md#scaling-node-groups) for timeouts and force.
+[scaling](swarms.md#scaling-node-groups) for timeouts and force. After the node
+agent stops, drain reports as unreleased every placement the store still
+records on the node. Those computers recover on another node from their last
+checkpoint when their leases expire.
 
 ## Host repair
 

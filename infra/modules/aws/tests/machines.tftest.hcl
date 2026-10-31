@@ -73,6 +73,10 @@ run "creates_the_group" {
     error_message = "Machines must carry the swarm and group tags and their name."
   }
   assert {
+    condition     = aws_instance.this[1].volume_tags == tomap({ "swarmy-swarm" = "fleet", "swarmy-group" = "workers", "swarmy-managed" = "true", Name = "fleet-workers-2" })
+    error_message = "Root volumes must carry the swarm and group tags and their machine's name."
+  }
+  assert {
     condition     = alltrue([for instance in aws_instance.this : one(instance.root_block_device).volume_size == 100 && one(instance.root_block_device).encrypted && one(instance.metadata_options).http_tokens == "required"])
     error_message = "Machines need an encrypted 100 GiB root disk and IMDSv2."
   }

@@ -2,7 +2,8 @@
 # Behavioral test for scripts/remote-decommission.sh: with stubbed sudo and
 # systemctl and a fake root, every unit and binary in the shared lists is
 # stopped, disabled, and removed, while the fstab entry and the service
-# user's home itself are left alone. Drop-in files without swarmy's marker
+# user's home itself are left alone. Provisioner data is removed, but
+# unrelated home files and drop-in files without swarmy's marker
 # line, such as the host's own modules list, survive.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -72,7 +73,21 @@ printf 'LABEL=swarmy-local /mnt/swarmy-local ext4 defaults,nofail 0 2\n' > "$fak
 getent() { printf 'decomm-swarmy:x:1001:1001::/home/decomm-swarmy:/bin/bash\n'; }
 export -f getent
 
+mkdir -p "$fake/home/decomm-swarmy/.local/share/swarmy/provisioner/tofu/gpu" \
+    "$fake/home/decomm-swarmy/.local/share/swarmy/provisioner/keys/groups" \
+    "$fake/home/decomm-swarmy/.cache/swarmy/tofu/1.0.0" \
+    "$fake/home/decomm-swarmy/.cache/swarmy/images"
+touch "$fake/home/decomm-swarmy/.local/share/swarmy/provisioner/tofu/gpu/terraform.tfstate" \
+    "$fake/home/decomm-swarmy/.local/share/swarmy/provisioner/keys/groups/gpu" \
+    "$fake/home/decomm-swarmy/.cache/swarmy/tofu/1.0.0/tofu" \
+    "$fake/home/decomm-swarmy/.local/share/swarmy/keep" \
+    "$fake/home/decomm-swarmy/.cache/swarmy/images/keep"
+
 bash scripts/remote-decommission.sh decomm-swarmy
+[[ ! -e $fake/home/decomm-swarmy/.local/share/swarmy/provisioner ]] || { echo "provisioner data remains" >&2; exit 1; }
+[[ ! -e $fake/home/decomm-swarmy/.cache/swarmy/tofu ]] || { echo "OpenTofu cache remains" >&2; exit 1; }
+[[ -f $fake/home/decomm-swarmy/.local/share/swarmy/keep ]] || { echo "unrelated data removed" >&2; exit 1; }
+[[ -f $fake/home/decomm-swarmy/.cache/swarmy/images/keep ]] || { echo "image cache removed" >&2; exit 1; }
 
 # Every shared unit was stopped and disabled before removal.
 while IFS= read -r unit; do
