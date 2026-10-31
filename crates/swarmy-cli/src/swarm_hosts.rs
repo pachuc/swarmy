@@ -694,8 +694,7 @@ pub(crate) async fn scale(
 mod elastic_tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
-    #[test]
-    fn scale_requests_and_down_blockers() {
+    fn scale_fixture() -> (SwarmSpec, RecordedHost, SwarmRecord) {
         let text = r#"
 name = "fleet"
 lifecycle = "persistent"
@@ -727,7 +726,7 @@ nodes = ["gpu"]
             ssh_key: "key".into(),
             provisioned: true,
         };
-        let mut record = SwarmRecord {
+        let record = SwarmRecord {
             name: "fleet".into(),
             created_at: jiff::Timestamp::now(),
             api: swarmy_config::swarm::SwarmApi::default(),
@@ -738,6 +737,11 @@ nodes = ["gpu"]
             tofu_bucket_endpoint: None,
             tofu_bucket_region: None,
         };
+        (spec, primary, record)
+    }
+    #[test]
+    fn scale_requests_and_down_blockers() {
+        let (spec, primary, mut record) = scale_fixture();
         let (definition, desired) = elastic_scale_requests(&spec, &record, "gpu", 1).unwrap();
         assert!(!definition.external_bucket);
         record.tofu_bucket = Some("swarmy-fleet-000000000001".into());
@@ -770,6 +774,10 @@ nodes = ["gpu"]
                 .contains("max = 2")
         );
         assert!(elastic_scale_requests(&spec, &record, "control", 1).is_err());
+    }
+    #[test]
+    fn autoscale_off_preserves_group_definition_and_down_reports_blockers() {
+        let (spec, primary, _record) = scale_fixture();
         let mut group = swarmy_api_types::ElasticGroup {
             swarm: "fleet".into(),
             group: "gpu".into(),
