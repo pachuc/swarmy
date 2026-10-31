@@ -3,6 +3,7 @@ mod device;
 pub mod gc;
 mod metrics;
 pub mod priority;
+mod reuse;
 pub use metrics::UploadStats;
 mod snapshot;
 pub use snapshot::SnapshotLoop;
@@ -56,6 +57,7 @@ pub type Result<T> = std::result::Result<T, VolumeError>;
 pub struct ChunkStore {
     inner: Arc<dyn ObjectStore>,
     metadata: Arc<OnceLock<swarmy_store::Store>>,
+    reuse: Arc<reuse::ReuseBatcher>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +72,7 @@ impl ChunkStore {
         Self {
             inner,
             metadata: Arc::new(OnceLock::new()),
+            reuse: Arc::default(),
         }
     }
 
@@ -93,19 +96,10 @@ impl ChunkStore {
 
     async fn protect_reuse(&self, hash: ContentHash) -> Result<()> {
         if let Some(metadata) = self.metadata.get() {
-            loop {
-                match metadata.protect_reused_chunk(hash).await {
-                    Err(swarmy_store::StoreError::Fence(
-                        swarmy_store::FenceError::GcLeaseMismatch,
-                    )) => {
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                    }
-                    result => {
-                        result?;
-                        break;
-                    }
-                }
-            }
+            let protect = |hashes: Vec<ContentHash>| async move {
+                Ok(metadata.protect_reused_chunks(&hashes).await?)
+            };
+            self.reuse.protect(hash, &protect).await?;
         }
         Ok(())
     }

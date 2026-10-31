@@ -95,25 +95,54 @@ impl Store {
 }
 
 impl Store {
-    /// Protect reuse of an existing content address before checking it again.
-    /// An object may have been deleted between the first HEAD and this guard.
+    /// Protect existing content addresses in one transaction. Returns hashes
+    /// whose deletion is reserved by a live collector.
     /// # Errors
-    /// Returns `LeaseMismatch` while a live collector is deleting this hash,
-    /// or a storage error. The uploader can retry after the deletion finishes.
-    pub async fn protect_reused_chunk(&self, hash: ContentHash) -> Result<()> {
+    /// Returns storage errors.
+    pub async fn protect_reused_chunks(&self, hashes: &[ContentHash]) -> Result<Vec<ContentHash>> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
         self.transaction(|trx| async move {
-            let deleting = self.keys().gc_deleting(hash);
-            if let Some(owner) = read::<LeaseOwnerId>(&trx, &deleting).await?
-                && read::<Lease>(&trx, &self.keys().gc_lease())
-                    .await?
-                    .is_some_and(|lease| lease.owner == owner && lease.expires_at > self.now())
-            {
-                return Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch));
+            let reservations = try_join_all(hashes.iter().map(|hash| async {
+                read::<LeaseOwnerId>(&trx, &self.keys().gc_deleting(*hash)).await
+            }))
+            .await?;
+            let lease = if reservations.iter().any(Option::is_some) {
+                read::<Lease>(&trx, &self.keys().gc_lease()).await?
+            } else {
+                None
+            };
+            let now = self.now();
+            let mut deleting = Vec::new();
+            for (&hash, reservation) in hashes.iter().zip(reservations) {
+                if reservation.is_some_and(|owner| {
+                    lease
+                        .as_ref()
+                        .is_some_and(|lease| lease.owner == owner && lease.expires_at > now)
+                }) {
+                    deleting.push(hash);
+                    continue;
+                }
+                trx.clear(&self.keys().gc_deleting(hash));
+                write(&trx, &self.keys().chunk_reused(hash), &now)?;
             }
-            trx.clear(&deleting);
-            write(&trx, &self.keys().chunk_reused(hash), &self.now())
+            Ok(deleting)
         })
         .await
+    }
+
+    /// Protect one reused chunk for tests and test-support clients.
+    /// # Errors
+    /// Returns `GcLeaseMismatch` while a live collector deletes the hash,
+    /// or a storage error.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn protect_reused_chunk(&self, hash: ContentHash) -> Result<()> {
+        if self.protect_reused_chunks(&[hash]).await?.is_empty() {
+            Ok(())
+        } else {
+            Err(StoreError::Fence(crate::FenceError::GcLeaseMismatch))
+        }
     }
 
     /// Serialize deletion against reuse of old objects by active uploaders.
