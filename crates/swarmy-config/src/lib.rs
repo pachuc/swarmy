@@ -454,6 +454,10 @@ impl Default for GatewaySettings {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NodeSettings {
+    /// Node API root through the SSH tunnel on joined nodes.
+    pub api_url: String,
+    /// File holding this node's API token, mode 0600.
+    pub token_file: PathBuf,
     pub id: Option<swarmy_core::NodeId>,
     pub roles: Vec<swarmy_core::NodeRole>,
     pub capacity: swarmy_core::NodeCapacity,
@@ -470,6 +474,8 @@ impl Default for NodeSettings {
     fn default() -> Self {
         Self {
             id: None,
+            api_url: "http://127.0.0.1:8743".into(),
+            token_file: "/etc/swarmy/node-token".into(),
             roles: vec![
                 swarmy_core::NodeRole::Sandbox,
                 swarmy_core::NodeRole::Volume,
@@ -479,6 +485,20 @@ impl Default for NodeSettings {
             fake_gpu: None,
             cdi_spec: "/etc/cdi/nvidia.json".into(),
             heartbeat_interval_ms: DEFAULT_NODE_HEARTBEAT_INTERVAL,
+        }
+    }
+}
+
+/// Node API service on the primary.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NodeApiSettings {
+    pub listen: String,
+}
+impl Default for NodeApiSettings {
+    fn default() -> Self {
+        Self {
+            listen: "127.0.0.1:8743".into(),
         }
     }
 }
@@ -590,6 +610,7 @@ pub struct Settings {
     pub inference: Inference,
     pub metering: Metering,
     pub node: NodeSettings,
+    pub node_api: NodeApiSettings,
     pub store: StoreSettings,
     pub s3: S3Settings,
     pub bus: BusSettings,
@@ -649,6 +670,7 @@ impl Default for Settings {
             inference: Inference::default(),
             metering: Metering::default(),
             node: NodeSettings::default(),
+            node_api: NodeApiSettings::default(),
             store: StoreSettings::default(),
             s3: S3Settings::default(),
             bus: BusSettings::default(),
@@ -1061,6 +1083,9 @@ static ENV_TABLE: &[EnvEntry] = &[
     e!("SWARMY_GC_BATCH_SIZE", |s, v, _| assign(&mut s.gc.batch_size, v), |s| Some(s.gc.batch_size.to_string())),
     e!("SWARMY_GC_DELETE_CONCURRENCY", |s, v, _| assign(&mut s.gc.delete_concurrency, v), |s| Some(s.gc.delete_concurrency.to_string())),
     e!("SWARMY_METERING_RAW_RETENTION_DAYS", |s, v, _| assign(&mut s.metering.raw_retention_days, v), |s| Some(s.metering.raw_retention_days.to_string())),
+    e!("SWARMY_NODE_API_LISTEN", |s, v, _| assign(&mut s.node_api.listen, v), |s| Some(s.node_api.listen.clone())),
+    e!("SWARMY_NODE_API_URL", |s, v, _| assign(&mut s.node.api_url, v), |s| Some(s.node.api_url.clone())),
+    e!("SWARMY_NODE_TOKEN_FILE", |s, v, _| assign(&mut s.node.token_file, v), |s| Some(s.node.token_file.to_string_lossy().into_owned())),
     e!("SWARMY_NODE_FAKE_GPU", set_node_fake_gpu, |s| s.node.fake_gpu.as_ref().map(|g| format!("{},{},{}", g.model, g.memory_mib, g.count))),
     e!("SWARMY_NODE_CDI_SPEC", |s, v, _| assign(&mut s.node.cdi_spec, v), |s| Some(s.node.cdi_spec.to_string_lossy().into_owned())),
     e!("SWARMY_NODE_ROLES", set_node_roles, |s| Some(format_node_roles(s))),
@@ -1706,6 +1731,9 @@ mod tests {
             ("SWARMY_GC_BATCH_SIZE", "123"),
             ("SWARMY_GC_DELETE_CONCURRENCY", "33"),
             ("SWARMY_METERING_RAW_RETENTION_DAYS", "7"),
+            ("SWARMY_NODE_API_LISTEN", "127.0.0.1:9997"),
+            ("SWARMY_NODE_API_URL", "http://127.0.0.1:9996"),
+            ("SWARMY_NODE_TOKEN_FILE", "/tmp/test-node-token"),
             ("SWARMY_NODE_ROLES", "volume"),
             ("SWARMY_NODE_HEARTBEAT_INTERVAL_MS", "7777"),
             ("SWARMY_NODE_CPU_MILLIS", "4001"),

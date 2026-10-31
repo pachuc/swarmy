@@ -3987,6 +3987,7 @@ dependencies = [
  "anyhow",
  "swarmy-api",
  "swarmy-gateway",
+ "swarmy-node-api",
  "swarmy-scheduler",
  "swarmy-version",
  "swarmy-worker",
@@ -4147,6 +4148,45 @@ dependencies = [
  "ulid",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "swarmy-node-api"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "blake3",
+ "clap",
+ "futures",
+ "jiff",
+ "reqwest",
+ "swarmy-config",
+ "swarmy-core",
+ "swarmy-node-protocol",
+ "swarmy-store",
+ "swarmy-testkit",
+ "swarmy-version",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "ulid",
+]
+
+[[package]]
+name = "swarmy-node-protocol"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "swarmy-core",
+ "swarmy-version",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "ulid",
 ]
 
 [[package]]

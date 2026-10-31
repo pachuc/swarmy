@@ -1,0 +1,21 @@
+[package]
+name = "swarmy-node-protocol"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+[lints]
+workspace = true
+[dependencies]
+jiff.workspace = true
+reqwest = { workspace = true, features = ["http2"] }
+serde.workspace = true
+serde_json.workspace = true
+swarmy-core.workspace = true
+swarmy-version.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+[dev-dependencies]
+tempfile.workspace = true
+ulid.workspace = true

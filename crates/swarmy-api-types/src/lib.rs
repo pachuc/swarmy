@@ -566,6 +566,7 @@ pub enum ServiceRole {
     Gateway,
     Api,
     Node,
+    NodeApi,
 }
 
 impl ServiceRole {
@@ -577,6 +578,7 @@ impl ServiceRole {
             Self::Gateway => "gateway",
             Self::Api => "api",
             Self::Node => "node",
+            Self::NodeApi => "node_api",
         }
     }
 }

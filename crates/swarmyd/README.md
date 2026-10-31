@@ -29,6 +29,8 @@ secondary count cap.
 
 | TOML setting | Environment override | Default |
 | --- | --- | --- |
+| `[node] api_url` (not used by the node yet) | `SWARMY_NODE_API_URL` | `http://127.0.0.1:8743` |
+| `[node] token_file` (not used by the node yet) | `SWARMY_NODE_TOKEN_FILE` | `/etc/swarmy/node-token` |
 | `[node] roles` | `SWARMY_NODE_ROLES` (comma-separated) | `["sandbox", "volume"]` |
 | `[node.capacity] cpu_millis` | `SWARMY_NODE_CPU_MILLIS` | `1000` |
 | `[node.capacity] memory_bytes` (sandbox budget) | `SWARMY_NODE_MEMORY_BYTES` | `1073741824` |

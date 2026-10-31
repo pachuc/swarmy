@@ -17,6 +17,7 @@ pub enum ServiceRole {
     Gateway,
     Api,
     Node,
+    NodeApi,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
