@@ -84,6 +84,10 @@ pub(crate) fn advert(record: &NodeRecord) -> NodeAdvert {
 }
 
 /// One node with a live placement, tool claim and volume writer.
+#[allow(
+    dead_code,
+    reason = "the shared fixture is used by the sync integration target only"
+)]
 pub(crate) struct Hosted {
     pub(crate) node: NodeRecord,
     pub(crate) token: swarmy_core::NodeToken,
@@ -93,6 +97,10 @@ pub(crate) struct Hosted {
     pub(crate) volume: swarmy_core::VolumeId,
     pub(crate) lease: swarmy_core::Lease,
 }
+#[allow(
+    dead_code,
+    reason = "the shared fixture is used by the sync integration target only"
+)]
 pub(crate) async fn hosted(store: &Store) -> Hosted {
     use std::time::Duration;
     use swarmy_core::{
@@ -216,6 +224,10 @@ pub(crate) async fn hosted(store: &Store) -> Hosted {
         lease,
     }
 }
+#[allow(
+    dead_code,
+    reason = "the shared fixture is used by the sync integration target only"
+)]
 pub(crate) fn request(hosted: &Hosted) -> swarmy_node_protocol::SyncRequest {
     use swarmy_node_protocol::{HostedPlacement, SyncRequest, WriterToken};
     SyncRequest {
