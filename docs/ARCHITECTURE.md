@@ -182,7 +182,9 @@ them in [api-breaks.txt](api-breaks.txt).
   [session_wait.rs](../crates/swarmy-store/src/session_wait.rs)).
 - **Metering.** `usage_record`, `usage_record_by_time`, `metering_hour`,
   `turn_metrics`, `turn_computer`, `turn_tool`, and `turn_inference` hold per-request usage,
-  hourly aggregates and step timings. A metric batch reads its rows in one round
+  hourly aggregates and step timings. Tool rows carry the worker's dispatch
+  and wake stamps and the node's delivery, claim, start and completion stamps,
+  so one call's latency splits into legs. A metric batch reads its rows in one round
   and rewrites the shared summary only when it changes it, so node tool and
   computer samples do not contend with gateway and worker summary writes;
   per-completion attribution and quota

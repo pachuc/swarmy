@@ -17,7 +17,7 @@ pub(super) fn woken_patches(
         .parts
         .iter()
         .filter_map(|part| match part {
-            swarmy_core::Part::ToolResult { call_id, .. } => Some(call_id),
+            swarmy_core::Part::ToolResult { call_id, .. } => Some(call_id.0.as_str()),
             _ => None,
         })
         .collect();
@@ -29,7 +29,7 @@ pub(super) fn woken_patches(
                 request_id,
                 call_id,
                 ..
-            } if calls.contains(call_id) && seen.insert(*request_id) => {
+            } if calls.contains(call_id.0.as_str()) && seen.insert(request_id.to_string()) => {
                 Some(swarmy_store::MetricPatch::Tool(swarmy_store::ToolMetric {
                     request_id: request_id.to_string(),
                     woken_ns: Some(woken_ns),

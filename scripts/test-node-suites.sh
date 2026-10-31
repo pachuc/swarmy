@@ -102,6 +102,7 @@ EOF
 cat > "$tmp/chaos/target/debug/swarmy-chaos" <<'EOF'
 #!/usr/bin/env bash
 [ "${FAKE_CHAOS_FAIL:-0}" = 1 ] && exit 1
+printf '== tool timings (ms)\nfake-timing-row\nTOOL_TIMINGS {"calls":[]}\n'
 printf 'chaos passed\n'
 EOF
 
@@ -228,6 +229,8 @@ check_exit_and_marker "rerun checkout failure" 2 "checkout failed"
 : > "$tmp/ip.log"
 run_case env HOME="$tmp" FAKE_IP_LOG="$tmp/ip.log" bash "$node_suites/latency.sh" b
 check_exit_and_marker "latency pass" 0 "SUITES_EXIT=0"
+grep -q '^fake-timing-row' "$tmp/out.log" || { echo "node-suites test failed: timing row missing"; exit 1; }
+grep -q '^TOOL_TIMINGS ' "$tmp/out.log" || { echo "node-suites test failed: timing JSON missing"; exit 1; }
 grep -q 'tc qdisc replace dev swl-p root netem delay 87500us' "$tmp/ip.log"
 grep -q 'tc qdisc replace dev swl-n root netem delay 200000us' "$tmp/ip.log"
 grep -q 'ip netns del swl-node' "$tmp/ip.log"
