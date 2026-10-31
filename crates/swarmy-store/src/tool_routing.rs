@@ -84,23 +84,32 @@ impl Store {
         node: swarmy_core::NodeId,
     ) -> Result<Option<swarmy_core::AgentId>> {
         self.transaction(|trx| async move {
-            if read::<bool>(&trx, &self.keys().tool_done(job.request_id))
-                .await?
-                .unwrap_or(false)
-            {
+            let done_key = self.keys().tool_done(job.request_id);
+            let placement_key = self.keys().tool_placement(job.request_id);
+            let fence = async {
+                Ok::<_, StoreError>(match read::<PlacementRecord>(&trx, &placement_key).await? {
+                    None => None,
+                    Some(placement) if placement.node_id != node => {
+                        Some(Err(StoreError::Fence(crate::FenceError::PlacementMismatch)))
+                    }
+                    Some(placement) => Some(self.check_live_placement(&trx, &placement).await),
+                })
+            };
+            let (done, session, fence) = futures::join!(
+                read::<bool>(&trx, &done_key),
+                self.session(&trx, job.session_id),
+                fence,
+            );
+            if done?.unwrap_or(false) {
                 return Ok(None);
             }
-            let session = self.session(&trx, job.session_id).await?;
+            let session = session?;
+            // Answered from the transaction's read cache: decoding the session read this key.
             self.check_computer(&trx, session.agent_id).await?;
-            if let Some(placement) =
-                read::<PlacementRecord>(&trx, &self.keys().tool_placement(job.request_id)).await?
-            {
-                if placement.node_id != node {
-                    return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
-                }
-                self.check_live_placement(&trx, &placement).await?;
+            if let Some(checked) = fence? {
+                checked?;
             }
-            Ok(Some(self.session(&trx, job.session_id).await?.agent_id))
+            Ok(Some(session.agent_id))
         })
         .await
     }

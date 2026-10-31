@@ -403,3 +403,18 @@ async fn tool_requests_and_dispatch_commit_together_with_both_fences() {
         Err(StoreError::Fence(swarmy_store::FenceError::LeaseMismatch))
     ));
 }
+
+#[tokio::test]
+async fn tool_admission_reads_the_session_record_once() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let (_, _, node, jobs, placement) = setup(store).await;
+    let before = store.session_record_read_count();
+    assert_eq!(
+        store.tool_agent(&jobs[0], node.node_id).await.unwrap(),
+        Some(placement.agent_id)
+    );
+    assert_eq!(store.session_record_read_count() - before, 1);
+}

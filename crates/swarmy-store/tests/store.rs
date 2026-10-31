@@ -2798,6 +2798,43 @@ async fn fetch_and_claim_each_request_one_session_record() {
     assert_eq!(test.store.session_record_read_count() - before, 1);
 }
 
+#[tokio::test]
+async fn multi_chunk_session_is_read_with_one_range_read() {
+    use serde_json::json;
+    use swarmy_core::{ToolCallId, ToolCallRecord};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let id = test.create().await;
+    let lease = test
+        .store
+        .claim_lease(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // A 300 KiB plan step makes the session record span four 80 KiB chunks.
+    let step = "x".repeat(300 * 1024);
+    let call = ToolCallRecord {
+        call_id: ToolCallId("plan".into()),
+        tool: "update_plan".into(),
+        arguments: json!({"plan": [{"step": step, "status": "pending"}]}),
+        result: None,
+    };
+    test.store
+        .complete_plan_tool(id, 0, &lease, RequestId::for_step(id, 1), &call)
+        .await
+        .unwrap();
+    let before = test.store.session_chunk_read_count();
+    let saved = test.store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(saved.plan[0].step, step);
+    assert_eq!(test.store.session_chunk_read_count() - before, 1);
+}
+
 #[path = "store/agents.rs"]
 mod agents;
 
