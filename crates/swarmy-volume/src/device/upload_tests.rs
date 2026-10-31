@@ -488,56 +488,57 @@ async fn process_death_after_uploads_preserves_overlay_and_published_baseline() 
     assert_eq!(committed.read(0, 4096).await.unwrap(), vec![19; 4096]);
 }
 
+use crate::{MetadataError, VolumeMetadata, WriterLease};
+use std::sync::Mutex;
+use swarmy_core::{FenceKind, Lease, LeaseOwnerId, ManifestId, VolumeId};
+#[derive(Default)]
+struct FakeMetadata {
+    head: Mutex<Option<ManifestId>>,
+    lease: Mutex<Option<Lease>>,
+}
+#[async_trait::async_trait]
+impl VolumeMetadata for FakeMetadata {
+    async fn publish(
+        &self,
+        _: VolumeId,
+        lease: &Lease,
+        previous: ManifestId,
+        next: ManifestId,
+        _: &swarmy_core::ManifestHeader,
+        _: NonZeroUsize,
+    ) -> std::result::Result<(), MetadataError> {
+        let current_lease = self.lease.lock().unwrap();
+        if !current_lease
+            .as_ref()
+            .is_some_and(|held| held.owner == lease.owner && held.seq == lease.seq)
+        {
+            return Err(MetadataError::Fenced(FenceKind::VolumeLease));
+        }
+        let mut head = self.head.lock().unwrap();
+        if *head != Some(previous) {
+            return Err(MetadataError::Fenced(FenceKind::VolumeHead));
+        }
+        *head = Some(next);
+        Ok(())
+    }
+    async fn protect_reused_chunks(
+        &self,
+        _: &[ContentHash],
+    ) -> std::result::Result<Vec<ContentHash>, MetadataError> {
+        Ok(vec![])
+    }
+    async fn release_writer_lease(
+        &self,
+        _: VolumeId,
+        _: &Lease,
+    ) -> std::result::Result<(), MetadataError> {
+        *self.lease.lock().unwrap() = None;
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn lease_loss_during_flush_rejects_publication_and_keeps_dirty_data() {
-    use crate::{MetadataError, VolumeMetadata, WriterLease};
-    use std::sync::Mutex;
-    use swarmy_core::{FenceKind, Lease, LeaseOwnerId, ManifestId, VolumeId};
-    #[derive(Default)]
-    struct FakeMetadata {
-        head: Mutex<Option<ManifestId>>,
-        lease: Mutex<Option<Lease>>,
-    }
-    #[async_trait::async_trait]
-    impl VolumeMetadata for FakeMetadata {
-        async fn publish(
-            &self,
-            _: VolumeId,
-            lease: &Lease,
-            previous: ManifestId,
-            next: ManifestId,
-            _: &swarmy_core::ManifestHeader,
-            _: NonZeroUsize,
-        ) -> std::result::Result<(), MetadataError> {
-            let held = self.lease.lock().unwrap();
-            if !held
-                .as_ref()
-                .is_some_and(|held| held.owner == lease.owner && held.seq == lease.seq)
-            {
-                return Err(MetadataError::Fenced(FenceKind::VolumeLease));
-            }
-            let mut head = self.head.lock().unwrap();
-            if *head != Some(previous) {
-                return Err(MetadataError::Fenced(FenceKind::VolumeHead));
-            }
-            *head = Some(next);
-            Ok(())
-        }
-        async fn protect_reused_chunks(
-            &self,
-            _: &[ContentHash],
-        ) -> std::result::Result<Vec<ContentHash>, MetadataError> {
-            Ok(vec![])
-        }
-        async fn release_writer_lease(
-            &self,
-            _: VolumeId,
-            _: &Lease,
-        ) -> std::result::Result<(), MetadataError> {
-            *self.lease.lock().unwrap() = None;
-            Ok(())
-        }
-    }
     let (dir, objects, device) = fixture(1, 1, Duration::ZERO).await;
     let base = ManifestId::from_ulid(ulid::Ulid::generate());
     let volume = VolumeId::from_ulid(ulid::Ulid::generate());

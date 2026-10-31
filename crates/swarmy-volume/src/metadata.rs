@@ -226,6 +226,33 @@ mod tests {
             Err(MetadataError::Fenced(FenceKind::VolumeLease))
         ));
     }
+    fn racing_call(
+        current: Lease,
+        first: &Lease,
+        same_sequence: bool,
+        sender: &watch::Sender<LeaseStatus>,
+        calls: &AtomicUsize,
+    ) -> Result<Lease, MetadataError> {
+        if calls.fetch_add(1, Ordering::SeqCst) != 0 {
+            return Ok(current);
+        }
+        let next = Lease {
+            seq: first.seq + u64::from(!same_sequence),
+            expires_at: first
+                .expires_at
+                .checked_add(Duration::from_secs(30))
+                .unwrap(),
+            owner: first.owner,
+        };
+        sender
+            .send(LeaseStatus::Held {
+                lease: next,
+                deadline: Instant::now() + Duration::from_secs(60),
+            })
+            .unwrap();
+        Err(MetadataError::Fenced(FenceKind::VolumeLease))
+    }
+
     #[tokio::test]
     async fn a_renewal_racing_a_call_retries_once() {
         for same_sequence in [true, false] {
@@ -236,28 +263,8 @@ mod tests {
             let result = with_current_lease(&watch, |current| {
                 let sender = sender.clone();
                 let calls = &calls;
-                let first = first.clone();
-                async move {
-                    if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                        let next = Lease {
-                            seq: first.seq + u64::from(!same_sequence),
-                            expires_at: first
-                                .expires_at
-                                .checked_add(Duration::from_secs(30))
-                                .unwrap(),
-                            ..first
-                        };
-                        sender
-                            .send(LeaseStatus::Held {
-                                lease: next,
-                                deadline: Instant::now() + Duration::from_secs(60),
-                            })
-                            .unwrap();
-                        Err(MetadataError::Fenced(FenceKind::VolumeLease))
-                    } else {
-                        Ok(current)
-                    }
-                }
+                let first = &first;
+                async move { racing_call(current, first, same_sequence, &sender, calls) }
             })
             .await;
             if same_sequence {

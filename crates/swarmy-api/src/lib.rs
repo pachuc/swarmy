@@ -104,15 +104,13 @@ impl AppState {
     }
 }
 
-pub(crate) fn volume(value: swarmy_volume::VolumeError) -> ApiFailure {
-    match value {
-        other => ApiFailure::caused(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "storage_error",
-            "volume operation failed",
-            &other,
-        ),
-    }
+pub(crate) fn volume(value: &swarmy_volume::VolumeError) -> ApiFailure {
+    ApiFailure::caused(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "storage_error",
+        "volume operation failed",
+        value,
+    )
 }
 
 type ApiResult<T> = Result<Json<T>, ApiFailure>;

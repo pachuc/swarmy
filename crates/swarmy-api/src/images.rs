@@ -175,7 +175,7 @@ pub(crate) async fn upload(
     )
     .await
     .map_err(|failure| match failure {
-        swarmy_volume::image::ImageError::Volume(inner) => volume(inner),
+        swarmy_volume::image::ImageError::Volume(inner) => volume(&inner),
         other => ApiFailure::caused(
             StatusCode::INTERNAL_SERVER_ERROR,
             "storage_error",
