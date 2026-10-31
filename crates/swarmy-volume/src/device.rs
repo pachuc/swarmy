@@ -262,7 +262,7 @@ impl VolumeDevice {
                 inner: store.inner,
                 counters: uploads.clone(),
             }),
-            metadata: store.metadata,
+            ..store
         };
         Ok(Arc::new(Self {
             store,

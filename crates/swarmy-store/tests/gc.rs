@@ -922,3 +922,51 @@ async fn deletion_revisions(
     }
     (roots, head)
 }
+
+#[tokio::test]
+async fn batch_reuse_protects_free_hashes_and_returns_hashes_being_deleted() {
+    let Some(test) = Fixture::new() else { return };
+    let run = run_record();
+    let lease = test
+        .store
+        .acquire_gc_lease(
+            &run,
+            Timestamp::now()
+                .checked_add(Duration::from_secs(30))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let hashes = [
+        ContentHash([7; 32]),
+        ContentHash([8; 32]),
+        ContentHash([9; 32]),
+    ];
+    assert_eq!(
+        test.store
+            .claim_gc_chunks(run.owner, &hashes[1..2], Timestamp::now(), false)
+            .await
+            .unwrap(),
+        vec![hashes[1]]
+    );
+    let before = test.store.transaction_count();
+    let deleting = test.store.protect_reused_chunks(&hashes).await.unwrap();
+    assert_eq!(test.store.transaction_count() - before, 1);
+    assert_eq!(deleting, vec![hashes[1]]);
+    assert!(test.gc_row_exists("gc_deleting", hashes[1]).await);
+    assert!(!test.gc_row_exists("chunk_reused", hashes[1]).await);
+    for hash in [hashes[0], hashes[2]] {
+        assert!(test.gc_row_exists("chunk_reused", hash).await);
+    }
+    let before = test.store.transaction_count();
+    assert!(
+        test.store
+            .protect_reused_chunks(&[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(test.store.transaction_count(), before);
+    test.store.finish_gc_run(&lease, &run).await.unwrap();
+    test.clear().await;
+}

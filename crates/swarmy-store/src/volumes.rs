@@ -257,8 +257,14 @@ impl Store {
             return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
         }
         self.transaction(|trx| async move {
-            let mut volume = self.volume(&trx, id).await?;
-            self.check_volume_placement(&trx, id, owner).await?;
+            let seq_key = self.keys().volume_lease_seq(id);
+            let (volume, placement, previous) = futures::join!(
+                self.volume(&trx, id),
+                self.check_volume_placement(&trx, id, owner),
+                read::<u64>(&trx, &seq_key),
+            );
+            let mut volume = volume?;
+            placement?;
             if volume
                 .writer_lease
                 .as_ref()
@@ -266,8 +272,7 @@ impl Store {
             {
                 return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
             }
-            let seq_key = self.keys().volume_lease_seq(id);
-            let seq = crate::seq_after(read::<u64>(&trx, &seq_key).await?.unwrap_or(0), 1)?;
+            let seq = crate::seq_after(previous?.unwrap_or(0), 1)?;
             let lease = Lease {
                 owner,
                 expires_at,
@@ -311,9 +316,12 @@ impl Store {
         expires_at: Timestamp,
     ) -> Result<Lease> {
         self.transaction(|trx| async move {
-            self.check_volume_placement(&trx, id, expected.owner)
-                .await?;
-            let mut volume = self.volume(&trx, id).await?;
+            let (placement, volume) = futures::join!(
+                self.check_volume_placement(&trx, id, expected.owner),
+                self.volume(&trx, id),
+            );
+            placement?;
+            let mut volume = volume?;
             if volume.writer_lease.as_ref() != Some(expected)
                 || expected.expires_at <= self.now()
                 || expires_at <= expected.expires_at
@@ -371,40 +379,42 @@ impl Store {
         retention: NonZeroUsize,
     ) -> Result<()> {
         self.transaction(|trx| async move {
-            self.check_volume_placement(&trx, id, expected.owner)
-                .await?;
-            let mut volume = self.volume(&trx, id).await?;
+            let parent_key = self.keys().manifest_parent(next);
+            let next_key = self.keys().manifest(next);
+            let previous_key = self.keys().manifest(previous);
+            let (placement, volume, parent, next_header, old_header, snapshots) = futures::join!(
+                self.check_volume_placement(&trx, id, expected.owner),
+                self.volume(&trx, id),
+                read::<ManifestId>(&trx, &parent_key),
+                read::<ManifestHeader>(&trx, &next_key),
+                read::<ManifestHeader>(&trx, &previous_key),
+                self.snapshots(&trx, id),
+            );
+            placement?;
+            let mut volume = volume?;
             if volume.writer_lease.as_ref() != Some(expected) || expected.expires_at <= self.now() {
                 return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
             }
-            let parent_key = self.keys().manifest_parent(next);
+            let (parent, next_header) = (parent?, next_header?);
             if volume.head_manifest == next
-                && read::<ManifestId>(&trx, &parent_key).await? == Some(previous)
-                && read::<ManifestHeader>(&trx, &self.keys().manifest(next))
-                    .await?
-                    .as_ref()
-                    == Some(header)
+                && parent == Some(previous)
+                && next_header.as_ref() == Some(header)
             {
                 return Ok(());
             }
             if volume.head_manifest != previous {
                 return Err(StoreError::Fence(crate::FenceError::VolumeHeadMismatch));
             }
-            let old: ManifestHeader = read(&trx, &self.keys().manifest(previous))
-                .await?
-                .ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?;
+            let old = old_header?.ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?;
             if header.size != old.size || header.chunk_size != old.chunk_size {
                 return Err(StoreError::Domain(crate::DomainError::InvalidManifest));
             }
-            if read::<ManifestHeader>(&trx, &self.keys().manifest(next))
-                .await?
-                .is_some()
-            {
+            if next_header.is_some() {
                 return Err(StoreError::Domain(crate::DomainError::ManifestExists));
             }
-            write(&trx, &self.keys().manifest(next), header)?;
+            write(&trx, &next_key, header)?;
             write(&trx, &parent_key, &previous)?;
-            let mut snapshots = self.snapshots(&trx, id).await?;
+            let mut snapshots = snapshots?;
             snapshots.insert(0, next);
             snapshots.truncate(retention.get());
             write(&trx, &self.keys().volume_snapshots(id), &snapshots)?;
