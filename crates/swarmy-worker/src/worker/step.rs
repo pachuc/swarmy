@@ -16,6 +16,8 @@ pub(super) struct StepContext {
     pub snapshot: Option<Snapshot>,
     pub events: Vec<Event>,
     pub turn: Option<MessageId>,
+    /// Worker clock at the claim, consumed by the first action only.
+    pub woken_ns: Option<i64>,
 }
 
 impl Worker {
@@ -204,9 +206,11 @@ impl Worker {
             snapshot,
             events,
             turn,
+            woken_ns,
         } = ctx;
         let snapshot = snapshot.as_ref().context("step snapshot missing")?;
         let (lease, turn, id) = (lease.as_ref(), *turn, session.session_id);
+        let mut woken_ns = *woken_ns;
         loop {
             if self
                 .interrupt_if_requested(&mut *session, lease, snapshot, &mut *events, turn)
@@ -217,6 +221,8 @@ impl Worker {
             let action = self
                 .action_at_boundary(session, lease, snapshot, events)
                 .await?;
+            // A later fold follows tools this worker ran itself.
+            let woken = woken_ns.take();
             match action {
                 Action::BuildInference(request) => {
                     return self
@@ -260,6 +266,12 @@ impl Worker {
                     }
                 }
                 Action::FoldResults(message) => {
+                    if let (Some(turn), Some(woken)) = (turn, woken) {
+                        let patches = super::tools::woken_patches(events, &message, woken);
+                        if !patches.is_empty() {
+                            self.store.observe_turn_metrics(id, turn, patches);
+                        }
+                    }
                     return self
                         .fold_results(&mut *session, lease, snapshot, &mut *events, message)
                         .await;

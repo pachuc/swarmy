@@ -80,6 +80,9 @@ pub(crate) struct StoredToolMetricCurrent {
     pub(crate) output_bytes: Option<u64>,
     pub(crate) queue_ms: Option<f64>,
     pub(crate) process_wall_ms: Option<f64>,
+    pub(crate) delivered_ns: Option<i64>,
+    pub(crate) claimed_ns: Option<i64>,
+    pub(crate) woken_ns: Option<i64>,
 }
 
 /// One inference request row. Token counts and the streamed flag arrive with
@@ -159,9 +162,9 @@ mod codec_tests {
     /// Checked-in current inference-row bytes for a single-chunk request.
     const CURRENT_INFERENCE_HEX: &str = "010101720466616b6508736372697074656400000400000000000100000000000000018092f401000180ade204";
     /// Checked-in current tool-row bytes.
-    const CURRENT_TOOL_HEX: &str = "01020163046261736800000000000000";
+    const CURRENT_TOOL_HEX: &str = "01020163046261736800000000000000000000";
 
-    const CURRENT_COMPUTER_HEX: &str = "010301000000000000294001010000000000000000";
+    const CURRENT_COMPUTER_HEX: &str = "0103010000000000002940010100000000000000000000";
 
     fn fixture_computer() -> ComputerMetric {
         ComputerMetric {

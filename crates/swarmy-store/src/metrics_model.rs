@@ -65,9 +65,18 @@ impl InferenceMetric {
 pub struct ToolMetric {
     pub request_id: String,
     pub name: String,
+    /// Worker clock: the worker dispatched the call.
     pub dispatched_ns: Option<i64>,
+    /// Node clock: the node started handling the NATS delivery.
+    pub delivered_ns: Option<i64>,
+    /// Node clock: the node's tool claim committed.
+    pub claimed_ns: Option<i64>,
+    /// Node clock: the sandbox command started.
     pub started_ns: Option<i64>,
+    /// Node clock: the node stamped `ToolCompleted` right after its completion commit.
     pub completed_ns: Option<i64>,
+    /// Worker clock: the worker claimed the step that folds this result.
+    pub woken_ns: Option<i64>,
     pub exit_status: Option<i32>,
     pub output_bytes: Option<u64>,
     pub queue_ms: Option<f64>,
@@ -96,6 +105,12 @@ pub struct ComputerMetric {
     /// Fetch p95 re-sampled after the first tool call completes.
     #[serde(default)]
     pub first_tool_fetch_p95_ms: Option<f64>,
+    /// Milliseconds from placement start through volume binding and spec read.
+    #[serde(default)]
+    pub open_ms: Option<f64>,
+    /// Milliseconds spent creating the sandbox, including volume attach.
+    #[serde(default)]
+    pub boot_ms: Option<f64>,
 }
 
 /// One turn's assembled metrics, as read back from the summary and rows.
@@ -270,6 +285,9 @@ impl From<StoredToolMetricCurrent> for ToolMetric {
             request_id: value.request_id,
             name: value.name,
             dispatched_ns: value.dispatched_ns,
+            delivered_ns: value.delivered_ns,
+            claimed_ns: value.claimed_ns,
+            woken_ns: value.woken_ns,
             started_ns: value.started_ns,
             completed_ns: value.completed_ns,
             exit_status: value.exit_status,
@@ -364,6 +382,12 @@ fn apply_computer(computer: &mut Option<ComputerMetric>, value: &ComputerMetric)
     let current = computer.get_or_insert_with(ComputerMetric::default);
     if value.placement_ms.is_some() {
         current.placement_ms = value.placement_ms;
+    }
+    if value.open_ms.is_some() {
+        current.open_ms = value.open_ms;
+    }
+    if value.boot_ms.is_some() {
+        current.boot_ms = value.boot_ms;
     }
     if value.cold.is_some() {
         current.cold = value.cold;
@@ -625,6 +649,15 @@ fn apply_tool_update(tools: &mut BTreeMap<String, StoredToolMetricCurrent>, upda
     }
     if let Some(value) = update.dispatched_ns {
         row.dispatched_ns = Some(value);
+    }
+    if let Some(value) = update.delivered_ns {
+        row.delivered_ns = Some(value);
+    }
+    if let Some(value) = update.claimed_ns {
+        row.claimed_ns = Some(value);
+    }
+    if let Some(value) = update.woken_ns {
+        row.woken_ns = Some(value);
     }
     if let Some(value) = update.started_ns {
         row.started_ns = Some(value);
