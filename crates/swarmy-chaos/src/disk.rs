@@ -87,9 +87,10 @@ pub(crate) async fn verify(
         ServerConfig {
             directory: files.join(".swarmy/verify-volumes"),
             node: NodeId::from_ulid(ulid::Ulid::generate()),
-            store: store.clone(),
+            metadata: Arc::new(store.clone()),
             objects,
         },
+        store.clone(),
     )
     .await?;
     let result = async {
@@ -225,6 +226,6 @@ pub(crate) fn cleanup(root: &Path) {
 
 fn objects() -> Result<Arc<dyn object_store::ObjectStore>> {
     let settings = swarmy_config::Settings::load()?.settings;
-    let objects = swarmy_store::objects::from_settings(&settings)?;
+    let objects = swarmy_volume::objects::from_settings(&settings)?;
     Ok(objects)
 }

@@ -6,7 +6,7 @@ use swarmy_volume::ChunkStore;
 
 fn store() -> Result<ChunkStore, Box<dyn Error>> {
     let settings = swarmy_config::Settings::load()?.settings;
-    Ok(ChunkStore::new(swarmy_store::objects::from_settings(
+    Ok(ChunkStore::new(swarmy_volume::objects::from_settings(
         &settings,
     )?))
 }

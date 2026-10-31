@@ -7,21 +7,18 @@ macro_rules! ensure {
         if !$condition { return Err(Error::Message(format!($($message)*))); }
     };
 }
-use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
-use swarmy_core::{LeaseOwnerId, ManifestId, NodeId, VolumeId, ignore_best_effort};
+use swarmy_core::{ManifestHeader, ManifestId, NodeId, VolumeId, ignore_best_effort};
 
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
 };
-
-const LEASE_DURATION: Duration = Duration::from_secs(60);
 
 #[derive(Serialize, Deserialize)]
 struct Request {
@@ -53,7 +50,7 @@ struct Reply {
 pub struct ServerConfig {
     pub directory: PathBuf,
     pub node: NodeId,
-    pub store: swarmy_store::Store,
+    pub metadata: Arc<dyn crate::VolumeMetadata>,
     pub objects: Arc<dyn object_store::ObjectStore>,
 }
 
@@ -192,13 +189,21 @@ impl Drop for SocketGuard {
 /// Returns setup, lease, control transport, or final flush errors.
 pub async fn attach(
     config: ServerConfig,
-    id: VolumeId,
+    grant: crate::WriterGrant,
     path: Option<PathBuf>,
     background: bool,
     ready: impl FnOnce(&Path) -> Result<()> + Send,
     shutdown: impl Future<Output = ()> + Send,
 ) -> Result<()> {
-    let node = config.node;
+    let crate::WriterGrant {
+        volume: id,
+        head,
+        header,
+        lease,
+        renewal: _renewal,
+    } = grant;
+    // A lock failure may belong to another attachment of this same owner.
+    // Never release its lease until this attachment holds the lock.
     let dir = &config.directory;
     std::fs::create_dir_all(dir)?;
     let lock = std::fs::OpenOptions::new()
@@ -216,28 +221,21 @@ pub async fn attach(
     }
     let listener = UnixListener::bind(&socket_path)?;
     let _socket_guard = SocketGuard(socket_path);
-    let store = &config.store;
-    let now = Timestamp::now();
-    let lease = store
-        .acquire_writer_lease(
-            id,
-            LeaseOwnerId::from_ulid(node.as_ulid()),
-            now.checked_add(LEASE_DURATION)?,
-        )
-        .await?;
     let result = serve(
         &config,
         id,
         path,
         background,
         listener,
-        (&lease, ready, shutdown),
+        (lease.clone(), head, header, ready, shutdown),
     )
     .await;
-    // Setup errors must not strand a lease. The running server releases its
-    // renewed token itself, so this fallback can only release the initial grant.
     if result.is_err()
-        && let Err(error) = store.release_writer_lease(id, &lease).await
+        && let Err(error) = crate::metadata::with_current_lease(&lease, |lease| {
+            let metadata = config.metadata.clone();
+            async move { metadata.release_writer_lease(id, &lease).await }
+        })
+        .await
     {
         tracing::warn!(error = %swarmy_core::error_chain(&error), "writer lease release after setup failure failed");
     }
@@ -252,23 +250,16 @@ async fn serve(
     background: bool,
     listener: UnixListener,
     lifecycle: (
-        &swarmy_core::Lease,
+        crate::WriterLease,
+        ManifestId,
+        ManifestHeader,
         impl FnOnce(&Path) -> Result<()> + Send,
         impl Future<Output = ()> + Send,
     ),
 ) -> Result<()> {
-    let (lease, ready, shutdown) = lifecycle;
-    let store = &config.store;
+    let (lease, head, header, ready, shutdown) = lifecycle;
     let node = config.node;
     let objects = config.objects.clone();
-    let record = store
-        .get_volume(id)
-        .await?
-        .ok_or_else(|| Error::Message("volume not found".into()))?;
-    let header = store
-        .get_manifest(record.head_manifest)
-        .await?
-        .ok_or_else(|| Error::Message("manifest missing".into()))?;
     let manifest = Manifest::load(&*objects, header).await?;
     // A new grant must discard every write after the last committed snapshot,
     // including local writes from a previous server on this same machine.
@@ -289,10 +280,10 @@ async fn serve(
         .volume_snapshots;
     let writer = VolumeWriter::with_retention(
         device.clone(),
-        store.clone(),
+        config.metadata.clone(),
         id,
         lease.clone(),
-        record.head_manifest,
+        head,
         policy.retention,
     );
     let (path, attachment) = attach_kernel(path, device.clone()).await?;
@@ -302,7 +293,7 @@ async fn serve(
     // publication cannot race unmounting or the final publication.
     let operations = Arc::new(tokio::sync::Mutex::new(()));
     let snapshots = start_snapshots(writer.clone(), device, operations.clone(), policy);
-    let (_renewal, mut lost_rx) = start_renewal(writer.clone());
+    let mut watch = lease;
     ready(&path)?;
     tokio::pin!(shutdown);
     loop {
@@ -315,10 +306,10 @@ async fn serve(
                     break;
                 }
             }
-            error = &mut lost_rx => {
+            error = watch.lost() => {
                 let _operation = operations.lock().await;
                 drop(snapshots);
-                return Err(Error::Message(format!("writer lease lost; device disconnected: {}", error?)));
+                return Err(Error::Message(format!("writer lease lost; device disconnected: {}", swarmy_core::error_chain(&*error))));
             }
             () = &mut shutdown => {
                 let _operation = operations.lock().await;
@@ -351,34 +342,6 @@ fn start_snapshots(
             Ok::<_, Error>(())
         }
     })
-}
-
-fn start_renewal(
-    writer: Arc<VolumeWriter>,
-) -> (
-    AbortTask,
-    tokio::sync::oneshot::Receiver<crate::VolumeError>,
-) {
-    let (lost_tx, lost_rx) = tokio::sync::oneshot::channel();
-    // The lease-renewal loop; AbortTask aborts it on drop.
-    // ast-grep-ignore: no-spawn-in-libraries
-    let task = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(15)).await;
-            if let Err(error) = writer.renew(LEASE_DURATION).await {
-                ignore_best_effort(lost_tx.send(error), "report lost volume writer");
-                break;
-            }
-        }
-    });
-    (AbortTask(task), lost_rx)
-}
-
-struct AbortTask(tokio::task::JoinHandle<()>);
-impl Drop for AbortTask {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
 }
 
 async fn attach_kernel(

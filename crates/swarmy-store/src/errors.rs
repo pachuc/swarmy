@@ -288,3 +288,17 @@ impl From<ulid::DecodeError> for StorageError {
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
+
+impl FenceError {
+    /// The token kind a node-side caller can be told about.
+    #[must_use]
+    pub fn kind(&self) -> Option<swarmy_core::FenceKind> {
+        match self {
+            Self::PlacementMismatch => Some(swarmy_core::FenceKind::Placement),
+            Self::PlacedToolClaimMismatch => Some(swarmy_core::FenceKind::PlacedToolClaim),
+            Self::VolumeLeaseMismatch => Some(swarmy_core::FenceKind::VolumeLease),
+            Self::VolumeHeadMismatch => Some(swarmy_core::FenceKind::VolumeHead),
+            _ => None,
+        }
+    }
+}

@@ -18,7 +18,9 @@ mod scheduler;
 mod selection;
 mod session;
 pub use selection::{InferenceField, InferenceSelection, ResolvedSelection};
+mod fence;
 mod store;
+pub use fence::FenceKind;
 mod volume;
 
 pub use encoding::{EncodingError, STORAGE_VERSION, decode, encode};
@@ -37,7 +39,10 @@ pub use session::{
 
 pub use store::{IdempotencyRecord, IdempotencyState, InflightRecord, RunnableEntry};
 
-pub use volume::{CHUNK_SIZE, ContentHash, GcRun, ImageRecord, ManifestHeader, VolumeRecord};
+pub use volume::{
+    CHUNK_SIZE, ContentHash, GcRun, ImageRecord, ManifestHeader, VolumeRecord, blob_key,
+    is_blob_key,
+};
 
 mod node;
 pub use node::{GpuCards, NodeCapacity, NodeRecord, NodeRole};

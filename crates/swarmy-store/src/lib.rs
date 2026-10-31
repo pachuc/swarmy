@@ -71,14 +71,15 @@ pub use routes::{
     CacheAffinity, ExpandedChain, FailoverAction, FailoverOutcome, PoolEntry, RouteCache,
     RouteFailure, RouteSelection, RouteSnapshot, RouteStepStatus,
 };
+pub mod collector;
 mod nodes;
-pub mod objects;
 mod placed_tools;
 pub use placed_tools::PlacedToolCompletion;
 mod hosting;
 pub use hosting::OpenHosting;
 mod node_credentials;
 mod placements;
+mod volume_metadata;
 pub use placements::ScratchRecord;
 mod gpu_tools;
 mod plans;
@@ -181,7 +182,7 @@ type BlobUpload = (String, Vec<u8>);
 fn stored_encoding<T: Serialize>(value: &T) -> Result<(Vec<u8>, Option<BlobUpload>)> {
     let bytes = encode(value)?;
     if bytes.len() > INLINE_LIMIT {
-        let key = blob::blob_key(&bytes);
+        let key = swarmy_core::blob_key(&bytes);
         Ok((encode(&StoredValue::Blob(key.clone()))?, Some((key, bytes))))
     } else {
         Ok((encode(&StoredValue::Inline(bytes))?, None))
@@ -206,7 +207,7 @@ fn stored_matches<T: Serialize + DeserializeOwned + PartialEq>(
 ) -> Result<bool> {
     match decode::<StoredValue>(stored)? {
         StoredValue::Inline(bytes) => Ok(decode::<T>(&bytes)? == *expected),
-        StoredValue::Blob(key) => Ok(key == blob::blob_key(&encode(expected)?)),
+        StoredValue::Blob(key) => Ok(key == swarmy_core::blob_key(&encode(expected)?)),
     }
 }
 
@@ -510,32 +511,15 @@ impl Store {
         Ok(out)
     }
 
-    /// Persist binary tool content without adding it to the session event log.
-    ///
-    /// # Errors
-    /// Returns an error if object storage rejects the upload.
-    pub async fn put_tool_blob(&self, bytes: Vec<u8>) -> Result<String> {
-        let key = blob::blob_key(&bytes);
-        self.blobs.put(&key, bytes.into()).await?;
-        Ok(key)
-    }
-
     /// Read binary tool content written by `put_tool_blob`.
     /// # Errors
     /// Returns an error for a malformed, oversized, missing, or corrupt blob.
     pub async fn get_tool_blob(&self, key: &str) -> Result<bytes::Bytes> {
-        let hash = key
-            .strip_prefix("blobs/")
-            .ok_or(StoreError::Storage(StorageError::Corrupt))?;
-        if hash.len() != 64
-            || !hash
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
+        if !swarmy_core::is_blob_key(key) {
             return Err(StoreError::Storage(StorageError::Corrupt));
         }
         let bytes = self.blobs.get(key).await?;
-        if bytes.len() > 5 * 1024 * 1024 || key != blob::blob_key(&bytes) {
+        if bytes.len() > 5 * 1024 * 1024 || key != swarmy_core::blob_key(&bytes) {
             return Err(StoreError::Storage(StorageError::Corrupt));
         }
         Ok(bytes)
@@ -554,7 +538,7 @@ impl Store {
             StoredValue::Inline(bytes) => Ok(decode(&bytes)?),
             StoredValue::Blob(key) => {
                 let bytes = self.blobs.get(&key).await?;
-                if key != blob::blob_key(&bytes) {
+                if key != swarmy_core::blob_key(&bytes) {
                     return Err(StoreError::Storage(StorageError::Corrupt));
                 }
                 Ok(decode(&bytes)?)

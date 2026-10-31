@@ -40,10 +40,13 @@ Upload chunks before building the manifest. After `build` succeeds, register its
 header under a fresh `ManifestId` using `Store::put_manifest`. Failed builds can
 leave unreferenced immutable objects for later garbage collection.
 
+The chunk collector lives in [collector.rs](../swarmy-store/src/collector.rs).
+
 ## FoundationDB records
 
 Shared ids, hashes, headers, and volume records live in `swarmy-core`.
-`swarmy-store` owns the versioned tuple keys:
+`swarmy-store` owns the versioned tuple keys. The volume library reaches
+these records only through `VolumeMetadata`, implemented by `swarmy-store`:
 
 - `("manifest", id)` holds `{ size, chunk_size, root_hash }`. An id cannot be
   replaced with a different header.
@@ -192,7 +195,9 @@ Clones begin unleased and share immutable objects, with independent local writes
 Their retained history starts at the cloned head; source retention is independent.
 
 Attach selects an unused `/dev/nbd0` through `/dev/nbd15`, or accepts `--device`.
-It renews a 60-second writer lease every 15 seconds. Flush, checkpoint, snapshot, and detach
+The caller opens the writer (`Store::open_volume_writer` acquires a 60-second
+lease and renews it every 15 seconds). The attachment disconnects when the lease
+is lost or its local deadline passes. Flush, checkpoint, snapshot, and detach
 send requests to `.swarmy/volumes/VOLUME.sock` under the discovered configuration
 root. Invoke commands with the same configuration root and node id; root-created
 sockets generally require sudo for control commands too. A local lock protects
@@ -235,12 +240,13 @@ failed-publication retry, trim, and untouched-leaf reuse.
 ### Shared attachment service
 
 `server::attach` is the shared foreground service used by the CLI and swarmyd.
-It accepts `ServerConfig` (node id, local directory, store, and object storage),
-a volume id, an optional device path, a background-upload flag, a readiness
+It accepts `ServerConfig` (node id, local directory, metadata, and object storage),
+a `WriterGrant` (lease, head, and header), an optional device path, a background-upload flag, a readiness
 callback, and a shutdown future. Readiness follows kernel capacity publication.
 `server::control` returns the manifest id after flush or detach. The service
 owns the local lock, control socket, overlay, kernel attachment, background
-uploader, snapshot loop, and renewal task for its whole lifetime. Callers supply shutdown
+uploader, snapshot loop for its whole lifetime. The grant owns the renewal task;
+the attachment does not renew the lease. Callers supply shutdown
 policy and presentation; the CLI supplies signals and prints readiness, while
 the sandbox runtime mounts the ready device and controls detach itself.
 

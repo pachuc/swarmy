@@ -6,7 +6,10 @@ use swarmy_api_types::{
     Model, Provider, Session,
 };
 use swarmy_bus::{Bus, Config};
-use swarmy_store::{ServiceDetail, ServiceHeartbeat, ServiceRole, Store, blob::MemoryBlobStore};
+use swarmy_store::{
+    ServiceDetail, ServiceHeartbeat, ServiceRole, Store,
+    blob::{BlobStore, MemoryBlobStore},
+};
 use ulid::Ulid;
 
 #[tokio::test]
@@ -655,7 +658,8 @@ async fn tool_image_route_returns_only_session_images() {
     let Some(stack) = swarmy_testkit::Stack::load("api-tool-image") else {
         return;
     };
-    let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+    let blobs = Arc::new(MemoryBlobStore::default());
+    let (store, _guard) = stack.open_store(blobs.clone()).await;
     swarmy_testkit::image(&store).await;
     let session = SessionId::from_ulid(Ulid::generate());
     store
@@ -671,7 +675,8 @@ async fn tool_image_route_returns_only_session_images() {
         .await
         .unwrap();
     let png = b"image bytes".to_vec();
-    let key = store.put_tool_blob(png.clone()).await.unwrap();
+    let key = swarmy_core::blob_key(&png);
+    blobs.put(&key, png.clone().into()).await.unwrap();
     let events = image_route_events(RequestId::for_step(session, 1), &key);
     store.append_events(session, 0, &events).await.unwrap();
     let bus = Bus::connect(&stack.nats_url, Config::default())

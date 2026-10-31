@@ -309,7 +309,7 @@ impl VolumeDevice {
         self.manifest.header().size
     }
 
-    pub(crate) fn protect_uploads(&self, store: swarmy_store::Store) {
+    pub(crate) fn protect_uploads(&self, store: Arc<dyn crate::VolumeMetadata>) {
         self.store.protect_uploads(store);
     }
 

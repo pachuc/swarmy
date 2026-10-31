@@ -57,14 +57,7 @@ async fn continuous_writes_and_retained_crash_images() {
     )
     .await
     .unwrap();
-    let writer = VolumeWriter::with_retention(
-        device.clone(),
-        store.clone(),
-        volume,
-        lease,
-        base_id,
-        std::num::NonZeroUsize::new(4).unwrap(),
-    );
+    let writer = boundary_writer(device.clone(), store.clone(), volume, lease, base_id);
     cleanup.attachment = Some(Attachment::attach(&path, device.clone()).await.unwrap());
     let block_gap = measure_block_writes(&writer, &device, &path, root.path()).await;
     command("mkfs.ext4", &["-F", "-q", &path]).await;
@@ -104,6 +97,26 @@ async fn continuous_writes_and_retained_crash_images() {
     eprintln!(
         "all four retained crash images mounted, ran Bash checks, matched boundary-data SHA-256, and passed e2fsck"
     );
+}
+
+fn boundary_writer(
+    device: Arc<VolumeDevice>,
+    store: swarmy_store::Store,
+    volume: VolumeId,
+    lease: swarmy_core::Lease,
+    base: ManifestId,
+) -> Arc<VolumeWriter> {
+    VolumeWriter::with_retention(
+        device,
+        Arc::new(store),
+        volume,
+        swarmy_volume::WriterLease::fixed(
+            lease,
+            tokio::time::Instant::now() + Duration::from_secs(3600),
+        ),
+        base,
+        std::num::NonZeroUsize::new(4).unwrap(),
+    )
 }
 
 fn install_test_subscriber() {

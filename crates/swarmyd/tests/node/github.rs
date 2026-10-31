@@ -220,8 +220,8 @@ async fn exercise(
     let config = swarmy_volume::server::ServerConfig {
         directory: node.root.path().join(".swarmy/volumes"),
         node: node.id,
-        store: store.clone(),
-        objects: swarmy_store::objects::from_settings(&node.settings).unwrap(),
+        metadata: Arc::new(store.clone()),
+        objects: swarmy_volume::objects::from_settings(&node.settings).unwrap(),
     };
     let snapshot = swarmy_volume::server::checkpoint(&config, volume, Some(bundle.join("rootfs")))
         .await
@@ -264,7 +264,7 @@ async fn scan_chunks(
     id: ManifestId,
     tokens: &[&[u8]],
 ) {
-    let objects = swarmy_store::objects::from_settings(settings).unwrap();
+    let objects = swarmy_volume::objects::from_settings(settings).unwrap();
     let header = store.get_manifest(id).await.unwrap().unwrap();
     let blocks = header.size / u64::from(swarmy_core::CHUNK_SIZE);
     let manifest = swarmy_volume::Manifest::load(objects.as_ref(), header)

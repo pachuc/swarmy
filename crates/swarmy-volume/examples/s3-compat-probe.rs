@@ -6,7 +6,7 @@
 //! client's `HeadBucket`, then PUT, create-only PUT (`If-None-Match: *`) on a
 //! new and an existing key, GET, HEAD, prefixed listing with pagination, and
 //! DELETE through the same object client the volume and blob stores use
-//! (`swarmy_store::objects::from_settings`). Swarmy never issues ranged GETs:
+//! (`swarmy_volume::objects::from_settings`). Swarmy never issues ranged GETs:
 //! chunks, manifests, and blobs are always read whole, so ranges are not
 //! probed. Each check prints one JSON line naming only the check, whether it
 //! passed, and a detail free of key material; the endpoint, bucket, prefix,
@@ -175,7 +175,7 @@ fn object_client(coordinates: &Coordinates) -> Result<Arc<dyn ObjectStore>, Stri
     settings.s3.secret_key.clone_from(&coordinates.secret);
     settings.s3.prefix = swarmy_config::ObjectPrefix::default();
     settings.s3.conditional_create = coordinates.conditional_create;
-    swarmy_store::objects::from_settings(&settings)
+    swarmy_volume::objects::from_settings(&settings)
         .map_err(|error| format!("invalid bucket coordinates: {error}"))
 }
 

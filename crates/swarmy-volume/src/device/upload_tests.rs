@@ -488,43 +488,77 @@ async fn process_death_after_uploads_preserves_overlay_and_published_baseline() 
     assert_eq!(committed.read(0, 4096).await.unwrap(), vec![19; 4096]);
 }
 
+use crate::{MetadataError, VolumeMetadata, WriterLease};
+use std::sync::Mutex;
+use swarmy_core::{FenceKind, Lease, LeaseOwnerId, ManifestId, VolumeId};
+#[derive(Default)]
+struct FakeMetadata {
+    head: Mutex<Option<ManifestId>>,
+    lease: Mutex<Option<Lease>>,
+}
+#[async_trait::async_trait]
+impl VolumeMetadata for FakeMetadata {
+    async fn publish(
+        &self,
+        _: VolumeId,
+        lease: &Lease,
+        previous: ManifestId,
+        next: ManifestId,
+        _: &swarmy_core::ManifestHeader,
+        _: NonZeroUsize,
+    ) -> std::result::Result<(), MetadataError> {
+        let current_lease = self.lease.lock().unwrap();
+        if !current_lease
+            .as_ref()
+            .is_some_and(|held| held.owner == lease.owner && held.seq == lease.seq)
+        {
+            return Err(MetadataError::Fenced(FenceKind::VolumeLease));
+        }
+        let mut head = self.head.lock().unwrap();
+        if *head != Some(previous) {
+            return Err(MetadataError::Fenced(FenceKind::VolumeHead));
+        }
+        *head = Some(next);
+        Ok(())
+    }
+    async fn protect_reused_chunks(
+        &self,
+        _: &[ContentHash],
+    ) -> std::result::Result<Vec<ContentHash>, MetadataError> {
+        Ok(vec![])
+    }
+    async fn release_writer_lease(
+        &self,
+        _: VolumeId,
+        _: &Lease,
+    ) -> std::result::Result<(), MetadataError> {
+        *self.lease.lock().unwrap() = None;
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn lease_loss_during_flush_rejects_publication_and_keeps_dirty_data() {
-    use jiff::Timestamp;
-    use swarmy_core::{LeaseOwnerId, ManifestId, VolumeId};
-    use swarmy_store::{Store, StoreError, blob::MemoryBlobStore};
-
-    let Some(cluster) = swarmy_testkit::require_stack("SWARMY_FDB_CLUSTER_FILE") else {
-        return;
-    };
-    swarmy_testkit::boot_fdb();
-    let store = Store::open(
-        Some(Path::new(&cluster)),
-        Some(&[format!("swarmy-upload-fencing-{}", ulid::Ulid::generate())]),
-        Arc::new(MemoryBlobStore::default()),
-    )
-    .await
-    .unwrap();
     let (dir, objects, device) = fixture(1, 1, Duration::ZERO).await;
     let base = ManifestId::from_ulid(ulid::Ulid::generate());
     let volume = VolumeId::from_ulid(ulid::Ulid::generate());
-    store
-        .put_manifest(base, device.manifest.header())
-        .await
-        .unwrap();
-    store.create_volume(volume, base).await.unwrap();
-    let now = Timestamp::now();
-    let expiry = now.checked_add(Duration::from_secs(60)).unwrap();
-    let lease = store
-        .acquire_writer_lease(
-            volume,
-            LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
-            expiry,
-        )
-        .await
-        .unwrap();
-    let writer =
-        crate::VolumeWriter::new(device.clone(), store.clone(), volume, lease.clone(), base);
+    let lease = Lease {
+        owner: LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
+        seq: 1,
+        expires_at: jiff::Timestamp::now(),
+    };
+    let store = Arc::new(FakeMetadata {
+        head: Mutex::new(Some(base)),
+        lease: Mutex::new(Some(lease.clone())),
+    });
+    let far = Instant::now() + Duration::from_secs(3600);
+    let writer = crate::VolumeWriter::new(
+        device.clone(),
+        store.clone(),
+        volume,
+        WriterLease::fixed(lease.clone(), far),
+        base,
+    );
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
     *objects.gate.lock().unwrap() = Some(gate.clone());
     device.flush().await.unwrap();
@@ -538,16 +572,15 @@ async fn lease_loss_during_flush_rejects_publication_and_keeps_dirty_data() {
     .await
     .unwrap();
     // Revoke the token while the chunk PUT is waiting, then let upload finish.
-    store.release_writer_lease(volume, &lease).await.unwrap();
+    *store.lease.lock().unwrap() = None;
     gate.add_permits(1);
     assert!(matches!(
         task.await.unwrap(),
-        Err(VolumeError::Store(StoreError::Fence(
-            swarmy_store::FenceError::VolumeLeaseMismatch
+        Err(VolumeError::Metadata(MetadataError::Fenced(
+            FenceKind::VolumeLease
         )))
     ));
-    let record = store.get_volume(volume).await.unwrap().unwrap();
-    assert_eq!(record.head_manifest, base);
+    assert_eq!(*store.head.lock().unwrap(), Some(base));
     assert_eq!(device.read(0, 4096).await.unwrap(), vec![1; 4096]);
     assert_eq!(device.dirty.lock().await.pending.len(), 1);
     assert_eq!(device.dirty.lock().await.uploaded.len(), 1);
@@ -561,16 +594,22 @@ async fn lease_loss_during_flush_rejects_publication_and_keeps_dirty_data() {
     .await
     .unwrap();
     assert_eq!(recovered.read(0, 4096).await.unwrap(), vec![0; 4096]);
-    let renewed = store
-        .acquire_writer_lease(volume, lease.owner, expiry)
-        .await
-        .unwrap();
-    let retry = crate::VolumeWriter::new(device.clone(), store.clone(), volume, renewed, base);
+    let renewed = Lease {
+        seq: lease.seq + 1,
+        ..lease
+    };
+    *store.lease.lock().unwrap() = Some(renewed.clone());
+    let retry = crate::VolumeWriter::new(
+        device.clone(),
+        store.clone(),
+        volume,
+        WriterLease::fixed(renewed, far),
+        base,
+    );
     let committed = retry.flush(None).await.unwrap();
     assert_eq!(committed.frozen_chunks_uploaded, 0);
     assert_eq!(committed.uploads.chunks_uploaded, 0);
-    let record = store.get_volume(volume).await.unwrap().unwrap();
-    assert_eq!(record.head_manifest, committed.manifest_id);
+    assert_eq!(*store.head.lock().unwrap(), Some(committed.manifest_id));
     assert!(device.dirty.lock().await.pending.is_empty());
 }
 
