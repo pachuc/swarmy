@@ -42,12 +42,31 @@ impl Process {
         files: &Path,
         environment: &[(OsString, OsString)],
     ) -> Result<Self> {
+        Self::start_in(kind, index, binaries, files, environment, None)
+    }
+
+    /// `ip netns exec` switches namespace and then runs the service in the same process.
+    pub(crate) fn start_in(
+        kind: Kind,
+        index: usize,
+        binaries: &Path,
+        files: &Path,
+        environment: &[(OsString, OsString)],
+        netns: Option<&str>,
+    ) -> Result<Self> {
         let name = format!("{}-{index}", kind.role());
         let log = OpenOptions::new()
             .create(true)
             .append(true)
             .open(files.join(format!("{name}.log")))?;
-        let mut command = Command::new(binaries.join("swarmy-core"));
+        let binary = binaries.join("swarmy-core");
+        let mut command = if let Some(netns) = netns {
+            let mut command = Command::new("ip");
+            command.args(["netns", "exec", netns]).arg(binary);
+            command
+        } else {
+            Command::new(binary)
+        };
         command
             .arg(kind.role())
             .current_dir(files)

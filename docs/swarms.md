@@ -359,6 +359,10 @@ provisioner's journal on the primary, `journalctl -u swarmy-provisioner`), and
 the provisioner replaces the machine after its 15-minute join deadline, within
 the creation limit, so fix the group's size and scale again.
 
+### Distance from the primary
+
+A node runs store transactions against FoundationDB on the primary for every sandbox start and tool call, and reads disk chunks from the primary's object storage. Nodes are supported up to 400 ms round trip from the primary. `scripts/node-suites/latency.sh` (run on the suite node through `suite-queue.sh --latency`) checks sandbox start and the first tool call with the node in its own network namespace at 175 ms and 400 ms round trip, and fails when any store transaction the node runs takes longer than four round trips plus 150 ms.
+
 ### Scaleway node groups
 
 Scaleway is a French cloud provider. An existing stack host can run with a

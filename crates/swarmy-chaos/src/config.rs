@@ -55,6 +55,12 @@ pub(crate) struct Config {
     /// Use a prebuilt swarmy-core binary from this directory instead of building it.
     #[arg(long)]
     pub bin_dir: Option<PathBuf>,
+    /// Run the node inside this network namespace (`ip netns exec NAME`).
+    #[arg(long, requires = "image")]
+    pub node_netns: Option<String>,
+    /// Fail when a node store transaction takes longer than this many milliseconds.
+    #[arg(long, requires = "image")]
+    pub max_node_transaction_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -73,6 +79,11 @@ pub(crate) enum Scenario {
 
 impl Config {
     pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            (self.node_netns.is_none() && self.max_node_transaction_ms.is_none())
+                || self.scenario.is_none(),
+            "--node-netns and --max-node-transaction-ms need the default scenario"
+        );
         ensure!(
             self.sessions > 0 && self.steps > 0,
             "sessions and steps must be positive"

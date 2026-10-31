@@ -3,6 +3,7 @@
 set -uo pipefail
 branch=$1
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+. "$here/suite-api.sh"
 bash "$here/root-suites.sh" "$branch"
 base=$?
 # Exit 2 means the branch could not be checked out or built; do not run the
@@ -43,30 +44,17 @@ done
 # Since the client split `swarmy image build` uploads through the API, and the
 # root suites above already stopped theirs, serve one on a loopback port for
 # this build. The node and chat sections after it need no API.
-api_pid=""
-if [ -x ./target/debug/swarmy-core ]; then
-  api_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
-  export SWARMY_API_TOKEN="suite-$(date +%s)-$RANDOM"
-  export SWARMY_API_URL="http://127.0.0.1:$api_port"
-  SWARMY_API_LISTEN="127.0.0.1:$api_port" ./target/debug/swarmy-core api > ~/root-suites-plus-api.log 2>&1 &
-  api_pid=$!
-  for _ in $(seq 1 120); do
-    (echo > "/dev/tcp/127.0.0.1/$api_port") 2>/dev/null && break
-    kill -0 "$api_pid" 2>/dev/null || { echo "swarmy-core api exited; see ~/root-suites-plus-api.log"; break; }
-    sleep 0.5
-  done
-  echo "== api on $SWARMY_API_URL (pid $api_pid)"
-fi
+start_suite_api ~/root-suites-plus-api.log
 echo "== image build swarmy-dev"
 # The next section needs this image, so stop here when the build fails
 # instead of recording rc=1 and running the dependent test anyway.
 full=~/suite-logs/$suffix-plus-image-build-swarmy-dev.log
-sudo -E ./target/debug/swarmy image build images/swarmy-dev --tag dev 2>&1 | tee "$full" | tail -2 || { [ -n "$api_pid" ] && { kill "$api_pid" 2>/dev/null; wait "$api_pid" 2>/dev/null; }; echo "PLUS_EXIT=1"; exit 1; }
+sudo -E ./target/debug/swarmy image build images/swarmy-dev --tag dev 2>&1 | tee "$full" | tail -2 || { stop_suite_api; echo "PLUS_EXIT=1"; exit 1; }
 echo "== image build base-desktop"
 full=~/suite-logs/$suffix-plus-image-build-base-desktop.log
 desktop_built=1
 sudo -E ./target/debug/swarmy image build images/base-desktop --tag dev 2>&1 | tee "$full" | tail -2 || { desktop_built=0; echo "base-desktop build failed; see $full"; }
-[ -n "$api_pid" ] && { kill "$api_pid" 2>/dev/null; wait "$api_pid" 2>/dev/null; api_pid=""; }
+stop_suite_api
 # The node acceptance and the chat tests refuse headless client binaries, so
 # rebuild default features once, before the sections that need them.
 CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-cli -p swarmy-core-bin >> ~/suite-build-plus.log 2>&1 \
