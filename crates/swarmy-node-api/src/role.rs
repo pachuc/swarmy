@@ -29,6 +29,11 @@ pub fn run(args: Vec<OsString>) -> Result<(), Error> {
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(start())
 }
+async fn flush_metrics(store: &Store) {
+    if let Err(error) = store.flush_turn_metrics().await {
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "node api metrics flush failed");
+    }
+}
 async fn start() -> Result<(), Error> {
     let settings = Settings::load()?.settings;
     let opened = Store::open_store(&settings).await?;
@@ -62,6 +67,7 @@ async fn start() -> Result<(), Error> {
         result = server => result,
         () = async { swarmy_config::shutdown_signal().await; tokio::time::sleep(Duration::from_secs(5)).await; } => Ok(()),
     };
+    flush_metrics(&store).await;
     heartbeat.abort();
     swarmy_core::ignore_best_effort(heartbeat.await, "stop node API heartbeat task");
     if let Err(error) = store

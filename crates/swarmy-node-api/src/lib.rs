@@ -6,14 +6,17 @@ use axum::{
 };
 use std::{sync::Arc, time::Duration};
 use swarmy_node_protocol::{
-    LeaseLengths, PLACEMENTS_PATH, REGISTER_PATH, SYNC_INTERVAL, TOOL_CLAIM_LEASE, WRITER_LEASE,
+    LeaseLengths, PLACEMENTS_PATH, REGISTER_PATH, SYNC_INTERVAL, SYNC_PATH, TOOL_CLAIM_LEASE,
+    WRITER_LEASE,
 };
 use swarmy_store::Store;
 mod auth;
+mod authorize;
 mod failure;
 mod placements;
 mod register;
 pub mod role;
+mod sync;
 /// Maximum lifetime of a cached positive credential verification.
 pub const CREDENTIAL_CACHE_TTL: Duration = Duration::from_secs(10);
 /// Shared server resources.
@@ -54,6 +57,7 @@ impl NodeApiState {
 pub fn router(state: NodeApiState) -> Router {
     Router::new()
         .route(REGISTER_PATH, post(register::handle))
+        .route(SYNC_PATH, post(sync::handle))
         .route(PLACEMENTS_PATH, get(placements::handle))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),

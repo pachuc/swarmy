@@ -63,6 +63,22 @@ async fn node_api_role_serves_and_honours_revocation() {
     };
     client.register(&request).await.unwrap();
     assert!(client.placements().await.unwrap().placements.is_empty());
+    let sync = swarmy_node_protocol::SyncRequest {
+        node: request.node.clone(),
+        placements: Vec::new(),
+        claims: Vec::new(),
+        writers: Vec::new(),
+        scratch: Vec::new(),
+        scratch_evicted: Vec::new(),
+        metrics: Vec::new(),
+    };
+    assert!(
+        client
+            .sync(&sync, tokio::time::Instant::now() + Duration::from_secs(20))
+            .await
+            .unwrap()
+            .heartbeat_recorded
+    );
     swarmy_testkit::eventually("node API heartbeat", Duration::from_secs(30), async || {
         store
             .list_services()

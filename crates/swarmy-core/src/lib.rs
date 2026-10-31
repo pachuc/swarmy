@@ -10,10 +10,12 @@ mod event;
 mod id;
 mod machine;
 mod message;
+mod metric;
 pub use machine::{
     BillingGranularity, InvalidMachineTransition, MachineAssignment, MachineCause, MachineRecord,
     MachineState, MachineTransition, NewMachine,
 };
+pub use metric::{ComputerMetric, ToolMetric};
 mod scheduler;
 mod selection;
 mod session;

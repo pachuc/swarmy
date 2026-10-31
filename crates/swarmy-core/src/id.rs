@@ -118,6 +118,13 @@ impl fmt::Display for RequestId {
     }
 }
 
+/// A node holds volume writer leases under its own id.
+impl From<NodeId> for LeaseOwnerId {
+    fn from(node: NodeId) -> Self {
+        Self::from_ulid(node.as_ulid())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]

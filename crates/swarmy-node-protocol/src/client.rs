@@ -139,6 +139,22 @@ impl NodeClient {
         )
         .await
     }
+    /// Send one sync before the caller's earliest local lease deadline.
+    /// # Errors
+    /// As `register`.
+    pub async fn sync(
+        &self,
+        request: &crate::SyncRequest,
+        deadline: Instant,
+    ) -> Result<crate::SyncResponse, ClientError> {
+        self.call(
+            reqwest::Method::POST,
+            crate::SYNC_PATH,
+            Some(request),
+            deadline,
+        )
+        .await
+    }
     /// List this node's placements.
     /// # Errors
     /// Final server answers and exhausted deadline.
