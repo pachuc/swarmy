@@ -37,10 +37,11 @@ impl CredentialCache {
                 .verified
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((known, at)) = entries.get(&token.node()) {
-                if *known == hash && at.elapsed() < self.ttl {
-                    return Ok(true);
-                }
+            if let Some((known, at)) = entries.get(&token.node())
+                && *known == hash
+                && at.elapsed() < self.ttl
+            {
+                return Ok(true);
             }
         }
         let valid = store.verify_node_credential(token).await?;

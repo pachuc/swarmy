@@ -51,7 +51,6 @@ impl NodeApiState {
     }
 }
 /// Assemble the independent node API router.
-#[must_use]
 pub fn router(state: NodeApiState) -> Router {
     Router::new()
         .route(REGISTER_PATH, post(register::handle))
