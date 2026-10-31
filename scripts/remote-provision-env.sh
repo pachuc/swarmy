@@ -739,6 +739,33 @@ node_disk_bytes() {
     fi
 }
 
+# Default sandbox memory in MiB. Equal to
+# swarmy_core::SandboxRequirements::default().memory_mib; a Rust test in
+# crates/swarmy-cloud/src/node_files.rs keeps the two the same.
+SWARMY_DEFAULT_SANDBOX_MIB=768
+
+# Bytes this host offers sandboxes: MemTotal less the system reserve, never
+# negative. SWARMY_MEMINFO overrides /proc/meminfo for tests.
+node_memory_bytes() {
+    awk -v reserve="${SWARMY_NODE_MEMORY_RESERVE_MIB:-3072}" \
+        '/MemTotal/ {bytes = ($2 - reserve * 1024) * 1024; printf "%.0f", (bytes > 0 ? bytes : 0)}' \
+        "${SWARMY_MEMINFO:-/proc/meminfo}"
+}
+
+# A host with sandboxes must fit one default sandbox after the reserve.
+check_node_memory() {
+    local sandboxes=${1:?sandbox count} bytes
+    if (( sandboxes == 0 )); then return 0; fi
+    bytes=$(node_memory_bytes) || return 1
+    if (( bytes < SWARMY_DEFAULT_SANDBOX_MIB * 1024 * 1024 )); then
+        printf 'This host offers %d MiB to sandboxes after the %d MiB system reserve, less than one default %d MiB sandbox. A sandbox node needs at least %d MiB of memory as the kernel reports it (MemTotal in /proc/meminfo). A 4 GiB machine falls short; choose a size with 8 GiB or more.\n' \
+            "$((bytes / 1024 / 1024))" "${SWARMY_NODE_MEMORY_RESERVE_MIB:-3072}" \
+            "$SWARMY_DEFAULT_SANDBOX_MIB" \
+            "$(( ${SWARMY_NODE_MEMORY_RESERVE_MIB:-3072} + SWARMY_DEFAULT_SANDBOX_MIB ))" >&2
+        return 1
+    fi
+}
+
 node_environment() {
     local repo_dir=$1 sandboxes=$2 mount=$3 bucket=${4:-} bucket_region=${5:-} bucket_endpoint=${6:-} bucket_prefix=${7:-} bucket_conditional_create=${8:-true} bucket_static=${9:-false} roles=sandbox,volume
     local s3_env
@@ -750,7 +777,7 @@ SWARMY_NATS_URL=nats://127.0.0.1:4222
 $s3_env
 SWARMY_S3_CONDITIONAL_CREATE=$bucket_conditional_create
 SWARMY_NODE_CPU_MILLIS=$(($(nproc) * 1000))
-SWARMY_NODE_MEMORY_BYTES=$(awk -v reserve="${SWARMY_NODE_MEMORY_RESERVE_MIB:-3072}" '/MemTotal/ {bytes = ($2 - reserve * 1024) * 1024; printf "%.0f", (bytes > 0 ? bytes : 0)}' /proc/meminfo)
+SWARMY_NODE_MEMORY_BYTES=$(node_memory_bytes)
 SWARMY_NODE_DISK_BYTES=$(node_disk_bytes "$sandboxes" "$mount")
 SWARMY_NODE_SANDBOXES=$sandboxes
 SWARMY_NODE_ROLES=$roles

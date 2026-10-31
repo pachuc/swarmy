@@ -12,6 +12,7 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
 parse_provision_args "$@"
 validate_service_user "$service_user"
+check_node_memory "$sandboxes"
 ensure_service_user "$service_user"
 # Privileged setup runs as any sudoer, but the build and the units belong to
 # the service user; re-enter as that user so files land owned correctly.
