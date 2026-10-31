@@ -83,6 +83,7 @@ mod sandbox_metadata;
 mod volume_metadata;
 pub use placements::ScratchRecord;
 pub use sandbox_metadata::StoreSandboxMetadata;
+pub use volume_metadata::WriterOpening;
 mod gpu_tools;
 mod plans;
 mod session_images;

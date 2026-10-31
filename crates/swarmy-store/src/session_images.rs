@@ -1,11 +1,43 @@
 //! Session image pins live in versioned session records.
 use crate::{MAX_SCAN_LIMIT, Result, Store, StoreError};
-use swarmy_core::{ImageRecord, ImageTag, ManifestId, SessionId};
+use swarmy_core::{
+    AgentId, GpuRequirement, ImageRecord, ImageTag, ManifestId, SandboxRequirements, SandboxSpec,
+    SessionId,
+};
 
 pub(crate) type ImageCache =
     std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<SessionId, ManifestId>>>;
 
 impl Store {
+    /// Resolve the sandbox requirements and scratch paths for an agent session.
+    /// # Errors
+    /// Storage and decoding failures.
+    pub async fn sandbox_spec(&self, agent: AgentId, session: SessionId) -> Result<SandboxSpec> {
+        let (record, image) = tokio::try_join!(self.get_agent(agent), self.pinned_image(session))?;
+        let requirements = if let Some(record) = record {
+            record.requirements
+        } else if let Some(ref image) = image {
+            SandboxRequirements {
+                memory_mib: self
+                    .image_memory(image)
+                    .await?
+                    .unwrap_or(SandboxRequirements::default().memory_mib),
+                gpu: GpuRequirement::default(),
+            }
+        } else {
+            SandboxRequirements::default()
+        };
+        let scratch = if let Some(image) = image {
+            self.image_scratch(&image).await?
+        } else {
+            Vec::new()
+        };
+        Ok(SandboxSpec {
+            agent_id: agent,
+            scratch,
+            requirements,
+        })
+    }
     /// Return the image selected when a session was created.
     /// # Errors
     /// Returns storage or decoding failures.

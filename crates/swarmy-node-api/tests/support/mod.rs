@@ -11,6 +11,10 @@ use swarmy_store::{Store, blob::MemoryBlobStore};
 use ulid::Ulid;
 pub(crate) struct Fixture {
     pub(crate) store: Store,
+    #[allow(
+        dead_code,
+        reason = "only clock-driven integration targets advance the fixture clock"
+    )]
     pub(crate) clock: Arc<Mutex<Timestamp>>,
     pub(crate) _guard: swarmy_testkit::StackGuard,
 }
@@ -33,6 +37,10 @@ pub(crate) async fn serve(router: Router) -> String {
     });
     format!("http://{addr}")
 }
+#[allow(
+    dead_code,
+    reason = "only retry integration targets use the response-drop helper"
+)]
 pub(crate) fn drop_first_response(
     router: Router,
     path: &'static str,
@@ -148,19 +156,27 @@ pub(crate) struct Hosted {
     pub(crate) volume: swarmy_core::VolumeId,
     pub(crate) lease: swarmy_core::Lease,
 }
-#[allow(
-    dead_code,
-    reason = "the shared fixture is used by the sync integration target only"
-)]
-pub(crate) async fn hosted(store: &Store) -> Hosted {
+/// One node with two dispatched jobs and a claimed placement, before volume binding.
+#[allow(dead_code, reason = "the fixture is shared across integration targets")]
+pub(crate) struct Dispatched {
+    pub(crate) node: NodeRecord,
+    pub(crate) token: swarmy_core::NodeToken,
+    pub(crate) session: swarmy_core::SessionId,
+    pub(crate) agent: swarmy_core::AgentId,
+    pub(crate) turn: swarmy_core::MessageId,
+    pub(crate) jobs: Vec<swarmy_core::ToolJob>,
+    pub(crate) placement: swarmy_core::PlacementRecord,
+}
+#[allow(dead_code, reason = "the fixture is shared across integration targets")]
+pub(crate) async fn dispatched(store: &Store) -> Dispatched {
     use std::time::Duration;
     use swarmy_core::{
-        BashArguments, Event, LeaseOwnerId, PlacedToolClaim, RequestId, SandboxArguments,
-        ToolCallId, ToolCallRecord, ToolJob,
+        BashArguments, Event, LeaseOwnerId, Message, MessageId, MessageRole, Part, RequestId,
+        SandboxArguments, ToolCallId, ToolCallRecord, ToolJob,
     };
     let (session, agent) = hosted_session(store).await;
     let node = node(store, 1).await;
-    let now = Timestamp::now();
+    let now = store.now();
     let placement = store
         .place(
             agent,
@@ -169,7 +185,19 @@ pub(crate) async fn hosted(store: &Store) -> Hosted {
         )
         .await
         .unwrap();
-    store.wake_session(session, now).await.unwrap();
+    let turn = MessageId::from_ulid(Ulid::generate());
+    store
+        .append_user_message(
+            session,
+            0,
+            &Message {
+                id: turn,
+                role: MessageRole::User,
+                parts: vec![Part::Text { text: "run".into() }],
+            },
+        )
+        .await
+        .unwrap();
     let session_lease = store
         .claim_lease(
             session,
@@ -178,64 +206,83 @@ pub(crate) async fn hosted(store: &Store) -> Hosted {
         )
         .await
         .unwrap();
-    let job = ToolJob {
-        session_id: session,
-        step: 1,
-        request_id: RequestId::for_step(session, 1),
-        call_id: ToolCallId("bash-1".into()),
-        arguments: SandboxArguments::Bash(BashArguments {
-            command: "echo test".into(),
-            timeout_ms: 1000,
-            yield_seconds: 10,
-            output_budget_bytes: 32768,
-        }),
-    };
-    let event = Event::ToolCallRequested {
-        seq: 0,
-        request_id: job.request_id,
-        call: ToolCallRecord {
-            call_id: job.call_id.clone(),
-            tool: "bash".into(),
-            arguments: job.arguments.parameters(),
-            result: None,
-        },
-    };
+    let jobs: Vec<ToolJob> = (2..=3)
+        .map(|step| ToolJob {
+            session_id: session,
+            step,
+            request_id: RequestId::for_step(session, step),
+            call_id: ToolCallId(format!("bash-{step}")),
+            arguments: SandboxArguments::Bash(BashArguments {
+                command: "echo test".into(),
+                timeout_ms: 1000,
+                yield_seconds: 10,
+                output_budget_bytes: 32768,
+            }),
+        })
+        .collect();
+    let events: Vec<Event> = jobs
+        .iter()
+        .map(|job| Event::ToolCallRequested {
+            seq: 0,
+            request_id: job.request_id,
+            call: ToolCallRecord {
+                call_id: job.call_id.clone(),
+                tool: "bash".into(),
+                arguments: job.arguments.parameters(),
+                result: None,
+            },
+        })
+        .collect();
     store
-        .append_events_leased(session, 0, &[event], &session_lease, now)
+        .append_events_leased(session, 1, &events, &session_lease, now)
         .await
         .unwrap();
     store
-        .dispatch_placed_tool_jobs(
-            session,
-            &session_lease,
-            std::slice::from_ref(&job),
-            &placement,
-        )
+        .dispatch_placed_tool_jobs(session, &session_lease, &jobs, &placement)
         .await
         .unwrap();
     store.claim_placement(&placement).await.unwrap();
+    let token = store.issue_node_credential(node.node_id).await.unwrap();
+    Dispatched {
+        node,
+        token,
+        session,
+        agent,
+        turn,
+        jobs,
+        placement,
+    }
+}
+#[allow(dead_code, reason = "the fixture is shared across integration targets")]
+pub(crate) async fn hosted(store: &Store) -> Hosted {
+    use std::time::Duration;
+    use swarmy_core::{LeaseOwnerId, PlacedToolClaim};
+    let dispatched = dispatched(store).await;
+    let now = store.now();
     let claim = PlacedToolClaim {
-        job,
+        job: dispatched.jobs[0].clone(),
         owner: LeaseOwnerId::from_ulid(Ulid::generate()),
-        placement: placement.clone(),
+        placement: dispatched.placement.clone(),
         expires_at: now.checked_add(Duration::from_secs(30)).unwrap(),
     };
     assert!(store.claim_placed_tool(&claim).await.unwrap());
-    let volume = store.agent_volume(session, &placement).await.unwrap();
+    let volume = store
+        .agent_volume(dispatched.session, &dispatched.placement)
+        .await
+        .unwrap();
     let lease = store
         .acquire_writer_lease(
             volume,
-            LeaseOwnerId::from(node.node_id),
+            LeaseOwnerId::from(dispatched.node.node_id),
             now.checked_add(Duration::from_secs(60)).unwrap(),
         )
         .await
         .unwrap();
-    let token = store.issue_node_credential(node.node_id).await.unwrap();
     Hosted {
-        node,
-        token,
-        session,
-        placement,
+        node: dispatched.node,
+        token: dispatched.token,
+        session: dispatched.session,
+        placement: dispatched.placement,
         claim,
         volume,
         lease,
@@ -263,4 +310,39 @@ pub(crate) fn request(hosted: &Hosted) -> swarmy_node_protocol::SyncRequest {
         scratch_evicted: Vec::new(),
         metrics: Vec::new(),
     }
+}
+
+#[allow(
+    dead_code,
+    reason = "shared helper is used by the hosting integration targets"
+)]
+pub(crate) fn policy() -> swarmy_node_api::NodeApiPolicy {
+    swarmy_node_api::NodeApiPolicy {
+        placement_lease: std::time::Duration::from_secs(30),
+        snapshot_retention: std::num::NonZeroUsize::new(3).unwrap(),
+    }
+}
+#[allow(
+    dead_code,
+    reason = "shared helper is used by different integration targets"
+)]
+pub(crate) fn state(f: &Fixture) -> swarmy_node_api::NodeApiState {
+    swarmy_node_api::NodeApiState::new(f.store.clone(), policy())
+}
+#[allow(
+    dead_code,
+    reason = "shared helper is used by the hosting integration targets"
+)]
+pub(crate) async fn served(f: &Fixture) -> String {
+    serve(swarmy_node_api::router(state(f))).await
+}
+#[allow(
+    dead_code,
+    reason = "shared helper is used by the hosting integration targets"
+)]
+pub(crate) fn client(
+    base: &str,
+    token: &swarmy_core::NodeToken,
+) -> swarmy_node_protocol::NodeClient {
+    swarmy_node_protocol::NodeClient::new(base, token).unwrap()
 }

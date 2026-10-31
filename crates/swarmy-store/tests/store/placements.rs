@@ -2005,3 +2005,56 @@ async fn store_sandbox_metadata_reports_and_clears_scratch_for_its_node() {
     primary.clear_scratch(agent).await.unwrap();
     assert!(test.store.scratch(agent).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn open_writer_lease_repeats_for_the_bound_owner() {
+    use swarmy_store::{AgentSessionOptions, FenceError};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let image = swarmy_testkit::image(store).await;
+    let session = store
+        .create_agent_session(
+            SessionId::from_ulid(Ulid::generate()),
+            None,
+            store.now(),
+            Some(AgentSessionOptions {
+                image: Some(image),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let host = node(store, 1).await;
+    let placement = store
+        .place(session.agent_id, host.node_id, future(30))
+        .await
+        .unwrap();
+    let volume = store
+        .agent_volume(session.session_id, &placement)
+        .await
+        .unwrap();
+    let owner = LeaseOwnerId::from(host.node_id);
+    let first = store
+        .open_writer_lease(volume, owner, Duration::from_secs(60))
+        .await
+        .unwrap();
+    let second = store
+        .open_writer_lease(volume, owner, Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert_eq!(first.lease.seq, second.lease.seq);
+    assert_eq!(first.head, second.head);
+    assert_eq!(first.header, second.header);
+    assert!(matches!(
+        store
+            .open_writer_lease(
+                volume,
+                LeaseOwnerId::from_ulid(Ulid::generate()),
+                Duration::from_secs(60)
+            )
+            .await,
+        Err(StoreError::Fence(FenceError::VolumeLeaseMismatch))
+    ));
+}

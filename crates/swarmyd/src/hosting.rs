@@ -5,8 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 use swarmy_core::{
-    AgentCallStatus, AgentId, BlockDevice, MessageId, NodeId, PlacementRecord, SandboxSpec,
-    SessionId, ToolJob, ignore_best_effort,
+    AgentCallStatus, AgentId, BlockDevice, MessageId, NodeId, PlacementRecord, SessionId, ToolJob,
+    ignore_best_effort,
 };
 use swarmy_sandbox::RuncRuntime;
 use swarmy_store::Store;
@@ -94,38 +94,6 @@ pub(crate) struct Hosting {
 }
 
 impl Hosting {
-    async fn sandbox_spec(&self, agent: AgentId, session: SessionId) -> Result<SandboxSpec> {
-        Ok(SandboxSpec {
-            agent_id: agent,
-            scratch: self.scratch_for_session(session).await?,
-            requirements: self.requirements_for_session(agent, session).await?,
-        })
-    }
-
-    async fn requirements_for_session(
-        &self,
-        agent: AgentId,
-        session: SessionId,
-    ) -> Result<swarmy_core::SandboxRequirements> {
-        if let Some(record) = self.store.get_agent(agent).await? {
-            return Ok(record.requirements);
-        }
-        if let Some(image) = self.store.pinned_image(session).await? {
-            return Ok(swarmy_core::SandboxRequirements {
-                memory_mib: self.store.image_memory(&image).await?.unwrap_or(768),
-                gpu: swarmy_core::GpuRequirement::default(),
-            });
-        }
-        Ok(swarmy_core::SandboxRequirements::default())
-    }
-
-    async fn scratch_for_session(&self, session: SessionId) -> Result<Vec<String>> {
-        if let Some(image) = self.store.pinned_image(session).await? {
-            Ok(self.store.image_scratch(&image).await?)
-        } else {
-            Ok(Vec::new())
-        }
-    }
     pub(crate) async fn new(
         store: Store,
         runtime: Arc<RuncRuntime>,
@@ -299,7 +267,7 @@ impl Hosting {
             .store
             .agent_volume(first.job.session_id, placement)
             .await?;
-        let spec = self.sandbox_spec(agent, first.job.session_id).await?;
+        let spec = self.store.sandbox_spec(agent, first.job.session_id).await?;
         let open_ms = placement_started.elapsed().as_secs_f64() * 1_000.0;
         let booting = Instant::now();
         self.runtime

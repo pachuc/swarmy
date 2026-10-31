@@ -55,7 +55,55 @@ impl VolumeMetadata for Store {
         Ok(Store::release_writer_lease(self, volume, lease).await?)
     }
 }
+/// Writer lease and the manifest head it starts from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WriterOpening {
+    pub lease: Lease,
+    pub head: ManifestId,
+    pub header: ManifestHeader,
+}
 impl Store {
+    /// Acquire a writer from the store clock and read its head manifest.
+    /// # Errors
+    /// Another writer, missing metadata or a transaction failure.
+    pub async fn open_writer_lease(
+        &self,
+        volume: VolumeId,
+        owner: LeaseOwnerId,
+        length: Duration,
+    ) -> Result<WriterOpening> {
+        let expiry = self
+            .now()
+            .checked_add(length)
+            .map_err(|_| StoreError::Fence(FenceError::VolumeLeaseMismatch))?;
+        let lease = self.acquire_writer_lease(volume, owner, expiry).await?;
+        let read = async {
+            let record = self
+                .get_volume(volume)
+                .await?
+                .ok_or(StoreError::Domain(DomainError::VolumeMissing))?;
+            let header = self
+                .get_manifest(record.head_manifest)
+                .await?
+                .ok_or(StoreError::Domain(DomainError::ManifestMissing))?;
+            Ok::<_, StoreError>((record.head_manifest, header))
+        }
+        .await;
+        let (head, header) = match read {
+            Ok(value) => value,
+            Err(error) => {
+                if let Err(release) = self.release_writer_lease(volume, &lease).await {
+                    tracing::warn!(error = %swarmy_core::error_chain(&release), "writer lease release after open failure failed");
+                }
+                return Err(error);
+            }
+        };
+        Ok(WriterOpening {
+            lease,
+            head,
+            header,
+        })
+    }
     /// Acquire a writer lease, read the head, and renew until the grant drops.
     /// # Errors
     /// Rejects another writer, missing metadata, and transaction failures.
@@ -89,37 +137,13 @@ impl Store {
         every: Duration,
     ) -> Result<WriterGrant> {
         let sent = Instant::now();
-        let now = Timestamp::now();
-        let expiry = now
-            .checked_add(length)
-            .map_err(|_| StoreError::Fence(FenceError::VolumeLeaseMismatch))?;
-        let lease = self.acquire_writer_lease(volume, owner, expiry).await?;
-        let read = async {
-            let record = self
-                .get_volume(volume)
-                .await?
-                .ok_or(StoreError::Domain(DomainError::VolumeMissing))?;
-            let header = self
-                .get_manifest(record.head_manifest)
-                .await?
-                .ok_or(StoreError::Domain(DomainError::ManifestMissing))?;
-            Ok::<_, StoreError>((record.head_manifest, header))
-        }
-        .await;
-        let (head, header) = match read {
-            Ok(value) => value,
-            Err(error) => {
-                if let Err(release) = self.release_writer_lease(volume, &lease).await {
-                    tracing::warn!(error = %swarmy_core::error_chain(&release), "writer lease release after open failure failed");
-                }
-                return Err(error);
-            }
-        };
-        let (renewal, watch) = self.spawn_writer_renewal(volume, lease, sent, length, every);
+        let opening = self.open_writer_lease(volume, owner, length).await?;
+        let (renewal, watch) =
+            self.spawn_writer_renewal(volume, opening.lease, sent, length, every);
         Ok(WriterGrant {
             volume,
-            head,
-            header,
+            head: opening.head,
+            header: opening.header,
             lease: watch,
             renewal: Some(renewal),
         })
