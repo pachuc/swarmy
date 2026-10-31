@@ -3513,7 +3513,8 @@
           "generation",
           "reconciled_generation",
           "settled",
-          "updated_at"
+          "updated_at",
+          "external_bucket"
         ],
         "properties": {
           "applied": {
@@ -3548,6 +3549,10 @@
               "null"
             ],
             "description": "Session that caused the latest desired change, if any."
+          },
+          "external_bucket": {
+            "type": "boolean",
+            "description": "Whether joined machines use the swarm's external bucket; false means\nthe tunnel to the stack host's own object store."
           },
           "generation": {
             "type": "integer",
@@ -4950,7 +4955,8 @@
           "price_per_hour",
           "currency",
           "primary_address",
-          "service_user"
+          "service_user",
+          "external_bucket"
         ],
         "properties": {
           "autoscale": {
@@ -4959,6 +4965,10 @@
           },
           "currency": {
             "type": "string"
+          },
+          "external_bucket": {
+            "type": "boolean",
+            "description": "Whether joined machines use the swarm's external bucket; false means\nthe tunnel to the stack host's own object store."
           },
           "idempotency_key": {
             "type": "string"
