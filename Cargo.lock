@@ -4160,7 +4160,6 @@ dependencies = [
  "futures",
  "jiff",
  "reqwest",
- "serde_json",
  "swarmy-config",
  "swarmy-core",
  "swarmy-node-protocol",
