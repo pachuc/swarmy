@@ -3,9 +3,7 @@ use crate::{DomainError, FenceError, Result, StorageError, Store, StoreError};
 use async_trait::async_trait;
 use jiff::Timestamp;
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
-use swarmy_core::{
-    ContentHash, FenceKind, Lease, LeaseOwnerId, ManifestHeader, ManifestId, VolumeId,
-};
+use swarmy_core::{ContentHash, Lease, LeaseOwnerId, ManifestHeader, ManifestId, VolumeId};
 use swarmy_volume::{
     LeaseStatus, MetadataError, RenewalTask, VolumeMetadata, WriterGrant, WriterLease,
 };
@@ -14,19 +12,6 @@ use tokio::time::Instant;
 const WRITER_LEASE: Duration = Duration::from_secs(60);
 const WRITER_RENEW_EVERY: Duration = Duration::from_secs(15);
 
-impl FenceError {
-    /// The token kind a node-side caller can be told about.
-    #[must_use]
-    pub fn kind(&self) -> Option<FenceKind> {
-        match self {
-            Self::PlacementMismatch => Some(FenceKind::Placement),
-            Self::PlacedToolClaimMismatch => Some(FenceKind::PlacedToolClaim),
-            Self::VolumeLeaseMismatch => Some(FenceKind::VolumeLease),
-            Self::VolumeHeadMismatch => Some(FenceKind::VolumeHead),
-            _ => None,
-        }
-    }
-}
 impl From<StoreError> for MetadataError {
     fn from(error: StoreError) -> Self {
         match error {
@@ -196,6 +181,7 @@ impl Store {
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+    use swarmy_core::FenceKind;
     #[test]
     fn store_errors_map_to_metadata_errors() {
         assert!(matches!(
