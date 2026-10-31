@@ -115,3 +115,17 @@ pub fn is_blob_key(key: &str) -> bool {
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     })
 }
+
+#[cfg(test)]
+mod blob_key_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    #[test]
+    fn blob_key_shape() {
+        assert!(is_blob_key(&blob_key(b"x")));
+        assert!(!is_blob_key("blobs/"));
+        assert!(!is_blob_key(&format!("blobs/{}", "A".repeat(64))));
+        assert!(!is_blob_key(&format!("blobs/{}", "a".repeat(63))));
+        assert!(!is_blob_key(&"a".repeat(64)));
+    }
+}

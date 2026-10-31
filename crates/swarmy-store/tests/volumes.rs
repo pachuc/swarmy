@@ -341,3 +341,114 @@ async fn live_roots_are_retained_snapshots_attached_heads_and_images_only() {
     }
     test.clear().await;
 }
+
+#[tokio::test]
+async fn open_volume_writer_returns_the_head_and_a_live_lease() {
+    let Some(test) = Fixture::new() else {
+        return;
+    };
+    let (id, base, header, old) = test.volume().await;
+    test.store
+        .release_writer_lease(id, &old, Timestamp::now())
+        .await
+        .unwrap();
+    let grant = test.store.open_volume_writer(id, old.owner).await.unwrap();
+    assert_eq!(grant.head, base);
+    assert_eq!(grant.header, header);
+    assert!(grant.lease.current().is_ok());
+    assert!(matches!(
+        test.store
+            .open_volume_writer(id, LeaseOwnerId::from_ulid(Ulid::generate()))
+            .await,
+        Err(swarmy_store::StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
+    ));
+}
+
+#[tokio::test]
+async fn open_volume_writer_renews_until_released() {
+    use swarmy_volume::{MetadataError, VolumeMetadata};
+    let Some(test) = Fixture::new() else {
+        return;
+    };
+    let (id, _, _, old) = test.volume().await;
+    test.store
+        .release_writer_lease(id, &old, Timestamp::now())
+        .await
+        .unwrap();
+    let grant = test
+        .store
+        .open_volume_writer_timed(
+            id,
+            old.owner,
+            Duration::from_secs(2),
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+    let first = grant.lease.current().unwrap();
+    let current =
+        swarmy_testkit::eventually("writer lease renewal", Duration::from_secs(5), || async {
+            let next = grant.lease.current().ok()?;
+            (next.expires_at > first.expires_at).then_some(next)
+        })
+        .await;
+    assert_eq!(current.seq, first.seq);
+    let latest = grant.lease.current().unwrap();
+    VolumeMetadata::release_writer_lease(&test.store, id, &latest)
+        .await
+        .unwrap();
+    let mut watch = grant.lease.clone();
+    let lost = tokio::time::timeout(Duration::from_secs(5), watch.lost())
+        .await
+        .unwrap();
+    assert!(matches!(
+        &*lost,
+        MetadataError::Fenced(swarmy_core::FenceKind::VolumeLease)
+    ));
+    drop(grant);
+}
+
+#[tokio::test]
+async fn publish_through_the_trait_is_fenced() {
+    use swarmy_volume::{MetadataError, VolumeMetadata};
+    let Some(test) = Fixture::new() else {
+        return;
+    };
+    let (id, _, header, old) = test.volume().await;
+    test.store
+        .release_writer_lease(id, &old, Timestamp::now())
+        .await
+        .unwrap();
+    let grant = test.store.open_volume_writer(id, old.owner).await.unwrap();
+    let lease = grant.lease.current().unwrap();
+    let next = manifest_id();
+    VolumeMetadata::publish(
+        &test.store,
+        id,
+        &lease,
+        grant.head,
+        next,
+        &header,
+        NonZeroUsize::new(4).unwrap(),
+    )
+    .await
+    .unwrap();
+    VolumeMetadata::release_writer_lease(&test.store, id, &lease)
+        .await
+        .unwrap();
+    assert!(matches!(
+        VolumeMetadata::publish(
+            &test.store,
+            id,
+            &lease,
+            next,
+            manifest_id(),
+            &header,
+            NonZeroUsize::new(4).unwrap()
+        )
+        .await,
+        Err(MetadataError::Fenced(swarmy_core::FenceKind::VolumeLease))
+    ));
+}

@@ -140,3 +140,136 @@ where
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
+    use swarmy_core::LeaseOwnerId;
+
+    fn lease() -> Lease {
+        Lease {
+            owner: LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
+            seq: 1,
+            expires_at: jiff::Timestamp::now(),
+        }
+    }
+    fn fenced(error: &MetadataError) -> bool {
+        matches!(error, MetadataError::Fenced(FenceKind::VolumeLease))
+    }
+
+    #[tokio::test]
+    async fn lost_resolves_with_the_reported_error() {
+        let (sender, mut watch) =
+            WriterLease::channel(lease(), Instant::now() + Duration::from_secs(60));
+        sender
+            .send(LeaseStatus::Lost(Arc::new(MetadataError::Fenced(
+                FenceKind::VolumeLease,
+            ))))
+            .unwrap();
+        assert!(fenced(&*watch.lost().await));
+    }
+    #[tokio::test]
+    async fn lost_resolves_when_the_deadline_passes() {
+        let (_, mut watch) = WriterLease::channel(lease(), Instant::now());
+        assert!(fenced(&*watch.lost().await));
+    }
+    #[tokio::test]
+    async fn held_lease_with_a_future_deadline_is_not_lost() {
+        let held = lease();
+        let (_, mut watch) =
+            WriterLease::channel(held.clone(), Instant::now() + Duration::from_secs(3600));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), watch.lost())
+                .await
+                .is_err()
+        );
+        assert_eq!(watch.current().unwrap(), held);
+    }
+    #[tokio::test]
+    async fn renewal_moves_the_deadline() {
+        let held = lease();
+        let (sender, mut watch) =
+            WriterLease::channel(held.clone(), Instant::now() + Duration::from_millis(100));
+        sender
+            .send(LeaseStatus::Held {
+                lease: held,
+                deadline: Instant::now() + Duration::from_secs(3600),
+            })
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), watch.lost())
+                .await
+                .is_err()
+        );
+    }
+    #[tokio::test]
+    async fn current_refuses_a_lost_or_expired_lease() {
+        let (_, expired) = WriterLease::channel(lease(), Instant::now());
+        assert!(matches!(
+            expired.current(),
+            Err(MetadataError::Fenced(FenceKind::VolumeLease))
+        ));
+        let (sender, lost) =
+            WriterLease::channel(lease(), Instant::now() + Duration::from_secs(60));
+        sender
+            .send(LeaseStatus::Lost(Arc::new(MetadataError::Fenced(
+                FenceKind::VolumeLease,
+            ))))
+            .unwrap();
+        assert!(matches!(
+            lost.current(),
+            Err(MetadataError::Fenced(FenceKind::VolumeLease))
+        ));
+    }
+    #[tokio::test]
+    async fn a_renewal_racing_a_call_retries_once() {
+        for same_sequence in [true, false] {
+            let first = lease();
+            let (sender, watch) =
+                WriterLease::channel(first.clone(), Instant::now() + Duration::from_secs(60));
+            let calls = AtomicUsize::new(0);
+            let result = with_current_lease(&watch, |current| {
+                let sender = sender.clone();
+                let calls = &calls;
+                let first = first.clone();
+                async move {
+                    if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        let next = Lease {
+                            seq: first.seq + u64::from(!same_sequence),
+                            expires_at: first
+                                .expires_at
+                                .checked_add(Duration::from_secs(30))
+                                .unwrap(),
+                            ..first
+                        };
+                        sender
+                            .send(LeaseStatus::Held {
+                                lease: next,
+                                deadline: Instant::now() + Duration::from_secs(60),
+                            })
+                            .unwrap();
+                        Err(MetadataError::Fenced(FenceKind::VolumeLease))
+                    } else {
+                        Ok(current)
+                    }
+                }
+            })
+            .await;
+            if same_sequence {
+                assert!(result.is_ok());
+                assert_eq!(calls.load(Ordering::SeqCst), 2);
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(MetadataError::Fenced(FenceKind::VolumeLease))
+                ));
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+            }
+        }
+    }
+}

@@ -191,3 +191,28 @@ impl Store {
         (RenewalTask::new(handle), watch)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    #[test]
+    fn store_errors_map_to_metadata_errors() {
+        assert!(matches!(
+            MetadataError::from(StoreError::Fence(FenceError::VolumeLeaseMismatch)),
+            MetadataError::Fenced(FenceKind::VolumeLease)
+        ));
+        assert!(matches!(
+            MetadataError::from(StoreError::Fence(FenceError::VolumeHeadMismatch)),
+            MetadataError::Fenced(FenceKind::VolumeHead)
+        ));
+        assert!(matches!(
+            MetadataError::from(StoreError::Storage(StorageError::CommitUnknown)),
+            MetadataError::CommitUnknown
+        ));
+        assert!(matches!(
+            MetadataError::from(StoreError::Fence(FenceError::GcLeaseMismatch)),
+            MetadataError::Failed(_)
+        ));
+    }
+}
