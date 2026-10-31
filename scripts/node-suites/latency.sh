@@ -4,6 +4,9 @@
 # The namespaces have no route out, so the base image is built on the host and
 # pulled inside the primary namespace from a static server on its loopback,
 # laid out like a release (SHA256SUMS plus the image tarball).
+# The node namespace gets a default route to the primary only because pasta,
+# which gives each sandbox its network, needs a default-route interface to
+# copy; the primary does not forward, so there is still no way out.
 set -uo pipefail
 branch=$1
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -94,7 +97,8 @@ if ! { sudo ip netns add "$primary_ns" && sudo ip netns add "$node_ns" \
   && sudo ip -n "$primary_ns" addr add "$primary_ip/30" dev swl-p \
   && sudo ip -n "$node_ns" addr add "$node_ip/30" dev swl-n \
   && sudo ip -n "$primary_ns" link set lo up && sudo ip -n "$node_ns" link set lo up \
-  && sudo ip -n "$primary_ns" link set swl-p up && sudo ip -n "$node_ns" link set swl-n up; }; then
+  && sudo ip -n "$primary_ns" link set swl-p up && sudo ip -n "$node_ns" link set swl-n up \
+  && sudo ip -n "$node_ns" route add default via "$primary_ip" dev swl-n; }; then
   echo "namespace setup failed"; echo "SUITES_EXIT=1"; exit 2
 fi
 as_user_in_primary scripts/dev-stack.sh start "$primary_ip" 2>&1 | tail -2
