@@ -4050,7 +4050,6 @@ version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
- "blake3",
  "foundationdb",
  "futures",
  "jiff",
@@ -4308,7 +4307,6 @@ name = "swarmy-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "blake3",
  "futures",
  "jiff",
  "rustix",
