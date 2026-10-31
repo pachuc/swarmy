@@ -80,7 +80,7 @@ The `aws` module implements the same thirteen inputs with these meanings:
 | `swarm`, `group`, `machine_count` | Names and number of EC2 machines |
 | `size` | EC2 instance type, such as m6i.large |
 | `location` | AWS region for the machines and network |
-| `image` | Current Canonical Ubuntu 24.04 SSM image or explicit AMI id |
+| `image` | Current Canonical Ubuntu 24.04 SSM image, an explicit AMI id, or a public SSM parameter path under `/aws/service/` |
 | `ssh_public_key` | The group's EC2 key pair (RSA or ed25519) |
 | `labels` | Resource tags; swarmy's three ownership tags win |
 | `ssh_allowed_cidrs` | SSH ingress from these IPv4 and IPv6 CIDRs |
@@ -134,11 +134,12 @@ run against real Scaleway.
 
 Swarmy keeps one OpenTofu working directory per machine group beneath the
 swarm's record directory. It writes the swarm and group names, machine count,
-optional size and location, one group SSH public key, SSH CIDRs, bucket name,
+optional size and location, the image when the group sets one, one group SSH public key, SSH CIDRs, bucket name,
 force-destroy flag, and network ID to the variables file. Each group has its
 own private SSH key pair. The stack group is applied first, followed by the
 services group when distinct and the node groups in placement order. A
-`network_id` output is passed only to later groups using the same module;
+`network_id` output is passed to later groups using the same module and to
+elastic groups of that module, which the provisioner applies on the primary;
 custom path modules may omit it. Custom module paths must be absolute.
 
 Only a hetzner-cloud stack group without a spec bucket creates an object

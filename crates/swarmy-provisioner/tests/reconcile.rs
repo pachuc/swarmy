@@ -117,6 +117,8 @@ impl Fixture {
                 service_user: "swarmy".into(),
                 autoscale,
                 external_bucket: false,
+                network_id: String::new(),
+                image: None,
             })
             .await
             .unwrap();
@@ -255,6 +257,11 @@ async fn scale_up_down_and_backup() {
         (0, 2, false)
     );
     assert_eq!(f.log().matches("apply machine_count=2").count(), 1);
+    let path = swarmy_cloud::provision::groups::group_dir(&f.temp.path().join("data"), "gpu")
+        .join(swarmy_infra::VARIABLES_FILE);
+    let vars: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(vars["network_id"], "");
+    assert!(vars.get("image").is_none());
     assert!(f.log().contains("env SCW_ACCESS_KEY"));
     assert!(
         f.store
@@ -1509,4 +1516,33 @@ async fn manual_scale_on_an_autoscaled_group_is_a_starting_point() {
     *f.clock.lock().unwrap() += Duration::from_mins(1);
     f.reconciler.tick(&mut holder).await.unwrap();
     assert_eq!(desired_count(&f).await, 0);
+}
+
+#[tokio::test]
+async fn elastic_group_joins_the_swarm_network_with_its_image() {
+    let Some(f) = Fixture::new(true, 1).await else {
+        return;
+    };
+    let definition = f
+        .store
+        .get_elastic_group("gpu")
+        .await
+        .unwrap()
+        .unwrap()
+        .definition;
+    f.store
+        .put_elastic_group(&ElasticGroupDefinition {
+            network_id: "4711".into(),
+            image: Some("ubuntu_jammy".into()),
+            ..definition
+        })
+        .await
+        .unwrap();
+    f.desired(1).await;
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    let path = swarmy_cloud::provision::groups::group_dir(&f.temp.path().join("data"), "gpu")
+        .join(swarmy_infra::VARIABLES_FILE);
+    let vars: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(vars["network_id"], "4711");
+    assert_eq!(vars["image"], "ubuntu_jammy");
 }

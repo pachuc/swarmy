@@ -306,13 +306,26 @@ hetzner-cloud and the spec has no `[bucket]` section.
 
 Hetzner and AWS groups of the same module share a network, so they must be
 in the same Hetzner network zone (fsn1, nbg1 and hel1 count as one zone) or
-the same AWS region; otherwise up refuses. Scaleway groups create no private
-network. Swarmy waits for SSH and cloud-init, the
+the same AWS region; otherwise up refuses. This includes elastic groups: an
+elastic group joins the network of the first group of its module that `swarm up`
+applied, so it must be in the same Hetzner network zone or AWS region too.
+`swarm up` records each group's network in the swarm record; run `swarm up`
+and then `swarm scale` again after upgrading so the provisioner learns it.
+Scaleway groups create no private network. Swarmy waits for SSH and cloud-init, the
 machine's first-boot configuration service, before provisioning hosts. Cloud
 and existing-host groups can coexist in a mixed swarm. Down destroys OpenTofu
 groups in reverse order and removes the bucket with the data.
 `SWARMY_TOFU_BIN` is a development and test override for the pinned,
 checksum-verified OpenTofu download.
+
+A group that creates machines may set `image` to choose the machine image;
+without it the module default is used (Ubuntu 24.04). Hetzner takes an image
+name or id, Scaleway an image label or UUID, AWS an AMI id or a public SSM
+parameter path under `/aws/service/`, for example the Deep Learning Base OSS
+NVIDIA Driver image
+`/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id`.
+Swarmy provisioning expects Ubuntu. The image cannot change once the group has
+machines.
 
 ### Minimum node size
 
@@ -531,7 +544,7 @@ For tests and dev stacks only, `[node.fake_gpu]` with `model`, `memory_mib`, and
 without probing. Local services do not inherit shell variables, so use the TOML
 form for local swarms. The override only advertises cards; it exposes no device.
 
-Provisioning prepares a machine that has an NVIDIA card. When `nvidia-smi` is missing (plain Ubuntu), it installs the `nvidia-driver-580-server` package; images with a preinstalled driver, such as Scaleway's GPU OS, skip that step. It then waits up to 30 seconds for `nvidia-smi` to answer; if the new driver still does not load, provisioning prints `nvidia-smi`'s error and asks for a reboot and a rerun. On AWS g6 machines with plain Ubuntu 24.04 no reboot was needed (driver 580 server, about 3 minutes to install). It installs NVIDIA's container toolkit from NVIDIA's package repository when `nvidia-ctk` is missing, and then writes a CDI spec with `nvidia-ctk cdi generate --output=/etc/cdi/nvidia.json --format=json`. CDI, the Container Device Interface, is a JSON file that lists the device nodes, driver library mounts, environment variables and hooks a container needs to use the card.
+Provisioning prepares a machine that has an NVIDIA card. When `nvidia-smi` is missing (plain Ubuntu), it installs the `nvidia-driver-580-server` package; images with a preinstalled driver, such as Scaleway's GPU OS (on AWS, the Deep Learning Base OSS NVIDIA Driver image through `image`), skip that step. It then waits up to 30 seconds for `nvidia-smi` to answer; if the new driver still does not load, provisioning prints `nvidia-smi`'s error and asks for a reboot and a rerun. On AWS g6 machines with plain Ubuntu 24.04 no reboot was needed (driver 580 server, about 3 minutes to install). It installs NVIDIA's container toolkit from NVIDIA's package repository when `nvidia-ctk` is missing, and then writes a CDI spec with `nvidia-ctk cdi generate --output=/etc/cdi/nvidia.json --format=json`. CDI, the Container Device Interface, is a JSON file that lists the device nodes, driver library mounts, environment variables and hooks a container needs to use the card.
 
 The node reads that spec once at start, from `[node] cdi_spec` (`SWARMY_NODE_CDI_SPEC`, default `/etc/cdi/nvidia.json`, JSON only). A node that finds cards but cannot use the spec logs an error and advertises no cards, so no GPU sandbox is placed there; rerun provisioning to fix it. A sandbox with a `shared` or `dedicated` requirement gets the spec's own edits plus those of its `all` device: every card on the node, the driver libraries, NVIDIA's setup hooks, and `NVIDIA_DRIVER_CAPABILITIES=graphics,display,compute,utility`. It gets no extra Linux capability. Sandboxes without a GPU requirement are unchanged. Fake cards expose no device. A driver upgrade renames library files, so rerun provisioning after one.
 

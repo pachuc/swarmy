@@ -18,6 +18,8 @@ fn definition(group: &str) -> ElasticGroupDefinition {
         service_user: "swarmy".into(),
         autoscale: false,
         external_bucket: false,
+        network_id: String::new(),
+        image: None,
     }
 }
 #[tokio::test]

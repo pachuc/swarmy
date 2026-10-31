@@ -852,6 +852,8 @@ pub(crate) fn elastic_group(record: &swarmy_core::ElasticGroupRecord) -> api::El
         settled: record.settled(),
         updated_at: record.updated_at.to_string(),
         external_bucket: definition.external_bucket,
+        network_id: definition.network_id.clone(),
+        image: definition.image.clone(),
     }
 }
 

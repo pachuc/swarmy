@@ -332,6 +332,7 @@ fn mixed_cloud_stack_and_existing_nodes() {
             module: swarmy_config::swarm::Module::Existing,
             size: None,
             location: None,
+            image: None,
             count: None,
             stack_dir: None,
             sandboxes: None,

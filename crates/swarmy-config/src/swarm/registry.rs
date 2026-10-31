@@ -179,6 +179,7 @@ impl Registry {
             tofu_bucket: None,
             tofu_bucket_endpoint: None,
             tofu_bucket_region: None,
+            tofu_networks: std::collections::BTreeMap::new(),
         })
     }
     /// Set the API endpoint of a managed swarm while preserving its identity and machines.
@@ -198,6 +199,7 @@ impl Registry {
             tofu_bucket: None,
             tofu_bucket_endpoint: None,
             tofu_bucket_region: None,
+            tofu_networks: std::collections::BTreeMap::new(),
         });
         record.api.url = Some(url.into());
         record.api.token = Some(token.into());
@@ -317,6 +319,7 @@ pub(super) mod tests {
                     module: Module::Existing,
                     size: None,
                     location: None,
+                    image: None,
                     count: None,
                     stack_dir: None,
                     hosts: vec![crate::swarm::HostSpec {
@@ -394,6 +397,7 @@ pub(super) mod tests {
             tofu_bucket: None,
             tofu_bucket_endpoint: None,
             tofu_bucket_region: None,
+            tofu_networks: std::collections::BTreeMap::new(),
         };
         r.write_record(&record).unwrap();
         r.write_record(&record).unwrap();

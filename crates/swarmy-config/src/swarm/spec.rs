@@ -75,6 +75,9 @@ pub struct GroupSpec {
     pub size: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
+    /// Machine image for groups that create machines; unset uses the module default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -255,6 +258,16 @@ fn group_failure(swarm: &str, g: &str, group: &GroupSpec, node_only: bool) -> Op
     if let Some(message) = elastic_failure(swarm, g, group) {
         return Some(message);
     }
+    if let Some(image) = &group.image {
+        if matches!(group.module, Module::Existing | Module::Local) {
+            return Some(format!(
+                "group \"{g}\": image applies only to groups that create machines"
+            ));
+        }
+        if image.is_empty() {
+            return Some(format!("group \"{g}\": image must not be empty"));
+        }
+    }
     if group.stack_dir.is_some() && group.module != Module::Local {
         return Some(format!(
             "group \"{g}\": stack_dir applies only to local groups"
@@ -344,6 +357,7 @@ impl SwarmSpec {
                     module: Module::Local,
                     size: None,
                     location: None,
+                    image: None,
                     count: None,
                     hosts: vec![],
                     stack_dir,
@@ -829,6 +843,26 @@ nodes = ["box"]
         }
     }
     #[test]
+    fn cloud_image_round_trip_and_empty_validation() {
+        let mut spec = SwarmSpec::parse(CLOUD).unwrap();
+        let group = spec.groups.get_mut("workers").unwrap();
+        group.image = Some(String::new());
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("image must not be empty")
+        );
+        spec.groups.get_mut("workers").unwrap().image = Some("ubuntu-24.04".into());
+        let text = toml::to_string(&spec).unwrap();
+        assert_eq!(
+            SwarmSpec::parse(&text).unwrap().groups["workers"]
+                .image
+                .as_deref(),
+            Some("ubuntu-24.04")
+        );
+    }
+    #[test]
     fn existing_and_local_validation() {
         for (text, change, expected) in [
             (
@@ -845,6 +879,11 @@ nodes = ["box"]
                 EXISTING,
                 "size",
                 "group \"box\": size and location apply only to groups that create machines",
+            ),
+            (
+                EXISTING,
+                "image",
+                "group \"box\": image applies only to groups that create machines",
             ),
             (
                 EXISTING,
@@ -867,6 +906,7 @@ nodes = ["box"]
                 "hosts" => spec.groups.get_mut("box").unwrap().hosts.clear(),
                 "count" => spec.groups.get_mut("box").unwrap().count = Some(1),
                 "size" => spec.groups.get_mut("box").unwrap().size = Some("x".into()),
+                "image" => spec.groups.get_mut("box").unwrap().image = Some("x".into()),
                 "address" => spec.groups.get_mut("box").unwrap().hosts[0].address.clear(),
                 "local fields" => spec.groups.get_mut("local").unwrap().count = Some(1),
                 "local nodes" => spec.placement.nodes = vec!["local".into()],

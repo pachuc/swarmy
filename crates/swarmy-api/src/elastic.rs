@@ -54,6 +54,9 @@ fn definition(
         .map_err(|_| invalid("primary_address must be the stack host's public IPv4 address"))?;
     swarmy_config::validate_service_user(&body.service_user)
         .map_err(|error| invalid(error.to_string()))?;
+    if body.image.as_deref() == Some("") {
+        return Err(invalid("image must not be empty"));
+    }
     Ok(ElasticGroupDefinition {
         swarm: body.swarm.clone(),
         group,
@@ -68,6 +71,8 @@ fn definition(
         service_user: body.service_user.clone(),
         autoscale: body.autoscale,
         external_bucket: body.external_bucket,
+        network_id: body.network_id.clone(),
+        image: body.image.clone(),
     })
 }
 pub(super) async fn put(

@@ -14,9 +14,11 @@ locals {
   # Every machine of the swarm sits in this one subnet.
   private_range = local.create_network ? aws_subnet.this[0].cidr_block : data.aws_subnet.joined[0].cidr_block
 
-  architecture    = contains(data.aws_ec2_instance_type.this.supported_architectures, "arm64") ? "arm64" : "amd64"
-  lookup_image    = var.image == "ubuntu-24.04"
-  image_id        = local.lookup_image ? data.aws_ssm_parameter.ubuntu[0].insecure_value : var.image
+  architecture     = contains(data.aws_ec2_instance_type.this.supported_architectures, "arm64") ? "arm64" : "amd64"
+  ubuntu_parameter = "/aws/service/canonical/ubuntu/server/24.04/stable/current/${local.architecture}/hvm/ebs-gp3/ami-id"
+  # Canonical's Ubuntu and any /aws/service/ path are looked up; an AMI id is used as given.
+  image_parameter = var.image == "ubuntu-24.04" ? local.ubuntu_parameter : (startswith(var.image, "/") ? var.image : "")
+  image_id        = local.image_parameter == "" ? var.image : data.aws_ssm_parameter.image[0].insecure_value
   root_volume_gb  = 100
   bucket_region   = var.bucket_location != "" ? var.bucket_location : var.location
   bucket_endpoint = "https://s3.${local.bucket_region}.amazonaws.com"
@@ -25,9 +27,9 @@ locals {
 data "aws_ec2_instance_type" "this" {
   instance_type = var.size
 }
-data "aws_ssm_parameter" "ubuntu" {
-  count = local.lookup_image ? 1 : 0
-  name  = "/aws/service/canonical/ubuntu/server/24.04/stable/current/${local.architecture}/hvm/ebs-gp3/ami-id"
+data "aws_ssm_parameter" "image" {
+  count = local.image_parameter == "" ? 0 : 1
+  name  = local.image_parameter
 }
 data "aws_subnet" "joined" {
   count = local.create_network ? 0 : 1
@@ -125,7 +127,7 @@ resource "aws_instance" "this" {
     delete_on_termination = true
   }
   lifecycle {
-    # The Ubuntu parameter moves and a key pair is fixed at launch.
+    # The image parameter moves and a key pair is fixed at launch.
     ignore_changes = [ami, key_name]
   }
   # The internet route must exist before first boot.
