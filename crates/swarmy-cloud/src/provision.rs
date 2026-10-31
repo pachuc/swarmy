@@ -579,8 +579,12 @@ fn service_options(
             ..Default::default()
         };
         let options = services::Options::new(&settings, true, user(spec), request.copy_credential)?;
-        Some(if request.recipe.is_some() {
-            options.with_default_image(&format!("base-ubuntu:{}", spec.name))?
+        Some(if let Some(recipe) = request.recipe {
+            options.with_default_image(&format!(
+                "{}:{}",
+                crate::node_files::recipe_image_name(recipe)?,
+                spec.name
+            ))?
         } else {
             options
         })
@@ -630,7 +634,8 @@ async fn provision_one(
         registry.write_record(record)?;
         if let Some(recipe) = request.recipe {
             cloud_out!(
-                "Building base-ubuntu:{} (this takes several minutes)",
+                "Building {}:{} (this takes several minutes)",
+                crate::node_files::recipe_image_name(recipe)?,
                 spec.name
             );
             host.build_image(&machine, &address, recipe, &spec.name)

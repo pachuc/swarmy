@@ -8,7 +8,11 @@ and OpenGL and Vulkan through one shared setup script,
 adds the Rust toolchain and is the image every fleet worker runs. Without a
 GPU, rendering runs on the CPU through Mesa's llvmpipe and lavapipe. Mesa is
 the standard open-source OpenGL and Vulkan implementation on Linux. In a
-sandbox with a card, the display runs on the card instead.
+sandbox with a card, the display runs on the card instead. Text uses DejaVu
+and Liberation, plus WenQuanYi Micro Hei for Chinese, Japanese and Korean, so
+CJK pages render in screenshots instead of empty boxes. It adds about 5 MB to
+the image; Noto CJK would add about 91 MB. Japanese kanji draw in Chinese
+glyph forms.
 
 ## GPU sandboxes
 

@@ -69,7 +69,7 @@ pub(crate) fn script() -> serde_json::Map<String, Value> {
         json!({}),
         json!({}),
         json!({"command":"cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo unavailable"}),
-        json!({"command":"cat /run/swarmy-display/renderer && glxinfo -B | grep 'OpenGL renderer string' && vulkaninfo --summary 2>/dev/null | grep -E 'deviceType|driverID'"}),
+        json!({"command":"cat /run/swarmy-display/renderer && glxinfo -B | grep 'OpenGL renderer string' && vulkaninfo --summary 2>/dev/null | grep -E 'deviceType|driverID' && fc-list ':lang=zh-cn' family"}),
     ];
     let mut responses: serde_json::Map<_, _> = inputs
         .into_iter()
@@ -243,6 +243,7 @@ fn verify_tools(events: &[Event]) -> Result<(Vec<&str>, ToolCompletions<'_>)> {
             }
             if index == RENDERER {
                 verify_software_renderer(&bash.stdout)?;
+                verify_cjk_font(&bash.stdout)?;
             }
         }
         if index == SETTINGS_SNAPSHOT {
@@ -277,6 +278,16 @@ fn verify_software_renderer(stdout: &str) -> Result<()> {
             && stdout.contains("PHYSICAL_DEVICE_TYPE_CPU")
             && !stdout.contains("PHYSICAL_DEVICE_TYPE_DISCRETE_GPU"),
         "desktop Vulkan is not lavapipe alone: {stdout}"
+    );
+    Ok(())
+}
+
+/// Screenshots of Chinese, Japanese or Korean pages need a CJK font; without
+/// one the text draws as empty boxes.
+fn verify_cjk_font(stdout: &str) -> Result<()> {
+    ensure!(
+        stdout.contains("WenQuanYi Micro Hei"),
+        "desktop image has no CJK font: {stdout}"
     );
     Ok(())
 }
@@ -429,6 +440,14 @@ mod tests {
         assert!(verify_software_renderer(&card).is_err());
         let hardware_gl = good.replace("llvmpipe (LLVM", "NVIDIA L4/PCIe/SSE2 (");
         assert!(verify_software_renderer(&hardware_gl).is_err());
+    }
+
+    #[test]
+    fn cjk_font_check_needs_wenquanyi() {
+        assert!(
+            verify_cjk_font("software\nWenQuanYi Micro Hei,文泉驛微米黑,文泉驿微米黑\n").is_ok()
+        );
+        assert!(verify_cjk_font("software\nOpenGL renderer string: llvmpipe\n").is_err());
     }
 
     #[test]

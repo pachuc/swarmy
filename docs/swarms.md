@@ -204,6 +204,20 @@ already marked provisioned in the record. Node add writes the new host to the
 spec, discarding comments, then provisions it. Down keeps the spec so the
 swarm can be provisioned again.
 
+Up builds an image recipe carried by the client on the primary, registers it
+as `DIRECTORY-NAME:SWARM` and makes it the swarm's default image:
+`images/base-ubuntu` by default, so `base-ubuntu:demo`. `--image-recipe
+images/swarmy-dev` builds `swarmy-dev:demo` instead, and `--no-image` skips
+the build. To use a recipe the client does not carry, build it as root on a
+Linux machine and register it with the swarm through its API:
+
+```sh
+sudo -E env HOME="$HOME" swarmy --swarm demo image build ./my-recipe --tag v1
+```
+
+The image is registered as `my-recipe:v1`; sessions select it with
+`--image my-recipe:v1`.
+
 S3 is an object-storage API for buckets and keys. The backing object store
 can use a compatible service. Add public bucket coordinates to the spec,
 never keys:

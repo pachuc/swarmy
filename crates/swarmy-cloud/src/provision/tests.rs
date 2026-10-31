@@ -354,6 +354,11 @@ async fn up_provisions_in_order_and_records_the_token() {
             "provision fleet-workers-2 primary=fleet-control-1 bucket=none"
         ]
     );
+    let config: Settings = toml::from_str(&fake.configs()[0]).unwrap();
+    assert_eq!(
+        config.selection.default_image.as_deref(),
+        Some("base-ubuntu:fleet")
+    );
     let record = registry.read_record("fleet").unwrap().unwrap();
     assert!(record.hosts.values().flatten().all(|h| h.provisioned));
     assert_eq!(record.api.token.as_deref(), Some("node-token"));
@@ -366,6 +371,32 @@ async fn up_provisions_in_order_and_records_the_token() {
     }
     assert_eq!(registry.current().unwrap().as_deref(), Some("fleet"));
 }
+#[tokio::test]
+async fn up_with_another_recipe_defaults_to_its_own_image() {
+    let (_tmp, registry, spec) = fixture();
+    let fake = FakeHost::new();
+    provision_swarm_with(
+        &fake,
+        request(
+            &registry,
+            &spec,
+            &settings(),
+            Some(Path::new("images/swarmy-dev")),
+        ),
+    )
+    .await
+    .unwrap();
+    let config: Settings = toml::from_str(&fake.configs()[0]).unwrap();
+    assert_eq!(
+        config.selection.default_image.as_deref(),
+        Some("swarmy-dev:fleet")
+    );
+    assert!(
+        fake.calls()
+            .contains(&"image fleet-control-1 fleet".to_owned())
+    );
+}
+
 #[tokio::test]
 async fn up_rerun_skips_provisioned_hosts_and_node_add_provisions_only_the_new_one() {
     let (_tmp, registry, mut spec) = fixture();
