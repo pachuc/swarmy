@@ -64,12 +64,18 @@ impl MetricsWriter {
         crate::keys::Keys::new(&self.root)
     }
 
-    async fn transaction<T, F, Fut>(&self, operation: F) -> Result<T>
+    #[track_caller]
+    fn transaction<T, F, Fut>(&self, operation: F) -> impl Future<Output = Result<T>>
     where
         F: Fn(foundationdb::RetryableTransaction) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        crate::run_transaction(&self.db, &self.transactions, operation).await
+        crate::run_transaction(
+            &self.db,
+            &self.transactions,
+            std::panic::Location::caller(),
+            operation,
+        )
     }
 }
 
