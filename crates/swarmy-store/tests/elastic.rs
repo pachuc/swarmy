@@ -17,6 +17,7 @@ fn definition(group: &str) -> ElasticGroupDefinition {
         primary_address: "192.0.2.1".parse().unwrap(),
         service_user: "swarmy".into(),
         autoscale: false,
+        external_bucket: false,
     }
 }
 #[tokio::test]

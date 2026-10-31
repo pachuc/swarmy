@@ -26,6 +26,10 @@ pub struct ElasticGroupDefinition {
     /// machines. Set it only on a group whose machines have an NVIDIA card. At most
     /// one group of a swarm autoscales.
     pub autoscale: bool,
+    /// Whether joined machines use the swarm's external bucket with the
+    /// primary's S3 settings. False means the stack host runs its own object
+    /// store and machines reach it through their SSH tunnel.
+    pub external_bucket: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ElasticGroupRecord {
@@ -66,6 +70,7 @@ mod tests {
                 primary_address: std::net::Ipv4Addr::new(192, 0, 2, 1),
                 service_user: "swarmy".into(),
                 autoscale: false,
+                external_bucket: true,
             },
             desired: 1,
             desired_cause: crate::MachineCause::from_reason("manual"),
@@ -80,7 +85,7 @@ mod tests {
             [
                 1, 1, 115, 1, 103, 3, 97, 119, 115, 1, 120, 2, 101, 117, 1, 6, 100, 105, 114, 58,
                 47, 120, 2, 176, 227, 45, 3, 69, 85, 82, 192, 0, 2, 1, 6, 115, 119, 97, 114, 109,
-                121, 0, 1, 0, 0, 6, 109, 97, 110, 117, 97, 108, 1, 0, 0, 20, 49, 57, 55, 48, 45,
+                121, 0, 1, 1, 0, 0, 6, 109, 97, 110, 117, 97, 108, 1, 0, 0, 20, 49, 57, 55, 48, 45,
                 48, 49, 45, 48, 49, 84, 48, 48, 58, 48, 48, 58, 48, 48, 90
             ]
         );

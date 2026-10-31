@@ -60,7 +60,6 @@ pub struct GroupPlan {
 }
 pub(crate) struct Applied {
     pub(crate) sources: Vec<HostSource>,
-    pub(crate) bucket: Option<BucketSpec>,
 }
 fn root(dir: &Path) -> PathBuf {
     dir.join("tofu")
@@ -587,10 +586,7 @@ pub(crate) async fn apply(
             created: true,
         }));
     }
-    Ok(Applied {
-        sources,
-        bucket: bucket.and_then(|_| bucket_from(record, machines.credentials)),
-    })
+    Ok(Applied { sources })
 }
 /// Plan each group without applying or marking state as created.
 /// # Errors

@@ -52,6 +52,7 @@ fn group_body(key: &str) -> PutElasticGroup {
         primary_address: "192.0.2.1".into(),
         service_user: "swarmy".into(),
         autoscale: false,
+        external_bucket: true,
     }
 }
 
@@ -85,6 +86,7 @@ async fn assert_registration(client: &reqwest::Client, base: &str) {
     assert!(response.status().is_success());
     let registered: ElasticGroup = response.json().await.unwrap();
     assert_eq!(registered.price_per_hour, "0.75");
+    assert!(registered.external_bucket);
     assert_eq!(registered.desired, 0);
     assert_eq!(
         client

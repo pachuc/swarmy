@@ -303,6 +303,7 @@ mod tests {
                 primary_address: std::net::Ipv4Addr::LOCALHOST,
                 service_user: "swarmy".into(),
                 autoscale: true,
+                external_bucket: false,
             },
             desired,
             desired_cause: MachineCause::from_reason("manual"),

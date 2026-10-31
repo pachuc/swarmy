@@ -227,6 +227,14 @@ fn node(p: &Planned, user: &str, bucket: Option<&swarmy_config::BucketSpec>) -> 
     machine.bucket = bucket.cloned();
     machine
 }
+/// Whether the swarm's nodes use an external bucket: one named in the spec's
+/// `[bucket]`, or one `OpenTofu` created for a hetzner-cloud stack group. When
+/// false, the stack host runs its own object store and nodes reach it through
+/// their SSH tunnel. `swarm up`, `node add`, and elastic joins all follow this.
+#[must_use]
+pub fn external_bucket(spec: &SwarmSpec, record: &SwarmRecord) -> bool {
+    spec.bucket.is_some() || record.tofu_bucket.is_some()
+}
 fn bucket_spec(spec: &SwarmSpec, record: &SwarmRecord) -> Option<swarmy_config::BucketSpec> {
     let bucket = spec.bucket.as_ref()?;
     let keys = record.bucket_keys.as_ref()?;
@@ -402,7 +410,7 @@ async fn provision_swarm_with_backend(
         primary_done,
         bucket_spec(spec, &record).as_ref(),
     )?;
-    let applied = if groups::has_module_groups(spec) {
+    if groups::has_module_groups(spec) {
         let machines = request.machines.as_ref().ok_or_else(|| {
             Error::other(format!(
                 "swarm {} has OpenTofu groups; this caller passed no OpenTofu runner",
@@ -410,14 +418,14 @@ async fn provision_swarm_with_backend(
             ))
         })?;
         let applied = groups::apply(machines, request.registry, spec, &mut record).await?;
-        sources.extend(applied.sources.clone());
-        Some(applied)
-    } else {
-        None
-    };
-    let bucket = applied
-        .and_then(|a| a.bucket)
-        .or_else(|| bucket_spec(spec, &record));
+        sources.extend(applied.sources);
+    }
+    let bucket = effective_bucket(
+        request.registry,
+        spec,
+        &record,
+        request.machines.as_ref().map(|m| m.credentials),
+    )?;
     let planned = plan(spec, sources)?;
     reconcile(&planned, &record)?;
     let primary = planned
@@ -680,20 +688,22 @@ fn effective_bucket(
     record: &SwarmRecord,
     credentials: Option<&swarmy_config::cloud::CloudCredentials>,
 ) -> Result<Option<swarmy_config::BucketSpec>> {
-    if spec.bucket.is_none() && record.tofu_bucket.is_some() {
-        let loaded;
-        let credentials = if let Some(credentials) = credentials {
-            credentials
-        } else {
-            loaded = swarmy_config::cloud::CloudCredentials::load(
-                &swarmy_config::cloud::CloudCredentials::path(registry.dirs()),
-            )?;
-            &loaded
-        };
-        Ok(groups::bucket_from(record, credentials))
-    } else {
-        Ok(bucket_spec(spec, record))
+    if !external_bucket(spec, record) {
+        return Ok(None);
     }
+    if spec.bucket.is_some() {
+        return Ok(bucket_spec(spec, record));
+    }
+    let loaded;
+    let credentials = if let Some(credentials) = credentials {
+        credentials
+    } else {
+        loaded = swarmy_config::cloud::CloudCredentials::load(
+            &swarmy_config::cloud::CloudCredentials::path(registry.dirs()),
+        )?;
+        &loaded
+    };
+    Ok(groups::bucket_from(record, credentials))
 }
 fn recorded_plan(registry: &Registry, spec: &SwarmSpec) -> Result<(SwarmRecord, Vec<Planned>)> {
     let record = registry.read_record(&spec.name)?.ok_or_else(|| {

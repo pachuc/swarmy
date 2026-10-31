@@ -98,7 +98,7 @@ impl Fixture {
         .with_tofu(Tofu::from_binary(link, &temp.path().join("cache")));
         let reconciler = if let Some(nodes) = nodes {
             nodes.set_store(store.clone(), temp.path().join("tofu.log"));
-            reconciler.with_nodes(nodes, None)
+            reconciler.with_nodes(nodes, Some(swarmy_config::BucketSpec::aws("swarm-bucket")))
         } else {
             reconciler
         };
@@ -116,6 +116,7 @@ impl Fixture {
                 primary_address: "192.0.2.1".parse().unwrap(),
                 service_user: "swarmy".into(),
                 autoscale,
+                external_bucket: false,
             })
             .await
             .unwrap();
@@ -192,13 +193,14 @@ fn sandbox_node(id: NodeId, now: Timestamp) -> NodeRecord {
 impl Nodes for FakeNodes {
     async fn join(&self, node: &Machine, _primary: &LocalPrimary) -> anyhow::Result<()> {
         self.calls.lock().unwrap().push(format!(
-            "join {} {} {} sandboxes={} storage={} node={}",
+            "join {} {} {} sandboxes={} storage={} node={} bucket={}",
             node.name,
             node.public_ip,
             node.ssh_user,
             node.sandboxes,
             node.local_storage,
-            node.node_id.unwrap()
+            node.node_id.unwrap(),
+            node.bucket.as_ref().map_or("tunnel", |b| b.bucket.as_str())
         ));
         if let Some(error) = self.join_error.lock().unwrap().clone() {
             anyhow::bail!("{error}")
@@ -858,7 +860,7 @@ async fn new_machine_joins_and_wakes_capacity_waits() {
     assert_eq!(
         nodes.calls(),
         vec![format!(
-            "join fleet-gpu-1 203.0.113.11 root sandboxes=1 storage=dir:/tmp node={}",
+            "join fleet-gpu-1 203.0.113.11 root sandboxes=1 storage=dir:/tmp node={} bucket=tunnel",
             row.machine_id.joined_node_id()
         )]
     );
@@ -873,6 +875,37 @@ async fn new_machine_joins_and_wakes_capacity_waits() {
             .unwrap()
             .state,
         SessionState::Runnable
+    );
+}
+#[tokio::test]
+async fn external_bucket_groups_join_with_the_primary_bucket() {
+    let nodes = Arc::new(FakeNodes::default());
+    let Some(f) = Fixture::with_nodes(1, nodes.clone()).await else {
+        return;
+    };
+    let definition = f
+        .store
+        .get_elastic_group("gpu")
+        .await
+        .unwrap()
+        .unwrap()
+        .definition;
+    f.store
+        .put_elastic_group(&ElasticGroupDefinition {
+            external_bucket: true,
+            ..definition
+        })
+        .await
+        .unwrap();
+    f.desired(1).await;
+    f.reconciler.tick(&mut Holder::new()).await.unwrap();
+    let row = &f.records().await[0];
+    assert_eq!(
+        nodes.calls(),
+        vec![format!(
+            "join fleet-gpu-1 203.0.113.11 root sandboxes=1 storage=dir:/tmp node={} bucket=swarm-bucket",
+            row.machine_id.joined_node_id()
+        )]
     );
 }
 #[tokio::test]

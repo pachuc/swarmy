@@ -67,6 +67,7 @@ fn definition(
         primary_address,
         service_user: body.service_user.clone(),
         autoscale: body.autoscale,
+        external_bucket: body.external_bucket,
     })
 }
 pub(super) async fn put(

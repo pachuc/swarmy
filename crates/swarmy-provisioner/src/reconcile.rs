@@ -133,6 +133,7 @@ impl Reconciler {
         }
     }
     #[must_use]
+    /// The primary bucket is used only for definitions with `external_bucket`.
     pub fn with_nodes(
         mut self,
         nodes: Arc<dyn crate::Nodes>,
@@ -253,7 +254,12 @@ impl Reconciler {
             &def.service_user,
             def.sandboxes,
             &def.local_storage,
-            self.bucket.clone(),
+            // False means the stack's own object store through the node's tunnel.
+            if def.external_bucket {
+                self.bucket.clone()
+            } else {
+                None
+            },
             record.machine_id.joined_node_id(),
         )
     }
