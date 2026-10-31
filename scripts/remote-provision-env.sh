@@ -271,7 +271,7 @@ swarmy_unit_role() {
     swarmy_unit_table | awk -F: -v unit="${1-}" '$1 == unit { print $2 }'
 }
 
-# Node-service units (scheduler, worker, gateway, api), in table order.
+# Node-service units (scheduler, worker, gateway, api, node-api), in table order.
 swarmy_service_units() {
     swarmy_unit_table | awk -F: '$4 == "service" { print $1 }'
 }

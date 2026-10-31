@@ -31,6 +31,7 @@ and systemd unit files in private node state. On a stack+services host, the unit
 | `swarmy-stack` | FoundationDB, NATS, object store |
 | `swarmyd` | Sandbox node |
 | `swarmy-api` | Control plane API |
+| `swarmy-node-api` | Authenticated node API on the stack host |
 | `swarmy-scheduler` | Scheduling |
 | `swarmy-worker` | Step execution |
 | `swarmy-gateway` | Inference gateway |

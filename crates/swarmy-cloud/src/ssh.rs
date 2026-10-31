@@ -1322,7 +1322,9 @@ async fn ensure_node_id(node: &Machine, address: &str) -> Result<swarmy_core::No
             node_id_command(node, id)?,
             tilde_repo(&service_user(node)?)
         ),
-        None => ensure_node_id_command(node, swarmy_core::NodeId::from_ulid(ulid::Ulid::new()))?,
+        None => {
+            ensure_node_id_command(node, swarmy_core::NodeId::from_ulid(ulid::Ulid::generate()))?
+        }
     };
     let output = run_output(
         &mut node_command(node, address, &command)?,
@@ -2064,7 +2066,9 @@ mod provisioning_command_tests {
             .reveal(),
         ] {
             let error = super::issued_token(text.as_bytes(), id).unwrap_err();
-            assert!(!error.to_string().contains(&text));
+            if !text.is_empty() {
+                assert!(!error.to_string().contains(&text));
+            }
         }
     }
 
@@ -2105,6 +2109,7 @@ mod provisioning_command_tests {
         assert_eq!(&words[..4], &["sudo", "-u", "swarmy", "sh"]);
         let inner = words.last().unwrap();
         assert!(inner.starts_with("umask 077; mkdir -p"));
+        assert!(inner.contains("grep -vF --"));
         assert!(inner.contains("status=$?; if [ \"$status\" -le 1 ]; then mv"));
         assert!(inner.contains("else rm -f"));
         assert!(inner.contains("~swarmy/.ssh/authorized_keys"));
