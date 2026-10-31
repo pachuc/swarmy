@@ -7,10 +7,10 @@ use crate::{
     sync,
 };
 use axum::{Extension, Json, extract::State};
-use swarmy_core::LeaseOwnerId;
+use swarmy_core::{LeaseOwnerId, ManifestId, SessionId, is_boot_set_key};
 use swarmy_node_protocol::{
-    Ack, FenceKind, HostingCloseRequest, HostingOpenRequest, HostingOpenResponse,
-    HostingReadyRequest, NodeRefusal, WRITER_LEASE,
+    Ack, FenceKind, HostingBootSetRequest, HostingCloseRequest, HostingOpenRequest,
+    HostingOpenResponse, HostingReadyRequest, NodeRefusal, WRITER_LEASE,
 };
 use swarmy_store::{FenceError, OpenHosting, StoreError};
 /// Open only a job dispatched to the caller; each store step is repeatable.
@@ -80,6 +80,7 @@ pub(crate) async fn open(
                 .map_err(Answer::from)
         },
     )?;
+    let boot_set = boot_set_for(&state.store, opening.head, request.job.session_id).await?;
     Ok(Json(HostingOpenResponse {
         server_now: now,
         placement,
@@ -88,7 +89,7 @@ pub(crate) async fn open(
         head: opening.head,
         header: opening.header,
         spec,
-        boot_set: None,
+        boot_set,
     }))
 }
 /// Record an address and enqueue boot metrics.
@@ -128,5 +129,44 @@ pub(crate) async fn close(
         .await?;
     }
     idempotent(|| state.store.release(&request.placement)).await?;
+    Ok(Json(Ack { server_now: now }))
+}
+
+/// Look up the head first, then the pinned image as a fallback.
+async fn boot_set_for(
+    store: &swarmy_store::Store,
+    head: ManifestId,
+    session: SessionId,
+) -> swarmy_store::Result<Option<String>> {
+    if let Some(key) = store.boot_set(head).await? {
+        return Ok(Some(key));
+    }
+    let Some(image) = store.pinned_image(session).await? else {
+        return Ok(None);
+    };
+    store.boot_set(image.manifest_id).await
+}
+
+/// Record a boot's set against the opened head and the session image.
+pub(crate) async fn boot_set(
+    State(state): State<NodeApiState>,
+    Extension(AuthenticatedNode(node)): Extension<AuthenticatedNode>,
+    Json(request): Json<HostingBootSetRequest>,
+) -> Result<Json<Ack>, Answer> {
+    let now = state.store.now();
+    authorize_token(node, Echoed::Placement(&request.placement))?;
+    if !is_boot_set_key(&request.key) {
+        return Err(Answer(swarmy_node_protocol::Failure::Rejected {
+            message: "invalid boot set key".into(),
+        }));
+    }
+    let head_recorded =
+        idempotent(|| state.store.record_boot_set(request.head, &request.key)).await?;
+    let image_recorded = if let Some(image) = state.store.pinned_image(request.session).await? {
+        idempotent(|| state.store.record_boot_set(image.manifest_id, &request.key)).await?
+    } else {
+        false
+    };
+    tracing::info!(head_recorded, image_recorded, "boot set reported");
     Ok(Json(Ack { server_now: now }))
 }

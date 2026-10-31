@@ -51,6 +51,7 @@ pub(crate) async fn attach(
     server::attach(
         config,
         grant,
+        None,
         path,
         background,
         move |path| {

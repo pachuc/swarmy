@@ -6,9 +6,9 @@ use axum::{
 };
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use swarmy_node_protocol::{
-    GITHUB_TOKEN_PATH, HOSTING_CLOSE_PATH, HOSTING_OPEN_PATH, HOSTING_READY_PATH, LeaseLengths,
-    PLACEMENTS_PATH, REGISTER_PATH, SYNC_INTERVAL, SYNC_PATH, TOOL_CLAIM_LEASE, TOOL_ROUTE_PATH,
-    VOLUME_PROTECT_PATH, VOLUME_PUBLISH_PATH, WRITER_LEASE,
+    GITHUB_TOKEN_PATH, HOSTING_BOOT_SET_PATH, HOSTING_CLOSE_PATH, HOSTING_OPEN_PATH,
+    HOSTING_READY_PATH, LeaseLengths, PLACEMENTS_PATH, REGISTER_PATH, SYNC_INTERVAL, SYNC_PATH,
+    TOOL_CLAIM_LEASE, TOOL_ROUTE_PATH, VOLUME_PROTECT_PATH, VOLUME_PUBLISH_PATH, WRITER_LEASE,
 };
 use swarmy_store::Store;
 mod auth;
@@ -83,6 +83,7 @@ pub fn router(state: NodeApiState) -> Router {
         .route(TOOL_ROUTE_PATH, post(tools::route))
         .route(HOSTING_OPEN_PATH, post(hosting::open))
         .route(HOSTING_READY_PATH, post(hosting::ready))
+        .route(HOSTING_BOOT_SET_PATH, post(hosting::boot_set))
         .route(HOSTING_CLOSE_PATH, post(hosting::close))
         .route(VOLUME_PUBLISH_PATH, post(volumes::publish))
         .route(VOLUME_PROTECT_PATH, post(volumes::protect))

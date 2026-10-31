@@ -203,6 +203,22 @@ impl NodeClient {
         )
         .await
     }
+    /// Report a boot set before the caller's deadline.
+    /// # Errors
+    /// As `register`.
+    pub async fn report_boot_set(
+        &self,
+        request: &crate::HostingBootSetRequest,
+        deadline: Instant,
+    ) -> Result<crate::Ack, ClientError> {
+        self.call(
+            reqwest::Method::POST,
+            crate::HOSTING_BOOT_SET_PATH,
+            Some(request),
+            deadline,
+        )
+        .await
+    }
     /// Send close hosting before the caller's deadline.
     /// # Errors
     /// As `register`.

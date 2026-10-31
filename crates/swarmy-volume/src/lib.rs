@@ -1,4 +1,6 @@
 //! Content-addressed disk chunks and immutable two-level manifests.
+mod bootset;
+pub use bootset::{get_boot_set, put_boot_set};
 mod device;
 mod metadata;
 pub use metadata::{

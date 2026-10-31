@@ -20,6 +20,7 @@ pub(crate) use session::{
     SESSION_CHUNK_MARKER, SESSION_MAX_BYTES, SESSION_RECORD_VERSION, StoredSession,
 };
 pub mod blob;
+mod boot_sets;
 mod breakers;
 mod computers;
 pub mod credentials;

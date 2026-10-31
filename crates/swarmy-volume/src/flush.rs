@@ -59,6 +59,12 @@ impl VolumeWriter {
         )
     }
 
+    /// Stop recording boot reads for this attachment.
+    #[must_use]
+    pub fn take_boot_set(&self) -> swarmy_core::BootSet {
+        self.device.take_boot_set()
+    }
+
     #[must_use]
     pub fn device_stats(&self) -> crate::DeviceStats {
         self.device.stats()
