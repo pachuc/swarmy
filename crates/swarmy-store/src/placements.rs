@@ -54,6 +54,13 @@ fn admit_gpu(node: &NodeRecord, requirement: GpuRequirement, load: &NodeLoad) ->
     }))
 }
 
+/// Parallel tombstone and snapshot placement reads for an identity fence.
+pub(crate) struct PlacementFence {
+    agent: AgentId,
+    deleted: Result<bool>,
+    current: Result<Option<PlacementRecord>>,
+}
+
 impl Store {
     /// Read the last reported local scratch location.
     /// # Errors
@@ -68,11 +75,13 @@ impl Store {
     /// Rejects deleted computers and storage failures.
     pub async fn report_scratch(&self, agent: AgentId, record: &ScratchRecord) -> Result<()> {
         self.transaction(|trx| async move {
-            self.check_computer(&trx, agent).await?;
-            if read::<PlacementRecord>(&trx, &self.keys().placement(agent))
-                .await?
-                .is_some_and(|placement| placement.node_id != record.node_id)
-            {
+            let placement_key = self.keys().placement(agent);
+            let (computer, placement) = futures::join!(
+                self.check_computer(&trx, agent),
+                read::<PlacementRecord>(&trx, &placement_key),
+            );
+            computer?;
+            if placement?.is_some_and(|placement| placement.node_id != record.node_id) {
                 return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             write(&trx, &self.keys().scratch(agent), record)
@@ -111,11 +120,12 @@ impl Store {
         expected: &PlacementRecord,
     ) -> Result<Option<Timestamp>> {
         self.transaction(|trx| async move {
-            self.checked_placement(&trx, expected).await?;
-            Ok(self
-                .read_placement_hosting(&trx, expected)
-                .await?
-                .and_then(|hosting| hosting.failure_estimate))
+            let (current, hosting) = futures::join!(
+                self.checked_placement(&trx, expected),
+                self.read_placement_hosting(&trx, expected),
+            );
+            current?;
+            Ok(hosting?.and_then(|hosting| hosting.failure_estimate))
         })
         .await
     }
@@ -152,11 +162,12 @@ impl Store {
     /// Rejects replaced placements and storage failures.
     pub async fn placement_release_requested(&self, placement: &PlacementRecord) -> Result<bool> {
         self.transaction(|trx| async move {
-            self.checked_placement(&trx, placement).await?;
-            Ok(self
-                .read_placement_hosting(&trx, placement)
-                .await?
-                .is_some_and(|h| h.release_requested.is_some()))
+            let (current, hosting) = futures::join!(
+                self.checked_placement(&trx, placement),
+                self.read_placement_hosting(&trx, placement),
+            );
+            current?;
+            Ok(hosting?.is_some_and(|h| h.release_requested.is_some()))
         })
         .await
     }
@@ -168,11 +179,12 @@ impl Store {
     /// Rejects stale or expired placements and storage failures.
     pub async fn claim_placement(&self, expected: &PlacementRecord) -> Result<()> {
         self.transaction(|trx| async move {
-            self.check_live_placement(&trx, expected).await?;
-            let mut hosting = self
-                .read_placement_hosting(&trx, expected)
-                .await?
-                .unwrap_or_default();
+            let (live, hosting) = futures::join!(
+                self.check_live_placement(&trx, expected),
+                self.read_placement_hosting(&trx, expected),
+            );
+            live?;
+            let mut hosting = hosting?.unwrap_or_default();
             hosting.claimed.get_or_insert_with(|| self.now());
             write(
                 &trx,
@@ -358,7 +370,8 @@ impl Store {
         )
     }
 
-    fn write_placement(&self, trx: &Transaction, record: &PlacementRecord) -> Result<()> {
+    /// Renewal writes only the lease and node index, not the identity fence.
+    fn write_placement_lease(&self, trx: &Transaction, record: &PlacementRecord) -> Result<()> {
         write(trx, &self.keys().placement(record.agent_id), record)?;
         write(
             trx,
@@ -366,12 +379,57 @@ impl Store {
                 .keys()
                 .placement_by_node(record.node_id, record.agent_id),
             record,
-        )?;
+        )
+    }
+
+    fn write_placement(&self, trx: &Transaction, record: &PlacementRecord) -> Result<()> {
+        self.write_placement_lease(trx, record)?;
         write(
             trx,
             &self.keys().placement_epoch(record.agent_id),
             &record.epoch,
         )
+    }
+
+    /// Issue both reads together; renewal never writes the epoch key.
+    pub(crate) async fn read_placement_fence(
+        &self,
+        trx: &Transaction,
+        agent: AgentId,
+    ) -> PlacementFence {
+        let key = self.keys().placement(agent);
+        let (deleted, current) = futures::join!(
+            self.computer_deleted(trx, agent),
+            crate::read_snapshot::<PlacementRecord>(trx, &key),
+        );
+        PlacementFence {
+            agent,
+            deleted,
+            current,
+        }
+    }
+
+    /// Snapshot the lease, conflicting on identity instead of expiry. Place,
+    /// takeover, and release write the epoch key; deletion writes the tombstone.
+    /// Renewal extends only a live lease, so a live snapshot stays live and an
+    /// expired snapshot cannot become live through renewal.
+    pub(crate) fn check_placement_fence(
+        &self,
+        trx: &Transaction,
+        fence: PlacementFence,
+        node: NodeId,
+        epoch: u64,
+    ) -> Result<()> {
+        if fence.deleted? {
+            return Err(StoreError::Domain(crate::DomainError::ComputerDeleted));
+        }
+        let current = fence
+            .current?
+            .ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
+        if current.node_id != node || current.epoch != epoch || current.expires_at <= self.now() {
+            return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
+        }
+        crate::add_read_conflict_key(trx, &self.keys().placement_epoch(fence.agent))
     }
 
     pub(crate) async fn checked_placement(
@@ -397,10 +455,8 @@ impl Store {
         trx: &Transaction,
         expected: &PlacementRecord,
     ) -> Result<()> {
-        if self.checked_placement(trx, expected).await?.expires_at <= self.now() {
-            return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
-        }
-        Ok(())
+        let fence = self.read_placement_fence(trx, expected.agent_id).await;
+        self.check_placement_fence(trx, fence, expected.node_id, expected.epoch)
     }
 
     /// Validate the current epoch before local execution.
@@ -483,6 +539,35 @@ impl Store {
         .await
     }
 
+    /// Read the current lease and hosting row together before extending expiry.
+    async fn renew_in(
+        &self,
+        trx: &Transaction,
+        expected: &PlacementRecord,
+        expiry: impl Fn(&PlacementRecord) -> Result<Timestamp>,
+    ) -> Result<(PlacementRecord, PlacementHosting)> {
+        let (current, hosting) = futures::join!(
+            self.checked_placement(trx, expected),
+            self.read_placement_hosting(trx, expected),
+        );
+        let mut current = current?;
+        let now = self.now();
+        let expires_at = expiry(&current)?;
+        if current.expires_at <= now || expires_at <= current.expires_at {
+            return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
+        }
+        let mut hosting = hosting?.ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
+        hosting.last_renewed = Some(now);
+        write(
+            trx,
+            &self.keys().placement_hosting(current.agent_id),
+            &hosting,
+        )?;
+        current.expires_at = expires_at;
+        self.write_placement_lease(trx, &current)?;
+        Ok((current, hosting))
+    }
+
     /// Extend a live lease held by the supplied node and epoch. The stored expiry
     /// is authoritative, so an earlier renewal response remains a valid epoch token.
     /// The clock is checked again on every transaction retry.
@@ -494,24 +579,31 @@ impl Store {
         expires_at: Timestamp,
     ) -> Result<PlacementRecord> {
         self.transaction(|trx| async move {
-            let mut current = self.checked_placement(&trx, expected).await?;
-            let now = self.now();
-            if current.expires_at <= now || expires_at <= current.expires_at {
-                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
-            }
-            let mut hosting = self
-                .read_placement_hosting(&trx, &current)
-                .await?
-                .ok_or(StoreError::Storage(crate::StorageError::Corrupt))?;
-            hosting.last_renewed = Some(now);
-            write(
-                &trx,
-                &self.keys().placement_hosting(current.agent_id),
-                &hosting,
-            )?;
-            current.expires_at = expires_at;
-            self.write_placement(&trx, &current)?;
-            Ok(current)
+            Ok(self.renew_in(&trx, expected, |_| Ok(expires_at)).await?.0)
+        })
+        .await
+    }
+
+    /// Extend a hosting lease past both the requested and stored expiry, and
+    /// return whether its hosting row requests release.
+    /// # Errors
+    /// Rejects absent, stale or expired leases and storage errors.
+    pub async fn renew_hosted(
+        &self,
+        expected: &PlacementRecord,
+        at_least: Timestamp,
+    ) -> Result<(PlacementRecord, bool)> {
+        self.transaction(|trx| async move {
+            let (record, hosting) = self
+                .renew_in(&trx, expected, |current| {
+                    let past = current
+                        .expires_at
+                        .checked_add(std::time::Duration::from_millis(1))
+                        .map_err(|_| StoreError::Storage(crate::StorageError::Corrupt))?;
+                    Ok(at_least.max(past))
+                })
+                .await?;
+            Ok((record, hosting.release_requested.is_some()))
         })
         .await
     }
@@ -523,15 +615,17 @@ impl Store {
     /// Rejects absent, expired, or replaced leases and storage errors.
     pub async fn release(&self, expected: &PlacementRecord) -> Result<()> {
         self.transaction(|trx| async move {
-            let current = self.checked_placement(&trx, expected).await?;
+            let count_key = self.keys().placement_count(expected.node_id);
+            let (current, hosting, _) = futures::join!(
+                self.checked_placement(&trx, expected),
+                self.read_placement_hosting(&trx, expected),
+                read::<u32>(&trx, &count_key),
+            );
+            let current = current?;
             if current.expires_at <= self.now() {
                 return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
-            if self
-                .read_placement_hosting(&trx, &current)
-                .await?
-                .is_some_and(|h| h.release_requested.is_some())
-            {
+            if hosting?.is_some_and(|h| h.release_requested.is_some()) {
                 write(
                     &trx,
                     &self.keys().placement_next_reason(current.agent_id),
@@ -557,6 +651,12 @@ impl Store {
                     .keys()
                     .placement_by_node(current.node_id, current.agent_id),
             );
+            // Snapshot fences conflict with release even though the epoch value is retained.
+            write(
+                &trx,
+                &self.keys().placement_epoch(current.agent_id),
+                &current.epoch,
+            )?;
             Ok(())
         })
         .await

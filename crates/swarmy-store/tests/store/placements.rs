@@ -1825,3 +1825,33 @@ async fn gpu_capacity_waits_list_gpu_waits_with_their_cause() {
     test.store.clear_session_wait(id_a).await.unwrap();
     assert!(test.store.gpu_capacity_waits().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn hosted_renewal_extends_past_stored_expiry_and_reports_release_requests() {
+    let Some(Renewed { test, live, .. }) = placed_renewed().await else {
+        return;
+    };
+    let (renewed, requested) = test.store.renew_hosted(&live, future(60)).await.unwrap();
+    assert_eq!(
+        renewed.expires_at,
+        live.expires_at
+            .checked_add(Duration::from_millis(1))
+            .unwrap()
+    );
+    assert!(!requested);
+    test.store
+        .request_placement_release(live.agent_id)
+        .await
+        .unwrap();
+    let target = future(600);
+    let (record, requested) = test.store.renew_hosted(&renewed, target).await.unwrap();
+    assert_eq!(record.expires_at, target);
+    assert!(requested);
+    let expired = expire(&test, &record).await;
+    assert!(matches!(
+        test.store.renew_hosted(&expired, future(700)).await,
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
+    ));
+}

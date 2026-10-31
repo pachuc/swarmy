@@ -155,6 +155,8 @@ them in [api-breaks.txt](api-breaks.txt).
   agent's scratch data, but after a placement lease expires the previous
   host is tried last, even if it holds that scratch. Capacity admission
   remains transactional, and a placement epoch fences stale node operations.
+  Fenced operations snapshot the placement and conflict on its epoch key, which
+  renewal never writes, so lease renewal does not make them retry.
   A GPU requirement change marks the hosting row for release at the next
   node renewal; the next placement records `RequirementChange`
   ([placement.rs](../crates/swarmy-worker/src/placement.rs),

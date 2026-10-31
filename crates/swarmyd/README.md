@@ -129,12 +129,14 @@ support remains in the volume library for explicit forks.
 
 The container and its processes survive successful calls. Each call has its own
 renewable tool lease, and completion checks both that lease and the placement
-epoch. Output completion does not freeze, flush, or advance the disk. The result's
+epoch. The node stops renewing the tool lease before completion because renewal
+rewrites the claim that completion reads. Output completion does not freeze, flush, or advance the disk. The result's
 manifest id names the latest observed checkpoint; it does not assert durability
 of that call's writes. The attachment continuously stages chunks and publishes
 snapshots according to the shared volume snapshot settings.
 
-Placement renewal runs every third of the lease duration, including during boot,
+Placement renewal runs every third of the lease duration in one transaction that
+extends the lease and reports any requested release, including during boot,
 commands, and final checkpoints. Renewal failure or expiry cancels execution,
 stops guest processes, and discards the attachment without publishing. Writer
 acquisition, renewal, and publication also validate the bound placement epoch in
