@@ -395,6 +395,12 @@ For leftover service users, fstab entries, sandbox files and tunnel keys, see
 `swarmy swarm logs fleet` follows service logs. Select `scheduler`, `worker`,
 `gateway`, `api` or `supervisor` to follow one service.
 
+Every store transaction is timed. One that takes a second or more logs a warning,
+`slow store transaction`, with `caller` (the source file, line and column that ran
+it), `attempts` (how many times FoundationDB ran it, counting conflict retries),
+`elapsed_ms` and `ok`. Set `RUST_LOG=info,swarmy_store::transaction=debug` on a
+service to log every transaction the same way.
+
 Host swarms default to the primary host's `swarmyd` journal. Pass
 `--host NAME` to select another recorded host, or `--unit swarmyd` to select
 a unit.

@@ -15,6 +15,7 @@ mod errors;
 mod errors_tests;
 pub use errors::{DomainError, FenceError, Result, StorageError, StoreError};
 mod session;
+mod transaction_log;
 pub(crate) use session::{
     SESSION_CHUNK_MARKER, SESSION_MAX_BYTES, SESSION_RECORD_VERSION, StoredSession,
 };
@@ -95,6 +96,7 @@ pub use session_wait::{
 
 use std::{
     future::Future,
+    panic::Location,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -373,12 +375,18 @@ impl Store {
         self.metering_rows_read.load(Ordering::Relaxed)
     }
 
-    async fn transaction<T, F, Fut>(&self, operation: F) -> Result<T>
+    /// Run `operation` as one logical store transaction, labelled with the
+    /// caller's source location for the transaction log. A plain function
+    /// returning a future, because `#[track_caller]` does not apply to
+    /// `async fn`. Helpers that call this from inside an `async fn` are
+    /// labelled with the helper's own line.
+    #[track_caller]
+    fn transaction<T, F, Fut>(&self, operation: F) -> impl Future<Output = Result<T>>
     where
         F: Fn(RetryableTransaction) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        run_transaction(&self.db, &self.transactions, operation).await
+        run_transaction(&self.db, &self.transactions, Location::caller(), operation)
     }
 
     /// Read every row in `range` across one transaction per page, paging by
@@ -952,10 +960,12 @@ impl Store {
 }
 
 /// One shared transaction runner for `Store` and the metrics drain writer.
-/// Binding-level retries inside one call count once against `counter`.
+/// Binding-level retries inside one call count once against `counter`; the
+/// transaction log records every attempt with the caller's location.
 pub(crate) async fn run_transaction<T, F, Fut>(
     db: &Database,
     counter: &AtomicU64,
+    caller: &'static Location<'static>,
     operation: F,
 ) -> Result<T>
 where
@@ -963,10 +973,13 @@ where
     Fut: Future<Output = Result<T>>,
 {
     counter.fetch_add(1, Ordering::Relaxed);
+    let timer = transaction_log::TransactionTimer::start(caller);
     let result = db
         .run(|trx, maybe_committed| {
             let operation = &operation;
+            let timer = &timer;
             async move {
+                timer.attempt();
                 if bool::from(maybe_committed) {
                     return Err(FdbBindingError::new_custom_error(Box::new(
                         StoreError::Storage(StorageError::CommitUnknown),
@@ -981,6 +994,7 @@ where
             }
         })
         .await;
+    timer.finish(result.is_ok());
     result.map_err(|error| match error {
         FdbBindingError::CustomError(error) => match error.downcast::<StoreError>() {
             Ok(error) => *error,
