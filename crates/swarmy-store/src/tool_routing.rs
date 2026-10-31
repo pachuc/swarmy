@@ -1,6 +1,8 @@
 //! Durable dispatch fences and recovery notices shared by all worker replicas.
 use foundationdb::Transaction;
 use jiff::Timestamp;
+#[cfg(any(test, feature = "test-support"))]
+use std::future::Future;
 use swarmy_core::{
     Event, Message, MessageId, MessageRole, Part, PlacementChangeReason, PlacementRecord,
     SessionId, SessionState, ToolJob, ToolResult, VolumeId, VolumeRecord, computer_rebuilt_message,
@@ -13,26 +15,45 @@ impl Store {
     /// # Errors
     /// Rejects stale placement epochs and storage or encoding failures.
     pub async fn put_agent_call_status(&self, status: &swarmy_core::AgentCallStatus) -> Result<()> {
-        self.transaction(|trx| async move {
-            let placement: PlacementRecord = read(&trx, &self.keys().placement(status.agent_id))
-                .await?
-                .ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
-            if placement.node_id != status.node_id || placement.epoch != status.epoch {
-                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
-            }
-            self.check_live_placement(&trx, &placement).await?;
-            let key = self.keys().agent_call_status(status.agent_id);
-            if read::<swarmy_core::AgentCallStatus>(&trx, &key)
-                .await?
-                .is_some_and(|old| {
-                    old.epoch == status.epoch && old.observed_at > status.observed_at
-                })
-            {
-                return Ok(());
-            }
-            write(&trx, &key, status)
-        })
-        .await
+        self.transaction(|trx| async move { self.put_agent_call_status_in(&trx, status).await })
+            .await
+    }
+
+    async fn put_agent_call_status_in(
+        &self,
+        trx: &Transaction,
+        status: &swarmy_core::AgentCallStatus,
+    ) -> Result<()> {
+        let key = self.keys().agent_call_status(status.agent_id);
+        let (fence, old) = futures::join!(
+            self.read_placement_fence(trx, status.agent_id),
+            read::<swarmy_core::AgentCallStatus>(trx, &key),
+        );
+        self.check_placement_fence(trx, fence, status.node_id, status.epoch)?;
+        if old?.is_some_and(|old| old.epoch == status.epoch && old.observed_at > status.observed_at)
+        {
+            return Ok(());
+        }
+        write(trx, &key, status)
+    }
+
+    /// Race a status write against a concurrent writer. Returns attempt count.
+    /// Test-only entry point, also available with the `test-support` feature.
+    /// # Errors
+    /// As `put_agent_call_status`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn put_agent_call_status_racing(
+        &self,
+        status: &swarmy_core::AgentCallStatus,
+        race: impl Future<Output = ()>,
+    ) -> Result<u32> {
+        Ok(self
+            .transaction_racing(
+                |trx| async move { self.put_agent_call_status_in(&trx, status).await },
+                race,
+            )
+            .await?
+            .1)
     }
 
     /// Return recent call occupancy, or none after expiry, release, deletion or takeover.

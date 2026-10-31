@@ -3,19 +3,11 @@ use crate::{Result, Store, StoreError, read, scan, write};
 use foundationdb::Transaction;
 use jiff::Timestamp;
 #[cfg(any(test, feature = "test-support"))]
-use std::{
-    future::Future,
-    sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
-    },
-};
+use std::future::Future;
 use swarmy_core::{
     Event, LeaseOwnerId, PlacedToolClaim, PlacementRecord, SessionId, SessionState, ToolJob,
     ToolResult, VolumeId, VolumeRecord,
 };
-#[cfg(any(test, feature = "test-support"))]
-use tokio::sync::Mutex;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct StoredPlacedClaim {
@@ -46,7 +38,7 @@ impl Store {
             let volume_key = self.keys().volume(id);
             let (live, stored, binding, volume) = futures::join!(
                 self.check_live_placement(&trx, placement),
-                self.session(&trx, session),
+                self.session_for_agent(&trx, session, placement.agent_id),
                 read::<PlacementRecord>(&trx, &key),
                 read::<VolumeRecord>(&trx, &volume_key),
             );
@@ -94,15 +86,24 @@ impl Store {
         id: VolumeId,
         owner: LeaseOwnerId,
     ) -> Result<()> {
-        if let Some(placement) =
-            read::<PlacementRecord>(trx, &self.keys().volume_placement(id)).await?
-        {
-            if owner.as_ulid() != placement.node_id.as_ulid() {
-                return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
-            }
-            self.check_live_placement(trx, &placement).await?;
+        // Agent volumes share their agent's id; prefetch the fence with the binding.
+        let agent = swarmy_core::AgentId::from_ulid(id.as_ulid());
+        let binding_key = self.keys().volume_placement(id);
+        let (binding, fence) = futures::join!(
+            read::<PlacementRecord>(trx, &binding_key),
+            self.read_placement_fence(trx, agent),
+        );
+        let Some(placement) = binding? else {
+            return Ok(());
+        };
+        if owner.as_ulid() != placement.node_id.as_ulid() {
+            return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
         }
-        Ok(())
+        if placement.agent_id == agent {
+            self.check_placement_fence(trx, fence, placement.node_id, placement.epoch)
+        } else {
+            self.check_live_placement(trx, &placement).await
+        }
     }
 
     /// Claim a pending job without creating an attempt volume.
@@ -124,7 +125,7 @@ impl Store {
             self.check_live_placement(trx, &claim.placement),
             self.check_tool_dispatch(trx, &claim.job, &claim.placement),
             trx.get(&job_key, false),
-            self.session(trx, claim.job.session_id),
+            self.session_for_agent(trx, claim.job.session_id, claim.placement.agent_id),
             read::<StoredPlacedClaim>(trx, &key),
         );
         live?;
@@ -169,24 +170,11 @@ impl Store {
         claim: &PlacedToolClaim,
         race: impl Future<Output = ()>,
     ) -> Result<(bool, u32)> {
-        let race = Arc::new(Mutex::new(Some(Box::pin(race))));
-        let attempts = AtomicU32::new(0);
-        let claimed = self
-            .transaction(|trx| {
-                let race = Arc::clone(&race);
-                let attempts = &attempts;
-                async move {
-                    attempts.fetch_add(1, Ordering::Relaxed);
-                    let claimed = self.claim_placed_tool_in(&trx, claim).await?;
-                    let first = race.lock().await.take();
-                    if let Some(first) = first {
-                        first.await;
-                    }
-                    Ok(claimed)
-                }
-            })
-            .await?;
-        Ok((claimed, attempts.load(Ordering::Relaxed)))
+        self.transaction_racing(
+            |trx| async move { self.claim_placed_tool_in(&trx, claim).await },
+            race,
+        )
+        .await
     }
 
     async fn check_placed_tool(
@@ -249,45 +237,101 @@ impl Store {
         expected_head: u64,
         result: &ToolResult,
     ) -> Result<()> {
-        let job = &claim.job;
-        let head = crate::seq_after(expected_head, 1)?;
         let event = self
-            .prepare(&Event::ToolCallCompleted {
-                seq: head,
-                request_id: job.request_id,
-                call_id: job.call_id.clone(),
-                result: result.clone(),
-            })
+            .prepare_completion(claim, expected_head, result)
             .await?;
         self.transaction(|trx| {
             let event = &event;
             async move {
-                let (_, mut session) = futures::try_join!(
-                    self.check_placed_tool(&trx, claim),
-                    self.session(&trx, job.session_id),
-                )?;
-                crate::check_head(session.head_seq, expected_head)?;
-                if session.state != SessionState::WaitingTools
-                    || session.agent_id != claim.placement.agent_id
-                {
-                    return Err(StoreError::Fence(crate::FenceError::ToolClaimMismatch));
-                }
-                trx.set(&self.keys().event(job.session_id, head), event);
-                trx.clear(&self.keys().tool_job(job.request_id));
-                trx.clear(&self.keys().tool_placement(job.request_id));
-                trx.clear(&self.keys().placed_tool_claim(job.request_id));
-                write(&trx, &self.keys().tool_done(job.request_id), &true)?;
-                let pending = self.keys().session_tools_space(job.session_id);
-                trx.clear(&self.keys().session_tools(job.session_id, job.request_id));
-                session.head_seq = head;
-                if scan(&trx, pending.range(), 1).await?.is_empty() {
-                    self.transition(&trx, session, SessionState::Runnable, self.now())
-                        .await
-                } else {
-                    self.write_session(&trx, &session)
-                }
+                self.complete_placed_tool_in(&trx, claim, expected_head, event)
+                    .await
             }
         })
         .await
+    }
+
+    async fn prepare_completion(
+        &self,
+        claim: &PlacedToolClaim,
+        expected_head: u64,
+        result: &ToolResult,
+    ) -> Result<Vec<u8>> {
+        self.prepare(&Event::ToolCallCompleted {
+            seq: crate::seq_after(expected_head, 1)?,
+            request_id: claim.job.request_id,
+            call_id: claim.job.call_id.clone(),
+            result: result.clone(),
+        })
+        .await
+    }
+
+    async fn complete_placed_tool_in(
+        &self,
+        trx: &Transaction,
+        claim: &PlacedToolClaim,
+        expected_head: u64,
+        event: &[u8],
+    ) -> Result<()> {
+        let job = &claim.job;
+        let head = crate::seq_after(expected_head, 1)?;
+        let pending = self.keys().session_tools_space(job.session_id);
+        let (checked, session, pending_rows) = futures::join!(
+            self.check_placed_tool(trx, claim),
+            self.session_for_agent(trx, job.session_id, claim.placement.agent_id),
+            scan(trx, pending.range(), 2),
+        );
+        checked?;
+        let mut session = session?;
+        crate::check_head(session.head_seq, expected_head)?;
+        if session.state != SessionState::WaitingTools
+            || session.agent_id != claim.placement.agent_id
+        {
+            return Err(StoreError::Fence(crate::FenceError::ToolClaimMismatch));
+        }
+        let own = self.keys().session_tools(job.session_id, job.request_id);
+        let others_pending = pending_rows?.iter().any(|(key, _)| *key != own);
+        trx.set(&self.keys().event(job.session_id, head), event);
+        trx.clear(&self.keys().tool_job(job.request_id));
+        trx.clear(&self.keys().tool_placement(job.request_id));
+        trx.clear(&self.keys().placed_tool_claim(job.request_id));
+        write(trx, &self.keys().tool_done(job.request_id), &true)?;
+        trx.clear(&own);
+        session.head_seq = head;
+        if others_pending {
+            self.write_session(trx, &session)
+        } else {
+            self.transition(trx, session, SessionState::Runnable, self.now())
+                .await
+        }
+    }
+
+    /// Race completion against a concurrent writer. Returns attempt count.
+    /// Test-only entry point, also available with the `test-support` feature.
+    /// # Errors
+    /// As `complete_placed_tool`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn complete_placed_tool_racing(
+        &self,
+        claim: &PlacedToolClaim,
+        expected_head: u64,
+        result: &ToolResult,
+        race: impl Future<Output = ()>,
+    ) -> Result<u32> {
+        let event = self
+            .prepare_completion(claim, expected_head, result)
+            .await?;
+        Ok(self
+            .transaction_racing(
+                |trx| {
+                    let event = &event;
+                    async move {
+                        self.complete_placed_tool_in(&trx, claim, expected_head, event)
+                            .await
+                    }
+                },
+                race,
+            )
+            .await?
+            .1)
     }
 }

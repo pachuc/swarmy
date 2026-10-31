@@ -257,12 +257,7 @@ impl Hosting {
                         old.epoch
                     );
                 }
-                self.store
-                    .renew(
-                        &old,
-                        expiry.max(old.expires_at.checked_add(Duration::from_millis(1))?),
-                    )
-                    .await?
+                self.store.renew_hosted(&old, expiry).await?.0
             }
         };
         self.store.claim_placement(&placement).await?;
@@ -501,20 +496,9 @@ impl Hosting {
             let budget = remaining.saturating_sub(remaining / 10);
             let renewal = async {
                 tokio::time::sleep(self.lease.min(remaining) / 3).await;
-                let current = self
-                    .store
-                    .get_by_agent(placement.agent_id)
-                    .await?
-                    .context("placement missing during renewal")?;
-                // A worker or a changed grant can leave more time than the
-                // node requests. Preserve it and the store's strict increase.
-                let expiry = jiff::Timestamp::now()
-                    .checked_add(self.lease)?
-                    .max(current.expires_at.checked_add(Duration::from_millis(1))?);
-                // Keep the original epoch token even if the read saw a takeover.
-                let renewed = self.store.renew(&placement, expiry).await?;
-                let requested = self.store.placement_release_requested(&renewed).await?;
-                Ok::<_, anyhow::Error>((renewed, requested))
+                // One renewal also reports a requested release for this epoch.
+                let at_least = jiff::Timestamp::now().checked_add(self.lease)?;
+                Ok::<_, anyhow::Error>(self.store.renew_hosted(&placement, at_least).await?)
             };
             match tokio::time::timeout(budget, renewal).await {
                 Ok(Ok((current, requested))) => {

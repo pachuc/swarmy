@@ -113,10 +113,14 @@ use foundationdb::{
 };
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::atomic::AtomicU32;
 use swarmy_core::{
-    AgentRecord, EncodingError, Event, IdempotencyRecord, RequestId, SessionId, SessionRecord,
-    SessionState, decode, encode,
+    AgentId, AgentRecord, EncodingError, Event, IdempotencyRecord, RequestId, SessionId,
+    SessionRecord, SessionState, decode, encode,
 };
+#[cfg(any(test, feature = "test-support"))]
+use tokio::sync::Mutex;
 
 #[cfg(any(test, feature = "test-support"))]
 use swarmy_core::{InflightRecord, SnapshotRef};
@@ -439,6 +443,37 @@ impl Store {
         run_transaction(&self.db, &self.transactions, Location::caller(), operation)
     }
 
+    /// Race a concurrent writer after the first attempt's reads, before commit.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) async fn transaction_racing<T, F, Fut>(
+        &self,
+        operation: F,
+        race: impl Future<Output = ()>,
+    ) -> Result<(T, u32)>
+    where
+        F: Fn(RetryableTransaction) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        let race = Arc::new(Mutex::new(Some(Box::pin(race))));
+        let attempts = AtomicU32::new(0);
+        let value = self
+            .transaction(|trx| {
+                let race = Arc::clone(&race);
+                let attempts = &attempts;
+                let future = operation(trx);
+                async move {
+                    attempts.fetch_add(1, Ordering::Relaxed);
+                    let value = future.await?;
+                    if let Some(first) = race.lock().await.take() {
+                        first.await;
+                    }
+                    Ok(value)
+                }
+            })
+            .await?;
+        Ok((value, attempts.load(Ordering::Relaxed)))
+    }
+
     /// Read every row in `range` across one transaction per page, paging by
     /// the last key. Callers that must cross transaction boundaries use this
     /// instead of copying the per-page `transaction` then `push(0)` loop.
@@ -523,7 +558,11 @@ impl Store {
         }
     }
 
-    async fn decode_session_in(&self, trx: &Transaction, bytes: &[u8]) -> Result<StoredSession> {
+    async fn decode_session_record(
+        &self,
+        trx: &Transaction,
+        bytes: &[u8],
+    ) -> Result<StoredSession> {
         if bytes.first() != Some(&SESSION_RECORD_VERSION) {
             return Err(StoreError::Storage(StorageError::Corrupt));
         }
@@ -557,8 +596,12 @@ impl Store {
         } else {
             bytes[1..].to_vec()
         };
-        let mut session: StoredSession =
-            postcard::from_bytes(&payload).map_err(EncodingError::Payload)?;
+        postcard::from_bytes(&payload)
+            .map_err(|error| StoreError::from(EncodingError::Payload(error)))
+    }
+
+    async fn decode_session_in(&self, trx: &Transaction, bytes: &[u8]) -> Result<StoredSession> {
+        let mut session = self.decode_session_record(trx, bytes).await?;
         // The agent tombstone is authoritative for every named side session.
         // Deleting a computer cannot atomically rewrite an unbounded set
         // of conversations, so keep this one shared fence until queried.
@@ -603,6 +646,27 @@ impl Store {
             .await?
             .ok_or(StoreError::Domain(DomainError::SessionMissing))?;
         self.decode_session_in(trx, &bytes).await
+    }
+
+    /// Read a known agent's session and deletion tombstone in one round.
+    pub(crate) async fn session_for_agent(
+        &self,
+        trx: &Transaction,
+        id: SessionId,
+        agent: AgentId,
+    ) -> Result<StoredSession> {
+        self.session_record_reads.fetch_add(1, Ordering::Relaxed);
+        let key = self.keys().session(id);
+        let (bytes, deleted) =
+            futures::join!(trx.get(&key, false), self.computer_deleted(trx, agent));
+        let bytes = bytes?.ok_or(StoreError::Domain(DomainError::SessionMissing))?;
+        let mut session = self.decode_session_record(trx, &bytes).await?;
+        session.computer_deleted |= if session.agent_id == agent {
+            deleted?
+        } else {
+            self.computer_deleted(trx, session.agent_id).await?
+        };
+        Ok(session)
     }
 
     pub(crate) fn write_session(&self, trx: &Transaction, session: &StoredSession) -> Result<()> {
@@ -1057,6 +1121,21 @@ where
         },
         other => StoreError::Storage(StorageError::Binding(other)),
     })
+}
+
+/// Snapshot only when relevant changes are covered by a narrower conflict key.
+async fn read_snapshot<T: DeserializeOwned>(trx: &Transaction, key: &[u8]) -> Result<Option<T>> {
+    trx.get(key, true)
+        .await?
+        .map(|value| decode(&value).map_err(Into::into))
+        .transpose()
+}
+
+fn add_read_conflict_key(trx: &Transaction, key: &[u8]) -> Result<()> {
+    let mut end = key.to_vec();
+    end.push(0);
+    trx.add_conflict_range(key, &end, foundationdb::options::ConflictRangeType::Read)?;
+    Ok(())
 }
 
 async fn read<T: DeserializeOwned>(trx: &Transaction, key: &[u8]) -> Result<Option<T>> {
