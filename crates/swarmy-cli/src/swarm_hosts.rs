@@ -758,7 +758,7 @@ nodes = ["gpu"]
                 .to_string()
                 .contains("is not up")
         );
-        record.hosts.insert("control".into(), vec![primary.clone()]);
+        record.hosts.insert("control".into(), vec![primary]);
         assert_eq!(definition.primary_address, "198.51.100.7");
         assert_eq!(definition.service_user, "swarmy");
         assert!(definition.autoscale);
