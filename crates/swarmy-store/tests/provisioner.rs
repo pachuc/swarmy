@@ -52,14 +52,8 @@ async fn lease_window_and_reconcile_are_fenced() {
     store.set_elastic_desired("gpu", 2, &cause).await.unwrap();
     let grant = store.reserve_elastic_creations(&live, 6).await.unwrap();
     assert_eq!((grant.granted, grant.used), (4, 4));
-    assert_eq!(
-        store
-            .reserve_elastic_creations(&live, 1)
-            .await
-            .unwrap()
-            .granted,
-        0
-    );
+    let exhausted = store.reserve_elastic_creations(&live, 1).await.unwrap();
+    assert_eq!(exhausted.granted, 0);
     assert!(grant.next_free_at.is_some());
     assert!(matches!(
         store.reserve_elastic_creations(&old, 1).await,
