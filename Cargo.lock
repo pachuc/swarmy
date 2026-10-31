@@ -4176,12 +4176,12 @@ dependencies = [
 name = "swarmy-sandbox"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "fs2",
  "object_store",
  "serde",
  "serde_json",
  "swarmy-core",
- "swarmy-store",
  "swarmy-volume",
  "tempfile",
  "thiserror 2.0.20",
@@ -4225,6 +4225,7 @@ dependencies = [
  "serde_json",
  "swarmy-config",
  "swarmy-core",
+ "swarmy-sandbox",
  "swarmy-store",
  "swarmy-testkit",
  "swarmy-volume",
