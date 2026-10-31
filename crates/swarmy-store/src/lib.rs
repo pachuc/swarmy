@@ -177,6 +177,8 @@ pub struct Store {
     /// so tests can compare per-operation transaction costs.
     transactions: Arc<AtomicU64>,
     session_record_reads: Arc<AtomicU64>,
+    /// Chunk range reads of oversized session records. Tests use it to pin the read shape.
+    session_chunk_reads: Arc<AtomicU64>,
     metering_rows_read: Arc<AtomicU64>,
     metrics_tx: tokio::sync::mpsc::Sender<metrics::MetricMsg>,
     /// Receiver held until the drain task starts. `open` starts the drain
@@ -237,6 +239,7 @@ impl Store {
             blobs,
             transactions: Arc::default(),
             session_record_reads: Arc::default(),
+            session_chunk_reads: Arc::default(),
             metering_rows_read: Arc::default(),
             metrics_tx,
             metrics_rx: Arc::new(std::sync::Mutex::new(Some(metrics_rx))),
@@ -280,6 +283,7 @@ impl Store {
             images: Arc::default(),
             transactions: Arc::default(),
             session_record_reads: Arc::default(),
+            session_chunk_reads: Arc::default(),
             metering_rows_read: Arc::default(),
             metrics_tx,
             metrics_rx: Arc::new(std::sync::Mutex::new(Some(metrics_rx))),
@@ -363,6 +367,14 @@ impl Store {
     #[cfg(any(test, feature = "test-support"))]
     pub fn session_record_read_count(&self) -> u64 {
         self.session_record_reads.load(Ordering::Relaxed)
+    }
+
+    /// Number of chunk range reads made for oversized session records.
+    /// Test-only entry point, also available with the `test-support` feature.
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn session_chunk_read_count(&self) -> u64 {
+        self.session_chunk_reads.load(Ordering::Relaxed)
     }
 
     /// Number of metering rows returned by range reads on this store instance.
@@ -484,12 +496,21 @@ impl Store {
             if count == 0 || usize::from(count) > SESSION_MAX_BYTES.div_ceil(INLINE_LIMIT) {
                 return Err(StoreError::Storage(StorageError::Corrupt));
             }
+            self.session_chunk_reads.fetch_add(1, Ordering::Relaxed);
+            let rows = scan(
+                trx,
+                self.keys().session_chunk_space(id).range(),
+                usize::from(count),
+            )
+            .await?;
+            if rows.len() != usize::from(count) {
+                return Err(StoreError::Storage(StorageError::Corrupt));
+            }
             let mut payload = Vec::new();
-            for index in 0..count {
-                let chunk = trx
-                    .get(&self.keys().session_chunk(id, index), false)
-                    .await?
-                    .ok_or(StoreError::Storage(StorageError::Corrupt))?;
+            for (index, (key, chunk)) in (0..count).zip(rows) {
+                if key != self.keys().session_chunk(id, index) {
+                    return Err(StoreError::Storage(StorageError::Corrupt));
+                }
                 payload.extend_from_slice(&chunk);
             }
             payload

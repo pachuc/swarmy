@@ -218,18 +218,16 @@ impl Store {
     }
 
     async fn requirements(&self, trx: &Transaction, agent: AgentId) -> Result<SandboxRequirements> {
-        let ephemeral: Option<u64> = read(trx, &self.keys().computer_memory(agent)).await?;
-        if let Some(memory_mib) = ephemeral {
-            Ok(SandboxRequirements {
+        let memory_key = self.keys().computer_memory(agent);
+        let (ephemeral, record) =
+            futures::join!(read::<u64>(trx, &memory_key), self.read_agent(trx, agent),);
+        if let Some(memory_mib) = ephemeral? {
+            return Ok(SandboxRequirements {
                 memory_mib,
                 gpu: GpuRequirement::None,
-            })
-        } else {
-            Ok(self
-                .read_agent(trx, agent)
-                .await?
-                .map_or_else(SandboxRequirements::default, |record| record.requirements))
+            });
         }
+        Ok(record?.map_or_else(SandboxRequirements::default, |record| record.requirements))
     }
 
     /// Requirements placement must satisfy for this computer.
@@ -260,6 +258,7 @@ impl Store {
     }
 
     /// Derive memory and GPU occupancy in one scan of the node's placement rows.
+    /// Read the requirements of the scanned placements together before summing them.
     async fn node_load(
         &self,
         trx: &Transaction,
@@ -267,17 +266,24 @@ impl Store {
         exclude: AgentId,
     ) -> Result<NodeLoad> {
         let (begin, end) = self.keys().placement_by_node_space(node).range();
-        let mut load = NodeLoad::default();
+        let mut records = Vec::new();
         for (_, value) in scan_all(trx, (begin, end)).await? {
             let record: PlacementRecord = decode(&value)?;
-            if record.agent_id == exclude {
-                continue;
+            if record.agent_id != exclude {
+                records.push(record);
             }
+        }
+        let requirements = futures::future::try_join_all(
+            records
+                .iter()
+                .map(|record| self.requirements(trx, record.agent_id)),
+        )
+        .await?;
+        let mut load = NodeLoad::default();
+        for (record, requirements) in records.iter().zip(requirements) {
             load.committed_bytes = load
                 .committed_bytes
-                .checked_add(requirement_bytes(
-                    self.requirements(trx, record.agent_id).await?,
-                )?)
+                .checked_add(requirement_bytes(requirements)?)
                 .ok_or(StoreError::Storage(
                     crate::StorageError::MemoryCapacityOverflow,
                 ))?;
@@ -296,14 +302,19 @@ impl Store {
         node: NodeId,
         agent: AgentId,
     ) -> Result<GpuRequirement> {
-        let registered: NodeRecord = read(trx, &self.keys().node(node))
-            .await?
-            .ok_or(StoreError::Domain(crate::DomainError::NodeMissing))?;
+        let key = self.keys().placement_count(node);
+        let node_key = self.keys().node(node);
+        let (registered, count, requirements, load) = futures::join!(
+            read::<NodeRecord>(trx, &node_key),
+            read::<u32>(trx, &key),
+            self.requirements(trx, agent),
+            self.node_load(trx, node, agent),
+        );
+        let registered = registered?.ok_or(StoreError::Domain(crate::DomainError::NodeMissing))?;
         if !registered.roles.contains(&NodeRole::Sandbox) {
             return Err(StoreError::Domain(crate::DomainError::NodeNotSandbox));
         }
-        let key = self.keys().placement_count(node);
-        let count: u32 = read(trx, &key).await?.unwrap_or(0);
+        let count = count?.unwrap_or(0);
         if count >= registered.capacity.sandboxes {
             return Err(StoreError::Domain(crate::DomainError::NodeAtCapacity {
                 detail: format!(
@@ -312,9 +323,9 @@ impl Store {
                 ),
             }));
         }
-        let requirements = self.requirements(trx, agent).await?;
+        let requirements = requirements?;
         let bytes = requirement_bytes(requirements)?;
-        let load = self.node_load(trx, node, agent).await?;
+        let load = load?;
         if bytes
             > registered
                 .capacity
@@ -368,10 +379,13 @@ impl Store {
         trx: &Transaction,
         expected: &PlacementRecord,
     ) -> Result<PlacementRecord> {
-        self.check_computer(trx, expected.agent_id).await?;
-        let current: PlacementRecord = read(trx, &self.keys().placement(expected.agent_id))
-            .await?
-            .ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
+        let placement_key = self.keys().placement(expected.agent_id);
+        let (computer, current) = futures::join!(
+            self.check_computer(trx, expected.agent_id),
+            read::<PlacementRecord>(trx, &placement_key),
+        );
+        computer?;
+        let current = current?.ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
         if current.node_id != expected.node_id || current.epoch != expected.epoch {
             return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
         }
@@ -415,24 +429,31 @@ impl Store {
         expires_at: Timestamp,
     ) -> Result<PlacementRecord> {
         self.transaction(|trx| async move {
-            self.check_computer(&trx, agent).await?;
+            let keys = self.keys();
+            let (placement_key, epoch_key, next_key) = (
+                keys.placement(agent),
+                keys.placement_epoch(agent),
+                keys.placement_next_reason(agent),
+            );
+            let (computer, existing, epoch, next, gpu) = futures::join!(
+                self.check_computer(&trx, agent),
+                read::<PlacementRecord>(&trx, &placement_key),
+                read::<u64>(&trx, &epoch_key),
+                read::<PlacementChangeReason>(&trx, &next_key),
+                self.reserve_computer(&trx, node, agent),
+            );
+            computer?;
             let now = self.now();
             if expires_at <= now {
                 return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
-            if read::<PlacementRecord>(&trx, &self.keys().placement(agent))
-                .await?
-                .is_some()
-            {
+            if existing?.is_some() {
                 return Err(StoreError::Domain(crate::DomainError::PlacementExists));
             }
-            let epoch: u64 = read(&trx, &self.keys().placement_epoch(agent))
-                .await?
-                .unwrap_or(0);
-            let gpu = self.reserve_computer(&trx, node, agent).await?;
-            let next: Option<PlacementChangeReason> =
-                read(&trx, &self.keys().placement_next_reason(agent)).await?;
-            trx.clear(&self.keys().placement_next_reason(agent));
+            let epoch = epoch?.unwrap_or(0);
+            let gpu = gpu?;
+            let next = next?;
+            trx.clear(&next_key);
             let record = PlacementRecord {
                 agent_id: agent,
                 node_id: node,

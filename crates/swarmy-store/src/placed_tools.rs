@@ -31,15 +31,22 @@ impl Store {
         placement: &PlacementRecord,
     ) -> Result<VolumeId> {
         self.transaction(|trx| async move {
-            self.check_live_placement(&trx, placement).await?;
-            let stored = self.session(&trx, session).await?;
+            let id = VolumeId::from_ulid(placement.agent_id.as_ulid());
+            let key = self.keys().volume_placement(id);
+            let volume_key = self.keys().volume(id);
+            let (live, stored, binding, volume) = futures::join!(
+                self.check_live_placement(&trx, placement),
+                self.session(&trx, session),
+                read::<PlacementRecord>(&trx, &key),
+                read::<VolumeRecord>(&trx, &volume_key),
+            );
+            live?;
+            let stored = stored?;
             if stored.agent_id != placement.agent_id {
                 return Err(StoreError::Fence(crate::FenceError::PlacementAgentMismatch));
             }
-            let id = VolumeId::from_ulid(placement.agent_id.as_ulid());
-            let key = self.keys().volume_placement(id);
-            let binding: Option<PlacementRecord> = read(&trx, &key).await?;
-            if let Some(volume) = read::<VolumeRecord>(&trx, &self.keys().volume(id)).await? {
+            let binding = binding?;
+            if let Some(volume) = volume? {
                 if volume
                     .writer_lease
                     .is_some_and(|lease| lease.expires_at > self.now())
@@ -93,16 +100,21 @@ impl Store {
     /// Rejects mismatched jobs, sessions, placements, and storage failures.
     pub async fn claim_placed_tool(&self, claim: &PlacedToolClaim) -> Result<bool> {
         self.transaction(|trx| async move {
-            self.check_live_placement(&trx, &claim.placement).await?;
-            self.check_tool_dispatch(&trx, &claim.job, &claim.placement)
-                .await?;
-            let Some(value) = trx
-                .get(&self.keys().tool_job(claim.job.request_id), false)
-                .await?
-            else {
+            let job_key = self.keys().tool_job(claim.job.request_id);
+            let key = self.keys().placed_tool_claim(claim.job.request_id);
+            let (live, dispatch, value, session, current) = futures::join!(
+                self.check_live_placement(&trx, &claim.placement),
+                self.check_tool_dispatch(&trx, &claim.job, &claim.placement),
+                trx.get(&job_key, false),
+                self.session(&trx, claim.job.session_id),
+                read::<StoredPlacedClaim>(&trx, &key),
+            );
+            live?;
+            dispatch?;
+            let Some(value) = value? else {
                 return Ok(false);
             };
-            let session = self.session(&trx, claim.job.session_id).await?;
+            let session = session?;
             if session.agent_id != claim.placement.agent_id
                 || session.state != SessionState::WaitingTools
                 || claim.expires_at <= self.now()
@@ -112,11 +124,7 @@ impl Store {
             if self.hydrate::<ToolJob>(&value).await? != claim.job {
                 return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
             }
-            let key = self.keys().placed_tool_claim(claim.job.request_id);
-            if read::<StoredPlacedClaim>(&trx, &key)
-                .await?
-                .is_some_and(|old| old.expires_at > self.now())
-            {
+            if current?.is_some_and(|old| old.expires_at > self.now()) {
                 return Ok(false);
             }
             write(
