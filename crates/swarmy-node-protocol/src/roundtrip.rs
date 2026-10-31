@@ -10,11 +10,11 @@ fn id() -> Ulid {
     Ulid::generate()
 }
 fn roundtrip<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
-    value: T,
+    value: &T,
 ) {
     assert_eq!(
-        serde_json::from_slice::<T>(&serde_json::to_vec(&value).unwrap()).unwrap(),
-        value
+        serde_json::from_slice::<T>(&serde_json::to_vec(value).unwrap()).unwrap(),
+        *value
     );
 }
 fn fixture() -> (
@@ -64,7 +64,7 @@ fn fixture() -> (
     let spec = SandboxSpec {
         agent_id: agent,
         scratch: vec![],
-        requirements: Default::default(),
+        requirements: swarmy_core::SandboxRequirements::default(),
     };
     (
         job,
@@ -80,17 +80,17 @@ fn fixture() -> (
 fn tool_and_hosting_wire_types_round_trip() {
     let (job, placement, lease, volume, head, header, spec) = fixture();
     let now = jiff::Timestamp::UNIX_EPOCH;
-    roundtrip(ToolRouteRequest { job: job.clone() });
-    roundtrip(ToolRouteResponse {
+    roundtrip(&ToolRouteRequest { job: job.clone() });
+    roundtrip(&ToolRouteResponse {
         server_now: now,
         agent: placement.agent_id,
     });
-    roundtrip(HostingOpenRequest {
+    roundtrip(&HostingOpenRequest {
         agent: placement.agent_id,
         job,
         previous_epoch: Some(1),
     });
-    roundtrip(HostingOpenResponse {
+    roundtrip(&HostingOpenResponse {
         server_now: now,
         placement: placement.clone(),
         volume,
@@ -100,7 +100,7 @@ fn tool_and_hosting_wire_types_round_trip() {
         spec,
         boot_set: None,
     });
-    roundtrip(HostingReadyRequest {
+    roundtrip(&HostingReadyRequest {
         placement: placement.clone(),
         address: std::net::Ipv4Addr::LOCALHOST,
         metrics: vec![MetricBatch {
@@ -109,7 +109,7 @@ fn tool_and_hosting_wire_types_round_trip() {
             patches: vec![NodeMetric::Computer(swarmy_core::ComputerMetric::default())],
         }],
     });
-    roundtrip(HostingCloseRequest {
+    roundtrip(&HostingCloseRequest {
         placement,
         writer: Some(WriterToken { volume, lease }),
     });
@@ -118,25 +118,25 @@ fn tool_and_hosting_wire_types_round_trip() {
 fn volume_and_credential_wire_types_round_trip() {
     let (_, placement, lease, volume, head, header, _) = fixture();
     let now = jiff::Timestamp::UNIX_EPOCH;
-    roundtrip(VolumePublishRequest {
+    roundtrip(&VolumePublishRequest {
         writer: WriterToken { volume, lease },
         previous: head,
         next: ManifestId::from_ulid(id()),
         header,
     });
-    roundtrip(VolumeProtectRequest {
+    roundtrip(&VolumeProtectRequest {
         hashes: vec![ContentHash::ZERO],
     });
-    roundtrip(VolumeProtectResponse {
+    roundtrip(&VolumeProtectResponse {
         server_now: now,
         deleting: vec![ContentHash::ZERO],
     });
-    roundtrip(GithubTokenRequest {
+    roundtrip(&GithubTokenRequest {
         agent: placement.agent_id,
     });
-    roundtrip(GithubTokenResponse {
+    roundtrip(&GithubTokenResponse {
         server_now: now,
         token: Some("secret".into()),
     });
-    roundtrip(Ack { server_now: now });
+    roundtrip(&Ack { server_now: now });
 }
