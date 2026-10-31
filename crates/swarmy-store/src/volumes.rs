@@ -241,36 +241,43 @@ impl Store {
         .await
     }
 
-    /// Acquire only when no writer exists or the previous writer has expired.
-    /// The caller supplies time, as with session leases. Every grant increments
-    /// a retained counter so releasing and reacquiring cannot recreate an old token.
+    /// Acquire a writer using the store clock to decide whether the previous writer expired.
+    /// Every new grant increments the retained sequence.
     /// # Errors
-    /// Rejects live writers, invalid expiry times, missing volumes, and transaction failures.
+    /// Rejects live writers, invalid expiry, missing volumes and storage failures.
     pub async fn acquire_writer_lease(
         &self,
         id: VolumeId,
         owner: LeaseOwnerId,
-        now: Timestamp,
         expires_at: Timestamp,
     ) -> Result<Lease> {
-        if expires_at <= now {
-            return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
-        }
         self.transaction(|trx| async move {
+            let now = self.now();
+            if expires_at <= now {
+                return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
+            }
             let seq_key = self.keys().volume_lease_seq(id);
-            let (volume, placement, previous) = futures::join!(
+            let (volume, bound, previous) = futures::join!(
                 self.volume(&trx, id),
                 self.check_volume_placement(&trx, id, owner),
                 read::<u64>(&trx, &seq_key),
             );
             let mut volume = volume?;
-            placement?;
-            if volume
+            let bound = bound?;
+            if let Some(mut lease) = volume
                 .writer_lease
-                .as_ref()
-                .is_some_and(|lease| lease.expires_at > now)
+                .clone()
+                .filter(|lease| lease.expires_at > now)
             {
-                return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
+                if !bound || lease.owner != owner {
+                    return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
+                }
+                if expires_at > lease.expires_at {
+                    lease.expires_at = expires_at;
+                    volume.writer_lease = Some(lease.clone());
+                    write(&trx, &self.keys().volume(id), &volume)?;
+                }
+                return Ok(lease);
             }
             let seq = crate::seq_after(previous?.unwrap_or(0), 1)?;
             let lease = Lease {
@@ -286,29 +293,31 @@ impl Store {
         .await
     }
 
-    /// Release only with the complete, still-live fencing token.
+    /// Release a live grant; repeating after its release succeeds at the same sequence.
     /// # Errors
-    /// Rejects absent, expired, or replaced leases and transaction failures.
-    pub async fn release_writer_lease(
-        &self,
-        id: VolumeId,
-        expected: &Lease,
-        now: Timestamp,
-    ) -> Result<()> {
+    /// Rejects expired or replaced grants and storage failures.
+    pub async fn release_writer_lease(&self, id: VolumeId, expected: &Lease) -> Result<()> {
         self.transaction(|trx| async move {
-            let mut volume = self.volume(&trx, id).await?;
-            if volume.writer_lease.as_ref() != Some(expected) || expected.expires_at <= now {
-                return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
+            let (volume, seq) = futures::join!(
+                self.volume(&trx, id),
+                read::<u64>(&trx, &self.keys().volume_lease_seq(id)),
+            );
+            let mut volume = volume?;
+            match volume.writer_lease.as_ref() {
+                Some(lease) if lease.same_grant(expected) && lease.expires_at > self.now() => {
+                    volume.writer_lease = None;
+                    write(&trx, &self.keys().volume(id), &volume)
+                }
+                None if seq? == Some(expected.seq) => Ok(()),
+                _ => Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch)),
             }
-            volume.writer_lease = None;
-            write(&trx, &self.keys().volume(id), &volume)
         })
         .await
     }
 
-    /// Renew a live writer without changing its fencing sequence.
+    /// Extend a live writer to at least `expires_at`; a repeat is a no-op.
     /// # Errors
-    /// Rejects expired or replaced tokens and non-increasing expiry times.
+    /// Rejects expired or replaced tokens and storage failures.
     pub async fn renew_writer_lease(
         &self,
         id: VolumeId,
@@ -322,18 +331,16 @@ impl Store {
             );
             placement?;
             let mut volume = volume?;
-            if volume.writer_lease.as_ref() != Some(expected)
-                || expected.expires_at <= self.now()
-                || expires_at <= expected.expires_at
-            {
-                return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
+            let mut lease = volume
+                .writer_lease
+                .clone()
+                .filter(|lease| lease.same_grant(expected) && lease.expires_at > self.now())
+                .ok_or(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch))?;
+            if expires_at > lease.expires_at {
+                lease.expires_at = expires_at;
+                volume.writer_lease = Some(lease.clone());
+                write(&trx, &self.keys().volume(id), &volume)?;
             }
-            let lease = Lease {
-                expires_at,
-                ..expected.clone()
-            };
-            volume.writer_lease = Some(lease.clone());
-            write(&trx, &self.keys().volume(id), &volume)?;
             Ok(lease)
         })
         .await
@@ -392,7 +399,11 @@ impl Store {
             );
             placement?;
             let mut volume = volume?;
-            if volume.writer_lease.as_ref() != Some(expected) || expected.expires_at <= self.now() {
+            if !volume
+                .writer_lease
+                .as_ref()
+                .is_some_and(|lease| lease.same_grant(expected) && lease.expires_at > self.now())
+            {
                 return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
             }
             let (parent, next_header) = (parent?, next_header?);

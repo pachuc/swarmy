@@ -147,6 +147,7 @@ fn family_key_layout_matches_checked_in_hex() {
             keys.metering_hour_total("fleet", 3600, "field"),
         ),
         ("node", keys.node(nodeid)),
+        ("node_credential", keys.node_credential(nodeid)),
         ("placed_tool_claim", keys.placed_tool_claim(requestid)),
         ("placement", keys.placement(agentid)),
         ("placement_address", keys.placement_address(agentid)),

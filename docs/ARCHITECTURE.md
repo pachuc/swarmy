@@ -144,7 +144,7 @@ them in [api-breaks.txt](api-breaks.txt).
   [computers.rs](../crates/swarmy-store/src/computers.rs),
   [session_images.rs](../crates/swarmy-store/src/session_images.rs),
   [volumes.rs](../crates/swarmy-store/src/volumes.rs)).
-- **Leases, placements, and nodes.** `lease`, `lease_by_expiry`, `node`,
+- **Leases, placements, and nodes.** `lease`, `lease_by_expiry`, `node`, `node_credential`,
   `placement`, `placement_epoch`, `placement_by_node`, `placement_hosting`,
   `placement_next_reason`, `volume_placement`, and `tool_placement` track
   ownership and where work runs. Node records carry advertised capacity, GPU
@@ -157,6 +157,9 @@ them in [api-breaks.txt](api-breaks.txt).
   remains transactional, and a placement epoch fences stale node operations.
   Fenced operations snapshot the placement and conflict on its epoch key, which
   renewal never writes, so lease renewal does not make them retry.
+  Claims and volume writer leases match by identity with expiry read from the stored
+  row against the store clock; node operations are safe to repeat after commit.
+  `node_credential` keeps the BLAKE3 hash of each node API token.
   A GPU requirement change marks the hosting row for release at the next
   node renewal; the next placement records `RequirementChange`
   ([placement.rs](../crates/swarmy-worker/src/placement.rs),

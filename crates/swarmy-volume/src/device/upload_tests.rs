@@ -519,7 +519,6 @@ async fn lease_loss_during_flush_rejects_publication_and_keeps_dirty_data() {
         .acquire_writer_lease(
             volume,
             LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
-            now,
             expiry,
         )
         .await
@@ -539,10 +538,7 @@ async fn lease_loss_during_flush_rejects_publication_and_keeps_dirty_data() {
     .await
     .unwrap();
     // Revoke the token while the chunk PUT is waiting, then let upload finish.
-    store
-        .release_writer_lease(volume, &lease, Timestamp::now())
-        .await
-        .unwrap();
+    store.release_writer_lease(volume, &lease).await.unwrap();
     gate.add_permits(1);
     assert!(matches!(
         task.await.unwrap(),
@@ -566,7 +562,7 @@ async fn lease_loss_during_flush_rejects_publication_and_keeps_dirty_data() {
     .unwrap();
     assert_eq!(recovered.read(0, 4096).await.unwrap(), vec![0; 4096]);
     let renewed = store
-        .acquire_writer_lease(volume, lease.owner, Timestamp::now(), expiry)
+        .acquire_writer_lease(volume, lease.owner, expiry)
         .await
         .unwrap();
     let retry = crate::VolumeWriter::new(device.clone(), store.clone(), volume, renewed, base);

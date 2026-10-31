@@ -60,6 +60,8 @@ pub use price::{HourlyPrice, InvalidPrice};
 pub mod elastic;
 pub use elastic::{ElasticGroupDefinition, ElasticGroupRecord, MAX_ELASTIC_MACHINES};
 
+mod node_token;
+pub use node_token::{NodeToken, NodeTokenError};
 mod placement;
 pub use placement::{AgentCallStatus, PlacementChangeReason, PlacementRecord};
 

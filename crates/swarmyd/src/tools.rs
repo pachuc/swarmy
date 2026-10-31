@@ -330,7 +330,7 @@ async fn commit_result(store: &Store, claim: &PlacedToolClaim, result: &ToolResu
     let mut head = claim.job.step;
     loop {
         match store.complete_placed_tool(claim, head, result).await {
-            Ok(()) => break,
+            Ok(_) => break,
             Err(StoreError::Fence(swarmy_store::FenceError::StaleSequence { actual, .. })) => {
                 head = actual;
             }
@@ -770,8 +770,7 @@ async fn heartbeat(
             .duration_since(jiff::Timestamp::now())
             .try_into()
             .unwrap_or(Duration::ZERO);
-        tokio::time::timeout(remaining, store.renew_placed_tool(claim, next)).await??;
-        expiry = next;
+        expiry = tokio::time::timeout(remaining, store.renew_placed_tool(claim, next)).await??;
     }
 }
 

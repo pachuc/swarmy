@@ -225,42 +225,20 @@ impl Hosting {
     }
 
     async fn placement(&self, agent: AgentId, job: &ToolJob) -> Result<PlacementRecord> {
-        let dispatched = self.store.tool_placement(job.request_id).await?;
-        let expiry = jiff::Timestamp::now().checked_add(self.lease)?;
-        let placement = match self.store.get_by_agent(agent).await? {
-            None => {
-                anyhow::ensure!(dispatched.is_none(), "dispatch placement was released");
-                self.store.place(agent, self.node, expiry).await?
+        let previous = self.previous.lock().await.get(&agent).copied();
+        let placement = match self
+            .store
+            .open_hosting(self.node, agent, job, previous, self.lease)
+            .await?
+        {
+            swarmy_store::OpenHosting::Opened(placement) => placement,
+            swarmy_store::OpenHosting::PlacedElsewhere { node, epoch } => {
+                bail!("agent is placed on another node {node} at epoch {epoch}")
             }
-            Some(old) if old.expires_at <= jiff::Timestamp::now() => {
-                anyhow::ensure!(
-                    dispatched.is_none(),
-                    "dispatch placement expired; worker must recover the call"
-                );
-                self.store.take_over(&old, self.node, expiry).await?
-            }
-            Some(old) if old.node_id != self.node => bail!(
-                "agent is placed on another node {} at epoch {}",
-                old.node_id,
-                old.epoch
-            ),
-            Some(old) => {
-                anyhow::ensure!(
-                    dispatched
-                        .as_ref()
-                        .is_none_or(|expected| expected.epoch == old.epoch),
-                    "dispatch placement epoch changed"
-                );
-                if self.previous.lock().await.get(&agent) == Some(&old.epoch) {
-                    bail!(
-                        "placement epoch {} stopped; waiting for lease expiry before rebuilding",
-                        old.epoch
-                    );
-                }
-                self.store.renew_hosted(&old, expiry).await?.0
+            swarmy_store::OpenHosting::EpochStopped { epoch } => {
+                bail!("placement epoch {epoch} stopped; waiting for lease expiry before rebuilding")
             }
         };
-        self.store.claim_placement(&placement).await?;
         self.previous.lock().await.insert(agent, placement.epoch);
         Ok(placement)
     }

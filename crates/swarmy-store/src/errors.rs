@@ -44,6 +44,8 @@ pub enum StorageError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum FenceError {
+    #[error("{detail}")]
+    DispatchPlacementStale { detail: &'static str },
     #[error("volume head changed since this writer opened it")]
     VolumeHeadMismatch,
     #[error("expected head {expected}, found {actual}")]

@@ -165,7 +165,6 @@ async fn agent_volume_starts_snapshot_history_and_can_publish() {
         .acquire_writer_lease(
             volume,
             LeaseOwnerId::from_ulid(node.node_id.as_ulid()),
-            Timestamp::now(),
             Timestamp::now()
                 .checked_add(Duration::from_secs(30))
                 .unwrap(),
@@ -214,7 +213,6 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
         .acquire_writer_lease(
             volume,
             LeaseOwnerId::from_ulid(node.node_id.as_ulid()),
-            Timestamp::now(),
             expiry(),
         )
         .await
@@ -228,7 +226,16 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
     };
     check_tool_admission(store, &claim.job, &placement).await;
     assert!(store.claim_placed_tool(&claim).await.unwrap());
-    assert!(!store.claim_placed_tool(&claim).await.unwrap());
+    assert!(store.claim_placed_tool(&claim).await.unwrap());
+    assert!(
+        !store
+            .claim_placed_tool(&PlacedToolClaim {
+                owner: owner(),
+                ..claim.clone()
+            })
+            .await
+            .unwrap()
+    );
     store.renew(&placement, expiry()).await.unwrap();
     store.renew_placed_tool(&claim, expiry()).await.unwrap();
     let result = BashResult {
@@ -809,7 +816,6 @@ async fn writer_lease_renewal_is_fenced_by_release() {
         .acquire_writer_lease(
             volume,
             LeaseOwnerId::from_ulid(node.node_id.as_ulid()),
-            Timestamp::now(),
             Timestamp::now()
                 .checked_add(Duration::from_secs(30))
                 .unwrap(),
