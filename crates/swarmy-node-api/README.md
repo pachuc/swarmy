@@ -13,3 +13,12 @@ Configure `[node_api] listen` (default `127.0.0.1:8743`), `[node] api_url`, and 
 `POST /node/v1/sync` combines heartbeat, placement and call occupancy, tool-claim and writer renewals, scratch inventory and evictions, and turn metric patches. The server returns index-aligned answers: `Renewed` supplies the new expiry, `Lost` means stop using the fenced token, and `Pending` means keep its existing expiry and retry next cycle. Each store item runs independently under a two-second server deadline. All requested expiries use the server clock; echoed expiries are never trusted. The authenticated node must own each placement, claim placement, and writer lease before a store call can use that token.
 
 The node reports scratch directories and their occupancy. The server decides deleted, moved, and idle eviction verdicts; the node evicts on disk and sends the removed agents in the next sync for row cleanup. Tool and computer metrics are queued without blocking the sync; they are flushed on service shutdown.
+
+## Provisioning
+
+A joining node receives its own token from the primary through the primary shell;
+the stack host issues its own token during provisioning. The token is stored in
+`/etc/swarmy/node-token` (root-owned, mode 0600) and revoked with the tunnel
+key when the node is removed. The SSH tunnel forwards local port 8743 to the
+primary's node API. Existing hosts receive credentials during `swarmy swarm
+upgrade` in NA11; this provisioning path only covers new joins.

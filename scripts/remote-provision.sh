@@ -198,6 +198,7 @@ write_units provisioned_units "$stack_dependency" "$node_unit"
 sudo systemctl daemon-reload
 if [[ $mode == stack ]]; then
     sudo systemctl enable --now "$stack_dependency"
+    issue_local_node_credential "$repo_dir" "/usr/local/bin/$(swarmy_core_binary)"
 else
     [[ -s .dev/fdb.cluster ]] || { echo 'Missing primary cluster file' >&2; exit 1; }
     sudo systemctl enable "$stack_dependency"

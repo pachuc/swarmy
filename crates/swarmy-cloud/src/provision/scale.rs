@@ -398,9 +398,9 @@ async fn drain_all(
         .filter(|h| h.provisioned)
     {
         let node = as_machine(spec, victim);
-        if let Err(error) = host.revoke_tunnel(&node, &primary).await {
+        if let Err(error) = host.revoke_node_access(&node, &primary).await {
             cloud_err!(
-                "host {}: could not revoke its tunnel key on {} ({}); remove its line from ~{}/.ssh/authorized_keys there",
+                "host {}: could not revoke its tunnel key and node API credential on {} ({}); remove its line from ~{}/.ssh/authorized_keys there and run swarmy-core node-credential revoke with its node id",
                 node.name,
                 primary.name,
                 swarmy_core::error_chain(&error),

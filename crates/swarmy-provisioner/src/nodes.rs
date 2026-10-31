@@ -40,6 +40,6 @@ impl Nodes for SshNodes {
         Ok(ssh::drain_node(node, timeout, true).await?)
     }
     async fn revoke(&self, node: &Machine, primary: &LocalPrimary) -> anyhow::Result<()> {
-        Ok(ssh::revoke_tunnel(node, Primary::Local(primary)).await?)
+        Ok(ssh::revoke_node_access(node, Primary::Local(primary)).await?)
     }
 }

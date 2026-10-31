@@ -60,6 +60,8 @@ zero=$(node_environment /tmp/checkout 0 /this-mount-does-not-exist)
 [[ $zero =~ SWARMY_NODE_MEMORY_BYTES=[0-9]+ ]]
 positive=$(node_environment /tmp/checkout 4 /tmp)
 [[ $positive == *'SWARMY_NODE_ROLES=sandbox,volume'* ]]
+[[ $positive == *'SWARMY_NODE_API_URL=http://127.0.0.1:8743'* ]]
+[[ $positive == *'SWARMY_NODE_TOKEN_FILE=/etc/swarmy/node-token'* ]]
 [[ $positive == *'SWARMY_NODE_SANDBOXES=4'* ]]
 [[ $positive == *'SWARMY_NODE_DISK_BYTES='* ]]
 [[ $positive != *'SWARMY_NODE_DISK_BYTES=0'* ]]
@@ -242,6 +244,15 @@ node_text=$(render_unit swarmyd.service)
 [[ $node_text == *'Wants=swarmy-tunnel.service'* && $node_text != *RequiresMountsFor* ]]
 tunnel_text=$(render_unit swarmy-tunnel.service)
 [[ $tunnel_text == *'-L 127.0.0.1:8333:127.0.0.1:8333 deploy-user@10.0.0.1'* ]]
+for expected in '-L 127.0.0.1:4500:127.0.0.1:4500' '-L 127.0.0.1:8743:127.0.0.1:8743' '-o ServerAliveInterval=5' '-o ServerAliveCountMax=3'; do
+    [[ $tunnel_text == *"$expected"* ]]
+done
+[[ $tunnel_text != *ServerAliveInterval=15* ]]
+node_api_text=$(render_unit swarmy-node-api.service)
+[[ $(swarmy_service_units) == *swarmy-node-api.service* ]]
+[[ $node_api_text == *'ExecStart=/usr/local/bin/swarmy-core node-api'* ]]
+[[ $node_api_text == *'Requires=swarmy-stack.service'* ]]
+[[ $(swarmy_unit_role swarmy-node-api.service) == node-api ]]
 set_unit_inputs node deploy-user 10.0.0.1 false ''
 [[ $(render_unit swarmy-tunnel.service) != *8333* ]]
 for args in 'other deploy-user 10.0.0.1 false /mnt' 'node deploy-user _ false /mnt' 'node deploy-user 10.0.0.1 yes /mnt' 'node deploy-user 10.0.0.1 false relative'; do
@@ -339,3 +350,31 @@ printf 'GPU provisioning: ok\n'
 [[ $(swarmy_library_conf) == /etc/ld.so.conf.d/swarmy-provisioned.conf ]]
 [[ $(swarmy_owned_marker) == '# Written by swarmy provisioning; swarmy swarm down removes this file.' ]]
 echo 'remote provision argument and environment tests passed'
+
+# Local stack credential issuance keeps the token on stdin and checks identity.
+(
+    repo="$bundle/local-repo"
+    export SWARMY_ETC_DIR="$bundle/local-etc"
+    mkdir -p "$repo/.swarmy" "$SWARMY_ETC_DIR"
+    : > "$SWARMY_ETC_DIR/node.env"
+    printf '%s\n' 01ARZ3NDEKTSV4RRFFQ69G5FAV > "$repo/.swarmy/node-id"
+    sudo() { [[ $1 == -n ]] && shift; "$@"; }
+    cat > "$bundle/local-core" <<'CORE'
+#!/bin/sh
+[ "$1 $2 $3" = 'node-credential issue 01ARZ3NDEKTSV4RRFFQ69G5FAV' ] || exit 1
+printf '%s\n' 'swn.01ARZ3NDEKTSV4RRFFQ69G5FAV.c2VjcmV0'
+CORE
+    chmod +x "$bundle/local-core"
+    issue_local_node_credential "$repo" "$bundle/local-core"
+    [[ $(<"$SWARMY_ETC_DIR/node-token") == 'swn.01ARZ3NDEKTSV4RRFFQ69G5FAV.c2VjcmV0' ]]
+    [[ $(stat -c %a "$SWARMY_ETC_DIR/node-token") == 600 ]]
+    rm "$SWARMY_ETC_DIR/node-token"
+    printf '%s\n' not-an-id > "$repo/.swarmy/node-id"
+    if issue_local_node_credential "$repo" "$bundle/local-core" 2>/dev/null; then exit 1; fi
+    [[ ! -e $SWARMY_ETC_DIR/node-token ]]
+    printf '%s\n' 01ARZ3NDEKTSV4RRFFQ69G5FAV > "$repo/.swarmy/node-id"
+    printf '#!/bin/sh\nprintf "%%s\\n" "swn.01ARZ3NDEKTSV4RRFFQ69G5FAA.c2VjcmV0"\n' > "$bundle/other-core"
+    chmod +x "$bundle/other-core"
+    if issue_local_node_credential "$repo" "$bundle/other-core" 2>/dev/null; then exit 1; fi
+    [[ ! -e $SWARMY_ETC_DIR/node-token ]]
+)

@@ -199,7 +199,7 @@ link_volumes_to() {
 # seed list: unit and role names derive from these, so adding a service
 # touches one place.
 swarmy_service_names() {
-    printf '%s\n' scheduler worker gateway api
+    printf '%s\n' scheduler worker gateway api node-api
 }
 
 # The CLI binary (no unit runs it) and its cargo package (the only binary
@@ -294,6 +294,9 @@ swarmy_agent_unit() {
 # Unit inputs are recorded separately from the secret node environment.
 swarmy_systemd_dir() { printf '%s\n' "${SWARMY_SYSTEMD_DIR:-/etc/systemd/system}"; }
 swarmy_etc_dir() { printf '%s\n' "${SWARMY_ETC_DIR:-/etc/swarmy}"; }
+# Equal to swarmy_config::NodeSettings defaults; node_files.rs checks them.
+swarmy_node_api_url() { printf 'http://127.0.0.1:8743\n'; }
+swarmy_node_token_file() { printf '%s/node-token\n' "$(swarmy_etc_dir)"; }
 swarmy_unit_inputs_file() { printf '%s/units.env\n' "$(swarmy_etc_dir)"; }
 
 set_unit_user() {
@@ -380,14 +383,14 @@ render_tunnel_unit() {
     if [[ $unit_tunnel_s3 == true ]]; then s3_forward=' -L 127.0.0.1:8333:127.0.0.1:8333'; fi
     cat <<UNIT
 [Unit]
-Description=Swarmy tunnel to first node backing services
+Description=Swarmy tunnel to first node backing services and node API
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=exec
 User=$unit_user
-ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -i /etc/swarmy/tunnel-key -L 127.0.0.1:4500:127.0.0.1:4500 -L 127.0.0.1:4222:127.0.0.1:4222$s3_forward $unit_user@$unit_primary
+ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i /etc/swarmy/tunnel-key -L 127.0.0.1:4500:127.0.0.1:4500 -L 127.0.0.1:4222:127.0.0.1:4222 -L 127.0.0.1:8743:127.0.0.1:8743$s3_forward $unit_user@$unit_primary
 ExecStartPost=/bin/bash -c 'for attempt in {1..30}; do if (echo > /dev/tcp/127.0.0.1/4500) 2>/dev/null; then exit 0; fi; sleep 1; done; exit 1'
 Restart=always
 RestartSec=5
@@ -780,6 +783,8 @@ node_environment() {
     cat <<ENV
 SWARMY_FDB_CLUSTER_FILE=$repo_dir/.dev/fdb.cluster
 SWARMY_NATS_URL=nats://127.0.0.1:4222
+SWARMY_NODE_API_URL=$(swarmy_node_api_url)
+SWARMY_NODE_TOKEN_FILE=$(swarmy_node_token_file)
 $s3_env
 SWARMY_S3_CONDITIONAL_CREATE=$bucket_conditional_create
 SWARMY_NODE_CPU_MILLIS=$(($(nproc) * 1000))
@@ -843,4 +848,19 @@ provision_nvidia() {
     fi
     sudo install -d -m 0755 "$(dirname "$(nvidia_cdi_spec)")"
     sudo nvidia-ctk cdi generate --output="$(nvidia_cdi_spec)" --format=json
+}
+
+# The stack host has no primary to ask for its own credential.
+issue_local_node_credential() {
+    local repo_dir=${1:?node directory} binary=${2:?core binary} id token file attempt
+    id=$(<"$repo_dir/.swarmy/node-id") || return 1
+    [[ $id =~ ^[0-9A-HJKMNP-TV-Z]{26}$ ]] || { echo "invalid node id in $repo_dir/.swarmy/node-id" >&2; return 1; }
+    file=$(swarmy_node_token_file)
+    for attempt in 1 2 3 4 5; do
+        if token=$(sudo -n sh -c "cd $repo_dir && set -a && . $(swarmy_etc_dir)/node.env && set +a && exec $binary node-credential issue $id"); then break; fi
+        (( attempt < 5 )) || return 1
+        sleep 2
+    done
+    [[ $token == "swn.$id."* ]] || { echo 'node-credential issue printed no token for this node' >&2; return 1; }
+    printf '%s\n' "$token" | sudo -n sh -c "umask 077; cat > $file.tmp && mv $file.tmp $file"
 }

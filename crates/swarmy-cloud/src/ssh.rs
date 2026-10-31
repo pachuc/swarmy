@@ -786,13 +786,7 @@ impl Ssh {
     pub async fn provision(&self, node: &Machine, primary: Option<Primary<'_>>) -> Result<String> {
         let address = wait_ssh(node).await?;
         let prebuilt = self.stage(node, &address, primary.is_none()).await?;
-        if let Some(id) = node.node_id {
-            checked(
-                &mut node_command(node, &address, &node_id_command(node, id)?)?,
-                "write node id",
-            )
-            .await?;
-        }
+        let node_id = ensure_node_id(node, &address).await?;
         let service_ip = primary.unwrap_or(Primary::Remote(node)).tunnel_address()?;
         let mode = if let Some(primary) = primary {
             let shell = primary.shell(90).await?;
@@ -812,7 +806,7 @@ impl Ssh {
                 "copy primary cluster file",
             )
             .await?;
-            install_tunnel(node, &address, primary, &shell).await?;
+            install_node_access(node, &address, primary, &shell, node_id).await?;
             "node"
         } else {
             "stack"
@@ -1183,10 +1177,20 @@ pub async fn drain_node(node: &Machine, timeout: Duration, force: bool) -> Resul
     Ok(serde_json::from_str(line)?)
 }
 
-/// Remove a node's tunnel key from the primary's service-user `authorized_keys`.
+/// Revoke a node's tunnel key and node API credential on the primary.
 /// # Errors
 /// SSH failures, or a node without a tunnel key.
-pub async fn revoke_tunnel(node: &Machine, primary: Primary<'_>) -> Result<()> {
+pub async fn revoke_node_access(node: &Machine, primary: Primary<'_>) -> Result<()> {
+    let shell = primary.shell(6).await?;
+    let primary_user = primary.user()?;
+    if let Some(id) = node.node_id {
+        shell
+            .output(
+                &node_credential_command(&primary_user, CredentialAction::Revoke, id),
+                "revoke node API credential",
+            )
+            .await?;
+    }
     let user = service_user(node)?;
     let address = wait_ssh_for(node, 6).await?;
     let key = run_output(
@@ -1198,11 +1202,46 @@ pub async fn revoke_tunnel(node: &Machine, primary: Primary<'_>) -> Result<()> {
         "read joining node tunnel key",
     )
     .await?;
-    let authorization = tunnel_authorization(&String::from_utf8(key.stdout)?)?;
-    let shell = primary.shell(6).await?;
+    if node.node_id.is_none() {
+        let id_output = run_output(
+            &mut node_command(
+                node,
+                &address,
+                &format!("cat {}/.swarmy/node-id", tilde_repo(&user)),
+            )?,
+            "read joining node id",
+        )
+        .await;
+        match id_output
+            .ok()
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|text| ulid::Ulid::from_string(text.trim()).ok())
+        {
+            Some(id) => {
+                shell
+                    .output(
+                        &node_credential_command(
+                            &primary_user,
+                            CredentialAction::Revoke,
+                            swarmy_core::NodeId::from_ulid(id),
+                        ),
+                        "revoke node API credential",
+                    )
+                    .await?;
+            }
+            None => cloud_err!(
+                "host {} has no valid persisted node id; skipping node API credential revocation",
+                node.name
+            ),
+        }
+    }
     shell
         .checked(
-            &authorized_keys_command(&primary.user()?, &authorization, true),
+            &authorized_keys_command(
+                &primary_user,
+                &tunnel_key(&String::from_utf8(key.stdout)?)?,
+                None,
+            ),
             "revoke joining node tunnel key",
         )
         .await
@@ -1269,6 +1308,42 @@ fn node_id_command(node: &Machine, id: swarmy_core::NodeId) -> Result<String> {
     ))
 }
 
+fn ensure_node_id_command(node: &Machine, fresh: swarmy_core::NodeId) -> Result<String> {
+    let user = service_user(node)?;
+    let repo = tilde_repo(&user);
+    Ok(format!(
+        "umask 077; mkdir -p {repo}/.swarmy && (test -s {repo}/.swarmy/node-id || printf %s {fresh} > {repo}/.swarmy/node-id) && chown {user}:{user} {repo}/.swarmy {repo}/.swarmy/node-id && cat {repo}/.swarmy/node-id"
+    ))
+}
+async fn ensure_node_id(node: &Machine, address: &str) -> Result<swarmy_core::NodeId> {
+    let command = match node.node_id {
+        Some(id) => format!(
+            "{} && cat {}/.swarmy/node-id",
+            node_id_command(node, id)?,
+            tilde_repo(&service_user(node)?)
+        ),
+        None => ensure_node_id_command(node, swarmy_core::NodeId::from_ulid(ulid::Ulid::new()))?,
+    };
+    let output = run_output(
+        &mut node_command(node, address, &command)?,
+        "settle node id",
+    )
+    .await?;
+    let text = String::from_utf8(output.stdout).map_err(|_| {
+        crate::Error::other(format!(
+            "host {} has a malformed persisted node id",
+            node.name
+        ))
+    })?;
+    let id = ulid::Ulid::from_string(text.trim()).map_err(|_| {
+        crate::Error::other(format!(
+            "host {} has a malformed persisted node id",
+            node.name
+        ))
+    })?;
+    Ok(swarmy_core::NodeId::from_ulid(id))
+}
+
 fn tunnel_key_command(node: &Machine) -> Result<String> {
     let user = service_user(node)?;
     let repo = tilde_repo(&user);
@@ -1286,48 +1361,87 @@ fn pin_primary_key_command(node: &Machine, known_host: &str) -> Result<String> {
     ))
 }
 
-// The service user's authorized_keys lives at its account home, not at the
-// bootstrap login's home. Both installation and revocation use this path.
-fn authorized_keys_command(user: &str, authorization: &str, revoke: bool) -> String {
-    let home = format!("~{user}");
-    let file = format!("{home}/.ssh/authorized_keys");
-    let line = shell_words::quote(authorization);
-    if revoke {
-        // Grep exit 1 means no matching line; exit 2 must never replace the file.
-        let inner = format!(
-            "umask 077; grep -vxF -- {line} {file} > {file}.tmp; status=$?; if [ \"$status\" -le 1 ]; then mv {file}.tmp {file}; else rm -f {file}.tmp; exit \"$status\"; fi"
-        );
-        format!("sudo -u {user} sh -c {}", shell_words::quote(&inner))
-    } else {
+// The service user's authorized_keys lives at its account home. The file
+// path begins with ~user so the inner shell, not the caller, expands it.
+fn authorized_keys_script(file: &str, key: &str, authorization: Option<&str>) -> String {
+    let line = authorization.map_or_else(String::new, |authorization| {
         format!(
-            "service_user={user}; service_home={home}; umask 077; sudo -u $service_user mkdir -p $service_home/.ssh && sudo -u $service_user touch $service_home/.ssh/authorized_keys && (sudo -u $service_user grep -qxF -- {line} $service_home/.ssh/authorized_keys || printf '%s\\n' {line} | sudo -u $service_user tee -a $service_home/.ssh/authorized_keys >/dev/null)"
+            "printf '%s\\n' {} >> {file}.tmp && ",
+            shell_words::quote(authorization)
         )
-    }
+    });
+    format!(
+        "umask 077; mkdir -p $(dirname {file}); touch {file}; grep -vF -- {} {file} > {file}.tmp; status=$?; if [ \"$status\" -le 1 ]; then {line}mv {file}.tmp {file}; else rm -f {file}.tmp; exit \"$status\"; fi",
+        shell_words::quote(key)
+    )
+}
+fn authorized_keys_command(user: &str, key: &str, authorization: Option<&str>) -> String {
+    format!(
+        "sudo -u {user} sh -c {}",
+        shell_words::quote(&authorized_keys_script(
+            &format!("~{user}/.ssh/authorized_keys"),
+            key,
+            authorization
+        ))
+    )
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CredentialAction {
+    Issue,
+    Revoke,
+}
+fn node_credential_command(
+    user: &str,
+    action: CredentialAction,
+    node: swarmy_core::NodeId,
+) -> String {
+    let action = match action {
+        CredentialAction::Issue => "issue",
+        CredentialAction::Revoke => "revoke",
+    };
+    format!(
+        "sudo -n sh -c {}",
+        shell_words::quote(&format!(
+            "cd {} && set -a && . /etc/swarmy/node.env && set +a && exec /usr/local/bin/swarmy-core node-credential {action} {node}",
+            tilde_repo(user)
+        ))
+    )
+}
+fn issued_token(stdout: &[u8], node: swarmy_core::NodeId) -> Result<swarmy_core::NodeToken> {
+    let text = std::str::from_utf8(stdout)
+        .map_err(|_| crate::Error::other("node-credential issue printed no valid token"))?;
+    let token = swarmy_core::NodeToken::parse(text.trim())
+        .map_err(|_| crate::Error::other("node-credential issue printed no valid token"))?;
+    crate::Error::ensure(
+        token.node() == node,
+        "node-credential issue printed a token for another node",
+    )?;
+    Ok(token)
 }
 
 // Generate the forwarding key on its owner; the primary login key never leaves the client.
-async fn install_tunnel(
+async fn install_node_access(
     node: &Machine,
     address: &str,
     primary: Primary<'_>,
     shell: &PrimaryShell<'_>,
+    node_id: swarmy_core::NodeId,
 ) -> Result<()> {
     let output = run_output(
         &mut node_command(node, address, &tunnel_key_command(node)?)?,
         "generate joining node tunnel key",
     )
     .await?;
-    let key = String::from_utf8(output.stdout)?;
-    let authorization = tunnel_authorization(&key)?;
-    // The tunnel unit connects as the service user, so its key belongs in the
-    // service user's authorized_keys, not the bootstrap login's.
+    let public = String::from_utf8(output.stdout)?;
+    let authorization = tunnel_authorization(&public, node.bucket.is_none())?;
+    let user = primary.user()?;
     shell
         .checked(
-            &authorized_keys_command(&primary.user()?, &authorization, false),
+            &authorized_keys_command(&user, &tunnel_key(&public)?, Some(&authorization)),
             "authorize joining node tunnel",
         )
         .await?;
-    // Obtain the host key over the already authenticated provisioning connection.
     let host_key = shell
         .output(
             "cat /etc/ssh/ssh_host_ed25519_key.pub",
@@ -1340,11 +1454,29 @@ async fn install_tunnel(
         &mut node_command(node, address, &pin_primary_key_command(node, &known_host)?)?,
         "pin primary SSH host key",
     )
+    .await?;
+    let output = shell
+        .output(
+            &node_credential_command(&user, CredentialAction::Issue, node_id),
+            "issue node API credential",
+        )
+        .await?;
+    let token = issued_token(&output.stdout, node_id)?;
+    let path = swarmy_config::NodeSettings::default().token_file;
+    let path = path
+        .to_str()
+        .ok_or_else(|| crate::Error::other("node token path must be UTF-8"))?;
+    crate::services::upload_root(
+        node,
+        address,
+        path,
+        format!("{}\n", token.reveal()).as_bytes(),
+    )
     .await
 }
 
-fn tunnel_authorization(key: &str) -> Result<String> {
-    let fields: Vec<_> = key.split_whitespace().collect();
+fn tunnel_key(public: &str) -> Result<String> {
+    let fields: Vec<_> = public.split_whitespace().collect();
     crate::Error::ensure(
         fields.len() >= 2
             && fields[0] == "ssh-ed25519"
@@ -1353,10 +1485,17 @@ fn tunnel_authorization(key: &str) -> Result<String> {
                 .all(|byte| byte.is_ascii_alphanumeric() || b"+/=".contains(&byte)),
         "invalid joining node public key",
     )?;
-    // Limit destination access, and disable shell, agent, X11, and PTY sessions.
+    Ok(format!("ssh-ed25519 {}", fields[1]))
+}
+fn tunnel_authorization(public: &str, object_store_forward: bool) -> Result<String> {
+    let key = tunnel_key(public)?;
+    let extra = if object_store_forward {
+        ",permitopen=\"127.0.0.1:8333\""
+    } else {
+        ""
+    };
     Ok(format!(
-        "restrict,port-forwarding,command=\"/bin/false\",permitopen=\"127.0.0.1:4500\",permitopen=\"127.0.0.1:4222\",permitopen=\"127.0.0.1:8333\" ssh-ed25519 {}",
-        fields[1]
+        "restrict,port-forwarding,command=\"/bin/false\",permitopen=\"127.0.0.1:4500\",permitopen=\"127.0.0.1:4222\",permitopen=\"127.0.0.1:8743\"{extra} {key}"
     ))
 }
 
@@ -1669,19 +1808,25 @@ mod tests {
 
     #[test]
     fn tunnel_key_authorization_restricts_sessions_and_destinations() {
-        let entry = tunnel_authorization("ssh-ed25519 AAAA+/= arbitrary comment\n").unwrap();
+        let entry = tunnel_authorization("ssh-ed25519 AAAA+/= arbitrary comment\n", true).unwrap();
         assert!(entry.starts_with("restrict,port-forwarding,command=\"/bin/false\","));
-        for port in [4500, 4222, 8333] {
+        for port in [4500, 4222, 8743, 8333] {
             assert!(entry.contains(&format!("permitopen=\"127.0.0.1:{port}\"")));
         }
         assert!(entry.ends_with(" ssh-ed25519 AAAA+/="));
+        let no_bucket = tunnel_authorization("ssh-ed25519 AAAA+/=", false).unwrap();
+        for port in [4500, 4222, 8743] {
+            assert!(no_bucket.contains(&format!("127.0.0.1:{port}")));
+        }
+        assert!(!no_bucket.contains("8333"));
         for key in [
             "",
             "ssh-rsa AAAA",
             "ssh-ed25519 AAAA;command",
             "ssh-ed25519 'AAAA'",
         ] {
-            assert!(tunnel_authorization(key).is_err());
+            assert!(tunnel_authorization(key, true).is_err());
+            assert!(tunnel_authorization(key, false).is_err());
         }
     }
 }
@@ -1841,12 +1986,125 @@ mod provisioning_command_tests {
     }
 
     #[test]
+    fn authorized_keys_script_replaces_and_revokes_by_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("authorized_keys");
+        std::fs::write(
+            &file,
+            "other-line ssh-ed25519 BBBB\nold,permitopen=\"127.0.0.1:4500\" ssh-ed25519 AAAA\n",
+        )
+        .unwrap();
+        let path = file.to_str().unwrap();
+        let run = |line| {
+            let script = super::authorized_keys_script(path, "ssh-ed25519 AAAA", line);
+            assert!(
+                std::process::Command::new("sh")
+                    .args(["-c", &script])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(Some("new ssh-ed25519 AAAA"));
+        let expected = "other-line ssh-ed25519 BBBB\nnew ssh-ed25519 AAAA\n";
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), expected);
+        run(Some("new ssh-ed25519 AAAA"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), expected);
+        run(None);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "other-line ssh-ed25519 BBBB\n"
+        );
+        std::fs::remove_file(&file).unwrap();
+        run(Some("new ssh-ed25519 AAAA"));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "new ssh-ed25519 AAAA\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn node_credential_commands_run_the_core_binary_with_the_node_environment() {
+        let id = swarmy_core::NodeId::from_ulid(ulid::Ulid::from(1_u128));
+        for (action, name) in [
+            (super::CredentialAction::Issue, "issue"),
+            (super::CredentialAction::Revoke, "revoke"),
+        ] {
+            let command = super::node_credential_command("swarmy", action, id);
+            let words = shell_words::split(&command).unwrap();
+            assert_eq!(&words[..4], ["sudo", "-n", "sh", "-c"]);
+            assert!(words[4].contains("cd ~swarmy/swarmy &&"));
+            assert!(words[4].contains(". /etc/swarmy/node.env"));
+            assert!(words[4].ends_with(&format!(
+                "exec /usr/local/bin/swarmy-core node-credential {name} {id}"
+            )));
+        }
+    }
+
+    #[test]
+    fn issued_token_accepts_exactly_one_token_for_the_node() {
+        let id = swarmy_core::NodeId::from_ulid(ulid::Ulid::from(1_u128));
+        let token = swarmy_core::NodeToken::new(id, [7; 32]);
+        assert_eq!(
+            super::issued_token(format!("{}\n", token.reveal()).as_bytes(), id).unwrap(),
+            token
+        );
+        for text in [
+            "garbage".to_owned(),
+            String::new(),
+            swarmy_core::NodeToken::new(
+                swarmy_core::NodeId::from_ulid(ulid::Ulid::from(2_u128)),
+                [8; 32],
+            )
+            .reveal(),
+        ] {
+            let error = super::issued_token(text.as_bytes(), id).unwrap_err();
+            assert!(!error.to_string().contains(&text));
+        }
+    }
+
+    #[test]
+    fn ensure_node_id_command_keeps_an_existing_id() {
+        let node = super::Machine {
+            name: "demo".into(),
+            public_ip: "192.0.2.1".into(),
+            private_ip: "10.0.0.1".into(),
+            key_path: "key".into(),
+            ssh_user: "root".into(),
+            service_user: "swarmy".into(),
+            local_storage: "dir:/tmp".into(),
+            sandboxes: 1,
+            bucket: None,
+            services: false,
+            node_id: None,
+        };
+        let id = swarmy_core::NodeId::from_ulid(ulid::Ulid::from(1_u128));
+        let command = super::ensure_node_id_command(&node, id).unwrap();
+        let words = shell_words::split(&command).unwrap();
+        for word in [
+            "test",
+            "-s",
+            "~swarmy/swarmy/.swarmy/node-id",
+            &id.to_string(),
+            "cat",
+        ] {
+            assert!(words.contains(&word.to_owned()));
+        }
+        assert!(command.ends_with("cat ~swarmy/swarmy/.swarmy/node-id"));
+    }
+
+    #[test]
     fn revoke_only_moves_authorized_keys_after_a_successful_grep() {
-        let command = super::authorized_keys_command("swarmy", "ssh-ed25519 AAAA test", true);
+        let command = super::authorized_keys_command("swarmy", "ssh-ed25519 AAAA", None);
         let words = shell_words::split(&command).unwrap();
         assert_eq!(&words[..4], &["sudo", "-u", "swarmy", "sh"]);
         let inner = words.last().unwrap();
-        assert!(inner.starts_with("umask 077; grep -vxF"));
+        assert!(inner.starts_with("umask 077; mkdir -p"));
         assert!(inner.contains("status=$?; if [ \"$status\" -le 1 ]; then mv"));
         assert!(inner.contains("else rm -f"));
         assert!(inner.contains("~swarmy/.ssh/authorized_keys"));

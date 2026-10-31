@@ -59,7 +59,7 @@ async fn start() -> Result<(), Error> {
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
         .map_err(|source| Error::Bind { listen, source })?;
-    tracing::info!(address = %listener.local_addr()?, "node api ready");
+    tracing::info!(address = %listener.local_addr()?, "node-api ready");
     let server = axum::serve(listener, router(state))
         .with_graceful_shutdown(swarmy_config::shutdown_signal())
         .into_future();
