@@ -141,6 +141,12 @@ placement and writer leases to expire before rebuilding under a new epoch.
 After the idle window without a call, the node stops processes, unmounts,
 publishes a final checkpoint, detaches the device, and releases placement.
 The retained epoch counter makes the next placement report reason `eviction`.
+A placement whose computer never finished booting (the volume or container
+setup failed, or the node began shutting down first) is released as well,
+once any partial local state is discarded: no guest command ran, so nothing
+was lost and the next placement reports `eviction`. Only a failed final
+checkpoint, or a lost lease, leaves the placement to expire, and the node
+that takes it over then records a failure.
 Graceful shutdown does the same for hosted agents, keeping renewal active during
 checkpointing. Idle time starts after a call finishes, so an active call cannot
 be evicted. Running managed processes prevent idle eviction; unmanaged background
