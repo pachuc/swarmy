@@ -53,3 +53,16 @@ pub(crate) async fn protect(
         deleting,
     }))
 }
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    #[test]
+    fn protects_at_most_one_transaction_batch() {
+        assert!(check_protect_len(MAX_PROTECT_HASHES).is_ok());
+        assert!(matches!(
+            check_protect_len(MAX_PROTECT_HASHES + 1),
+            Err(Answer(Failure::Rejected { .. }))
+        ));
+    }
+}

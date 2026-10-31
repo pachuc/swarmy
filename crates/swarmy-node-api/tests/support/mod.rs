@@ -11,6 +11,10 @@ use swarmy_store::{Store, blob::MemoryBlobStore};
 use ulid::Ulid;
 pub(crate) struct Fixture {
     pub(crate) store: Store,
+    #[allow(
+        dead_code,
+        reason = "only clock-driven integration targets advance the fixture clock"
+    )]
     pub(crate) clock: Arc<Mutex<Timestamp>>,
     pub(crate) _guard: swarmy_testkit::StackGuard,
 }
@@ -33,6 +37,10 @@ pub(crate) async fn serve(router: Router) -> String {
     });
     format!("http://{addr}")
 }
+#[allow(
+    dead_code,
+    reason = "only retry integration targets use the response-drop helper"
+)]
 pub(crate) fn drop_first_response(
     router: Router,
     path: &'static str,
