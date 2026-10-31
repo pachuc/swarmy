@@ -51,7 +51,7 @@ pub(crate) fn failure(error: &StoreError) -> Failure {
                     refusal: NodeRefusal::Fenced(kind),
                 }
             } else {
-                internal(message)
+                internal(error, message)
             }
         }
         StoreError::Domain(DomainError::ComputerDeleted) => Failure::Refused {
@@ -68,11 +68,11 @@ pub(crate) fn failure(error: &StoreError) -> Failure {
         StoreError::Storage(
             StorageError::CommitUnknown | StorageError::FoundationDb(_) | StorageError::Binding(_),
         ) => Failure::Unavailable { message },
-        StoreError::Storage(_) => internal(message),
+        StoreError::Storage(_) => internal(error, message),
     }
 }
-fn internal(message: String) -> Failure {
-    tracing::error!(error = %message, "node api internal error");
+fn internal(error: &StoreError, message: String) -> Failure {
+    tracing::error!(error = %swarmy_core::error_chain(error), "node api internal error");
     Failure::Internal { message }
 }
 pub(crate) async fn idempotent<T, F, Fut>(operation: F) -> swarmy_store::Result<T>
