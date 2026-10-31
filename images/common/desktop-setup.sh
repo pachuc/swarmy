@@ -9,9 +9,11 @@ fi
 # installed: on a GPU node the container runtime mounts the host driver's own
 # libraries into the sandbox (CDI), so they always match the host's kernel
 # module. glvnd and the Vulkan loader pick NVIDIA's libraries up from there.
+
+# fonts-wqy-microhei draws Chinese, Japanese and Korean text in about 5 MB; Noto CJK would add about 91 MB.
 env DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends -- \
     x11-utils xvfb xserver-xorg-core openbox util-linux unzip scrot wmctrl \
-    fonts-dejavu-core fonts-liberation \
+    fonts-dejavu-core fonts-liberation fonts-wqy-microhei fontconfig \
     libglvnd0 libgl1 libglx-mesa0 libegl1 libegl-mesa0 libgles2 libgl1-mesa-dri mesa-utils \
     libvulkan1 mesa-vulkan-drivers vulkan-tools \
     libnss3 libatk-bridge2.0-0 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \

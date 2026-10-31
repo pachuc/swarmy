@@ -1209,6 +1209,7 @@ pub async fn revoke_tunnel(node: &Machine, primary: Primary<'_>) -> Result<()> {
 }
 
 fn image_build_command(user: &str, recipe: &Path, tag: &str) -> Result<String> {
+    let name = crate::node_files::recipe_image_name(recipe)?;
     let recipe = recipe
         .to_str()
         .ok_or_else(|| crate::Error::other("image recipe path must be UTF-8"))?;
@@ -1218,7 +1219,7 @@ fn image_build_command(user: &str, recipe: &Path, tag: &str) -> Result<String> {
         "build",
         recipe,
         "--name",
-        "base-ubuntu",
+        name,
         "--tag",
         tag,
     ]);
@@ -1538,7 +1539,7 @@ mod tests {
                 "build",
                 path.to_str().unwrap(),
                 "--name",
-                "base-ubuntu",
+                "custom ' $(touch unwanted)",
                 "--tag",
                 "demo"
             ]

@@ -123,10 +123,22 @@ pub fn recipe(path: &Path) -> Result<PathBuf> {
         Ok(PathBuf::from(normalized))
     } else {
         Err(crate::Error::other(format!(
-            "image recipe {raw} is not carried by this client; choose one of {}, or build a custom recipe with swarmy image build --swarm NAME DIR",
+            "image recipe {raw} is not carried by this client; choose one of {}, or build your own recipe as root on a Linux machine and register it with the swarm: sudo -E env HOME=\"$HOME\" swarmy --swarm NAME image build DIR --tag TAG",
             recipes().join(", ")
         )))
     }
+}
+
+/// The image name a carried recipe registers on a swarm: its directory name,
+/// as `swarmy image build` names it.
+///
+/// # Errors
+/// Rejects a path without a UTF-8 last component.
+pub fn recipe_image_name(recipe: &Path) -> Result<&str> {
+    recipe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| crate::Error::other("image recipe path has no directory name"))
 }
 
 #[cfg(test)]
@@ -298,9 +310,21 @@ mod tests {
                 error.contains("images/base-ubuntu")
                     && error.contains("images/base-desktop")
                     && error.contains("images/swarmy-dev")
-                    && error.contains("swarmy image build --swarm")
+                    && error.contains("swarmy --swarm NAME image build DIR")
             );
         }
+    }
+
+    #[test]
+    fn carried_recipe_images_are_named_after_their_directory() {
+        assert_eq!(
+            recipe_image_name(&recipe(Path::new("./images/swarmy-dev/")).unwrap()).unwrap(),
+            "swarmy-dev"
+        );
+        assert_eq!(
+            recipe_image_name(&recipe(Path::new("images/base-ubuntu")).unwrap()).unwrap(),
+            "base-ubuntu"
+        );
     }
 
     #[test]

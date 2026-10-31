@@ -82,7 +82,7 @@ pub(crate) enum Command {
         /// Acknowledge copying the credential and keyring onto host services
         #[arg(long)]
         copy_credential: bool,
-        /// Image recipe carried by this client
+        /// Image recipe carried by this client (default images/base-ubuntu); up builds it on the primary, registers it as DIRECTORY-NAME:SWARM and makes it the default image
         #[arg(long)]
         image_recipe: Option<PathBuf>,
         /// Static S3 access key for this swarm's bucket
