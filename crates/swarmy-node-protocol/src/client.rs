@@ -255,6 +255,65 @@ mod tests {
         }
     }
     #[test]
+    fn classify_answers() {
+        use reqwest::StatusCode;
+        assert!(matches!(
+            classify(StatusCode::OK, b"{}"),
+            Outcome::Success(_)
+        ));
+        assert!(matches!(
+            classify(StatusCode::SERVICE_UNAVAILABLE, b""),
+            Outcome::Retry(_)
+        ));
+        assert!(matches!(
+            classify(StatusCode::UNAUTHORIZED, b""),
+            Outcome::Fail(ClientError::Unauthorized)
+        ));
+        let cases = [
+            (
+                Failure::BuildMismatch {
+                    server: "a".into(),
+                    node: "b".into(),
+                },
+                StatusCode::CONFLICT,
+            ),
+            (
+                Failure::Refused {
+                    refusal: NodeRefusal::AlreadyDone,
+                },
+                StatusCode::CONFLICT,
+            ),
+            (
+                Failure::Rejected {
+                    message: "bad".into(),
+                },
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                Failure::Internal {
+                    message: "internal".into(),
+                },
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+        for (failure, status) in cases {
+            let outcome = classify(status, &serde_json::to_vec(&failure).unwrap());
+            match failure {
+                Failure::BuildMismatch { .. } => {
+                    assert!(matches!(outcome, Outcome::BuildMismatch { .. }))
+                }
+                Failure::Refused { .. } => {
+                    assert!(matches!(outcome, Outcome::Fail(ClientError::Refused(_))))
+                }
+                _ => assert!(matches!(outcome, Outcome::Fail(ClientError::Rejected(_)))),
+            }
+        }
+        assert!(matches!(
+            classify(StatusCode::BAD_GATEWAY, b"<html>broken</html>"),
+            Outcome::Fail(ClientError::Rejected(_))
+        ));
+    }
+    #[test]
     fn token_file() {
         let file = tempfile::NamedTempFile::new().unwrap();
         let token = swarmy_core::NodeToken::new(

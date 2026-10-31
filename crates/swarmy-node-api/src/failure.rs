@@ -85,3 +85,104 @@ where
         other => other,
     }
 }
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[test]
+    fn maps_store_failures() {
+        let cases = [
+            (StoreError::Fence(FenceError::PlacementMismatch), 409),
+            (StoreError::Fence(FenceError::PlacementAgentMismatch), 409),
+            (StoreError::Fence(FenceError::PlacedToolClaimMismatch), 409),
+            (StoreError::Fence(FenceError::VolumeLeaseMismatch), 409),
+            (StoreError::Fence(FenceError::VolumeHeadMismatch), 409),
+            (
+                StoreError::Fence(FenceError::StaleSequence {
+                    expected: 1,
+                    actual: 2,
+                }),
+                409,
+            ),
+            (StoreError::Fence(FenceError::ToolJobMismatch), 409),
+            (
+                StoreError::Fence(FenceError::DispatchPlacementStale { detail: "stale" }),
+                409,
+            ),
+            (StoreError::Fence(FenceError::InflightMismatch), 500),
+            (StoreError::Fence(FenceError::SessionAgentMismatch), 500),
+            (StoreError::Fence(FenceError::ToolClaimMismatch), 500),
+            (StoreError::Fence(FenceError::LeaseMismatch), 500),
+            (StoreError::Fence(FenceError::GcLeaseMismatch), 500),
+            (StoreError::Fence(FenceError::ProvisionerLeaseMismatch), 500),
+            (
+                StoreError::Fence(FenceError::CredentialRefreshMismatch),
+                500,
+            ),
+            (StoreError::Domain(DomainError::ComputerDeleted), 409),
+            (
+                StoreError::Domain(DomainError::NodeAtCapacity {
+                    detail: "full".into(),
+                }),
+                409,
+            ),
+            (
+                StoreError::Domain(DomainError::GpuUnavailable {
+                    detail: "none".into(),
+                }),
+                409,
+            ),
+            (
+                StoreError::Domain(DomainError::ImageMissing {
+                    image: "x".into(),
+                    registered: "".into(),
+                }),
+                409,
+            ),
+            (StoreError::Domain(DomainError::NodeMissing), 400),
+            (StoreError::Storage(StorageError::CommitUnknown), 503),
+            (StoreError::Storage(StorageError::Corrupt), 500),
+        ];
+        for (error, status) in cases {
+            assert_eq!(failure(&error).status().as_u16(), status);
+        }
+    }
+    #[tokio::test]
+    async fn repeats_only_unknown_commits_once() {
+        let calls = AtomicUsize::new(0);
+        let result = idempotent(|| async {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(StoreError::Storage(StorageError::CommitUnknown))
+            } else {
+                Ok(5)
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(result, 5);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        calls.store(0, Ordering::SeqCst);
+        let result = idempotent(|| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err::<(), _>(StoreError::Storage(StorageError::CommitUnknown))
+        })
+        .await;
+        assert!(matches!(
+            result,
+            Err(StoreError::Storage(StorageError::CommitUnknown))
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        calls.store(0, Ordering::SeqCst);
+        let result = idempotent(|| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err::<(), _>(StoreError::Fence(FenceError::PlacementMismatch))
+        })
+        .await;
+        assert!(matches!(
+            result,
+            Err(StoreError::Fence(FenceError::PlacementMismatch))
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+}

@@ -1,6 +1,5 @@
 use crate::{NodeApiState, failure::Answer};
 use axum::{
-    Extension,
     extract::{Request, State},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -106,4 +105,44 @@ pub(crate) async fn check_build(
         .into_response();
     }
     next.run(request).await
+}
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use ulid::Ulid;
+    #[test]
+    fn cache_matches_hash_and_lifetime() {
+        let node = NodeId::from_ulid(Ulid::generate());
+        let token = NodeToken::new(node, [7; 32]);
+        let hash = blake3::Hash::from_bytes(token.secret_hash());
+        let cache = CredentialCache::new(Duration::from_secs(60));
+        cache
+            .verified
+            .lock()
+            .unwrap()
+            .insert(node, (hash, Instant::now()));
+        assert!(
+            cache
+                .verified
+                .lock()
+                .unwrap()
+                .get(&node)
+                .is_some_and(|(known, at)| *known == hash && at.elapsed() < cache.ttl)
+        );
+        let other = NodeToken::new(node, [8; 32]);
+        assert_ne!(hash, blake3::Hash::from_bytes(other.secret_hash()));
+        let zero = CredentialCache::new(Duration::ZERO);
+        zero.verified
+            .lock()
+            .unwrap()
+            .insert(node, (hash, Instant::now()));
+        assert!(
+            zero.verified
+                .lock()
+                .unwrap()
+                .get(&node)
+                .is_some_and(|(_, at)| at.elapsed() >= zero.ttl)
+        );
+    }
 }

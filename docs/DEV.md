@@ -260,7 +260,7 @@ rules](../crates/swarmy-store/src/objects.rs). Set `[s3] conditional_create`
 to `false` (or `SWARMY_S3_CONDITIONAL_CREATE=false`) for object stores that
 reject create-only PUTs; chunks and manifests are content-addressed, so the
 plain-PUT fallback is safe. Additional settings are
-`[scheduler] scan_interval_ms`, `[scheduler] resend_interval_ms`,
+`[node_api] listen`, `[scheduler] scan_interval_ms`, `[scheduler] resend_interval_ms`,
 `[scheduler] ephemeral_retention_secs`, `[scheduler] placement_lease_secs`,
 `[worker] lease_ms`, `[worker] recovery_interval_ms`, `[bus] ack_wait_ms`,
 `[bus] max_deliver`, `[gateway] concurrency`, `[node] heartbeat_interval_ms`,
