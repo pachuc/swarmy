@@ -395,26 +395,7 @@ impl Hosting {
         } else {
             "eviction"
         };
-        let cleanup = async {
-            if self
-                .runtime
-                .list()
-                .await
-                .iter()
-                .any(|sandbox| sandbox.agent_id == agent)
-            {
-                self.runtime
-                    .destroy(swarmy_core::Sandbox { agent_id: agent })
-                    .await?;
-                self.store.release(&placement).await?;
-                self.previous.lock().await.remove(&agent);
-                self.computer_sampled.lock().await.remove(&agent);
-                tracing::info!(%agent, epoch = placement.epoch, reason = cause, "placement released");
-            } else {
-                self.runtime.discard_if_present(agent).await?;
-            }
-            Ok::<_, anyhow::Error>(())
-        };
+        let cleanup = self.stop_and_release(agent, &placement, cause);
         tokio::select! {
             result = cleanup => {
                 if let Err(error) = result {
@@ -428,6 +409,38 @@ impl Hosting {
             }
         }
         serving
+    }
+
+    /// Stop the agent's local sandbox and release its placement. A sandbox that
+    /// exists is destroyed, which publishes its final checkpoint; if that fails
+    /// the placement is kept so its expiry reports a possible computer loss.
+    /// A missing sandbox means the boot never finished and no guest command
+    /// ran, so once any partial local state is discarded nothing can still
+    /// write the disk and the placement is released too.
+    async fn stop_and_release(
+        &self,
+        agent: AgentId,
+        placement: &PlacementRecord,
+        cause: &'static str,
+    ) -> Result<()> {
+        let hosted = self
+            .runtime
+            .list()
+            .await
+            .iter()
+            .any(|sandbox| sandbox.agent_id == agent);
+        if hosted {
+            self.runtime
+                .destroy(swarmy_core::Sandbox { agent_id: agent })
+                .await?;
+        } else {
+            self.runtime.discard_if_present(agent).await?;
+        }
+        self.store.release(placement).await?;
+        self.previous.lock().await.remove(&agent);
+        self.computer_sampled.lock().await.remove(&agent);
+        tracing::info!(%agent, epoch = placement.epoch, reason = cause, booted = hosted, "placement released");
+        Ok(())
     }
 
     async fn execute(&self, placement: &PlacementRecord, call: Call) -> Result<()> {
@@ -564,5 +577,148 @@ impl Hosting {
             ignore_best_effort(entry.task.await, "await background task");
         }
         self.computer_sampled.lock().await.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+
+    use super::Hosting;
+    use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
+    use swarmy_core::{
+        AgentId, NodeCapacity, NodeId, NodeRecord, NodeRole, PlacementChangeReason, PlacementRecord,
+    };
+    use swarmy_store::Store;
+    use tokio::sync::{Mutex, watch};
+
+    /// A node with one sandbox slot, a claimed placement for a new agent on it,
+    /// and a hosting whose runtime has no sandboxes at all.
+    async fn placed(store: &Store, root: &Path) -> (Arc<Hosting>, AgentId, PlacementRecord) {
+        let node_id = NodeId::from_ulid(ulid::Ulid::generate());
+        store
+            .put_node(&NodeRecord {
+                node_id,
+                roles: vec![NodeRole::Sandbox],
+                capacity: NodeCapacity {
+                    cpu_millis: 1000,
+                    memory_bytes: 4 * 1024 * 1024 * 1024,
+                    disk_bytes: 1024,
+                    sandboxes: 1,
+                },
+                last_heartbeat: jiff::Timestamp::now(),
+                cached_images: vec![],
+                gpu: None,
+            })
+            .await
+            .unwrap();
+        let agent = AgentId::from_ulid(ulid::Ulid::generate());
+        let placement = store
+            .place(
+                agent,
+                node_id,
+                jiff::Timestamp::now()
+                    .checked_add(Duration::from_secs(60))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        store.claim_placement(&placement).await.unwrap();
+        let runtime = swarmy_sandbox::RuncRuntime::open(
+            root.join("runtime"),
+            swarmy_volume::server::ServerConfig {
+                directory: root.join("volumes"),
+                node: node_id,
+                store: store.clone(),
+                objects: Arc::new(object_store::memory::InMemory::new()),
+            },
+        )
+        .await
+        .unwrap();
+        let hosting = Arc::new(Hosting {
+            store: store.clone(),
+            runtime: Arc::new(runtime),
+            node: node_id,
+            lease: Duration::from_secs(60),
+            idle: Duration::from_secs(60),
+            entries: Mutex::new(BTreeMap::new()),
+            previous: Mutex::new(BTreeMap::from([(agent, placement.epoch)])),
+            computer_sampled: Mutex::new(BTreeMap::new()),
+            shutdown: watch::channel(false).0,
+        });
+        (hosting, agent, placement)
+    }
+
+    #[tokio::test]
+    async fn cleanup_without_a_sandbox_releases_the_placement() {
+        let Some(stack) = swarmy_testkit::Stack::load("hosting-release") else {
+            return;
+        };
+        let (store, mut guard) = stack
+            .open_store(Arc::new(swarmy_store::blob::MemoryBlobStore::default()))
+            .await;
+        let root = tempfile::tempdir().unwrap();
+        let (hosting, agent, placement) = placed(&store, root.path()).await;
+        hosting
+            .stop_and_release(agent, &placement, "eviction")
+            .await
+            .unwrap();
+        assert!(
+            store.get_by_agent(agent).await.unwrap().is_none(),
+            "cleanup must release a placement whose sandbox never booted"
+        );
+        assert!(!hosting.previous.lock().await.contains_key(&agent));
+        let next = store
+            .place(
+                agent,
+                placement.node_id,
+                jiff::Timestamp::now()
+                    .checked_add(Duration::from_secs(60))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(next.epoch, placement.epoch + 1);
+        assert_eq!(next.last_change_reason, PlacementChangeReason::Eviction);
+        guard.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn cleanup_keeps_fencing_when_the_placement_is_stale() {
+        let Some(stack) = swarmy_testkit::Stack::load("hosting-release") else {
+            return;
+        };
+        let (store, mut guard) = stack
+            .open_store(Arc::new(swarmy_store::blob::MemoryBlobStore::default()))
+            .await;
+        let root = tempfile::tempdir().unwrap();
+        let (hosting, agent, placement) = placed(&store, root.path()).await;
+        store.release(&placement).await.unwrap();
+        let replacement = store
+            .place(
+                agent,
+                placement.node_id,
+                jiff::Timestamp::now()
+                    .checked_add(Duration::from_secs(60))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let error = hosting
+            .stop_and_release(agent, &placement, "eviction")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<swarmy_store::StoreError>(),
+            Some(swarmy_store::StoreError::Fence(
+                swarmy_store::FenceError::PlacementMismatch
+            ))
+        ));
+        assert_eq!(store.get_by_agent(agent).await.unwrap(), Some(replacement));
+        assert_eq!(
+            hosting.previous.lock().await.get(&agent),
+            Some(&placement.epoch)
+        );
+        guard.cleanup().await;
     }
 }
