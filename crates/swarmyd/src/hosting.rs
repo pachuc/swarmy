@@ -12,9 +12,17 @@ use swarmy_sandbox::RuncRuntime;
 use swarmy_store::Store;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
+#[derive(Clone, Copy)]
+struct BootTimes {
+    placement: f64,
+    open: f64,
+    boot: f64,
+}
+
 struct Call {
     job: ToolJob,
     turn: Option<MessageId>,
+    delivered_ns: Option<i64>,
     reply: oneshot::Sender<Result<()>>,
     activity: ActivityGuard,
 }
@@ -155,6 +163,7 @@ impl Hosting {
         self: &Arc<Self>,
         job: ToolJob,
         turn: Option<MessageId>,
+        delivered_ns: Option<i64>,
     ) -> Result<()> {
         let agent = match self.store.tool_agent(&job, self.node).await {
             Ok(Some(agent)) => agent,
@@ -214,6 +223,7 @@ impl Hosting {
             .send(Call {
                 job,
                 turn,
+                delivered_ns,
                 reply,
                 activity,
             })
@@ -252,7 +262,7 @@ impl Hosting {
         session: SessionId,
         turn: Option<MessageId>,
         volume: swarmy_core::VolumeId,
-        elapsed: f64,
+        times: BootTimes,
     ) {
         let Some(turn) = turn else { return };
         let store = self.store.clone();
@@ -263,7 +273,9 @@ impl Hosting {
                     session,
                     turn,
                     swarmy_store::MetricPatch::Computer(swarmy_store::ComputerMetric {
-                        placement_ms: Some(elapsed),
+                        placement_ms: Some(times.placement),
+                        open_ms: Some(times.open),
+                        boot_ms: Some(times.boot),
                         cold: Some(stats.fetched_chunks > 0),
                         chunks_fetched: stats.fetched_chunks,
                         bytes_fetched: stats.fetched_bytes,
@@ -287,12 +299,13 @@ impl Hosting {
             .store
             .agent_volume(first.job.session_id, placement)
             .await?;
+        let spec = self.sandbox_spec(agent, first.job.session_id).await?;
+        let open_ms = placement_started.elapsed().as_secs_f64() * 1_000.0;
+        let booting = Instant::now();
         self.runtime
-            .create(
-                self.sandbox_spec(agent, first.job.session_id).await?,
-                BlockDevice { volume_id: volume },
-            )
+            .create(spec, BlockDevice { volume_id: volume })
             .await?;
+        let boot_ms = booting.elapsed().as_secs_f64() * 1_000.0;
         self.store
             .set_placement_address(placement, RuncRuntime::NETWORK_ADDRESS)
             .await?;
@@ -300,7 +313,11 @@ impl Hosting {
             first.job.session_id,
             first.turn,
             volume,
-            placement_started.elapsed().as_secs_f64() * 1_000.0,
+            BootTimes {
+                placement: placement_started.elapsed().as_secs_f64() * 1_000.0,
+                open: open_ms,
+                boot: boot_ms,
+            },
         );
         Ok(())
     }
@@ -429,6 +446,12 @@ impl Hosting {
             None => false,
         };
         let turn = call.turn;
+        let metrics = crate::tools::CallMetrics {
+            turn,
+            needs_computer_sample: needs_sample,
+            delivered_ns: call.delivered_ns,
+            claimed_ns: None,
+        };
         let result = tokio::select! {
             result = crate::tools::execute(
                 &self.store,
@@ -436,8 +459,7 @@ impl Hosting {
                 self.node,
                 placement,
                 call.job,
-                turn,
-                needs_sample,
+                metrics,
             ) => result,
             _ = shutdown.changed() => Err(anyhow::anyhow!("node is shutting down")),
         };

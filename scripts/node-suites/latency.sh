@@ -141,6 +141,8 @@ for rtt in ${LATENCY_RTTS:-175 400}; do
     echo "LATENCY_RTT=$rtt FAILED; see $full"
     tail -5 "$full"
   fi
+  echo "== timings at $rtt ms"
+  awk '/^== tool timings/,/^TOOL_TIMINGS /' "$full"
 done
 echo "SUITES_EXIT=$rc"
 exit "$rc"

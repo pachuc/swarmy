@@ -2940,6 +2940,14 @@
           "bytes_fetched"
         ],
         "properties": {
+          "boot_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Milliseconds spent creating the sandbox, including volume attach."
+          },
           "bytes_fetched": {
             "type": "integer",
             "format": "int64",
@@ -3003,6 +3011,14 @@
             ],
             "format": "double",
             "description": "Fetch p95 re-sampled after the first tool call completes."
+          },
+          "open_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Milliseconds from placement start through volume binding and spec read."
           },
           "placement_ms": {
             "type": [
@@ -5609,19 +5625,37 @@
           "name"
         ],
         "properties": {
+          "claimed_ns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Node clock: the node's tool claim committed."
+          },
           "completed_ns": {
             "type": [
               "integer",
               "null"
             ],
-            "format": "int64"
+            "format": "int64",
+            "description": "Node clock: the node stamped `ToolCompleted` right after its completion commit."
+          },
+          "delivered_ns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Node clock: the node started handling the NATS delivery."
           },
           "dispatched_ns": {
             "type": [
               "integer",
               "null"
             ],
-            "format": "int64"
+            "format": "int64",
+            "description": "Worker clock: the worker dispatched the call."
           },
           "exit_status": {
             "type": [
@@ -5663,7 +5697,16 @@
               "integer",
               "null"
             ],
-            "format": "int64"
+            "format": "int64",
+            "description": "Node clock: the sandbox command started."
+          },
+          "woken_ns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Worker clock: the worker claimed the step that folds this result."
           }
         }
       },

@@ -338,3 +338,52 @@ mod side_tail_tests {
         assert!(input < 16_384);
     }
 }
+
+mod woken_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use swarmy_core::{Message, MessageRole, Part, ToolCallId, ToolResult};
+    use swarmy_store::MetricPatch;
+
+    fn completion(seq: u64, id: &str, request_id: RequestId) -> Event {
+        Event::ToolCallCompleted {
+            seq,
+            request_id,
+            call_id: ToolCallId(id.into()),
+            result: ToolResult::Error {
+                error: "test".into(),
+            },
+        }
+    }
+    fn folded(id: &str) -> Message {
+        Message {
+            id: MessageId::from_ulid(Ulid::nil()),
+            role: MessageRole::Tool,
+            parts: vec![Part::ToolResult {
+                call_id: ToolCallId(id.into()),
+                result: ToolResult::Error {
+                    error: "test".into(),
+                },
+            }],
+        }
+    }
+    #[test]
+    fn woken_stamps_only_the_folded_calls() {
+        let session = SessionId::from_ulid(Ulid::nil());
+        let a = RequestId::for_step(session, 1);
+        let b = RequestId::for_step(session, 2);
+        let patches = tools::woken_patches(
+            &[completion(1, "A", a), completion(2, "B", b)],
+            &folded("A"),
+            42,
+        );
+        assert_eq!(patches.len(), 1);
+        assert!(
+            matches!(&patches[0], MetricPatch::Tool(row) if row.request_id == a.to_string() && row.woken_ns == Some(42))
+        );
+    }
+    #[test]
+    fn woken_patches_ignore_results_without_a_completion() {
+        assert!(tools::woken_patches(&[], &folded("A"), 42).is_empty());
+    }
+}

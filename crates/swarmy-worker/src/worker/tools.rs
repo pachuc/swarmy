@@ -7,6 +7,40 @@ use super::{
 use swarmy_core::GpuRequirement;
 use swarmy_store::CapacityPark;
 
+/// Stamp only results folded by the first action of a claimed step.
+pub(super) fn woken_patches(
+    events: &[Event],
+    message: &swarmy_core::Message,
+    woken_ns: i64,
+) -> Vec<swarmy_store::MetricPatch> {
+    let calls: std::collections::BTreeSet<_> = message
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            swarmy_core::Part::ToolResult { call_id, .. } => Some(call_id.0.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::ToolCallCompleted {
+                request_id,
+                call_id,
+                ..
+            } if calls.contains(call_id.0.as_str()) && seen.insert(request_id.to_string()) => {
+                Some(swarmy_store::MetricPatch::Tool(swarmy_store::ToolMetric {
+                    request_id: request_id.to_string(),
+                    woken_ns: Some(woken_ns),
+                    ..Default::default()
+                }))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 pub(super) enum DispatchOutcome {
     Sent,
     Parked,

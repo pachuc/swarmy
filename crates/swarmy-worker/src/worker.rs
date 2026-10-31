@@ -228,6 +228,7 @@ impl Worker {
             }
             Err(error) => return Err(error.into()),
         };
+        let woken_ns = i64::try_from(Timestamp::now().as_nanosecond()).ok();
         tracing::info!(session_id = %id, owner = %lease.owner, step = lease.seq, "claimed step");
         if let Some(turn) = turn {
             let event = Bus::turn_event(id, turn, TurnStage::Claimed, None);
@@ -241,6 +242,7 @@ impl Worker {
             snapshot: None,
             events,
             turn,
+            woken_ns,
         };
         let heartbeat_lease = ctx.lease.clone();
         let period = (self.config.lease_duration / 3).min(self.config.bus.ack_wait / 3);

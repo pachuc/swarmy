@@ -61,6 +61,10 @@ pub(crate) struct Config {
     /// Fail when a node store transaction takes longer than this many milliseconds.
     #[arg(long, requires = "image")]
     pub max_node_transaction_ms: Option<u64>,
+    #[arg(long, requires = "image")]
+    pub max_warm_overhead_ms: Option<u64>,
+    #[arg(long, requires = "image")]
+    pub max_cold_start_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -80,9 +84,12 @@ pub(crate) enum Scenario {
 impl Config {
     pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
-            (self.node_netns.is_none() && self.max_node_transaction_ms.is_none())
+            (self.node_netns.is_none()
+                && self.max_node_transaction_ms.is_none()
+                && self.max_warm_overhead_ms.is_none()
+                && self.max_cold_start_ms.is_none())
                 || self.scenario.is_none(),
-            "--node-netns and --max-node-transaction-ms need the default scenario"
+            "--node-netns, --max-node-transaction-ms, --max-warm-overhead-ms and --max-cold-start-ms need the default scenario"
         );
         ensure!(
             self.sessions > 0 && self.steps > 0,
