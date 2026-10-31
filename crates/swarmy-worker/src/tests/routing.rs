@@ -132,6 +132,8 @@ struct Fixture {
     nodes: [NodeId; 2],
     manifest: ManifestId,
     clock: Arc<TestClock>,
+    prefix: String,
+    nats_url: String,
     // Held for its Drop: removes the test keys and streams even on panic.
     _guard: swarmy_testkit::StackGuard,
 }
@@ -256,6 +258,8 @@ impl Fixture {
             worker,
             agent: AgentId::from_ulid(Ulid::generate()),
             clock,
+            prefix,
+            nats_url: stack.nats_url.clone(),
             nodes,
             manifest,
             _guard: guard,
@@ -2128,7 +2132,9 @@ async fn recovery_republishes_a_pending_job_with_backoff() {
     f.worker.recover_tools().await.unwrap();
     f.no_delivery(f.nodes[0], Duration::from_millis(500)).await;
 
-    let mut config = f.worker.config.clone();
+    let mut config = config(f.nats_url.clone(), &f.prefix, Arc::default());
+    config.partitions = (0..256).collect();
+    config.bus.ack_wait = Duration::from_millis(200);
     config.harness.tools.register(Box::new(swarmy_tools::Bash));
     let clock = f.clock.clone();
     let fresh = Worker::new(

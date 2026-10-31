@@ -282,7 +282,7 @@ mod handoff;
 mod inference;
 mod inflight;
 mod overflow;
-mod republish;
+pub(crate) mod republish;
 mod step;
 mod summarize;
 #[cfg(test)]
