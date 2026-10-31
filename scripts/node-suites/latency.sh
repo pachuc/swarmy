@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Usage: latency.sh BRANCH. The primary and node live in separate namespaces;
 # only the veth ends receive netem delay. LATENCY_RTTS defaults to "175 400".
+# The namespaces have no route out, so the base image is built on the host and
+# pulled inside the primary namespace from a static server on its loopback,
+# laid out like a release (SHA256SUMS plus the image tarball).
 set -uo pipefail
 branch=$1
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -13,13 +16,38 @@ node_ns=swl-node
 primary_ip=10.203.77.1
 node_ip=10.203.77.2
 user=$(id -un)
+release_pid=""
+work=""
 cd ~/chaos
 git fetch -q origin "$branch" && git checkout -q -B suite "${REV:-origin/$branch}" || { echo "checkout failed"; echo "SUITES_EXIT=1"; exit 2; }
 echo "== branch $branch at $(git rev-parse --short HEAD)"
 in_primary() { sudo -E ip netns exec "$primary_ns" "$@"; }
 as_user_in_primary() { in_primary sudo -u "$user" env "PATH=$PATH" "HOME=$HOME" "$@"; }
 wipe_stack_state() { sudo rm -rf .dev/fdb .dev/nats .dev/seaweed .dev/fdb.cluster; }
+stop_release_server() {
+  [ -n "$release_pid" ] || return 0
+  sudo kill "$release_pid" 2>/dev/null
+  wait "$release_pid" 2>/dev/null
+  release_pid=""
+}
+# Serve every request path by its last component from DIR, so the release tag
+# in the URL does not matter. Writes the bound port to PORT_FILE once listening.
+release_server='
+import http.server, os, sys
+root, port_file = sys.argv[1], sys.argv[2]
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def translate_path(self, path):
+        return os.path.join(root, os.path.basename(path.split("?", 1)[0]))
+    def log_message(self, *args):
+        pass
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+with open(port_file + ".tmp", "w") as f:
+    f.write(str(server.server_address[1]))
+os.rename(port_file + ".tmp", port_file)
+server.serve_forever()
+'
 cleanup() {
+  stop_release_server
   stop_suite_api
   if [ -e "/var/run/netns/$primary_ns" ]; then
     as_user_in_primary scripts/dev-stack.sh stop >/dev/null 2>&1 || true
@@ -30,6 +58,7 @@ cleanup() {
   done
   bash "$here/nbd-orphans.sh"
   wipe_stack_state
+  [ -z "$work" ] || sudo rm -rf "$work"
   sudo systemctl start swarmy-tunnel swarmyd
 }
 sudo systemctl stop swarmyd swarmy-tunnel
@@ -40,6 +69,17 @@ sudo chown -R "$user:$(id -gn)" "$(readlink -f target)"
 CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-chaos -p swarmy-cli -p swarmy-core-bin > ~/suite-build-latency.log 2>&1 \
   || { tail -20 ~/suite-build-latency.log; echo "build failed"; echo "SUITES_EXIT=1"; exit 2; }
 tail -1 ~/suite-build-latency.log
+echo "== image build on the host"
+work=$(mktemp -d ~/latency-image.XXXXXX)
+top=swarmy-image-base-ubuntu-$(uname -m)-unknown-linux-gnu
+mkdir -p "$work/stage/$top" "$work/www" "$work/cache"
+if ! { ./target/debug/swarmy image build images/base-ubuntu --tag dev --output "$work/stage/$top/disk.ext4" --no-register 2>&1 | tail -2 \
+  && install -m 0644 images/base-ubuntu/recipe.toml "$work/stage/$top/recipe.toml" \
+  && tar -C "$work/stage" --sparse -I 'gzip -1' -cf "$work/www/$top.tar.gz" "$top" \
+  && rm -rf "$work/stage" \
+  && (cd "$work/www" && sha256sum -- "$top.tar.gz" > SHA256SUMS); }; then
+  echo "image build failed"; echo "SUITES_EXIT=1"; exit 2
+fi
 for ns in "$primary_ns" "$node_ns"; do sudo ip netns del "$ns" 2>/dev/null || true; done
 sudo modprobe sch_netem
 if ! { sudo ip netns add "$primary_ns" && sudo ip netns add "$node_ns" \
@@ -55,9 +95,19 @@ set -a; . .dev/env; set +a
 export SWARMY_NATS_URL="nats://$primary_ip:4222"
 export SWARMY_S3_ENDPOINT="http://$primary_ip:8333"
 start_suite_api ~/latency-api.log sudo -E ip netns exec "$primary_ns"
-echo "== image build"
-in_primary ./target/debug/swarmy image build images/base-ubuntu --tag dev 2>&1 | tail -2
+echo "== image pull inside $primary_ns"
+in_primary python3 -c "$release_server" "$work/www" "$work/port" > "$work/server.log" 2>&1 &
+release_pid=$!
+for _ in $(seq 1 60); do [ -s "$work/port" ] && break; sleep 0.5; done
+if ! [ -s "$work/port" ] || ! in_primary env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+    SWARMY_RELEASE_BASE_URL="http://127.0.0.1:$(cat "$work/port")" XDG_CACHE_HOME="$work/cache" \
+    ./target/debug/swarmy image pull --tag dev 2>&1 | tail -3; then
+  cat "$work/server.log"; echo "image pull failed"; echo "SUITES_EXIT=1"; exit 2
+fi
+stop_release_server
 stop_suite_api
+sudo rm -rf "$work"
+work=""
 mkdir -p ~/suite-logs
 rc=0
 for rtt in ${LATENCY_RTTS:-175 400}; do
