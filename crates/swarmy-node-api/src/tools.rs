@@ -250,3 +250,41 @@ async fn after_commit(
     }
     interrupt
 }
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::collections::BTreeMap;
+    #[test]
+    fn result_blobs_accept_only_valid_keys() {
+        let mut metadata = BTreeMap::new();
+        let result = |metadata| ToolResult::Completed {
+            title: "screen".into(),
+            output: String::new(),
+            metadata,
+        };
+        assert!(check_result_blobs(&result(metadata.clone())).is_ok());
+        assert!(
+            check_result_blobs(&ToolResult::Error {
+                error: "failed".into()
+            })
+            .is_ok()
+        );
+        metadata.insert(
+            "image_object_key".into(),
+            serde_json::json!(swarmy_core::blob_key(b"png")),
+        );
+        assert!(check_result_blobs(&result(metadata.clone())).is_ok());
+        metadata.insert(
+            "image_object_key".into(),
+            serde_json::json!("blobs/not-a-hash"),
+        );
+        assert!(check_result_blobs(&result(metadata.clone())).is_err());
+        metadata.insert("image_object_key".into(), serde_json::json!(5));
+        assert!(check_result_blobs(&result(metadata.clone())).is_err());
+        metadata.remove("image_object_key");
+        metadata.insert("image_base64".into(), serde_json::json!("abc"));
+        assert!(check_result_blobs(&result(metadata)).is_err());
+    }
+}

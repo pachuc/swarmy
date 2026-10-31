@@ -25,6 +25,7 @@ tracing.workspace = true
 ulid.workspace = true
 [dev-dependencies]
 reqwest = { workspace = true, features = ["http2"] }
+serde_json.workspace = true
 swarmy-store = { workspace = true, features = ["test-support"] }
 swarmy-testkit.workspace = true
 ulid.workspace = true

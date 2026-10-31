@@ -360,3 +360,29 @@ pub(crate) fn client(
 ) -> swarmy_node_protocol::NodeClient {
     swarmy_node_protocol::NodeClient::new(base, token).unwrap()
 }
+
+#[allow(
+    dead_code,
+    reason = "shared tool fixture is used by tool integration targets"
+)]
+pub(crate) fn claim_request(
+    job: &swarmy_core::ToolJob,
+    placement: &swarmy_core::PlacementRecord,
+) -> swarmy_node_protocol::ToolClaimRequest {
+    swarmy_node_protocol::ToolClaimRequest {
+        job: job.clone(),
+        placement: placement.clone(),
+        owner: swarmy_core::LeaseOwnerId::from_ulid(Ulid::generate()),
+    }
+}
+#[allow(
+    dead_code,
+    reason = "shared tool fixture is used by tool integration targets"
+)]
+pub(crate) fn bash_result() -> swarmy_core::ToolResult {
+    swarmy_core::ToolResult::Completed {
+        title: "bash".into(),
+        output: "{\"exit_code\":0}".into(),
+        metadata: Default::default(),
+    }
+}
