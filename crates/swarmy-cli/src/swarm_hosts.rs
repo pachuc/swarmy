@@ -84,6 +84,7 @@ pub(crate) fn cloud_spec(name: &str, args: &CreateCloud) -> Result<SwarmSpec> {
         module: module.clone(),
         size: Some(size),
         location: Some(location.clone()),
+        image: None,
         count: Some(count),
         stack_dir: None,
         hosts: Vec::new(),
@@ -200,6 +201,7 @@ pub(crate) fn host_spec(registry: &Registry, name: &str, args: &CreateHost) -> R
                 module: Module::Existing,
                 size: None,
                 location: None,
+                image: None,
                 count: None,
                 stack_dir: None,
                 sandboxes: args.sandboxes,
@@ -549,6 +551,8 @@ pub(crate) fn elastic_scale_requests(
         service_user: provision::user(spec).into(),
         autoscale: selected.autoscale,
         external_bucket: provision::external_bucket(spec, record),
+        network_id: groups::joined_network(spec, record, group).to_owned(),
+        image: selected.image.clone(),
     };
     let desired = swarmy_api_types::SetElasticDesired {
         idempotency_key: ulid::Ulid::generate().to_string(),
@@ -577,6 +581,8 @@ fn autoscale_off_request(
         service_user: provision::user(spec).into(),
         autoscale: false,
         external_bucket: record.external_bucket,
+        network_id: record.network_id.clone(),
+        image: record.image.clone(),
     }
 }
 fn not_up(spec: &SwarmSpec) -> anyhow::Error {
@@ -736,6 +742,7 @@ nodes = ["gpu"]
             tofu_bucket: None,
             tofu_bucket_endpoint: None,
             tofu_bucket_region: None,
+            tofu_networks: BTreeMap::new(),
         };
         (spec, primary, record)
     }

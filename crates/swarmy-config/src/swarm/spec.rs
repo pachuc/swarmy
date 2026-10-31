@@ -75,6 +75,9 @@ pub struct GroupSpec {
     pub size: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
+    /// Machine image for groups that create machines; unset uses the module default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -255,6 +258,16 @@ fn group_failure(swarm: &str, g: &str, group: &GroupSpec, node_only: bool) -> Op
     if let Some(message) = elastic_failure(swarm, g, group) {
         return Some(message);
     }
+    if let Some(image) = &group.image {
+        if matches!(group.module, Module::Existing | Module::Local) {
+            return Some(format!(
+                "group \"{g}\": image applies only to groups that create machines"
+            ));
+        }
+        if image.is_empty() {
+            return Some(format!("group \"{g}\": image must not be empty"));
+        }
+    }
     if group.stack_dir.is_some() && group.module != Module::Local {
         return Some(format!(
             "group \"{g}\": stack_dir applies only to local groups"
@@ -344,6 +357,7 @@ impl SwarmSpec {
                     module: Module::Local,
                     size: None,
                     location: None,
+                    image: None,
                     count: None,
                     hosts: vec![],
                     stack_dir,

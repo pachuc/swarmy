@@ -926,6 +926,11 @@ pub struct ElasticGroup {
     /// Whether joined machines use the swarm's external bucket; false means
     /// the tunnel to the stack host's own object store.
     pub external_bucket: bool,
+    /// Swarm network the group joins; empty means it creates its own.
+    pub network_id: String,
+    /// Machine image; absent uses the module default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 /// Register or update an elastic group's definition from the swarm spec.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -950,6 +955,11 @@ pub struct PutElasticGroup {
     /// Whether joined machines use the swarm's external bucket; false means
     /// the tunnel to the stack host's own object store.
     pub external_bucket: bool,
+    /// Swarm network the group joins; empty means it creates its own.
+    pub network_id: String,
+    /// Machine image; absent uses the module default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 /// Set the desired number of machines, between zero and max.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

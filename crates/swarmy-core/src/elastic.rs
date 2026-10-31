@@ -18,7 +18,8 @@ pub struct ElasticGroupDefinition {
     pub local_storage: String,
     pub max: u32,
     pub hourly_price: HourlyPrice,
-    /// Public IPv4 address of the stack host. Elastic machines tunnel to it, because they never share its private network.
+    /// Public IPv4 address of the stack host. Elastic machines reach it through
+    /// their SSH tunnel, like every node.
     pub primary_address: std::net::Ipv4Addr,
     /// Service login that owns swarmy on every host of the swarm.
     pub service_user: String,
@@ -30,6 +31,10 @@ pub struct ElasticGroupDefinition {
     /// primary's S3 settings. False means the stack host runs its own object
     /// store and machines reach it through their SSH tunnel.
     pub external_bucket: bool,
+    /// Swarm network the group joins; empty means it creates its own.
+    pub network_id: String,
+    /// Machine image; `None` uses the module default.
+    pub image: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ElasticGroupRecord {
@@ -71,6 +76,8 @@ mod tests {
                 service_user: "swarmy".into(),
                 autoscale: false,
                 external_bucket: true,
+                network_id: "4711".into(),
+                image: None,
             },
             desired: 1,
             desired_cause: crate::MachineCause::from_reason("manual"),

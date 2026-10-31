@@ -590,6 +590,7 @@ fn reconcile_refuses_removed_or_moved_hosts() {
         tofu_bucket: None,
         tofu_bucket_endpoint: None,
         tofu_bucket_region: None,
+        tofu_networks: BTreeMap::new(),
     };
     assert!(
         reconcile(&planned[..2], &record)
@@ -699,6 +700,7 @@ mod bucket_lifecycle {
             tofu_bucket: None,
             tofu_bucket_endpoint: None,
             tofu_bucket_region: None,
+            tofu_networks: BTreeMap::new(),
             bucket_keys: Some(StaticKeys {
                 access_key: "access-secret".into(),
                 secret_key: "value-secret".into(),
@@ -1114,6 +1116,7 @@ fn nodes_use_an_external_bucket_only_when_the_swarm_has_one() {
         tofu_bucket: None,
         tofu_bucket_endpoint: None,
         tofu_bucket_region: None,
+        tofu_networks: BTreeMap::new(),
     };
     assert!(!external_bucket(&spec, &record));
     record.tofu_bucket = Some("swarmy-fleet-000000000001".into());

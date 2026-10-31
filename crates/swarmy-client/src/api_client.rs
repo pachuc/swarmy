@@ -220,6 +220,7 @@ mod tests {
             tofu_bucket: None,
             tofu_bucket_endpoint: None,
             tofu_bucket_region: None,
+            tofu_networks: BTreeMap::new(),
         }
     }
     #[test]

@@ -304,6 +304,8 @@ mod tests {
                 service_user: "swarmy".into(),
                 autoscale: true,
                 external_bucket: false,
+                network_id: String::new(),
+                image: None,
             },
             desired,
             desired_cause: MachineCause::from_reason("manual"),

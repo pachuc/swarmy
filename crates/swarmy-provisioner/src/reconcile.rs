@@ -1058,7 +1058,8 @@ fn variables(
         location: Some(&def.location),
         ssh_public_key: key,
         bucket: "",
-        network: "",
+        network: &def.network_id,
+        image: def.image.as_deref(),
     })
 }
 

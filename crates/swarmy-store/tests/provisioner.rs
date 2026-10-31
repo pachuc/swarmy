@@ -44,6 +44,8 @@ async fn lease_window_and_reconcile_are_fenced() {
         service_user: "swarmy".into(),
         autoscale: false,
         external_bucket: false,
+        network_id: String::new(),
+        image: None,
     };
     store.put_elastic_group(&group).await.unwrap();
     let cause = MachineCause::from_reason("test");

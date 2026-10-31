@@ -51,6 +51,18 @@ pub fn apply_order(spec: &SwarmSpec) -> Vec<String> {
     }
     result
 }
+/// The network a group joins, from the first earlier applied group of its module.
+/// Elastic groups are not in apply order, so they join the first applied group.
+#[must_use]
+pub fn joined_network<'a>(spec: &SwarmSpec, record: &'a SwarmRecord, group: &str) -> &'a str {
+    let module = &spec.groups[group].module;
+    apply_order(spec)
+        .into_iter()
+        .take_while(|name| name != group)
+        .filter(|name| spec.groups[name].module == *module)
+        .find_map(|name| record.tofu_networks.get(&name))
+        .map_or("", String::as_str)
+}
 #[derive(Debug, serde::Serialize)]
 pub struct GroupPlan {
     pub group: String,
@@ -181,8 +193,13 @@ pub(crate) fn preflight(
     dir: &Path,
 ) -> Result<()> {
     check_credentials(spec, machines.credentials)?;
+    let elastic = spec
+        .groups
+        .iter()
+        .filter(|(_, group)| group.elastic)
+        .map(|(name, _)| name.clone());
     let mut seen: Vec<String> = Vec::new();
-    for name in apply_order(spec) {
+    for name in apply_order(spec).into_iter().chain(elastic) {
         let group = &spec.groups[&name];
         if let Some(first) = seen.iter().find(|first| {
             let other = &spec.groups[*first];
@@ -195,7 +212,10 @@ pub(crate) fn preflight(
                 group.location.as_deref().unwrap_or("<unset>"),
             )));
         }
-        seen.push(name.clone());
+        seen.push(name);
+    }
+    for name in apply_order(spec) {
+        let group = &spec.groups[&name];
         if !swarmy_config::is_opentofu_name(&spec.name) {
             return Err(Error::other(format!(
                 "swarm \"{}\": OpenTofu groups need a swarm name of 1-20 lowercase letters, digits and hyphens that starts with a letter and does not end with a hyphen",
@@ -248,7 +268,11 @@ fn check_immutable_fields(
     let Some(last) = last_variables(&group_dir(dir, name)) else {
         return Ok(());
     };
-    for (field, current) in [("size", &group.size), ("location", &group.location)] {
+    for (field, current) in [
+        ("size", &group.size),
+        ("location", &group.location),
+        ("image", &group.image),
+    ] {
         let old = last.get(field).and_then(Value::as_str);
         if old != current.as_deref() {
             return Err(Error::other(format!(
@@ -293,6 +317,7 @@ pub struct GroupInputs<'a> {
     pub machine_count: u32,
     pub size: Option<&'a str>,
     pub location: Option<&'a str>,
+    pub image: Option<&'a str>,
     pub ssh_public_key: &'a str,
     pub bucket: &'a str,
     pub network: &'a str,
@@ -318,6 +343,9 @@ pub fn group_variables(inputs: &GroupInputs<'_>) -> Map<String, Value> {
     }
     if let Some(location) = inputs.location {
         vars.insert("location".into(), json!(location));
+    }
+    if let Some(image) = inputs.image {
+        vars.insert("image".into(), json!(image));
     }
     vars
 }
@@ -454,7 +482,7 @@ async fn prepare_group<'a>(
     name: &str,
     key: &str,
     bucket: Option<&str>,
-    networks: &[(Module, String)],
+    network: &str,
 ) -> Result<Workspace<'a>> {
     let group = &spec.groups[name];
     let group_bucket = if name == spec.placement.stack {
@@ -462,16 +490,13 @@ async fn prepare_group<'a>(
     } else {
         ""
     };
-    let network = networks
-        .iter()
-        .find(|(kind, _)| kind == &group.module)
-        .map_or("", |(_, id)| id.as_str());
     let vars = group_variables(&GroupInputs {
         swarm: &spec.name,
         group: name,
         machine_count: group.count.unwrap_or_default(),
         size: group.size.as_deref(),
         location: group.location.as_deref(),
+        image: group.image.as_deref(),
         ssh_public_key: key,
         bucket: group_bucket,
         network,
@@ -515,13 +540,13 @@ pub(crate) async fn apply(
     record.tofu_state = Some(root);
     registry.write_record(record)?;
     let mut sources = Vec::new();
-    let mut networks: Vec<(Module, String)> = Vec::new();
     for name in order {
         let group = &spec.groups[&name];
         cloud_out!(
             "OpenTofu: applying group {name} ({})",
             module_name(&group.module)
         );
+        let network = joined_network(spec, record, &name).to_owned();
         let workspace = prepare_group(
             *machines,
             spec,
@@ -529,7 +554,7 @@ pub(crate) async fn apply(
             &name,
             &keys[&name],
             bucket.as_deref(),
-            &networks,
+            &network,
         )
         .await?;
         workspace.apply().await?;
@@ -547,9 +572,10 @@ pub(crate) async fn apply(
                 )));
             }
         }
-        if let Some(id) = outputs.network_id.clone() {
-            networks.push((group.module.clone(), id));
-        }
+        match outputs.network_id.clone() {
+            Some(id) => record.tofu_networks.insert(name.clone(), id),
+            None => record.tofu_networks.remove(&name),
+        };
         if name == spec.placement.stack && bucket.is_some() && outputs.bucket.is_none() {
             return Err(Error::other(format!(
                 "group {name}: expected a bucket output for the OpenTofu bucket"
@@ -615,6 +641,7 @@ pub async fn plan_groups(
             tofu_bucket: None,
             tofu_bucket_endpoint: None,
             tofu_bucket_region: None,
+            tofu_networks: BTreeMap::new(),
         });
     preflight(spec, &record, &machines, &dir)?;
     let bucket = bucket_name(spec, &mut record);
@@ -626,7 +653,6 @@ pub async fn plan_groups(
     create_private_dir(&root(&dir))?;
     registry.write_record(&record)?;
     let mut result = Vec::new();
-    let mut networks: Vec<(Module, String)> = Vec::new();
     for name in apply_order(spec) {
         let group = &spec.groups[&name];
         let key = group_key(&dir, &spec.name, &name).await?;
@@ -637,7 +663,7 @@ pub async fn plan_groups(
             &name,
             &key,
             bucket.as_deref(),
-            &networks,
+            joined_network(spec, &record, &name),
         )
         .await?;
         let (outcome, text) = workspace.plan_text().await?;
@@ -647,12 +673,6 @@ pub async fn plan_groups(
             changes: outcome == PlanOutcome::Changes,
             plan: text,
         });
-        if workspace.dir().join("terraform.tfstate").is_file()
-            && let Ok(outputs) = workspace.outputs().await
-            && let Some(id) = outputs.network_id
-        {
-            networks.push((group.module.clone(), id));
-        }
     }
     Ok(result)
 }
@@ -743,6 +763,7 @@ pub(crate) async fn destroy(
             }
             fs::remove_dir_all(&work)?;
             record.hosts.remove(&name);
+            record.tofu_networks.remove(&name);
             registry.write_record(record)?;
             Ok(())
         }

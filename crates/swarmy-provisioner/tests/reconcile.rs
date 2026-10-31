@@ -117,6 +117,8 @@ impl Fixture {
                 service_user: "swarmy".into(),
                 autoscale,
                 external_bucket: false,
+                network_id: String::new(),
+                image: None,
             })
             .await
             .unwrap();
@@ -893,6 +895,8 @@ async fn external_bucket_groups_join_with_the_primary_bucket() {
     f.store
         .put_elastic_group(&ElasticGroupDefinition {
             external_bucket: true,
+            network_id: String::new(),
+            image: None,
             ..definition
         })
         .await

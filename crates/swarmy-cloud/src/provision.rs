@@ -389,6 +389,7 @@ async fn provision_swarm_with_backend(
             tofu_bucket: None,
             tofu_bucket_endpoint: None,
             tofu_bucket_region: None,
+            tofu_networks: BTreeMap::new(),
         });
     preflight_machine_groups(&request, &record, &swarm_dir)?;
     prepare_bucket(
