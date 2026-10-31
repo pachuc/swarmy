@@ -1273,5 +1273,5 @@ async fn agent_placement_latency_comes_from_computer_rows() {
         .await
         .unwrap();
     assert_eq!(metrics.turns, 1);
-    assert_eq!(metrics.latencies["placement"].p50_ms, 12.5);
+    assert!((metrics.latencies["placement"].p50_ms - 12.5).abs() < f64::EPSILON);
 }
