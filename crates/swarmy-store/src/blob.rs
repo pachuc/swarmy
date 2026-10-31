@@ -6,6 +6,13 @@ use bytes::Bytes;
 use object_store::{ObjectStore, path::Path};
 use tokio::sync::RwLock;
 
+/// Object-store key of a content-addressed payload: the blake3 hash of its bytes.
+/// Every blob written through the store, and every snapshot, uses this key.
+#[must_use]
+pub fn blob_key(bytes: &[u8]) -> String {
+    format!("blobs/{}", blake3::hash(bytes).to_hex())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum BlobError {
     #[error("blob not found: {0}")]

@@ -121,7 +121,7 @@ impl Store {
             {
                 return Err(StoreError::Fence(crate::FenceError::ToolClaimMismatch));
             }
-            if self.hydrate::<ToolJob>(&value).await? != claim.job {
+            if !crate::stored_matches(&value, &claim.job)? {
                 return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
             }
             if current?.is_some_and(|old| old.expires_at > self.now()) {

@@ -128,7 +128,7 @@ impl Store {
             else {
                 return Ok(false);
             };
-            if self.hydrate::<ToolJob>(&value).await? != *job
+            if !crate::stored_matches(&value, job)?
                 || self.session(&trx, job.session_id).await?.agent_id != placement.agent_id
             {
                 return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
@@ -187,14 +187,13 @@ impl Store {
             ));
         }
         session.head_seq = crate::seq_after(session.head_seq, 1)?;
-        let event = self
-            .prepare(&Event::ToolCallCompleted {
-                seq: session.head_seq,
-                request_id: job.request_id,
-                call_id: job.call_id.clone(),
-                result: ToolResult::Error { error: explanation },
-            })
-            .await?;
+        // Built inside the transaction, so it must not upload; notices and refusals are short.
+        let event = crate::prepare_inline(&Event::ToolCallCompleted {
+            seq: session.head_seq,
+            request_id: job.request_id,
+            call_id: job.call_id.clone(),
+            result: ToolResult::Error { error: explanation },
+        })?;
         trx.set(&self.keys().event(job.session_id, session.head_seq), &event);
         let keys = self.keys();
         let request = job.request_id;
@@ -228,7 +227,7 @@ impl Store {
                 .get(&self.keys().tool_job(job.request_id), false)
                 .await?
             {
-                if self.hydrate::<ToolJob>(&value).await? != *job {
+                if !crate::stored_matches(&value, job)? {
                     return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
                 }
                 self.fail_lost_tool(
@@ -326,12 +325,11 @@ impl Store {
         if read::<bool>(trx, &delivered).await? != Some(true) {
             let mut session = self.session(trx, id).await?;
             session.head_seq = crate::seq_after(session.head_seq, 1)?;
-            let event = self
-                .prepare(&Event::MessageAppended {
-                    seq: session.head_seq,
-                    message: message.clone(),
-                })
-                .await?;
+            // Built inside the transaction, so it must not upload; notices and refusals are short.
+            let event = crate::prepare_inline(&Event::MessageAppended {
+                seq: session.head_seq,
+                message: message.clone(),
+            })?;
             trx.set(&self.keys().event(id, session.head_seq), &event);
             self.write_session(trx, &session)?;
             write(trx, &delivered, &true)?;

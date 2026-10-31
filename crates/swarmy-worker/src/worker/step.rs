@@ -796,7 +796,7 @@ impl Worker {
                 .await?;
             let bytes = encode(&replayed)?;
             let reference = SnapshotRef {
-                object_key: format!("blobs/{}", blake3::hash(&bytes).to_hex()),
+                object_key: swarmy_store::blob::blob_key(&bytes),
                 seq: head,
             };
             self.blobs.put(&reference.object_key, bytes.into()).await?;
