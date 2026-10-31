@@ -360,8 +360,8 @@ fn derive_inference(row: &mut StoredTurnInferenceCurrent) {
         .and_then(|ms| InferenceMetric::tokens_per_second(metric.output_tokens, ms));
 }
 
-fn apply_computer(summary: &mut StoredTurnSummaryCurrent, value: &ComputerMetric) {
-    let current = summary.computer.get_or_insert_with(ComputerMetric::default);
+fn apply_computer(computer: &mut Option<ComputerMetric>, value: &ComputerMetric) {
+    let current = computer.get_or_insert_with(ComputerMetric::default);
     if value.placement_ms.is_some() {
         current.placement_ms = value.placement_ms;
     }
@@ -403,6 +403,8 @@ pub(crate) struct TurnWrite {
     pub(crate) summary: StoredTurnSummaryCurrent,
     pub(crate) inference: BTreeMap<String, StoredTurnInferenceCurrent>,
     pub(crate) tools: BTreeMap<String, StoredToolMetricCurrent>,
+    /// The node's sample row, loaded only when the batch touches it.
+    pub(crate) computer: Option<ComputerMetric>,
 }
 
 /// The detail rows one patch batch touches, so the transaction reads only
@@ -413,6 +415,7 @@ pub(crate) struct TouchedRows {
     pub(crate) inference: BTreeSet<String>,
     pub(crate) tools: BTreeSet<String>,
     pub(crate) has_wait: bool,
+    pub(crate) computer: bool,
 }
 
 pub(crate) fn touched_rows(patches: &[MetricPatch]) -> TouchedRows {
@@ -444,7 +447,8 @@ pub(crate) fn touched_rows(patches: &[MetricPatch]) -> TouchedRows {
             MetricPatch::Wait { request_id, .. } => {
                 touched.inference.insert(request_id.clone());
             }
-            MetricPatch::Computer(_) | MetricPatch::Error(_) => {}
+            MetricPatch::Computer(_) => touched.computer = true,
+            MetricPatch::Error(_) => {}
         }
     }
     touched.has_wait = patches
@@ -778,12 +782,13 @@ pub(crate) fn apply_one(state: &mut TurnWrite, patch: &MetricPatch) {
         summary,
         inference,
         tools,
+        computer,
     } = state;
     match patch {
         MetricPatch::Stage(event) => apply_stage(summary, inference, tools, event),
         MetricPatch::Inference(update) => apply_inference_update(summary, inference, update),
         MetricPatch::Tool(update) => apply_tool_update(tools, update),
-        MetricPatch::Computer(value) => apply_computer(summary, value),
+        MetricPatch::Computer(value) => apply_computer(computer, value),
         MetricPatch::Error(value) => {
             summary.error = Some(clipped(value, 512));
         }
@@ -862,6 +867,7 @@ pub(crate) fn sort_tool_rows(rows: &mut [StoredToolMetricCurrent]) {
 /// remainder in `dropped_*`; a complete read reports zero.
 pub(crate) fn assemble_turn(
     summary: &StoredTurnSummaryCurrent,
+    computer: Option<ComputerMetric>,
     mut inference_rows: Vec<StoredTurnInferenceCurrent>,
     mut tool_rows: Vec<StoredToolMetricCurrent>,
     inference_limit: Option<usize>,
@@ -908,7 +914,7 @@ pub(crate) fn assemble_turn(
             .map(|row| InferenceMetric::from(row.metric))
             .collect(),
         tools: tools_page.into_iter().map(ToolMetric::from).collect(),
-        computer: summary.computer.clone(),
+        computer,
         append_to_first_token_ms: None,
         inference_duration_ms: None,
         append_to_idle_ms: None,

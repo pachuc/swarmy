@@ -107,6 +107,7 @@ const TOOL_DONE: &str = "tool_done";
 const TOOL_JOB: &str = "tool_job";
 const TOOL_PLACEMENT: &str = "tool_placement";
 const TURN: &str = "turn";
+const TURN_COMPUTER: &str = "turn_computer";
 const TURN_INFERENCE: &str = "turn_inference";
 const TURN_METRICS: &str = "turn_metrics";
 const TURN_TOOL: &str = "turn_tool";
@@ -729,6 +730,15 @@ impl<'a> Keys<'a> {
     }
     pub(crate) fn turn_inference_space_root(&self) -> Subspace {
         self.root.subspace(&(TURN_INFERENCE,))
+    }
+    pub(crate) fn turn_computer(&self, session: SessionId, turn: MessageId) -> Vec<u8> {
+        self.turn_computer_space_root().pack(&(
+            session.as_ulid().to_bytes().as_slice(),
+            turn.as_ulid().to_bytes().as_slice(),
+        ))
+    }
+    pub(crate) fn turn_computer_space_root(&self) -> Subspace {
+        self.root.subspace(&(TURN_COMPUTER,))
     }
     pub(crate) fn turn_metrics(&self, session: SessionId, turn: MessageId) -> Vec<u8> {
         self.turn_metrics_space_root().pack(&(

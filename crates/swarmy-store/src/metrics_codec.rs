@@ -15,7 +15,6 @@ pub(crate) struct StoredTurnSummaryCurrent {
     pub(crate) idle_ns: Option<i64>,
     pub(crate) inference_started_ns: Option<i64>,
     pub(crate) inference_finished_ns: Option<i64>,
-    pub(crate) computer: Option<ComputerMetric>,
     pub(crate) append_to_first_token_ms: Option<f64>,
     pub(crate) inference_duration_ms: Option<f64>,
     pub(crate) append_to_idle_ms: Option<f64>,
@@ -100,32 +99,43 @@ pub(crate) enum StoredTurnMetrics {
     Summary(Box<StoredTurnSummaryCurrent>),
     Inference(StoredTurnInferenceCurrent),
     Tool(StoredToolMetricCurrent),
+    /// The node's sample for one turn, written only by the node.
+    Computer(ComputerMetric),
 }
 
 pub(crate) fn decode_summary(bytes: &[u8]) -> Result<StoredTurnSummaryCurrent> {
     match decode::<StoredTurnMetrics>(bytes)? {
         StoredTurnMetrics::Summary(summary) => Ok(*summary),
-        StoredTurnMetrics::Inference(_) | StoredTurnMetrics::Tool(_) => {
-            Err(StoreError::Storage(crate::StorageError::Corrupt))
-        }
+        StoredTurnMetrics::Inference(_)
+        | StoredTurnMetrics::Tool(_)
+        | StoredTurnMetrics::Computer(_) => Err(StoreError::Storage(crate::StorageError::Corrupt)),
     }
 }
 
 pub(crate) fn decode_inference(bytes: &[u8]) -> Result<StoredTurnInferenceCurrent> {
     match decode::<StoredTurnMetrics>(bytes)? {
         StoredTurnMetrics::Inference(row) => Ok(row),
-        StoredTurnMetrics::Summary(_) | StoredTurnMetrics::Tool(_) => {
-            Err(StoreError::Storage(crate::StorageError::Corrupt))
-        }
+        StoredTurnMetrics::Summary(_)
+        | StoredTurnMetrics::Tool(_)
+        | StoredTurnMetrics::Computer(_) => Err(StoreError::Storage(crate::StorageError::Corrupt)),
     }
 }
 
 pub(crate) fn decode_tool(bytes: &[u8]) -> Result<StoredToolMetricCurrent> {
     match decode::<StoredTurnMetrics>(bytes)? {
         StoredTurnMetrics::Tool(row) => Ok(row),
-        StoredTurnMetrics::Summary(_) | StoredTurnMetrics::Inference(_) => {
-            Err(StoreError::Storage(crate::StorageError::Corrupt))
-        }
+        StoredTurnMetrics::Summary(_)
+        | StoredTurnMetrics::Inference(_)
+        | StoredTurnMetrics::Computer(_) => Err(StoreError::Storage(crate::StorageError::Corrupt)),
+    }
+}
+
+pub(crate) fn decode_computer(bytes: &[u8]) -> Result<ComputerMetric> {
+    match decode::<StoredTurnMetrics>(bytes)? {
+        StoredTurnMetrics::Computer(row) => Ok(row),
+        StoredTurnMetrics::Summary(_)
+        | StoredTurnMetrics::Inference(_)
+        | StoredTurnMetrics::Tool(_) => Err(StoreError::Storage(crate::StorageError::Corrupt)),
     }
 }
 
@@ -145,11 +155,22 @@ mod codec_tests {
     /// Checked-in current summary bytes. Generated with
     /// `swarmy_core::encode(&StoredTurnMetrics::Summary(fixture_summary()))`;
     /// decoding them pins the unbounded layout.
-    const CURRENT_SUMMARY_HEX: &str = "010001730174000180897a00000180b6dc050000000000000000000000000000000000000000000000000000000000";
+    const CURRENT_SUMMARY_HEX: &str =
+        "010001730174000180897a00000180b6dc0500000000000000000000000000000000000000000000000000";
     /// Checked-in current inference-row bytes for a single-chunk request.
     const CURRENT_INFERENCE_HEX: &str = "010101720466616b6508736372697074656400000400000000000100000000000000018092f401000180ade204";
     /// Checked-in current tool-row bytes.
     const CURRENT_TOOL_HEX: &str = "01020163046261736800000000000000";
+
+    const CURRENT_COMPUTER_HEX: &str = "";
+
+    fn fixture_computer() -> ComputerMetric {
+        ComputerMetric {
+            placement_ms: Some(12.5),
+            cold: Some(true),
+            ..ComputerMetric::default()
+        }
+    }
 
     fn fixture_summary() -> StoredTurnSummaryCurrent {
         StoredTurnSummaryCurrent {
@@ -211,5 +232,7 @@ mod codec_tests {
             panic!("expected currentTool");
         };
         assert_eq!(row, fixture_tool());
+        let computer = decode_computer(&hex_to_bytes(CURRENT_COMPUTER_HEX)).unwrap();
+        assert_eq!(computer, fixture_computer());
     }
 }

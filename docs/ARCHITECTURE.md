@@ -179,8 +179,11 @@ them in [api-breaks.txt](api-breaks.txt).
   [breakers.rs](../crates/swarmy-store/src/breakers.rs),
   [session_wait.rs](../crates/swarmy-store/src/session_wait.rs)).
 - **Metering.** `usage_record`, `usage_record_by_time`, `metering_hour`,
-  `turn_metrics`, `turn_tool`, and `turn_inference` hold per-request usage,
-  hourly aggregates and step timings; per-completion attribution and quota
+  `turn_metrics`, `turn_computer`, `turn_tool`, and `turn_inference` hold per-request usage,
+  hourly aggregates and step timings. A metric batch reads its rows in one round
+  and rewrites the shared summary only when it changes it, so node tool and
+  computer samples do not contend with gateway and worker summary writes;
+  per-completion attribution and quota
   observation per auth entry sit alongside. Dimensions and hour-bucket
   encoding are defined in [metering.rs](../crates/swarmy-store/src/metering.rs)
   and [usage.rs](../crates/swarmy-store/src/usage.rs), quota observation in
