@@ -3969,6 +3969,7 @@ dependencies = [
 name = "swarmy-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "jiff",
  "postcard",
