@@ -35,7 +35,7 @@ crate in a tier depends on every lower tier.
   registry used by the worker, the gateway, and tools (integration suites use
   it too) ([source](../crates/swarmy-harness/src/lib.rs)).
 - **swarmy-sandbox** starts and manages runc containers through the sandbox
-  interface and uses store and volume ([source](../crates/swarmy-sandbox/src/lib.rs)).
+  interface, uses volume, and reaches durable state only through its `SandboxMetadata` trait ([source](../crates/swarmy-sandbox/src/lib.rs)).
 - **swarmy-chat** renders conversation events using swarmy-client for interactive clients
   ([source](../crates/swarmy-chat/src/lib.rs)).
 - **swarmy-image** builds and registers images from recipes

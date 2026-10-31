@@ -1,7 +1,7 @@
 //! Per-sandbox credential endpoint. The socket determines identity, never the request.
-use std::{os::unix::fs::PermissionsExt, path::Path, time::Duration};
+use crate::SandboxMetadata;
+use std::{os::unix::fs::PermissionsExt, path::Path, sync::Arc, time::Duration};
 use swarmy_core::{AgentId, ignore_best_effort};
-use swarmy_store::Store;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UnixListener,
@@ -17,7 +17,11 @@ impl Drop for Credentials {
 }
 
 impl Credentials {
-    pub(crate) fn start(path: &Path, store: Store, agent: AgentId) -> std::io::Result<Self> {
+    pub(crate) fn start(
+        path: &Path,
+        metadata: Arc<dyn SandboxMetadata>,
+        agent: AgentId,
+    ) -> std::io::Result<Self> {
         let listener = UnixListener::bind(path)?;
         // The containing bundle is private to the node; only this agent sees
         // the bind mount. Both root and the agent user can ask for its token.
@@ -35,7 +39,7 @@ impl Credentials {
                     if &request != b"github-token\n" {
                         return Ok::<_, std::io::Error>(());
                     }
-                    let response = match store.agent_github_token(agent).await {
+                    let response = match metadata.github_token(agent).await {
                         Ok(Some(token)) => serde_json::json!({"token": token}),
                         // Do not log database errors alongside secret-bearing data.
                         _ => serde_json::json!({"error": "GitHub credential unavailable"}),
@@ -55,5 +59,86 @@ impl Credentials {
                 }
             }
         })))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use swarmy_core::{NodeId, VolumeId};
+    use swarmy_volume::{MetadataError, WriterGrant};
+    use tokio::net::UnixStream;
+
+    struct FakeMetadata {
+        token: Result<Option<String>, MetadataError>,
+    }
+
+    #[async_trait::async_trait]
+    impl SandboxMetadata for FakeMetadata {
+        async fn open_writer(&self, _: VolumeId) -> Result<WriterGrant, MetadataError> {
+            Err(MetadataError::VolumeMissing)
+        }
+        async fn computer_deleted(&self, _: AgentId) -> Result<bool, MetadataError> {
+            Ok(false)
+        }
+        async fn placement_node(&self, _: AgentId) -> Result<Option<NodeId>, MetadataError> {
+            Ok(None)
+        }
+        async fn report_scratch(&self, _: AgentId, _: u64) -> Result<(), MetadataError> {
+            Ok(())
+        }
+        async fn clear_scratch(&self, _: AgentId) -> Result<(), MetadataError> {
+            Ok(())
+        }
+        async fn github_token(&self, _: AgentId) -> Result<Option<String>, MetadataError> {
+            match &self.token {
+                Ok(token) => Ok(token.clone()),
+                Err(_) => Err(MetadataError::Failed(Box::new(std::io::Error::other(
+                    "lookup failed",
+                )))),
+            }
+        }
+    }
+
+    async fn answer(token: Result<Option<String>, MetadataError>, request: &[u8]) -> Vec<u8> {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.sock");
+        let _credentials = Credentials::start(
+            &path,
+            Arc::new(FakeMetadata { token }),
+            AgentId::from_ulid(ulid::Ulid::generate()),
+        )
+        .unwrap();
+        let mut socket = UnixStream::connect(path).await.unwrap();
+        socket.write_all(request).await.unwrap();
+        let mut response = Vec::new();
+        socket.read_to_end(&mut response).await.unwrap();
+        response
+    }
+
+    #[tokio::test]
+    async fn socket_answers_the_agent_token() {
+        assert_eq!(
+            answer(Ok(Some("example-token".into())), b"github-token\n").await,
+            b"{\"token\":\"example-token\"}\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn socket_hides_lookup_failures() {
+        assert_eq!(
+            answer(Err(MetadataError::VolumeMissing), b"github-token\n").await,
+            b"{\"error\":\"GitHub credential unavailable\"}\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn socket_ignores_other_requests() {
+        assert!(
+            answer(Ok(Some("example-token".into())), b"other-request")
+                .await
+                .is_empty()
+        );
     }
 }

@@ -82,15 +82,16 @@ pub(crate) async fn verify(
     let objects = objects()?;
     let root = files.join(".swarmy/verify");
     let _cleanup = Cleanup(root.clone());
+    let node = NodeId::from_ulid(ulid::Ulid::generate());
     let runtime = RuncRuntime::open(
         root,
         ServerConfig {
             directory: files.join(".swarmy/verify-volumes"),
-            node: NodeId::from_ulid(ulid::Ulid::generate()),
+            node,
             metadata: Arc::new(store.clone()),
             objects,
         },
-        store.clone(),
+        swarmy_store::StoreSandboxMetadata::new(store.clone(), node),
     )
     .await?;
     let result = async {

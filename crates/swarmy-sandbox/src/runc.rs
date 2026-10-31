@@ -1,6 +1,6 @@
 use crate::{
     BlockDevice, Error, ExecOutput, ExecRequest, ExecResult, PauseHandle, Result, RuntimeCaps,
-    Sandbox, SandboxSpec,
+    Sandbox, SandboxMetadata, SandboxSpec,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -13,7 +13,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 use swarmy_core::{AgentId, ignore_best_effort};
-use swarmy_store::ScratchRecord;
 use swarmy_volume::server::{self, ServerConfig};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
@@ -148,7 +147,7 @@ pub struct RuncRuntime {
     scratch_policy: ScratchPolicy,
     gpu: crate::NodeGpu,
     config: ServerConfig,
-    store: swarmy_store::Store,
+    metadata: Arc<dyn SandboxMetadata>,
     sandboxes: Mutex<BTreeMap<AgentId, Arc<Mutex<Running>>>>,
     lifecycle: Mutex<()>,
     _lock: File,
@@ -196,9 +195,9 @@ impl RuncRuntime {
     pub async fn open(
         root: PathBuf,
         config: ServerConfig,
-        store: swarmy_store::Store,
+        metadata: Arc<dyn SandboxMetadata>,
     ) -> Result<Self> {
-        Self::open_with(root, config, store, RuntimeOptions::default()).await
+        Self::open_with(root, config, metadata, RuntimeOptions::default()).await
     }
 
     /// Open with the node's scratch thresholds and GPU devices.
@@ -207,7 +206,7 @@ impl RuncRuntime {
     pub async fn open_with(
         root: PathBuf,
         config: ServerConfig,
-        store: swarmy_store::Store,
+        metadata: Arc<dyn SandboxMetadata>,
         options: RuntimeOptions,
     ) -> Result<Self> {
         let scratch_policy = options.scratch;
@@ -238,7 +237,7 @@ impl RuncRuntime {
             scratch_policy,
             gpu: options.gpu,
             config,
-            store,
+            metadata,
             sandboxes: Mutex::new(BTreeMap::new()),
             lifecycle: Mutex::new(()),
             _lock: lock,
@@ -296,21 +295,11 @@ impl RuncRuntime {
     /// whose sandbox still runs on this node.
     async fn refresh_hosted(&self, id: AgentId, path: &Path) -> Result<()> {
         std::fs::write(path.join(".hosted"), b"")?;
-        if self.store.is_computer_deleted(id).await? {
+        if self.metadata.computer_deleted(id).await? {
             return Ok(());
         }
         let bytes = directory_bytes(path)?;
-        if let Err(error) = self
-            .store
-            .report_scratch(
-                id,
-                &ScratchRecord {
-                    node_id: self.config.node,
-                    bytes,
-                },
-            )
-            .await
-        {
+        if let Err(error) = self.metadata.report_scratch(id, bytes).await {
             tracing::warn!(%id, error = %swarmy_core::error_chain(&error), "scratch size report failed");
         }
         Ok(())
@@ -330,28 +319,20 @@ impl RuncRuntime {
             .or_else(|_| entry.metadata())?
             .modified()?;
         let bytes = directory_bytes(&path)?;
-        let deleted = self.store.is_computer_deleted(id).await?;
+        let deleted = self.metadata.computer_deleted(id).await?;
         let moved = self
-            .store
-            .get_by_agent(id)
+            .metadata
+            .placement_node(id)
             .await?
-            .is_some_and(|placement| placement.node_id != self.config.node);
+            .is_some_and(|node| node != self.config.node);
         let idle = modified.elapsed().unwrap_or_default()
             > Duration::from_secs(self.scratch_policy.idle_days.saturating_mul(86_400));
         if deleted || moved || idle {
             self.evict_scratch(id, bytes)?;
-            self.store.clear_scratch(id, self.config.node).await?;
+            self.metadata.clear_scratch(id).await?;
             return Ok(None);
         }
-        self.store
-            .report_scratch(
-                id,
-                &ScratchRecord {
-                    node_id: self.config.node,
-                    bytes,
-                },
-            )
-            .await?;
+        self.metadata.report_scratch(id, bytes).await?;
         Ok(pressure_eligible(modified).then_some((modified, id, bytes)))
     }
 
@@ -376,7 +357,7 @@ impl RuncRuntime {
                 break;
             }
             self.evict_scratch(id, bytes)?;
-            self.store.clear_scratch(id, self.config.node).await?;
+            self.metadata.clear_scratch(id).await?;
         }
         Ok(())
     }
@@ -919,13 +900,7 @@ impl RuncRuntime {
         if self.sandboxes.lock().await.contains_key(&id) {
             return Err(Error::State);
         }
-        let grant = self
-            .store
-            .open_volume_writer(
-                disk.volume_id,
-                swarmy_core::LeaseOwnerId::from_ulid(self.config.node.as_ulid()),
-            )
-            .await?;
+        let grant = self.metadata.open_writer(disk.volume_id).await?;
         let bundle = self.bundle(id);
         std::fs::create_dir(&bundle)?;
         let journal = Journal { spec, disk };
@@ -990,20 +965,17 @@ impl RuncRuntime {
             .await?;
             let credentials = crate::credentials::Credentials::start(
                 &bundle.join("guest/github.sock"),
-                self.store.clone(),
+                self.metadata.clone(),
                 id,
             )?;
             self.running(id).await?.lock().await.credentials = Some(credentials);
             self.prepare_scratch(id, &scratch).await?;
             self.start(id, &scratch, requirements).await?;
             if !scratch.is_empty() {
-                self.store
+                self.metadata
                     .report_scratch(
                         id,
-                        &ScratchRecord {
-                            node_id: self.config.node,
-                            bytes: directory_bytes(&self.scratch_root.join(id.to_string()))?,
-                        },
+                        directory_bytes(&self.scratch_root.join(id.to_string()))?,
                     )
                     .await?;
             }

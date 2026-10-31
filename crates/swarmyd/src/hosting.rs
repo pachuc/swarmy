@@ -616,7 +616,7 @@ mod tests {
                 metadata: Arc::new(store.clone()),
                 objects: Arc::new(object_store::memory::InMemory::new()),
             },
-            store.clone(),
+            swarmy_store::StoreSandboxMetadata::new(store.clone(), node_id),
         )
         .await
         .unwrap();
