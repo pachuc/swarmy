@@ -253,7 +253,19 @@ async fn placements_lists_only_the_callers_with_occupancy() {
         a_result
             .placements
             .iter()
-            .all(|p| p.placement.node_id == a.node_id && !p.occupied)
+            .all(|p| p.placement.node_id == a.node_id)
+    );
+    assert!(
+        a_result
+            .placements
+            .iter()
+            .any(|p| p.placement.agent_id == placed[0].agent_id && p.occupied)
+    );
+    assert!(
+        a_result
+            .placements
+            .iter()
+            .any(|p| p.placement.agent_id == placed[1].agent_id && !p.occupied)
     );
     assert_eq!(b_result.placements.len(), 1);
     assert_eq!(
