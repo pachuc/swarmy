@@ -2097,7 +2097,11 @@ mod provisioning_command_tests {
             &id.to_string(),
             "cat",
         ] {
-            assert!(words.contains(&word.to_owned()));
+            assert!(
+                words
+                    .iter()
+                    .any(|part| part.trim_matches(['(', ')']) == word)
+            );
         }
         assert!(command.ends_with("cat ~swarmy/swarmy/.swarmy/node-id"));
     }

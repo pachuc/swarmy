@@ -168,10 +168,9 @@ mod tests {
             settings.api_url
         )));
         assert_eq!(settings.token_file, Path::new("/etc/swarmy/node-token"));
-        assert!(
-            REMOTE_PROVISION_ENV
-                .contains("swarmy_node_token_file() { printf '%s\\n' \"$(swarmy_etc_dir)\"; }")
-        );
+        assert!(REMOTE_PROVISION_ENV.contains(
+            "swarmy_node_token_file() { printf '%s/node-token\\n' \"$(swarmy_etc_dir)\"; }"
+        ));
         assert!(REMOTE_PROVISION_ENV.contains("${SWARMY_ETC_DIR:-/etc/swarmy}"));
     }
 
