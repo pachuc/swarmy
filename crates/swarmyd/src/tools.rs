@@ -260,12 +260,12 @@ async fn produce(
         agent_id: claim.placement.agent_id,
     };
     require_display(store, claim).await?;
-    let outcome = run_command(store, &runtime, &sandbox, claim).await?;
+    let outcome = run_command(store, runtime, &sandbox, claim).await?;
     let mut result = outcome.result;
     extract_image_blob(store, &mut result).await?;
-    cap_completed_output(&runtime, &sandbox, claim, &mut result).await;
+    cap_completed_output(runtime, &sandbox, claim, &mut result).await;
     if store.interrupt_requested(claim.job.session_id).await? {
-        stop_result_process(&runtime, &sandbox, claim.placement.epoch, &result).await?;
+        stop_result_process(runtime, &sandbox, claim.placement.epoch, &result).await?;
     }
     Ok((result, outcome.summary))
 }
