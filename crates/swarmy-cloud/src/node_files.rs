@@ -140,6 +140,15 @@ mod tests {
     }
 
     #[test]
+    fn provisioning_checks_against_the_default_sandbox() {
+        let line = format!(
+            "\nSWARMY_DEFAULT_SANDBOX_MIB={}\n",
+            swarmy_core::SandboxRequirements::default().memory_mib
+        );
+        assert!(REMOTE_PROVISION_ENV.contains(&line));
+    }
+
+    #[test]
     fn table_matches_repository_files() {
         let paths: Vec<_> = FILES.iter().map(|(path, _)| *path).collect();
         assert!(paths.windows(2).all(|pair| pair[0] < pair[1]));

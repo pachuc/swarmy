@@ -314,6 +314,24 @@ groups in reverse order and removes the bucket with the data.
 `SWARMY_TOFU_BIN` is a development and test override for the pinned,
 checksum-verified OpenTofu download.
 
+### Minimum node size
+
+A node keeps 3072 MiB of memory for the operating system and swarmy's own
+services, and offers the rest to sandboxes. The default sandbox needs 768 MiB,
+so a node with sandboxes needs at least 3840 MiB of memory as the kernel
+reports it (`MemTotal` in `/proc/meminfo`). The kernel reports less than a
+machine's nominal size: a 4 GiB machine such as an AWS t3.medium reports about
+3830 MiB and falls short. Choose 8 GiB or more. Each further default sandbox
+needs another 768 MiB.
+
+Provisioning checks this on every host with sandboxes before it changes
+anything, and stops with the numbers when the host is too small. This applies
+to `swarm up`, `node add`, `swarm scale`, and elastic joins. An elastic group
+with a size below the minimum fails every join (the message is in the
+provisioner's journal on the primary, `journalctl -u swarmy-provisioner`), and
+the provisioner replaces the machine after its 15-minute join deadline, within
+the creation limit, so fix the group's size and scale again.
+
 ### Scaleway node groups
 
 Scaleway is a French cloud provider. An existing stack host can run with a

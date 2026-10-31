@@ -63,6 +63,19 @@ positive=$(node_environment /tmp/checkout 4 /tmp)
 [[ $positive == *'SWARMY_NODE_SANDBOXES=4'* ]]
 [[ $positive == *'SWARMY_NODE_DISK_BYTES='* ]]
 [[ $positive != *'SWARMY_NODE_DISK_BYTES=0'* ]]
+# A 4 GiB machine reports about 3832 MiB: 760 MiB after the 3072 MiB reserve.
+printf 'MemTotal:        3923968 kB\n' > "$bundle/meminfo"
+[[ $(SWARMY_MEMINFO=$bundle/meminfo node_memory_bytes) == 796917760 ]]
+SWARMY_MEMINFO=$bundle/meminfo check_node_memory 0
+if SWARMY_MEMINFO=$bundle/meminfo check_node_memory 1 2>"$bundle/memory-err"; then
+    echo 'accepted a host below one default sandbox' >&2; exit 1
+fi
+grep -q 'less than one default 768 MiB sandbox' "$bundle/memory-err"
+grep -q 'at least 3840 MiB' "$bundle/memory-err"
+# Exactly the reserve plus one default sandbox is enough.
+printf 'MemTotal:        3932160 kB\n' > "$bundle/meminfo"
+[[ $(SWARMY_MEMINFO=$bundle/meminfo node_memory_bytes) == 805306368 ]]
+SWARMY_MEMINFO=$bundle/meminfo check_node_memory 1
 zero_bucket=$(node_environment /tmp/checkout 0 /this-mount-does-not-exist example-bucket eu-west-1)
 [[ $zero_bucket == *'SWARMY_NODE_ROLES=volume'* ]]
 [[ $zero_bucket == *'SWARMY_NODE_SANDBOXES=0'* ]]
