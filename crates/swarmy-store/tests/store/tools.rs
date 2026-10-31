@@ -665,6 +665,81 @@ async fn status_write_survives_renewal_and_fails_after_release() {
 }
 
 #[tokio::test]
+async fn deletion_racing_status_write_fences_on_computer_tombstone() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (_, _, node, _, placement) = setup(&test.store).await;
+    let now = Timestamp::now();
+    let status = swarmy_core::AgentCallStatus {
+        agent_id: placement.agent_id,
+        node_id: node.node_id,
+        epoch: placement.epoch,
+        holder_session_id: None,
+        queued_calls: 0,
+        observed_at: now,
+        expires_at: now.checked_add(Duration::from_secs(30)).unwrap(),
+    };
+    assert!(matches!(
+        test.store
+            .put_agent_call_status_racing(&status, async {
+                test.store
+                    .delete_computer(placement.agent_id)
+                    .await
+                    .unwrap();
+            })
+            .await,
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::ComputerDeleted
+        ))
+    ));
+}
+
+#[tokio::test]
+async fn takeover_racing_status_write_fences_on_placement_epoch() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (_, _, node, _, placement) = setup(&test.store).await;
+    // The two handles share the database but disagree on whether the old lease
+    // has expired, so takeover can commit while the node's read sees it live.
+    let live_now = Timestamp::now();
+    let expired_now = placement
+        .expires_at
+        .checked_add(Duration::from_millis(1))
+        .unwrap();
+    let fenced = test.store.clone().with_clock(move || live_now);
+    let racing = test.store.clone().with_clock(move || expired_now);
+    let status = swarmy_core::AgentCallStatus {
+        agent_id: placement.agent_id,
+        node_id: node.node_id,
+        epoch: placement.epoch,
+        holder_session_id: None,
+        queued_calls: 0,
+        observed_at: live_now,
+        expires_at: placement.expires_at,
+    };
+    assert!(matches!(
+        fenced
+            .put_agent_call_status_racing(&status, async {
+                let next = racing
+                    .take_over(
+                        &placement,
+                        node.node_id,
+                        expired_now.checked_add(Duration::from_secs(60)).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(next.epoch > placement.epoch);
+            })
+            .await,
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
+    ));
+}
+
+#[tokio::test]
 async fn completion_survives_renewal_and_last_completion_wakes_the_session() {
     let Some(test) = TestStore::memory() else {
         return;
