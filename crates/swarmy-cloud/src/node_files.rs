@@ -161,6 +161,20 @@ mod tests {
     }
 
     #[test]
+    fn provisioning_uses_the_default_node_api_settings() {
+        let settings = swarmy_config::NodeSettings::default();
+        assert!(REMOTE_PROVISION_ENV.contains(&format!(
+            "swarmy_node_api_url() {{ printf '{}\\n'; }}",
+            settings.api_url
+        )));
+        assert_eq!(settings.token_file, Path::new("/etc/swarmy/node-token"));
+        assert!(REMOTE_PROVISION_ENV.contains(
+            "swarmy_node_token_file() { printf '%s/node-token\\n' \"$(swarmy_etc_dir)\"; }"
+        ));
+        assert!(REMOTE_PROVISION_ENV.contains("${SWARMY_ETC_DIR:-/etc/swarmy}"));
+    }
+
+    #[test]
     fn table_matches_repository_files() {
         let paths: Vec<_> = FILES.iter().map(|(path, _)| *path).collect();
         assert!(paths.windows(2).all(|pair| pair[0] < pair[1]));

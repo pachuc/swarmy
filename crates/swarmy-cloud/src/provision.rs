@@ -127,7 +127,7 @@ pub(crate) trait SwarmHost {
     ) -> Result<()>;
     async fn decommission(&self, node: &Machine) -> Result<()>;
     async fn drain(&self, node: &Machine, timeout: Duration, force: bool) -> Result<ssh::Drain>;
-    async fn revoke_tunnel(&self, node: &Machine, primary: &Machine) -> Result<()>;
+    async fn revoke_node_access(&self, node: &Machine, primary: &Machine) -> Result<()>;
     async fn stop(&self, node: &Machine) -> Result<()>;
     async fn start(&self, node: &Machine) -> Result<()>;
     async fn reachable(&self, node: &Machine) -> bool;
@@ -169,8 +169,8 @@ impl SwarmHost for ssh::Ssh {
     async fn drain(&self, node: &Machine, timeout: Duration, force: bool) -> Result<ssh::Drain> {
         ssh::drain_node(node, timeout, force).await
     }
-    async fn revoke_tunnel(&self, node: &Machine, primary: &Machine) -> Result<()> {
-        ssh::revoke_tunnel(node, ssh::Primary::Remote(primary)).await
+    async fn revoke_node_access(&self, node: &Machine, primary: &Machine) -> Result<()> {
+        ssh::revoke_node_access(node, ssh::Primary::Remote(primary)).await
     }
     async fn stop(&self, node: &Machine) -> Result<()> {
         ssh::stop_units(node).await

@@ -31,6 +31,7 @@ and systemd unit files in private node state. On a stack+services host, the unit
 | `swarmy-stack` | FoundationDB, NATS, object store |
 | `swarmyd` | Sandbox node |
 | `swarmy-api` | Control plane API |
+| `swarmy-node-api` | Authenticated node API on the stack host |
 | `swarmy-scheduler` | Scheduling |
 | `swarmy-worker` | Step execution |
 | `swarmy-gateway` | Inference gateway |
@@ -170,8 +171,14 @@ primary, preserving cluster identity and loopback coordinator address. Node
 add generates a dedicated tunnel key on the joining host, authorizes only
 service forwards on the primary, and pins the primary's host key through the
 authenticated provisioning connection. The key allows no interactive shell.
-The tunnel forwards local 4500 and 4222 to the primary's loopback ports and
-8333 when SeaweedFS is used. It starts before swarmyd and restarts after SSH
+The tunnel forwards local 4500, 4222 and 8743 to the primary's loopback ports;
+8743 reaches the node API. It forwards 8333 only when SeaweedFS is used. The
+primary's tunnel key line permits 4500, 4222 and 8743, and permits 8333 only
+without a bucket. SSH checks the link every 5 seconds and restarts after three
+misses. Join issues each node's API token on the primary and copies it over
+SSH standard input to `/etc/swarmy/node-token` (root-owned, mode 0600). The
+stack host issues its own token during provisioning. Removing a node revokes
+its token together with its tunnel key. It starts before swarmyd and restarts after SSH
 failure; inspect it with `sudo journalctl -u swarmy-tunnel`. Tunnel identity
 and pinned host key live under `/etc/swarmy/`, readable only by the service
 user. Binaries install to `/usr/local/bin`.

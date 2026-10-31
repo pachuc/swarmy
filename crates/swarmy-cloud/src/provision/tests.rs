@@ -132,7 +132,11 @@ impl SwarmHost for FakeHost {
                 .map_err(Error::other)
         })
     }
-    fn revoke_tunnel(&self, node: &Machine, primary: &Machine) -> impl Future<Output = Result<()>> {
+    fn revoke_node_access(
+        &self,
+        node: &Machine,
+        primary: &Machine,
+    ) -> impl Future<Output = Result<()>> {
         std::future::ready({
             self.push(format!("revoke {} primary={}", node.name, primary.name));
             Ok(())

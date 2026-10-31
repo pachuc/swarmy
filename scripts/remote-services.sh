@@ -42,4 +42,4 @@ for unit in "${service_units[@]}"; do
         exit 1
     fi
 done
-echo 'scheduler, worker, gateway, api, and provisioner ready on node and enabled at boot'
+echo 'scheduler, worker, gateway, api, node-api, and provisioner ready on node and enabled at boot'

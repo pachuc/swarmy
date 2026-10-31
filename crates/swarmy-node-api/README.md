@@ -41,3 +41,12 @@ The node reports scratch directories and their occupancy. The server decides del
 ## GitHub credential
 
 `POST /node/v1/credentials/github` returns a token only when the agent has a live placement on the calling node according to the server clock. Other placements return `NotYours`; the secret is never logged and its response debug representation is redacted.
+
+## Provisioning
+
+A joining node receives its own token from the primary through the primary shell;
+the stack host issues its own token during provisioning. The token is stored in
+`/etc/swarmy/node-token` (root-owned, mode 0600) and revoked with the tunnel
+key when the node is removed. The SSH tunnel forwards local port 8743 to the
+primary's node API. Existing hosts receive credentials during `swarmy swarm
+upgrade` in NA11; this provisioning path only covers new joins.
