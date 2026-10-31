@@ -528,3 +528,94 @@ async fn large_tool_job_fails_after_computer_deletion_without_object_storage_rea
         SessionState::WaitingTools
     );
 }
+
+#[tokio::test]
+async fn redispatching_a_pending_job_writes_nothing() {
+    use foundationdb::options::ConflictRangeType;
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (_, _, _, jobs, placement) = setup(&test.store).await;
+    let (begin, end) = test.root.range();
+    let probe = test.root.pack(&("probe",));
+    let trx = test.db.create_trx().unwrap();
+    trx.get_read_version().await.unwrap();
+    trx.add_conflict_range(&begin, &end, ConflictRangeType::Read)
+        .unwrap();
+    for _ in 0..2 {
+        assert!(
+            test.store
+                .route_tool_job(&jobs[0], &placement)
+                .await
+                .unwrap()
+        );
+    }
+    trx.set(&probe, b"ok");
+    trx.commit().await.unwrap();
+
+    let trx = test.db.create_trx().unwrap();
+    trx.get_read_version().await.unwrap();
+    trx.add_conflict_range(&begin, &end, ConflictRangeType::Read)
+        .unwrap();
+    let claim = swarmy_core::PlacedToolClaim {
+        job: jobs[0].clone(),
+        owner: owner(),
+        placement,
+        expires_at: Timestamp::now()
+            .checked_add(Duration::from_secs(30))
+            .unwrap(),
+    };
+    assert!(test.store.claim_placed_tool(&claim).await.unwrap());
+    trx.set(&probe, b"changed");
+    assert_eq!(trx.commit().await.unwrap_err().code(), 1020);
+}
+
+#[tokio::test]
+async fn claim_commits_on_first_attempt_while_redispatch_runs() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (_, _, _, jobs, placement) = setup(&test.store).await;
+    let expiry = Timestamp::now()
+        .checked_add(Duration::from_secs(30))
+        .unwrap();
+    let claim = |job: &ToolJob| swarmy_core::PlacedToolClaim {
+        job: job.clone(),
+        owner: owner(),
+        placement: placement.clone(),
+        expires_at: expiry,
+    };
+    assert_eq!(
+        test.store
+            .claim_placed_tool_racing(&claim(&jobs[0]), async {
+                for _ in 0..2 {
+                    assert!(
+                        test.store
+                            .route_tool_job(&jobs[0], &placement)
+                            .await
+                            .unwrap()
+                    );
+                }
+            })
+            .await
+            .unwrap(),
+        (true, 1)
+    );
+    assert_eq!(
+        test.store
+            .claim_placed_tool_racing(&claim(&jobs[1]), async {
+                test.store
+                    .renew(
+                        &placement,
+                        Timestamp::now()
+                            .checked_add(Duration::from_secs(60))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+            })
+            .await
+            .unwrap(),
+        (true, 2)
+    );
+}

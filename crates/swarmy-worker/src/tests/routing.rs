@@ -407,6 +407,16 @@ impl Fixture {
             .unwrap()
     }
 
+    /// Assert no tool message reaches the node within `wait`.
+    async fn no_delivery(&self, node: NodeId, wait: Duration) {
+        let mut messages = self
+            .bus
+            .consume::<ToolJob>(&WorkQueue::NodeTools(node))
+            .await
+            .unwrap();
+        assert!(timeout(wait, messages.next()).await.is_err());
+    }
+
     async fn claim(&self, job: ToolJob, placement: PlacementRecord) -> PlacedToolClaim {
         self.store.claim_placement(&placement).await.unwrap();
         let claim = PlacedToolClaim {
@@ -2085,4 +2095,53 @@ async fn gpu_tool_moves_the_computer_then_next_call_waits_and_runs_on_a_gpu_node
         SessionState::WaitingTools
     );
     f.delivery(gpu).await.acknowledge().await.unwrap();
+}
+
+#[tokio::test]
+async fn recovery_republishes_a_pending_job_with_backoff() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let placement = f
+        .store
+        .place(
+            f.agent,
+            f.nodes[0],
+            f.now().checked_add(Duration::from_secs(300)).unwrap(),
+        )
+        .await
+        .unwrap();
+    let id = f.session().await;
+    f.step(id).await;
+    let first = f.delivery(f.nodes[0]).await;
+    let job = first.value.clone();
+    first.acknowledge().await.unwrap();
+    for _ in 0..3 {
+        f.worker.recover_tools().await.unwrap();
+    }
+    f.no_delivery(f.nodes[0], Duration::from_millis(500)).await;
+    f.advance(crate::worker::republish::REPUBLISH_FIRST_DELAY);
+    f.worker.recover_tools().await.unwrap();
+    let second = f.delivery(f.nodes[0]).await;
+    assert_eq!(second.value.request_id, job.request_id);
+    second.acknowledge().await.unwrap();
+    f.worker.recover_tools().await.unwrap();
+    f.no_delivery(f.nodes[0], Duration::from_millis(500)).await;
+
+    let mut config = f.worker.config.clone();
+    config.harness.tools.register(Box::new(swarmy_tools::Bash));
+    let clock = f.clock.clone();
+    let fresh = Worker::new(
+        f.store.clone(),
+        f.bus.clone(),
+        Arc::new(MemoryBlobStore::default()),
+        config,
+    )
+    .with_clock(move || clock.now());
+    fresh.recover_tools().await.unwrap();
+    let repaired = f.delivery(f.nodes[0]).await;
+    assert_eq!(repaired.value.request_id, job.request_id);
+    repaired.acknowledge().await.unwrap();
+    let claim = f.claim(job, placement).await;
+    f.complete(&claim).await.unwrap();
 }

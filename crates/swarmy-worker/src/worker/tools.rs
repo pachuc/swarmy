@@ -467,7 +467,9 @@ impl Worker {
                 .await;
             self.bus
                 .publish_work(&WorkQueue::NodeTools(placement.node_id), &job)
-                .await
+                .await?;
+            self.republish.published(job.request_id, self.now()).await;
+            Ok::<(), anyhow::Error>(())
         }))
         .await?;
         Ok(())
@@ -517,32 +519,28 @@ impl Worker {
             .await
     }
 
-    /// Recover one dispatch through the worker clock.
+    /// Recover one dispatch through the worker clock. The fence and epoch
+    /// checks run on every scan; the publish is repeated only when due.
     pub(super) async fn route_tool(&self, job: &ToolJob) -> Result<()> {
         if self.store.fail_deleted_computer_tool(job).await? {
+            self.republish.forget(job.request_id).await;
             return Ok(());
         }
         let placement = self.place(job.session_id).await?;
-        if self.store.route_tool_job(job, &placement).await? {
-            let turn = self.store.request_turn_id(job.request_id).await?;
-            if let Some(turn) = turn {
-                let event = Bus::turn_event(
-                    job.session_id,
-                    turn,
-                    TurnStage::ToolDispatched,
-                    Some(job.request_id),
-                );
-                self.bus.record_turn(&event).await;
-                self.store.observe_turn_metrics(
-                    job.session_id,
-                    turn,
-                    swarmy_store::dispatch_patches(event, job.arguments.name()),
-                );
-            }
-            self.bus
-                .publish_work(&WorkQueue::NodeTools(placement.node_id), job)
-                .await?;
+        if !self.store.route_tool_job(job, &placement).await? {
+            self.republish.forget(job.request_id).await;
+            return Ok(());
         }
+        if !self.republish.due(job.request_id, self.now()).await {
+            return Ok(());
+        }
+        let turn = self.store.request_turn_id(job.request_id).await?;
+        self.observe_dispatch(job.session_id, turn, job.request_id, job.arguments.name())
+            .await;
+        self.bus
+            .publish_work(&WorkQueue::NodeTools(placement.node_id), job)
+            .await?;
+        self.republish.published(job.request_id, self.now()).await;
         Ok(())
     }
 
@@ -550,10 +548,13 @@ impl Worker {
     /// shared clock past lease expiry instead of sleeping out real leases;
     /// production keeps the default wall clock.
     pub(crate) async fn recover_tools(&self) -> Result<()> {
+        let scan_started = self.now();
+        let mut seen = std::collections::HashSet::new();
         let mut after = None;
         loop {
             let jobs = self.store.scan_tool_jobs(after, MAX_SCAN_LIMIT).await?;
             if jobs.is_empty() {
+                self.republish.retain(&seen, scan_started).await;
                 return Ok(());
             }
             for job in jobs {
@@ -564,7 +565,9 @@ impl Worker {
                     .contains(&runnable_partition(job.session_id))
                 {
                     // A dead node cannot consume its own redeliveries. The durable
-                    // outbox scan re-resolves every retry and repairs lost publishes.
+                    // outbox scan re-resolves every pending job on each tick and
+                    // republishes it only when due, without rewriting the claim fence.
+                    seen.insert(job.request_id);
                     let result = self.route_tool(&job).await;
                     if let Err(error) = result {
                         tracing::warn!(error = %swarmy_core::error_chain(&*error), request_id = %job.request_id, "tool recovery failed");
