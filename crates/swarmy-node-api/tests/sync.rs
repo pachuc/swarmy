@@ -10,7 +10,7 @@ use swarmy_node_protocol::{
 use ulid::Ulid;
 
 async fn client(f: &support::Fixture, token: &swarmy_core::NodeToken) -> NodeClient {
-    let base = support::serve(router(support::state(&f))).await;
+    let base = support::serve(router(support::state(f))).await;
     NodeClient::new(&base, token).unwrap()
 }
 #[tokio::test]

@@ -63,8 +63,7 @@ async fn protect_accepts_any_hashes_in_chunks() {
     let hashes: Vec<ContentHash> = (0..2100_u16)
         .map(|n| {
             let mut bytes = [0; 32];
-            bytes[0] = n as u8;
-            bytes[1] = (n >> 8) as u8;
+            bytes[..2].copy_from_slice(&n.to_le_bytes());
             ContentHash(bytes)
         })
         .collect();

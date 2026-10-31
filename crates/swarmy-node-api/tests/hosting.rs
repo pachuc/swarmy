@@ -51,7 +51,7 @@ async fn route_names_the_agent_and_refuses_done_jobs() {
             &ToolResult::Completed {
                 output: "done".into(),
                 title: "done".into(),
-                metadata: Default::default(),
+                metadata: std::collections::BTreeMap::default(),
             },
         )
         .await
