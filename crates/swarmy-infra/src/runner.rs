@@ -29,9 +29,15 @@ const CLOSED: [(&str, &str); 4] = [
     ("AWS_EC2_METADATA_DISABLED", "true"),
     ("SCW_CONFIG_PATH", "/nonexistent/swarmy/scw-config.yaml"),
 ];
+#[derive(Clone)]
+struct Var {
+    name: String,
+    value: String,
+    secret: bool,
+}
 #[derive(Clone, Default)]
 pub struct CredentialEnv {
-    vars: Vec<(String, String)>,
+    vars: Vec<Var>,
 }
 impl CredentialEnv {
     #[must_use]
@@ -41,41 +47,50 @@ impl CredentialEnv {
     /// Keep the AWS and Scaleway providers off shared files, local CLI profiles and instance metadata.
     #[must_use]
     pub fn closed() -> Self {
-        CLOSED
-            .iter()
-            .fold(Self::new(), |env, (name, value)| env.with(*name, *value))
+        CLOSED.iter().fold(Self::new(), |env, (name, value)| {
+            env.with_setting(*name, *value)
+        })
     }
+    /// Add a secret: passed to `OpenTofu`, refused in its files, redacted from its output.
     #[must_use]
-    pub fn with(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.vars.push((name.into(), value.into()));
+    pub fn with(self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.push(name.into(), value.into(), true)
+    }
+    /// Add a plain setting, such as a region: passed to `OpenTofu` and allowed anywhere.
+    #[must_use]
+    pub fn with_setting(self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.push(name.into(), value.into(), false)
+    }
+    fn push(mut self, name: String, value: String, secret: bool) -> Self {
+        self.vars.push(Var {
+            name,
+            value,
+            secret,
+        });
         self
     }
     pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.vars.iter().map(|(name, _)| name.as_str())
+        self.vars.iter().map(|var| var.name.as_str())
+    }
+    fn secrets(&self) -> impl Iterator<Item = &Var> {
+        self.vars
+            .iter()
+            .filter(|var| var.secret && !var.value.is_empty())
     }
     fn found_in(&self, bytes: &[u8]) -> Option<&str> {
-        self.vars
-            .iter()
-            .find(|(name, value)| {
-                secret_name(name)
-                    && !value.is_empty()
-                    && bytes
-                        .windows(value.len())
-                        .any(|window| window == value.as_bytes())
+        self.secrets()
+            .find(|var| {
+                bytes
+                    .windows(var.value.len())
+                    .any(|w| w == var.value.as_bytes())
             })
-            .map(|(name, _)| name.as_str())
+            .map(|var| var.name.as_str())
     }
     fn redact(&self, text: &str) -> String {
-        self.vars
-            .iter()
-            .filter(|(name, value)| secret_name(name) && !value.is_empty())
-            .fold(text.to_owned(), |text, (_, value)| {
-                text.replace(value, "<redacted>")
-            })
+        self.secrets().fold(text.to_owned(), |text, var| {
+            text.replace(&var.value, "<redacted>")
+        })
     }
-}
-fn secret_name(name: &str) -> bool {
-    !CLOSED.iter().any(|(closed, _)| *closed == name)
 }
 impl fmt::Debug for CredentialEnv {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -392,8 +407,8 @@ impl Workspace<'_> {
                 command.env(key, value);
             }
         }
-        for (key, value) in &self.credentials.vars {
-            command.env(key, value);
+        for var in &self.credentials.vars {
+            command.env(&var.name, &var.value);
         }
         command
             .env("TF_IN_AUTOMATION", "1")
@@ -544,8 +559,13 @@ mod tests {
     fn redaction() {
         let env = CredentialEnv::new()
             .with("EMPTY", "")
-            .with("TOKEN", "secret");
+            .with("TOKEN", "secret")
+            .with_setting("AWS_REGION", "us-west-2");
         assert_eq!(env.redact("secret secret"), "<redacted> <redacted>");
+        assert_eq!(env.redact("us-west-2 secret"), "us-west-2 <redacted>");
+        assert_eq!(env.found_in(b"location us-west-2"), None);
+        assert_eq!(env.found_in(b"x secret y"), Some("TOKEN"));
+        assert_eq!(CredentialEnv::closed().found_in(b"/dev/null true"), None);
         assert!(!format!("{env:?}").contains("secret"));
     }
 }

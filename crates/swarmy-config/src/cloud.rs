@@ -35,7 +35,7 @@ impl CloudProvider {
             Self::Scaleway => "scaleway",
         }
     }
-    /// `OpenTofu` environment names in secret field order, followed by the optional field.
+    /// `OpenTofu` environment names: secret fields in order, then the optional plain setting.
     #[must_use]
     pub const fn env_names(self) -> (&'static [&'static str], Option<&'static str>) {
         match self {
@@ -258,11 +258,16 @@ impl CloudCredential {
             ],
         };
         let (names, optional) = self.provider().env_names();
-        let mut vars: Vec<_> = names.iter().copied().zip(values).collect();
+        let mut vars: Vec<_> = names
+            .iter()
+            .copied()
+            .zip(values)
+            .map(|(name, value)| (name, value, true))
+            .collect();
         if let (Some(name), Self::Aws(c)) = (optional, self)
             && let Some(value) = &c.region
         {
-            vars.push((name, value.clone()));
+            vars.push((name, value.clone(), false));
         }
         ProviderEnv { vars }
     }
@@ -320,14 +325,30 @@ impl CloudCredential {
 /// Environment for one `OpenTofu` run. Debug exposes names, never values.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ProviderEnv {
-    vars: Vec<(&'static str, String)>,
+    /// Name, value, and whether the value is a secret.
+    vars: Vec<(&'static str, String, bool)>,
 }
 impl ProviderEnv {
+    /// Every variable, secrets first, in provider field order.
     pub fn iter(&self) -> impl Iterator<Item = (&'static str, &str)> {
-        self.vars.iter().map(|(n, v)| (*n, v.as_str()))
+        self.vars.iter().map(|(n, v, _)| (*n, v.as_str()))
+    }
+    /// Values that must never reach a file, a plan, or a log.
+    pub fn secrets(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        self.vars
+            .iter()
+            .filter(|(_, _, s)| *s)
+            .map(|(n, v, _)| (*n, v.as_str()))
+    }
+    /// Plain settings, such as the AWS region, that may appear anywhere.
+    pub fn settings(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        self.vars
+            .iter()
+            .filter(|(_, _, s)| !*s)
+            .map(|(n, v, _)| (*n, v.as_str()))
     }
     pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.vars.iter().map(|(n, _)| *n)
+        self.vars.iter().map(|(n, _, _)| *n)
     }
 }
 impl fmt::Debug for ProviderEnv {
@@ -636,8 +657,23 @@ mod tests {
                 ("SCW_DEFAULT_PROJECT_ID", SCW_PROJECT)
             ]
         );
+        assert_eq!(
+            aws.env().secrets().collect::<Vec<_>>(),
+            [
+                ("AWS_ACCESS_KEY_ID", AWS_ACCESS),
+                ("AWS_SECRET_ACCESS_KEY", AWS_SECRET),
+            ]
+        );
+        assert_eq!(
+            aws.env().settings().collect::<Vec<_>>(),
+            [("AWS_REGION", "eu-central-1")]
+        );
+        for credential in [&hc, &s3, &scw] {
+            assert_eq!(credential.env().settings().count(), 0);
+        }
         assert_eq!(scw.set_fields(), ["access_key", "secret_key", "project_id"]);
         let aws_without_region = entry(CloudProvider::Aws, &[AWS_ACCESS, AWS_SECRET], None);
+        assert_eq!(aws_without_region.env().settings().count(), 0);
         assert_eq!(
             aws_without_region.env().iter().collect::<Vec<_>>(),
             vec![

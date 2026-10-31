@@ -106,10 +106,13 @@ fn provider_env(
             return Err(swarmy_config::Error::CloudNotLoggedIn(provider.name()).into());
         }
         if let Some(credential) = credential {
-            env = credential
-                .env()
-                .iter()
+            let vars = credential.env();
+            env = vars
+                .secrets()
                 .fold(env, |env, (name, value)| env.with(name, value));
+            env = vars
+                .settings()
+                .fold(env, |env, (name, value)| env.with_setting(name, value));
         }
     }
     Ok(env)
