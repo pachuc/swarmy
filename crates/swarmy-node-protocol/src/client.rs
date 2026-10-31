@@ -300,10 +300,10 @@ mod tests {
             let outcome = classify(status, &serde_json::to_vec(&failure).unwrap());
             match failure {
                 Failure::BuildMismatch { .. } => {
-                    assert!(matches!(outcome, Outcome::BuildMismatch { .. }))
+                    assert!(matches!(outcome, Outcome::BuildMismatch { .. }));
                 }
                 Failure::Refused { .. } => {
-                    assert!(matches!(outcome, Outcome::Fail(ClientError::Refused(_))))
+                    assert!(matches!(outcome, Outcome::Fail(ClientError::Refused(_))));
                 }
                 _ => assert!(matches!(outcome, Outcome::Fail(ClientError::Rejected(_)))),
             }
