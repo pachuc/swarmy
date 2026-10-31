@@ -40,7 +40,7 @@ module, and the GLX client library are all present. Otherwise it chooses
 
 For NVIDIA, PID 1 runs Xorg as container root using
 `/etc/X11/swarmy-nvidia.conf`, a 1280x800 virtual screen,
-`UseDisplayDevice "None"`, and `AllowEmptyInitialConfiguration`. Its log is
+and `AllowEmptyInitialConfiguration`; it sets no `UseDisplayDevice`, because the driver rejects `"None"` together with a virtual screen on an L4. Its log is
 `/run/swarmy-display/Xorg.99.log`. The software Xvfb path is unchanged.
 The glvnd dispatch library routes OpenGL calls to the vendor selected by the
 X server. The Vulkan loader reads ICD files, small JSON descriptions of driver

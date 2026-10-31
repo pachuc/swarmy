@@ -811,17 +811,26 @@ nvidia_card_present() {
     return 1
 }
 # The full driver package includes the X.Org driver and GLX libraries.
-nvidia_driver_package() { printf 'nvidia-driver-570-server\n'; }
+# On Ubuntu 24.04 the 570 server package is a transitional name for 580.
+nvidia_driver_package() { printf 'nvidia-driver-580-server\n'; }
 # swarmyd's default JSON CDI spec path.
 nvidia_cdi_spec() { printf '/etc/cdi/nvidia.json\n'; }
 # Regenerate on every run because driver upgrades rename libraries.
 provision_nvidia() {
     if ! command -v nvidia-smi >/dev/null; then
         sudo -E apt-get install -y "$(nvidia_driver_package)"
-        if ! sudo modprobe nvidia || ! nvidia-smi >/dev/null; then
-            echo 'The NVIDIA driver is installed but not loaded; reboot the machine and rerun provisioning.' >&2
-            return 1
-        fi
+        # The card can take a few seconds to answer after the module loads;
+        # only a driver that stays unloaded needs a reboot.
+        local tries=0 smi
+        sudo modprobe nvidia || true
+        until smi=$(nvidia-smi 2>&1); do
+            if (( ++tries >= ${SWARMY_NVIDIA_WAIT_SECONDS:-30} )); then
+                printf '%s\n' "$smi" >&2
+                echo 'The NVIDIA driver is installed but not loaded; reboot the machine and rerun provisioning.' >&2
+                return 1
+            fi
+            sleep 1
+        done
     fi
     if ! command -v nvidia-ctk >/dev/null; then
         local keyring=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg

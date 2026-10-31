@@ -277,12 +277,12 @@ rm -rf "$pci"
 
 # Stub sudo logs commands; a driver install provides nvidia-smi unless broken.
 stub=$(mktemp -d)
-for tool in sed dirname chmod cat; do ln -s "$(command -v "$tool")" "$stub/$tool"; done
+for tool in sed dirname chmod cat sleep; do ln -s "$(command -v "$tool")" "$stub/$tool"; done
 printf '#!/bin/sh\nexit 0\n' >"$stub/curl"
 cat >"$stub/sudo" <<'EOS'
 #!/bin/bash
 printf '%s\n' "$*" >>"$STUB_LOG"
-if [[ $* == *"apt-get install -y nvidia-driver-570-server"* && -z ${STUB_BROKEN_DRIVER:-} ]]; then
+if [[ $* == *"apt-get install -y nvidia-driver-580-server"* ]]; then
     printf '#!/bin/sh\nexit 0\n' >"$STUB_DIR/nvidia-smi"
     chmod +x "$STUB_DIR/nvidia-smi"
 fi
@@ -301,13 +301,37 @@ if grep -q 'nvidia-driver' "$STUB_LOG"; then echo 'installed a driver although n
 [[ $(tail -n 1 "$STUB_LOG") == "$generate" ]]
 rm "$stub/nvidia-smi"
 : >"$STUB_LOG"; ( PATH=$stub; provision_nvidia )
-[[ $(head -n 1 "$STUB_LOG") == '-E apt-get install -y nvidia-driver-570-server' ]]
+[[ $(head -n 1 "$STUB_LOG") == '-E apt-get install -y nvidia-driver-580-server' ]]
 grep -qx 'modprobe nvidia' "$STUB_LOG"
 [[ $(tail -n 1 "$STUB_LOG") == "$generate" ]]
 rm "$stub/nvidia-smi"
+# A card that answers a moment after the module loads is not a reboot case.
+cat >"$stub/sudo" <<'EOS'
+#!/bin/bash
+printf '%s\n' "$*" >>"$STUB_LOG"
+if [[ $* == *"apt-get install -y nvidia-driver-580-server"* ]]; then
+    printf '#!/bin/sh\nn=$(cat "$STUB_DIR/smi-calls" 2>/dev/null || echo 0)\necho $((n + 1)) >"$STUB_DIR/smi-calls"\n[ "$n" -ge 2 ] || { echo "NVIDIA-SMI has failed"; exit 9; }\n' >"$STUB_DIR/nvidia-smi"
+    chmod +x "$STUB_DIR/nvidia-smi"
+fi
+EOS
+chmod +x "$stub/sudo"
+: >"$STUB_LOG"; ( PATH=$stub; provision_nvidia )
+[[ $(<"$stub/smi-calls") == 3 ]]
+[[ $(tail -n 1 "$STUB_LOG") == "$generate" ]]
+rm "$stub/nvidia-smi" "$stub/smi-calls"
+cat >"$stub/sudo" <<'EOS'
+#!/bin/bash
+printf '%s\n' "$*" >>"$STUB_LOG"
+if [[ $* == *"apt-get install -y nvidia-driver-580-server"* ]]; then
+    printf '#!/bin/sh\necho "NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver"\nexit 9\n' >"$STUB_DIR/nvidia-smi"
+    chmod +x "$STUB_DIR/nvidia-smi"
+fi
+EOS
+chmod +x "$stub/sudo"
 : >"$STUB_LOG"
-if ( PATH=$stub; export STUB_BROKEN_DRIVER=1; provision_nvidia ) 2>"$stub/err"; then echo 'continued with an unloaded driver' >&2; exit 1; fi
+if ( PATH=$stub; export SWARMY_NVIDIA_WAIT_SECONDS=2; provision_nvidia ) 2>"$stub/err"; then echo 'continued with an unloaded driver' >&2; exit 1; fi
 grep -q 'reboot' "$stub/err"
+grep -q 'could not communicate' "$stub/err"
 if grep -q 'cdi generate' "$STUB_LOG"; then echo 'wrote a spec with an unloaded driver' >&2; exit 1; fi
 rm -rf "$stub"
 printf 'GPU provisioning: ok\n'

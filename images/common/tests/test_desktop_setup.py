@@ -69,9 +69,12 @@ class DesktopSetupTests(unittest.TestCase):
     def test_nvidia_display_has_a_virtual_screen_and_no_monitor(self):
         config = block(self.script, '/etc/X11/swarmy-nvidia.conf', 'CONF')
         for line in ['Driver "nvidia"', 'Option "AllowEmptyInitialConfiguration" "true"',
-                     'Option "UseDisplayDevice" "None"', 'Virtual 1280 800',
+                     'Virtual 1280 800',
                      'Option "AutoAddDevices" "false"']:
             self.assertIn(line, config)
+        # The L4's driver refuses UseDisplayDevice "None" with a virtual
+        # screen: "UseDisplayDevice "None" is not supported with virtual display".
+        self.assertNotIn('UseDisplayDevice', config)
         init = block(self.script, '/usr/local/libexec/swarmy-init', 'SH')
         self.assertIn('Xorg :99 -config /etc/X11/swarmy-nvidia.conf', init)
 

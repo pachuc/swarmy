@@ -117,7 +117,6 @@ Section "Device"
     Identifier "card"
     Driver "nvidia"
     Option "AllowEmptyInitialConfiguration" "true"
-    Option "UseDisplayDevice" "None"
 EndSection
 
 Section "Screen"
