@@ -1366,14 +1366,23 @@ fn pin_primary_key_command(node: &Machine, known_host: &str) -> Result<String> {
 // The service user's authorized_keys lives at its account home. The file
 // path begins with ~user so the inner shell, not the caller, expands it.
 fn authorized_keys_script(file: &str, key: &str, authorization: Option<&str>) -> String {
+    // Only the validated ~user path is left literal so the inner shell expands it.
+    let (file, temporary) = if file.starts_with('~') {
+        (file.to_owned(), format!("{file}.tmp"))
+    } else {
+        (
+            shell_words::quote(file).into_owned(),
+            shell_words::quote(&format!("{file}.tmp")).into_owned(),
+        )
+    };
     let line = authorization.map_or_else(String::new, |authorization| {
         format!(
-            "printf '%s\\n' {} >> {file}.tmp && ",
+            "printf '%s\\n' {} >> {temporary} && ",
             shell_words::quote(authorization)
         )
     });
     format!(
-        "umask 077; mkdir -p $(dirname {file}); touch {file}; grep -vF -- {} {file} > {file}.tmp; status=$?; if [ \"$status\" -le 1 ]; then {line}mv {file}.tmp {file}; else rm -f {file}.tmp; exit \"$status\"; fi",
+        "umask 077; mkdir -p \"$(dirname {file})\"; touch {file}; grep -vF -- {} {file} > {temporary}; status=$?; if [ \"$status\" -le 1 ]; then {line}mv {temporary} {file}; else rm -f {temporary}; exit \"$status\"; fi",
         shell_words::quote(key)
     )
 }

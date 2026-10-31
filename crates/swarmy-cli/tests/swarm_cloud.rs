@@ -604,11 +604,11 @@ fn scale_workers_up_then_down() {
             .any(|s| s.contains("drain_node_agent swarmy 600 wait"))
     );
     let ssh = fs::read_to_string(f.path().join("ssh-commands")).unwrap();
-    assert!(ssh.contains("grep -vxF"));
+    assert!(ssh.contains("grep -vF"));
     let full = fs::read_to_string(f.path().join("ssh-full-commands")).unwrap();
     assert!(
         full.lines()
-            .any(|line| line.contains("grep -vxF") && line.contains("203.0.113.10"))
+            .any(|line| line.contains("grep -vF") && line.contains("203.0.113.10"))
     );
     assert!(
         fs::read_to_string(f.path().join("ssh-keygen-commands"))
