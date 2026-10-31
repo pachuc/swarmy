@@ -5,12 +5,14 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
+use swarmy_bus::{Bus, Config, SubjectToken};
 use swarmy_core::{NodeCapacity, NodeId, NodeRecord, NodeRole};
 use swarmy_node_protocol::NodeAdvert;
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use ulid::Ulid;
 pub(crate) struct Fixture {
     pub(crate) store: Store,
+    pub(crate) bus: Bus,
     #[allow(
         dead_code,
         reason = "only clock-driven integration targets advance the fixture clock"
@@ -23,7 +25,18 @@ pub(crate) async fn fixture(tag: &str) -> Option<Fixture> {
     let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
     let clock = Arc::new(Mutex::new(Timestamp::now()));
     let copy = clock.clone();
+    let bus = Bus::connect(
+        &stack.nats_url,
+        Config {
+            prefix: Some(SubjectToken::new(&stack.prefix).unwrap()),
+            ..Config::default()
+        },
+    )
+    .await
+    .unwrap();
+    bus.setup(&[]).await.unwrap();
     Some(Fixture {
+        bus,
         store: store.with_clock(move || *copy.lock().unwrap()),
         clock,
         _guard: guard,
@@ -320,6 +333,7 @@ pub(crate) fn policy() -> swarmy_node_api::NodeApiPolicy {
     swarmy_node_api::NodeApiPolicy {
         placement_lease: std::time::Duration::from_secs(30),
         snapshot_retention: std::num::NonZeroUsize::new(3).unwrap(),
+        resend_interval: std::time::Duration::from_secs(5),
     }
 }
 #[allow(
@@ -327,7 +341,7 @@ pub(crate) fn policy() -> swarmy_node_api::NodeApiPolicy {
     reason = "shared helper is used by different integration targets"
 )]
 pub(crate) fn state(f: &Fixture) -> swarmy_node_api::NodeApiState {
-    swarmy_node_api::NodeApiState::new(f.store.clone(), policy())
+    swarmy_node_api::NodeApiState::new(f.store.clone(), f.bus.clone(), policy())
 }
 #[allow(
     dead_code,

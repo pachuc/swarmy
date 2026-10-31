@@ -5,10 +5,11 @@ use axum::{
     routing::{get, post},
 };
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use swarmy_bus::Bus;
 use swarmy_node_protocol::{
     GITHUB_TOKEN_PATH, HOSTING_CLOSE_PATH, HOSTING_OPEN_PATH, HOSTING_READY_PATH, LeaseLengths,
-    PLACEMENTS_PATH, REGISTER_PATH, SYNC_INTERVAL, SYNC_PATH, TOOL_CLAIM_LEASE, TOOL_ROUTE_PATH,
-    VOLUME_PROTECT_PATH, VOLUME_PUBLISH_PATH, WRITER_LEASE,
+    PLACEMENTS_PATH, REGISTER_PATH, SYNC_INTERVAL, SYNC_PATH, TOOL_CLAIM_LEASE, TOOL_CLAIM_PATH,
+    TOOL_COMPLETE_PATH, TOOL_ROUTE_PATH, VOLUME_PROTECT_PATH, VOLUME_PUBLISH_PATH, WRITER_LEASE,
 };
 use swarmy_store::Store;
 mod auth;
@@ -30,6 +31,7 @@ pub const CREDENTIAL_CACHE_TTL: Duration = Duration::from_secs(10);
 pub struct NodeApiPolicy {
     pub placement_lease: Duration,
     pub snapshot_retention: NonZeroUsize,
+    pub resend_interval: Duration,
 }
 impl NodeApiPolicy {
     /// Derive lease and retention policy from service settings.
@@ -38,6 +40,7 @@ impl NodeApiPolicy {
         Self {
             placement_lease: settings.scheduler.placement_lease_secs,
             snapshot_retention: settings.volume_snapshots.retention,
+            resend_interval: settings.scheduler.resend_interval_ms,
         }
     }
 }
@@ -45,6 +48,8 @@ impl NodeApiPolicy {
 #[derive(Clone)]
 pub struct NodeApiState {
     store: Store,
+    bus: Bus,
+    resend_interval: Duration,
     placement_lease: Duration,
     snapshot_retention: NonZeroUsize,
     build: &'static str,
@@ -53,9 +58,11 @@ pub struct NodeApiState {
 impl NodeApiState {
     /// Use the scheduler placement lease as the server's policy.
     #[must_use]
-    pub fn new(store: Store, policy: NodeApiPolicy) -> Self {
+    pub fn new(store: Store, bus: Bus, policy: NodeApiPolicy) -> Self {
         Self {
             store,
+            bus,
+            resend_interval: policy.resend_interval,
             placement_lease: policy.placement_lease,
             snapshot_retention: policy.snapshot_retention,
             build: swarmy_version::IDENTITY,
@@ -81,6 +88,8 @@ impl NodeApiState {
 pub fn router(state: NodeApiState) -> Router {
     Router::new()
         .route(TOOL_ROUTE_PATH, post(tools::route))
+        .route(TOOL_CLAIM_PATH, post(tools::claim))
+        .route(TOOL_COMPLETE_PATH, post(tools::complete))
         .route(HOSTING_OPEN_PATH, post(hosting::open))
         .route(HOSTING_READY_PATH, post(hosting::ready))
         .route(HOSTING_CLOSE_PATH, post(hosting::close))

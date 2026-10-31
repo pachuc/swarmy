@@ -1,6 +1,7 @@
 use crate::{NodeApiState, router};
 use clap::{Parser, Subcommand};
 use std::{ffi::OsString, time::Duration};
+use swarmy_bus::Bus;
 use swarmy_config::Settings;
 use swarmy_core::NodeId;
 use swarmy_store::{HeartbeatSpec, ServiceDetail, ServiceRole, Store};
@@ -9,6 +10,8 @@ use swarmy_store::{HeartbeatSpec, ServiceDetail, ServiceRole, Store};
 pub enum Error {
     #[error(transparent)]
     Settings(#[from] swarmy_config::Error),
+    #[error(transparent)]
+    Bus(#[from] swarmy_bus::Error),
     #[error(transparent)]
     Store(#[from] swarmy_store::StoreError),
     #[error(transparent)]
@@ -38,6 +41,8 @@ async fn start() -> Result<(), Error> {
     let settings = Settings::load()?.settings;
     let opened = Store::open_store(&settings).await?;
     let store = opened.store;
+    let bus = Bus::connect(&settings.bus.nats_url, settings.bus.bus_config()?).await?;
+    bus.setup(&[]).await?;
     let started = jiff::Timestamp::now();
     let instance_id = ulid::Ulid::generate().to_string();
     let heartbeat_id = instance_id.clone();
@@ -56,6 +61,7 @@ async fn start() -> Result<(), Error> {
     });
     let state = NodeApiState::new(
         store.clone(),
+        bus,
         crate::NodeApiPolicy::from_settings(&settings),
     );
     let listen = settings.node_api.listen;
