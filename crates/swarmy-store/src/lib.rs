@@ -164,9 +164,11 @@ enum StoredValue {
     Blob(String),
 }
 
+type BlobUpload = (String, Vec<u8>);
+
 /// The stored form of `value` as `Store::prepare` writes it, and the blob
 /// that must exist under its key when the value is too large to inline.
-fn stored_encoding<T: Serialize>(value: &T) -> Result<(Vec<u8>, Option<(String, Vec<u8>)>)> {
+fn stored_encoding<T: Serialize>(value: &T) -> Result<(Vec<u8>, Option<BlobUpload>)> {
     let bytes = encode(value)?;
     if bytes.len() > INLINE_LIMIT {
         let key = blob::blob_key(&bytes);
