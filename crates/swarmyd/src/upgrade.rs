@@ -86,6 +86,26 @@ async fn process_list_with_timeout(
     }
 }
 
+/// Whether a placement still holds work for an idle agent. A stopped node has
+/// no control socket: every placement it still holds was not released, and
+/// counts without a listing. A listing that fails (a sandbox evicted
+/// mid-query, a helper that exits non-zero, a socket that refuses) says
+/// nothing about idleness, so it also counts, with a warning.
+async fn placement_busy(socket: &Path, agent: AgentId, epoch: u64, warn: &impl Fn(&str)) -> bool {
+    if !socket.exists() {
+        return true;
+    }
+    match process_list(socket, agent, epoch).await {
+        Ok(running) => running,
+        Err(error) => {
+            warn(&format!(
+                "process listing for {agent} failed, treating it as busy: {error:#}"
+            ));
+            true
+        }
+    }
+}
+
 pub(crate) async fn run(
     loaded: &swarmy_config::Loaded,
     warn: impl Fn(&str),
@@ -111,23 +131,8 @@ pub(crate) async fn run(
                 .is_some_and(|status| {
                     status.holder_session_id.is_some() || status.queued_calls > 0
                 });
-            // A listing that fails (a sandbox evicted mid-query, a helper that
-            // exits non-zero) says nothing about idleness, so count it as busy
-            // and let the caller retry rather than abort the whole upgrade.
-            let running = if occupied {
-                true
-            } else {
-                match process_list(&socket, placement.agent_id, placement.epoch).await {
-                    Ok(running) => running,
-                    Err(error) => {
-                        warn(&format!(
-                            "process listing for {} failed, treating it as busy: {error:#}",
-                            placement.agent_id
-                        ));
-                        true
-                    }
-                }
-            };
+            let running = occupied
+                || placement_busy(&socket, placement.agent_id, placement.epoch, &warn).await;
             if running {
                 busy.push(placement.agent_id.to_string());
             }
@@ -183,6 +188,32 @@ mod response_tests {
     use super::*;
     use swarmy_core::ExecResult;
     use tokio::net::UnixListener;
+
+    #[tokio::test]
+    async fn a_stopped_node_counts_its_placements_without_a_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.sock");
+        let warnings = std::sync::Mutex::new(Vec::new());
+        let warn = |message: &str| warnings.lock().unwrap().push(message.to_owned());
+        let agent = AgentId::from_ulid(ulid::Ulid::generate());
+        assert!(placement_busy(&path, agent, 7, &warn).await);
+        assert!(warnings.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refusing_socket_counts_as_busy_with_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        drop(listener);
+        let warnings = std::sync::Mutex::new(Vec::new());
+        let warn = |message: &str| warnings.lock().unwrap().push(message.to_owned());
+        let agent = AgentId::from_ulid(ulid::Ulid::generate());
+        assert!(placement_busy(&path, agent, 7, &warn).await);
+        let warnings = warnings.lock().unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("treating it as busy"));
+    }
 
     async fn response(value: crate::Response) -> Result<bool> {
         let dir = tempfile::tempdir().unwrap();

@@ -618,7 +618,7 @@ disable_previous_units() {
 decommission_remove() {
     local service_user=${1-}
     validate_service_user "$service_user" || return 1
-    local units unit binaries binary service_repo
+    local units unit binaries binary service_repo service_home
     disable_previous_units
     read_shared_list units swarmy_unit_names
     for unit in "${units[@]}"; do
@@ -636,6 +636,12 @@ decommission_remove() {
     remove_owned_file "$(swarmy_modules_file)"
     sudo rm -rf /etc/swarmy
     service_repo=$(service_repo_for "$service_user")
+    # The provisioner's working data (each elastic group's OpenTofu directory,
+    # empty by now because down waits for every elastic group to reach zero,
+    # and the group SSH keys) and its OpenTofu download cache. The unit sets
+    # only HOME, so these are the XDG defaults.
+    service_home=$(service_home_for "$service_user")
+    sudo rm -rf "$service_home/.local/share/swarmy/provisioner" "$service_home/.cache/swarmy/tofu"
     sudo rm -rf "$service_repo"
 }
 

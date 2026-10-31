@@ -112,6 +112,8 @@ resource "aws_instance" "this" {
   key_name                    = aws_key_pair.this.key_name
   associate_public_ip_address = true
   tags                        = merge(local.tags, { Name = format("%s-%d", local.name, count.index + 1) })
+  # Root volumes carry the same tags so tag-based leak checks find them.
+  volume_tags = merge(local.tags, { Name = format("%s-%d", local.name, count.index + 1) })
   metadata_options {
     http_endpoint = "enabled"
     http_tokens   = "required"

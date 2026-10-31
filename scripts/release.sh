@@ -44,7 +44,7 @@ fetch_fdb() {
 }
 
 package() {
-    local component=$1 target=$2 dir=$3 name stage host
+    local component=$1 target=$2 dir=$3 name stage host fdb_dir
     mkdir -p "$dir"
     dir=$(cd "$dir" && pwd)
     work=$(mktemp -d)
@@ -66,12 +66,16 @@ package() {
             name=swarmy-core
             stage="$work/$name-$target"
             mkdir -p "$stage"
-            fetch_fdb "$target" "$work/fdb"
-            env -u SWARMY_FDB_LIB_DIR FDB_CLIENT_LIB_PATH="$work/fdb" "$CARGO" build --release --locked --target "$target" -p "$CORE_BIN_PACKAGE" --bin swarmy-core
+            # foundationdb-sys keeps the first FDB_CLIENT_LIB_PATH in its cached
+            # build output and never reruns when it changes, so the library
+            # lives at one stable path per target, never a temporary directory.
+            fdb_dir="$(release_dir "$target")/fdb"
+            fetch_fdb "$target" "$fdb_dir"
+            env -u SWARMY_FDB_LIB_DIR FDB_CLIENT_LIB_PATH="$fdb_dir" "$CARGO" build --release --locked --target "$target" -p "$CORE_BIN_PACKAGE" --bin swarmy-core
             install -m 0755 "$(release_dir "$target")/swarmy-core" "$stage/swarmy-core"
-            env -u SWARMY_FDB_LIB_DIR FDB_CLIENT_LIB_PATH="$work/fdb" "$CARGO" build --release --locked --target "$target" -p swarmy-provisioner --bin swarmy-provisioner
+            env -u SWARMY_FDB_LIB_DIR FDB_CLIENT_LIB_PATH="$fdb_dir" "$CARGO" build --release --locked --target "$target" -p swarmy-provisioner --bin swarmy-provisioner
             install -m 0755 "$(release_dir "$target")/swarmy-provisioner" "$stage/swarmy-provisioner"
-            install -m 0644 "$work/fdb/libfdb_c.so" "$stage/libfdb_c.so"
+            install -m 0644 "$fdb_dir/libfdb_c.so" "$stage/libfdb_c.so"
             patchelf --set-rpath '$ORIGIN' "$stage/swarmy-core"
             [ "$(patchelf --print-rpath "$stage/swarmy-core")" = '$ORIGIN' ] || fail 'core rpath is not $ORIGIN'
             readelf -d "$stage/swarmy-core" | grep -q 'NEEDED.*\[libfdb_c\.so\]' || fail 'core does not need libfdb_c.so'
