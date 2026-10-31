@@ -616,6 +616,239 @@ async fn claim_commits_on_first_attempt_while_redispatch_runs() {
             })
             .await
             .unwrap(),
-        (true, 2)
+        (true, 1)
     );
+}
+
+#[tokio::test]
+async fn status_write_survives_renewal_and_fails_after_release() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (_, _, node, _, placement) = setup(&test.store).await;
+    let store = &test.store;
+    let now = Timestamp::now();
+    let status = swarmy_core::AgentCallStatus {
+        agent_id: placement.agent_id,
+        node_id: node.node_id,
+        epoch: placement.epoch,
+        holder_session_id: None,
+        queued_calls: 0,
+        observed_at: now,
+        expires_at: now.checked_add(Duration::from_secs(30)).unwrap(),
+    };
+    assert_eq!(
+        store
+            .put_agent_call_status_racing(&status, async {
+                store
+                    .renew_hosted(
+                        &placement,
+                        now.checked_add(Duration::from_secs(60)).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+            })
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(matches!(
+        store
+            .put_agent_call_status_racing(&status, async {
+                store.release(&placement).await.unwrap();
+            })
+            .await,
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
+    ));
+}
+
+#[tokio::test]
+async fn deletion_racing_status_write_fences_on_computer_tombstone() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (_, _, node, _, placement) = setup(&test.store).await;
+    let now = Timestamp::now();
+    let status = swarmy_core::AgentCallStatus {
+        agent_id: placement.agent_id,
+        node_id: node.node_id,
+        epoch: placement.epoch,
+        holder_session_id: None,
+        queued_calls: 0,
+        observed_at: now,
+        expires_at: now.checked_add(Duration::from_secs(30)).unwrap(),
+    };
+    assert!(matches!(
+        test.store
+            .put_agent_call_status_racing(&status, async {
+                test.store
+                    .delete_computer(placement.agent_id)
+                    .await
+                    .unwrap();
+            })
+            .await,
+        Err(StoreError::Domain(
+            swarmy_store::DomainError::ComputerDeleted
+        ))
+    ));
+}
+
+#[tokio::test]
+async fn takeover_racing_status_write_fences_on_placement_epoch() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (_, _, node, _, placement) = setup(&test.store).await;
+    // The two handles share the database but disagree on whether the old lease
+    // has expired, so takeover can commit while the node's read sees it live.
+    let live_now = Timestamp::now();
+    let expired_now = placement
+        .expires_at
+        .checked_add(Duration::from_millis(1))
+        .unwrap();
+    let fenced = test.store.clone().with_clock(move || live_now);
+    let racing = test.store.clone().with_clock(move || expired_now);
+    let status = swarmy_core::AgentCallStatus {
+        agent_id: placement.agent_id,
+        node_id: node.node_id,
+        epoch: placement.epoch,
+        holder_session_id: None,
+        queued_calls: 0,
+        observed_at: live_now,
+        expires_at: placement.expires_at,
+    };
+    assert!(matches!(
+        fenced
+            .put_agent_call_status_racing(&status, async {
+                let next = racing
+                    .take_over(
+                        &placement,
+                        node.node_id,
+                        expired_now.checked_add(Duration::from_secs(60)).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(next.epoch > placement.epoch);
+            })
+            .await,
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
+    ));
+}
+
+#[tokio::test]
+async fn completion_survives_renewal_and_last_completion_wakes_the_session() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let (session, image, _, jobs, placement) = setup(store).await;
+    let claim = |job: &ToolJob| swarmy_core::PlacedToolClaim {
+        job: job.clone(),
+        owner: owner(),
+        placement: placement.clone(),
+        expires_at: Timestamp::now()
+            .checked_add(Duration::from_secs(30))
+            .unwrap(),
+    };
+    let result = BashResult {
+        stdout: "done".into(),
+        stderr: String::new(),
+        exit_code: 0,
+        timed_out: false,
+        manifest_id: image,
+    }
+    .tool_result();
+    let first = claim(&jobs[0]);
+    assert!(store.claim_placed_tool(&first).await.unwrap());
+    assert_eq!(
+        store
+            .complete_placed_tool_racing(&first, 2, &result, async {
+                store
+                    .renew_hosted(
+                        &placement,
+                        Timestamp::now()
+                            .checked_add(Duration::from_secs(60))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+            })
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.fetch_session(session).await.unwrap().unwrap().state,
+        SessionState::WaitingTools
+    );
+    let second = claim(&jobs[1]);
+    assert!(store.claim_placed_tool(&second).await.unwrap());
+    store
+        .complete_placed_tool(&second, 3, &result)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.fetch_session(session).await.unwrap().unwrap().state,
+        SessionState::Runnable
+    );
+}
+
+#[tokio::test]
+async fn writer_lease_renewal_is_fenced_by_release() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let (session, _, node, _, placement) = setup(store).await;
+    let volume = store.agent_volume(session, &placement).await.unwrap();
+    let writer = store
+        .acquire_writer_lease(
+            volume,
+            LeaseOwnerId::from_ulid(node.node_id.as_ulid()),
+            Timestamp::now(),
+            Timestamp::now()
+                .checked_add(Duration::from_secs(30))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let renewed = store
+        .renew_hosted(
+            &placement,
+            Timestamp::now()
+                .checked_add(Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .0;
+    let writer = store
+        .renew_writer_lease(
+            volume,
+            &writer,
+            Timestamp::now()
+                .checked_add(Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    store.release(&renewed).await.unwrap();
+    assert!(matches!(
+        store
+            .renew_writer_lease(
+                volume,
+                &writer,
+                Timestamp::now()
+                    .checked_add(Duration::from_secs(90))
+                    .unwrap()
+            )
+            .await,
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacementMismatch
+        ))
+    ));
 }

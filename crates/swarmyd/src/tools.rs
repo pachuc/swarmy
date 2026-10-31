@@ -11,7 +11,7 @@ use swarmy_core::{
 };
 use swarmy_sandbox::{ExecOutput, ExecRequest, RuncRuntime};
 use swarmy_store::{Store, StoreError};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 const LEASE: Duration = Duration::from_secs(30);
 /// Extra time for sandbox exec startup (cold image reads) and helper startup, not the command.
@@ -204,10 +204,7 @@ pub(crate) async fn execute(
     };
     anyhow::ensure!(claimed, "tool call already claimed");
     let _activity = swarmy_volume::priority::ToolActivity::begin();
-    tokio::select! {
-        result = run(store, runtime, &claim, turn, needs_computer_sample) => result,
-        result = heartbeat(store, &claim) => result,
-    }
+    run(store, runtime, &claim, turn, needs_computer_sample).await
 }
 
 async fn run(
@@ -217,18 +214,20 @@ async fn run(
     turn: Option<swarmy_core::MessageId>,
     needs_computer_sample: bool,
 ) -> Result<()> {
-    tracing::info!(request_id = %claim.job.request_id, epoch = claim.placement.epoch, "executing sandbox command");
-    let sandbox = Sandbox {
-        agent_id: claim.placement.agent_id,
+    let (stop, stopped) = watch::channel(false);
+    let heartbeat = heartbeat(store, claim, stopped);
+    tokio::pin!(heartbeat);
+    let (result, summary) = tokio::select! {
+        produced = produce(store, &runtime, claim) => produced?,
+        ended = &mut heartbeat => {
+            ended?;
+            anyhow::bail!("tool claim heartbeat ended before the command finished");
+        }
     };
-    require_display(store, claim).await?;
-    let outcome = run_command(store, &runtime, &sandbox, claim).await?;
-    let mut result = outcome.result;
-    extract_image_blob(store, &mut result).await?;
-    cap_completed_output(&runtime, &sandbox, claim, &mut result).await;
-    if store.interrupt_requested(claim.job.session_id).await? {
-        stop_result_process(&runtime, &sandbox, claim.placement.epoch, &result).await?;
-    }
+    // Renewal rewrites the claim read by completion. Wait for any in-flight
+    // renewal before committing while most of the tool lease remains.
+    stop.send_replace(true);
+    heartbeat.await?;
     commit_result(store, claim, &result).await?;
     // The tool result and completion stage land right after the fenced
     // commit so the worker sees the completion without waiting for the
@@ -245,10 +244,30 @@ async fn run(
         turn,
         needs_computer_sample,
         &result,
-        &outcome.summary,
+        &summary,
     );
     tracing::info!(request_id = %claim.job.request_id, "committed sandbox tool output");
     Ok(())
+}
+
+async fn produce(
+    store: &Store,
+    runtime: &Arc<RuncRuntime>,
+    claim: &PlacedToolClaim,
+) -> Result<(ToolResult, ToolTiming)> {
+    tracing::info!(request_id = %claim.job.request_id, epoch = claim.placement.epoch, "executing sandbox command");
+    let sandbox = Sandbox {
+        agent_id: claim.placement.agent_id,
+    };
+    require_display(store, claim).await?;
+    let outcome = run_command(store, runtime, &sandbox, claim).await?;
+    let mut result = outcome.result;
+    extract_image_blob(store, &mut result).await?;
+    cap_completed_output(runtime, &sandbox, claim, &mut result).await;
+    if store.interrupt_requested(claim.job.session_id).await? {
+        stop_result_process(runtime, &sandbox, claim.placement.epoch, &result).await?;
+    }
+    Ok((result, outcome.summary))
 }
 
 /// Reject display tools when the agent's image has no display. Display
@@ -735,10 +754,17 @@ pub(crate) async fn has_processes(
     Ok(records.iter().any(|record| record["status"] == "running"))
 }
 
-async fn heartbeat(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
+async fn heartbeat(
+    store: &Store,
+    claim: &PlacedToolClaim,
+    mut stop: watch::Receiver<bool>,
+) -> Result<()> {
     let mut expiry = claim.expires_at;
     loop {
-        tokio::time::sleep(LEASE / 3).await;
+        tokio::select! {
+            () = tokio::time::sleep(LEASE / 3) => {}
+            _ = stop.changed() => return Ok(()),
+        }
         let next = jiff::Timestamp::now().checked_add(LEASE)?;
         let remaining = expiry
             .duration_since(jiff::Timestamp::now())
