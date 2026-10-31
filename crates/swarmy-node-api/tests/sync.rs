@@ -221,22 +221,26 @@ async fn sync_retry_after_a_dropped_response() {
 }
 #[tokio::test]
 async fn sync_scratch_verdicts_and_evictions() {
-    let Some(f) = support::fixture("sync-scratch").await else {
+    let Some(fixture) = support::fixture("sync-scratch").await else {
         return;
     };
-    let a = support::hosted(&f.store).await;
-    let b = support::hosted(&f.store).await;
-    let c = support::hosted(&f.store).await;
-    f.store.delete_computer(c.placement.agent_id).await.unwrap();
-    let x = AgentId::from_ulid(Ulid::generate());
-    let y = AgentId::from_ulid(Ulid::generate());
-    let mut request = support::request(&a);
+    let hosted_a = support::hosted(&fixture.store).await;
+    let hosted_b = support::hosted(&fixture.store).await;
+    let hosted_c = support::hosted(&fixture.store).await;
+    fixture
+        .store
+        .delete_computer(hosted_c.placement.agent_id)
+        .await
+        .unwrap();
+    let idle_agent = AgentId::from_ulid(Ulid::generate());
+    let kept_agent = AgentId::from_ulid(Ulid::generate());
+    let mut request = support::request(&hosted_a);
     request.scratch = [
-        (a.placement.agent_id, true, false),
-        (b.placement.agent_id, false, false),
-        (c.placement.agent_id, false, false),
-        (x, false, true),
-        (y, false, false),
+        (hosted_a.placement.agent_id, true, false),
+        (hosted_b.placement.agent_id, false, false),
+        (hosted_c.placement.agent_id, false, false),
+        (idle_agent, false, true),
+        (kept_agent, false, false),
     ]
     .into_iter()
     .map(|(agent, hosted, idle)| ScratchEntry {
@@ -246,7 +250,7 @@ async fn sync_scratch_verdicts_and_evictions() {
         idle,
     })
     .collect();
-    let client = client(&f, &a.token).await;
+    let client = client(&fixture, &hosted_a.token).await;
     let response = client
         .sync(
             &request,
@@ -265,8 +269,9 @@ async fn sync_scratch_verdicts_and_evictions() {
         ]
     );
     assert_eq!(
-        f.store
-            .scratch(a.placement.agent_id)
+        fixture
+            .store
+            .scratch(hosted_a.placement.agent_id)
             .await
             .unwrap()
             .unwrap()
@@ -274,19 +279,26 @@ async fn sync_scratch_verdicts_and_evictions() {
         10
     );
     assert_eq!(
-        f.store.scratch(y).await.unwrap().unwrap().node_id,
-        a.node.node_id
+        fixture
+            .store
+            .scratch(kept_agent)
+            .await
+            .unwrap()
+            .unwrap()
+            .node_id,
+        hosted_a.node.node_id
     );
     assert!(
-        f.store
-            .scratch(b.placement.agent_id)
+        fixture
+            .store
+            .scratch(hosted_b.placement.agent_id)
             .await
             .unwrap()
             .is_none()
     );
-    assert!(f.store.scratch(x).await.unwrap().is_none());
+    assert!(fixture.store.scratch(idle_agent).await.unwrap().is_none());
     request.scratch.clear();
-    request.scratch_evicted = vec![y];
+    request.scratch_evicted = vec![kept_agent];
     client
         .sync(
             &request,
@@ -294,7 +306,7 @@ async fn sync_scratch_verdicts_and_evictions() {
         )
         .await
         .unwrap();
-    assert!(f.store.scratch(y).await.unwrap().is_none());
+    assert!(fixture.store.scratch(kept_agent).await.unwrap().is_none());
 }
 #[tokio::test]
 async fn sync_queues_metric_patches() {

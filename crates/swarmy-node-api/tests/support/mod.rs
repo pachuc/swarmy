@@ -83,30 +83,14 @@ pub(crate) fn advert(record: &NodeRecord) -> NodeAdvert {
     }
 }
 
-/// One node with a live placement, tool claim and volume writer.
 #[allow(
     dead_code,
     reason = "the shared fixture is used by the sync integration target only"
 )]
-pub(crate) struct Hosted {
-    pub(crate) node: NodeRecord,
-    pub(crate) token: swarmy_core::NodeToken,
-    pub(crate) session: swarmy_core::SessionId,
-    pub(crate) placement: swarmy_core::PlacementRecord,
-    pub(crate) claim: swarmy_core::PlacedToolClaim,
-    pub(crate) volume: swarmy_core::VolumeId,
-    pub(crate) lease: swarmy_core::Lease,
-}
-#[allow(
-    dead_code,
-    reason = "the shared fixture is used by the sync integration target only"
-)]
-pub(crate) async fn hosted(store: &Store) -> Hosted {
-    use std::time::Duration;
+async fn hosted_session(store: &Store) -> (swarmy_core::SessionId, swarmy_core::AgentId) {
     use swarmy_core::{
-        AgentId, BashArguments, CHUNK_SIZE, ContentHash, Event, ImageTag, LeaseOwnerId,
-        ManifestHeader, ManifestId, PlacedToolClaim, RequestId, SandboxArguments, SessionKind,
-        SessionRecord, SessionState, ToolCallId, ToolCallRecord, ToolJob,
+        AgentId, CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId, SessionKind,
+        SessionRecord, SessionState,
     };
     let session = swarmy_core::SessionId::from_ulid(Ulid::generate());
     let agent = AgentId::from_ulid(Ulid::generate());
@@ -147,6 +131,34 @@ pub(crate) async fn hosted(store: &Store) -> Hosted {
         )
         .await
         .unwrap();
+    (session, agent)
+}
+
+/// One node with a live placement, tool claim and volume writer.
+#[allow(
+    dead_code,
+    reason = "the shared fixture is used by the sync integration target only"
+)]
+pub(crate) struct Hosted {
+    pub(crate) node: NodeRecord,
+    pub(crate) token: swarmy_core::NodeToken,
+    pub(crate) session: swarmy_core::SessionId,
+    pub(crate) placement: swarmy_core::PlacementRecord,
+    pub(crate) claim: swarmy_core::PlacedToolClaim,
+    pub(crate) volume: swarmy_core::VolumeId,
+    pub(crate) lease: swarmy_core::Lease,
+}
+#[allow(
+    dead_code,
+    reason = "the shared fixture is used by the sync integration target only"
+)]
+pub(crate) async fn hosted(store: &Store) -> Hosted {
+    use std::time::Duration;
+    use swarmy_core::{
+        BashArguments, Event, LeaseOwnerId, PlacedToolClaim, RequestId, SandboxArguments,
+        ToolCallId, ToolCallRecord, ToolJob,
+    };
+    let (session, agent) = hosted_session(store).await;
     let node = node(store, 1).await;
     let now = Timestamp::now();
     let placement = store
@@ -193,7 +205,12 @@ pub(crate) async fn hosted(store: &Store) -> Hosted {
         .await
         .unwrap();
     store
-        .dispatch_placed_tool_jobs(session, &session_lease, &[job.clone()], &placement)
+        .dispatch_placed_tool_jobs(
+            session,
+            &session_lease,
+            std::slice::from_ref(&job),
+            &placement,
+        )
         .await
         .unwrap();
     store.claim_placement(&placement).await.unwrap();
