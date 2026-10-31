@@ -1078,9 +1078,28 @@ async fn summary_rollover_copies_cache_affinity_to_main_and_side_successors() {
     }
 }
 
+// Hold a read conflict on the summary while another metric batch commits.
+async fn summary_conflict_probe(
+    test: &TestStore,
+    session: SessionId,
+    turn: MessageId,
+) -> foundationdb::Transaction {
+    use foundationdb::options::ConflictRangeType;
+    let key = test.root.subspace(&("turn_metrics",)).pack(&(
+        session.as_ulid().to_bytes().as_slice(),
+        turn.as_ulid().to_bytes().as_slice(),
+    ));
+    let mut end = key.clone();
+    end.push(0);
+    let trx = test.db.create_trx().unwrap();
+    trx.get_read_version().await.unwrap();
+    trx.add_conflict_range(&key, &end, ConflictRangeType::Read)
+        .unwrap();
+    trx
+}
+
 #[tokio::test]
 async fn tool_and_computer_metrics_leave_the_turn_summary_alone() {
-    use foundationdb::options::ConflictRangeType;
     use swarmy_core::{TurnEvent, TurnStage};
     use swarmy_store::{
         ComputerMetric, MetricPatch, ToolMetric, completion_patches, dispatch_patches,
@@ -1123,17 +1142,8 @@ async fn tool_and_computer_metrics_leave_the_turn_summary_alone() {
         )
         .await
         .unwrap();
-    let key = test.root.subspace(&("turn_metrics",)).pack(&(
-        session.as_ulid().to_bytes().as_slice(),
-        turn.as_ulid().to_bytes().as_slice(),
-    ));
-    let mut end = key.clone();
-    end.push(0);
     let probe = test.root.pack(&("probe",));
-    let trx = test.db.create_trx().unwrap();
-    trx.get_read_version().await.unwrap();
-    trx.add_conflict_range(&key, &end, ConflictRangeType::Read)
-        .unwrap();
+    let trx = summary_conflict_probe(&test, session, turn).await;
     test.store
         .record_turn_metrics(
             session,
@@ -1164,10 +1174,7 @@ async fn tool_and_computer_metrics_leave_the_turn_summary_alone() {
     trx.set(&probe, b"ok");
     trx.commit().await.unwrap();
 
-    let trx = test.db.create_trx().unwrap();
-    trx.get_read_version().await.unwrap();
-    trx.add_conflict_range(&key, &end, ConflictRangeType::Read)
-        .unwrap();
+    let trx = summary_conflict_probe(&test, session, turn).await;
     test.store
         .record_turn_metrics(
             session,
