@@ -258,6 +258,7 @@ impl Store {
     }
 
     /// Derive memory and GPU occupancy in one scan of the node's placement rows.
+    /// Read the requirements of the scanned placements together before summing them.
     async fn node_load(
         &self,
         trx: &Transaction,
