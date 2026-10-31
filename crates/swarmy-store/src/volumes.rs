@@ -298,10 +298,8 @@ impl Store {
     /// Rejects expired or replaced grants and storage failures.
     pub async fn release_writer_lease(&self, id: VolumeId, expected: &Lease) -> Result<()> {
         self.transaction(|trx| async move {
-            let (volume, seq) = futures::join!(
-                self.volume(&trx, id),
-                read::<u64>(&trx, &self.keys().volume_lease_seq(id)),
-            );
+            let seq_key = self.keys().volume_lease_seq(id);
+            let (volume, seq) = futures::join!(self.volume(&trx, id), read::<u64>(&trx, &seq_key),);
             let mut volume = volume?;
             match volume.writer_lease.as_ref() {
                 Some(lease) if lease.same_grant(expected) && lease.expires_at > self.now() => {

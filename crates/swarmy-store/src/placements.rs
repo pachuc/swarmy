@@ -616,12 +616,14 @@ impl Store {
     pub async fn release(&self, expected: &PlacementRecord) -> Result<()> {
         self.transaction(|trx| async move {
             let count_key = self.keys().placement_count(expected.node_id);
+            let placement_key = self.keys().placement(expected.agent_id);
+            let epoch_key = self.keys().placement_epoch(expected.agent_id);
             let (computer, current, hosting, _, retained) = futures::join!(
                 self.check_computer(&trx, expected.agent_id),
-                read::<PlacementRecord>(&trx, &self.keys().placement(expected.agent_id)),
+                read::<PlacementRecord>(&trx, &placement_key),
                 self.read_placement_hosting(&trx, expected),
                 read::<u32>(&trx, &count_key),
-                read::<u64>(&trx, &self.keys().placement_epoch(expected.agent_id)),
+                read::<u64>(&trx, &epoch_key),
             );
             computer?;
             let Some(current) = current? else {

@@ -1,8 +1,8 @@
 use super::*;
 use std::time::Duration;
 use swarmy_core::{
-    BashArguments, BashResult, NodeCapacity, NodeId, NodeRecord, NodeRole, ToolCallId,
-    ToolCallRecord, ToolJob,
+    BashArguments, BashResult, NodeCapacity, NodeId, NodeRecord, NodeRole, PlacedToolClaim,
+    ToolCallId, ToolCallRecord, ToolJob,
 };
 
 async fn setup_with(
@@ -218,7 +218,7 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
         .await
         .unwrap();
     let before = store.list_volumes(None, 64).await.unwrap();
-    let claim = swarmy_core::PlacedToolClaim {
+    let claim = PlacedToolClaim {
         job: jobs[0].clone(),
         owner: owner(),
         placement: placement.clone(),
@@ -254,7 +254,7 @@ async fn persistent_calls_fence_epochs_without_publishing_or_cloning() {
         store.tool_agent(&claim.job, node.node_id).await.unwrap(),
         None
     );
-    let claim = swarmy_core::PlacedToolClaim {
+    let claim = PlacedToolClaim {
         job: jobs[1].clone(),
         owner: owner(),
         placement: placement.clone(),
@@ -489,7 +489,7 @@ async fn large_tool_jobs_are_routed_and_claimed_without_object_storage_reads() {
     let expires_at = Timestamp::now()
         .checked_add(Duration::from_secs(30))
         .unwrap();
-    let claim = |job: &ToolJob| swarmy_core::PlacedToolClaim {
+    let claim = |job: &ToolJob| PlacedToolClaim {
         job: job.clone(),
         owner: owner(),
         placement: placement.clone(),
@@ -564,7 +564,7 @@ async fn redispatching_a_pending_job_writes_nothing() {
     trx.get_read_version().await.unwrap();
     trx.add_conflict_range(&begin, &end, ConflictRangeType::Read)
         .unwrap();
-    let claim = swarmy_core::PlacedToolClaim {
+    let claim = PlacedToolClaim {
         job: jobs[0].clone(),
         owner: owner(),
         placement,
@@ -586,7 +586,7 @@ async fn claim_commits_on_first_attempt_while_redispatch_runs() {
     let expiry = Timestamp::now()
         .checked_add(Duration::from_secs(30))
         .unwrap();
-    let claim = |job: &ToolJob| swarmy_core::PlacedToolClaim {
+    let claim = |job: &ToolJob| PlacedToolClaim {
         job: job.clone(),
         owner: owner(),
         placement: placement.clone(),
@@ -753,7 +753,7 @@ async fn completion_survives_renewal_and_last_completion_wakes_the_session() {
     };
     let store = &test.store;
     let (session, image, _, jobs, placement) = setup(store).await;
-    let claim = |job: &ToolJob| swarmy_core::PlacedToolClaim {
+    let claim = |job: &ToolJob| PlacedToolClaim {
         job: job.clone(),
         owner: owner(),
         placement: placement.clone(),
@@ -857,4 +857,222 @@ async fn writer_lease_renewal_is_fenced_by_release() {
             swarmy_store::FenceError::PlacementMismatch
         ))
     ));
+}
+
+fn tool_expiry() -> Timestamp {
+    Timestamp::now()
+        .checked_add(Duration::from_secs(60))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn claim_repeat_after_commit_returns_true() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (session, _, _, jobs, placement) = setup(&test.store).await;
+    let claim = PlacedToolClaim {
+        job: jobs[0].clone(),
+        owner: owner(),
+        placement,
+        expires_at: tool_expiry(),
+    };
+    let store = &test.store;
+    let (claimed, attempts) = store
+        .claim_placed_tool_racing(&claim, async {
+            assert!(store.claim_placed_tool(&claim).await.unwrap());
+        })
+        .await
+        .unwrap();
+    assert!(claimed);
+    assert_eq!(attempts, 2);
+    assert!(
+        !store
+            .claim_placed_tool(&PlacedToolClaim {
+                owner: owner(),
+                ..claim
+            })
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store.fetch_session(session).await.unwrap().unwrap().state,
+        SessionState::WaitingTools
+    );
+}
+
+#[tokio::test]
+async fn claim_renewal_extends_to_at_least() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (_, image, _, jobs, placement) = setup(&test.store).await;
+    let claim = PlacedToolClaim {
+        job: jobs[0].clone(),
+        owner: owner(),
+        placement,
+        expires_at: tool_expiry(),
+    };
+    let store = &test.store;
+    assert!(store.claim_placed_tool(&claim).await.unwrap());
+    let later = Timestamp::now()
+        .checked_add(Duration::from_secs(120))
+        .unwrap();
+    assert_eq!(store.renew_placed_tool(&claim, later).await.unwrap(), later);
+    assert_eq!(store.renew_placed_tool(&claim, later).await.unwrap(), later);
+    assert_eq!(
+        store
+            .renew_placed_tool(&claim, claim.expires_at)
+            .await
+            .unwrap(),
+        later
+    );
+    let result = BashResult {
+        stdout: String::new(),
+        stderr: String::new(),
+        exit_code: 0,
+        timed_out: false,
+        manifest_id: image,
+    };
+    assert_eq!(
+        store
+            .complete_placed_tool(&claim, 2, &result.tool_result())
+            .await
+            .unwrap()
+            .state,
+        SessionState::WaitingTools
+    );
+}
+
+#[tokio::test]
+async fn completion_repeat_after_commit_answers_done() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (_, image, _, jobs, placement) = setup(&test.store).await;
+    let store = &test.store;
+    let claim = PlacedToolClaim {
+        job: jobs[0].clone(),
+        owner: owner(),
+        placement: placement.clone(),
+        expires_at: tool_expiry(),
+    };
+    let result = BashResult {
+        stdout: String::new(),
+        stderr: String::new(),
+        exit_code: 0,
+        timed_out: false,
+        manifest_id: image,
+    }
+    .tool_result();
+    assert!(store.claim_placed_tool(&claim).await.unwrap());
+    let raced = store
+        .complete_placed_tool_racing(&claim, 2, &result, async {
+            assert_eq!(
+                store
+                    .complete_placed_tool(&claim, 2, &result)
+                    .await
+                    .unwrap(),
+                swarmy_store::PlacedToolCompletion {
+                    head_seq: 3,
+                    state: SessionState::WaitingTools
+                }
+            );
+        })
+        .await;
+    assert!(matches!(
+        raced,
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::PlacedToolClaimMismatch
+        ))
+    ));
+    assert!(store.tool_completed(jobs[0].request_id).await.unwrap());
+    let second = PlacedToolClaim {
+        job: jobs[1].clone(),
+        owner: owner(),
+        placement,
+        expires_at: tool_expiry(),
+    };
+    assert!(store.claim_placed_tool(&second).await.unwrap());
+    assert_eq!(
+        store
+            .complete_placed_tool(&second, 3, &result)
+            .await
+            .unwrap(),
+        swarmy_store::PlacedToolCompletion {
+            head_seq: 4,
+            state: SessionState::Runnable
+        }
+    );
+}
+
+#[tokio::test]
+async fn writer_acquire_repeats_for_the_bound_owner() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (session, _, node, _, placement) = setup(&test.store).await;
+    let store = &test.store;
+    let volume = store.agent_volume(session, &placement).await.unwrap();
+    let owner = LeaseOwnerId::from_ulid(node.node_id.as_ulid());
+    let first = store
+        .acquire_writer_lease(volume, owner, tool_expiry())
+        .await
+        .unwrap();
+    let repeat = store
+        .acquire_writer_lease(volume, owner, tool_expiry())
+        .await
+        .unwrap();
+    assert_eq!(first.seq, repeat.seq);
+    assert!(matches!(
+        store
+            .acquire_writer_lease(volume, super::owner(), tool_expiry())
+            .await,
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
+    ));
+    store.release_writer_lease(volume, &first).await.unwrap();
+    store.release_writer_lease(volume, &first).await.unwrap();
+    let next = store
+        .acquire_writer_lease(volume, owner, tool_expiry())
+        .await
+        .unwrap();
+    assert_eq!(next.seq, first.seq + 1);
+    assert!(matches!(
+        store.release_writer_lease(volume, &first).await,
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
+    ));
+}
+
+#[tokio::test]
+async fn open_hosting_refuses_a_released_dispatch_placement() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (_, _, node, jobs, placement) = setup(&test.store).await;
+    test.store.release(&placement).await.unwrap();
+    assert!(matches!(
+        test.store
+            .open_hosting(
+                node.node_id,
+                placement.agent_id,
+                &jobs[0],
+                None,
+                Duration::from_secs(30)
+            )
+            .await,
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::DispatchPlacementStale { .. }
+        ))
+    ));
+    assert!(
+        test.store
+            .get_by_agent(placement.agent_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }

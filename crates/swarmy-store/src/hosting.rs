@@ -25,9 +25,11 @@ impl Store {
     ) -> Result<OpenHosting> {
         let (dispatched, current) = self
             .transaction(|trx| async move {
+                let dispatch_key = self.keys().tool_placement(job.request_id);
+                let placement_key = self.keys().placement(agent);
                 futures::try_join!(
-                    read::<PlacementRecord>(&trx, &self.keys().tool_placement(job.request_id)),
-                    read::<PlacementRecord>(&trx, &self.keys().placement(agent)),
+                    read::<PlacementRecord>(&trx, &dispatch_key),
+                    read::<PlacementRecord>(&trx, &placement_key),
                 )
             })
             .await?;

@@ -2363,7 +2363,7 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
     let Some(test) = TestStore::memory() else {
         return;
     };
-    let clock = std::sync::Arc::new(std::sync::Mutex::new(timestamp(1)));
+    let clock = Arc::new(std::sync::Mutex::new(timestamp(1)));
     let store = test.store.clone().with_clock({
         let clock = clock.clone();
         move || *clock.lock().unwrap()
@@ -2629,6 +2629,8 @@ mod turns;
 
 #[path = "store/machines.rs"]
 mod machines;
+#[path = "store/node_credentials.rs"]
+mod node_credentials;
 #[path = "store/placements.rs"]
 mod placements;
 

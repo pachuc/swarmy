@@ -24,8 +24,11 @@ impl Store {
             hash: token.secret_hash(),
             issued_at: self.now(),
         };
-        self.transaction(|trx| async { write(&trx, &self.keys().node_credential(node), &row) })
-            .await?;
+        self.transaction(|trx| {
+            let row = &row;
+            async move { write(&trx, &self.keys().node_credential(node), row) }
+        })
+        .await?;
         Ok(token)
     }
     /// Check the current credential using constant-time hash equality.
