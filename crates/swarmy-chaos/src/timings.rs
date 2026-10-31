@@ -158,6 +158,7 @@ pub(crate) fn build(turns: &[TurnMetrics]) -> Report {
 
 fn percentile(sorted: &[f64], fraction: f64) -> Option<f64> {
     #[expect(
+        clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "bounded percentile index is positive and fits the slice length"
@@ -259,6 +260,10 @@ impl Report {
         writeln!(out, "TOOL_TIMINGS {}", self.json()).expect("writing to String cannot fail");
         out
     }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "millisecond gates are approximate and do not require exact representation of large thresholds"
+    )]
     pub(crate) fn check(&self, gates: &Gates) -> Result<()> {
         if gates.require_stamps {
             if self.calls.is_empty() {

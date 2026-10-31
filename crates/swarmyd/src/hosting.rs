@@ -12,10 +12,11 @@ use swarmy_sandbox::RuncRuntime;
 use swarmy_store::Store;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
+#[derive(Clone, Copy)]
 struct BootTimes {
-    placement_ms: f64,
-    open_ms: f64,
-    boot_ms: f64,
+    placement: f64,
+    open: f64,
+    boot: f64,
 }
 
 struct Call {
@@ -294,9 +295,9 @@ impl Hosting {
                     session,
                     turn,
                     swarmy_store::MetricPatch::Computer(swarmy_store::ComputerMetric {
-                        placement_ms: Some(times.placement_ms),
-                        open_ms: Some(times.open_ms),
-                        boot_ms: Some(times.boot_ms),
+                        placement_ms: Some(times.placement),
+                        open_ms: Some(times.open),
+                        boot_ms: Some(times.boot),
                         cold: Some(stats.fetched_chunks > 0),
                         chunks_fetched: stats.fetched_chunks,
                         bytes_fetched: stats.fetched_bytes,
@@ -335,9 +336,9 @@ impl Hosting {
             first.turn,
             volume,
             BootTimes {
-                placement_ms: placement_started.elapsed().as_secs_f64() * 1_000.0,
-                open_ms,
-                boot_ms,
+                placement: placement_started.elapsed().as_secs_f64() * 1_000.0,
+                open: open_ms,
+                boot: boot_ms,
             },
         );
         Ok(())
