@@ -16,7 +16,7 @@ fn blob_values_match_by_content_address_without_a_download() {
     let (key, bytes) = blob.unwrap();
     assert_eq!(key, blob::blob_key(&bytes));
     assert!(stored_matches(&stored, &large).unwrap());
-    let mut other = large.clone();
+    let mut other = large;
     other.replace_range(0..1, "y");
     assert!(!stored_matches(&stored, &other).unwrap());
 }
