@@ -28,6 +28,16 @@ pub struct PlacementRecord {
     pub gpu: crate::GpuRequirement,
 }
 
+impl PlacementRecord {
+    /// Whether another record names the same grant, ignoring renewal metadata.
+    #[must_use]
+    pub fn same_grant(&self, other: &Self) -> bool {
+        self.agent_id == other.agent_id
+            && self.node_id == other.node_id
+            && self.epoch == other.epoch
+    }
+}
+
 /// A node's recent observation of calls sharing one computer, not execution authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentCallStatus {

@@ -52,7 +52,6 @@ impl Fixture {
             .acquire_writer_lease(
                 id,
                 LeaseOwnerId::from_ulid(Ulid::generate()),
-                now,
                 now.checked_add(Duration::from_secs(120)).unwrap(),
             )
             .await
@@ -284,14 +283,11 @@ async fn live_roots_are_retained_snapshots_attached_heads_and_images_only() {
         )
         .await
         .unwrap();
-    test.store
-        .release_writer_lease(id, &lease, Timestamp::now())
-        .await
-        .unwrap();
+    test.store.release_writer_lease(id, &lease).await.unwrap();
     let (attached, attached_head, _, _) = test.volume().await;
     let (detached, detached_head, _, detached_lease) = test.volume().await;
     test.store
-        .release_writer_lease(detached, &detached_lease, Timestamp::now())
+        .release_writer_lease(detached, &detached_lease)
         .await
         .unwrap();
     // Independently exercise the attached-head rule with no retained snapshots.
@@ -348,10 +344,7 @@ async fn open_volume_writer_returns_the_head_and_a_live_lease() {
         return;
     };
     let (id, base, header, old) = test.volume().await;
-    test.store
-        .release_writer_lease(id, &old, Timestamp::now())
-        .await
-        .unwrap();
+    test.store.release_writer_lease(id, &old).await.unwrap();
     let grant = test.store.open_volume_writer(id, old.owner).await.unwrap();
     assert_eq!(grant.head, base);
     assert_eq!(grant.header, header);
@@ -373,10 +366,7 @@ async fn open_volume_writer_renews_until_released() {
         return;
     };
     let (id, _, _, old) = test.volume().await;
-    test.store
-        .release_writer_lease(id, &old, Timestamp::now())
-        .await
-        .unwrap();
+    test.store.release_writer_lease(id, &old).await.unwrap();
     let grant = test
         .store
         .open_volume_writer_timed(
@@ -417,10 +407,7 @@ async fn publish_through_the_trait_is_fenced() {
         return;
     };
     let (id, _, header, old) = test.volume().await;
-    test.store
-        .release_writer_lease(id, &old, Timestamp::now())
-        .await
-        .unwrap();
+    test.store.release_writer_lease(id, &old).await.unwrap();
     let grant = test.store.open_volume_writer(id, old.owner).await.unwrap();
     let objects = Arc::new(object_store::memory::InMemory::new());
     let device = VolumeDevice::open(

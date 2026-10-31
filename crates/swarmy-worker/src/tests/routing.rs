@@ -435,7 +435,10 @@ impl Fixture {
         claim
     }
 
-    async fn complete(&self, claim: &PlacedToolClaim) -> swarmy_store::Result<()> {
+    async fn complete(
+        &self,
+        claim: &PlacedToolClaim,
+    ) -> swarmy_store::Result<swarmy_store::PlacedToolCompletion> {
         let head = self
             .store
             .fetch_session(claim.job.session_id)
@@ -577,7 +580,6 @@ async fn recovery_waits_for_writer_lease_before_granting_new_epoch() {
         .acquire_writer_lease(
             volume,
             LeaseOwnerId::from_ulid(f.nodes[0].as_ulid()),
-            now,
             now.checked_add(Duration::from_millis(4000)).unwrap(),
         )
         .await

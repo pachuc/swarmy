@@ -444,7 +444,7 @@ impl Store {
         );
         computer?;
         let current = current?.ok_or(StoreError::Fence(crate::FenceError::PlacementMismatch))?;
-        if current.node_id != expected.node_id || current.epoch != expected.epoch {
+        if !current.same_grant(expected) {
             return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
         }
         Ok(current)
@@ -616,13 +616,24 @@ impl Store {
     pub async fn release(&self, expected: &PlacementRecord) -> Result<()> {
         self.transaction(|trx| async move {
             let count_key = self.keys().placement_count(expected.node_id);
-            let (current, hosting, _) = futures::join!(
-                self.checked_placement(&trx, expected),
+            let placement_key = self.keys().placement(expected.agent_id);
+            let epoch_key = self.keys().placement_epoch(expected.agent_id);
+            let (computer, current, hosting, _, retained) = futures::join!(
+                self.check_computer(&trx, expected.agent_id),
+                read::<PlacementRecord>(&trx, &placement_key),
                 self.read_placement_hosting(&trx, expected),
                 read::<u32>(&trx, &count_key),
+                read::<u64>(&trx, &epoch_key),
             );
-            let current = current?;
-            if current.expires_at <= self.now() {
+            computer?;
+            let Some(current) = current? else {
+                return if retained? == Some(expected.epoch) {
+                    Ok(())
+                } else {
+                    Err(StoreError::Fence(crate::FenceError::PlacementMismatch))
+                };
+            };
+            if !current.same_grant(expected) || current.expires_at <= self.now() {
                 return Err(StoreError::Fence(crate::FenceError::PlacementMismatch));
             }
             if hosting?.is_some_and(|h| h.release_requested.is_some()) {

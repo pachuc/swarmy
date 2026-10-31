@@ -12,9 +12,17 @@ use swarmy_sandbox::RuncRuntime;
 use swarmy_store::Store;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
+#[derive(Clone, Copy)]
+struct BootTimes {
+    placement: f64,
+    open: f64,
+    boot: f64,
+}
+
 struct Call {
     job: ToolJob,
     turn: Option<MessageId>,
+    delivered_ns: Option<i64>,
     reply: oneshot::Sender<Result<()>>,
     activity: ActivityGuard,
 }
@@ -155,6 +163,7 @@ impl Hosting {
         self: &Arc<Self>,
         job: ToolJob,
         turn: Option<MessageId>,
+        delivered_ns: Option<i64>,
     ) -> Result<()> {
         let agent = match self.store.tool_agent(&job, self.node).await {
             Ok(Some(agent)) => agent,
@@ -214,6 +223,7 @@ impl Hosting {
             .send(Call {
                 job,
                 turn,
+                delivered_ns,
                 reply,
                 activity,
             })
@@ -225,42 +235,20 @@ impl Hosting {
     }
 
     async fn placement(&self, agent: AgentId, job: &ToolJob) -> Result<PlacementRecord> {
-        let dispatched = self.store.tool_placement(job.request_id).await?;
-        let expiry = jiff::Timestamp::now().checked_add(self.lease)?;
-        let placement = match self.store.get_by_agent(agent).await? {
-            None => {
-                anyhow::ensure!(dispatched.is_none(), "dispatch placement was released");
-                self.store.place(agent, self.node, expiry).await?
+        let previous = self.previous.lock().await.get(&agent).copied();
+        let placement = match self
+            .store
+            .open_hosting(self.node, agent, job, previous, self.lease)
+            .await?
+        {
+            swarmy_store::OpenHosting::Opened(placement) => placement,
+            swarmy_store::OpenHosting::PlacedElsewhere { node, epoch } => {
+                bail!("agent is placed on another node {node} at epoch {epoch}")
             }
-            Some(old) if old.expires_at <= jiff::Timestamp::now() => {
-                anyhow::ensure!(
-                    dispatched.is_none(),
-                    "dispatch placement expired; worker must recover the call"
-                );
-                self.store.take_over(&old, self.node, expiry).await?
-            }
-            Some(old) if old.node_id != self.node => bail!(
-                "agent is placed on another node {} at epoch {}",
-                old.node_id,
-                old.epoch
-            ),
-            Some(old) => {
-                anyhow::ensure!(
-                    dispatched
-                        .as_ref()
-                        .is_none_or(|expected| expected.epoch == old.epoch),
-                    "dispatch placement epoch changed"
-                );
-                if self.previous.lock().await.get(&agent) == Some(&old.epoch) {
-                    bail!(
-                        "placement epoch {} stopped; waiting for lease expiry before rebuilding",
-                        old.epoch
-                    );
-                }
-                self.store.renew_hosted(&old, expiry).await?.0
+            swarmy_store::OpenHosting::EpochStopped { epoch } => {
+                bail!("placement epoch {epoch} stopped; waiting for lease expiry before rebuilding")
             }
         };
-        self.store.claim_placement(&placement).await?;
         self.previous.lock().await.insert(agent, placement.epoch);
         Ok(placement)
     }
@@ -274,7 +262,7 @@ impl Hosting {
         session: SessionId,
         turn: Option<MessageId>,
         volume: swarmy_core::VolumeId,
-        elapsed: f64,
+        times: BootTimes,
     ) {
         let Some(turn) = turn else { return };
         let store = self.store.clone();
@@ -285,7 +273,9 @@ impl Hosting {
                     session,
                     turn,
                     swarmy_store::MetricPatch::Computer(swarmy_store::ComputerMetric {
-                        placement_ms: Some(elapsed),
+                        placement_ms: Some(times.placement),
+                        open_ms: Some(times.open),
+                        boot_ms: Some(times.boot),
                         cold: Some(stats.fetched_chunks > 0),
                         chunks_fetched: stats.fetched_chunks,
                         bytes_fetched: stats.fetched_bytes,
@@ -309,12 +299,13 @@ impl Hosting {
             .store
             .agent_volume(first.job.session_id, placement)
             .await?;
+        let spec = self.sandbox_spec(agent, first.job.session_id).await?;
+        let open_ms = placement_started.elapsed().as_secs_f64() * 1_000.0;
+        let booting = Instant::now();
         self.runtime
-            .create(
-                self.sandbox_spec(agent, first.job.session_id).await?,
-                BlockDevice { volume_id: volume },
-            )
+            .create(spec, BlockDevice { volume_id: volume })
             .await?;
+        let boot_ms = booting.elapsed().as_secs_f64() * 1_000.0;
         self.store
             .set_placement_address(placement, RuncRuntime::NETWORK_ADDRESS)
             .await?;
@@ -322,7 +313,11 @@ impl Hosting {
             first.job.session_id,
             first.turn,
             volume,
-            placement_started.elapsed().as_secs_f64() * 1_000.0,
+            BootTimes {
+                placement: placement_started.elapsed().as_secs_f64() * 1_000.0,
+                open: open_ms,
+                boot: boot_ms,
+            },
         );
         Ok(())
     }
@@ -451,6 +446,12 @@ impl Hosting {
             None => false,
         };
         let turn = call.turn;
+        let metrics = crate::tools::CallMetrics {
+            turn,
+            needs_computer_sample: needs_sample,
+            delivered_ns: call.delivered_ns,
+            claimed_ns: None,
+        };
         let result = tokio::select! {
             result = crate::tools::execute(
                 &self.store,
@@ -458,8 +459,7 @@ impl Hosting {
                 self.node,
                 placement,
                 call.job,
-                turn,
-                needs_sample,
+                metrics,
             ) => result,
             _ = shutdown.changed() => Err(anyhow::anyhow!("node is shutting down")),
         };

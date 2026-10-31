@@ -2328,7 +2328,13 @@ async fn cloning_has_constant_metadata_cost_for_small_and_large_manifests() {
         test.store.create_volume(source, manifest).await.unwrap();
         let lease = test
             .store
-            .acquire_writer_lease(source, owner(), timestamp(1), timestamp(10))
+            .acquire_writer_lease(
+                source,
+                owner(),
+                Timestamp::now()
+                    .checked_add(std::time::Duration::from_secs(60))
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let destination = volume_id();
@@ -2372,18 +2378,21 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
     let Some(test) = TestStore::memory() else {
         return;
     };
+    let clock = Arc::new(std::sync::Mutex::new(timestamp(1)));
+    let store = test.store.clone().with_clock({
+        let clock = clock.clone();
+        move || *clock.lock().unwrap()
+    });
     let manifest = manifest_id();
-    test.store
+    store
         .put_manifest(manifest, &manifest_header(u64::from(CHUNK_SIZE)))
         .await
         .unwrap();
     let volume = volume_id();
-    test.store.create_volume(volume, manifest).await.unwrap();
+    store.create_volume(volume, manifest).await.unwrap();
     let (a, b) = tokio::join!(
-        test.store
-            .acquire_writer_lease(volume, owner(), timestamp(1), timestamp(10)),
-        test.store
-            .acquire_writer_lease(volume, owner(), timestamp(1), timestamp(10)),
+        store.acquire_writer_lease(volume, owner(), timestamp(10)),
+        store.acquire_writer_lease(volume, owner(), timestamp(10)),
     );
     let (winner, loser) = match (a, b) {
         (Ok(lease), Err(error)) | (Err(error), Ok(lease)) => (lease, error),
@@ -2393,20 +2402,16 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         loser,
         StoreError::Fence(FenceError::VolumeLeaseMismatch)
     ));
+    *clock.lock().unwrap() = timestamp(2);
     let mut wrong = winner.clone();
     wrong.owner = owner();
     assert!(matches!(
-        test.store
-            .release_writer_lease(volume, &wrong, timestamp(2))
-            .await,
+        store.release_writer_lease(volume, &wrong).await,
         Err(StoreError::Fence(FenceError::VolumeLeaseMismatch))
     ));
-    test.store
-        .release_writer_lease(volume, &winner, timestamp(2))
-        .await
-        .unwrap();
+    store.release_writer_lease(volume, &winner).await.unwrap();
     assert_eq!(
-        test.store
+        store
             .get_volume(volume)
             .await
             .unwrap()
@@ -2415,49 +2420,45 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         None
     );
     // Reusing owner and expiry still produces a distinct fencing token.
-    let next = test
-        .store
-        .acquire_writer_lease(volume, winner.owner, timestamp(2), winner.expires_at)
+    let next = store
+        .acquire_writer_lease(volume, winner.owner, winner.expires_at)
         .await
         .unwrap();
     assert_eq!(next.seq, winner.seq + 1);
+    *clock.lock().unwrap() = timestamp(3);
     assert!(matches!(
-        test.store
-            .release_writer_lease(volume, &winner, timestamp(3))
-            .await,
+        store.release_writer_lease(volume, &winner).await,
         Err(StoreError::Fence(FenceError::VolumeLeaseMismatch))
     ));
+    *clock.lock().unwrap() = timestamp(10);
     assert!(matches!(
-        test.store
-            .release_writer_lease(volume, &next, timestamp(10))
-            .await,
+        store.release_writer_lease(volume, &next).await,
         Err(StoreError::Fence(FenceError::VolumeLeaseMismatch))
     ));
-    let replacement = test
-        .store
-        .acquire_writer_lease(volume, owner(), timestamp(10), timestamp(20))
+    let replacement = store
+        .acquire_writer_lease(volume, owner(), timestamp(20))
         .await
         .unwrap();
     assert_eq!(replacement.seq, next.seq + 1);
+    *clock.lock().unwrap() = timestamp(11);
     assert!(matches!(
-        test.store
-            .release_writer_lease(volume, &next, timestamp(11))
-            .await,
+        store.release_writer_lease(volume, &next).await,
         Err(StoreError::Fence(FenceError::VolumeLeaseMismatch))
     ));
-    test.store
-        .release_writer_lease(volume, &replacement, timestamp(11))
+    store
+        .release_writer_lease(volume, &replacement)
         .await
         .unwrap();
+    *clock.lock().unwrap() = timestamp(12);
     assert!(matches!(
-        test.store
-            .acquire_writer_lease(volume, owner(), timestamp(12), timestamp(12))
+        store
+            .acquire_writer_lease(volume, owner(), timestamp(12))
             .await,
         Err(StoreError::Fence(FenceError::VolumeLeaseMismatch))
     ));
     assert!(matches!(
-        test.store
-            .acquire_writer_lease(volume_id(), owner(), timestamp(12), timestamp(20))
+        store
+            .acquire_writer_lease(volume_id(), owner(), timestamp(20))
             .await,
         Err(StoreError::Domain(swarmy_store::DomainError::VolumeMissing))
     ));
@@ -2542,7 +2543,6 @@ async fn volume_publication_fences_writers_and_preserves_history() {
         .acquire_writer_lease(
             id,
             owner(),
-            now,
             now.checked_add(std::time::Duration::from_secs(60)).unwrap(),
         )
         .await
@@ -2572,12 +2572,10 @@ async fn volume_publication_fences_writers_and_preserves_history() {
         )
         .await
         .unwrap();
-    assert!(matches!(
-        store.advance_volume(id, &lease, base, next, &header).await,
-        Err(StoreError::Fence(
-            swarmy_store::FenceError::VolumeLeaseMismatch
-        ))
-    ));
+    store
+        .advance_volume(id, &lease, base, next, &header)
+        .await
+        .unwrap();
     store
         .advance_volume(id, &renewed, base, next, &header)
         .await
@@ -2601,12 +2599,9 @@ async fn volume_publication_fences_writers_and_preserves_history() {
     let clone = VolumeId::from_ulid(Ulid::generate());
     store.clone_volume(id, clone).await.unwrap();
     assert_volume_listing(store, next).await;
-    store
-        .release_writer_lease(id, &renewed, Timestamp::now())
-        .await
-        .unwrap();
+    store.release_writer_lease(id, &renewed).await.unwrap();
     let replacement = store
-        .acquire_writer_lease(id, owner(), now, renewed.expires_at)
+        .acquire_writer_lease(id, owner(), renewed.expires_at)
         .await
         .unwrap();
     assert!(replacement.seq > renewed.seq);
@@ -2648,6 +2643,8 @@ mod turns;
 
 #[path = "store/machines.rs"]
 mod machines;
+#[path = "store/node_credentials.rs"]
+mod node_credentials;
 #[path = "store/placements.rs"]
 mod placements;
 
@@ -3351,4 +3348,50 @@ async fn finished_turn_clears_a_capacity_wait() {
         f.store.session_wait(id).await.unwrap().unwrap().since,
         timestamp(200)
     );
+}
+
+#[tokio::test]
+async fn writer_lease_live_by_store_clock_cannot_be_taken() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let time = timestamp(100);
+    let clock = Arc::new(std::sync::Mutex::new(time));
+    let store = test.store.with_clock({
+        let clock = clock.clone();
+        move || *clock.lock().unwrap()
+    });
+    let base = manifest_id();
+    store
+        .put_manifest(base, &manifest_header(u64::from(CHUNK_SIZE)))
+        .await
+        .unwrap();
+    let id = volume_id();
+    store.create_volume(id, base).await.unwrap();
+    let first_owner = owner();
+    let second_owner = owner();
+    let first = store
+        .acquire_writer_lease(id, first_owner, timestamp(130))
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .acquire_writer_lease(id, second_owner, timestamp(190))
+            .await,
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
+    ));
+    *clock.lock().unwrap() = timestamp(131);
+    let second = store
+        .acquire_writer_lease(id, second_owner, timestamp(190))
+        .await
+        .unwrap();
+    assert_eq!(second.seq, first.seq + 1);
+    assert!(matches!(
+        store.release_writer_lease(id, &first).await,
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
+    ));
 }

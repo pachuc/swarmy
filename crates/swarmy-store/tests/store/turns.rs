@@ -1275,3 +1275,77 @@ async fn agent_placement_latency_comes_from_computer_rows() {
     assert_eq!(metrics.turns, 1);
     assert!((metrics.latencies["placement"].p50_ms - 12.5).abs() < f64::EPSILON);
 }
+
+#[tokio::test]
+async fn timing_breakdown_round_trips_through_the_store() {
+    use swarmy_store::{ComputerMetric, MetricPatch, ToolMetric, completion_patches};
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let session = SessionId::from_ulid(Ulid::generate());
+    let turn = MessageId::from_ulid(Ulid::generate());
+    let request = RequestId::for_step(session, 1);
+    let event = swarmy_core::TurnEvent {
+        session_id: session,
+        turn_id: turn,
+        stage: swarmy_core::TurnStage::ToolCompleted,
+        request_id: Some(request),
+        clock_id: "test".into(),
+        monotonic_ns: 1,
+        unix_ns: 1,
+    };
+    test.store
+        .record_turn_metrics(
+            session,
+            turn,
+            completion_patches(
+                ToolMetric {
+                    request_id: request.to_string(),
+                    delivered_ns: Some(1),
+                    claimed_ns: Some(2),
+                    started_ns: Some(3),
+                    ..Default::default()
+                },
+                None,
+                event,
+            ),
+        )
+        .await
+        .unwrap();
+    test.store
+        .record_turn_metrics(
+            session,
+            turn,
+            vec![
+                MetricPatch::Tool(ToolMetric {
+                    request_id: request.to_string(),
+                    woken_ns: Some(9),
+                    ..Default::default()
+                }),
+                MetricPatch::Computer(ComputerMetric {
+                    open_ms: Some(4.0),
+                    boot_ms: Some(6.0),
+                    ..Default::default()
+                }),
+            ],
+        )
+        .await
+        .unwrap();
+    let turns = test
+        .store
+        .list_turn_metrics_paged(session, None, 10, None, None)
+        .await
+        .unwrap();
+    let row = &turns[0].tools[0];
+    assert_eq!(
+        (
+            row.delivered_ns,
+            row.claimed_ns,
+            row.started_ns,
+            row.woken_ns
+        ),
+        (Some(1), Some(2), Some(3), Some(9))
+    );
+    let computer = turns[0].computer.as_ref().unwrap();
+    assert_eq!((computer.open_ms, computer.boot_ms), (Some(4.0), Some(6.0)));
+}

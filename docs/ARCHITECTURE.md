@@ -146,7 +146,7 @@ them in [api-breaks.txt](api-breaks.txt).
   [computers.rs](../crates/swarmy-store/src/computers.rs),
   [session_images.rs](../crates/swarmy-store/src/session_images.rs),
   [volumes.rs](../crates/swarmy-store/src/volumes.rs)).
-- **Leases, placements, and nodes.** `lease`, `lease_by_expiry`, `node`,
+- **Leases, placements, and nodes.** `lease`, `lease_by_expiry`, `node`, `node_credential`,
   `placement`, `placement_epoch`, `placement_by_node`, `placement_hosting`,
   `placement_next_reason`, `volume_placement`, and `tool_placement` track
   ownership and where work runs. Node records carry advertised capacity, GPU
@@ -159,11 +159,16 @@ them in [api-breaks.txt](api-breaks.txt).
   remains transactional, and a placement epoch fences stale node operations.
   Fenced operations snapshot the placement and conflict on its epoch key, which
   renewal never writes, so lease renewal does not make them retry.
+  Claims and volume writer leases match by identity with expiry read from the stored
+  row against the store clock; node operations are safe to repeat after commit.
+  `node_credential` keeps the BLAKE3 hash of each node API token.
   A GPU requirement change marks the hosting row for release at the next
   node renewal; the next placement records `RequirementChange`
   ([placement.rs](../crates/swarmy-worker/src/placement.rs),
   [leases.rs](../crates/swarmy-store/src/leases.rs),
   [placements.rs](../crates/swarmy-store/src/placements.rs),
+  [hosting.rs](../crates/swarmy-store/src/hosting.rs),
+  [node_credentials.rs](../crates/swarmy-store/src/node_credentials.rs),
   [nodes.rs](../crates/swarmy-store/src/nodes.rs),
   [services.rs](../crates/swarmy-store/src/services.rs),
   [tool_routing.rs](../crates/swarmy-store/src/tool_routing.rs),
@@ -184,7 +189,9 @@ them in [api-breaks.txt](api-breaks.txt).
   [session_wait.rs](../crates/swarmy-store/src/session_wait.rs)).
 - **Metering.** `usage_record`, `usage_record_by_time`, `metering_hour`,
   `turn_metrics`, `turn_computer`, `turn_tool`, and `turn_inference` hold per-request usage,
-  hourly aggregates and step timings. A metric batch reads its rows in one round
+  hourly aggregates and step timings. Tool rows carry the worker's dispatch
+  and wake stamps and the node's delivery, claim, start and completion stamps,
+  so one call's latency splits into legs. A metric batch reads its rows in one round
   and rewrites the shared summary only when it changes it, so node tool and
   computer samples do not contend with gateway and worker summary writes;
   per-completion attribution and quota

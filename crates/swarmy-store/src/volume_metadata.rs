@@ -52,7 +52,7 @@ impl VolumeMetadata for Store {
         volume: VolumeId,
         lease: &Lease,
     ) -> std::result::Result<(), MetadataError> {
-        Ok(Store::release_writer_lease(self, volume, lease, Timestamp::now()).await?)
+        Ok(Store::release_writer_lease(self, volume, lease).await?)
     }
 }
 impl Store {
@@ -93,9 +93,7 @@ impl Store {
         let expiry = now
             .checked_add(length)
             .map_err(|_| StoreError::Fence(FenceError::VolumeLeaseMismatch))?;
-        let lease = self
-            .acquire_writer_lease(volume, owner, now, expiry)
-            .await?;
+        let lease = self.acquire_writer_lease(volume, owner, expiry).await?;
         let read = async {
             let record = self
                 .get_volume(volume)
@@ -111,10 +109,7 @@ impl Store {
         let (head, header) = match read {
             Ok(value) => value,
             Err(error) => {
-                if let Err(release) = self
-                    .release_writer_lease(volume, &lease, Timestamp::now())
-                    .await
-                {
+                if let Err(release) = self.release_writer_lease(volume, &lease).await {
                     tracing::warn!(error = %swarmy_core::error_chain(&release), "writer lease release after open failure failed");
                 }
                 return Err(error);

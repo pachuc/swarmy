@@ -79,6 +79,17 @@ async fn serve(
 /// Run one tool call without acknowledging it. Every error returns to the
 /// caller, which releases the message for redelivery; only the live nudge
 /// stays best effort because the scheduler recovers it.
+fn wall_ns() -> Option<i64> {
+    i64::try_from(jiff::Timestamp::now().as_nanosecond()).ok()
+}
+
+pub(crate) struct CallMetrics {
+    pub(crate) turn: Option<swarmy_core::MessageId>,
+    pub(crate) needs_computer_sample: bool,
+    pub(crate) delivered_ns: Option<i64>,
+    pub(crate) claimed_ns: Option<i64>,
+}
+
 async fn handle_call(
     message: &WorkMessage<ToolJob>,
     store: &Store,
@@ -87,11 +98,15 @@ async fn handle_call(
     ack_wait: Duration,
     resend_interval: Duration,
 ) -> Result<()> {
+    let delivered_ns = wall_ns();
     // One lookup per tool call; the turn travels with the job
     // so the execution path needs no further lookups.
     let turn = store.request_turn_id(message.value.request_id).await?;
     let result = message
-        .keep_alive_while(ack_wait / 3, hosting.call(message.value.clone(), turn))
+        .keep_alive_while(
+            ack_wait / 3,
+            hosting.call(message.value.clone(), turn, delivered_ns),
+        )
         .await;
     result?;
     // The completion stage lands in the same batch as
@@ -175,8 +190,7 @@ pub(crate) async fn execute(
     node: NodeId,
     placement: &PlacementRecord,
     job: ToolJob,
-    turn: Option<swarmy_core::MessageId>,
-    needs_computer_sample: bool,
+    mut metrics: CallMetrics,
 ) -> Result<()> {
     store.ensure_session_computer(job.session_id).await?;
     if store.tool_completed(job.request_id).await? {
@@ -203,16 +217,16 @@ pub(crate) async fn execute(
         }
     };
     anyhow::ensure!(claimed, "tool call already claimed");
+    metrics.claimed_ns = wall_ns();
     let _activity = swarmy_volume::priority::ToolActivity::begin();
-    run(store, runtime, &claim, turn, needs_computer_sample).await
+    run(store, runtime, &claim, &metrics).await
 }
 
 async fn run(
     store: &Store,
     runtime: Arc<RuncRuntime>,
     claim: &PlacedToolClaim,
-    turn: Option<swarmy_core::MessageId>,
-    needs_computer_sample: bool,
+    metrics: &CallMetrics,
 ) -> Result<()> {
     let (stop, stopped) = watch::channel(false);
     let heartbeat = heartbeat(store, claim, stopped);
@@ -237,15 +251,7 @@ async fn run(
     // through `started_ns` and `process_wall_ms`. The output cap above
     // applies before the metrics patch so the recorded size matches what
     // the worker stored.
-    observe_tool_completion(
-        store,
-        runtime,
-        claim,
-        turn,
-        needs_computer_sample,
-        &result,
-        &summary,
-    );
+    observe_tool_completion(store, runtime, claim, metrics, &result, &summary);
     tracing::info!(request_id = %claim.job.request_id, "committed sandbox tool output");
     Ok(())
 }
@@ -333,7 +339,7 @@ async fn commit_result(store: &Store, claim: &PlacedToolClaim, result: &ToolResu
     let mut head = claim.job.step;
     loop {
         match store.complete_placed_tool(claim, head, result).await {
-            Ok(()) => break,
+            Ok(_) => break,
             Err(StoreError::Fence(swarmy_store::FenceError::StaleSequence { actual, .. })) => {
                 head = actual;
             }
@@ -379,8 +385,7 @@ async fn run_command(
     let request = request(arguments, claim.placement.epoch, &claim.job.call_id.0);
     // The start time travels in memory to the completion batch below;
     // no separate start transaction is written.
-    let started_wall = jiff::Timestamp::now();
-    let started_ns = i64::try_from(started_wall.as_nanosecond()).ok();
+    let started_ns = wall_ns();
     let started = Instant::now();
     let process_id = match arguments {
         SandboxArguments::Bash(_)
@@ -453,12 +458,11 @@ fn observe_tool_completion(
     store: &Store,
     runtime: Arc<RuncRuntime>,
     claim: &PlacedToolClaim,
-    turn: Option<swarmy_core::MessageId>,
-    needs_computer_sample: bool,
+    metrics: &CallMetrics,
     result: &ToolResult,
     timing: &ToolTiming,
 ) {
-    let Some(turn) = turn else { return };
+    let Some(turn) = metrics.turn else { return };
     let (output_bytes, exit_status) = match result {
         ToolResult::Completed {
             output, metadata, ..
@@ -476,6 +480,8 @@ fn observe_tool_completion(
         request_id: claim.job.request_id.to_string(),
         name: claim.job.arguments.name().into(),
         started_ns: timing.started_ns,
+        delivered_ns: metrics.delivered_ns,
+        claimed_ns: metrics.claimed_ns,
         exit_status,
         output_bytes: Some(output_bytes),
         process_wall_ms: timing.process_wall_ms,
@@ -498,7 +504,7 @@ fn observe_tool_completion(
     // sample, so re-sample after the result is committed. Only the first
     // completion per turn carries it; the store keeps the first re-sample
     // per turn as well.
-    if needs_computer_sample {
+    if metrics.needs_computer_sample {
         let store = store.clone();
         let session = claim.job.session_id;
         let volume = VolumeId::from_ulid(claim.placement.agent_id.as_ulid());
@@ -773,8 +779,7 @@ async fn heartbeat(
             .duration_since(jiff::Timestamp::now())
             .try_into()
             .unwrap_or(Duration::ZERO);
-        tokio::time::timeout(remaining, store.renew_placed_tool(claim, next)).await??;
-        expiry = next;
+        expiry = tokio::time::timeout(remaining, store.renew_placed_tool(claim, next)).await??;
     }
 }
 

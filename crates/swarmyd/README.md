@@ -117,7 +117,9 @@ job's dispatch fence, so it cannot conflict with the node's claim.
 
 The node places an unplaced agent locally, accepts a live placement assigned to
 this node, or takes over an expired epoch. It refuses live placements on other
-nodes. A per-agent task records the placement, attached volume, container, and
+nodes. The decision is `Store::open_hosting`, which refuses an epoch this node
+already stopped before renewing anything, so its lease expires and a later call
+takes it over. A per-agent task records the placement, attached volume, container, and
 time since the last completed call. It serializes calls across sessions of that
 agent while other agents execute independently.
 

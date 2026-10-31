@@ -8,6 +8,7 @@ mod measure;
 mod persistent;
 mod process;
 mod saturation;
+mod timings;
 mod transactions;
 
 use std::{
@@ -611,6 +612,14 @@ async fn exercise_suite(
         Some(Scenario::Saturation) => unreachable!("saturation starts its own services above"),
         None => {
             let calls = fixture.exercise(config, seed).await?;
+            if config.image.is_some() {
+                let gates = timings::Gates {
+                    max_warm_overhead_ms: config.max_warm_overhead_ms,
+                    max_cold_start_ms: config.max_cold_start_ms,
+                    require_stamps: config.kills == 0 && !config.kill_node_mid_command,
+                };
+                timings::report(&fixture.store, &fixture.sessions, &gates).await?;
+            }
             if let Some(max_ms) = config.max_node_transaction_ms {
                 transactions::check_node_logs(fixture.files.path(), max_ms)?;
             }

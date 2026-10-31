@@ -74,6 +74,10 @@ pub use routes::{
 pub mod collector;
 mod nodes;
 mod placed_tools;
+pub use placed_tools::PlacedToolCompletion;
+mod hosting;
+pub use hosting::OpenHosting;
+mod node_credentials;
 mod placements;
 mod volume_metadata;
 pub use placements::ScratchRecord;
