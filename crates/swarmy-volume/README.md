@@ -40,7 +40,7 @@ Upload chunks before building the manifest. After `build` succeeds, register its
 header under a fresh `ManifestId` using `Store::put_manifest`. Failed builds can
 leave unreferenced immutable objects for later garbage collection.
 
-The chunk collector lives in `swarmy-store/src/collector.rs`.
+The chunk collector lives in [collector.rs](../swarmy-store/src/collector.rs).
 
 ## FoundationDB records
 

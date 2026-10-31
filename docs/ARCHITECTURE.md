@@ -116,7 +116,7 @@ strings; event sequence and epoch components are tuple integers. Stored values
 use postcard serialization, with large data redirected to object storage
 ([lib.rs](../crates/swarmy-store/src/lib.rs),
 [blob.rs](../crates/swarmy-store/src/blob.rs)); bucket namespaces and
-migration rules live in [objects.rs](../crates/swarmy-store/src/objects.rs).
+migration rules live in [objects.rs](../crates/swarmy-volume/src/objects.rs).
 Treat family names as internal
 schema, not an API. Postcard encodes structs positionally: append stored fields
 only at the end, with fixed-byte tests for stored formats. Format changes
