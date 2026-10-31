@@ -136,7 +136,7 @@ mod tests {
             (
                 StoreError::Domain(DomainError::ImageMissing {
                     image: "x".into(),
-                    registered: "".into(),
+                    registered: String::new(),
                 }),
                 409,
             ),
