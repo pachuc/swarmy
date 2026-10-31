@@ -45,7 +45,9 @@ impl Process {
         Self::start_in(kind, index, binaries, files, environment, None)
     }
 
-    /// `ip netns exec` switches namespace and then runs the service in the same process.
+    /// `nsenter --net` switches the network namespace and then runs the service
+    /// in the same process. Unlike `ip netns exec` it keeps the mount namespace,
+    /// so /sys/fs/cgroup stays visible to the sandbox runtime.
     pub(crate) fn start_in(
         kind: Kind,
         index: usize,
@@ -61,8 +63,10 @@ impl Process {
             .open(files.join(format!("{name}.log")))?;
         let binary = binaries.join("swarmy-core");
         let mut command = if let Some(netns) = netns {
-            let mut command = Command::new("ip");
-            command.args(["netns", "exec", netns]).arg(binary);
+            let mut command = Command::new("nsenter");
+            command
+                .arg(format!("--net=/run/netns/{netns}"))
+                .arg(binary);
             command
         } else {
             Command::new(binary)

@@ -21,7 +21,14 @@ work=""
 cd ~/chaos
 git fetch -q origin "$branch" && git checkout -q -B suite "${REV:-origin/$branch}" || { echo "checkout failed"; echo "SUITES_EXIT=1"; exit 2; }
 echo "== branch $branch at $(git rev-parse --short HEAD)"
-in_primary() { sudo -E ip netns exec "$primary_ns" "$@"; }
+# nsenter switches only the network namespace. `ip netns exec` also remounts
+# /sys in a private mount namespace, which drops /sys/fs/cgroup, and the
+# node's sandbox runtime then fails with "no cgroup mount found in mountinfo".
+# Background jobs use the primary_cmd array, not a function, so $! is the
+# sudo process itself and killing it stops the service.
+primary_cmd=(sudo -E nsenter --net="/run/netns/$primary_ns")
+in_ns() { local ns=$1; shift; sudo -E nsenter --net="/run/netns/$ns" "$@"; }
+in_primary() { "${primary_cmd[@]}" "$@"; }
 as_user_in_primary() { in_primary sudo -u "$user" env "PATH=$PATH" "HOME=$HOME" "$@"; }
 wipe_stack_state() { sudo rm -rf .dev/fdb .dev/nats .dev/seaweed .dev/fdb.cluster; }
 stop_release_server() {
@@ -94,9 +101,9 @@ as_user_in_primary scripts/dev-stack.sh start "$primary_ip" 2>&1 | tail -2
 set -a; . .dev/env; set +a
 export SWARMY_NATS_URL="nats://$primary_ip:4222"
 export SWARMY_S3_ENDPOINT="http://$primary_ip:8333"
-start_suite_api ~/latency-api.log sudo -E ip netns exec "$primary_ns"
+start_suite_api ~/latency-api.log "${primary_cmd[@]}"
 echo "== image pull inside $primary_ns"
-in_primary python3 -c "$release_server" "$work/www" "$work/port" > "$work/server.log" 2>&1 &
+"${primary_cmd[@]}" python3 -c "$release_server" "$work/www" "$work/port" > "$work/server.log" 2>&1 &
 release_pid=$!
 for _ in $(seq 1 60); do [ -s "$work/port" ] && break; sleep 0.5; done
 if ! [ -s "$work/port" ] || ! in_primary env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
@@ -112,8 +119,8 @@ mkdir -p ~/suite-logs
 rc=0
 for rtt in ${LATENCY_RTTS:-175 400}; do
   if ! [[ $rtt =~ ^[1-9][0-9]*$ ]]; then echo "LATENCY_RTTS entry '$rtt' is not a positive integer"; rc=1; continue; fi
-  sudo ip netns exec "$primary_ns" tc qdisc replace dev swl-p root netem delay "$((rtt * 500))us"
-  sudo ip netns exec "$node_ns" tc qdisc replace dev swl-n root netem delay "$((rtt * 500))us"
+  in_ns "$primary_ns" tc qdisc replace dev swl-p root netem delay "$((rtt * 500))us"
+  in_ns "$node_ns" tc qdisc replace dev swl-n root netem delay "$((rtt * 500))us"
   echo "== round trip $rtt ms"
   bash "$here/nbd-orphans.sh"
   full=~/suite-logs/${branch##*/}-latency-$rtt.log

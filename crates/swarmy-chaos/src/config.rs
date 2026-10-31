@@ -55,7 +55,7 @@ pub(crate) struct Config {
     /// Use a prebuilt swarmy-core binary from this directory instead of building it.
     #[arg(long)]
     pub bin_dir: Option<PathBuf>,
-    /// Run the node inside this network namespace (`ip netns exec NAME`).
+    /// Run the node inside this named network namespace (`nsenter --net=/run/netns/NAME`).
     #[arg(long, requires = "image")]
     pub node_netns: Option<String>,
     /// Fail when a node store transaction takes longer than this many milliseconds.
