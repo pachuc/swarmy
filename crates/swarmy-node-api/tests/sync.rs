@@ -2,7 +2,7 @@
 mod support;
 use std::{sync::atomic::Ordering, time::Duration};
 use swarmy_core::{AgentId, Lease, LeaseOwnerId, MessageId, ToolMetric};
-use swarmy_node_api::{NodeApiState, router};
+use swarmy_node_api::router;
 use swarmy_node_protocol::{
     EvictReason, MetricBatch, NodeClient, NodeMetric, NodeRefusal, Renewal, SYNC_PATH,
     ScratchEntry, ScratchVerdict, WriterToken,
@@ -10,11 +10,7 @@ use swarmy_node_protocol::{
 use ulid::Ulid;
 
 async fn client(f: &support::Fixture, token: &swarmy_core::NodeToken) -> NodeClient {
-    let base = support::serve(router(NodeApiState::new(
-        f.store.clone(),
-        Duration::from_secs(30),
-    )))
-    .await;
+    let base = support::serve(router(support::state(&f))).await;
     NodeClient::new(&base, token).unwrap()
 }
 #[tokio::test]
@@ -201,10 +197,7 @@ async fn sync_retry_after_a_dropped_response() {
         return;
     };
     let a = support::hosted(&f.store).await;
-    let (router, count) = support::drop_first_response(
-        router(NodeApiState::new(f.store.clone(), Duration::from_secs(30))),
-        SYNC_PATH,
-    );
+    let (router, count) = support::drop_first_response(router(support::state(&f)), SYNC_PATH);
     let base = support::serve(router).await;
     let response = NodeClient::new(&base, &a.token)
         .unwrap()

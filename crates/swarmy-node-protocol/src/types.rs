@@ -39,3 +39,8 @@ pub struct PlacementsResponse {
     pub server_now: jiff::Timestamp,
     pub placements: Vec<PlacementOccupancy>,
 }
+/// Acknowledgement carrying the server clock.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ack {
+    pub server_now: jiff::Timestamp,
+}

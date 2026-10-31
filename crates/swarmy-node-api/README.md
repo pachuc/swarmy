@@ -13,3 +13,31 @@ Configure `[node_api] listen` (default `127.0.0.1:8743`), `[node] api_url`, and 
 `POST /node/v1/sync` combines heartbeat, placement and call occupancy, tool-claim and writer renewals, scratch inventory and evictions, and turn metric patches. The server returns index-aligned answers: `Renewed` supplies the new expiry, `Lost` means stop using the fenced token, and `Pending` means keep its existing expiry and retry next cycle. Each store item runs independently under a two-second server deadline. All requested expiries use the server clock; echoed expiries are never trusted. The authenticated node must own each placement, claim placement, and writer lease before a store call can use that token.
 
 The node reports scratch directories and their occupancy. The server decides deleted, moved, and idle eviction verdicts; the node evicts on disk and sends the removed agents in the next sync for row cleanup. Tool and computer metrics are queued without blocking the sync; they are flushed on service shutdown.
+
+## Tool route
+
+`POST /node/v1/tool/route` resolves a tool job's immutable session to its agent. The node caches that agent for its hosting actor. A completed job returns `AlreadyDone`; dispatch to another node returns `PlacedElsewhere`.
+
+## Hosting open
+
+`POST /node/v1/hosting/open` accepts only a live job dispatched to the caller. It repeats safe store steps to claim a placement, bind the volume, open its writer and head, and read the sandbox spec. A stopped epoch is never renewed. The answer includes the server clock and an empty boot set until boot working sets are recorded.
+
+## Hosting ready
+
+`POST /node/v1/hosting/ready` requires the caller's placement, records the sandbox address, and queues boot metric batches. A stale placement is fenced.
+
+## Hosting close
+
+`POST /node/v1/hosting/close` requires ownership of both echoed tokens. It releases the writer before the placement; a writer refusal leaves the placement intact so possible loss can be reported after expiry.
+
+## Volume publish
+
+`POST /node/v1/volume/publish` requires the caller's writer lease and publishes under the server's configured snapshot retention. A stale lease or head is fenced.
+
+## Volume protect
+
+`POST /node/v1/volume/protect` conservatively protects arbitrary reused hashes. One request carries at most 1,024 hashes (400 otherwise); the client splits larger lists into sequential requests and joins the deleting results in order.
+
+## GitHub credential
+
+`POST /node/v1/credentials/github` returns a token only when the agent has a live placement on the calling node according to the server clock. Other placements return `NotYours`; the secret is never logged and its response debug representation is redacted.

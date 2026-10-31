@@ -36,11 +36,7 @@ async fn tokens_are_required_and_checked() {
     };
     let record = support::node(&f.store, 2).await;
     let token = f.store.issue_node_credential(record.node_id).await.unwrap();
-    let base = support::serve(router(NodeApiState::new(
-        f.store.clone(),
-        Duration::from_secs(30),
-    )))
-    .await;
+    let base = support::serve(router(support::state(&f))).await;
     let request = RegisterRequest {
         node: support::advert(&record),
     };
@@ -74,15 +70,10 @@ async fn revocation_takes_effect_after_the_cache() {
     let record = support::node(&f.store, 2).await;
     let token = f.store.issue_node_credential(record.node_id).await.unwrap();
     let fresh = support::serve(router(
-        NodeApiState::new(f.store.clone(), Duration::from_secs(30))
-            .with_credential_ttl(Duration::ZERO),
+        support::state(&f).with_credential_ttl(Duration::ZERO),
     ))
     .await;
-    let cached = support::serve(router(NodeApiState::new(
-        f.store.clone(),
-        Duration::from_secs(30),
-    )))
-    .await;
+    let cached = support::serve(router(support::state(&f))).await;
     let request = RegisterRequest {
         node: support::advert(&record),
     };
@@ -107,11 +98,7 @@ async fn wrong_build_is_a_conflict_naming_both() {
     };
     let record = support::node(&f.store, 2).await;
     let token = f.store.issue_node_credential(record.node_id).await.unwrap();
-    let base = support::serve(router(NodeApiState::new(
-        f.store.clone(),
-        Duration::from_secs(30),
-    )))
-    .await;
+    let base = support::serve(router(support::state(&f))).await;
     let request = RegisterRequest {
         node: support::advert(&record),
     };
@@ -172,7 +159,10 @@ async fn register_records_the_node_on_the_server_clock() {
     });
     let base = support::serve(router(NodeApiState::new(
         f.store.clone(),
-        Duration::from_secs(47),
+        swarmy_node_api::NodeApiPolicy {
+            placement_lease: Duration::from_secs(47),
+            ..support::policy()
+        },
     )))
     .await;
     let answer = NodeClient::new(&base, &token)
@@ -233,11 +223,7 @@ async fn placements_lists_only_the_callers_with_occupancy() {
         .unwrap();
     let token_a = f.store.issue_node_credential(a.node_id).await.unwrap();
     let token_b = f.store.issue_node_credential(b.node_id).await.unwrap();
-    let base = support::serve(router(NodeApiState::new(
-        f.store.clone(),
-        Duration::from_secs(30),
-    )))
-    .await;
+    let base = support::serve(router(support::state(&f))).await;
     let a_result = NodeClient::new(&base, &token_a)
         .unwrap()
         .placements()
@@ -280,10 +266,7 @@ async fn register_retry_after_a_dropped_response() {
     };
     let record = support::node(&f.store, 2).await;
     let token = f.store.issue_node_credential(record.node_id).await.unwrap();
-    let (router, count) = support::drop_first_response(
-        router(NodeApiState::new(f.store.clone(), Duration::from_secs(30))),
-        REGISTER_PATH,
-    );
+    let (router, count) = support::drop_first_response(router(support::state(&f)), REGISTER_PATH);
     let base = support::serve(router).await;
     let result = NodeClient::new(&base, &token)
         .unwrap()

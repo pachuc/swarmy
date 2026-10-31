@@ -34,7 +34,7 @@ impl Default for SandboxRequirements {
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxSpec {
     pub agent_id: AgentId,
     #[serde(default)]

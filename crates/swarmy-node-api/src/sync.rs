@@ -237,7 +237,7 @@ async fn cleared_scratch(state: &NodeApiState, node: NodeId, evicted: &[AgentId]
     }))
     .await;
 }
-fn queue_metrics(state: &NodeApiState, batches: Vec<MetricBatch>) {
+pub(crate) fn queue_metrics(state: &NodeApiState, batches: Vec<MetricBatch>) {
     for batch in batches {
         if batch.patches.is_empty() {
             continue;

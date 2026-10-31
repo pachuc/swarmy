@@ -54,7 +54,10 @@ async fn start() -> Result<(), Error> {
             })
             .await;
     });
-    let state = NodeApiState::new(store.clone(), settings.scheduler.placement_lease_secs);
+    let state = NodeApiState::new(
+        store.clone(),
+        crate::NodeApiPolicy::from_settings(&settings),
+    );
     let listen = settings.node_api.listen;
     let listener = tokio::net::TcpListener::bind(&listen)
         .await

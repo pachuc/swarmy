@@ -155,6 +155,126 @@ impl NodeClient {
         )
         .await
     }
+    /// Send route tool before the caller's deadline.
+    /// # Errors
+    /// As `register`.
+    pub async fn route_tool(
+        &self,
+        request: &crate::ToolRouteRequest,
+        deadline: Instant,
+    ) -> Result<crate::ToolRouteResponse, ClientError> {
+        self.call(
+            reqwest::Method::POST,
+            crate::TOOL_ROUTE_PATH,
+            Some(request),
+            deadline,
+        )
+        .await
+    }
+    /// Send open hosting before the caller's deadline.
+    /// # Errors
+    /// As `register`.
+    pub async fn open_hosting(
+        &self,
+        request: &crate::HostingOpenRequest,
+        deadline: Instant,
+    ) -> Result<crate::HostingOpenResponse, ClientError> {
+        self.call(
+            reqwest::Method::POST,
+            crate::HOSTING_OPEN_PATH,
+            Some(request),
+            deadline,
+        )
+        .await
+    }
+    /// Send hosting ready before the caller's deadline.
+    /// # Errors
+    /// As `register`.
+    pub async fn hosting_ready(
+        &self,
+        request: &crate::HostingReadyRequest,
+        deadline: Instant,
+    ) -> Result<crate::Ack, ClientError> {
+        self.call(
+            reqwest::Method::POST,
+            crate::HOSTING_READY_PATH,
+            Some(request),
+            deadline,
+        )
+        .await
+    }
+    /// Send close hosting before the caller's deadline.
+    /// # Errors
+    /// As `register`.
+    pub async fn close_hosting(
+        &self,
+        request: &crate::HostingCloseRequest,
+        deadline: Instant,
+    ) -> Result<crate::Ack, ClientError> {
+        self.call(
+            reqwest::Method::POST,
+            crate::HOSTING_CLOSE_PATH,
+            Some(request),
+            deadline,
+        )
+        .await
+    }
+    /// Send publish volume before the caller's deadline.
+    /// # Errors
+    /// As `register`.
+    pub async fn publish_volume(
+        &self,
+        request: &crate::VolumePublishRequest,
+        deadline: Instant,
+    ) -> Result<crate::Ack, ClientError> {
+        self.call(
+            reqwest::Method::POST,
+            crate::VOLUME_PUBLISH_PATH,
+            Some(request),
+            deadline,
+        )
+        .await
+    }
+    /// Send github token before the caller's deadline.
+    /// # Errors
+    /// As `register`.
+    pub async fn github_token(
+        &self,
+        request: &crate::GithubTokenRequest,
+        deadline: Instant,
+    ) -> Result<crate::GithubTokenResponse, ClientError> {
+        self.call(
+            reqwest::Method::POST,
+            crate::GITHUB_TOKEN_PATH,
+            Some(request),
+            deadline,
+        )
+        .await
+    }
+    /// Protect chunks in bounded sequential requests, retaining deletion order.
+    /// # Errors
+    /// As `register`.
+    pub async fn protect_chunks(
+        &self,
+        hashes: &[swarmy_core::ContentHash],
+        deadline: Instant,
+    ) -> Result<Vec<swarmy_core::ContentHash>, ClientError> {
+        let mut deleting = Vec::new();
+        for chunk in hashes.chunks(crate::MAX_PROTECT_HASHES) {
+            let response: crate::VolumeProtectResponse = self
+                .call(
+                    reqwest::Method::POST,
+                    crate::VOLUME_PROTECT_PATH,
+                    Some(&crate::VolumeProtectRequest {
+                        hashes: chunk.to_vec(),
+                    }),
+                    deadline,
+                )
+                .await?;
+            deleting.extend(response.deleting);
+        }
+        Ok(deleting)
+    }
     /// List this node's placements.
     /// # Errors
     /// Final server answers and exhausted deadline.

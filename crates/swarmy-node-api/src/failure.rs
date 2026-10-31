@@ -12,6 +12,11 @@ impl IntoResponse for Answer {
         (self.0.status(), Json(self.0)).into_response()
     }
 }
+impl From<NodeRefusal> for Answer {
+    fn from(refusal: NodeRefusal) -> Self {
+        Self(Failure::Refused { refusal })
+    }
+}
 impl From<StoreError> for Answer {
     fn from(error: StoreError) -> Self {
         Self(failure(&error))

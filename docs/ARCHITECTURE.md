@@ -156,6 +156,7 @@ them in [api-breaks.txt](api-breaks.txt).
   heartbeats stay advisory, tool routing fences durable dispatch across
   worker replicas, and tool claims on agent volumes never publish disk state.
   The node API renews placements, tool claims and writer leases in one sync request and refuses any token whose placement or owner is not the calling node before it reaches the store.
+  The node API opens hosting (placement, volume binding, writer lease, head and sandbox spec) only for a job dispatched to the calling node, and releases the writer lease before the placement.
   Placement filters by GPU requirement before preferring a node holding the
   agent's scratch data, but after a placement lease expires the previous
   host is tried last, even if it holds that scratch. Capacity admission
