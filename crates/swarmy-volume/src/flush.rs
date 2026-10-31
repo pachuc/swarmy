@@ -145,7 +145,7 @@ impl VolumeWriter {
                         // The immutable id lets a retry recognize a publication
                         // whose commit acknowledgement was lost.
                         Err(MetadataError::CommitUnknown) => {
-                            tokio::time::sleep(Duration::from_millis(200)).await
+                            tokio::time::sleep(Duration::from_millis(200)).await;
                         }
                         result => {
                             result?;
