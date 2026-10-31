@@ -103,7 +103,7 @@ run "rejects_bad_network_id" {
 }
 
 run "rejects_a_private_ssm_parameter" {
-  command         = plan
+  command = plan
   variables { image = "/my/own/ami-id" }
   expect_failures = [var.image]
 }

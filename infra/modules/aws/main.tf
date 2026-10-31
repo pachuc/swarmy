@@ -14,7 +14,7 @@ locals {
   # Every machine of the swarm sits in this one subnet.
   private_range = local.create_network ? aws_subnet.this[0].cidr_block : data.aws_subnet.joined[0].cidr_block
 
-  architecture    = contains(data.aws_ec2_instance_type.this.supported_architectures, "arm64") ? "arm64" : "amd64"
+  architecture     = contains(data.aws_ec2_instance_type.this.supported_architectures, "arm64") ? "arm64" : "amd64"
   ubuntu_parameter = "/aws/service/canonical/ubuntu/server/24.04/stable/current/${local.architecture}/hvm/ebs-gp3/ami-id"
   # Canonical's Ubuntu and any /aws/service/ path are looked up; an AMI id is used as given.
   image_parameter = var.image == "ubuntu-24.04" ? local.ubuntu_parameter : (startswith(var.image, "/") ? var.image : "")
@@ -127,7 +127,7 @@ resource "aws_instance" "this" {
     delete_on_termination = true
   }
   lifecycle {
-    # The Ubuntu parameter moves and a key pair is fixed at launch.
+    # The image parameter moves and a key pair is fixed at launch.
     ignore_changes = [ami, key_name]
   }
   # The internet route must exist before first boot.

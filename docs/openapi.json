@@ -3514,7 +3514,8 @@
           "reconciled_generation",
           "settled",
           "updated_at",
-          "external_bucket"
+          "external_bucket",
+          "network_id"
         ],
         "properties": {
           "applied": {
@@ -3562,6 +3563,13 @@
           "group": {
             "type": "string"
           },
+          "image": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Machine image; absent uses the module default."
+          },
           "local_storage": {
             "type": "string"
           },
@@ -3575,6 +3583,10 @@
           },
           "module": {
             "type": "string"
+          },
+          "network_id": {
+            "type": "string",
+            "description": "Swarm network the group joins; empty means it creates its own."
           },
           "price_per_hour": {
             "type": "string"
@@ -4956,7 +4968,8 @@
           "currency",
           "primary_address",
           "service_user",
-          "external_bucket"
+          "external_bucket",
+          "network_id"
         ],
         "properties": {
           "autoscale": {
@@ -4973,6 +4986,13 @@
           "idempotency_key": {
             "type": "string"
           },
+          "image": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Machine image; absent uses the module default."
+          },
           "local_storage": {
             "type": "string"
           },
@@ -4986,6 +5006,10 @@
           },
           "module": {
             "type": "string"
+          },
+          "network_id": {
+            "type": "string",
+            "description": "Swarm network the group joins; empty means it creates its own."
           },
           "price_per_hour": {
             "type": "string"
