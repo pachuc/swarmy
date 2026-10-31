@@ -1076,3 +1076,87 @@ async fn open_hosting_refuses_a_released_dispatch_placement() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn renewed_tokens_still_complete_and_publish() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let (session, image, node, jobs, placement) = setup(&test.store).await;
+    let store = &test.store;
+    let volume = store.agent_volume(session, &placement).await.unwrap();
+    let lease_owner = LeaseOwnerId::from_ulid(node.node_id.as_ulid());
+    let l1 = store
+        .acquire_writer_lease(volume, lease_owner, tool_expiry())
+        .await
+        .unwrap();
+    let claim = PlacedToolClaim {
+        job: jobs[0].clone(),
+        owner: owner(),
+        placement: placement.clone(),
+        expires_at: tool_expiry(),
+    };
+    assert!(store.claim_placed_tool(&claim).await.unwrap());
+    let later = Timestamp::now()
+        .checked_add(Duration::from_secs(120))
+        .unwrap();
+    let renewed = store.renew_hosted(&placement, later).await.unwrap().0;
+    let claim_expiry = store.renew_placed_tool(&claim, later).await.unwrap();
+    let l2 = store.renew_writer_lease(volume, &l1, later).await.unwrap();
+    let result = BashResult {
+        stdout: String::new(),
+        stderr: String::new(),
+        exit_code: 0,
+        timed_out: false,
+        manifest_id: image,
+    }
+    .tool_result();
+    let updated = PlacedToolClaim {
+        placement: renewed,
+        expires_at: claim_expiry,
+        ..claim
+    };
+    assert_eq!(
+        store
+            .complete_placed_tool(&updated, 2, &result)
+            .await
+            .unwrap()
+            .state,
+        SessionState::WaitingTools
+    );
+    let base = store
+        .get_volume(volume)
+        .await
+        .unwrap()
+        .unwrap()
+        .head_manifest;
+    let next = ManifestId::from_ulid(Ulid::generate());
+    let header = ManifestHeader {
+        size: u64::from(CHUNK_SIZE),
+        chunk_size: CHUNK_SIZE,
+        root_hash: ContentHash([3; 32]),
+    };
+    store
+        .advance_volume_retained(
+            volume,
+            &l1,
+            base,
+            next,
+            &header,
+            std::num::NonZeroUsize::new(10).unwrap(),
+        )
+        .await
+        .unwrap();
+    store
+        .advance_volume_retained(
+            volume,
+            &l2,
+            base,
+            next,
+            &header,
+            std::num::NonZeroUsize::new(10).unwrap(),
+        )
+        .await
+        .unwrap();
+    store.release_writer_lease(volume, &l1).await.unwrap();
+}

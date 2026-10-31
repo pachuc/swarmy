@@ -2405,8 +2405,7 @@ async fn concurrent_volume_writers_have_one_winner_and_release_allows_reacquisit
         None
     );
     // Reusing owner and expiry still produces a distinct fencing token.
-    let next = test
-        .store
+    let next = store
         .acquire_writer_lease(volume, winner.owner, winner.expires_at)
         .await
         .unwrap();
@@ -3334,4 +3333,50 @@ async fn finished_turn_clears_a_capacity_wait() {
         f.store.session_wait(id).await.unwrap().unwrap().since,
         timestamp(200)
     );
+}
+
+#[tokio::test]
+async fn writer_lease_live_by_store_clock_cannot_be_taken() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let time = timestamp(100);
+    let clock = Arc::new(std::sync::Mutex::new(time));
+    let store = test.store.with_clock({
+        let clock = clock.clone();
+        move || *clock.lock().unwrap()
+    });
+    let base = manifest_id();
+    store
+        .put_manifest(base, &manifest_header(u64::from(CHUNK_SIZE)))
+        .await
+        .unwrap();
+    let id = volume_id();
+    store.create_volume(id, base).await.unwrap();
+    let first_owner = owner();
+    let second_owner = owner();
+    let first = store
+        .acquire_writer_lease(id, first_owner, timestamp(130))
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .acquire_writer_lease(id, second_owner, timestamp(190))
+            .await,
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
+    ));
+    *clock.lock().unwrap() = timestamp(131);
+    let second = store
+        .acquire_writer_lease(id, second_owner, timestamp(190))
+        .await
+        .unwrap();
+    assert_eq!(second.seq, first.seq + 1);
+    assert!(matches!(
+        store.release_writer_lease(id, &first).await,
+        Err(StoreError::Fence(
+            swarmy_store::FenceError::VolumeLeaseMismatch
+        ))
+    ));
 }

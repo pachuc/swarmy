@@ -263,13 +263,15 @@ impl Store {
                 read::<u64>(&trx, &seq_key),
             );
             let mut volume = volume?;
-            let bound = bound?;
             if let Some(mut lease) = volume
                 .writer_lease
                 .clone()
                 .filter(|lease| lease.expires_at > now)
             {
-                if !bound || lease.owner != owner {
+                if lease.owner != owner {
+                    return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
+                }
+                if !bound? {
                     return Err(StoreError::Fence(crate::FenceError::VolumeLeaseMismatch));
                 }
                 if expires_at > lease.expires_at {
@@ -279,6 +281,7 @@ impl Store {
                 }
                 return Ok(lease);
             }
+            bound?;
             let seq = crate::seq_after(previous?.unwrap_or(0), 1)?;
             let lease = Lease {
                 owner,

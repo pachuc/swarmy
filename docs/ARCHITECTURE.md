@@ -165,6 +165,8 @@ them in [api-breaks.txt](api-breaks.txt).
   ([placement.rs](../crates/swarmy-worker/src/placement.rs),
   [leases.rs](../crates/swarmy-store/src/leases.rs),
   [placements.rs](../crates/swarmy-store/src/placements.rs),
+  [hosting.rs](../crates/swarmy-store/src/hosting.rs),
+  [node_credentials.rs](../crates/swarmy-store/src/node_credentials.rs),
   [nodes.rs](../crates/swarmy-store/src/nodes.rs),
   [services.rs](../crates/swarmy-store/src/services.rs),
   [tool_routing.rs](../crates/swarmy-store/src/tool_routing.rs),
