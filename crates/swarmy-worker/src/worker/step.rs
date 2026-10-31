@@ -195,6 +195,23 @@ impl Worker {
         Ok(action)
     }
 
+    /// Record wake only for results present at the first fold after the claim.
+    fn observe_fold_wake(
+        &self,
+        session: SessionId,
+        turn: Option<MessageId>,
+        woken: Option<i64>,
+        events: &[Event],
+        message: &swarmy_core::Message,
+    ) {
+        if let (Some(turn), Some(woken)) = (turn, woken) {
+            let patches = super::tools::woken_patches(events, message, woken);
+            if !patches.is_empty() {
+                self.store.observe_turn_metrics(session, turn, patches);
+            }
+        }
+    }
+
     pub(super) async fn step(&self, ctx: &mut StepContext) -> Result<()> {
         let Some(snapshot) = self.prepare_step(ctx).await? else {
             return Ok(());
@@ -266,12 +283,7 @@ impl Worker {
                     }
                 }
                 Action::FoldResults(message) => {
-                    if let (Some(turn), Some(woken)) = (turn, woken) {
-                        let patches = super::tools::woken_patches(events, &message, woken);
-                        if !patches.is_empty() {
-                            self.store.observe_turn_metrics(id, turn, patches);
-                        }
-                    }
+                    self.observe_fold_wake(id, turn, woken, events, &message);
                     return self
                         .fold_results(&mut *session, lease, snapshot, &mut *events, message)
                         .await;
