@@ -4,15 +4,15 @@ mod server;
 use std::ffi::OsString;
 
 /// Run developer volume commands with the local store.
-pub(crate) fn run(args: Vec<OsString>) -> anyhow::Result<()> {
+pub(crate) fn run(args: Vec<OsString>) -> Result<()> {
     swarmy_config::init_tracing();
     let _settings = swarmy_config::Settings::load()?;
     let _network = swarmy_store::boot();
     tokio::runtime::Runtime::new()?.block_on(run_cli(args))
 }
 
-use self::command::Command;
 use anyhow::{Context, Result};
+use command::Command;
 use std::fmt::Write;
 use swarmy_core::{ImageTag, VolumeId};
 use swarmy_store::{MAX_SCAN_LIMIT, Store};
@@ -29,35 +29,35 @@ pub(crate) struct VolCli {
     command: Command,
 }
 
-pub(crate) async fn run_cli(args: Vec<std::ffi::OsString>) -> Result<()> {
+pub(crate) async fn run_cli(args: Vec<OsString>) -> Result<()> {
     let cli = match <VolCli as clap::Parser>::try_parse_from(
-        std::iter::once(std::ffi::OsString::from("vol")).chain(args),
+        std::iter::once(OsString::from("vol")).chain(args),
     ) {
         Ok(cli) => cli,
         // Help and version exit from here with their own status codes.
         Err(error) => error.exit(),
     };
-    run(cli.command, cli.json).await
+    execute(cli.command, cli.json).await
 }
 
-pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
+async fn execute(command: Command, json: bool) -> Result<()> {
     match command {
         Command::Attach {
             volume,
             device,
             background,
         } => {
-            self::server::attach(VolumeId::from_ulid(volume), device, background, json).await?;
+            server::attach(VolumeId::from_ulid(volume), device, background, json).await?;
         }
         Command::Flush {
             volume,
             mount,
             freeze,
         } => {
-            self::server::flush(VolumeId::from_ulid(volume), mount, freeze, json).await?;
+            server::flush(VolumeId::from_ulid(volume), mount, freeze, json).await?;
         }
         Command::Checkpoint { volume, mount } => {
-            self::server::control(VolumeId::from_ulid(volume), mount, false, json).await?;
+            server::control(VolumeId::from_ulid(volume), mount, false, json).await?;
         }
         Command::Snapshot { volume } => {
             let id = VolumeId::from_ulid(volume);
@@ -68,7 +68,7 @@ pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
                 .as_ref()
                 .is_some_and(|lease| lease.expires_at > jiff::Timestamp::now())
             {
-                self::server::control(id, None, false, json).await?;
+                server::control(id, None, false, json).await?;
             } else {
                 output(
                     &serde_json::json!({"volume_id": id, "manifest_id": record.head_manifest}),
@@ -78,7 +78,7 @@ pub(crate) async fn run(command: Command, json: bool) -> Result<()> {
             }
         }
         Command::Detach { volume } => {
-            self::server::control(VolumeId::from_ulid(volume), None, true, json).await?;
+            server::control(VolumeId::from_ulid(volume), None, true, json).await?;
         }
         other => inspect(other, &store().await?, json).await?,
     }

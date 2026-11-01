@@ -15,7 +15,7 @@ crate in a tier depends on every lower tier.
 
 ### Libraries
 
-- **swarmy-core-bin** dispatches `swarmy-core` to the scheduler, worker, gateway, API, node API, node, or volume role, and handles the node-credential command ([source](../crates/swarmy-core-bin/src/main.rs)).
+- **swarmy-core-bin** dispatches `swarmy-core` to the scheduler, worker, gateway, API, node API, or volume role, and handles the node-credential command ([source](../crates/swarmy-core-bin/src/main.rs)).
 - **swarmy-core** defines session, agent, event, request, lease, and placement
   types shared across processes ([source](../crates/swarmy-core/src/lib.rs)).
 - **swarmy-api-types** owns the JSON request and response contracts rather

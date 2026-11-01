@@ -371,7 +371,7 @@ rustup's normal shell setup, or `~/.cargo/bin/swarmy` directly. The CLI embeds t
 
 ### Service binary
 
-`swarmy-core` runs `scheduler`, `worker`, `gateway`, `api`, `node`, and `vol` roles. Run `swarmy-core --version` to check its identity. The `node` role needs root and NBD.
+`swarmy-core` runs `scheduler`, `worker`, `gateway`, `api`, `node-api`, and `vol` roles. Run `swarmy-core --version` to check its identity. The separate `swarmy-node` binary needs root and NBD.
 
 ### Diagnose an installation
 
