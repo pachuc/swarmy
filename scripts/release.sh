@@ -73,6 +73,9 @@ package() {
             fetch_fdb "$target" "$fdb_dir"
             env -u SWARMY_FDB_LIB_DIR FDB_CLIENT_LIB_PATH="$fdb_dir" "$CARGO" build --release --locked --target "$target" -p "$CORE_BIN_PACKAGE" --bin swarmy-core
             install -m 0755 "$(release_dir "$target")/swarmy-core" "$stage/swarmy-core"
+            env -u SWARMY_FDB_LIB_DIR "$CARGO" build --release --locked --target "$target" -p swarmyd --bin swarmy-node
+            install -m 0755 "$(release_dir "$target")/swarmy-node" "$stage/swarmy-node"
+            if readelf -d "$stage/swarmy-node" | grep -q 'NEEDED.*libfdb_c'; then fail 'node must not link libfdb_c'; fi
             env -u SWARMY_FDB_LIB_DIR FDB_CLIENT_LIB_PATH="$fdb_dir" "$CARGO" build --release --locked --target "$target" -p swarmy-provisioner --bin swarmy-provisioner
             install -m 0755 "$(release_dir "$target")/swarmy-provisioner" "$stage/swarmy-provisioner"
             install -m 0644 "$fdb_dir/libfdb_c.so" "$stage/libfdb_c.so"
@@ -108,6 +111,7 @@ package() {
         elif [ "$component" = core ]; then
             ldd "$stage/swarmy-core" | grep -F "libfdb_c.so => $stage/libfdb_c.so" || fail 'bundled libfdb_c.so not loaded'
             "$stage/swarmy-core" api --version
+            "$stage/swarmy-node" --version
             "$stage/swarmy-provisioner" --version
         fi
     fi

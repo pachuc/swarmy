@@ -7,7 +7,8 @@
 #   mount at /mnt/swarmy-local or dir:/path for an existing directory.
 #   Sandbox nodes require it; control-only nodes use the root disk. PREBUILT
 #   true installs the uploaded bundle from <node dir>/.swarmy/release; false
-#   builds on the node from <node dir>/source.
+#   builds on the node from <node dir>/source. Node mode installs only
+#   swarmy-node, not the FoundationDB client or backing tools.
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/remote-provision-env.sh"
 parse_provision_args "$@"
@@ -124,7 +125,7 @@ if [[ $prebuilt == false ]]; then
 fi
 # A version marker avoids downloading the backing tools again on a rerun.
 tools_hash=$(sha256sum scripts/install-dev-tools.sh | cut -d' ' -f1)
-if [[ ! -f .swarmy/remote-tools-version || $(<.swarmy/remote-tools-version) != "$tools_hash" ]]; then
+if [[ $mode == stack ]] && { [[ ! -f .swarmy/remote-tools-version ]] || [[ $(<.swarmy/remote-tools-version) != "$tools_hash" ]]; }; then
     bash scripts/install-dev-tools.sh
     printf '%s\n' "$tools_hash" > .swarmy/remote-tools-version
 fi
@@ -149,19 +150,24 @@ if [[ $prebuilt == false ]]; then
         SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p "$(swarmy_cli_package)" --no-default-features
     fi
     read_shared_list build_args swarmy_mode_build_args "$mode"
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}"
+    if [[ $mode == stack ]]; then
+        SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}"
+    else
+        cargo build --release --locked "${build_args[@]}"
+    fi
     )
     bin_dir=$source_dir/target/release
 else
     bin_dir=$(release_bundle_dir "$repo_dir")
     check_release_bundle "$bin_dir" "$mode"
-    install_core_library "$bin_dir/libfdb_c.so"
+    if [[ $mode == stack ]]; then install_core_library "$bin_dir/libfdb_c.so"; fi
 fi
 # Install from the shared binary list so the install can never name a binary
 # teardown misses. Only built binaries are present, selected per mode above.
 read_shared_list install_binaries swarmy_mode_binaries "$mode"
 sudo install -m 0755 "${install_binaries[@]/#/$bin_dir/}" /usr/local/bin/
 remove_retired_binaries
+if [[ $mode == node ]]; then remove_node_host_leftovers "$repo_dir" "$service_home"; fi
 if [[ $prebuilt == true ]]; then
     printf 'Installed release binaries from %s\n' "$bin_dir"
 else
@@ -169,7 +175,7 @@ else
 fi
 sudo install -d -m 0755 /etc/swarmy
 sudo install -m 0600 /dev/null /etc/swarmy/node.env
-node_environment "$repo_dir" "$sandboxes" "$local_mount" "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix" "$bucket_conditional_create" "$bucket_static" | sudo tee /etc/swarmy/node.env >/dev/null
+node_environment "$mode" "$repo_dir" "$sandboxes" "$local_mount" "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix" "$bucket_conditional_create" "$bucket_static" | sudo tee /etc/swarmy/node.env >/dev/null
 # Static S3 keys arrive over SSH stdin in a root-owned staging file the
 # provisioning user cannot read. Append it verbatim as root in one step and
 # delete it: sourcing the file would expand `$`, backticks and spaces in key
@@ -200,7 +206,6 @@ if [[ $mode == stack ]]; then
     sudo systemctl enable --now "$stack_dependency"
     issue_local_node_credential "$repo_dir" "/usr/local/bin/$(swarmy_core_binary)"
 else
-    [[ -s .dev/fdb.cluster ]] || { echo 'Missing primary cluster file' >&2; exit 1; }
     sudo systemctl enable "$stack_dependency"
     # A new machine's first tunnel connection can fail while its private
     # network or the primary's backing services are still coming up.
@@ -221,7 +226,7 @@ for _ in $(seq 1 60); do
     if sudo test -S "$repo_dir/.swarmy/node/control.sock" && sudo journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager | grep -q 'node registered and ready'; then
         sudo systemctl is-active "$node_unit"
         if [[ $mode == stack ]]; then sudo systemctl is-active "$stack_dependency"; fi
-        echo "node role (swarmy-core node) registered and ready; $mode mode enabled at boot"
+        echo "node agent (swarmy-node) registered and ready; $mode mode enabled at boot"
         exit 0
     fi
     sleep 2

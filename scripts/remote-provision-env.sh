@@ -41,7 +41,7 @@ check_release_bundle() {
     for binary in "${binaries[@]}"; do
         [[ -f $dir/$binary && -x $dir/$binary ]] || { echo "Missing uploaded release binary: $dir/$binary" >&2; return 1; }
     done
-    [[ -f $dir/libfdb_c.so ]] || { echo "Missing uploaded libfdb_c.so in $dir" >&2; return 1; }
+    [[ $mode != stack || -f $dir/libfdb_c.so ]] || { echo "Missing uploaded libfdb_c.so in $dir" >&2; return 1; }
 }
 
 swarmy_core_library_dir() { printf '/usr/local/lib/swarmy\n'; }
@@ -79,6 +79,18 @@ install_core_library() {
     sudo -n install -m 0644 "$1" "$dir/libfdb_c.so"
     printf '%s\n' "$dir" | install_owned_file "$(swarmy_library_conf)"
     sudo -n ldconfig
+}
+
+
+# Remove only leftovers installed by swarmy on a node-only host. Safe to repeat.
+remove_node_host_leftovers() {
+    local repo_dir=${1:?node directory} home=${2:?service home} tool
+    sudo -n rm -rf "$(swarmy_core_library_dir)"
+    remove_owned_file "$(swarmy_library_conf)"
+    sudo -n ldconfig
+    for tool in fdbserver fdbcli nats-server weed; do rm -f "$home/.local/bin/$tool"; done
+    rm -f "$home/.local/lib/libfdb_c.so" "$repo_dir/.dev/fdb.cluster" "$repo_dir/.swarmy/remote-tools-version"
+    sudo -n rm -f "/usr/local/bin/$(swarmy_core_binary)" "/usr/local/bin/$(swarmy_provisioner_binary)"
 }
 
 parse_sandbox_count() {
@@ -213,11 +225,14 @@ swarmy_cli_package() {
 }
 
 swarmy_core_binary() { printf 'swarmy-core\n'; }
+swarmy_node_binary() { printf 'swarmy-node\n'; }
+swarmy_node_package() { printf 'swarmyd\n'; }
 swarmy_core_package() { printf 'swarmy-core-bin\n'; }
 swarmy_provisioner_binary() { printf 'swarmy-provisioner\n'; }
 swarmy_provisioner_package() { printf 'swarmy-provisioner\n'; }
 
-# Every systemd unit provisioning installs: unit, core role, owning modes, and
+# Every systemd unit provisioning installs: unit, service role (a swarmy-core
+# role, or node for the swarmy-node agent), owning modes, and
 # kind (backing service, node agent, or node service). Units that run
 # something else leave the role empty. Service rows derive from the seed list.
 # This table is the single source installs, upgrades, and teardown read.
@@ -250,6 +265,7 @@ swarmy_unit_names() {
 swarmy_binary_names() {
     swarmy_cli_binary
     swarmy_core_binary
+    swarmy_node_binary
     swarmy_provisioner_binary
 }
 
@@ -383,15 +399,15 @@ render_tunnel_unit() {
     if [[ $unit_tunnel_s3 == true ]]; then s3_forward=' -L 127.0.0.1:8333:127.0.0.1:8333'; fi
     cat <<UNIT
 [Unit]
-Description=Swarmy tunnel to first node backing services and node API
+Description=Swarmy tunnel to the primary's NATS and node API
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=exec
 User=$unit_user
-ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i /etc/swarmy/tunnel-key -L 127.0.0.1:4500:127.0.0.1:4500 -L 127.0.0.1:4222:127.0.0.1:4222 -L 127.0.0.1:8743:127.0.0.1:8743$s3_forward $unit_user@$unit_primary
-ExecStartPost=/bin/bash -c 'for attempt in {1..30}; do if (echo > /dev/tcp/127.0.0.1/4500) 2>/dev/null; then exit 0; fi; sleep 1; done; exit 1'
+ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i /etc/swarmy/tunnel-key -L 127.0.0.1:4222:127.0.0.1:4222 -L 127.0.0.1:8743:127.0.0.1:8743$s3_forward $unit_user@$unit_primary
+ExecStartPost=/bin/bash -c 'for attempt in {1..30}; do if (echo > /dev/tcp/127.0.0.1/8743) 2>/dev/null; then exit 0; fi; sleep 1; done; exit 1'
 Restart=always
 RestartSec=5
 TimeoutStartSec=40
@@ -403,15 +419,14 @@ UNIT
 
 render_node_unit() {
     : "${unit_mode:?unit inputs not set}"
-    local stack_dependency dependency_kind=Wants mount_requirement='' node_unit
+    local stack_dependency dependency_kind=Wants mount_requirement=''
     stack_dependency=$(swarmy_mode_backing_unit "$unit_mode") || return 1
-    node_unit=$(swarmy_agent_unit) || return 1
     # Keep the node role running across tunnel reconnects; its clients reconnect too.
     if [[ $unit_mode == stack ]]; then dependency_kind=Requires; fi
     if [[ -n $unit_mount ]]; then mount_requirement="RequiresMountsFor=$unit_mount"; fi
     cat <<UNIT
 [Unit]
-Description=Swarmy node agent (swarmy-core node)
+Description=Swarmy node agent (swarmy-node)
 $dependency_kind=$stack_dependency
 After=network-online.target $stack_dependency systemd-modules-load.service
 Wants=network-online.target
@@ -420,7 +435,7 @@ ${mount_requirement}
 [Service]
 WorkingDirectory=$unit_repo
 EnvironmentFile=/etc/swarmy/node.env
-ExecStart=/usr/local/bin/$(swarmy_core_binary) $(swarmy_unit_role "$node_unit")
+ExecStart=/usr/local/bin/$(swarmy_node_binary)
 Restart=always
 RestartSec=5
 TimeoutStopSec=120
@@ -531,34 +546,27 @@ swarmy_mode_units() {
     swarmy_unit_table | awk -F: -v mode="${1-}" 'index(","$3",", ","mode",") { print $1 }'
 }
 
-# Binaries a mode installs: the CLI ships on stack hosts and the core on all.
+# Binaries a mode installs: only the node agent ships to node-only hosts.
 swarmy_mode_binaries() {
     local mode=${1-}
     if [[ $mode == stack ]]; then
         swarmy_cli_binary
     fi
-    swarmy_core_binary
+    if [[ $mode == stack ]]; then swarmy_core_binary; fi
+    swarmy_node_binary
     if [[ $mode == stack ]]; then swarmy_provisioner_binary; fi
 }
 
-# Cargo build arguments for the core binary (the CLI builds separately).
-# Emit one -p pair for mapfile. The table is checked before filtering so
-# a failing table propagates instead of building an empty package list.
+# Cargo build arguments for the host binaries; the CLI builds separately.
 swarmy_mode_build_args() {
-    local mode=${1-}
-    local table filtered
-    table=$(swarmy_unit_table) || return 1
-    [[ -n $table ]] || {
-        echo 'empty unit table' >&2
-        return 1
-    }
-    filtered=$(printf '%s\n' "$table" | awk -F: -v mode="$mode" 'index(","$3",", ","mode",") && $2 != "" { print $2 }') || return 1
-    [[ -n $filtered ]] || {
-        echo "no build packages for mode $mode" >&2
-        return 1
-    }
-    printf -- '-p\n%s\n' "$(swarmy_core_package)"
-    if [[ $mode == stack ]]; then printf -- '-p\n%s\n' "$(swarmy_provisioner_package)"; fi
+    case ${1-} in
+        stack)
+            printf -- '-p\n%s\n' "$(swarmy_core_package)"
+            printf -- '-p\n%s\n' "$(swarmy_node_package)"
+            printf -- '-p\n%s\n' "$(swarmy_provisioner_package)" ;;
+        node) printf -- '-p\n%s\n' "$(swarmy_node_package)" ;;
+        *) echo "no build packages for mode ${1-}" >&2; return 1 ;;
+    esac
 }
 
 # Read a list function into an array, failing loudly when the producer
@@ -651,9 +659,8 @@ decommission_remove() {
 # Agents placed on this node whose sandboxes are busy, as a JSON array ('[]' when idle).
 # After the node agent stops, every placement it did not release counts as busy.
 swarmy_busy_sandboxes() {
-    local repo_dir=${1:?node directory} binary=${2:?core binary} role
-    role=$(swarmy_unit_role "$(swarmy_agent_unit)") || return 1
-    sudo -n sh -c "cd $repo_dir && set -a && . $(swarmy_etc_dir)/node.env && set +a && exec $binary $role --upgrade-processes"
+    local repo_dir=${1:?node directory} binary=${2:?swarmy-node binary}
+    sudo -n sh -c "cd $repo_dir && set -a && . $(swarmy_etc_dir)/node.env && set +a && exec $binary --upgrade-processes"
 }
 
 # A clean stop checkpoints and releases every computer before removing a node.
@@ -664,7 +671,7 @@ drain_node_agent() {
     local repo unit binary deadline busy='[]' after
     repo=$(service_repo_for "$service_user")
     unit=$(swarmy_agent_unit)
-    binary=${SWARMY_BIN_DIR:-/usr/local/bin}/$(swarmy_core_binary)
+    binary=${SWARMY_BIN_DIR:-/usr/local/bin}/$(swarmy_node_binary)
     deadline=$((SECONDS + timeout))
     while sudo -n systemctl is-active --quiet "$unit"; do
         busy=$(swarmy_busy_sandboxes "$repo" "$binary") || return 1
@@ -776,12 +783,14 @@ check_node_memory() {
 }
 
 node_environment() {
-    local repo_dir=$1 sandboxes=$2 mount=$3 bucket=${4:-} bucket_region=${5:-} bucket_endpoint=${6:-} bucket_prefix=${7:-} bucket_conditional_create=${8:-true} bucket_static=${9:-false} roles=sandbox,volume
+    local mode=$1 repo_dir=$2 sandboxes=$3 mount=$4 bucket=${5:-} bucket_region=${6:-} bucket_endpoint=${7:-} bucket_prefix=${8:-} bucket_conditional_create=${9:-true} bucket_static=${10:-false} roles=sandbox,volume fdb_env=''
+    [[ $mode == stack || $mode == node ]] || { echo "invalid node environment mode: $mode" >&2; return 1; }
+    if [[ $mode == stack ]]; then fdb_env=$(printf 'SWARMY_FDB_CLUSTER_FILE=%s/.dev/fdb.cluster\nLD_LIBRARY_PATH=%s/.local/lib' "$repo_dir" "$(dirname "$repo_dir")"); fi
     local s3_env
     s3_env=$(swarmy_remote_s3_env "$bucket" "$bucket_region" "$bucket_endpoint" "$bucket_prefix" "$bucket_static")
     if (( sandboxes == 0 )); then roles=volume; fi
     cat <<ENV
-SWARMY_FDB_CLUSTER_FILE=$repo_dir/.dev/fdb.cluster
+$fdb_env
 SWARMY_NATS_URL=nats://127.0.0.1:4222
 SWARMY_NODE_API_URL=$(swarmy_node_api_url)
 SWARMY_NODE_TOKEN_FILE=$(swarmy_node_token_file)
@@ -800,7 +809,6 @@ SWARMY_VOLUME_SNAPSHOT_RETENTION=3
 SWARMY_VOLUME_SNAPSHOT_PERIOD_SECONDS=1800
 SWARMY_GC_GRACE_SECONDS=1800
 SWARMY_GC_INTERVAL_SECONDS=600
-LD_LIBRARY_PATH=$(dirname "$repo_dir")/.local/lib
 ENV
 }
 

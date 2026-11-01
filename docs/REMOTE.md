@@ -19,7 +19,8 @@ configuration at `.swarmy/config.toml`:
 
 Scripts match the client binary. Rebuild a development client after editing a
 script. Do not delete `.swarmy/` or `.dev/` when clearing unused checkout files.
-The node's binaries and scripts are
+The core release bundle carries `swarmy-node` alongside the stack binaries.
+Node-only hosts install only `swarmy-node` from it. The node's binaries and scripts are
 copied from a checkout for development builds, or fetched from the matching
 release for release builds. `SWARMY_RELEASE_BASE_URL` overrides the release
 archive source. Systemd is the Linux service manager that starts and
@@ -145,7 +146,7 @@ checkpoint when their leases expire.
 Run a full `swarmy swarm upgrade NAME` without `--services-only` from a
 matching client. The `units` list should include `swarmyd.service` and the
 installed service units. Check `systemctl cat swarmyd.service` for
-`ExecStart=/usr/local/bin/swarmy-core node`, and inspect
+`ExecStart=/usr/local/bin/swarmy-node`, and inspect
 `ls /usr/local/bin`. Old binaries are removed once no installed unit refers
 to them. Do not use down to fix an upgrade: down removes the backing stack's
 data. If installed service settings do not match, inspect
@@ -166,14 +167,14 @@ cd ~/swarmy && bash scripts/remote-provision.sh stack PRIVATE_IP BUCKET REGION E
 
 `PREBUILT` is true for an uploaded release bundle; the service user defaults
 to `swarmy`. A joining host uses `node FIRST_HOST_PRIVATE_IP` followed by the
-same bucket and storage arguments. Its cluster file is copied from the
-primary, preserving cluster identity and loopback coordinator address. Node
+same bucket and storage arguments. A node-only host runs `swarmy-node` and
+holds no FoundationDB client, cluster file, or database credentials. Node
 add generates a dedicated tunnel key on the joining host, authorizes only
 service forwards on the primary, and pins the primary's host key through the
 authenticated provisioning connection. The key allows no interactive shell.
-The tunnel forwards local 4500, 4222 and 8743 to the primary's loopback ports;
-8743 reaches the node API. It forwards 8333 only when SeaweedFS is used. The
-primary's tunnel key line permits 4500, 4222 and 8743, and permits 8333 only
+The tunnel forwards local 4222 and 8743 to the primary's loopback ports;
+8743 reaches the node API; the tunnel start check probes this port. It forwards 8333 only when SeaweedFS is used. The
+primary's tunnel key line permits 4222 and 8743, and permits 8333 only
 without a bucket. SSH checks the link every 5 seconds and restarts after three
 misses. Join issues each node's API token on the primary and copies it over
 SSH standard input to `/etc/swarmy/node-token` (root-owned, mode 0600). The
@@ -181,7 +182,8 @@ stack host issues its own token during provisioning. Removing a node revokes
 its token together with its tunnel key. It starts before swarmyd and restarts after SSH
 failure; inspect it with `sudo journalctl -u swarmy-tunnel`. Tunnel identity
 and pinned host key live under `/etc/swarmy/`, readable only by the service
-user. Binaries install to `/usr/local/bin`.
+user. Binaries install to `/usr/local/bin`: the primary installs the client,
+core, node and provisioner binaries, while joining nodes install only `swarmy-node`.
 
 See [infra/README.md](../infra/README.md) for OpenTofu working directories.
 
