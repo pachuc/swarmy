@@ -1,10 +1,13 @@
 # Node agent
 
-`swarmyd` registers with the primary node API using `[node] api_url` and `token_file`, retries registration until the API answers, recovers previous placement epochs, and hosts
+`swarmy-node` (built by `swarmyd`) registers with the primary node API using `[node] api_url` and `token_file`, retries registration until the API answers, recovers previous placement epochs, and hosts
 runc sandboxes and their NBD volume servers. It uses the same shared attachment
 service as `swarmy-core vol attach`, including writer fencing, lease renewal,
 background uploads, periodic snapshots, and final checkpoint on detach. Calls
-arrive on the node tool queue and share one computer per agent.
+arrive on the node tool queue and share one computer per agent. The lease keeper
+sends one sync every five seconds to renew hosting, tool and writer leases.
+The node answers memory requests and exposes a control socket used by the
+drain helper.
 
 Developer volume tools live in `swarmy-core-bin` as `swarmy-core vol` (`create`, `attach`,
 `detach`, `flush`, `checkpoint`, `snapshot`, `clone`, `ls`, `show`); the

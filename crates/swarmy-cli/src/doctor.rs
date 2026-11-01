@@ -494,7 +494,7 @@ fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
         Check::warn(
             "nodes",
             "no live nodes; capacity is zero",
-            "Start `swarmy-core node` on a sandbox node.",
+            "Start `swarmy-node` on a sandbox node.",
         )
     } else {
         Check::new(

@@ -128,13 +128,18 @@ for rtt in ${LATENCY_RTTS:-175 400}; do
   if ! [[ $rtt =~ ^[1-9][0-9]*$ ]]; then echo "LATENCY_RTTS entry '$rtt' is not a positive integer"; rc=1; continue; fi
   in_ns "$primary_ns" tc qdisc replace dev swl-p root netem delay "$((rtt * 500))us"
   in_ns "$node_ns" tc qdisc replace dev swl-n root netem delay "$((rtt * 500))us"
-  echo "== round trip $rtt ms"
+  case $rtt in
+    175) gates=(--max-warm-overhead-ms 1000 --max-cold-start-ms 60000); gate_label="warm 1000 ms, cold 60000 ms" ;;
+    400) gates=(--max-warm-overhead-ms 2000); gate_label="warm 2000 ms" ;;
+    *) gates=(); gate_label="none" ;;
+  esac
+  echo "== round trip $rtt ms (gates: $gate_label, request $((rtt + 150)) ms)"
   bash "$here/nbd-orphans.sh"
   full=~/suite-logs/${branch##*/}-latency-$rtt.log
   if in_primary ./target/debug/swarmy-chaos --no-start-stack --bin-dir target/debug \
       --image base-ubuntu:dev --sessions 1 --steps 2 --kills 0 --gateways 1 \
       --session-timeout-secs 600 --prime-boot-set --node-netns "$node_ns" --node-api-host "$primary_ip" \
-      --max-node-request-ms "$((rtt * 4 + 150))" > "$full" 2>&1; then
+      "${gates[@]}" --max-node-request-ms "$((rtt + 150))" > "$full" 2>&1; then
     echo "LATENCY_RTT=$rtt ok"
   else
     rc=1

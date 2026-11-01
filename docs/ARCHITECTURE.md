@@ -8,7 +8,7 @@ and for checkout development see [DEV.md](DEV.md). Each section names its implem
 
 The workspace holds thirty-two crates (`members = ["crates/*"]` in
 [Cargo.toml](../Cargo.toml)). These are descriptive tiers, not strict acyclic
-boundaries: sandbox uses the node API for scratch and GitHub credentials and uses volume for disk; chat and devtools use the HTTP
+boundaries: the node uses the node API for durable metadata and object storage for disk; chat and devtools use the HTTP
 client. The individual manifests in `crates/*/Cargo.toml` are the
 source of truth for edges; this is a layering rule, not a claim that every
 crate in a tier depends on every lower tier.
@@ -54,6 +54,8 @@ crate in a tier depends on every lower tier.
   server and reaches durable metadata only through its `VolumeMetadata` trait
   ([source](../crates/swarmy-volume/src/lib.rs)).
 
+Normal dependency edges from `swarmyd`, `swarmy-volume` and `swarmy-sandbox` to the store are forbidden by `scripts/check-node-deps.sh`. Nodes hold no database client; they read and write chunks, manifests, boot sets and screenshot blobs directly in object storage.
+
 ### Services
 
 - **swarmy-scheduler** scans runnable sessions and dispatches work
@@ -65,7 +67,7 @@ crate in a tier depends on every lower tier.
 - **swarmy-node-api** authenticates sandbox nodes by their own token and runs their store operations on the primary ([source](../crates/swarmy-node-api/src/role.rs)).
 - **swarmy-api** exposes HTTP JSON mutations and cursor-based event streams
   ([source](../crates/swarmy-api/src/role.rs)).
-- **swarmyd** builds the `swarmy-node` binary with no `swarmy-store` dependency. It registers and opens hosting through the node API; one sync renews every placement, claim and writer lease. It claims and completes tool calls through the node API, which publishes the completion event and wakes the session. It hosts volumes and sandbox commands on a node
+- **swarmyd** builds the `swarmy-node` binary with no `swarmy-store` dependency. It registers and opens hosting through the node API; one sync every five seconds renews every placement, claim and writer lease. It claims and completes tool calls through the node API, which publishes the completion event and wakes the session. It uses HTTP/2 over the SSH tunnel for one request per action, consumes its own NATS queue, answers memory requests, and hosts volumes and sandbox commands on a node
   ([source](../crates/swarmyd/src/role.rs)).
 
 ### Client and cloud
@@ -85,7 +87,7 @@ crate in a tier depends on every lower tier.
 Services share one bootstrap from `swarmy-config`: `Settings::load` for
 configuration, `init_tracing` for stderr logging, `Store::open_store` for the
 database handle, and `shutdown_signal` (SIGINT or SIGTERM), which the API, worker, scheduler,
-gateway, and swarmyd all wait on to shut down cleanly; the four
+and gateway all wait on to shut down cleanly; the four
 control-plane services flush queued turn metrics before exit
 ([config](../crates/swarmy-config/src/lib.rs),
 [store](../crates/swarmy-store/src/lib.rs)).
