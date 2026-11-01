@@ -1,4 +1,5 @@
 //! Volume metadata served by the primary node API.
+use crate::heads::Heads;
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use swarmy_core::{
     AgentId, ContentHash, FenceKind, Lease, LeaseOwnerId, ManifestHeader, ManifestId, NodeId,
@@ -53,10 +54,15 @@ impl swarmy_sandbox::SandboxMetadata for NodeSandboxMetadata {
 pub(crate) struct NodeVolumeMetadata {
     client: NodeClient,
     store: Store,
+    heads: Heads,
 }
 impl NodeVolumeMetadata {
-    pub(crate) fn new(client: NodeClient, store: Store) -> Self {
-        Self { client, store }
+    pub(crate) fn new(client: NodeClient, store: Store, heads: Heads) -> Self {
+        Self {
+            client,
+            store,
+            heads,
+        }
     }
 }
 #[async_trait::async_trait]
@@ -85,6 +91,7 @@ impl VolumeMetadata for NodeVolumeMetadata {
             )
             .await
             .map_err(metadata_error)?;
+        self.heads.set(volume, next);
         Ok(())
     }
     async fn protect_reused_chunks(

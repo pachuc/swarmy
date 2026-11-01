@@ -1,6 +1,8 @@
 use crate::{
     api_metadata::{NodeSandboxMetadata, NodeVolumeMetadata},
-    gpu, hosting,
+    gpu,
+    heads::Heads,
+    hosting,
     keeper::{Keeper, ScratchSkipped},
     memory, service, tools, upgrade, vol,
 };
@@ -77,18 +79,20 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
         registered.leases,
         settings.node.heartbeat_interval_ms,
     );
+    let heads = Heads::default();
     let runtime = open_runtime(
         &loaded,
         root.clone(),
         node,
         store.clone(),
         client.clone(),
+        heads.clone(),
         objects,
         node_gpu,
     )
     .await?;
     let hosting = hosting::Hosting::new(
-        store.clone(),
+        heads,
         client.clone(),
         keeper.clone(),
         runtime.clone(),
@@ -116,7 +120,7 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     let mut clients = JoinSet::new();
     let (shutdown, _) = watch::channel(false);
     let mut memory_server = memory::spawn(bus.clone(), keeper.clone(), runtime.clone(), node);
-    let mut tool_server = tools::spawn(bus, &store, node, &hosting, settings);
+    let mut tool_server = tools::spawn(bus, node, &hosting, settings);
     let serving: Result<()> = async {
         loop {
             tokio::select! {
@@ -205,6 +209,7 @@ async fn open_runtime(
     node: swarmy_core::NodeId,
     store: Store,
     client: NodeClient,
+    heads: Heads,
     objects: Arc<dyn object_store::ObjectStore>,
     gpu: swarmy_sandbox::NodeGpu,
 ) -> Result<Arc<RuncRuntime>> {
@@ -215,7 +220,11 @@ async fn open_runtime(
             ServerConfig {
                 directory: loaded.root.join(".swarmy/volumes"),
                 node,
-                metadata: Arc::new(NodeVolumeMetadata::new(client.clone(), store.clone())),
+                metadata: Arc::new(NodeVolumeMetadata::new(
+                    client.clone(),
+                    store.clone(),
+                    heads,
+                )),
                 objects,
             },
             NodeSandboxMetadata::new(client, store, node),
@@ -506,7 +515,11 @@ mod node_api_tests {
             ServerConfig {
                 directory: root.path().join("volumes"),
                 node,
-                metadata: Arc::new(NodeVolumeMetadata::new(client.clone(), store.clone())),
+                metadata: Arc::new(NodeVolumeMetadata::new(
+                    client.clone(),
+                    store.clone(),
+                    Heads::default(),
+                )),
                 objects: Arc::new(object_store::memory::InMemory::new()),
             },
             NodeSandboxMetadata::new(client, store.clone(), node),

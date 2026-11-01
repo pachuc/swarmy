@@ -1,4 +1,7 @@
-use crate::keeper::{self, ClaimHold, Keeper};
+use crate::{
+    heads::Heads,
+    keeper::{self, Answered, ClaimHold, Keeper},
+};
 use anyhow::{Context, Result};
 use base64::Engine as _;
 use std::{
@@ -10,41 +13,37 @@ use swarmy_core::{
     LeaseOwnerId, NodeId, PlacedToolClaim, PlacementRecord, ProcessListArguments, Sandbox,
     SandboxArguments, ToolJob, ToolResult, VolumeId,
 };
+use swarmy_node_protocol::{
+    ClientError, FenceKind, NodeClient, NodeRefusal, ToolClaimRequest, ToolCompleteRequest,
+};
 use swarmy_sandbox::{ExecOutput, ExecRequest, RuncRuntime};
-use swarmy_store::{Store, StoreError};
 use tokio::sync::mpsc;
+const NODE_TOOL_BATCH: std::num::NonZeroUsize =
+    std::num::NonZeroUsize::new(16).expect("16 is not zero");
 
 /// Extra time for sandbox exec startup (cold image reads) and helper startup, not the command.
 const EXEC_STARTUP_ALLOWANCE_MS: u64 = 60_000;
 
 pub(crate) fn spawn(
     bus: Bus,
-    store: &Store,
     node: NodeId,
     hosting: &Arc<crate::hosting::Hosting>,
     settings: &swarmy_config::Settings,
 ) -> tokio::task::JoinHandle<Result<()>> {
-    tokio::spawn(serve(
-        bus,
-        store.clone(),
-        node,
-        hosting.clone(),
-        settings.bus.ack_wait_ms,
-        settings.scheduler.resend_interval_ms,
-    ))
+    tokio::spawn(serve(bus, node, hosting.clone(), settings.bus.ack_wait_ms))
 }
 
 async fn serve(
     bus: Bus,
-    store: Store,
     node: NodeId,
     hosting: Arc<crate::hosting::Hosting>,
     ack_wait: Duration,
-    resend_interval: Duration,
 ) -> Result<()> {
     let queue = WorkQueue::NodeTools(node);
     bus.setup(std::slice::from_ref(&queue)).await?;
-    let mut messages = bus.consume::<ToolJob>(&queue).await?;
+    let mut messages = bus
+        .consume_batched::<ToolJob>(&queue, NODE_TOOL_BATCH)
+        .await?;
     let mut calls = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
@@ -58,12 +57,8 @@ async fn serve(
                     Some(Ok(message)) => message,
                 };
                 let hosting = hosting.clone();
-                let store = store.clone();
-                let bus = bus.clone();
                 calls.spawn(async move {
-                    let outcome =
-                        handle_call(&message, &store, &hosting, &bus, ack_wait, resend_interval)
-                            .await;
+                    let outcome = handle_call(&message, &hosting, ack_wait).await;
                     settle(&message, outcome).await;
                 });
             }
@@ -76,9 +71,8 @@ async fn serve(
     }
 }
 
-/// Run one tool call without acknowledging it. Every error returns to the
-/// caller, which releases the message for redelivery; only the live nudge
-/// stays best effort because the scheduler recovers it.
+/// Run one tool call without acknowledging it. Every error returns to `settle`,
+/// which releases the message for redelivery.
 fn wall_ns() -> Option<i64> {
     i64::try_from(jiff::Timestamp::now().as_nanosecond()).ok()
 }
@@ -92,50 +86,16 @@ pub(crate) struct CallMetrics {
 
 async fn handle_call(
     message: &WorkMessage<ToolJob>,
-    store: &Store,
     hosting: &Arc<crate::hosting::Hosting>,
-    bus: &Bus,
     ack_wait: Duration,
-    resend_interval: Duration,
 ) -> Result<()> {
     let delivered_ns = wall_ns();
-    // One lookup per tool call; the turn travels with the job
-    // so the execution path needs no further lookups.
-    let turn = store.request_turn_id(message.value.request_id).await?;
-    let result = message
+    message
         .keep_alive_while(
             ack_wait / 3,
-            hosting.call(message.value.clone(), turn, delivered_ns),
+            hosting.call(message.value.clone(), delivered_ns),
         )
-        .await;
-    result?;
-    // The completion stage lands in the same batch as
-    // the tool result inside `run`; only the live bus
-    // event is emitted here, never a second store write.
-    if let Some(turn) = turn {
-        bus.record_turn(&Bus::turn_event(
-            message.value.session_id,
-            turn,
-            swarmy_core::TurnStage::ToolCompleted,
-            Some(message.value.request_id),
-        ))
-        .await;
-    }
-    if let Some(session) = store.fetch_session(message.value.session_id).await?
-        && session.state == swarmy_core::SessionState::Runnable
-        && let Err(error) = bus
-            .nudge(
-                session.session_id,
-                session.head_seq,
-                turn,
-                resend_interval,
-                false,
-            )
-            .await
-    {
-        tracing::warn!(error = %swarmy_core::error_chain(&error), "tool completion nudge failed; scheduler will recover");
-    }
-    Ok(())
+        .await
 }
 
 /// The only place that acknowledges or releases a tool message. It runs
@@ -167,131 +127,156 @@ async fn release(message: &WorkMessage<ToolJob>) {
     }
 }
 
-pub(crate) fn placement_refusal(
-    current: Option<&PlacementRecord>,
-    dispatched: &PlacementRecord,
-    node: NodeId,
-) -> Option<anyhow::Error> {
-    current
-        .filter(|placement| placement.node_id != node)
-        .or_else(|| (dispatched.node_id != node).then_some(dispatched))
-        .map(|placement| {
-            anyhow::anyhow!(
-                "agent is placed on another node {} at epoch {}",
-                placement.node_id,
-                placement.epoch
-            )
-        })
+/// A tool call claimed through the node API.
+pub(crate) struct Claimed {
+    pub(crate) claim: PlacedToolClaim,
+    pub(crate) hold: ClaimHold,
+    pub(crate) turn: Option<swarmy_core::MessageId>,
+    pub(crate) claimed_ns: Option<i64>,
 }
 
-pub(crate) async fn execute(
-    store: &Store,
+pub(crate) async fn claim(
+    client: &NodeClient,
     keeper: &Keeper,
-    runtime: Arc<RuncRuntime>,
-    node: NodeId,
     placement: &PlacementRecord,
     job: ToolJob,
-    mut metrics: CallMetrics,
-) -> Result<()> {
-    store.ensure_session_computer(job.session_id).await?;
-    if store.tool_completed(job.request_id).await? {
-        return Ok(());
-    }
-    // claim_placed_tool checks the live placement and dispatch epoch in the
-    // same transaction as the claim; a separate validation could race anyway.
+    deadline: tokio::time::Instant,
+) -> Result<Option<Claimed>> {
     let sent = tokio::time::Instant::now();
-    let claim = PlacedToolClaim {
+    let request = ToolClaimRequest {
         job,
-        owner: LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
         placement: placement.clone(),
-        expires_at: jiff::Timestamp::now().checked_add(keeper.leases().tool_claim)?,
+        owner: LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
     };
-    // The transactional claim is the guard. If it rejects a stale placement,
-    // read the current one only to explain the refusal in the node log.
-    let claimed = match store.claim_placed_tool(&claim).await {
-        Ok(claimed) => claimed,
-        Err(error) => {
-            let current = store.get_by_agent(placement.agent_id).await?;
-            if let Some(refusal) = placement_refusal(current.as_ref(), placement, node) {
-                return Err(refusal);
-            }
-            return Err(error.into());
+    match client.claim_tool(&request, deadline).await {
+        Ok(answer) => {
+            let local = keeper::local_deadline(
+                Answered {
+                    sent,
+                    server_now: answer.server_now,
+                },
+                answer.claim.expires_at,
+                keeper::margin(keeper.leases().tool_claim),
+            );
+            let hold = keeper.hold_claim(answer.claim.clone(), local);
+            Ok(Some(Claimed {
+                claim: answer.claim,
+                hold,
+                turn: answer.turn,
+                claimed_ns: wall_ns(),
+            }))
         }
-    };
-    anyhow::ensure!(claimed, "tool call already claimed");
-    metrics.claimed_ns = wall_ns();
-    let _activity = swarmy_volume::priority::ToolActivity::begin();
-    let hold = keeper.hold_claim(
-        claim.clone(),
-        sent + keeper.leases().tool_claim - keeper::margin(keeper.leases().tool_claim),
-    );
-    run(store, keeper, runtime, &claim, hold, &metrics).await
+        Err(ClientError::Refused(NodeRefusal::AlreadyDone)) => Ok(None),
+        Err(ClientError::Refused(refusal)) => Err(claim_refusal(refusal)),
+        Err(error) => Err(error.into()),
+    }
 }
 
-async fn run(
-    store: &Store,
+fn claim_refusal(refusal: NodeRefusal) -> anyhow::Error {
+    match refusal {
+        NodeRefusal::PlacedElsewhere { .. } | NodeRefusal::EpochStopped { .. } => {
+            crate::hosting::refusal_error(refusal)
+        }
+        NodeRefusal::Fenced(FenceKind::PlacedToolClaim) => {
+            anyhow::anyhow!("tool call already claimed")
+        }
+        NodeRefusal::Fenced(FenceKind::DispatchPlacementStale { detail })
+        | NodeRefusal::Unavailable(detail) => anyhow::anyhow!(detail),
+        other => anyhow::anyhow!("node API refused the tool claim: {other}"),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Completion {
+    Committed { interrupt_requested: bool },
+    AlreadyDone,
+}
+
+pub(crate) async fn complete(
+    client: &NodeClient,
+    claim: &PlacedToolClaim,
+    hold: &ClaimHold,
+    result: ToolResult,
+    tool: swarmy_core::ToolMetric,
+) -> Result<Completion> {
+    let deadline = hold
+        .deadline()
+        .context("tool claim lost before completion")?;
+    match client
+        .complete_tool(
+            &ToolCompleteRequest {
+                claim: claim.clone(),
+                result,
+                tool,
+            },
+            deadline,
+        )
+        .await
+    {
+        Ok(answer) => Ok(Completion::Committed {
+            interrupt_requested: answer.interrupt_requested,
+        }),
+        Err(ClientError::Refused(NodeRefusal::AlreadyDone)) => Ok(Completion::AlreadyDone),
+        Err(ClientError::Refused(refusal)) => Err(anyhow::anyhow!(
+            "node API refused the tool completion: {refusal}"
+        )),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(crate) async fn run(
+    client: &NodeClient,
     keeper: &Keeper,
     runtime: Arc<RuncRuntime>,
-    claim: &PlacedToolClaim,
-    mut hold: ClaimHold,
-    metrics: &CallMetrics,
+    heads: &Heads,
+    claimed: Claimed,
+    metrics: CallMetrics,
 ) -> Result<()> {
-    let (result, summary) = tokio::select! {
-        produced = produce(store, &runtime, claim) => produced?,
+    let _activity = swarmy_volume::priority::ToolActivity::begin();
+    let Claimed {
+        claim, mut hold, ..
+    } = claimed;
+    let sandbox = Sandbox {
+        agent_id: claim.placement.agent_id,
+    };
+    let (result, timing) = tokio::select! {
+        produced = produce(&runtime, heads, &claim) => produced?,
         reason = hold.lost() => anyhow::bail!("tool claim lost before the command finished: {reason}"),
     };
-    // The store compares claims by identity, so renewal during commit is harmless.
-    commit_result(store, claim, &result).await?;
+    let tool = node_tool_metric(&claim, &metrics, &result, &timing);
+    let outcome = complete(client, &claim, &hold, result.clone(), tool).await?;
+    if matches!(
+        outcome,
+        Completion::Committed {
+            interrupt_requested: true
+        }
+    ) {
+        stop_result_process(&runtime, &sandbox, claim.placement.epoch, &result).await?;
+    }
     drop(hold);
-    // The tool result and completion stage land right after the fenced
-    // commit so the worker sees the completion without waiting for the
-    // volume stat round trip. The first-tool computer re-sample follows in
-    // its own transaction from a spawned task; the store keeps the first
-    // re-sample per turn. Queueing versus execution stays distinguishable
-    // through `started_ns` and `process_wall_ms`. The output cap above
-    // applies before the metrics patch so the recorded size matches what
-    // the worker stored.
-    observe_tool_completion(store, keeper, runtime, claim, metrics, &result, &summary);
-    tracing::info!(request_id = %claim.job.request_id, "committed sandbox tool output");
+    if matches!(outcome, Completion::Committed { .. }) {
+        observe_first_tool(keeper, runtime, &claim, &metrics);
+        tracing::info!(request_id = %claim.job.request_id, "committed sandbox tool output");
+    } else {
+        tracing::info!(request_id = %claim.job.request_id, "tool completion already committed by an earlier attempt");
+    }
     Ok(())
 }
 
 async fn produce(
-    store: &Store,
     runtime: &Arc<RuncRuntime>,
+    heads: &Heads,
     claim: &PlacedToolClaim,
 ) -> Result<(ToolResult, ToolTiming)> {
     tracing::info!(request_id = %claim.job.request_id, epoch = claim.placement.epoch, "executing sandbox command");
     let sandbox = Sandbox {
         agent_id: claim.placement.agent_id,
     };
-    require_display(store, claim).await?;
-    let outcome = run_command(store, runtime, &sandbox, claim).await?;
+    let outcome = run_command(heads, runtime, &sandbox, claim).await?;
     let mut result = outcome.result;
     extract_image_blob(runtime.objects(), &mut result).await?;
     cap_completed_output(runtime, &sandbox, claim, &mut result).await;
-    if store.interrupt_requested(claim.job.session_id).await? {
-        stop_result_process(runtime, &sandbox, claim.placement.epoch, &result).await?;
-    }
     Ok((result, outcome.summary))
-}
-
-/// Reject display tools when the agent's image has no display. Display
-/// support varies only by image manifest, so this check runs before the
-/// sandbox starts.
-async fn require_display(store: &Store, claim: &PlacedToolClaim) -> Result<()> {
-    if !claim.job.arguments.is_display_tool() {
-        return Ok(());
-    }
-    let agent = store
-        .get_agent(claim.placement.agent_id)
-        .await?
-        .context("agent missing")?;
-    anyhow::ensure!(
-        store.image_display(&agent.image).await?,
-        "display tool requires a display image"
-    );
-    Ok(())
 }
 
 /// Move an inline base64 screenshot out of the result metadata into blob
@@ -333,22 +318,6 @@ async fn cap_completed_output(
     }
 }
 
-async fn commit_result(store: &Store, claim: &PlacedToolClaim, result: &ToolResult) -> Result<()> {
-    // A single call usually remains at its request head. Concurrent calls and
-    // rebuild notices return the actual head from the same fenced transaction.
-    let mut head = claim.job.step;
-    loop {
-        match store.complete_placed_tool(claim, head, result).await {
-            Ok(_) => break,
-            Err(StoreError::Fence(swarmy_store::FenceError::StaleSequence { actual, .. })) => {
-                head = actual;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
-}
-
 /// Wall-clock start and process timing for one sandbox execution.
 struct ToolTiming {
     exit_status: Option<i32>,
@@ -362,7 +331,7 @@ struct CommandOutcome {
 }
 
 async fn run_command(
-    store: &Store,
+    heads: &Heads,
     runtime: &RuncRuntime,
     sandbox: &Sandbox,
     claim: &PlacedToolClaim,
@@ -430,13 +399,11 @@ async fn run_command(
         if arguments.is_display_tool() {
             display_result(arguments.name(), value)?
         } else if matches!(arguments, SandboxArguments::Bash(_)) {
-            value["manifest_id"] = serde_json::json!(
-                store
-                    .get_volume(VolumeId::from_ulid(sandbox.agent_id.as_ulid()))
-                    .await?
-                    .context("agent volume missing")?
-                    .head_manifest
-            );
+            let volume = VolumeId::from_ulid(sandbox.agent_id.as_ulid());
+            let head = heads
+                .get(volume)
+                .context("no published head for the agent volume on this node")?;
+            value["manifest_id"] = serde_json::json!(head);
             let metadata = serde_json::from_value(value.clone())?;
             ToolResult::Completed {
                 title: "bash".into(),
@@ -454,16 +421,12 @@ async fn run_command(
     clippy::cast_precision_loss,
     reason = "fetch histogram reads are approximate, so floating-point display precision is sufficient"
 )]
-fn observe_tool_completion(
-    store: &Store,
-    keeper: &Keeper,
-    runtime: Arc<RuncRuntime>,
+fn node_tool_metric(
     claim: &PlacedToolClaim,
     metrics: &CallMetrics,
     result: &ToolResult,
     timing: &ToolTiming,
-) {
-    let Some(turn) = metrics.turn else { return };
+) -> swarmy_core::ToolMetric {
     let (output_bytes, exit_status) = match result {
         ToolResult::Completed {
             output, metadata, ..
@@ -477,7 +440,7 @@ fn observe_tool_completion(
         ),
         ToolResult::Error { error } => (error.len() as u64, timing.exit_status),
     };
-    let tool = swarmy_store::ToolMetric {
+    swarmy_core::ToolMetric {
         request_id: claim.job.request_id.to_string(),
         name: claim.job.arguments.name().into(),
         started_ns: timing.started_ns,
@@ -487,25 +450,22 @@ fn observe_tool_completion(
         output_bytes: Some(output_bytes),
         process_wall_ms: timing.process_wall_ms,
         ..Default::default()
-    };
-    let completed = Bus::turn_event(
-        claim.job.session_id,
-        turn,
-        swarmy_core::TurnStage::ToolCompleted,
-        Some(claim.job.request_id),
-    );
-    // The result lands before the volume stat round trip so `run` returns
-    // without waiting on the attach server socket.
-    store.observe_turn_metrics(
-        claim.job.session_id,
-        turn,
-        swarmy_store::completion_patches(tool, None, completed),
-    );
-    // Lazy hydration during the first command is invisible in the boot
-    // sample, so re-sample after the result is committed. Only the first
-    // completion per turn carries it; the store keeps the first re-sample
-    // per turn as well.
-    if metrics.needs_computer_sample {
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "fetch histogram reads are approximate, so floating-point display precision is sufficient"
+)]
+fn observe_first_tool(
+    keeper: &Keeper,
+    runtime: Arc<RuncRuntime>,
+    claim: &PlacedToolClaim,
+    metrics: &CallMetrics,
+) {
+    if metrics.needs_computer_sample
+        && let Some(turn) = metrics.turn
+    {
         let keeper = keeper.clone();
         let session = claim.job.session_id;
         let volume = VolumeId::from_ulid(claim.placement.agent_id.as_ulid());
@@ -767,10 +727,8 @@ pub(crate) async fn has_processes(
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
-    use super::{exec_guard, helper_timeout_error, placement_refusal};
-    use swarmy_core::{
-        AgentId, NodeId, PlacementChangeReason, PlacementRecord, ignore_best_effort,
-    };
+    use super::{exec_guard, helper_timeout_error};
+    use swarmy_core::{NodeId, ignore_best_effort};
 
     #[test]
     fn bash_guard_reserves_startup_after_default_yield() {
@@ -789,47 +747,6 @@ mod tests {
         assert!(error.contains("process process-123; use process_log or process_list"));
         assert!(error.contains("within 70 s"));
         assert!(error.contains("stdout: partial stderr: warning"));
-    }
-
-    #[test]
-    fn rejected_claim_explains_other_nodes_placement() {
-        let node = NodeId::from_ulid(ulid::Ulid::generate());
-        let other = NodeId::from_ulid(ulid::Ulid::generate());
-        let now = jiff::Timestamp::now();
-        let dispatched = PlacementRecord {
-            agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
-            node_id: other,
-            epoch: 2,
-            expires_at: now,
-            last_change_reason: PlacementChangeReason::Initial,
-            last_changed_at: now,
-            gpu: swarmy_core::GpuRequirement::None,
-        };
-        let explanation = format!("agent is placed on another node {other} at epoch 2");
-        // The takeover test dispatches the replacement placement to the old node.
-        assert_eq!(
-            placement_refusal(Some(&dispatched), &dispatched, node)
-                .unwrap()
-                .to_string(),
-            explanation
-        );
-        assert_eq!(
-            placement_refusal(None, &dispatched, node)
-                .unwrap()
-                .to_string(),
-            explanation
-        );
-        let local = PlacementRecord {
-            node_id: node,
-            ..dispatched
-        };
-        assert_eq!(
-            placement_refusal(Some(&dispatched), &local, node)
-                .unwrap()
-                .to_string(),
-            explanation
-        );
-        assert!(placement_refusal(Some(&local), &local, node).is_none());
     }
 
     struct Processes(tempfile::TempDir);

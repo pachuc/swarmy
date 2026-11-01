@@ -1,4 +1,8 @@
-use crate::keeper::{Answered, Keeper, Occupancy, PlacementHold};
+use crate::{
+    heads::Heads,
+    keeper::{Answered, Keeper, Occupancy, PlacementHold},
+    tools::Claimed,
+};
 use anyhow::{Context, Result, bail};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use swarmy_core::{
@@ -10,7 +14,6 @@ use swarmy_node_protocol::{
     MetricBatch, NodeClient, NodeMetric, NodeRefusal, ToolRouteRequest, WriterToken,
 };
 use swarmy_sandbox::RuncRuntime;
-use swarmy_store::Store;
 use swarmy_volume::{WriterGrant, WriterLease};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::time::Instant;
@@ -24,7 +27,6 @@ struct BootTimes {
 
 struct Call {
     job: ToolJob,
-    turn: Option<MessageId>,
     delivered_ns: Option<i64>,
     reply: oneshot::Sender<Result<()>>,
     activity: ActivityGuard,
@@ -84,7 +86,7 @@ struct Opening {
 
 /// Each actor serializes calls for one agent while the keeper renews its leases.
 pub(crate) struct Hosting {
-    store: Store,
+    heads: Heads,
     runtime: Arc<RuncRuntime>,
     client: NodeClient,
     keeper: Keeper,
@@ -105,7 +107,7 @@ pub(crate) struct Hosting {
 
 impl Hosting {
     pub(crate) fn new(
-        store: Store,
+        heads: Heads,
         client: NodeClient,
         keeper: Keeper,
         runtime: Arc<RuncRuntime>,
@@ -114,7 +116,7 @@ impl Hosting {
         previous: &[PlacementRecord],
     ) -> Arc<Self> {
         Arc::new(Self {
-            store,
+            heads,
             client,
             keeper,
             runtime,
@@ -188,6 +190,7 @@ impl Hosting {
             .lock()
             .await
             .insert(agent, answer.placement.epoch);
+        self.heads.set(answer.volume, answer.head);
         Ok(Some(Opening {
             placement: answer.placement,
             hold,
@@ -199,12 +202,10 @@ impl Hosting {
         }))
     }
 
-    /// Serve one tool call with its durable turn already resolved by the
-    /// caller, so the execution path needs no `request_turn_id` lookup.
+    /// Serve a job through the hosting actor.
     pub(crate) async fn call(
         self: &Arc<Self>,
         job: ToolJob,
-        turn: Option<MessageId>,
         delivered_ns: Option<i64>,
     ) -> Result<()> {
         let Some(agent) = self.route(&job).await? else {
@@ -250,7 +251,6 @@ impl Hosting {
         calls
             .send(Call {
                 job,
-                turn,
                 delivered_ns,
                 reply,
                 activity,
@@ -319,10 +319,9 @@ impl Hosting {
     async fn boot_computer(
         &self,
         opening: &mut Opening,
-        first: &Call,
         placement_started: Instant,
         open_ms: f64,
-    ) -> Result<()> {
+    ) -> Result<BootTimes> {
         let grant = WriterGrant {
             volume: opening.volume,
             head: opening.head,
@@ -341,18 +340,11 @@ impl Hosting {
             )
             .await?;
         let boot_ms = booting.elapsed().as_secs_f64() * 1_000.0;
-        self.report_ready(
-            opening.placement.clone(),
-            opening.volume,
-            first.job.session_id,
-            first.turn,
-            BootTimes {
-                placement: placement_started.elapsed().as_secs_f64() * 1_000.0,
-                open: open_ms,
-                boot: boot_ms,
-            },
-        );
-        Ok(())
+        Ok(BootTimes {
+            placement: placement_started.elapsed().as_secs_f64() * 1_000.0,
+            open: open_ms,
+            boot: boot_ms,
+        })
     }
 
     /// A requirement release stops hosting between calls even if processes run:
@@ -385,9 +377,35 @@ impl Hosting {
         tokio::pin!(lost);
         let serving = async {
             anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
-            self.boot_computer(&mut opening, &first, placement_started, open_ms)
-                .await?;
-            self.execute(&opening.placement, first).await?;
+            let placement = opening.placement.clone();
+            let deadline = opening
+                .hold
+                .deadline()
+                .context("placement lease lost before the first claim")?;
+            let (booted, claimed) = tokio::join!(
+                self.boot_computer(&mut opening, placement_started, open_ms),
+                crate::tools::claim(
+                    &self.client,
+                    &self.keeper,
+                    &placement,
+                    first.job.clone(),
+                    deadline
+                ),
+            );
+            let times = booted?;
+            let turn = claimed
+                .as_ref()
+                .ok()
+                .and_then(|c| c.as_ref())
+                .and_then(|c| c.turn);
+            self.report_ready(
+                placement.clone(),
+                opening.volume,
+                first.job.session_id,
+                turn,
+                times,
+            );
+            self.finish(&placement, first, claimed).await?;
             loop {
                 if *shutdown.borrow() || opening.hold.release_requested() {
                     break;
@@ -396,7 +414,7 @@ impl Hosting {
                     call = calls.recv() => {
                         let Some(mut call) = call else { break; };
                         call.activity.start(call.job.session_id);
-                        self.execute(&opening.placement, call).await?;
+                        self.execute(&opening.placement, &opening.hold, call).await?;
                     }
                     () = tokio::time::sleep(self.idle) => {
                         if !crate::tools::has_processes(&self.runtime, &opening.placement).await? { break; }
@@ -482,40 +500,73 @@ impl Hosting {
                 deadline,
             )
             .await?;
+        self.heads.forget(opening.volume);
         self.previous.lock().await.remove(&agent);
         self.computer_sampled.lock().await.remove(&agent);
         tracing::info!(%agent, epoch = opening.placement.epoch, reason = cause, booted = hosted, "placement released");
         Ok(())
     }
 
-    async fn execute(&self, placement: &PlacementRecord, call: Call) -> Result<()> {
+    async fn execute(
+        &self,
+        placement: &PlacementRecord,
+        hold: &PlacementHold,
+        call: Call,
+    ) -> Result<()> {
+        let claimed = match hold.deadline() {
+            Some(deadline) => {
+                crate::tools::claim(
+                    &self.client,
+                    &self.keeper,
+                    placement,
+                    call.job.clone(),
+                    deadline,
+                )
+                .await
+            }
+            None => Err(anyhow::anyhow!("placement lease lost")),
+        };
+        self.finish(placement, call, claimed).await
+    }
+
+    async fn finish(
+        &self,
+        placement: &PlacementRecord,
+        call: Call,
+        claimed: Result<Option<Claimed>>,
+    ) -> Result<()> {
+        let claimed = match claimed {
+            Ok(Some(claimed)) => claimed,
+            Ok(None) => {
+                ignore_best_effort(call.reply.send(Ok(())), "reply to completed call");
+                return Ok(());
+            }
+            Err(error) => {
+                ignore_best_effort(call.reply.send(Err(error)), "reply to waiter");
+                bail!("tool execution interrupted; stopping agent");
+            }
+        };
         let mut shutdown = self.shutdown.subscribe();
         anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
         // Only the first completion per turn carries the computer re-sample;
         // later tools skip the volume stat read entirely. One entry per
         // agent keeps the map bounded for the life of the node process.
-        let needs_sample = match call.turn {
+        let needs_sample = match claimed.turn {
             Some(turn) => {
                 self.computer_sampled.lock().await.get(&placement.agent_id) != Some(&turn)
             }
             None => false,
         };
-        let turn = call.turn;
+        let turn = claimed.turn;
         let metrics = crate::tools::CallMetrics {
             turn,
             needs_computer_sample: needs_sample,
             delivered_ns: call.delivered_ns,
-            claimed_ns: None,
+            claimed_ns: claimed.claimed_ns,
         };
         let result = tokio::select! {
-            result = crate::tools::execute(
-                &self.store,
-                &self.keeper,
-                self.runtime.clone(),
-                self.node,
-                placement,
-                call.job,
-                metrics,
+            result = crate::tools::run(
+                &self.client, &self.keeper, self.runtime.clone(), &self.heads, claimed, metrics,
             ) => result,
             _ = shutdown.changed() => Err(anyhow::anyhow!("node is shutting down")),
         };
@@ -547,7 +598,7 @@ impl Hosting {
     }
 }
 
-fn refusal_error(refusal: NodeRefusal) -> anyhow::Error {
+pub(crate) fn refusal_error(refusal: NodeRefusal) -> anyhow::Error {
     match refusal {
         NodeRefusal::PlacedElsewhere { node, epoch } => {
             anyhow::anyhow!("agent is placed on another node {node} at epoch {epoch}")
@@ -669,7 +720,7 @@ mod tests {
         .unwrap();
         let settings = swarmy_config::Settings::default();
         let hosting = Hosting::new(
-            store.clone(),
+            Heads::default(),
             client,
             keeper.clone(),
             Arc::new(runtime),

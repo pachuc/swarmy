@@ -145,6 +145,13 @@ pub(crate) enum ClaimState {
 }
 pub(crate) struct ClaimHold(watch::Receiver<ClaimState>);
 impl ClaimHold {
+    /// The local deadline while live; `None` after loss.
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        match &*self.0.borrow() {
+            ClaimState::Live { deadline } if *deadline > Instant::now() => Some(*deadline),
+            _ => None,
+        }
+    }
     pub(crate) async fn lost(&mut self) -> String {
         loop {
             let state = self.0.borrow_and_update().clone();
