@@ -18,6 +18,12 @@ The node reports scratch directories and their occupancy. The server decides del
 
 `POST /node/v1/tool/route` resolves a tool job's immutable session to its agent. The node caches that agent for its hosting actor. A completed job returns `AlreadyDone`; dispatch to another node returns `PlacedElsewhere`.
 
+## Tool claim and completion
+
+`POST /node/v1/tool/claim` checks dispatch ownership and the live placement, reads the turn, and refuses display tools when the agent image has no display. The node supplies a fresh claim owner for each call and retains it across HTTP retries. The server sets expiry on its own clock; a same-owner repeat raises the stored expiry when needed. Other owners are fenced.
+
+`POST /node/v1/tool/complete` accepts screenshots only as `blobs/<64 hex>` object keys, not inline base64. It retries a moving session head before committing the result. Only the request that committed queues completion metrics, publishes the `ToolCompleted` event, and nudges the session if it became runnable; a repeat answers `AlreadyDone` without publishing. For an unknown commit, a set done flag means the commit landed and publication proceeds; otherwise completion retries. The response carries the post-commit interrupt flag. The node API service connects to NATS for events and nudges; publication is best effort after durable commit.
+
 ## Hosting open
 
 `POST /node/v1/hosting/open` accepts only a live job dispatched to the caller. It repeats safe store steps to claim a placement, bind the volume, open its writer and head, and read the sandbox spec. A stopped epoch is never renewed. The answer includes the server clock and an empty boot set until boot working sets are recorded.

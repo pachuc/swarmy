@@ -159,6 +159,7 @@ async fn register_records_the_node_on_the_server_clock() {
     });
     let base = support::serve(router(NodeApiState::new(
         f.store.clone(),
+        f.bus.clone(),
         swarmy_node_api::NodeApiPolicy {
             placement_lease: Duration::from_secs(47),
             ..support::policy()

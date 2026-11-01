@@ -21,7 +21,10 @@ pub use sync::{
     EvictReason, HostedPlacement, MetricBatch, NodeMetric, PlacementRenewal, Renewal, ScratchEntry,
     ScratchVerdict, SyncRequest, SyncResponse, WriterToken,
 };
-pub use tools::{ToolRouteRequest, ToolRouteResponse};
+pub use tools::{
+    ToolClaimRequest, ToolClaimResponse, ToolCompleteRequest, ToolCompleteResponse,
+    ToolRouteRequest, ToolRouteResponse,
+};
 pub use types::{
     Ack, LeaseLengths, NodeAdvert, PlacementOccupancy, PlacementsResponse, RegisterRequest,
     RegisterResponse,
@@ -44,6 +47,10 @@ pub const WRITER_LEASE: Duration = Duration::from_secs(60);
 /// Non-lease request deadline.
 pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(30);
 
+/// Claim one tool call under this node's placement.
+pub const TOOL_CLAIM_PATH: &str = "/node/v1/tool/claim";
+/// Commit one tool call's result.
+pub const TOOL_COMPLETE_PATH: &str = "/node/v1/tool/complete";
 /// Resolve a tool job's agent.
 pub const TOOL_ROUTE_PATH: &str = "/node/v1/tool/route";
 /// Open agent hosting.

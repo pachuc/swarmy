@@ -154,9 +154,20 @@ impl Store {
         if let Some(old) = current?
             && old.expires_at > self.now()
         {
-            return Ok(old.owner == claim.owner
+            let mine = old.owner == claim.owner
                 && old.job_digest == job_digest(&claim.job)?
-                && old.placement.same_grant(&claim.placement));
+                && old.placement.same_grant(&claim.placement);
+            if mine && claim.expires_at > old.expires_at {
+                write(
+                    trx,
+                    &key,
+                    &StoredPlacedClaim {
+                        expires_at: claim.expires_at,
+                        ..old
+                    },
+                )?;
+            }
+            return Ok(mine);
         }
         write(
             trx,

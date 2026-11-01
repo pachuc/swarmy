@@ -171,6 +171,38 @@ impl NodeClient {
         )
         .await
     }
+    /// Claim a tool before the caller's deadline.
+    /// # Errors
+    /// As `register`.
+    pub async fn claim_tool(
+        &self,
+        request: &crate::ToolClaimRequest,
+        deadline: Instant,
+    ) -> Result<crate::ToolClaimResponse, ClientError> {
+        self.call(
+            reqwest::Method::POST,
+            crate::TOOL_CLAIM_PATH,
+            Some(request),
+            deadline,
+        )
+        .await
+    }
+    /// Complete a tool before the caller's deadline.
+    /// # Errors
+    /// As `register`.
+    pub async fn complete_tool(
+        &self,
+        request: &crate::ToolCompleteRequest,
+        deadline: Instant,
+    ) -> Result<crate::ToolCompleteResponse, ClientError> {
+        self.call(
+            reqwest::Method::POST,
+            crate::TOOL_COMPLETE_PATH,
+            Some(request),
+            deadline,
+        )
+        .await
+    }
     /// Send open hosting before the caller's deadline.
     /// # Errors
     /// As `register`.

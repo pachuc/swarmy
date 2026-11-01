@@ -162,3 +162,69 @@ async fn a_node_cannot_act_on_another_nodes_tokens() {
         .unwrap();
     client_b.publish_volume(&publish, deadline()).await.unwrap();
 }
+
+#[tokio::test]
+async fn a_node_cannot_claim_or_complete_for_another_node() {
+    let Some(f) = support::fixture("na5b-auth").await else {
+        return;
+    };
+    let a = support::dispatched(&f.store).await;
+    let b = support::dispatched(&f.store).await;
+    let base = support::served(&f).await;
+    let alice = support::client(&base, &a.token);
+    let bob = support::client(&base, &b.token);
+    let own = alice
+        .open_hosting(
+            &HostingOpenRequest {
+                agent: a.agent,
+                job: a.jobs[0].clone(),
+                previous_epoch: None,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap()
+        .placement;
+    let foreign_placement = bob
+        .open_hosting(
+            &HostingOpenRequest {
+                agent: b.agent,
+                job: b.jobs[0].clone(),
+                previous_epoch: None,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap()
+        .placement;
+    foreign(
+        &alice
+            .claim_tool(
+                &support::claim_request(&b.jobs[0], &foreign_placement),
+                deadline(),
+            )
+            .await,
+    );
+    let forged = support::claim_request(&b.jobs[0], &own);
+    assert!(matches!(
+        alice.claim_tool(&forged, deadline()).await,
+        Err(ClientError::Refused(
+            NodeRefusal::PlacedElsewhere { .. } | NodeRefusal::Fenced(_)
+        ))
+    ));
+    let claim = bob
+        .claim_tool(
+            &support::claim_request(&b.jobs[0], &foreign_placement),
+            deadline(),
+        )
+        .await
+        .unwrap()
+        .claim;
+    let request = swarmy_node_protocol::ToolCompleteRequest {
+        claim,
+        result: support::bash_result(),
+        tool: swarmy_core::ToolMetric::default(),
+    };
+    foreign(&alice.complete_tool(&request, deadline()).await);
+    bob.complete_tool(&request, deadline()).await.unwrap();
+}

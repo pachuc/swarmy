@@ -140,3 +140,37 @@ fn volume_and_credential_wire_types_round_trip() {
     });
     roundtrip(&Ack { server_now: now });
 }
+
+#[test]
+fn tool_claim_and_completion_wire_types_round_trip() {
+    let (job, placement, _, _, _, _, _) = fixture();
+    let now = jiff::Timestamp::UNIX_EPOCH;
+    let owner = LeaseOwnerId::from_ulid(id());
+    let claim = swarmy_core::PlacedToolClaim {
+        job: job.clone(),
+        owner,
+        placement: placement.clone(),
+        expires_at: now,
+    };
+    roundtrip(&ToolClaimRequest {
+        job,
+        placement,
+        owner,
+    });
+    roundtrip(&ToolClaimResponse {
+        server_now: now,
+        claim: claim.clone(),
+        turn: Some(MessageId::from_ulid(id())),
+    });
+    roundtrip(&ToolCompleteRequest {
+        claim,
+        result: swarmy_core::ToolResult::Error {
+            error: "fail".into(),
+        },
+        tool: swarmy_core::ToolMetric::default(),
+    });
+    roundtrip(&ToolCompleteResponse {
+        server_now: now,
+        interrupt_requested: true,
+    });
+}

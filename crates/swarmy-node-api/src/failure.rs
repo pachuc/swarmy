@@ -30,7 +30,9 @@ pub(crate) fn failure(error: &StoreError) -> Failure {
                 FenceError::PlacementMismatch | FenceError::PlacementAgentMismatch => {
                     Some(FenceKind::Placement)
                 }
-                FenceError::PlacedToolClaimMismatch => Some(FenceKind::PlacedToolClaim),
+                FenceError::PlacedToolClaimMismatch | FenceError::ToolClaimMismatch => {
+                    Some(FenceKind::PlacedToolClaim)
+                }
                 FenceError::VolumeLeaseMismatch => Some(FenceKind::VolumeLease),
                 FenceError::VolumeHeadMismatch => Some(FenceKind::VolumeHead),
                 FenceError::StaleSequence { expected, actual } => Some(FenceKind::StaleSequence {
@@ -45,7 +47,6 @@ pub(crate) fn failure(error: &StoreError) -> Failure {
                 }
                 FenceError::InflightMismatch
                 | FenceError::SessionAgentMismatch
-                | FenceError::ToolClaimMismatch
                 | FenceError::LeaseMismatch
                 | FenceError::GcLeaseMismatch
                 | FenceError::ProvisionerLeaseMismatch
@@ -117,7 +118,7 @@ mod tests {
             ),
             (StoreError::Fence(FenceError::InflightMismatch), 500),
             (StoreError::Fence(FenceError::SessionAgentMismatch), 500),
-            (StoreError::Fence(FenceError::ToolClaimMismatch), 500),
+            (StoreError::Fence(FenceError::ToolClaimMismatch), 409),
             (StoreError::Fence(FenceError::LeaseMismatch), 500),
             (StoreError::Fence(FenceError::GcLeaseMismatch), 500),
             (StoreError::Fence(FenceError::ProvisionerLeaseMismatch), 500),

@@ -1160,3 +1160,51 @@ async fn renewed_tokens_still_complete_and_publish() {
         .unwrap();
     store.release_writer_lease(volume, &l1).await.unwrap();
 }
+
+#[tokio::test]
+async fn claim_repeat_raises_the_expiry_to_the_request() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let (_, _, _, jobs, placement) = setup(store).await;
+    let e1 = store.now().checked_add(Duration::from_secs(30)).unwrap();
+    let claim = PlacedToolClaim {
+        job: jobs[0].clone(),
+        owner: owner(),
+        placement,
+        expires_at: e1,
+    };
+    assert!(store.claim_placed_tool(&claim).await.unwrap());
+    let e2 = e1.checked_add(Duration::from_secs(5)).unwrap();
+    assert!(
+        store
+            .claim_placed_tool(&PlacedToolClaim {
+                expires_at: e2,
+                ..claim.clone()
+            })
+            .await
+            .unwrap()
+    );
+    assert_eq!(store.renew_placed_tool(&claim, e1).await.unwrap(), e2);
+    let e0 = e1.checked_sub(Duration::from_secs(5)).unwrap();
+    assert!(
+        store
+            .claim_placed_tool(&PlacedToolClaim {
+                expires_at: e0,
+                ..claim.clone()
+            })
+            .await
+            .unwrap()
+    );
+    assert_eq!(store.renew_placed_tool(&claim, e1).await.unwrap(), e2);
+    assert!(
+        !store
+            .claim_placed_tool(&PlacedToolClaim {
+                owner: owner(),
+                ..claim
+            })
+            .await
+            .unwrap()
+    );
+}

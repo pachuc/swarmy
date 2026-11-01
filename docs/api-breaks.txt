@@ -219,3 +219,5 @@ POST /v1/images/uploads added the new required `query` request parameter `size`
 # 2026-10-31: Node API gains tool/route, hosting/open, hosting/ready, hosting/close, volume/publish, volume/protect and credentials/github (internal contract, not /v1). New store functions sandbox_spec and open_writer_lease; no stored format change.
 
 # 2026-10-31: Provisioning issues node API tokens at join (/etc/swarmy/node-token), adds the 8743 node API tunnel forward and swarmy-node-api.service on stack hosts, permits 8333 only without a bucket, and matches tunnel key lines by key. Existing hosts are unchanged until swarm upgrade learns the node API (NA11).
+
+# 2026-11-01: Node API gains tool/claim and tool/complete (internal contract, not /v1); the node-api service connects to NATS. A same-owner claim repeat raises the stored claim expiry; no stored format change.
