@@ -27,6 +27,9 @@ pub(crate) struct Config {
     /// Kill the node after the command writes its file, then require exactly one retry.
     #[arg(long, requires = "image")]
     pub kill_node_mid_command: bool,
+    /// Prime a boot set, then restart the node with an empty chunk cache before measuring.
+    #[arg(long, requires = "image")]
+    pub prime_boot_set: bool,
     #[arg(long, default_value_t = 5)]
     pub steps: usize,
     #[arg(long, default_value_t = 15)]
@@ -232,5 +235,16 @@ mod docs_command_tests {
         let command = super::Config::command();
         swarmy_testkit::check_docs_commands(&root, &[("swarmy-chaos", &command)])
             .expect("documented swarmy-chaos flags match the chaos clap tree");
+    }
+}
+
+#[cfg(test)]
+mod prime_tests {
+    #![deny(clippy::disallowed_methods)]
+    use clap::Parser;
+
+    #[test]
+    fn prime_requires_image() {
+        assert!(super::Config::try_parse_from(["chaos", "--prime-boot-set"]).is_err());
     }
 }

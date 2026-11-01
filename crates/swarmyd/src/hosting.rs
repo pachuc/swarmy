@@ -10,8 +10,9 @@ use swarmy_core::{
     SessionId, ToolJob, VolumeId, ignore_best_effort,
 };
 use swarmy_node_protocol::{
-    ClientError, DEFAULT_DEADLINE, HostingCloseRequest, HostingOpenRequest, HostingReadyRequest,
-    MetricBatch, NodeClient, NodeMetric, NodeRefusal, ToolRouteRequest, WriterToken,
+    ClientError, DEFAULT_DEADLINE, HostingBootSetRequest, HostingCloseRequest, HostingOpenRequest,
+    HostingReadyRequest, MetricBatch, NodeClient, NodeMetric, NodeRefusal, ToolRouteRequest,
+    WriterToken,
 };
 use swarmy_sandbox::RuncRuntime;
 use swarmy_volume::{WriterGrant, WriterLease};
@@ -80,6 +81,7 @@ struct Opening {
     volume: VolumeId,
     writer: Option<WriterLease>,
     head: ManifestId,
+    boot_set: Option<String>,
     header: ManifestHeader,
     spec: SandboxSpec,
 }
@@ -194,6 +196,7 @@ impl Hosting {
             volume: answer.volume,
             writer: Some(writer),
             head: answer.head,
+            boot_set: answer.boot_set,
             header: answer.header,
             spec: answer.spec,
         }))
@@ -334,6 +337,7 @@ impl Hosting {
                     volume_id: opening.volume,
                 },
                 grant,
+                opening.boot_set.clone(),
             )
             .await?;
         let boot_ms = booting.elapsed().as_secs_f64() * 1_000.0;
@@ -380,8 +384,50 @@ impl Hosting {
             turn,
             times,
         );
+        let session = first.job.session_id;
         self.finish(&placement, first, claimed).await?;
+        self.record_boot_set(opening, session);
         Ok(())
+    }
+
+    /// Record after the first committed call without delaying subsequent calls.
+    fn record_boot_set(&self, opening: &Opening, session: SessionId) {
+        let runtime = self.runtime.clone();
+        let client = self.client.clone();
+        let placement = opening.placement.clone();
+        let volume = opening.volume;
+        let head = opening.head;
+        tokio::spawn(async move {
+            let record = async {
+                let set = runtime.boot_set(volume).await?;
+                if set.chunks.is_empty() {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                let key = swarmy_volume::put_boot_set(runtime.objects(), &set).await?;
+                client
+                    .report_boot_set(
+                        &HostingBootSetRequest {
+                            placement: placement.clone(),
+                            session,
+                            head,
+                            key: key.clone(),
+                        },
+                        Instant::now() + DEFAULT_DEADLINE,
+                    )
+                    .await?;
+                tracing::info!(agent = %placement.agent_id, chunks = set.chunks.len(), leaves = set.leaves.len(), %key, "boot set recorded");
+                Ok(())
+            };
+            match tokio::time::timeout(Duration::from_secs(30), record).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(error = %swarmy_core::error_chain(&*error), "boot set recording failed");
+                }
+                Err(error) => {
+                    tracing::warn!(error = %swarmy_core::error_chain(&error), "boot set recording failed");
+                }
+            }
+        });
     }
 
     /// A requirement release stops hosting between calls even if processes run:
@@ -416,6 +462,7 @@ impl Hosting {
             anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
             self.first_call(&mut opening, first, placement_started, open_ms)
                 .await?;
+
             loop {
                 if *shutdown.borrow() || opening.hold.release_requested() {
                     break;

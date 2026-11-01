@@ -264,7 +264,13 @@ impl Fixture {
             .iter()
             .any(|process| process.kind == Kind::Node)
         {
-            self.node_ready().await?;
+            let since = Timestamp::now()
+                .checked_sub(Duration::from_secs(60))
+                .context("node liveness window")?;
+            self.node_ready(since).await?;
+            if config.prime_boot_set {
+                self.prime_boot_set(config).await?;
+            }
         }
         self.environment = environment;
         if config.scenario == Some(Scenario::Desktop) {
@@ -395,15 +401,12 @@ impl Fixture {
 
     /// Wait until a sandbox node this fixture started has registered, so the
     /// first tool call finds capacity instead of parking for the capacity retry.
-    async fn node_ready(&mut self) -> Result<()> {
+    async fn node_ready(&mut self, since: Timestamp) -> Result<()> {
         timeout(Duration::from_secs(60), async {
             loop {
                 for process in &mut self.processes {
                     process.check()?;
                 }
-                let since = Timestamp::now()
-                    .checked_sub(Duration::from_secs(60))
-                    .context("node liveness window")?;
                 let (nodes, _) = self.store.scan_live_nodes(None, since, 64).await?;
                 if nodes
                     .iter()
@@ -436,41 +439,83 @@ impl Fixture {
             None
         };
         for _ in 0..count {
-            let id = loop {
-                let id = SessionId::from_ulid(Ulid::generate());
-                if runnable_partition(id) < 4 {
-                    break id;
-                }
-            };
+            let id = self.create_session(agent).await?;
             self.sessions.push(id);
-            self.store
-                .create_agent_session(
-                    id,
-                    agent,
-                    Timestamp::now(),
-                    Some(AgentSessionOptions {
-                        image: if shared { None } else { Some("chaos:test") },
-                        ..Default::default()
-                    }),
-                )
-                .await?;
-            self.store
-                .append_events(
-                    id,
-                    0,
-                    &[Event::MessageAppended {
-                        seq: 0,
-                        message: Message {
-                            id: MessageId::from_ulid(Ulid::generate()),
-                            role: MessageRole::User,
-                            parts: vec![Part::Text {
-                                text: "Read the clock at each step, then finish.".into(),
-                            }],
-                        },
-                    }],
-                )
-                .await?;
         }
+        Ok(())
+    }
+
+    async fn create_session(&self, agent: Option<swarmy_core::AgentId>) -> Result<SessionId> {
+        let id = loop {
+            let id = SessionId::from_ulid(Ulid::generate());
+            if runnable_partition(id) < 4 {
+                break id;
+            }
+        };
+        self.store
+            .create_agent_session(
+                id,
+                agent,
+                Timestamp::now(),
+                Some(AgentSessionOptions {
+                    image: if agent.is_some() {
+                        None
+                    } else {
+                        Some("chaos:test")
+                    },
+                    ..Default::default()
+                }),
+            )
+            .await?;
+        self.store
+            .append_events(
+                id,
+                0,
+                &[Event::MessageAppended {
+                    seq: 0,
+                    message: Message {
+                        id: MessageId::from_ulid(Ulid::generate()),
+                        role: MessageRole::User,
+                        parts: vec![Part::Text {
+                            text: "Read the clock at each step, then finish.".into(),
+                        }],
+                    },
+                }],
+            )
+            .await?;
+        Ok(id)
+    }
+
+    async fn prime_boot_set(&mut self, config: &Config) -> Result<()> {
+        let id = self.create_session(None).await?;
+        watch(&self.store, &self.bus, id, config).await?;
+        let image = self.image.context("image required to prime boot set")?;
+        let key = timeout(Duration::from_secs(60), async {
+            loop {
+                if let Some(key) = self.store.boot_set(image).await? {
+                    break Ok::<_, anyhow::Error>(key);
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .context("boot set priming timed out")??;
+        let restarted = Timestamp::now();
+        let node = self
+            .processes
+            .iter_mut()
+            .find(|p| p.kind == Kind::Node)
+            .context("priming requires a sandbox node")?;
+        node.stop().await?;
+        let cache = self.files.path().join(".swarmy/volumes/cache");
+        if let Err(error) = std::fs::remove_dir_all(cache)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(error.into());
+        }
+        node.start_stopped()?;
+        self.node_ready(restarted).await?;
+        tracing::info!(%key, "boot set primed");
         Ok(())
     }
 

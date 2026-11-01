@@ -3,6 +3,26 @@ use super::{exec_guard, helper_timeout_error};
 use swarmy_core::{NodeId, ignore_best_effort};
 
 #[test]
+fn prefetch_fields_report_only_prefetched_boots() {
+    let mut stats = swarmy_volume::DeviceStats::default();
+    assert_eq!(super::prefetch_fields(&stats), (None, None));
+    stats.boot_prefetch_chunks = 3;
+    stats.boot_prefetch_bytes = 786_432;
+    stats.boot_prefetch_ms = Some(1200);
+    assert_eq!(
+        super::prefetch_fields(&stats),
+        (Some(786_432), Some(1200.0))
+    );
+    stats.boot_prefetch_chunks = 0;
+    stats.boot_prefetch_bytes = 0;
+    stats.boot_prefetch_ms = Some(5);
+    assert_eq!(super::prefetch_fields(&stats), (Some(0), Some(5.0)));
+    stats.boot_prefetch_chunks = 2;
+    stats.boot_prefetch_ms = None;
+    assert_eq!(super::prefetch_fields(&stats), (Some(0), None));
+}
+
+#[test]
 fn bash_guard_reserves_startup_after_default_yield() {
     let args = swarmy_core::SandboxArguments::Bash(swarmy_core::BashArguments {
         command: "true".into(),

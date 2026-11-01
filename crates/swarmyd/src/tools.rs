@@ -467,10 +467,13 @@ fn observe_first_tool(
         let volume = VolumeId::from_ulid(claim.placement.agent_id.as_ulid());
         tokio::spawn(async move {
             if let Ok(stats) = runtime.volume_stats(volume).await {
+                let (prefetch_bytes, prefetch_ms) = prefetch_fields(&stats);
                 keeper.queue_metric(
                     session,
                     turn,
                     swarmy_node_protocol::NodeMetric::Computer(swarmy_core::ComputerMetric {
+                        prefetch_bytes,
+                        prefetch_ms,
                         first_tool_chunks_fetched: Some(stats.fetched_chunks),
                         first_tool_bytes_fetched: Some(stats.fetched_bytes),
                         first_tool_fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
@@ -481,6 +484,16 @@ fn observe_first_tool(
             }
         });
     }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "prefetch timing is an approximate metric, so floating-point display precision is sufficient"
+)]
+fn prefetch_fields(stats: &swarmy_volume::DeviceStats) -> (Option<u64>, Option<f64>) {
+    let bytes = (stats.boot_prefetch_chunks > 0 || stats.boot_prefetch_ms.is_some())
+        .then_some(stats.boot_prefetch_bytes);
+    (bytes, stats.boot_prefetch_ms.map(|ms| ms as f64))
 }
 
 async fn stop_result_process(
