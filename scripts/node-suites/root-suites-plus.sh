@@ -27,10 +27,10 @@ rc=0; [ "$base" -eq 0 ] || rc=1
 # always recoverable from the section file. This mirrors root-suites.sh.
 mkdir -p ~/suite-logs
 suffix=${branch##*/}
-CARGO_BUILD_JOBS=8 cargo build --locked --tests -p swarmy-cli -p swarmyd -p swarmy-volume --no-default-features > ~/suite-build-plus.log 2>&1 && CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-core-bin >> ~/suite-build-plus.log 2>&1 \
+CARGO_BUILD_JOBS=8 cargo build --locked --tests -p swarmy-cli -p swarmyd -p swarmy-volume --no-default-features > ~/suite-build-plus.log 2>&1 && CARGO_BUILD_JOBS=8 cargo build --locked --tests -p swarmy-core-bin >> ~/suite-build-plus.log 2>&1 \
   || { tail -20 ~/suite-build-plus.log; echo "image suite build failed"; echo "PLUS_EXIT=1"; exit 2; }
 tail -1 ~/suite-build-plus.log
-for suite in "swarmy-cli --test image" "swarmyd --test vol" "swarmy-volume --test image" "swarmy-volume --test nbd"; do
+for suite in "swarmy-cli --test image" "swarmy-core-bin --test vol" "swarmy-volume --test image" "swarmy-volume --test nbd"; do
   set -- $suite
   echo "== $suite"
   bash "$here/nbd-orphans.sh"

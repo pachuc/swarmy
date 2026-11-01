@@ -196,9 +196,14 @@ impl Config {
             .parent()
             .context("executable directory missing")?;
         let mut build = Command::new("cargo");
-        build
-            .current_dir(repo())
-            .args(["build", "--locked", "-p", "swarmy-core-bin"]);
+        build.current_dir(repo()).args([
+            "build",
+            "--locked",
+            "-p",
+            "swarmy-core-bin",
+            "-p",
+            "swarmyd",
+        ]);
         if directory.file_name().is_some_and(|name| name == "release") {
             build.arg("--release");
         }

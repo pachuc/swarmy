@@ -3985,13 +3985,24 @@ name = "swarmy-core-bin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
+ "jiff",
+ "rustix",
+ "serde_json",
  "swarmy-api",
+ "swarmy-config",
+ "swarmy-core",
  "swarmy-gateway",
  "swarmy-node-api",
  "swarmy-scheduler",
+ "swarmy-store",
+ "swarmy-testkit",
  "swarmy-version",
+ "swarmy-volume",
  "swarmy-worker",
- "swarmyd",
+ "tempfile",
+ "tokio",
+ "ulid",
 ]
 
 [[package]]
@@ -4379,10 +4390,8 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "clap",
  "jiff",
  "object_store",
- "rustix",
  "serde",
  "serde_json",
  "swarmy-bus",

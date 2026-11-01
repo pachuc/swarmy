@@ -9,9 +9,6 @@ pub mod role;
 mod service;
 mod tools;
 mod upgrade;
-mod vol;
-mod vol_command;
-mod vol_server;
 
 use serde::{Deserialize, Serialize};
 use swarmy_core::{

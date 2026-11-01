@@ -316,7 +316,7 @@ make install
 ```
 
 `make install` is `make install-client` plus `make install-core`. The client
-links no database library and needs no `libfdb_c`; `swarmy-core` (scheduler, worker, gateway, API, node, and vol) still links it. Install only the client with
+links no database library and needs no `libfdb_c`; `swarmy-core` (scheduler, worker, gateway, API, and vol) still links it. `swarmy-node` links no FoundationDB library; `make check-deps` verifies its normal dependency tree. Install only the client with
 `make install-client` when the services live elsewhere. `make install-client`
 builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs `swarmy-core`. The `remote` feature compiles the S3 client for swarm buckets. A plain
 `cargo build -p swarmy-cli` leaves that feature off for the slimmer node
@@ -337,7 +337,7 @@ the installer and process supervisor currently target Linux.
 Local Linux nodes also need `runc`, `passt` (which supplies `pasta`),
 `iproute2`, and `util-linux` (which supplies `nsenter`). Install them with
 `sudo apt-get install runc passt iproute2 util-linux` before
-starting `swarmy-core node`. Local swarms run the node API as the `node-api`
+starting `swarmy-node`. Local swarms run the node API as the `node-api`
 control service. Issue a credential with `swarmy-core node-credential issue <node id>
 > ~/.swarmy/node-token`, run `chmod 600 ~/.swarmy/node-token`, and set
 `SWARMY_NODE_TOKEN_FILE` to that path. Set `SWARMY_NODE_API_URL` when the API
@@ -371,7 +371,7 @@ rustup's normal shell setup, or `~/.cargo/bin/swarmy` directly. The CLI embeds t
 
 ### Service binary
 
-`swarmy-core` runs `scheduler`, `worker`, `gateway`, `api`, `node`, and `vol` roles. Run `swarmy-core --version` to check its identity. The `node` role needs root and NBD.
+`swarmy-core` runs `scheduler`, `worker`, `gateway`, `api`, `node-api`, and `vol` roles. Run `swarmy-core --version` to check its identity. The separate `swarmy-node` binary needs root and NBD.
 
 ### Diagnose an installation
 

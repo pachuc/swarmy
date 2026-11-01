@@ -35,7 +35,7 @@ measured numbers with raw samples.
   built from a directory, shell, debootstrap, or OCI recipe; `images/
   base-ubuntu` is the one image every agent uses. The collector marks with a
   Bloom filter and sweeps 256 prefixes under a run lease
-  (`docs/gc-benchmarks.md`). Nodes (`swarmy-core node`, crate `swarmyd`) host runc containers from the
+  (`docs/gc-benchmarks.md`). Nodes (`swarmy-node`, crate `swarmyd`) host runc containers from the
   mounted device, up to node capacity, idle eviction after thirty minutes, rebuild
   on another node after failure. Every session has a computer: ephemeral
   sessions own a throwaway one, named agents share one persistent one.
@@ -356,7 +356,7 @@ code they cover, on a machine with root and the NBD module loaded, with sudo:
 |---|---|
 | `swarmy-volume` (chunks, manifests, NBD, snapshots) | `swarmy-volume --test nbd`, `swarmy-volume --test image` |
 | image recipes or `swarmy image` | `swarmy-cli --test image` (starts its own API against the dev stack), `swarmy-volume --test image` |
-| `swarmy-core vol` or the volume server | `swarmyd --test vol` |
+| `swarmy-core vol` or the volume server | `swarmy-core-bin --test vol` |
 | `swarmyd`, `swarmy-sandbox`, `swarmy-tools`, or the tool helpers | `swarmyd --test node`, then the chaos suites below |
 | the browser or screen tools, `images/base-desktop`, `images/common/desktop-setup.sh`, or image inputs | `swarmy-chaos --test desktop` (built and run by `scripts/node-suites/root-suites-plus.sh`, with `SWARMY_TEST_DESKTOP_IMAGE=base-desktop:dev`) |
 | store transactions on the node's start or tool path, or the latency suite | `scripts/node-suites/latency.sh` (`suite-queue.sh --latency`) |
@@ -367,7 +367,7 @@ service started against the dev stack. After `scripts/dev-stack.sh start` and
 `source .dev/env`, start `./target/debug/swarmy-core api` with `SWARMY_API_LISTEN`
 set to a loopback address and `SWARMY_API_TOKEN` set to any string, export
 `SWARMY_API_URL` and the same token, then run `sudo -E ./target/debug/swarmy
-image build images/base-ubuntu --tag dev`. Run `cargo build --locked -p swarmy-core-bin` first: the swarmyd suites launch the sibling `swarmy-core`. The suite command shape is then:
+image build images/base-ubuntu --tag dev`. The swarmyd suites launch `swarmy-node`, which Cargo builds with their tests; `swarmy-core-bin --test vol` launches the sibling `swarmy-core`. The suite command shape is then:
 
 ```sh
 sudo -E env SWARMY_TEST_IMAGE=base-ubuntu:dev "$(command -v cargo)" test --locked \

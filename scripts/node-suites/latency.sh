@@ -78,7 +78,7 @@ trap cleanup EXIT
 scripts/dev-stack.sh stop >/dev/null 2>&1 || true
 wipe_stack_state
 sudo chown -R "$user:$(id -gn)" "$(readlink -f target)"
-CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-chaos -p swarmy-cli -p swarmy-core-bin > ~/suite-build-latency.log 2>&1 \
+CARGO_BUILD_JOBS=8 cargo build --locked -p swarmy-chaos -p swarmy-cli -p swarmy-core-bin -p swarmyd > ~/suite-build-latency.log 2>&1 \
   || { tail -20 ~/suite-build-latency.log; echo "build failed"; echo "SUITES_EXIT=1"; exit 2; }
 tail -1 ~/suite-build-latency.log
 echo "== image build on the host"

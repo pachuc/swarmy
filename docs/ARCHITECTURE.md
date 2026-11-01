@@ -15,7 +15,7 @@ crate in a tier depends on every lower tier.
 
 ### Libraries
 
-- **swarmy-core-bin** dispatches `swarmy-core` to the scheduler, worker, gateway, API, node API, node, or volume role, and handles the node-credential command ([source](../crates/swarmy-core-bin/src/main.rs)).
+- **swarmy-core-bin** dispatches `swarmy-core` to the scheduler, worker, gateway, API, node API, or volume role, and handles the node-credential command ([source](../crates/swarmy-core-bin/src/main.rs)).
 - **swarmy-core** defines session, agent, event, request, lease, and placement
   types shared across processes ([source](../crates/swarmy-core/src/lib.rs)).
 - **swarmy-api-types** owns the JSON request and response contracts rather
@@ -65,7 +65,7 @@ crate in a tier depends on every lower tier.
 - **swarmy-node-api** authenticates sandbox nodes by their own token and runs their store operations on the primary ([source](../crates/swarmy-node-api/src/role.rs)).
 - **swarmy-api** exposes HTTP JSON mutations and cursor-based event streams
   ([source](../crates/swarmy-api/src/role.rs)).
-- **swarmyd** registers and opens hosting through the node API; one sync renews every placement, claim and writer lease. It claims and completes tool calls through the node API, which publishes the completion event and wakes the session. It hosts volumes and sandbox commands on a node
+- **swarmyd** builds the `swarmy-node` binary with no `swarmy-store` dependency. It registers and opens hosting through the node API; one sync renews every placement, claim and writer lease. It claims and completes tool calls through the node API, which publishes the completion event and wakes the session. It hosts volumes and sandbox commands on a node
   ([source](../crates/swarmyd/src/role.rs)).
 
 ### Client and cloud
