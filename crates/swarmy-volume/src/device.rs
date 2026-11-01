@@ -654,7 +654,7 @@ impl VolumeDevice {
         let _priority = self.admit_upload().await;
         // Fetch immutable baseline data before locking the overlay: a cold GET
         // must not block sandbox writes either.
-        let mut bytes = self.chunk(number, Fetch::Readahead).await?.to_vec();
+        let mut bytes = self.chunk_without_recording(number).await?.to_vec();
         let generation = {
             let mut dirty = self.lock_upload_dirty().await;
             if !dirty.pending.contains(&number)
@@ -741,6 +741,16 @@ impl VolumeDevice {
             return self.store.get_chunk(hash).await;
         }
         self.fill(hash, mode).await?.ok_or(VolumeError::Corrupt)
+    }
+
+    async fn chunk_without_recording(&self, number: u64) -> Result<Bytes> {
+        let hash = self.hash(number).await?;
+        if hash == ContentHash::ZERO {
+            return self.store.get_chunk(hash).await;
+        }
+        self.fill(hash, Fetch::Demand)
+            .await?
+            .ok_or(VolumeError::Corrupt)
     }
 
     async fn fill(&self, hash: ContentHash, mode: Fetch) -> Result<Option<Bytes>> {
@@ -925,7 +935,7 @@ mod tests {
 
     async fn populated_device(
         count: u8,
-        objects: Arc<InMemory>,
+        objects: Arc<dyn object_store::ObjectStore>,
         dir: &tempfile::TempDir,
     ) -> (Arc<VolumeDevice>, Vec<ContentHash>) {
         let store = ChunkStore::new(objects.clone());

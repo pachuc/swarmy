@@ -20,7 +20,7 @@ async fn boot_set_first_writer_wins() {
     let Some(test) = TestStore::memory() else {
         return;
     };
-    let manifest = ManifestId::from_ulid(ulid::Ulid::generate());
+    let manifest = ManifestId::from_ulid(Ulid::generate());
     let first = format!("bootsets/{}", "a".repeat(64));
     let second = format!("bootsets/{}", "b".repeat(64));
     assert_eq!(test.store.boot_set(manifest).await.unwrap(), None);

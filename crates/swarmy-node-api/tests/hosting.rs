@@ -4,8 +4,8 @@ use std::{net::Ipv4Addr, sync::atomic::Ordering, time::Duration};
 use swarmy_core::{ComputerMetric, LeaseOwnerId, PlacedToolClaim, ToolResult, VolumeId};
 use swarmy_node_api::router;
 use swarmy_node_protocol::{
-    ClientError, HOSTING_OPEN_PATH, HostingCloseRequest, HostingOpenRequest, HostingReadyRequest,
-    MetricBatch, NodeMetric, NodeRefusal, WriterToken,
+    ClientError, HOSTING_OPEN_PATH, HostingBootSetRequest, HostingCloseRequest, HostingOpenRequest,
+    HostingReadyRequest, MetricBatch, NodeMetric, NodeRefusal, WriterToken,
 };
 use ulid::Ulid;
 fn deadline() -> tokio::time::Instant {
@@ -18,6 +18,83 @@ fn open(a: &support::Dispatched) -> HostingOpenRequest {
         previous_epoch: None,
     }
 }
+#[tokio::test]
+async fn open_answers_the_recorded_boot_set() {
+    let Some(f) = support::fixture("na9-boot-open").await else {
+        return;
+    };
+    let a = support::dispatched(&f.store).await;
+    let base = support::served(&f).await;
+    let client = support::client(&base, &a.token);
+    let first = client.open_hosting(&open(&a), deadline()).await.unwrap();
+    assert_eq!(first.boot_set, None);
+    let image = f
+        .store
+        .pinned_image(a.session)
+        .await
+        .unwrap()
+        .unwrap()
+        .manifest_id;
+    let key = swarmy_core::boot_set_key(b"first");
+    assert!(f.store.record_boot_set(image, &key).await.unwrap());
+    let second = client.open_hosting(&open(&a), deadline()).await.unwrap();
+    assert_eq!(second.boot_set, Some(key));
+}
+
+#[tokio::test]
+async fn boot_set_report_records_head_and_image_once() {
+    let Some(f) = support::fixture("na9-boot-report").await else {
+        return;
+    };
+    let a = support::dispatched(&f.store).await;
+    let base = support::served(&f).await;
+    let client = support::client(&base, &a.token);
+    let opened = client.open_hosting(&open(&a), deadline()).await.unwrap();
+    let image = f
+        .store
+        .pinned_image(a.session)
+        .await
+        .unwrap()
+        .unwrap()
+        .manifest_id;
+    let key = swarmy_core::boot_set_key(b"first");
+    let request = HostingBootSetRequest {
+        placement: opened.placement,
+        session: a.session,
+        head: opened.head,
+        key: key.clone(),
+    };
+    client.report_boot_set(&request, deadline()).await.unwrap();
+    assert_eq!(
+        f.store.boot_set(opened.head).await.unwrap(),
+        Some(key.clone())
+    );
+    assert_eq!(f.store.boot_set(image).await.unwrap(), Some(key.clone()));
+    client
+        .report_boot_set(
+            &HostingBootSetRequest {
+                key: swarmy_core::boot_set_key(b"second"),
+                ..request.clone()
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(f.store.boot_set(opened.head).await.unwrap(), Some(key));
+    assert!(matches!(
+        client
+            .report_boot_set(
+                &HostingBootSetRequest {
+                    key: "bad".into(),
+                    ..request
+                },
+                deadline()
+            )
+            .await,
+        Err(ClientError::Rejected(_))
+    ));
+}
+
 #[tokio::test]
 async fn route_names_the_agent_and_refuses_done_jobs() {
     let Some(f) = support::fixture("na5-route").await else {

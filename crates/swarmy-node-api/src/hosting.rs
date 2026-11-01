@@ -170,3 +170,34 @@ pub(crate) async fn boot_set(
     tracing::info!(head_recorded, image_recorded, "boot set reported");
     Ok(Json(Ack { server_now: now }))
 }
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::sync::Arc;
+    use swarmy_store::blob::MemoryBlobStore;
+    use ulid::Ulid;
+
+    #[tokio::test]
+    async fn boot_set_for_prefers_head_then_image() {
+        let Some(stack) = swarmy_testkit::Stack::load("na9-boot-lookup") else {
+            return;
+        };
+        let (store, _guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+        let session = SessionId::from_ulid(Ulid::generate());
+        let head = ManifestId::from_ulid(Ulid::generate());
+        assert_eq!(boot_set_for(&store, head, session).await.unwrap(), None);
+        // The pinned-image lookup is also covered by the hosting integration test;
+        // here an unknown session has no fallback, even with another manifest recorded.
+        let other = ManifestId::from_ulid(Ulid::generate());
+        let key = swarmy_core::boot_set_key(b"head");
+        store.record_boot_set(other, &key).await.unwrap();
+        assert_eq!(boot_set_for(&store, head, session).await.unwrap(), None);
+        store.record_boot_set(head, &key).await.unwrap();
+        assert_eq!(
+            boot_set_for(&store, head, session).await.unwrap(),
+            Some(key)
+        );
+    }
+}
