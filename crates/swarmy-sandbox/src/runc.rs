@@ -846,14 +846,14 @@ impl RuncRuntime {
         .await?)
     }
 
-    /// Read fetch activity for a mounted agent disk without publishing it.
+    /// Stop the attachment's boot recording and return it.
     /// # Errors
     /// Returns attachment transport or decoding errors.
     pub async fn boot_set(&self, volume: swarmy_core::VolumeId) -> Result<swarmy_core::BootSet> {
         Ok(server::boot_set(&self.config, volume).await?)
     }
 
-    /// Return attachment stats.
+    /// Read fetch activity for a mounted agent disk without publishing it.
     /// # Errors
     /// Returns attachment transport or decoding errors.
     pub async fn volume_stats(
