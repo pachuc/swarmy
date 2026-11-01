@@ -101,7 +101,7 @@ async fn root_named_chats_share_a_background_process_and_delete() {
         return;
     };
     run(|fixture| async move {
-        let (services, _node) = root_services(&fixture, &image, r#"{
+        let services = root_services(&fixture, &image, r#"{
             "request_by_prompt": {
                 "start": {"steps": 2, "tool_steps": [0], "bash_command": "nohup sleep 600 >/background.log 2>&1 </dev/null & echo $! >/background.pid; cat /background.pid", "final_answer": "Started background process"},
                 "inspect": {"steps": 2, "tool_steps": [0], "bash_command": "kill -0 $(cat /background.pid) && echo shared-process-alive", "final_answer": "Inspected background process"}
@@ -374,7 +374,7 @@ async fn root_memory_written_by_tools_is_in_the_next_turn_and_capped() {
         return;
     };
     run(|fixture| async move {
-        let (services, _node) = root_services(&fixture, &image, r#"{
+        let services = root_services(&fixture, &image, r#"{
             "request_by_prompt": {
                 "save": {"steps": 2, "tool_steps": [0], "bash_command": "mkdir -p /home/agent/memory; printf 'Remember: the launch code is violet.' > /home/agent/memory/a.txt; head -c 40000 /dev/zero | tr '\\0' x > /home/agent/memory/z.txt", "final_answer": "Saved memory"},
                 "remember": {"steps": 1, "tool_steps": [], "final_answer": "Read memory"},
