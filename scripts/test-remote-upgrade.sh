@@ -266,3 +266,24 @@ start_line=$(grep -n '^start swarmyd.service$' "$node_root/systemctl.log" | tail
 ! grep -q 'FDB_CLUSTER_FILE\|LD_LIBRARY_PATH' "$SWARMY_ETC_DIR/node.env"
 [[ ! -f $node_root/usr/local/bin/swarmy-core && ! -f $node_repo/.dev/fdb.cluster ]]
 printf 'node_upgrade_stops_restarts_tunnel_then_starts: ok\n'
+
+# An existing object-store node has one SSH process forwarding all three ports.
+set_unit_inputs node "$(id -un)" 10.0.0.9 true ''
+unit_inputs_text > "$SWARMY_ETC_DIR/units.env"
+render_unit swarmy-tunnel.service > "$SWARMY_SYSTEMD_DIR/swarmy-tunnel.service"
+sed -i '/^Wants=swarmy-objects-tunnel.service$/d' "$SWARMY_SYSTEMD_DIR/swarmy-tunnel.service"
+# Use the actual service user rather than a fixture-specific username.
+sed -i "s/ $(id -un)@10.0.0.9/ -L 127.0.0.1:8333:127.0.0.1:8333 $(id -un)@10.0.0.9/" "$SWARMY_SYSTEMD_DIR/swarmy-tunnel.service"
+rm -f "$SWARMY_SYSTEMD_DIR/swarmy-objects-tunnel.service"
+set_unit_inputs node "$(id -un)" 10.0.0.9 false ''
+render_unit swarmyd.service > "$SWARMY_SYSTEMD_DIR/swarmyd.service"
+: > "$node_root/systemctl.log"
+HOME="$TEST_NODE_HOME" bash "$node_repo/scripts/remote-upgrade.sh" node all 0 prebuilt > "$scenario/object-tunnel.json"
+[[ -f $SWARMY_SYSTEMD_DIR/swarmy-objects-tunnel.service ]]
+grep -q '^enable swarmy-objects-tunnel.service$' "$node_root/systemctl.log"
+stop_line=$(grep -n '^stop swarmyd.service$' "$node_root/systemctl.log" | tail -1 | cut -d: -f1)
+tunnel_line=$(grep -n '^restart swarmy-tunnel.service swarmy-objects-tunnel.service$' "$node_root/systemctl.log" | tail -1 | cut -d: -f1)
+start_line=$(grep -n '^start swarmyd.service$' "$node_root/systemctl.log" | tail -1 | cut -d: -f1)
+[[ $stop_line -lt $tunnel_line && $tunnel_line -lt $start_line ]]
+! grep -q '8333' "$SWARMY_SYSTEMD_DIR/swarmy-tunnel.service"
+printf 'object_store_node_upgrade_splits_the_tunnel: ok\n'

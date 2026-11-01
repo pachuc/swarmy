@@ -275,7 +275,18 @@ set_unit_inputs node deploy-user 10.0.0.1 true ''
 node_text=$(render_unit swarmyd.service)
 [[ $node_text == *'Wants=swarmy-tunnel.service'* && $node_text != *RequiresMountsFor* ]]
 tunnel_text=$(render_unit swarmy-tunnel.service)
-[[ $tunnel_text == *'-L 127.0.0.1:8333:127.0.0.1:8333 deploy-user@10.0.0.1'* ]]
+[[ $tunnel_text == *'-L 127.0.0.1:4222:127.0.0.1:4222 -L 127.0.0.1:8743:127.0.0.1:8743 deploy-user@10.0.0.1'* ]]
+[[ $tunnel_text == *'Wants=swarmy-objects-tunnel.service'* && $tunnel_text != *8333* ]]
+objects_text=$(render_unit swarmy-objects-tunnel.service)
+for expected in '-L 127.0.0.1:8333:127.0.0.1:8333 deploy-user@10.0.0.1' 'PartOf=swarmy-tunnel.service' '-i /etc/swarmy/tunnel-key' 'UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts' '/dev/tcp/127.0.0.1/8333'; do
+    [[ $objects_text == *"$expected"* ]]
+done
+[[ $objects_text != *4222* && $objects_text != *8743* ]]
+[[ $(grep '^After=' <<< "$node_text") == *swarmy-objects-tunnel.service* ]]
+[[ $(swarmy_node_tunnel_units) == $'swarmy-tunnel.service\nswarmy-objects-tunnel.service' ]]
+[[ $(swarmy_mode_backing_unit node) == swarmy-tunnel.service ]]
+[[ $(stack_only_units) != *swarmy-objects-tunnel.service* ]]
+printf 'control_and_object_traffic_use_separate_tunnels: ok\n'
 for expected in '-L 127.0.0.1:8743:127.0.0.1:8743' '-o ServerAliveInterval=5' '-o ServerAliveCountMax=3'; do
     [[ $tunnel_text == *"$expected"* ]]
 done
@@ -287,7 +298,10 @@ node_api_text=$(render_unit swarmy-node-api.service)
 [[ $node_api_text == *'Requires=swarmy-stack.service'* ]]
 [[ $(swarmy_unit_role swarmy-node-api.service) == node-api ]]
 set_unit_inputs node deploy-user 10.0.0.1 false ''
-[[ $(render_unit swarmy-tunnel.service) != *8333* ]]
+[[ $(swarmy_node_tunnel_units) == swarmy-tunnel.service ]]
+[[ $(render_unit swarmy-tunnel.service) != *8333* && $(render_unit swarmy-tunnel.service) != *objects* ]]
+[[ $(render_unit swarmyd.service) != *swarmy-objects-tunnel.service* ]]
+printf 'bucket_node_keeps_only_control_tunnel: ok\n'
 for args in 'other deploy-user 10.0.0.1 false /mnt' 'node deploy-user _ false /mnt' 'node deploy-user 10.0.0.1 yes /mnt' 'node deploy-user 10.0.0.1 false relative'; do
     read -r -a parts <<< "$args"
     if set_unit_inputs "${parts[@]}" 2>/dev/null; then echo "accepted invalid unit inputs: $args" >&2; exit 1; fi

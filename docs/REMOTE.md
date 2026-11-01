@@ -37,10 +37,10 @@ and systemd unit files in private node state. On a stack+services host, the unit
 | `swarmy-worker` | Step execution |
 | `swarmy-gateway` | Inference gateway |
 | `swarmy-provisioner` | Elastic machine groups; primary only |
-| `swarmy-tunnel` | Host tunnel endpoint |
+| `swarmy-tunnel` | Node API and NATS tunnel endpoint |
+| `swarmy-objects-tunnel` | Object-store tunnel; joining nodes of swarms without a bucket |
 
-Without a bucket, the node tunnel forwards NATS (4222), the node API (8743),
-and object storage (8333), but never FoundationDB. The node token is revoked
+The control tunnel forwards NATS (4222) and the node API (8743), but never FoundationDB. Without a bucket, a second SSH connection forwards object storage (8333). The node token is revoked
 when its host is removed.
 
 The swarmy-provisioner service runs OpenTofu for elastic groups on the primary.
@@ -188,15 +188,15 @@ holds no FoundationDB client, cluster file, or database credentials. Node
 add generates a dedicated tunnel key on the joining host, authorizes only
 service forwards on the primary, and pins the primary's host key through the
 authenticated provisioning connection. The key allows no interactive shell.
-The tunnel forwards local 4222 and 8743 to the primary's loopback ports;
-8743 reaches the node API; the tunnel start check probes this port. It forwards 8333 only when SeaweedFS is used. The
+The control tunnel forwards local 4222 and 8743 to the primary's loopback ports;
+8743 reaches the node API and its start check probes this port. When the primary serves SeaweedFS without a bucket, the objects tunnel forwards 8333 on a separate SSH connection, using the same key. It starts and stops with the control tunnel. The
 primary's tunnel key line permits 4222 and 8743, and permits 8333 only
 without a bucket. SSH checks the link every 5 seconds and restarts after three
 misses. Join issues each node's API token on the primary and copies it over
 SSH standard input to `/etc/swarmy/node-token` (root-owned, mode 0600). The
 stack host issues its own token during provisioning. Removing a node revokes
 its token together with its tunnel key. It starts before swarmyd and restarts after SSH
-failure; inspect it with `sudo journalctl -u swarmy-tunnel`. Tunnel identity
+failure; inspect it with `sudo journalctl -u swarmy-tunnel` and inspect object traffic with `sudo journalctl -u swarmy-objects-tunnel`. Tunnel identity
 and pinned host key live under `/etc/swarmy/`, readable only by the service
 user. Binaries install to `/usr/local/bin`: the primary installs the client,
 core, node and provisioner binaries, while joining nodes install only `swarmy-node`.
