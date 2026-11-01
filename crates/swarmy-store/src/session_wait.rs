@@ -541,6 +541,21 @@ impl Store {
         self.clear_wait_kind(id, true).await
     }
 
+    /// Remove an inference wait inside a caller's transaction, keeping a
+    /// capacity wait.
+    pub(crate) async fn clear_inference_wait_in(
+        &self,
+        trx: &foundationdb::Transaction,
+        id: SessionId,
+    ) -> Result<()> {
+        if let Some(wait) = read::<SessionWait>(trx, &self.keys().session_wait(id)).await?
+            && wait.inference().is_some()
+        {
+            self.clear_wait(trx, id, &wait);
+        }
+        Ok(())
+    }
+
     async fn clear_wait_kind(&self, id: SessionId, only_inference: bool) -> Result<()> {
         self.transaction(|trx| async move {
             if let Some(wait) = read::<SessionWait>(&trx, &self.keys().session_wait(id)).await?
