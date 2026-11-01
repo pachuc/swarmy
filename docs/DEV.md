@@ -675,6 +675,8 @@ intermediate response calls `get_time`; the last response is the fixed answer
 `chaos session complete`. Each gateway handles one call at a time, making the
 allowed cost of each gateway kill at most one additional provider call.
 
+With `--image`, `--prime-boot-set` runs one unmeasured session, waits for its boot set, then restarts the node with an empty chunk cache before measuring cold starts.
+
 Use `--schedulers`, `--workers`, and `--gateways` to change process counts.
 `--min-interval-ms` and `--max-interval-ms` set the inclusive random interval range
 (default 100 to 350 ms). `--latency-ms` delays each fake delta (default 100 ms,
