@@ -296,6 +296,8 @@ async fn boot_set_prefetch(node: &mut Node, store: &Store, bus: &Bus, base: Mani
         },
     )
     .await;
+    // The test node has one sandbox slot; free it for the shutdown check.
+    evicted(store, next).await;
 }
 
 /// A requirement release checkpoints and stops hosting even with processes running.
