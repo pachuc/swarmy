@@ -737,7 +737,11 @@ impl Ssh {
         services_only: bool,
         drain_timeout: Duration,
         stack: bool,
+        primary: Option<Primary<'_>>,
     ) -> Result<serde_json::Value> {
+        if let Some(primary) = primary.filter(|_| !services_only) {
+            refresh_node_access(node, address, primary).await?;
+        }
         let prebuilt = self.stage(node, address, stack).await?;
         let mode = if stack { "stack" } else { "node" };
         let services = if services_only {
@@ -1393,6 +1397,11 @@ async fn install_node_access(
     shell: &PrimaryShell<'_>,
     node_id: swarmy_core::NodeId,
 ) -> Result<()> {
+    authorize_tunnel(node, address, primary, shell).await?;
+    issue_node_token(node, address, primary, shell, node_id).await
+}
+
+async fn authorize_tunnel(node: &Machine, address: &str, primary: Primary<'_>, shell: &PrimaryShell<'_>) -> Result<()> {
     let output = run_output(
         &mut node_command(node, address, &tunnel_key_command(node)?)?,
         "generate joining node tunnel key",
@@ -1419,7 +1428,13 @@ async fn install_node_access(
         &mut node_command(node, address, &pin_primary_key_command(node, &known_host)?)?,
         "pin primary SSH host key",
     )
-    .await?;
+    .await
+}
+
+async fn issue_node_token(
+    node: &Machine, address: &str, primary: Primary<'_>, shell: &PrimaryShell<'_>, node_id: swarmy_core::NodeId,
+) -> Result<()> {
+    let user = primary.user()?;
     let output = shell
         .output(
             &node_credential_command(&user, CredentialAction::Issue, node_id),
@@ -1438,6 +1453,31 @@ async fn install_node_access(
         format!("{}\n", token.reveal()).as_bytes(),
     )
     .await
+}
+
+fn has_node_token_command() -> Result<String> {
+    let path = swarmy_config::NodeSettings::default().token_file;
+    let path = path.to_str().ok_or_else(|| crate::Error::other("node token path must be UTF-8"))?;
+    Ok(format!("sudo -n test -s {}", shell_words::quote(path)))
+}
+
+async fn has_node_token(node: &Machine, address: &str) -> Result<bool> {
+    let status = node_command(node, address, &has_node_token_command()?)?.status().await?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(crate::Error::other(format!("cannot check node token on host {}: {status}", node.name))),
+    }
+}
+
+pub(crate) async fn refresh_node_access(node: &Machine, address: &str, primary: Primary<'_>) -> Result<()> {
+    let node_id = ensure_node_id(node, address).await?;
+    let shell = primary.shell(90).await?;
+    authorize_tunnel(node, address, primary, &shell).await?;
+    if !has_node_token(node, address).await? {
+        issue_node_token(node, address, primary, &shell, node_id).await?;
+    }
+    Ok(())
 }
 
 fn tunnel_key(public: &str) -> Result<String> {

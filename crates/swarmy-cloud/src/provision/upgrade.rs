@@ -66,6 +66,7 @@ pub(super) trait UpgradeHost {
         services_only: bool,
         drain_timeout: Duration,
         stack: bool,
+        primary: Option<&Machine>,
     ) -> Result<Summary>;
 }
 
@@ -86,11 +87,12 @@ impl UpgradeHost for ssh::Ssh {
         services_only: bool,
         drain_timeout: Duration,
         stack: bool,
+        primary: Option<&Machine>,
     ) -> Result<Summary> {
         let address = ssh::reachable_address(node).await?;
         let started = Instant::now();
         let value = self
-            .upgrade(node, &address, services_only, drain_timeout, stack)
+            .upgrade(node, &address, services_only, drain_timeout, stack, primary.map(ssh::Primary::Remote))
             .await?;
         let mut summary: Summary = serde_json::from_value(value)?;
         summary.node.clone_from(&node.name);
@@ -139,19 +141,31 @@ pub(super) async fn run_with(
             options.format == Format::Json,
         );
     }
+    let mut primary = None;
+    for node in nodes {
+        if host.has_service_units(node).await? {
+            primary = Some(node);
+            break;
+        }
+    }
+    let primary = primary.ok_or_else(|| crate::Error::other(format!(
+        "swarm {} has no stack host with services; upgrade needs the primary's node API",
+        nodes.first().map_or("unknown", |node| node.name.split('-').next().unwrap_or("unknown"))
+    )))?;
     let mut summaries = Vec::new();
     for node in nodes {
         print_version(
             &format!("Upgrading {}", node.name),
             options.format == Format::Json,
         );
-        let stack = host.has_service_units(node).await?;
+        let stack = std::ptr::eq(node, primary);
         let summary = host
             .upgrade(
                 node,
                 options.scope == Scope::ServicesOnly,
                 options.drain_timeout,
                 stack,
+                (!stack).then_some(primary),
             )
             .await?;
         if options.format != Format::Json {

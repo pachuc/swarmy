@@ -980,7 +980,6 @@ fn upgrade_machines(
 ) -> Vec<Machine> {
     record_plan(record, &spec.placement.stack)
         .iter()
-        .rev()
         .filter(|p| recorded(record, p).is_some_and(|h| h.provisioned))
         .map(|p| node(p, user(spec), bucket))
         .collect()
@@ -1003,10 +1002,11 @@ pub async fn logs(
         "swarmy-scheduler",
         "swarmy-worker",
         "swarmy-gateway",
+        "swarmy-node-api",
     ];
     Error::ensure(
         UNITS.contains(&unit),
-        "--unit must be one of swarmyd, swarmy-stack, swarmy-tunnel, swarmy-api, swarmy-scheduler, swarmy-worker, swarmy-gateway",
+        "--unit must be one of swarmyd, swarmy-stack, swarmy-tunnel, swarmy-api, swarmy-scheduler, swarmy-worker, swarmy-gateway, swarmy-node-api",
     )?;
     let (record, planned) = recorded_plan(registry, spec)?;
     let selected = if let Some(host) = host {
