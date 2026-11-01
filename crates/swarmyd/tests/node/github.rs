@@ -144,7 +144,7 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
             agent.agent_id,
             node.id,
             jiff::Timestamp::now()
-                .checked_add(std::time::Duration::from_hours(1))
+                .checked_add(Duration::from_hours(1))
                 .unwrap(),
         )
         .await

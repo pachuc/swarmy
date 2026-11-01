@@ -326,6 +326,14 @@ impl Keeper {
             .replace((inventory, sender));
         receiver.await.map_err(|_| ScratchSkipped)
     }
+    #[cfg(test)]
+    pub(crate) fn scratch_pending(&self) -> bool {
+        self.inner
+            .scratch
+            .lock()
+            .expect("scratch lock poisoned")
+            .is_some()
+    }
     pub(crate) fn report_evicted(&self, agents: Vec<AgentId>) {
         self.inner
             .evicted
@@ -458,7 +466,7 @@ impl Keeper {
                     answer
                         .scratch
                         .resize(request.scratch.len(), ScratchVerdict::Keep);
-                    let _ = sender.send(answer.scratch.clone());
+                    drop(sender.send(answer.scratch.clone()));
                 }
                 self.apply(&request, answer, sent);
                 Ok(())
@@ -763,7 +771,7 @@ mod tests {
             keeper.queue_metric(
                 session,
                 MessageId::from_ulid(ulid::Ulid::generate()),
-                NodeMetric::Computer(Default::default()),
+                NodeMetric::Computer(swarmy_core::ComputerMetric::default()),
             );
         }
         script.answers.lock().unwrap().push_back(Err(outage()));

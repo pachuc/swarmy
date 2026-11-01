@@ -351,6 +351,8 @@ impl RuncRuntime {
     }
 
     /// Scratch removed since the previous call.
+    /// # Panics
+    /// Panics if the eviction lock was poisoned.
     pub fn take_evicted(&self) -> Vec<AgentId> {
         std::mem::take(&mut *self.evicted.lock().expect("scratch eviction lock poisoned"))
     }
@@ -1441,7 +1443,7 @@ mod scratch_inventory_tests {
             let marker = File::create(path.join(".hosted")).unwrap();
             if old {
                 marker
-                    .set_modified(SystemTime::now() - Duration::from_secs(8 * 86_400))
+                    .set_modified(SystemTime::now() - Duration::from_hours(192))
                     .unwrap();
             }
         }
