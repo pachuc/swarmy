@@ -433,7 +433,9 @@ it), `attempts` (how many times FoundationDB ran it, counting conflict retries),
 service to log every transaction the same way. A node logs one `node request`
 line per node API request with its path, attempts, elapsed time and outcome.
 The chaos latency check uses `--max-node-request-ms` to bound those requests;
-the request bound is one round trip plus 150 ms.
+the request bound is one round trip plus 150 ms. Registration and volume
+protect, a bulk list of chunk hashes sent during publication, are reported but
+not bounded.
 
 Host swarms default to the primary host's `swarmyd` journal. Pass
 `--host NAME` to select another recorded host, or `--unit swarmyd` to select
