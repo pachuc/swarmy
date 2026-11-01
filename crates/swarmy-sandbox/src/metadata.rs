@@ -4,7 +4,7 @@ use swarmy_volume::{MetadataError, WriterGrant};
 
 #[async_trait::async_trait]
 pub trait SandboxMetadata: Send + Sync {
-    /// Acquire this node's writer lease and read the volume head.
+    /// Open a writer for the control socket and resume; hosting passes its own grant to `create_with`.
     /// # Errors
     /// Returns a fence or metadata failure.
     async fn open_writer(&self, volume: VolumeId) -> Result<WriterGrant, MetadataError>;

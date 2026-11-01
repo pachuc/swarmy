@@ -798,4 +798,22 @@ mod tests {
             swarmy_volume::MetadataError::Fenced(swarmy_core::FenceKind::VolumeLease)
         ));
     }
+    #[tokio::test(start_paused = true)]
+    async fn replacing_a_placement_loses_the_old_hold() {
+        let (keeper, _) = fixture();
+        let now: jiff::Timestamp = "2001-01-01T00:00:00Z".parse().unwrap();
+        let placement = placement(now);
+        let answered = Answered {
+            sent: Instant::now(),
+            server_now: now,
+        };
+        let mut old = keeper.hold_placement(placement.clone(), answered, Arc::default());
+        let next = PlacementRecord {
+            epoch: 2,
+            ..placement
+        };
+        let new = keeper.hold_placement(next, answered, Arc::default());
+        assert_eq!(old.lost().await, "replaced");
+        assert_eq!(new.current().unwrap().epoch, 2);
+    }
 }

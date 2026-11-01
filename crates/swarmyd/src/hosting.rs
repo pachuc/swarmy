@@ -564,17 +564,20 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use crate::keeper::{Answered, Occupancy};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::{num::NonZeroUsize, path::Path};
     use swarmy_bus::{Bus, Config, SubjectToken};
     use swarmy_core::{NodeCapacity, NodeRecord, NodeRole, PlacementChangeReason, VolumeId};
+    use swarmy_node_api::test_support::drop_first_response;
     use swarmy_node_api::{NodeApiPolicy, NodeApiState, router, test_support::TestApi};
-    use swarmy_node_protocol::{NodeAdvert, RegisterRequest};
+    use swarmy_node_protocol::{NodeAdvert, RegisterRequest, SYNC_PATH};
 
     async fn node_api(
         store: &Store,
         stack: &swarmy_testkit::Stack,
         record: &NodeRecord,
-    ) -> (NodeClient, Keeper, TestApi) {
+        fault: bool,
+    ) -> (NodeClient, Keeper, TestApi, Arc<AtomicUsize>) {
         let token = store.issue_node_credential(record.node_id).await.unwrap();
         let bus = Bus::connect(
             &stack.nats_url,
@@ -585,7 +588,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let api = TestApi::start(router(NodeApiState::new(
+        let router = router(NodeApiState::new(
             store.clone(),
             bus,
             NodeApiPolicy {
@@ -593,8 +596,13 @@ mod tests {
                 snapshot_retention: NonZeroUsize::new(10).unwrap(),
                 resend_interval: Duration::from_secs(5),
             },
-        )))
-        .await;
+        ));
+        let (router, count) = if fault {
+            drop_first_response(router, SYNC_PATH)
+        } else {
+            (router, Arc::new(AtomicUsize::new(0)))
+        };
+        let api = TestApi::start(router).await;
         let client = NodeClient::new(api.url(), &token).unwrap();
         let advert = NodeAdvert {
             roles: record.roles.clone(),
@@ -613,7 +621,7 @@ mod tests {
             registered.leases,
             Duration::from_secs(5),
         );
-        (client, keeper, api)
+        (client, keeper, api, count)
     }
 
     async fn placed(
@@ -636,7 +644,7 @@ mod tests {
             gpu: None,
         };
         store.put_node(&record).await.unwrap();
-        let (client, keeper, api) = node_api(store, stack, &record).await;
+        let (client, keeper, api, _) = node_api(store, stack, &record, false).await;
         let agent = AgentId::from_ulid(ulid::Ulid::generate());
         let placement = store
             .place(
@@ -869,6 +877,53 @@ mod tests {
             hosting.previous.lock().await.get(&agent),
             Some(&placement.epoch)
         );
+        guard.cleanup().await;
+    }
+    #[tokio::test]
+    async fn sync_retry_after_a_dropped_answer() {
+        let Some(stack) = swarmy_testkit::Stack::load("hosting-sync-retry") else {
+            return;
+        };
+        let (store, mut guard) = stack
+            .open_store(Arc::new(swarmy_store::blob::MemoryBlobStore::default()))
+            .await;
+        let node_id = NodeId::from_ulid(ulid::Ulid::generate());
+        let record = NodeRecord {
+            node_id,
+            roles: vec![NodeRole::Sandbox],
+            capacity: NodeCapacity {
+                cpu_millis: 1000,
+                memory_bytes: 4 * 1024 * 1024 * 1024,
+                disk_bytes: 1000,
+                sandboxes: 1,
+            },
+            last_heartbeat: store.now(),
+            cached_images: vec![],
+            gpu: None,
+        };
+        store.put_node(&record).await.unwrap();
+        let (_client, keeper, _api, count) = node_api(&store, &stack, &record, true).await;
+        let agent = AgentId::from_ulid(ulid::Ulid::generate());
+        let placement = store
+            .place(
+                agent,
+                node_id,
+                store.now().checked_add(Duration::from_secs(60)).unwrap(),
+            )
+            .await
+            .unwrap();
+        store.claim_placement(&placement).await.unwrap();
+        let hold = keeper.hold_placement(
+            placement,
+            Answered {
+                sent: Instant::now(),
+                server_now: store.now(),
+            },
+            Arc::default(),
+        );
+        keeper.sync_once().await.unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        assert_eq!(hold.current(), store.get_by_agent(agent).await.unwrap());
         guard.cleanup().await;
     }
 }

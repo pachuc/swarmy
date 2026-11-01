@@ -880,14 +880,15 @@ impl RuncRuntime {
         }
         result
     }
-    /// Create a sandbox on the supplied disk.
+    /// Create a sandbox on `disk`, opening its writer through the runtime metadata.
+    /// Used by the control socket and resume.
     /// # Errors
     /// Returns attachment, mount, or container startup errors.
     pub async fn create(&self, spec: SandboxSpec, disk: BlockDevice) -> Result<Sandbox> {
         let grant = self.metadata.open_writer(disk.volume_id).await?;
         self.create_with(spec, disk, grant).await
     }
-    /// Create with a writer already granted by hosting/open.
+    /// Create a sandbox on `disk` with a writer grant the caller already holds.
     /// # Errors
     /// Returns attachment, mount, or container startup errors.
     pub async fn create_with(

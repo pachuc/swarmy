@@ -585,6 +585,16 @@ async fn superseded_process(node: &Node, store: &Store, bus: &Bus, agent: AgentI
 }
 
 async fn api_outage(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId) {
+    let started = invoke(
+        node,
+        store,
+        bus,
+        agent,
+        "process_start",
+        serde_json::json!({"command": "exec sleep 300"}),
+    )
+    .await;
+    assert!(started["process_id"].is_string());
     let old = store.get_by_agent(agent).await.unwrap().unwrap();
     node.pause_api();
     #[expect(
@@ -655,6 +665,25 @@ async fn restart_waits_for_its_old_epoch(
     node.kill();
     node.start();
     node.ready(store, jiff::Timestamp::now()).await;
+    // This direct NATS fixture has no worker to re-dispatch a job whose old
+    // placement expires. Wait before dispatching so its fence names the new epoch.
+    let writer_expiry = store
+        .get_volume(VolumeId::from_ulid(agent.as_ulid()))
+        .await
+        .unwrap()
+        .unwrap()
+        .writer_lease
+        .unwrap()
+        .expires_at;
+    swarmy_testkit::eventually(
+        "restarted node leaves old epoch and writer to expire",
+        Duration::from_secs(90),
+        async || {
+            (jiff::Timestamp::now() >= old.expires_at && jiff::Timestamp::now() >= writer_expiry)
+                .then_some(())
+        },
+    )
+    .await;
     let second = dispatch(store, &bus, node.id, agent, "true").await;
     completed(store, &second).await;
     let next = store.get_by_agent(agent).await.unwrap().unwrap();
