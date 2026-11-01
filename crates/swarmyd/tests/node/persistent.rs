@@ -243,7 +243,51 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
         false,
     )
     .await;
+    boot_set_prefetch(&mut node, store, &bus, base).await;
     graceful(&mut node, store, &bus, base).await;
+}
+
+async fn boot_set_prefetch(node: &mut Node, store: &Store, bus: &Bus, base: ManifestId) {
+    let first = AgentId::from_ulid(ulid::Ulid::generate());
+    let job = dispatch(store, bus, node.id, first, "true").await;
+    completed(store, &job).await;
+    swarmy_testkit::eventually(
+        "boot set was not recorded",
+        Duration::from_secs(60),
+        async || {
+            let set = store.boot_set(base).await.unwrap();
+            let log =
+                std::fs::read_to_string(node.root.path().join("node.log")).unwrap_or_default();
+            (set.is_some() && log.contains("boot set recorded")).then_some(())
+        },
+    )
+    .await;
+    let log_path = node.root.path().join("node.log");
+    let before = std::fs::read_to_string(&log_path).unwrap().len();
+    node.stop().await;
+    let cache = node.root.path().join(".swarmy/volumes/cache");
+    if let Err(error) = std::fs::remove_dir_all(cache) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+    let restarted = jiff::Timestamp::now();
+    node.start();
+    node.ready(store, restarted).await;
+    let next = AgentId::from_ulid(ulid::Ulid::generate());
+    let job = dispatch(store, bus, node.id, next, "true").await;
+    completed(store, &job).await;
+    let log = std::fs::read_to_string(log_path).unwrap();
+    let restarted_log = &log[before..];
+    assert!(
+        restarted_log.lines().any(|line| {
+            line.contains("boot set prefetched")
+                && line.split_whitespace().any(|field| {
+                    field
+                        .strip_prefix("chunks=")
+                        .is_some_and(|count| count.parse::<u64>().is_ok_and(|count| count > 0))
+                })
+        }),
+        "missing nonempty prefetch in restarted node log"
+    );
 }
 
 /// A requirement release checkpoints and stops hosting even with processes running.
