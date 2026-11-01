@@ -9,11 +9,12 @@ use serde_json::Value;
 use swarmy_testkit::FakeStack;
 
 const CLI: &str = env!("CARGO_BIN_EXE_swarmy");
-const SERVICES: [(&str, &str); 4] = [
+const SERVICES: [(&str, &str); 5] = [
     ("scheduler", "scheduler started"),
     ("worker", "worker ready"),
     ("gateway", "gateway ready"),
     ("api", "api ready"),
+    ("node-api", "node-api ready"),
 ];
 
 fn script(path: &Path, identity: &str) {

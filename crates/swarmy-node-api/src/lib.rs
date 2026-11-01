@@ -111,3 +111,6 @@ pub fn router(state: NodeApiState) -> Router {
         ))
         .with_state(state)
 }
+
+#[cfg(feature = "test-support")]
+pub mod test_support;

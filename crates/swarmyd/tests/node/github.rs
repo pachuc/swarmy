@@ -134,7 +134,7 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
         .unwrap();
     let volume = VolumeId::from_ulid(agent.agent_id.as_ulid());
     store.create_volume(volume, base).await.unwrap();
-    let mut node = Node::new(settings);
+    let mut node = Node::new(settings, &store).await;
     node.start();
     node.ready(&store, jiff::Timestamp::UNIX_EPOCH).await;
     let sandbox = match node

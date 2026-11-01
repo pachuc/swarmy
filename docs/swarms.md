@@ -646,3 +646,7 @@ scripts/acceptance-hetzner-cloud.sh --provider PROVIDER --model MODEL --api-key-
 [cloud-substrate.md](cloud-substrate.md) describes cloud boundaries;
 [fleet-runbook.md](fleet-runbook.md) covers the fleet; [DEV.md](DEV.md) covers
 checkout development.
+
+The latency suite runs chaos with `--node-api-host` set to the primary network
+namespace address, so its isolated node can reach the node API. Chaos starts
+and may kill the node API alongside the other services.

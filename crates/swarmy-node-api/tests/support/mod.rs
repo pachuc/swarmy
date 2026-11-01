@@ -1,10 +1,7 @@
 #![deny(clippy::disallowed_methods)]
-use axum::{Router, middleware, response::IntoResponse};
+use axum::Router;
 use jiff::Timestamp;
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::{Arc, Mutex};
 use swarmy_bus::{Bus, Config, SubjectToken};
 use swarmy_core::{NodeCapacity, NodeId, NodeRecord, NodeRole};
 use swarmy_node_protocol::NodeAdvert;
@@ -43,42 +40,19 @@ pub(crate) async fn fixture(tag: &str) -> Option<Fixture> {
     })
 }
 pub(crate) async fn serve(router: Router) -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
-    });
-    format!("http://{addr}")
+    swarmy_node_api::test_support::TestApi::start(router)
+        .await
+        .detach()
 }
 #[allow(
     dead_code,
     reason = "only retry integration targets use the response-drop helper"
 )]
-pub(crate) fn drop_first_response(
-    router: Router,
-    path: &'static str,
-) -> (Router, Arc<AtomicUsize>) {
-    let count = Arc::new(AtomicUsize::new(0));
-    let copy = count.clone();
-    let wrapped = router.layer(middleware::from_fn(
-        move |request: axum::extract::Request, next: middleware::Next| {
-            let count = copy.clone();
-            async move {
-                let selected = request.uri().path() == path;
-                let answer = next.run(request).await;
-                if selected
-                    && count.fetch_add(1, Ordering::SeqCst) == 0
-                    && answer.status().is_success()
-                {
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response()
-                } else {
-                    answer
-                }
-            }
-        },
-    ));
-    (wrapped, count)
-}
+#[allow(
+    unused_imports,
+    reason = "only retry integration targets use this helper"
+)]
+pub(crate) use swarmy_node_api::test_support::drop_first_response;
 pub(crate) async fn node(store: &Store, sandboxes: u32) -> NodeRecord {
     let record = NodeRecord {
         node_id: NodeId::from_ulid(Ulid::generate()),

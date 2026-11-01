@@ -10,6 +10,7 @@ pub(crate) enum Kind {
     Worker,
     Gateway,
     Api,
+    NodeApi,
     Node,
 }
 
@@ -20,6 +21,7 @@ impl Kind {
             Self::Worker => "worker",
             Self::Gateway => "gateway",
             Self::Api => "api",
+            Self::NodeApi => "node-api",
             Self::Node => "node",
         }
     }
@@ -149,5 +151,28 @@ impl Process {
             }
         }
         Ok(())
+    }
+}
+
+/// A currently unused port; test harness callers accept the bind race.
+pub(crate) fn free_port(host: std::net::IpAddr) -> Result<u16> {
+    Ok(std::net::TcpListener::bind((host, 0))?.local_addr()?.port())
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    #[test]
+    fn free_port_is_bindable() {
+        let host = std::net::Ipv4Addr::LOCALHOST.into();
+        // The helper deliberately releases the port; retry if another test
+        // takes it between selection and binding.
+        for _ in 0..20 {
+            let port = super::free_port(host).unwrap();
+            if let Ok(_listener) = std::net::TcpListener::bind((host, port)) {
+                return;
+            }
+        }
+        panic!("selected ports were repeatedly claimed before binding");
     }
 }

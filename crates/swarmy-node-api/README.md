@@ -65,3 +65,10 @@ object it wrote with `POST /node/v1/hosting/boot-set`, echoing its placement,
 session, head and content-addressed key. The API checks placement ownership
 and key shape, then records it against the head and image with first writer
 wins. Object bytes are read directly from object storage, not through the API.
+
+## Tests
+
+The `test-support` feature provides `TestApi`, an in-process router behind a
+relay. Tests can pause and resume the relay on the same URL, dropping active
+connections, and use `drop_first_response` to simulate a response lost after
+work commits.

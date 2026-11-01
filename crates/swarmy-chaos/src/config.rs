@@ -58,6 +58,9 @@ pub(crate) struct Config {
     /// Run the node inside this named network namespace (`nsenter --net=/run/netns/NAME`).
     #[arg(long, requires = "image")]
     pub node_netns: Option<String>,
+    /// The node API listener, reachable from a node network namespace.
+    #[arg(long, default_value = "127.0.0.1")]
+    pub node_api_host: std::net::IpAddr,
     /// Fail when a node store transaction takes longer than this many milliseconds.
     #[arg(long, requires = "image")]
     pub max_node_transaction_ms: Option<u64>,

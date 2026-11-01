@@ -29,7 +29,8 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use swarmy_bus::{Bus, Config as BusConfig, SubjectToken};
 use swarmy_core::{
-    Event, Message, MessageId, MessageRole, NodeRole, Part, SessionId, SessionState, WakeReply,
+    Event, Message, MessageId, MessageRole, NodeId, NodeRole, Part, SessionId, SessionState,
+    WakeReply,
 };
 use swarmy_store::{
     AgentSessionOptions, MAX_SCAN_LIMIT, Store, blob::ObjectBlobStore, runnable_partition,
@@ -72,6 +73,7 @@ struct Fixture {
     sessions: Vec<SessionId>,
     image: Option<swarmy_core::ManifestId>,
     image_memory_mib: Option<u64>,
+    node_api: Option<String>,
     environment: Vec<(OsString, OsString)>,
 }
 
@@ -103,8 +105,24 @@ impl Fixture {
             sessions: Vec::new(),
             image: None,
             image_memory_mib: None,
+            node_api: None,
             environment: Vec::new(),
         })
+    }
+
+    /// Give a node its own identity and credential for the node API.
+    async fn node_identity(&self, node: NodeId, root: &Path) -> Result<Vec<(OsString, OsString)>> {
+        use std::os::unix::fs::PermissionsExt;
+        let url = self.node_api.as_ref().context("node API is not running")?;
+        let file = root.join("node-token");
+        let token = self.store.issue_node_credential(node).await?;
+        std::fs::write(&file, format!("{}\n", token.reveal()))?;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))?;
+        Ok(vec![
+            ("SWARMY_NODE_ID".into(), node.to_string().into()),
+            ("SWARMY_NODE_API_URL".into(), url.into()),
+            ("SWARMY_NODE_TOKEN_FILE".into(), file.into_os_string()),
+        ])
     }
 
     async fn import_image(&mut self, image: &str) -> Result<()> {
@@ -197,12 +215,19 @@ impl Fixture {
             })?,
         )?;
         let environment = self.service_environment(config)?;
-        let node_environment = node_environment(&environment, config);
+        let mut node_api_environment = environment.clone();
+        if config.image.is_some() {
+            let port = process::free_port(config.node_api_host)?;
+            let listen = std::net::SocketAddr::new(config.node_api_host, port);
+            self.node_api = Some(format!("http://{listen}"));
+            node_api_environment.push(("SWARMY_NODE_API_LISTEN".into(), listen.to_string().into()));
+        }
         for (kind, count) in [
             (Kind::Scheduler, config.schedulers),
             (Kind::Worker, config.workers),
             (Kind::Gateway, config.gateways),
             (Kind::Api, 1),
+            (Kind::NodeApi, usize::from(config.image.is_some())),
             (
                 Kind::Node,
                 usize::from(
@@ -212,16 +237,23 @@ impl Fixture {
         ] {
             for index in 0..count {
                 let (slot_environment, netns) = if kind == Kind::Node {
-                    (node_environment.as_slice(), config.node_netns.as_deref())
+                    let mut env = node_environment(&environment, config);
+                    env.extend(
+                        self.node_identity(NodeId::from_ulid(Ulid::generate()), self.files.path())
+                            .await?,
+                    );
+                    (env, config.node_netns.as_deref())
+                } else if kind == Kind::NodeApi {
+                    (node_api_environment.clone(), None)
                 } else {
-                    (environment.as_slice(), None)
+                    (environment.clone(), None)
                 };
                 self.processes.push(Process::start_in(
                     kind,
                     index,
                     binaries,
                     self.files.path(),
-                    slot_environment,
+                    &slot_environment,
                     netns,
                 )?);
             }
@@ -887,5 +919,47 @@ impl Drop for Fixture {
         if self.image.is_some() {
             disk::cleanup(&self.files.path().join(".swarmy/node"));
         }
+    }
+}
+
+#[cfg(test)]
+mod node_identity_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn node_identity_names_node_api_and_token() {
+        let Some(_stack) = swarmy_testkit::Stack::load("chaos-node-identity") else {
+            return;
+        };
+        let mut fixture = Fixture::new().await.unwrap();
+        fixture.node_api = Some("http://127.0.0.1:1".into());
+        let node = NodeId::from_ulid(Ulid::generate());
+        let env = fixture
+            .node_identity(node, fixture.files.path())
+            .await
+            .unwrap();
+        assert_eq!(env.len(), 3);
+        assert_eq!(env[0], ("SWARMY_NODE_ID".into(), node.to_string().into()));
+        assert_eq!(
+            env[1],
+            ("SWARMY_NODE_API_URL".into(), "http://127.0.0.1:1".into())
+        );
+        let file = fixture.files.path().join("node-token");
+        assert_eq!(
+            env[2],
+            (
+                "SWARMY_NODE_TOKEN_FILE".into(),
+                file.clone().into_os_string()
+            )
+        );
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let token = swarmy_core::NodeToken::parse(&std::fs::read_to_string(file).unwrap()).unwrap();
+        assert_eq!(token.node(), node);
+        assert!(fixture.store.verify_node_credential(&token).await.unwrap());
     }
 }

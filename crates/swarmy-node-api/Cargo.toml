@@ -7,6 +7,8 @@ license.workspace = true
 build = "../swarmy-store/build.rs"
 [lints]
 workspace = true
+[features]
+test-support = []
 [dependencies]
 axum = { workspace = true, features = ["http2"] }
 blake3.workspace = true
@@ -24,6 +26,7 @@ tokio.workspace = true
 tracing.workspace = true
 ulid.workspace = true
 [dev-dependencies]
+swarmy-node-api = { path = ".", features = ["test-support"] }
 reqwest = { workspace = true, features = ["http2"] }
 serde_json.workspace = true
 swarmy-store = { workspace = true, features = ["test-support"] }
