@@ -95,13 +95,13 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
         let keeper = keeper.clone();
         async move { keeper.run(keeping_signal).await }
     });
+    let (shutdown, _) = watch::channel(false);
     let sweeping = tokio::spawn(sweep_scratch(
         runtime.clone(),
         keeper.clone(),
-        keeping_stop.subscribe(),
+        shutdown.subscribe(),
     ));
     let mut clients = JoinSet::new();
-    let (shutdown, _) = watch::channel(false);
     let mut memory_server = memory::spawn(bus.clone(), keeper.clone(), runtime.clone(), node);
     let mut tool_server = tools::spawn(bus, node, &hosting, settings);
     let serving: Result<()> = async {
@@ -131,10 +131,12 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     }
     ignore_best_effort(shutdown.send(true), "signal shutdown");
     while clients.join_next().await.is_some() {}
-    keeping_stop.send_replace(true);
+    // The keeper stops last: a scratch round waits for its next sync, and shutdown
+    // flushes volumes and releases placements under leases only it renews.
     sweeping.await?;
     hosting.shutdown().await;
     let cleanup = runtime.shutdown().await;
+    keeping_stop.send_replace(true);
     keeping.await?;
     std::fs::remove_file(socket)?;
     cleanup?;

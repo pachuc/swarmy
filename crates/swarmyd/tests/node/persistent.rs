@@ -296,6 +296,8 @@ async fn boot_set_prefetch(node: &mut Node, store: &Store, bus: &Bus, base: Mani
         },
     )
     .await;
+    // The test node has one sandbox slot; free it for the shutdown check.
+    evicted(store, next).await;
 }
 
 /// A requirement release checkpoints and stops hosting even with processes running.
@@ -808,7 +810,6 @@ async fn takeover(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId, dur
     if !during_call {
         completed(store, &active).await;
     }
-    let placement = store.get_by_agent(agent).await.unwrap().unwrap();
     let path = device(node, agent);
     let pid = node.child.as_ref().unwrap().id().to_string();
     assert!(
@@ -819,11 +820,16 @@ async fn takeover(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId, dur
             .success()
     );
     // The frozen node must miss heartbeats until its placement expires;
-    // poll the expiry instead of assuming a fixed freeze covers it.
-    swarmy_testkit::eventually(
+    // poll the expiry instead of assuming a fixed freeze covers it. Reread
+    // the placement each time: the node API may still answer a sync the
+    // node sent just before it froze and renew the placement.
+    let placement = swarmy_testkit::eventually(
         "frozen placement expires",
         Duration::from_secs(30),
-        async || (jiff::Timestamp::now() >= placement.expires_at).then_some(()),
+        async || {
+            let placement = store.get_by_agent(agent).await.unwrap().unwrap();
+            (jiff::Timestamp::now() >= placement.expires_at).then_some(placement)
+        },
     )
     .await;
     let mut other = store.get_node(node.id).await.unwrap().unwrap();
