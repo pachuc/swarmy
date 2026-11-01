@@ -247,7 +247,7 @@ see [worker/summarize.rs](../crates/swarmy-worker/src/worker/summarize.rs) and
 A local checkout starts FoundationDB, NATS and SeaweedFS with
 [dev-stack.sh](../scripts/dev-stack.sh). The control node hosts these backing
 services and scheduler, worker, gateway and API processes; the sandbox node
-runs `swarmyd`, runc containers and the volume/NBD path
+runs the `swarmy-node` binary (from `swarmyd`), runc containers and the volume/NBD path
 ([remote-provision.sh](../scripts/remote-provision.sh),
 [swarmyd main](../crates/swarmyd/src/role.rs)). One machine can perform both
 roles. Groups supply machines: local, existing hosts, or OpenTofu modules
