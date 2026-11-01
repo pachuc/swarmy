@@ -508,10 +508,10 @@ impl Fixture {
             .context("priming requires a sandbox node")?;
         node.stop().await?;
         let cache = self.files.path().join(".swarmy/volumes/cache");
-        if let Err(error) = std::fs::remove_dir_all(cache) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return Err(error.into());
-            }
+        if let Err(error) = std::fs::remove_dir_all(cache)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(error.into());
         }
         node.start_stopped()?;
         self.node_ready(restarted).await?;

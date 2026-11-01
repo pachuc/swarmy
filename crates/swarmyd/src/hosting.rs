@@ -390,10 +390,10 @@ impl Hosting {
             match tokio::time::timeout(Duration::from_secs(30), record).await {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
-                    tracing::warn!(error = %swarmy_core::error_chain(&*error), "boot set recording failed")
+                    tracing::warn!(error = %swarmy_core::error_chain(&*error), "boot set recording failed");
                 }
                 Err(error) => {
-                    tracing::warn!(error = %swarmy_core::error_chain(&error), "boot set recording failed")
+                    tracing::warn!(error = %swarmy_core::error_chain(&error), "boot set recording failed");
                 }
             }
         });

@@ -530,6 +530,10 @@ fn observe_tool_completion(
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "prefetch timing is an approximate metric, so floating-point display precision is sufficient"
+)]
 fn prefetch_fields(stats: &swarmy_volume::DeviceStats) -> (Option<u64>, Option<f64>) {
     let bytes = (stats.boot_prefetch_chunks > 0 || stats.boot_prefetch_ms.is_some())
         .then_some(stats.boot_prefetch_bytes);
