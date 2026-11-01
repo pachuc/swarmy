@@ -101,12 +101,17 @@ async fn release_frees_the_writer_for_the_next_owner() {
     );
     f.store.release(&hosted.placement).await.unwrap();
     let next = support::node(&f.store, 1).await;
-    f.store
+    let placement = f
+        .store
         .place(
             hosted.placement.agent_id,
             next.node_id,
             f.store.now().checked_add(Duration::from_secs(60)).unwrap(),
         )
+        .await
+        .unwrap();
+    f.store
+        .agent_volume(hosted.session, &placement)
         .await
         .unwrap();
     f.store
