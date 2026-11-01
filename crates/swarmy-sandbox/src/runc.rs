@@ -933,8 +933,8 @@ impl RuncRuntime {
         let mut server = ServerTask(tokio::spawn(server::attach(
             config,
             grant,
-            None,
             boot_set,
+            None,
             true,
             move |path| {
                 std::fs::write(&device_journal, path.as_os_str().as_encoded_bytes())?;
