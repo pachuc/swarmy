@@ -17,8 +17,8 @@ use std::fmt::Write;
 use swarmy_core::{ImageTag, VolumeId};
 use swarmy_store::{MAX_SCAN_LIMIT, Store};
 
-/// Developer volume tools, served from the node daemon: attach and snapshot
-/// need local devices and the store, neither of which the client links.
+/// Developer volume tools: attach and snapshot need local devices and the
+/// store, neither of which the client links.
 #[derive(clap::Parser)]
 #[command(name = "vol", about = "Create, attach, and snapshot durable volumes")]
 pub(crate) struct VolCli {
