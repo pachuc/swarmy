@@ -239,3 +239,35 @@ async fn a_node_cannot_claim_or_complete_for_another_node() {
     foreign(&alice.complete_tool(&request, deadline()).await);
     bob.complete_tool(&request, deadline()).await.unwrap();
 }
+
+#[tokio::test]
+async fn a_node_cannot_release_another_nodes_writer() {
+    let Some(f) = support::fixture("na10-foreign-release").await else {
+        return;
+    };
+    let a = support::dispatched(&f.store).await;
+    let b = support::hosted(&f.store).await;
+    let base = support::served(&f).await;
+    let client_a = support::client(&base, &a.token);
+    let client_b = support::client(&base, &b.token);
+    let request = swarmy_node_protocol::VolumeReleaseRequest {
+        writer: WriterToken {
+            volume: b.volume,
+            lease: b.lease.clone(),
+        },
+    };
+    assert!(matches!(
+        client_a.release_volume(&request, deadline()).await,
+        Err(ClientError::Refused(NodeRefusal::NotYours))
+    ));
+    assert_eq!(
+        f.store
+            .get_volume(b.volume)
+            .await
+            .unwrap()
+            .unwrap()
+            .writer_lease,
+        Some(b.lease)
+    );
+    client_b.release_volume(&request, deadline()).await.unwrap();
+}

@@ -133,14 +133,14 @@ mod tests {
     async fn publish_records_the_head_only_when_accepted() {
         use axum::{Json, Router, response::IntoResponse, routing::post};
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use swarmy_core::{ContentHash, LeaseOwnerId, NodeId, NodeToken};
+        use swarmy_core::{LeaseOwnerId, NodeId, NodeToken};
         use swarmy_node_api::test_support::TestApi;
         use swarmy_node_protocol::{Ack, Failure, VOLUME_PUBLISH_PATH};
         use swarmy_store::blob::MemoryBlobStore;
         let Some(stack) = swarmy_testkit::Stack::load("published-head") else {
             return;
         };
-        let (store, mut guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+        let (_store, mut guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
         let count = Arc::new(AtomicUsize::new(0));
         let counter = count.clone();
         let router = Router::new().route(
@@ -232,5 +232,48 @@ mod tests {
             }),
             MetadataError::Failed(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod release_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use axum::{Json, Router, routing::post};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use swarmy_core::{LeaseOwnerId, NodeId, NodeToken};
+    use swarmy_node_api::test_support::TestApi;
+    use swarmy_node_protocol::{Ack, VOLUME_RELEASE_PATH};
+
+    #[tokio::test]
+    async fn release_goes_through_the_node_api() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let calls = count.clone();
+        let router = Router::new().route(
+            VOLUME_RELEASE_PATH,
+            post(move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Json(Ack {
+                        server_now: jiff::Timestamp::now(),
+                    })
+                }
+            }),
+        );
+        let api = TestApi::start(router).await;
+        let node = NodeId::from_ulid(ulid::Ulid::generate());
+        let client = NodeClient::new(api.url(), &NodeToken::new(node, [1; 32])).unwrap();
+        let volume = VolumeId::from_ulid(ulid::Ulid::generate());
+        let heads = Heads::default();
+        heads.set(volume, ManifestId::from_ulid(ulid::Ulid::generate()));
+        let metadata = NodeVolumeMetadata::new(client, heads.clone());
+        let lease = Lease {
+            owner: LeaseOwnerId::from(node),
+            seq: 1,
+            expires_at: jiff::Timestamp::now(),
+        };
+        metadata.release_writer_lease(volume, &lease).await.unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(heads.get(volume), None);
     }
 }

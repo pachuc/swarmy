@@ -72,3 +72,5 @@ The `test-support` feature provides `TestApi`, an in-process router behind a
 relay. Tests can pause and resume the relay on the same URL, dropping active
 connections, and use `drop_first_response` to simulate a response lost after
 work commits.
+
+`volume/release` has the same authority as `volume/publish`: the node API checks that the writer owner is the calling node before the store call. The store matches owner and sequence; a repeated release succeeds.
