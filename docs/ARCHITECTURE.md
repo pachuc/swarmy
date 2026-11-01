@@ -65,7 +65,7 @@ crate in a tier depends on every lower tier.
 - **swarmy-node-api** authenticates sandbox nodes by their own token and runs their store operations on the primary ([source](../crates/swarmy-node-api/src/role.rs)).
 - **swarmy-api** exposes HTTP JSON mutations and cursor-based event streams
   ([source](../crates/swarmy-api/src/role.rs)).
-- **swarmyd** registers and opens hosting through the node API; one sync renews every placement, claim and writer lease. It hosts volumes and sandbox commands on a node
+- **swarmyd** registers and opens hosting through the node API; one sync renews every placement, claim and writer lease. It claims and completes tool calls through the node API, which publishes the completion event and wakes the session. It hosts volumes and sandbox commands on a node
   ([source](../crates/swarmyd/src/role.rs)).
 
 ### Client and cloud

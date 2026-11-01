@@ -96,7 +96,6 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
         client.clone(),
         keeper.clone(),
         runtime.clone(),
-        node,
         settings,
         &registered.previous,
     );

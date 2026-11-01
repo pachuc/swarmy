@@ -206,7 +206,7 @@ impl Report {
             value.map_or_else(|| "-".into(), |n| format!("{n:.1}"))
         }
         let mut out = String::from(
-            "== tool timings (ms; delivery and wake compare worker and node wall clocks)\n",
+            "== tool timings (ms; delivery and complete compare node and primary wall clocks)\n",
         );
         for c in &self.calls {
             writeln!(

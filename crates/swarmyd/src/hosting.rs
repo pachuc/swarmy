@@ -6,8 +6,8 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use swarmy_core::{
-    AgentId, BlockDevice, ManifestHeader, ManifestId, MessageId, NodeId, PlacementRecord,
-    SandboxSpec, SessionId, ToolJob, VolumeId, ignore_best_effort,
+    AgentId, BlockDevice, ManifestHeader, ManifestId, MessageId, PlacementRecord, SandboxSpec,
+    SessionId, ToolJob, VolumeId, ignore_best_effort,
 };
 use swarmy_node_protocol::{
     ClientError, DEFAULT_DEADLINE, HostingCloseRequest, HostingOpenRequest, HostingReadyRequest,
@@ -90,7 +90,6 @@ pub(crate) struct Hosting {
     runtime: Arc<RuncRuntime>,
     client: NodeClient,
     keeper: Keeper,
-    node: NodeId,
     routes: Mutex<BTreeMap<SessionId, AgentId>>,
     idle: Duration,
     entries: Mutex<BTreeMap<AgentId, Entry>>,
@@ -111,7 +110,6 @@ impl Hosting {
         client: NodeClient,
         keeper: Keeper,
         runtime: Arc<RuncRuntime>,
-        node: NodeId,
         settings: &swarmy_config::Settings,
         previous: &[PlacementRecord],
     ) -> Arc<Self> {
@@ -120,7 +118,6 @@ impl Hosting {
             client,
             keeper,
             runtime,
-            node,
             idle: settings.sandbox.idle_secs,
             entries: Mutex::new(BTreeMap::new()),
             routes: Mutex::new(BTreeMap::new()),
@@ -611,19 +608,22 @@ pub(crate) fn refusal_error(refusal: NodeRefusal) -> anyhow::Error {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use crate::keeper::{Answered, Occupancy};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::{num::NonZeroUsize, path::Path};
     use swarmy_bus::{Bus, Config, SubjectToken};
-    use swarmy_core::{NodeCapacity, NodeRecord, NodeRole, PlacementChangeReason, VolumeId};
+    use swarmy_core::{
+        NodeCapacity, NodeId, NodeRecord, NodeRole, PlacementChangeReason, VolumeId,
+    };
     use swarmy_node_api::test_support::drop_first_response;
     use swarmy_node_api::{NodeApiPolicy, NodeApiState, router, test_support::TestApi};
     use swarmy_node_protocol::{NodeAdvert, RegisterRequest, SYNC_PATH};
+    use swarmy_store::Store;
 
-    async fn node_api(
+    pub(crate) async fn node_api(
         store: &Store,
         stack: &swarmy_testkit::Stack,
         record: &NodeRecord,
@@ -724,7 +724,6 @@ mod tests {
             client,
             keeper.clone(),
             Arc::new(runtime),
-            node_id,
             &settings,
             std::slice::from_ref(&placement),
         );

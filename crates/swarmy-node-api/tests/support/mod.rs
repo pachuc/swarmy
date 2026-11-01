@@ -3,7 +3,7 @@ use axum::Router;
 use jiff::Timestamp;
 use std::sync::{Arc, Mutex};
 use swarmy_bus::{Bus, Config, SubjectToken};
-use swarmy_core::{NodeCapacity, NodeId, NodeRecord, NodeRole};
+use swarmy_core::NodeRecord;
 use swarmy_node_protocol::NodeAdvert;
 use swarmy_store::{Store, blob::MemoryBlobStore};
 use ulid::Ulid;
@@ -53,6 +53,10 @@ pub(crate) async fn serve(router: Router) -> String {
     reason = "only retry integration targets use this helper"
 )]
 pub(crate) use swarmy_node_api::test_support::drop_first_response;
+#[allow(
+    unused_imports,
+    reason = "shared fixtures have different consumers across integration targets"
+)]
 pub(crate) use swarmy_node_api::test_support::node;
 pub(crate) fn advert(record: &NodeRecord) -> NodeAdvert {
     NodeAdvert {
@@ -62,6 +66,10 @@ pub(crate) fn advert(record: &NodeRecord) -> NodeAdvert {
     }
 }
 
+#[allow(
+    unused_imports,
+    reason = "shared fixtures have different consumers across integration targets"
+)]
 pub(crate) use swarmy_node_api::test_support::hosted_session;
 /// One node with a live placement, tool claim and volume writer.
 #[allow(
@@ -77,6 +85,10 @@ pub(crate) struct Hosted {
     pub(crate) volume: swarmy_core::VolumeId,
     pub(crate) lease: swarmy_core::Lease,
 }
+#[allow(
+    unused_imports,
+    reason = "shared fixtures have different consumers across integration targets"
+)]
 pub(crate) use swarmy_node_api::test_support::{Dispatched, dispatched};
 #[allow(dead_code, reason = "the fixture is shared across integration targets")]
 pub(crate) async fn hosted(store: &Store) -> Hosted {

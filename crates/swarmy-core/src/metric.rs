@@ -13,7 +13,7 @@ pub struct ToolMetric {
     pub claimed_ns: Option<i64>,
     /// Node clock: the sandbox command started.
     pub started_ns: Option<i64>,
-    /// Node clock: the node stamped `ToolCompleted` right after its completion commit.
+    /// Primary clock: when the node API committed the completion (the server's `ToolCompleted` stage).
     pub completed_ns: Option<i64>,
     /// Worker clock: the worker claimed the step that folds this result.
     pub woken_ns: Option<i64>,
