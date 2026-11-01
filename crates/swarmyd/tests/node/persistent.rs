@@ -275,19 +275,27 @@ async fn boot_set_prefetch(node: &mut Node, store: &Store, bus: &Bus, base: Mani
     let next = AgentId::from_ulid(ulid::Ulid::generate());
     let job = dispatch(store, bus, node.id, next, "true").await;
     completed(store, &job).await;
-    let log = std::fs::read_to_string(log_path).unwrap();
-    let restarted_log = &log[before..];
-    assert!(
-        restarted_log.lines().any(|line| {
-            line.contains("boot set prefetched")
-                && line.split_whitespace().any(|field| {
-                    field
-                        .strip_prefix("chunks=")
-                        .is_some_and(|count| count.parse::<u64>().is_ok_and(|count| count > 0))
-                })
-        }),
-        "missing nonempty prefetch in restarted node log"
-    );
+    swarmy_testkit::eventually(
+        "boot set did not prefetch chunks",
+        Duration::from_secs(30),
+        async || {
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            log.get(before..).and_then(|restarted_log| {
+                restarted_log
+                    .lines()
+                    .any(|line| {
+                        line.contains("boot set prefetched")
+                            && line.split_whitespace().any(|field| {
+                                field.strip_prefix("chunks=").is_some_and(|count| {
+                                    count.parse::<u64>().is_ok_and(|count| count > 0)
+                                })
+                            })
+                    })
+                    .then_some(())
+            })
+        },
+    )
+    .await;
 }
 
 /// A requirement release checkpoints and stops hosting even with processes running.
