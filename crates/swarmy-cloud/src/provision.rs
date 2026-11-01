@@ -999,6 +999,7 @@ pub async fn logs(
         "swarmyd",
         "swarmy-stack",
         "swarmy-tunnel",
+        "swarmy-objects-tunnel",
         "swarmy-api",
         "swarmy-scheduler",
         "swarmy-worker",
@@ -1007,7 +1008,7 @@ pub async fn logs(
     ];
     Error::ensure(
         UNITS.contains(&unit),
-        "--unit must be one of swarmyd, swarmy-stack, swarmy-tunnel, swarmy-api, swarmy-scheduler, swarmy-worker, swarmy-gateway, swarmy-node-api",
+        "--unit must be one of swarmyd, swarmy-stack, swarmy-tunnel, swarmy-objects-tunnel, swarmy-api, swarmy-scheduler, swarmy-worker, swarmy-gateway, swarmy-node-api",
     )?;
     let (record, planned) = recorded_plan(registry, spec)?;
     let selected = if let Some(host) = host {

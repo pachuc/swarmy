@@ -75,13 +75,18 @@ if systemctl cat "$api_unit" >/dev/null 2>&1; then
     token_status=$(ensure_api_token .swarmy/config.toml)
 fi
 unit_inputs_for_upgrade "$mode" "$repo_owner"
+tunnel_units=()
+if [[ $mode == node ]]; then read_shared_list tunnel_units swarmy_node_tunnel_units; fi
 systemd_dir=$(swarmy_systemd_dir)
 backing_unit=$(swarmy_mode_backing_unit "$mode")
 node_unit=$(swarmy_agent_unit)
 read_shared_list service_units swarmy_service_units
 provisioner_unit=$(swarmy_provisioner_unit)
 reconcile=()
-if [[ $services != services-only ]]; then reconcile+=("$backing_unit" "$node_unit"); fi
+if [[ $services != services-only ]]; then
+    if [[ $mode == node ]]; then reconcile+=("${tunnel_units[@]}" "$node_unit")
+    else reconcile+=("$backing_unit" "$node_unit"); fi
+fi
 new_service_units=()
 for unit in "${service_units[@]}"; do
     if [[ -f $systemd_dir/$unit ]]; then
@@ -96,12 +101,14 @@ changed_units=()
 reconcile_units changed_units "${reconcile[@]}"
 for unit in "${new_service_units[@]}"; do sudo -n systemctl enable "$unit"; done
 if unit_listed "$provisioner_unit" "${changed_units[@]}"; then sudo -n systemctl enable "$provisioner_unit"; fi
+objects_unit=$(swarmy_objects_tunnel_unit)
+if unit_listed "$objects_unit" "${changed_units[@]}"; then sudo -n systemctl enable "$objects_unit"; fi
 # Persist changed unit text before diagnostics or restart decisions can fail.
 pending_file=.swarmy/upgrade-pending-units
 previous_pending=()
 if [[ -f $pending_file ]]; then mapfile -t previous_pending < "$pending_file"; fi
 printf '%s\n' "${changed_units[@]}" "${previous_pending[@]}" > "$pending_file"
-if unit_listed "$backing_unit" "${changed_units[@]}"; then
+if unit_listed "$backing_unit" "${changed_units[@]}" || unit_listed "$objects_unit" "${changed_units[@]}"; then
     if [[ $mode == node && $services != services-only ]]; then
         echo "$backing_unit changed; the tunnel restarts with the node" >&2
     else
@@ -110,7 +117,7 @@ if unit_listed "$backing_unit" "${changed_units[@]}"; then
 fi
 restart_units=()
 for unit in "${changed_units[@]}"; do
-    [[ $unit == "$backing_unit" ]] || restart_units+=("$unit")
+    unit_listed "$unit" "$backing_unit" "${tunnel_units[@]}" || restart_units+=("$unit")
 done
 if [[ -f $pending_file ]]; then
     while IFS= read -r unit; do
@@ -193,9 +200,9 @@ if [[ $node_restart == true ]]; then
         done
         if [[ $mode == node ]]; then
             sudo -n systemctl stop "$node_unit"
-            sudo -n systemctl restart "$backing_unit"
+            sudo -n systemctl restart "${tunnel_units[@]}"
             restarted+=(tunnel)
-            restarted_units+=("$backing_unit")
+            restarted_units+=("${tunnel_units[@]}")
             sudo -n systemctl start "$node_unit"
         else
             sudo -n systemctl restart "$node_unit"

@@ -200,19 +200,22 @@ if [[ $storage_is_mount == true ]]; then unit_mount=$local_mount; fi
 set_unit_inputs "$mode" "$service_user" "$tunnel_primary" "$tunnel_s3" "$unit_mount"
 record_unit_inputs
 provisioned_units=()
-write_units provisioned_units "$stack_dependency" "$node_unit"
+units=("$stack_dependency")
+if [[ $mode == node ]]; then read_shared_list units swarmy_node_tunnel_units; fi
+write_units provisioned_units "${units[@]}" "$node_unit"
+if [[ $mode == node && $tunnel_s3 == false ]]; then sudo rm -f "$(swarmy_systemd_dir)/$(swarmy_objects_tunnel_unit)"; fi
 sudo systemctl daemon-reload
 if [[ $mode == stack ]]; then
     sudo systemctl enable --now "$stack_dependency"
     issue_local_node_credential "$repo_dir" "/usr/local/bin/$(swarmy_core_binary)"
 else
-    sudo systemctl enable "$stack_dependency"
+    sudo systemctl enable "${units[@]}"
     # A new machine's first tunnel connection can fail while its private
     # network or the primary's backing services are still coming up.
     for attempt in 1 2 3 4 5 6; do
-        if sudo systemctl restart "$stack_dependency"; then break; fi
+        if sudo systemctl restart "${units[@]}"; then break; fi
         if ((attempt == 6)); then
-            sudo journalctl -u "$stack_dependency" --no-pager -n 20 >&2 || :
+            for unit in "${units[@]}"; do sudo journalctl -u "$unit" --no-pager -n 20 >&2 || :; done
             exit 1
         fi
         echo "the tunnel to the primary is not up yet; retrying ($attempt/6)" >&2

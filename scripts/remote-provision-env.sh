@@ -240,6 +240,7 @@ swarmy_unit_table() {
     printf '%s\n' \
         'swarmy-stack.service::stack:backing' \
         'swarmy-tunnel.service::node:backing' \
+        'swarmy-objects-tunnel.service::node:objects' \
         'swarmyd.service:node:stack,node:agent'
     local services_text
     services_text=$(swarmy_service_names) || return 1
@@ -305,6 +306,18 @@ swarmy_provisioner_unit() {
 # The node agent unit.
 swarmy_agent_unit() {
     swarmy_unit_table | awk -F: '$4 == "agent" { print $1 }'
+}
+
+# The object-store forward has its own supervised SSH connection.
+swarmy_objects_tunnel_unit() {
+    swarmy_unit_table | awk -F: '$4 == "objects" { print $1 }'
+}
+
+# Tunnel units a joining node runs, control first. Needs unit inputs.
+swarmy_node_tunnel_units() {
+    : "${unit_tunnel_s3:?unit inputs not set}"
+    swarmy_mode_backing_unit node || return 1
+    if [[ $unit_tunnel_s3 == true ]]; then swarmy_objects_tunnel_unit; fi
 }
 
 # Unit inputs are recorded separately from the secret node environment.
@@ -393,21 +406,50 @@ WantedBy=multi-user.target
 UNIT
 }
 
-render_tunnel_unit() {
+# The SSH options are identical for the control and object-store connections.
+tunnel_ssh_command() {
     : "${unit_primary:?unit inputs not set}"
-    local s3_forward=''
-    if [[ $unit_tunnel_s3 == true ]]; then s3_forward=' -L 127.0.0.1:8333:127.0.0.1:8333'; fi
+    printf '/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i /etc/swarmy/tunnel-key %s %s@%s\n' "$*" "$unit_user" "$unit_primary"
+}
+
+render_tunnel_unit() {
+    local objects_want=''
+    if [[ $unit_tunnel_s3 == true ]]; then objects_want="Wants=$(swarmy_objects_tunnel_unit)"$'\n'; fi
     cat <<UNIT
 [Unit]
 Description=Swarmy tunnel to the primary's NATS and node API
+After=network-online.target
+Wants=network-online.target
+${objects_want}
+[Service]
+Type=exec
+User=$unit_user
+ExecStart=$(tunnel_ssh_command -L 127.0.0.1:4222:127.0.0.1:4222 -L 127.0.0.1:8743:127.0.0.1:8743)
+ExecStartPost=/bin/bash -c 'for attempt in {1..30}; do if (echo > /dev/tcp/127.0.0.1/8743) 2>/dev/null; then exit 0; fi; sleep 1; done; exit 1'
+Restart=always
+RestartSec=5
+TimeoutStartSec=40
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+render_objects_tunnel_unit() {
+    local control
+    control=$(swarmy_mode_backing_unit node) || return 1
+    cat <<UNIT
+[Unit]
+Description=Swarmy tunnel to the primary's object store
+PartOf=$control
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=exec
 User=$unit_user
-ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/swarmy/tunnel-known-hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -i /etc/swarmy/tunnel-key -L 127.0.0.1:4222:127.0.0.1:4222 -L 127.0.0.1:8743:127.0.0.1:8743$s3_forward $unit_user@$unit_primary
-ExecStartPost=/bin/bash -c 'for attempt in {1..30}; do if (echo > /dev/tcp/127.0.0.1/8743) 2>/dev/null; then exit 0; fi; sleep 1; done; exit 1'
+ExecStart=$(tunnel_ssh_command -L 127.0.0.1:8333:127.0.0.1:8333)
+ExecStartPost=/bin/bash -c 'for attempt in {1..30}; do if (echo > /dev/tcp/127.0.0.1/8333) 2>/dev/null; then exit 0; fi; sleep 1; done; exit 1'
 Restart=always
 RestartSec=5
 TimeoutStartSec=40
@@ -419,16 +461,17 @@ UNIT
 
 render_node_unit() {
     : "${unit_mode:?unit inputs not set}"
-    local stack_dependency dependency_kind=Wants mount_requirement=''
+    local stack_dependency dependency_kind=Wants mount_requirement='' objects_after=''
     stack_dependency=$(swarmy_mode_backing_unit "$unit_mode") || return 1
     # Keep the node role running across tunnel reconnects; its clients reconnect too.
     if [[ $unit_mode == stack ]]; then dependency_kind=Requires; fi
+    if [[ $unit_mode == node && $unit_tunnel_s3 == true ]]; then objects_after=" $(swarmy_objects_tunnel_unit)"; fi
     if [[ -n $unit_mount ]]; then mount_requirement="RequiresMountsFor=$unit_mount"; fi
     cat <<UNIT
 [Unit]
 Description=Swarmy node agent (swarmy-node)
 $dependency_kind=$stack_dependency
-After=network-online.target $stack_dependency systemd-modules-load.service
+After=network-online.target $stack_dependency systemd-modules-load.service$objects_after
 Wants=network-online.target
 ${mount_requirement}
 
@@ -510,6 +553,7 @@ render_unit() {
         backing)
             if [[ $unit == "$(swarmy_mode_backing_unit stack)" ]]; then render_stack_unit
             else render_tunnel_unit; fi ;;
+        objects) render_objects_tunnel_unit ;;
         agent) render_node_unit ;;
         service) render_service_unit "$unit" ;;
         provisioner) render_provisioner_unit ;;
