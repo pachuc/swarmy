@@ -853,6 +853,9 @@ impl RuncRuntime {
         Ok(server::boot_set(&self.config, volume).await?)
     }
 
+    /// Return attachment stats.
+    /// # Errors
+    /// Returns attachment transport or decoding errors.
     pub async fn volume_stats(
         &self,
         volume: swarmy_core::VolumeId,
