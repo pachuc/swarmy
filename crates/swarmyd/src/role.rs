@@ -1,12 +1,19 @@
-use crate::{gpu, hosting, memory, service, tools, upgrade, vol};
+use crate::{
+    api_metadata::NodeVolumeMetadata, gpu, hosting, keeper::Keeper, memory, service, tools,
+    upgrade, vol,
+};
 use std::ffi::OsString;
 
 use anyhow::{Result, ensure};
 use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
-use swarmy_core::{NodeRecord, ignore_best_effort};
+use swarmy_core::ignore_best_effort;
+use swarmy_node_protocol::{
+    ClientError, NodeAdvert, NodeClient, RegisterRequest, RegisterResponse,
+};
 use swarmy_sandbox::{RuncRuntime, RuntimeOptions, ScratchPolicy};
 use swarmy_store::Store;
 use swarmy_volume::server::ServerConfig;
+use tokio::sync::watch;
 use tokio::{net::UnixListener, task::JoinSet};
 
 /// Run the node role, including the upgrade drain command.
@@ -52,49 +59,53 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     let bus_config = settings.bus.bus_config()?;
     let bus = swarmy_bus::Bus::connect(&settings.bus.nats_url, bus_config.clone()).await?;
     let node = loaded.node_id()?;
+    let client = node_client(settings, node)?;
     let root = loaded.root.join(".swarmy/node");
     std::fs::create_dir_all(&root)?;
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
     let (cards, node_gpu) = gpu::devices(&settings.node, gpu::nvidia_smi()).await;
+    let advert = advert(settings, cards)?;
+    let stop = swarmy_config::shutdown_signal();
+    tokio::pin!(stop);
+    let registered = tokio::select! { result = register(&client, &advert, &settings.node.token_file) => result?, () = &mut stop => return Ok(()) };
+    let keeper = Keeper::new(
+        Arc::new(client.clone()),
+        advert,
+        registered.leases,
+        settings.node.heartbeat_interval_ms,
+    );
     let runtime = open_runtime(
         &loaded,
         root.clone(),
         node,
         store.clone(),
+        client.clone(),
         objects,
         node_gpu,
     )
     .await?;
-    let hosting = hosting::Hosting::new(store.clone(), runtime.clone(), node, settings).await?;
+    let hosting = hosting::Hosting::new(
+        store.clone(),
+        client,
+        keeper.clone(),
+        runtime.clone(),
+        node,
+        settings,
+        &registered.previous,
+    );
     let socket = root.join("control.sock");
     if socket.exists() {
         std::fs::remove_file(&socket)?;
     }
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
-    let mut record = NodeRecord {
-        node_id: node,
-        roles: settings.node.roles.clone(),
-        capacity: settings.node.capacity.clone(),
-        last_heartbeat: jiff::Timestamp::now(),
-        cached_images: Vec::new(),
-        gpu: cards,
-    };
-    if let Some(reserve) = settings.node.memory_reserve_mib {
-        record.capacity.memory_bytes = advertised_memory(reserve)?;
-    }
-    store.put_node(&record).await?;
     tracing::info!(%node, socket = %socket.display(), "node registered and ready");
-    let mut heartbeat = tokio::time::interval(settings.node.heartbeat_interval_ms);
-    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let (keeping_stop, keeping_signal) = watch::channel(false);
+    let keeping = tokio::spawn(async move { keeper.run(keeping_signal).await });
     let mut scratch_sweep = tokio::time::interval(Duration::from_secs(10));
     scratch_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // Created once, before the servers start, so a signal during startup
-    // or while a loop arm runs is still seen on the next pass.
-    let stop = swarmy_config::shutdown_signal();
-    tokio::pin!(stop);
     let mut clients = JoinSet::new();
-    let (shutdown, _) = tokio::sync::watch::channel(false);
+    let (shutdown, _) = watch::channel(false);
     let mut memory_server = memory::spawn(bus.clone(), store.clone(), runtime.clone(), node);
     let mut tool_server = tools::spawn(bus, &store, node, &hosting, settings);
     let serving: Result<()> = async {
@@ -109,11 +120,6 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
                     clients.spawn(async move {
                         if let Err(error) = service::handle(socket, runtime, shutdown).await { tracing::warn!(error = %swarmy_core::error_chain(&*error), "node control request failed"); }
                     });
-                }
-                _ = heartbeat.tick() => {
-                    record.last_heartbeat = jiff::Timestamp::now();
-                    store.put_node(&record).await?;
-                    hosting.report_status(settings.node.heartbeat_interval_ms.saturating_mul(3)).await?;
                 }
                 _ = scratch_sweep.tick() => {
                     if let Err(error) = runtime.sweep_scratch().await { tracing::warn!(error = %swarmy_core::error_chain(&error), "scratch sweep failed"); }
@@ -133,6 +139,8 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     while clients.join_next().await.is_some() {}
     hosting.shutdown().await;
     let cleanup = runtime.shutdown().await;
+    keeping_stop.send_replace(true);
+    keeping.await?;
     std::fs::remove_file(socket)?;
     cleanup?;
     serving
@@ -143,6 +151,7 @@ async fn open_runtime(
     root: std::path::PathBuf,
     node: swarmy_core::NodeId,
     store: Store,
+    client: NodeClient,
     objects: Arc<dyn object_store::ObjectStore>,
     gpu: swarmy_sandbox::NodeGpu,
 ) -> Result<Arc<RuncRuntime>> {
@@ -153,7 +162,7 @@ async fn open_runtime(
             ServerConfig {
                 directory: loaded.root.join(".swarmy/volumes"),
                 node,
-                metadata: Arc::new(store.clone()),
+                metadata: Arc::new(NodeVolumeMetadata::new(client, store.clone())),
                 objects,
             },
             swarmy_store::StoreSandboxMetadata::new(store, node),
@@ -192,4 +201,59 @@ fn advertised_memory(reserve_mib: u64) -> Result<u64> {
     Ok(total_kib
         .saturating_sub(reserve_mib.saturating_mul(1024))
         .saturating_mul(1024))
+}
+
+fn advert(
+    settings: &swarmy_config::Settings,
+    cards: Option<swarmy_core::GpuCards>,
+) -> Result<NodeAdvert> {
+    let mut capacity = settings.node.capacity.clone();
+    if let Some(reserve) = settings.node.memory_reserve_mib {
+        capacity.memory_bytes = advertised_memory(reserve)?;
+    }
+    Ok(NodeAdvert {
+        roles: settings.node.roles.clone(),
+        capacity,
+        gpu: cards,
+    })
+}
+
+async fn register(
+    client: &NodeClient,
+    advert: &NodeAdvert,
+    token_file: &std::path::Path,
+) -> Result<RegisterResponse> {
+    loop {
+        match client
+            .register(&RegisterRequest {
+                node: advert.clone(),
+            })
+            .await
+        {
+            Ok(registered) => return Ok(registered),
+            Err(ClientError::Unauthorized) => anyhow::bail!(
+                "node token {} rejected; run swarmy-core node-credential issue {}",
+                token_file.display(),
+                client.node()
+            ),
+            Err(error) => {
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "node register failed; retrying");
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+fn node_client(
+    settings: &swarmy_config::Settings,
+    node: swarmy_core::NodeId,
+) -> Result<NodeClient> {
+    let client = NodeClient::from_token_file(&settings.node.api_url, &settings.node.token_file)?;
+    ensure!(
+        client.node() == node,
+        "node token {} names node {}, but this node is {node}",
+        settings.node.token_file.display(),
+        client.node()
+    );
+    Ok(client)
 }

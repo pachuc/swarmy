@@ -1,6 +1,6 @@
 # Node agent
 
-`swarmyd` registers a node in FoundationDB, refreshes its heartbeat, and hosts
+`swarmyd` registers with the primary node API using `[node] api_url` and `token_file`, retries registration until the API answers, recovers previous placement epochs, and hosts
 runc sandboxes and their NBD volume servers. It uses the same shared attachment
 service as `swarmy-core vol attach`, including writer fencing, lease renewal,
 background uploads, periodic snapshots, and final checkpoint on detach. Calls
@@ -131,21 +131,11 @@ pinned image (or imports the published head of its existing slice 2 sandbox).
 Subsequent sessions use that same volume. No attempt volume is created. Clone
 support remains in the volume library for explicit forks.
 
-The container and its processes survive successful calls. Each call has its own
-renewable tool lease, and completion checks both that lease and the placement
-epoch. The node stops renewing the tool lease before completion because renewal
-rewrites the claim that completion reads. Output completion does not freeze, flush, or advance the disk. The result's
-manifest id names the latest observed checkpoint; it does not assert durability
-of that call's writes. The attachment continuously stages chunks and publishes
-snapshots according to the shared volume snapshot settings.
+The container and its processes survive successful calls. Tool claims and completions still use the store until NA8; the single lease keeper renews the claim through the node API alongside placement and volume writer leases. The store compares the claim by identity, so renewal can race completion safely. Output completion does not freeze, flush, or advance the disk. The result's manifest id names the latest observed checkpoint; it does not assert durability of that call's writes. The attachment continuously stages chunks and publishes snapshots according to the shared volume snapshot settings.
 
-Placement renewal runs every third of the lease duration in one transaction that
-extends the lease and reports any requested release, including during boot,
-commands, and final checkpoints. Renewal failure or expiry cancels execution,
-stops guest processes, and discards the attachment without publishing. Writer
-acquisition, renewal, and publication also validate the bound placement epoch in
-FoundationDB. A restarted daemon cleans local state first and waits for old
-placement and writer leases to expire before rebuilding under a new epoch.
+The node caches `tool/route` per hosted session. `hosting/open` grants the placement, bound volume, writer lease, head manifest and sandbox spec in one request. After boot the node reports `hosting/ready` asynchronously; `hosting/close` releases the writer and placement. Volume publication and reused-chunk protection use the node API, while detach still releases the writer through the store until NA10. The control socket still opens writers through the store.
+
+One keeper sends a `sync` for all placements, claims and writers, including call occupancy and the heartbeat. Its period is the shortest of the server interval, configured heartbeat, and one third of each lease (at least 100 ms). The local deadline is the request send instant plus the expiry's remaining duration on the server clock, minus a tenth of the lease length. A refused or expired lease is lost permanently: the placement actor stops and discards its sandbox, a claim stops its call, and a writer disconnects the device. A restarted daemon cleans local state first and waits for old placement and writer leases to expire before rebuilding under a new epoch.
 
 After the idle window without a call, the node stops processes, unmounts,
 publishes a final checkpoint, detaches the device, and releases placement.
@@ -213,15 +203,12 @@ finishes or reaches its tool timeout before the next call starts; later calls
 cannot overtake an already queued session. Each call collects its own stdout
 and stderr before committing its result.
 
-Each node heartbeat publishes `swarmy_core::AgentCallStatus` in the separate
-store row `("agent_call_status", agent_id)`. CLI consumers can read it through
-`Store::agent_call_status(agent_id)`. Its fields are `agent_id`, `node_id`,
-`epoch`, `holder_session_id`, `queued_calls`, `observed_at`, and `expires_at`.
+Each keeper sync sends call occupancy to the node API, which writes `swarmy_core::AgentCallStatus` in the separate store row `("agent_call_status", agent_id)`. CLI consumers can read it through `Store::agent_call_status(agent_id)`. Its fields are `agent_id`, `node_id`, `epoch`, `holder_session_id`, `queued_calls`, `observed_at`, and `expires_at`.
 The holder includes sandbox startup and call execution. The queue count excludes
 the holder and includes calls waiting for channel capacity. An idle resident
 computer has a null holder and zero queued calls.
 
-Status is sampled at the configured node heartbeat interval and expires after
+Status is sampled at the keeper sync interval and expires after
 three intervals. The store rejects writes from a replaced or expired placement
 and hides observations after sample expiry, placement expiry, release, deletion,
 or takeover. A missing observation means occupancy is unknown. It must not be

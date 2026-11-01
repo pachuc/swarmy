@@ -880,10 +880,23 @@ impl RuncRuntime {
         }
         result
     }
-    /// Create a sandbox on the supplied disk.
+    /// Create a sandbox on `disk`, opening its writer through the runtime metadata.
+    /// Used by the control socket and resume.
     /// # Errors
     /// Returns attachment, mount, or container startup errors.
     pub async fn create(&self, spec: SandboxSpec, disk: BlockDevice) -> Result<Sandbox> {
+        let grant = self.metadata.open_writer(disk.volume_id).await?;
+        self.create_with(spec, disk, grant).await
+    }
+    /// Create a sandbox on `disk` with a writer grant the caller already holds.
+    /// # Errors
+    /// Returns attachment, mount, or container startup errors.
+    pub async fn create_with(
+        &self,
+        spec: SandboxSpec,
+        disk: BlockDevice,
+        grant: swarmy_volume::WriterGrant,
+    ) -> Result<Sandbox> {
         let total = fs2::total_space(&self.scratch_root)?;
         if total > 0
             && fs2::available_space(&self.scratch_root)?
@@ -896,7 +909,6 @@ impl RuncRuntime {
         if self.sandboxes.lock().await.contains_key(&id) {
             return Err(Error::State);
         }
-        let grant = self.metadata.open_writer(disk.volume_id).await?;
         let bundle = self.bundle(id);
         std::fs::create_dir(&bundle)?;
         let journal = Journal { spec, disk };

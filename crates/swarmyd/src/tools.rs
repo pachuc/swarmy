@@ -1,3 +1,4 @@
+use crate::keeper::{self, ClaimHold, Keeper};
 use anyhow::{Context, Result};
 use base64::Engine as _;
 use std::{
@@ -11,9 +12,8 @@ use swarmy_core::{
 };
 use swarmy_sandbox::{ExecOutput, ExecRequest, RuncRuntime};
 use swarmy_store::{Store, StoreError};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
-const LEASE: Duration = Duration::from_secs(30);
 /// Extra time for sandbox exec startup (cold image reads) and helper startup, not the command.
 const EXEC_STARTUP_ALLOWANCE_MS: u64 = 60_000;
 
@@ -186,6 +186,7 @@ pub(crate) fn placement_refusal(
 
 pub(crate) async fn execute(
     store: &Store,
+    keeper: &Keeper,
     runtime: Arc<RuncRuntime>,
     node: NodeId,
     placement: &PlacementRecord,
@@ -198,11 +199,12 @@ pub(crate) async fn execute(
     }
     // claim_placed_tool checks the live placement and dispatch epoch in the
     // same transaction as the claim; a separate validation could race anyway.
+    let sent = tokio::time::Instant::now();
     let claim = PlacedToolClaim {
         job,
         owner: LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
         placement: placement.clone(),
-        expires_at: jiff::Timestamp::now().checked_add(LEASE)?,
+        expires_at: jiff::Timestamp::now().checked_add(keeper.leases().tool_claim)?,
     };
     // The transactional claim is the guard. If it rejects a stale placement,
     // read the current one only to explain the refusal in the node log.
@@ -219,30 +221,27 @@ pub(crate) async fn execute(
     anyhow::ensure!(claimed, "tool call already claimed");
     metrics.claimed_ns = wall_ns();
     let _activity = swarmy_volume::priority::ToolActivity::begin();
-    run(store, runtime, &claim, &metrics).await
+    let hold = keeper.hold_claim(
+        claim.clone(),
+        sent + keeper.leases().tool_claim - keeper::margin(keeper.leases().tool_claim),
+    );
+    run(store, runtime, &claim, hold, &metrics).await
 }
 
 async fn run(
     store: &Store,
     runtime: Arc<RuncRuntime>,
     claim: &PlacedToolClaim,
+    mut hold: ClaimHold,
     metrics: &CallMetrics,
 ) -> Result<()> {
-    let (stop, stopped) = watch::channel(false);
-    let heartbeat = heartbeat(store, claim, stopped);
-    tokio::pin!(heartbeat);
     let (result, summary) = tokio::select! {
         produced = produce(store, &runtime, claim) => produced?,
-        ended = &mut heartbeat => {
-            ended?;
-            anyhow::bail!("tool claim heartbeat ended before the command finished");
-        }
+        reason = hold.lost() => anyhow::bail!("tool claim lost before the command finished: {reason}"),
     };
-    // Renewal rewrites the claim read by completion. Wait for any in-flight
-    // renewal before committing while most of the tool lease remains.
-    stop.send_replace(true);
-    heartbeat.await?;
+    // The store compares claims by identity, so renewal during commit is harmless.
     commit_result(store, claim, &result).await?;
+    drop(hold);
     // The tool result and completion stage land right after the fenced
     // commit so the worker sees the completion without waiting for the
     // volume stat round trip. The first-tool computer re-sample follows in
@@ -761,26 +760,6 @@ pub(crate) async fn has_processes(
     );
     let records: Vec<serde_json::Value> = serde_json::from_str(&stdout)?;
     Ok(records.iter().any(|record| record["status"] == "running"))
-}
-
-async fn heartbeat(
-    store: &Store,
-    claim: &PlacedToolClaim,
-    mut stop: watch::Receiver<bool>,
-) -> Result<()> {
-    let mut expiry = claim.expires_at;
-    loop {
-        tokio::select! {
-            () = tokio::time::sleep(LEASE / 3) => {}
-            _ = stop.changed() => return Ok(()),
-        }
-        let next = jiff::Timestamp::now().checked_add(LEASE)?;
-        let remaining = expiry
-            .duration_since(jiff::Timestamp::now())
-            .try_into()
-            .unwrap_or(Duration::ZERO);
-        expiry = tokio::time::timeout(remaining, store.renew_placed_tool(claim, next)).await??;
-    }
 }
 
 #[cfg(test)]
