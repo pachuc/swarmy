@@ -88,7 +88,7 @@ search path to use `swarmy` directly. When using a system client library, omit `
 install prefix, set it to that prefix's `lib` directory at build time.
 
 ```sh
-./target/debug/swarmy swarm logs dev           # follow all four service logs
+./target/debug/swarmy swarm logs dev           # follow all five service logs
 ./target/debug/swarmy swarm logs dev worker    # follow one service; Ctrl-C ends tailing
 ./target/debug/swarmy swarm logs dev supervisor
 ```
