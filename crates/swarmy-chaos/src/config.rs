@@ -64,9 +64,10 @@ pub(crate) struct Config {
     /// The node API listener, reachable from a node network namespace.
     #[arg(long, default_value = "127.0.0.1")]
     pub node_api_host: std::net::IpAddr,
-    /// Fail when a node store transaction takes longer than this many milliseconds.
+    /// Fail when a node API request (other than register) takes longer than
+    /// this many milliseconds, retries included.
     #[arg(long, requires = "image")]
-    pub max_node_transaction_ms: Option<u64>,
+    pub max_node_request_ms: Option<u64>,
     #[arg(long, requires = "image")]
     pub max_warm_overhead_ms: Option<u64>,
     #[arg(long, requires = "image")]
@@ -91,11 +92,11 @@ impl Config {
     pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             (self.node_netns.is_none()
-                && self.max_node_transaction_ms.is_none()
+                && self.max_node_request_ms.is_none()
                 && self.max_warm_overhead_ms.is_none()
                 && self.max_cold_start_ms.is_none())
                 || self.scenario.is_none(),
-            "--node-netns, --max-node-transaction-ms, --max-warm-overhead-ms and --max-cold-start-ms need the default scenario"
+            "--node-netns, --max-node-request-ms, --max-warm-overhead-ms and --max-cold-start-ms need the default scenario"
         );
         ensure!(
             self.sessions > 0 && self.steps > 0,
@@ -246,5 +247,6 @@ mod prime_tests {
     #[test]
     fn prime_requires_image() {
         assert!(super::Config::try_parse_from(["chaos", "--prime-boot-set"]).is_err());
+        assert!(super::Config::try_parse_from(["chaos", "--max-node-request-ms", "500"]).is_err());
     }
 }

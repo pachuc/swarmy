@@ -7,9 +7,9 @@ mod disk;
 mod measure;
 mod persistent;
 mod process;
+mod requests;
 mod saturation;
 mod timings;
-mod transactions;
 
 use std::{
     ffi::OsString,
@@ -237,7 +237,7 @@ impl Fixture {
         ] {
             for index in 0..count {
                 let (slot_environment, netns) = if kind == Kind::Node {
-                    let mut env = node_environment(&environment, config);
+                    let mut env = environment.clone();
                     env.extend(
                         self.node_identity(NodeId::from_ulid(Ulid::generate()), self.files.path())
                             .await?,
@@ -697,8 +697,8 @@ async fn exercise_suite(
                 };
                 timings::report(&fixture.store, &fixture.sessions, &gates).await?;
             }
-            if let Some(max_ms) = config.max_node_transaction_ms {
-                transactions::check_node_logs(fixture.files.path(), max_ms)?;
+            if let Some(max_ms) = config.max_node_request_ms {
+                requests::check_node_logs(fixture.files.path(), max_ms)?;
             }
             Ok(calls)
         }
@@ -741,18 +741,6 @@ fn settle_cleanup(cleanup: Result<()>, result: Result<usize>) -> Result<()> {
     }
     result?;
     Ok(())
-}
-
-/// Override logging for the node only, leaving other services at their shared level.
-fn node_environment(shared: &[(OsString, OsString)], config: &Config) -> Vec<(OsString, OsString)> {
-    let mut environment = shared.to_vec();
-    if config.max_node_transaction_ms.is_some() {
-        environment.push((
-            "RUST_LOG".into(),
-            "info,swarmy_store::transaction=debug".into(),
-        ));
-    }
-    environment
 }
 
 fn call_count(files: &Path) -> Result<usize> {
