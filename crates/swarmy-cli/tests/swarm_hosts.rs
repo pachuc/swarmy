@@ -474,7 +474,7 @@ fn upgrade_json_reports_completed_host_before_later_host_fails() {
         "--ssh-key",
         f.key.to_str().unwrap(),
     ]);
-    fs::write(f.path().join("fail-upgrade-primary"), "").unwrap();
+    fs::write(f.path().join("fail-upgrade-node"), "").unwrap();
     let result = f.run(&["--json", "swarm", "upgrade", "box"]);
     assert!(!result.status.success());
     assert!(
@@ -488,5 +488,5 @@ fn upgrade_json_reports_completed_host_before_later_host_fails() {
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
         .collect::<Vec<_>>();
     assert_eq!(summaries.len(), 1, "{lines}");
-    assert_eq!(summaries[0]["node"], "box-box-2");
+    assert_eq!(summaries[0]["node"], "box-box-1");
 }

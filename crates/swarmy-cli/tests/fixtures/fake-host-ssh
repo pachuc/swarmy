@@ -17,7 +17,8 @@ case "$last" in
   'uname -m') /usr/bin/uname -m ;;
   *'swarmy-core --version'*) printf 'swarmy-core test\n' ;;
   *'journalctl --unit swarmyd --follow --no-pager --lines 100'*) if [ -e "$root/fail-journal" ]; then echo journal-failed >&2; exit 23; fi; echo remote-output ;;
-  *'remote-upgrade.sh'*) if [ -e "$root/fail-upgrade-primary" ] && [[ " $* " == *203.0.113.10* ]]; then echo upgrade-failed >&2; exit 23; fi; printf '{"node":"","changed":[],"restarted":[],"elapsed_seconds":0}\n' ;;
+  *'remote-upgrade.sh'*) if { [ -e "$root/fail-upgrade-primary" ] && [[ " $* " == *203.0.113.10* ]]; } || { [ -e "$root/fail-upgrade-node" ] && [[ " $* " == *203.0.113.11* ]]; }; then echo upgrade-failed >&2; exit 23; fi; printf '{"node":"","changed":[],"restarted":[],"elapsed_seconds":0}\n' ;;
+  *'tunnel-key.pub'*) printf 'ssh-ed25519 AAAATEST test\n' ;;
   *'.swarmy/node-id'*'&& cat '* )
     if [[ $last =~ printf[[:space:]]%s[[:space:]]([0-9A-HJKMNP-TV-Z]{26}) ]]; then
         printf '%s\n' "${BASH_REMATCH[1]}" > "$root/fake-node-id"
