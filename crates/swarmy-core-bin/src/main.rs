@@ -3,6 +3,11 @@ use anyhow::{Result, bail};
 use std::ffi::OsString;
 mod vol;
 
+// CLI output belongs to the executable, not the volume command module.
+fn print_volume_output(value: impl std::fmt::Display) {
+    println!("{value}");
+}
+
 fn main() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
     let role = args.next();

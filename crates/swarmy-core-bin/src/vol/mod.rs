@@ -166,9 +166,9 @@ async fn inspect(command: Command, store: &Store, json: bool) -> Result<()> {
 pub(crate) fn output(value: &serde_json::Value, text: &str, json: bool) -> Result<()> {
     use std::io::Write;
     if json {
-        println!("{value}");
+        crate::print_volume_output(value);
     } else {
-        println!("{text}");
+        crate::print_volume_output(text);
     }
     std::io::stdout().flush()?;
     Ok(())
