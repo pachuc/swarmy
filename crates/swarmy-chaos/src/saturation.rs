@@ -394,6 +394,37 @@ async fn audit(
     }
     Ok((samples, waiting))
 }
+/// Name each session that is not idle when the drive times out, with the
+/// state, lease and wait that hold it, so a stall can be diagnosed.
+async fn report_unfinished(store: &Store, sessions: &[SessionId]) {
+    let rows = match store.lease_audit(sessions).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!(error = %swarmy_core::error_chain(&error), "cannot read unfinished sessions");
+            return;
+        }
+    };
+    for row in rows.iter().filter(|row| row.state != SessionState::Idle) {
+        let session = store.fetch_session(row.session_id).await.ok().flatten();
+        let wait = store.session_wait(row.session_id).await.ok().flatten();
+        let after = session
+            .as_ref()
+            .map_or(0, |session| session.head_seq.saturating_sub(4));
+        let tail = store
+            .read_events(row.session_id, after, 8)
+            .await
+            .unwrap_or_default();
+        tracing::error!(
+            session = %row.session_id,
+            state = ?row.state,
+            leased = row.leased,
+            head = ?session.map(|session| session.head_seq),
+            wait = ?wait,
+            last_events = ?tail,
+            "session unfinished at the drive deadline"
+        );
+    }
+}
 async fn poll_until<T>(
     label: &str,
     budget: Duration,
@@ -710,12 +741,14 @@ pub(crate) async fn exercise(f: &mut Fixture, config: &Config, binaries: &Path) 
         Ok::<_, anyhow::Error>(())
     };
     let audit = audit(&f.store, &mut f.processes, &sessions, &finished);
-    let ((), (samples, waiting)) =
-        timeout(Duration::from_secs(config.session_timeout_secs), async {
-            tokio::try_join!(drive, audit)
-        })
-        .await
-        .context("saturation drive timed out")??;
+    let driven = timeout(Duration::from_secs(config.session_timeout_secs), async {
+        tokio::try_join!(drive, audit)
+    })
+    .await;
+    if driven.is_err() {
+        report_unfinished(&f.store, &sessions).await;
+    }
+    let ((), (samples, waiting)) = driven.context("saturation drive timed out")??;
     ensure!(
         waiting > 0,
         "no session was ever observed waiting; the route was not saturated"
