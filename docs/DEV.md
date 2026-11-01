@@ -82,7 +82,7 @@ scheduler, worker, gateway, and API under a background CLI supervisor. It return
 when their logs report readiness and prints process ids. The default fake
 provider replies `Hello from swarmy!` without credentials. Builds are separate
 from startup; build again after changing Rust code. The CLI and the services
-(scheduler, worker, gateway, API) must live
+(scheduler, worker, gateway, API, node API) must live
 in the same directory. You can add `target/debug` to your shell's executable
 search path to use `swarmy` directly. When using a system client library, omit `SWARMY_FDB_LIB_DIR`. With a custom
 install prefix, set it to that prefix's `lib` directory at build time.
