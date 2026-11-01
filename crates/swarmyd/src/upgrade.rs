@@ -141,6 +141,7 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::ExecResult;
+    use tokio::io::AsyncWriteExt;
     use tokio::net::UnixListener;
 
     #[tokio::test]
@@ -182,6 +183,7 @@ mod response_tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use swarmy_core::ExecResult;
+    use tokio::io::AsyncWriteExt;
     use tokio::net::UnixListener;
 
     #[tokio::test]
@@ -287,6 +289,7 @@ mod drain_tests {
     use swarmy_core::{AgentCallStatus, SessionId};
     use swarmy_node_api::{NodeApiPolicy, NodeApiState, router, test_support::TestApi};
     use swarmy_store::blob::MemoryBlobStore;
+    use tokio::io::AsyncWriteExt;
     use tokio::net::UnixListener;
 
     #[tokio::test]
@@ -347,7 +350,6 @@ mod drain_tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let (_read, mut write) = stream.into_split();
-            use tokio::io::AsyncWriteExt;
             let mut frame = serde_json::to_vec(&crate::Response::Error(
                 "sandbox is missing or already exists".into(),
             ))
