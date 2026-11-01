@@ -176,6 +176,11 @@ primary use:
 cd ~/swarmy && bash scripts/remote-provision.sh stack PRIVATE_IP BUCKET REGION ENDPOINT PREFIX CONDITIONAL_CREATE STATIC_KEYS SANDBOXES SERVICE_USER LOCAL_STORAGE PREBUILT
 ```
 
+On the primary, provisioning enables `swarmyd` but leaves it stopped;
+`bash scripts/remote-services.sh SERVICE_USER` starts the services and node
+agent, then waits for the agent to register with the node API. A joining
+host starts and waits for its node agent during provisioning.
+
 `PREBUILT` is true for an uploaded release bundle; the service user defaults
 to `swarmy`. A joining host uses `node FIRST_HOST_PRIVATE_IP` followed by the
 same bucket and storage arguments. A node-only host runs `swarmy-node` and

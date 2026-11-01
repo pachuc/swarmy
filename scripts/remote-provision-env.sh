@@ -695,6 +695,46 @@ drain_node_agent() {
     printf 'drain {"stopped":true,"busy":%s,"unreleased":%s}\n' "$busy" "$after"
 }
 
+# Wait for this run of the node agent to register with the node API.
+wait_node_registered() {
+    local repo_dir=${1:?node directory} node_unit invocation
+    node_unit=$(swarmy_agent_unit) || return 1
+    invocation=$(sudo systemctl show -p InvocationID --value "$node_unit") || return 1
+    for _ in $(seq 1 60); do
+        if sudo test -S "$repo_dir/.swarmy/node/control.sock" && sudo journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager | grep -q 'node registered and ready'; then
+            sudo systemctl is-active "$node_unit"
+            return 0
+        fi
+        sleep 2
+    done
+    sudo journalctl -u "$node_unit" -n 50 --no-pager
+    return 1
+}
+
+# Enable and restart the node agent, then wait until it has registered.
+restart_node_agent() {
+    local repo_dir=${1:?node directory} node_unit
+    node_unit=$(swarmy_agent_unit) || return 1
+    sudo systemctl enable "$node_unit" || return 1
+    sudo systemctl restart "$node_unit" || return 1
+    wait_node_registered "$repo_dir"
+}
+
+# The stack host's node API is installed by remote-services.sh. Joining nodes
+# can reach the primary's node API through their tunnel during provisioning.
+provision_node_agent() {
+    local mode=${1-} repo_dir=${2:?node directory} node_unit
+    [[ $mode == stack || $mode == node ]] || { echo "invalid node agent mode: $mode" >&2; return 1; }
+    node_unit=$(swarmy_agent_unit) || return 1
+    if [[ $mode == stack ]]; then
+        sudo systemctl enable "$node_unit" || return 1
+        echo "node agent (swarmy-node) enabled; it starts after the node API (remote-services.sh)"
+        return 0
+    fi
+    restart_node_agent "$repo_dir" || return 1
+    echo "node agent (swarmy-node) registered and ready; node mode enabled at boot"
+}
+
 # Decommission entrypoint for piped use (no node directory needed): run the
 # shared removal when the node script file is present (proving the
 # node directory is intact), fail loudly when units remain without a node directory,
