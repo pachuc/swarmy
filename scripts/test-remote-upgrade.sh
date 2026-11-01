@@ -190,7 +190,14 @@ cat > "$scenario/stubs/sudo" <<'STUB'
 [[ $1 == -n ]] && shift
 case $1 in
     install)
-        args=("$@")
+        # The test runs unprivileged, so drop the owner and group a real sudo would set.
+        args=()
+        while (( $# )); do
+            case $1 in
+                -o|-g) shift 2 ;;
+                *) args+=("$1"); shift ;;
+            esac
+        done
         last=$(( ${#args[@]} - 1 ))
         dest=${args[last]}
         [[ $dest == /usr/local/* || $dest == /etc/* ]] && args[last]="$TEST_NODE_ROOT$dest"

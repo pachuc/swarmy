@@ -849,7 +849,11 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
     eprintln!("acceptance 5 passed: no memory pause or hardware virtualization");
     let volume = VolumeId::from_ulid(ulid::Ulid::generate());
     store.create_volume(volume, base).await.unwrap();
-    let missing = VolumeId::from_ulid(ulid::Ulid::generate());
+    // The caller acquires the writer, so a missing volume never reaches the
+    // node. A grant whose head cannot be loaded is the failure the node sees:
+    // creation fails, releases the lease, and leaves no bundle behind.
+    let mut unloadable = node.writer(volume).await;
+    unloadable.header.root_hash = swarmy_core::ContentHash([7; 32]);
     assert!(matches!(
         node.request(Request::Create {
             spec: SandboxSpec {
@@ -858,8 +862,8 @@ async fn root_node_registration_runc_persistence_and_crash_recovery() {
 
                 requirements: swarmy_core::SandboxRequirements::default(),
             },
-            disk: BlockDevice { volume_id: missing },
-            writer: node.writer(volume).await,
+            disk: BlockDevice { volume_id: volume },
+            writer: unloadable,
         })
         .await,
         Response::Error(_)
