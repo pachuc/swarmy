@@ -218,4 +218,4 @@ POST /v1/images/uploads added the new required `query` request parameter `size`
 
 # 2026-10-31: Node API gains tool/route, hosting/open, hosting/ready, hosting/close, volume/publish, volume/protect and credentials/github (internal contract, not /v1). New store functions sandbox_spec and open_writer_lease; no stored format change.
 
-# 2026-10-31: Computer metrics gain prefetch_bytes and prefetch_ms (additive in /v1; the stored computer row layout changes with the batch's metrics break). Node API gains hosting/boot-set and fills hosting/open's boot_set. New store key family boot_set.
+# 2026-11-01: Computer metrics gain prefetch_bytes and prefetch_ms (additive in /v1; the stored computer row layout changes with the batch's metrics break). Node API gains hosting/boot-set and fills hosting/open's boot_set. New store key family boot_set.
