@@ -939,7 +939,7 @@ pub struct UpgradeOptions {
     pub json: bool,
     pub cache: PathBuf,
 }
-/// Upgrade provisioned nodes before the primary host.
+/// Upgrade the primary first, then the other provisioned hosts.
 /// # Errors
 /// Reports an incomplete record, dirty checkout, or host failure.
 pub async fn upgrade_swarm(
@@ -968,6 +968,7 @@ pub async fn upgrade_swarm_with(
         options.json,
     );
     policy.dirty_paths = host.checkout_changes()?;
+    policy.swarm_name.clone_from(&spec.name);
     let bucket = effective_bucket(registry, spec, &record, None)?;
     let machines = upgrade_machines(&record, spec, bucket.as_ref());
     upgrade::run_with(&host, &machines, policy, on_summary).await
@@ -980,7 +981,6 @@ fn upgrade_machines(
 ) -> Vec<Machine> {
     record_plan(record, &spec.placement.stack)
         .iter()
-        .rev()
         .filter(|p| recorded(record, p).is_some_and(|h| h.provisioned))
         .map(|p| node(p, user(spec), bucket))
         .collect()
@@ -1003,10 +1003,11 @@ pub async fn logs(
         "swarmy-scheduler",
         "swarmy-worker",
         "swarmy-gateway",
+        "swarmy-node-api",
     ];
     Error::ensure(
         UNITS.contains(&unit),
-        "--unit must be one of swarmyd, swarmy-stack, swarmy-tunnel, swarmy-api, swarmy-scheduler, swarmy-worker, swarmy-gateway",
+        "--unit must be one of swarmyd, swarmy-stack, swarmy-tunnel, swarmy-api, swarmy-scheduler, swarmy-worker, swarmy-gateway, swarmy-node-api",
     )?;
     let (record, planned) = recorded_plan(registry, spec)?;
     let selected = if let Some(host) = host {

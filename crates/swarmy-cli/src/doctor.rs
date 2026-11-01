@@ -454,6 +454,7 @@ fn service_checks(checks: &mut Vec<Check>, snapshot: &Snapshot) {
         ("scheduler", swarmy_api_types::ServiceRole::Scheduler),
         ("worker", swarmy_api_types::ServiceRole::Worker),
         ("gateway", swarmy_api_types::ServiceRole::Gateway),
+        ("node-api", swarmy_api_types::ServiceRole::NodeApi),
     ] {
         let live: Vec<_> = snapshot
             .services
@@ -706,6 +707,23 @@ mod tests {
             checks
                 .iter()
                 .any(|check| check.name == "gateway" && check.status == "fail")
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.name == "node-api" && check.status == "fail")
+        );
+        let mut live = Vec::new();
+        let snapshot: Snapshot = serde_json::from_value(json!({
+            "services": [{"role":"node_api", "instance_id":"api1", "version":"0.1.0", "alive":true,
+                "providers":[], "capacity":null}], "images":[], "default_image":null,
+            "credentials":[]
+        }))
+        .unwrap();
+        service_checks(&mut live, &snapshot);
+        assert!(
+            live.iter()
+                .any(|check| check.name == "node-api" && check.status == "pass")
         );
     }
 }

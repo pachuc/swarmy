@@ -120,10 +120,17 @@ root=$work/node-root
 mkdir -p "$root/etc/systemd/system" "$root/etc/swarmy"
 export SWARMY_SYSTEMD_DIR=$root/etc/systemd/system SWARMY_ETC_DIR=$root/etc/swarmy
 printf '[Service]\nExecStart=/usr/local/bin/swarmyd\n' > "$SWARMY_SYSTEMD_DIR/swarmyd.service"
-printf '[Service]\nExecStart=/usr/bin/ssh -N ubuntu@10.0.0.9\n' > "$SWARMY_SYSTEMD_DIR/swarmy-tunnel.service"
+printf '[Service]\nExecStart=/usr/bin/ssh -N -L 127.0.0.1:4500:127.0.0.1:4500 ubuntu@10.0.0.9\n' > "$SWARMY_SYSTEMD_DIR/swarmy-tunnel.service"
 printf 'SWARMY_S3_ENDPOINT=http://127.0.0.1:8333\n' > "$SWARMY_ETC_DIR/node.env"
 derive_unit_inputs node ubuntu
 [[ $unit_primary == 10.0.0.9 && $unit_tunnel_s3 == true ]]
+old_inputs=$(unit_inputs_text)
+render_tunnel_unit > "$SWARMY_SYSTEMD_DIR/swarmy-tunnel.service"
+[[ $(render_tunnel_unit) == *'127.0.0.1:8743:127.0.0.1:8743'* ]]
+[[ $(render_tunnel_unit) != *4500* ]]
+derive_unit_inputs node ubuntu
+[[ $(unit_inputs_text) == "$old_inputs" ]]
+printf 'old_tunnel_units_derive_the_same_inputs: ok\n'
 printf 'SWARMY_S3_ENDPOINT=https://objects.example.invalid\n' > "$SWARMY_ETC_DIR/node.env"
 derive_unit_inputs node ubuntu
 [[ $unit_tunnel_s3 == false ]]
@@ -135,6 +142,17 @@ if unit_inputs_for_upgrade stack swarmy 2>/dev/null; then echo 'accepted mismatc
 systemctl() { return 99; }
 unit_restart_wanted fake.service /missing/binary fake.service
 printf 'host upgrade unit reconciliation: ok\n'
+# Node API environment migration preserves operator settings and is idempotent.
+export SWARMY_ETC_DIR=$work/env-etc
+mkdir -p "$SWARMY_ETC_DIR"
+old_env=$'SWARMY_S3_KEY=secret\nSWARMY_DEFAULT_IMAGE=base-ubuntu:hz\nSWARMY_FDB_CLUSTER_FILE=/x\nLD_LIBRARY_PATH=/y\nSWARMY_NODE_API_URL=http://old\n'
+node_env=$(printf '%s' "$old_env" | node_env_with_node_api node)
+[[ $node_env == $'SWARMY_S3_KEY=secret\nSWARMY_DEFAULT_IMAGE=base-ubuntu:hz\nSWARMY_NODE_API_URL=http://127.0.0.1:8743\nSWARMY_NODE_TOKEN_FILE='"$SWARMY_ETC_DIR/node-token" ]]
+[[ $(printf '%s\n' "$node_env" | node_env_with_node_api node) == "$node_env" ]]
+stack_env=$(printf '%s' "$old_env" | node_env_with_node_api stack)
+[[ $stack_env == *'SWARMY_FDB_CLUSTER_FILE=/x'* && $stack_env == *'LD_LIBRARY_PATH=/y'* ]]
+[[ $(printf '%s\n' "$stack_env" | node_env_with_node_api stack) == "$stack_env" ]]
+printf 'node_env_with_node_api_keeps_other_lines: ok\n'
 
 # Exercise the SSH entrypoint against a pre-units.env node without touching host units.
 scenario=$work/entrypoint
@@ -163,7 +181,7 @@ cat > "$scenario/stubs/systemctl" <<'STUB'
 #!/usr/bin/env bash
 case $1 in
     cat) [[ -f $SWARMY_SYSTEMD_DIR/$2 ]] ;;
-    show) printf '0\n' ;;
+    show) printf '%s\n' "${TEST_RUNNING_PID:-0}" ;;
     *) printf '%s\n' "$*" >> "$TEST_NODE_ROOT/systemctl.log" ;;
 esac
 STUB
@@ -185,10 +203,30 @@ case $1 in
     tee) if [[ $2 == "$TEST_NODE_ROOT"/* ]]; then command tee "$2"; else command tee "$TEST_NODE_ROOT$2"; fi ;;
     ldconfig) : ;;
     systemctl) shift; systemctl "$@" ;;
-    sh) printf '[]\n' ;;
-    rm) shift; command rm -f "$TEST_NODE_ROOT${@: -1}" ;;
+    sh)
+        if [[ $* == *'node-credential issue'* ]]; then
+            printf '%s\n' "$*" >> "$TEST_NODE_ROOT/issued.log"
+            printf 'swn.%s.test-secret\n' "$(cat "$TEST_NODE_HOME/swarmy/.swarmy/node-id")"
+        elif [[ $* == *'cat > '*node-token* ]]; then
+            cat > "$SWARMY_ETC_DIR/node-token"
+        else
+            printf '[]\n'
+        fi ;;
+    rm)
+        shift
+        for path in "$@"; do
+            [[ $path == -* ]] && continue
+            [[ $path == /usr/local/* || $path == /etc/* ]] && path=$TEST_NODE_ROOT$path
+            command rm -rf -- "$path"
+        done ;;
     *) command "$@" ;;
 esac
+STUB
+cat > "$scenario/stubs/sha256sum" <<'STUB'
+#!/usr/bin/env bash
+file=$1
+[[ $file == /usr/local/* ]] && file=$TEST_NODE_ROOT$file
+/usr/bin/sha256sum "$file"
 STUB
 chmod +x "$scenario/stubs/"*
 export TEST_NODE_HOME=$scenario/home TEST_NODE_ROOT=$node_root
@@ -203,6 +241,7 @@ for role in scheduler worker gateway api; do
 done
 printf 'SWARMY_S3_ENDPOINT=http://127.0.0.1:8333\n' > "$SWARMY_ETC_DIR/node.env"
 printf '[api]\ntoken = "existing"\n' > "$node_repo/.swarmy/config.toml"
+printf '%s' '01ARZ3NDEKTSV4RRFFQ69G5FAV' > "$node_repo/.swarmy/node-id"
 for binary in swarmy swarmy-core swarmy-node swarmy-provisioner libfdb_c.so; do
     printf '#!/usr/bin/env bash\necho "[]"\n' > "$node_repo/.swarmy/release/$binary"
     chmod +x "$node_repo/.swarmy/release/$binary"
@@ -217,9 +256,16 @@ with open(sys.argv[1], encoding='utf-8') as file:
     data = json.load(file)
 assert data['units'] == ['swarmyd.service', 'swarmy-scheduler.service',
                          'swarmy-worker.service', 'swarmy-gateway.service',
-                         'swarmy-api.service', 'swarmy-provisioner.service'], data
+                         'swarmy-api.service', 'swarmy-node-api.service',
+                         'swarmy-provisioner.service'], data
 PY
 [[ ! -f $node_repo/.swarmy/upgrade-pending-units ]]
+[[ -f $SWARMY_SYSTEMD_DIR/swarmy-node-api.service ]]
+grep -q '^enable swarmy-node-api.service$' "$node_root/systemctl.log"
+[[ $(wc -l < "$node_root/issued.log") == 1 ]]
+grep -q '^swn.01ARZ3NDEKTSV4RRFFQ69G5FAV.' "$SWARMY_ETC_DIR/node-token"
+grep -q '^SWARMY_NODE_API_URL=http://127.0.0.1:8743$' "$SWARMY_ETC_DIR/node.env"
+grep -q "^SWARMY_NODE_TOKEN_FILE=$SWARMY_ETC_DIR/node-token$" "$SWARMY_ETC_DIR/node.env"
 [[ -f $SWARMY_SYSTEMD_DIR/swarmy-provisioner.service ]]
 grep -q '^enable swarmy-provisioner.service$' "$node_root/systemctl.log"
 grep -q '^restart swarmy-provisioner.service$' "$node_root/systemctl.log"
@@ -239,4 +285,42 @@ with open(sys.argv[1], encoding='utf-8') as file:
 assert data['units'] == [], data
 PY
 [[ $(grep -c '^daemon-reload$' "$node_root/systemctl.log") == 1 ]]
+[[ $(wc -l < "$node_root/issued.log") == 1 ]]
 printf 'host upgrade entrypoint: ok\n'
+# A node-only host must not acquire credentials on a services-only pass.
+for unit in "$SWARMY_SYSTEMD_DIR"/swarmy-{stack,scheduler,worker,gateway,api,node-api,provisioner}.service; do rm -f "$unit"; done
+set_unit_inputs node "$(id -un)" 10.0.0.9 false ''
+unit_inputs_text > "$SWARMY_ETC_DIR/units.env"
+render_unit swarmy-tunnel.service > "$SWARMY_SYSTEMD_DIR/swarmy-tunnel.service"
+# Simulate the old tunnel with its FoundationDB forward; it must be re-rendered.
+sed -i 's/8743/4500/g' "$SWARMY_SYSTEMD_DIR/swarmy-tunnel.service"
+printf 'SWARMY_S3_KEY=keep\nSWARMY_FDB_CLUSTER_FILE=/old/fdb.cluster\nLD_LIBRARY_PATH=/old/lib\n' > "$SWARMY_ETC_DIR/node.env"
+rm "$SWARMY_ETC_DIR/node-token"
+touch "$node_root/usr/local/bin/swarmy-core"
+: > "$node_root/systemctl.log"
+HOME="$TEST_NODE_HOME" bash "$node_repo/scripts/remote-upgrade.sh" node services-only 0 prebuilt > "$scenario/services-only.json"
+[[ $(cat "$SWARMY_ETC_DIR/node.env") == *SWARMY_FDB_CLUSTER_FILE* ]]
+[[ ! -s $node_root/systemctl.log ]]
+[[ -f $node_root/usr/local/bin/swarmy-core ]]
+printf 'services_only_leaves_the_node_alone: ok\n'
+if HOME="$TEST_NODE_HOME" bash "$node_repo/scripts/remote-upgrade.sh" node all 0 prebuilt > "$scenario/missing.json" 2> "$scenario/missing.err"; then
+    echo 'accepted node upgrade without a token' >&2; exit 1
+fi
+grep -q 'swarmy swarm upgrade' "$scenario/missing.err"
+[[ ! -s $node_root/systemctl.log ]]
+printf 'node_upgrade_without_a_token_fails_and_names_the_fix: ok\n'
+printf 'swn.01ARZ3NDEKTSV4RRFFQ69G5FAV.test-secret\n' > "$SWARMY_ETC_DIR/node-token"
+# The fake running executable equals the installed node after the restart.
+cp /proc/$$/exe "$node_repo/.swarmy/release/swarmy-node"
+export TEST_RUNNING_PID=$$
+touch "$node_root/usr/local/bin/swarmy-core"
+mkdir -p "$node_repo/.dev"
+touch "$node_repo/.dev/fdb.cluster"
+HOME="$TEST_NODE_HOME" bash "$node_repo/scripts/remote-upgrade.sh" node all 0 prebuilt > "$scenario/node.json"
+stop_line=$(grep -n '^stop swarmyd.service$' "$node_root/systemctl.log" | tail -1 | cut -d: -f1)
+tunnel_line=$(grep -n '^restart swarmy-tunnel.service$' "$node_root/systemctl.log" | tail -1 | cut -d: -f1)
+start_line=$(grep -n '^start swarmyd.service$' "$node_root/systemctl.log" | tail -1 | cut -d: -f1)
+[[ $stop_line -lt $tunnel_line && $tunnel_line -lt $start_line ]]
+! grep -q 'FDB_CLUSTER_FILE\|LD_LIBRARY_PATH' "$SWARMY_ETC_DIR/node.env"
+[[ ! -f $node_root/usr/local/bin/swarmy-core && ! -f $node_repo/.dev/fdb.cluster ]]
+printf 'node_upgrade_stops_restarts_tunnel_then_starts: ok\n'

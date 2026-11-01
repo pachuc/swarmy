@@ -144,8 +144,15 @@ checkpoint when their leases expire.
 ## Host repair
 
 Run a full `swarmy swarm upgrade NAME` without `--services-only` from a
-matching client. The `units` list should include `swarmyd.service` and the
-installed service units. Check `systemctl cat swarmyd.service` for
+matching client. The primary upgrades first because other nodes need its node
+API and credentials. A full upgrade issues missing node tokens, keeps the node
+API lines of `/etc/swarmy/node.env` current, restarts a node-only host's tunnel
+with its node, and removes its FoundationDB leftovers after the new node runs.
+After a store wipe, delete `/etc/swarmy/node-token` on every host before
+upgrading to issue fresh tokens. Follow node API logs on the primary with
+`swarmy swarm logs NAME --unit swarmy-node-api`. The `units` list should
+include `swarmyd.service` and `swarmy-node-api.service` on a stack with services, along with the other
+service units. Check `systemctl cat swarmyd.service` for
 `ExecStart=/usr/local/bin/swarmy-node`, and inspect
 `ls /usr/local/bin`. Old binaries are removed once no installed unit refers
 to them. Do not use down to fix an upgrade: down removes the backing stack's

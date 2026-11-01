@@ -233,3 +233,5 @@ POST /v1/images/uploads added the new required `query` request parameter `size`
 # 2026-11-01: The node agent is the swarmy-node binary (package swarmyd); swarmy-core has no node role. swarmy-core vol is unchanged for users. Provisioned hosts need NA11 to switch their units.
 
 # 2026-11-01: Provisioning runs swarmyd.service as /usr/local/bin/swarmy-node; node-only hosts get no swarmy-core, libfdb_c.so, linker drop-in, backing tools, cluster file or 4500 forward; the primary no longer permits 4500 for node keys. The core release bundle carries swarmy-node. Existing hosts move with swarm upgrade (NA11b).
+
+# 2026-11-01: swarm upgrade upgrades the primary first, installs swarmy-node-api.service on stacks with services, issues node tokens to hosts without one, manages SWARMY_NODE_API_URL and SWARMY_NODE_TOKEN_FILE in node.env (and drops the FoundationDB lines on node hosts), restarts a node host's tunnel with its node, and removes FoundationDB leftovers from node hosts. swarmy doctor requires a node-api heartbeat.
