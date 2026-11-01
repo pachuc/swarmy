@@ -1,6 +1,7 @@
 #![deny(clippy::disallowed_methods)]
 #![cfg(target_os = "linux")]
 use std::{
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Arc,
@@ -56,7 +57,6 @@ impl Node {
         let token = store.issue_node_credential(id).await.unwrap();
         let token_file = root.path().join("node-token");
         std::fs::write(&token_file, format!("{}\n", token.reveal())).unwrap();
-        use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&token_file, std::fs::Permissions::from_mode(0o600)).unwrap();
         settings.node.api_url = api.url().to_owned();
         settings.node.token_file = token_file;

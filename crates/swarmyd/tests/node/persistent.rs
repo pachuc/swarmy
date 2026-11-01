@@ -206,7 +206,7 @@ pub(super) async fn start(
     )
     .await
     .unwrap();
-    let mut node = Node::new(settings, store).await;
+    let mut node = Box::pin(Node::new(settings, store)).await;
     node.start();
     node.ready(store, jiff::Timestamp::UNIX_EPOCH).await;
     bus.setup(&[WorkQueue::NodeTools(node.id)]).await.unwrap();

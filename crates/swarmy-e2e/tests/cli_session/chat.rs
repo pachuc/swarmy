@@ -3,6 +3,7 @@ use std::{
     collections::BTreeMap,
     fmt::Write as FmtWrite,
     io::{Read, Write},
+    os::unix::fs::PermissionsExt,
     path::PathBuf,
 };
 use swarmy_core::ignore_best_effort;
@@ -1129,7 +1130,6 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
         services.launch(fixture, name);
     }
     wait_for_scheduler(fixture).await;
-    use std::os::unix::fs::PermissionsExt;
     let id = swarmy_core::NodeId::from_ulid(Ulid::generate());
     let token = fixture.store.issue_node_credential(id).await.unwrap();
     let token_file = services.files.path().join("node-token");
