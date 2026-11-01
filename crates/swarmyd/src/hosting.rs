@@ -1,10 +1,6 @@
 use crate::keeper::{Answered, Keeper, Occupancy, PlacementHold};
 use anyhow::{Context, Result, bail};
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use swarmy_core::{
     AgentId, BlockDevice, ManifestHeader, ManifestId, MessageId, NodeId, PlacementRecord,
     SandboxSpec, SessionId, ToolJob, VolumeId, ignore_best_effort,
@@ -17,6 +13,7 @@ use swarmy_sandbox::RuncRuntime;
 use swarmy_store::Store;
 use swarmy_volume::{WriterGrant, WriterLease};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
+use tokio::time::Instant;
 
 #[derive(Clone, Copy)]
 struct BootTimes {
@@ -402,7 +399,7 @@ impl Hosting {
                         self.execute(&opening.placement, call).await?;
                     }
                     () = tokio::time::sleep(self.idle) => {
-                        if !crate::tools::has_processes(&self.runtime, &placement).await? { break; }
+                        if !crate::tools::has_processes(&self.runtime, &opening.placement).await? { break; }
                     },
                     _ = shutdown.changed() => break,
                     () = released.released() => break,
@@ -473,7 +470,10 @@ impl Hosting {
         self.client
             .close_hosting(
                 &HostingCloseRequest {
-                    placement: opening.placement.clone(),
+                    placement: opening
+                        .hold
+                        .current()
+                        .context("placement lease lost before close")?,
                     writer: writer.map(|lease| WriterToken {
                         volume: opening.volume,
                         lease,
@@ -562,35 +562,81 @@ fn refusal_error(refusal: NodeRefusal) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use crate::keeper::{Answered, Occupancy};
+    use std::{num::NonZeroUsize, path::Path};
+    use swarmy_bus::{Bus, Config, SubjectToken};
+    use swarmy_core::{NodeCapacity, NodeRecord, NodeRole, PlacementChangeReason, VolumeId};
+    use swarmy_node_api::{NodeApiPolicy, NodeApiState, router, test_support::TestApi};
+    use swarmy_node_protocol::{NodeAdvert, RegisterRequest};
 
-    use super::Hosting;
-    use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
-    use swarmy_core::{
-        AgentId, NodeCapacity, NodeId, NodeRecord, NodeRole, PlacementChangeReason, PlacementRecord,
-    };
-    use swarmy_store::Store;
-    use tokio::sync::{Mutex, watch};
-
-    /// A node with one sandbox slot, a claimed placement for a new agent on it,
-    /// and a hosting whose runtime has no sandboxes at all.
-    async fn placed(store: &Store, root: &Path) -> (Arc<Hosting>, AgentId, PlacementRecord) {
-        let node_id = NodeId::from_ulid(ulid::Ulid::generate());
-        store
-            .put_node(&NodeRecord {
-                node_id,
-                roles: vec![NodeRole::Sandbox],
-                capacity: NodeCapacity {
-                    cpu_millis: 1000,
-                    memory_bytes: 4 * 1024 * 1024 * 1024,
-                    disk_bytes: 1024,
-                    sandboxes: 1,
-                },
-                last_heartbeat: jiff::Timestamp::now(),
-                cached_images: vec![],
-                gpu: None,
+    async fn node_api(
+        store: &Store,
+        stack: &swarmy_testkit::Stack,
+        record: &NodeRecord,
+    ) -> (NodeClient, Keeper, TestApi) {
+        let token = store.issue_node_credential(record.node_id).await.unwrap();
+        let bus = Bus::connect(
+            &stack.nats_url,
+            Config {
+                prefix: Some(SubjectToken::new(&stack.prefix).unwrap()),
+                ..Config::default()
+            },
+        )
+        .await
+        .unwrap();
+        let api = TestApi::start(router(NodeApiState::new(
+            store.clone(),
+            bus,
+            NodeApiPolicy {
+                placement_lease: Duration::from_secs(60),
+                snapshot_retention: NonZeroUsize::new(10).unwrap(),
+                resend_interval: Duration::from_secs(5),
+            },
+        )))
+        .await;
+        let client = NodeClient::new(api.url(), &token).unwrap();
+        let advert = NodeAdvert {
+            roles: record.roles.clone(),
+            capacity: record.capacity.clone(),
+            gpu: None,
+        };
+        let registered = client
+            .register(&RegisterRequest {
+                node: advert.clone(),
             })
             .await
             .unwrap();
+        let keeper = Keeper::new(
+            Arc::new(client.clone()),
+            advert,
+            registered.leases,
+            Duration::from_secs(5),
+        );
+        (client, keeper, api)
+    }
+
+    async fn placed(
+        store: &Store,
+        stack: &swarmy_testkit::Stack,
+        root: &Path,
+    ) -> (Arc<Hosting>, AgentId, PlacementRecord, Opening, TestApi) {
+        let node_id = NodeId::from_ulid(ulid::Ulid::generate());
+        let record = NodeRecord {
+            node_id,
+            roles: vec![NodeRole::Sandbox],
+            capacity: NodeCapacity {
+                cpu_millis: 1000,
+                memory_bytes: 4 * 1024 * 1024 * 1024,
+                disk_bytes: 1024,
+                sandboxes: 1,
+            },
+            last_heartbeat: jiff::Timestamp::now(),
+            cached_images: vec![],
+            gpu: None,
+        };
+        store.put_node(&record).await.unwrap();
+        let (client, keeper, api) = node_api(store, stack, &record).await;
         let agent = AgentId::from_ulid(ulid::Ulid::generate());
         let placement = store
             .place(
@@ -603,7 +649,7 @@ mod tests {
             .await
             .unwrap();
         store.claim_placement(&placement).await.unwrap();
-        let runtime = swarmy_sandbox::RuncRuntime::open(
+        let runtime = RuncRuntime::open(
             root.join("runtime"),
             swarmy_volume::server::ServerConfig {
                 directory: root.join("volumes"),
@@ -615,18 +661,44 @@ mod tests {
         )
         .await
         .unwrap();
-        let hosting = Arc::new(Hosting {
-            store: store.clone(),
-            runtime: Arc::new(runtime),
-            node: node_id,
-            lease: Duration::from_secs(60),
-            idle: Duration::from_secs(60),
-            entries: Mutex::new(BTreeMap::new()),
-            previous: Mutex::new(BTreeMap::from([(agent, placement.epoch)])),
-            computer_sampled: Mutex::new(BTreeMap::new()),
-            shutdown: watch::channel(false).0,
-        });
-        (hosting, agent, placement)
+        let settings = swarmy_config::Settings::default();
+        let hosting = Hosting::new(
+            store.clone(),
+            client,
+            keeper.clone(),
+            Arc::new(runtime),
+            node_id,
+            &settings,
+            std::slice::from_ref(&placement),
+        );
+        let answered = Answered {
+            sent: Instant::now(),
+            server_now: store.now(),
+        };
+        let hold = keeper.hold_placement(
+            placement.clone(),
+            answered,
+            Arc::new(std::sync::Mutex::new(Occupancy::default())),
+        );
+        let volume = VolumeId::from_ulid(agent.as_ulid());
+        let opening = Opening {
+            placement: placement.clone(),
+            hold,
+            volume,
+            writer: None,
+            head: ManifestId::from_ulid(ulid::Ulid::generate()),
+            header: ManifestHeader {
+                size: u64::from(swarmy_core::CHUNK_SIZE),
+                chunk_size: swarmy_core::CHUNK_SIZE,
+                root_hash: swarmy_core::ContentHash::ZERO,
+            },
+            spec: SandboxSpec {
+                agent_id: agent,
+                scratch: vec![],
+                requirements: swarmy_core::SandboxRequirements::default(),
+            },
+        };
+        (hosting, agent, placement, opening, api)
     }
 
     #[tokio::test]
@@ -638,15 +710,12 @@ mod tests {
             .open_store(Arc::new(swarmy_store::blob::MemoryBlobStore::default()))
             .await;
         let root = tempfile::tempdir().unwrap();
-        let (hosting, agent, placement) = placed(&store, root.path()).await;
+        let (hosting, agent, placement, opening, _api) = placed(&store, &stack, root.path()).await;
         hosting
-            .stop_and_release(agent, &placement, "eviction")
+            .stop_and_release(agent, &opening, "eviction")
             .await
             .unwrap();
-        assert!(
-            store.get_by_agent(agent).await.unwrap().is_none(),
-            "cleanup must release a placement whose sandbox never booted"
-        );
+        assert!(store.get_by_agent(agent).await.unwrap().is_none());
         assert!(!hosting.previous.lock().await.contains_key(&agent));
         let next = store
             .place(
@@ -672,7 +741,7 @@ mod tests {
             .open_store(Arc::new(swarmy_store::blob::MemoryBlobStore::default()))
             .await;
         let root = tempfile::tempdir().unwrap();
-        let (hosting, agent, placement) = placed(&store, root.path()).await;
+        let (hosting, agent, placement, opening, _api) = placed(&store, &stack, root.path()).await;
         store.release(&placement).await.unwrap();
         let replacement = store
             .place(
@@ -685,15 +754,10 @@ mod tests {
             .await
             .unwrap();
         let error = hosting
-            .stop_and_release(agent, &placement, "eviction")
+            .stop_and_release(agent, &opening, "eviction")
             .await
             .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<swarmy_store::StoreError>(),
-            Some(swarmy_store::StoreError::Fence(
-                swarmy_store::FenceError::PlacementMismatch
-            ))
-        ));
+        assert!(error.to_string().contains("fenced"), "{error}");
         assert_eq!(store.get_by_agent(agent).await.unwrap(), Some(replacement));
         assert_eq!(
             hosting.previous.lock().await.get(&agent),

@@ -218,6 +218,12 @@ pub(super) async fn start(
 }
 
 pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: ManifestId) {
+    Box::pin(restart_waits_for_its_old_epoch(
+        settings.clone(),
+        store,
+        base,
+    ))
+    .await;
     check_lease_mismatch(&settings, store, base).await;
     let (mut node, bus) = start(settings, store, base, 3).await;
     managed_tools(&node, store, &bus).await;
@@ -226,6 +232,7 @@ pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: 
     let clean = check_dirty_without_publish(store, &bus, &node, agent, base).await;
     check_eviction_rehydrate(store, &bus, &node, agent, renewed_epoch, clean).await;
     check_requirement_release(store, &bus, &node, agent).await;
+    api_outage(&mut node, store, &bus, agent).await;
     crash(&mut node, store, &bus, agent).await;
     takeover(&mut node, store, &bus, agent, true).await;
     takeover(
@@ -575,6 +582,85 @@ async fn superseded_process(node: &Node, store: &Store, bus: &Bus, agent: AgentI
     eprintln!(
         "placement fencing acceptance: superseded resident process stopped before its delayed external effect"
     );
+}
+
+async fn api_outage(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId) {
+    let old = store.get_by_agent(agent).await.unwrap().unwrap();
+    node.pause_api();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the one-second outage length is the assertion"
+    )]
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    node.resume_api().await;
+    let short = dispatch(store, bus, node.id, agent, "true").await;
+    completed(store, &short).await;
+    assert_eq!(
+        store.get_by_agent(agent).await.unwrap().unwrap().epoch,
+        old.epoch
+    );
+
+    let path = device(node, agent);
+    let expires = store.get_by_agent(agent).await.unwrap().unwrap().expires_at;
+    node.pause_api();
+    swarmy_testkit::eventually(
+        "placement lease lost during API outage",
+        Duration::from_secs(20),
+        async || {
+            let past_deadline =
+                jiff::Timestamp::now() >= expires.checked_add(Duration::from_secs(1)).unwrap();
+            let log =
+                std::fs::read_to_string(node.root.path().join("node.log")).unwrap_or_default();
+            (past_deadline && log.contains("placement lease lost")).then_some(())
+        },
+    )
+    .await;
+    node.resume_api().await;
+    swarmy_testkit::eventually(
+        "outage discards device",
+        Duration::from_secs(30),
+        async || is_absent(node, agent, &path).then_some(()),
+    )
+    .await;
+    let next = dispatch(
+        store,
+        bus,
+        node.id,
+        agent,
+        "test $(cat /persistent) = durable",
+    )
+    .await;
+    completed(store, &next).await;
+    assert!(store.get_by_agent(agent).await.unwrap().unwrap().epoch > old.epoch);
+}
+
+async fn restart_waits_for_its_old_epoch(
+    settings: swarmy_config::Settings,
+    store: &Store,
+    base: ManifestId,
+) {
+    let (mut node, bus) = start(settings, store, base, 10).await;
+    let agent = AgentId::from_ulid(ulid::Ulid::generate());
+    let first = dispatch(
+        store,
+        &bus,
+        node.id,
+        agent,
+        "touch /restart-started; sleep 100",
+    )
+    .await;
+    written(&node, agent, "restart-started").await;
+    assert!(!store.tool_completed(first.request_id).await.unwrap());
+    let old = store.get_by_agent(agent).await.unwrap().unwrap();
+    node.kill();
+    node.start();
+    node.ready(store, jiff::Timestamp::now()).await;
+    let second = dispatch(store, &bus, node.id, agent, "true").await;
+    completed(store, &second).await;
+    let next = store.get_by_agent(agent).await.unwrap().unwrap();
+    assert_eq!(next.epoch, old.epoch + 1);
+    assert!(next.last_changed_at >= old.expires_at);
+    node.stop().await;
 }
 
 async fn crash(node: &mut Node, store: &Store, bus: &Bus, agent: AgentId) {

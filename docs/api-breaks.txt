@@ -223,3 +223,5 @@ POST /v1/images/uploads added the new required `query` request parameter `size`
 # 2026-11-01: Node API gains tool/claim and tool/complete (internal contract, not /v1); the node-api service connects to NATS. A same-owner claim repeat raises the stored claim expiry; no stored format change.
 
 # 2026-11-01: Computer metrics gain prefetch_bytes and prefetch_ms (additive in /v1; the stored computer row layout changes with the batch's metrics break). Node API gains hosting/boot-set and fills hosting/open's boot_set. New store key family boot_set.
+
+# 2026-11-01: swarmyd registers, renews leases and opens hosting through the node API; a node needs [node] api_url and token_file. No stored format change.

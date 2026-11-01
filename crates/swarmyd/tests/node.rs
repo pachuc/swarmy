@@ -74,11 +74,9 @@ impl Node {
         }
     }
 
-    #[allow(dead_code, reason = "used by NA7b outage checks")]
     fn pause_api(&mut self) {
         self.api.pause();
     }
-    #[allow(dead_code, reason = "used by NA7b outage checks")]
     async fn resume_api(&mut self) {
         self.api.resume().await;
     }

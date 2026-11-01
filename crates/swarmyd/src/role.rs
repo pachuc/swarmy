@@ -59,13 +59,7 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     let bus_config = settings.bus.bus_config()?;
     let bus = swarmy_bus::Bus::connect(&settings.bus.nats_url, bus_config.clone()).await?;
     let node = loaded.node_id()?;
-    let client = NodeClient::from_token_file(&settings.node.api_url, &settings.node.token_file)?;
-    ensure!(
-        client.node() == node,
-        "node token {} names node {}, but this node is {node}",
-        settings.node.token_file.display(),
-        client.node()
-    );
+    let client = node_client(settings, node)?;
     let root = loaded.root.join(".swarmy/node");
     std::fs::create_dir_all(&root)?;
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
@@ -111,7 +105,7 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     let mut scratch_sweep = tokio::time::interval(Duration::from_secs(10));
     scratch_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut clients = JoinSet::new();
-    let (shutdown, _) = tokio::sync::watch::channel(false);
+    let (shutdown, _) = watch::channel(false);
     let mut memory_server = memory::spawn(bus.clone(), store.clone(), runtime.clone(), node);
     let mut tool_server = tools::spawn(bus, &store, node, &hosting, settings);
     let serving: Result<()> = async {
@@ -238,9 +232,23 @@ async fn register(client: &NodeClient, advert: &NodeAdvert) -> Result<RegisterRe
                 client.node()
             ),
             Err(error) => {
-                tracing::warn!(error = %swarmy_core::error_chain(&error), "node register failed; retrying")
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "node register failed; retrying");
             }
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
+}
+
+fn node_client(
+    settings: &swarmy_config::Settings,
+    node: swarmy_core::NodeId,
+) -> Result<NodeClient> {
+    let client = NodeClient::from_token_file(&settings.node.api_url, &settings.node.token_file)?;
+    ensure!(
+        client.node() == node,
+        "node token {} names node {}, but this node is {node}",
+        settings.node.token_file.display(),
+        client.node()
+    );
+    Ok(client)
 }

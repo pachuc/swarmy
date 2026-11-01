@@ -84,3 +84,43 @@ pub(crate) fn fenced_or_failed(refusal: NodeRefusal) -> MetadataError {
         MetadataError::Fenced,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use swarmy_node_protocol::FenceKind as ProtocolFence;
+    #[test]
+    fn refusals_map_to_volume_errors() {
+        let cases = [
+            (ProtocolFence::Placement, FenceKind::Placement),
+            (ProtocolFence::PlacedToolClaim, FenceKind::PlacedToolClaim),
+            (ProtocolFence::VolumeLease, FenceKind::VolumeLease),
+            (ProtocolFence::VolumeHead, FenceKind::VolumeHead),
+        ];
+        for (protocol, core) in cases {
+            assert!(
+                matches!(fenced_or_failed(NodeRefusal::Fenced(protocol)), MetadataError::Fenced(kind) if kind == core)
+            );
+        }
+        assert!(matches!(
+            fenced_or_failed(NodeRefusal::NotYours),
+            MetadataError::Failed(_)
+        ));
+        assert!(matches!(
+            fenced_or_failed(NodeRefusal::Fenced(ProtocolFence::StaleSequence {
+                expected: 1,
+                actual: 2
+            })),
+            MetadataError::Failed(_)
+        ));
+        assert!(matches!(
+            metadata_error(ClientError::Deadline {
+                path: "test",
+                attempts: 1,
+                last: "timeout".into()
+            }),
+            MetadataError::Failed(_)
+        ));
+    }
+}

@@ -442,7 +442,16 @@ impl Keeper {
                 Renewal::Pending(_) => {}
             }
         }
-        for (sent, renewal) in request.writers.iter().zip(answer.writers) {
+        self.apply_writers(&mut tokens, request, answer.writers, answered);
+    }
+    fn apply_writers(
+        &self,
+        tokens: &mut Tokens,
+        request: &SyncRequest,
+        renewals: Vec<Renewal<Lease>>,
+        answered: Answered,
+    ) {
+        for (sent, renewal) in request.writers.iter().zip(renewals) {
             let Some(e) = tokens.writers.get_mut(&sent.volume) else {
                 continue;
             };
@@ -482,5 +491,179 @@ impl Keeper {
         loop {
             tokio::select! { _ = interval.tick() => { if let Err(error) = self.sync_once().await { tracing::warn!(error = %swarmy_core::error_chain(&error), "node sync failed; leases keep their local deadlines"); } }, changed = stop.changed() => { if changed.is_err() || *stop.borrow() { break; } } }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::collections::VecDeque;
+    use swarmy_core::{GpuRequirement, NodeCapacity, NodeId, NodeRole, PlacementChangeReason};
+    use swarmy_node_protocol::{FenceKind, NodeRefusal, PlacementRenewal};
+    struct Script {
+        requests: Mutex<Vec<SyncRequest>>,
+        answers: Mutex<VecDeque<Result<SyncResponse, ClientError>>>,
+    }
+    #[async_trait::async_trait]
+    impl SyncTransport for Script {
+        async fn sync(
+            &self,
+            request: &SyncRequest,
+            _deadline: Instant,
+        ) -> Result<SyncResponse, ClientError> {
+            self.requests.lock().unwrap().push(request.clone());
+            self.answers.lock().unwrap().pop_front().unwrap()
+        }
+    }
+    fn leases() -> LeaseLengths {
+        LeaseLengths {
+            placement: Duration::from_secs(30),
+            tool_claim: Duration::from_secs(30),
+            writer: Duration::from_secs(60),
+            sync_interval: Duration::from_secs(5),
+        }
+    }
+    fn fixture() -> (Keeper, Arc<Script>) {
+        let script = Arc::new(Script {
+            requests: Mutex::new(Vec::new()),
+            answers: Mutex::new(VecDeque::new()),
+        });
+        let advert = NodeAdvert {
+            roles: vec![NodeRole::Sandbox],
+            capacity: NodeCapacity {
+                cpu_millis: 1000,
+                memory_bytes: 1000,
+                disk_bytes: 1000,
+                sandboxes: 1,
+            },
+            gpu: None,
+        };
+        (
+            Keeper::new(script.clone(), advert, leases(), Duration::from_secs(5)),
+            script,
+        )
+    }
+    fn placement(now: jiff::Timestamp) -> PlacementRecord {
+        PlacementRecord {
+            agent_id: AgentId::from_ulid(ulid::Ulid::generate()),
+            node_id: NodeId::from_ulid(ulid::Ulid::generate()),
+            epoch: 1,
+            expires_at: now.checked_add(Duration::from_secs(30)).unwrap(),
+            last_change_reason: PlacementChangeReason::Initial,
+            last_changed_at: now,
+            gpu: GpuRequirement::None,
+        }
+    }
+    fn answer(now: jiff::Timestamp, placement: Vec<Renewal<PlacementRenewal>>) -> SyncResponse {
+        SyncResponse {
+            server_now: now,
+            heartbeat_recorded: true,
+            placements: placement,
+            claims: vec![],
+            writers: vec![],
+            scratch: vec![],
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn deadline_comes_from_server_time_only() {
+        let server_now = "2001-01-01T00:00:00Z".parse().unwrap();
+        let sent = Instant::now();
+        let answered = Answered { sent, server_now };
+        let expires = server_now.checked_add(Duration::from_secs(30)).unwrap();
+        assert_eq!(
+            local_deadline(answered, expires, Duration::from_secs(3)),
+            sent + Duration::from_secs(27)
+        );
+        assert_eq!(
+            local_deadline(
+                answered,
+                server_now.checked_sub(Duration::from_secs(1)).unwrap(),
+                Duration::from_secs(3)
+            ),
+            sent
+        );
+    }
+    #[test]
+    fn sync_period_follows_the_shortest_lease() {
+        let mut l = leases();
+        assert_eq!(
+            sync_period(&l, Duration::from_secs(5)),
+            Duration::from_secs(5)
+        );
+        l.placement = Duration::from_secs(3);
+        assert_eq!(
+            sync_period(&l, Duration::from_secs(5)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            sync_period(&l, Duration::from_millis(100)),
+            Duration::from_millis(100)
+        );
+        l.placement = Duration::from_millis(150);
+        assert_eq!(
+            sync_period(&l, Duration::from_secs(5)),
+            Duration::from_millis(100)
+        );
+    }
+    #[tokio::test(start_paused = true)]
+    async fn refusal_is_final_and_dropped_holders_are_pruned() {
+        let (keeper, script) = fixture();
+        let now = "2001-01-01T00:00:00Z".parse().unwrap();
+        let placement = placement(now);
+        let mut hold = keeper.hold_placement(
+            placement,
+            Answered {
+                sent: Instant::now(),
+                server_now: now,
+            },
+            Arc::default(),
+        );
+        script.answers.lock().unwrap().push_back(Ok(answer(
+            now,
+            vec![Renewal::Lost(NodeRefusal::Fenced(FenceKind::Placement))],
+        )));
+        keeper.sync_once().await.unwrap();
+        assert!(hold.lost().await.contains("fenced"));
+        script
+            .answers
+            .lock()
+            .unwrap()
+            .push_back(Ok(answer(now, vec![])));
+        keeper.sync_once().await.unwrap();
+        assert_eq!(script.requests.lock().unwrap()[0].placements.len(), 1);
+        assert!(script.requests.lock().unwrap()[1].placements.is_empty());
+    }
+    #[tokio::test(start_paused = true)]
+    async fn renewal_reports_release_and_occupancy() {
+        let (keeper, script) = fixture();
+        let now = "2001-01-01T00:00:00Z".parse().unwrap();
+        let placement = placement(now);
+        let occupancy = Arc::new(Mutex::new(Occupancy {
+            holder: None,
+            queued: 2,
+        }));
+        let mut hold = keeper.hold_placement(
+            placement.clone(),
+            Answered {
+                sent: Instant::now(),
+                server_now: now,
+            },
+            occupancy,
+        );
+        script.answers.lock().unwrap().push_back(Ok(answer(
+            now,
+            vec![Renewal::Renewed(PlacementRenewal {
+                placement,
+                release_requested: true,
+            })],
+        )));
+        keeper.sync_once().await.unwrap();
+        assert_eq!(
+            script.requests.lock().unwrap()[0].placements[0].queued_calls,
+            2
+        );
+        assert!(hold.release_requested());
+        hold.released().await;
     }
 }
