@@ -1,3 +1,4 @@
+use crate::keeper::{Answered, Keeper, Occupancy, PlacementHold};
 use anyhow::{Context, Result, bail};
 use std::{
     collections::BTreeMap,
@@ -5,11 +6,16 @@ use std::{
     time::{Duration, Instant},
 };
 use swarmy_core::{
-    AgentCallStatus, AgentId, BlockDevice, MessageId, NodeId, PlacementRecord, SessionId, ToolJob,
-    ignore_best_effort,
+    AgentId, BlockDevice, ManifestHeader, ManifestId, MessageId, NodeId, PlacementRecord,
+    SandboxSpec, SessionId, ToolJob, VolumeId, ignore_best_effort,
+};
+use swarmy_node_protocol::{
+    ClientError, DEFAULT_DEADLINE, HostingCloseRequest, HostingOpenRequest, HostingReadyRequest,
+    MetricBatch, NodeClient, NodeMetric, NodeRefusal, ToolRouteRequest, WriterToken,
 };
 use swarmy_sandbox::RuncRuntime;
 use swarmy_store::Store;
+use swarmy_volume::{WriterGrant, WriterLease};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
 #[derive(Clone, Copy)]
@@ -29,25 +35,20 @@ struct Call {
 struct Entry {
     calls: mpsc::Sender<Call>,
     task: tokio::task::JoinHandle<()>,
-    activity: Arc<std::sync::Mutex<Activity>>,
+    activity: Arc<std::sync::Mutex<Occupancy>>,
 }
 
 #[derive(Default)]
-struct Activity {
-    placement: Option<PlacementRecord>,
-    holder: Option<SessionId>,
-    queued: u64,
-}
 
 // The guard follows the call through admission, boot and execution. Cancellation
 // and dropped queues must release occupancy even when no reply can be sent.
 struct ActivityGuard {
-    state: Arc<std::sync::Mutex<Activity>>,
+    state: Arc<std::sync::Mutex<Occupancy>>,
     active: bool,
 }
 
 impl ActivityGuard {
-    fn queued(state: Arc<std::sync::Mutex<Activity>>) -> Self {
+    fn queued(state: Arc<std::sync::Mutex<Occupancy>>) -> Self {
         state.lock().expect("activity lock poisoned").queued += 1;
         Self {
             state,
@@ -74,12 +75,24 @@ impl Drop for ActivityGuard {
     }
 }
 
-/// Each actor serializes calls for one agent while its renewal runs independently.
+struct Opening {
+    placement: PlacementRecord,
+    hold: PlacementHold,
+    volume: VolumeId,
+    writer: Option<WriterLease>,
+    head: ManifestId,
+    header: ManifestHeader,
+    spec: SandboxSpec,
+}
+
+/// Each actor serializes calls for one agent while the keeper renews its leases.
 pub(crate) struct Hosting {
     store: Store,
     runtime: Arc<RuncRuntime>,
+    client: NodeClient,
+    keeper: Keeper,
     node: NodeId,
-    lease: Duration,
+    routes: Mutex<BTreeMap<SessionId, AgentId>>,
     idle: Duration,
     entries: Mutex<BTreeMap<AgentId, Entry>>,
     previous: Mutex<BTreeMap<AgentId, u64>>,
@@ -94,34 +107,98 @@ pub(crate) struct Hosting {
 }
 
 impl Hosting {
-    pub(crate) async fn new(
+    pub(crate) fn new(
         store: Store,
+        client: NodeClient,
+        keeper: Keeper,
         runtime: Arc<RuncRuntime>,
         node: NodeId,
         settings: &swarmy_config::Settings,
-    ) -> Result<Arc<Self>> {
-        let mut previous = BTreeMap::new();
-        let mut cursor = None;
-        loop {
-            let page = store
-                .list_by_node(node, cursor, swarmy_store::MAX_SCAN_LIMIT)
-                .await?;
-            if page.is_empty() {
-                break;
-            }
-            cursor = page.last().map(|p| p.agent_id);
-            previous.extend(page.into_iter().map(|p| (p.agent_id, p.epoch)));
-        }
-        Ok(Arc::new(Self {
+        previous: &[PlacementRecord],
+    ) -> Arc<Self> {
+        Arc::new(Self {
             store,
+            client,
+            keeper,
             runtime,
             node,
-            lease: settings.scheduler.placement_lease_secs,
             idle: settings.sandbox.idle_secs,
             entries: Mutex::new(BTreeMap::new()),
-            previous: Mutex::new(previous),
+            routes: Mutex::new(BTreeMap::new()),
+            previous: Mutex::new(previous.iter().map(|p| (p.agent_id, p.epoch)).collect()),
             computer_sampled: Mutex::new(BTreeMap::new()),
             shutdown: watch::channel(false).0,
+        })
+    }
+
+    async fn route(&self, job: &ToolJob) -> Result<Option<AgentId>> {
+        if let Some(agent) = self.routes.lock().await.get(&job.session_id).copied() {
+            return Ok(Some(agent));
+        }
+        let agent = match self
+            .client
+            .route_tool(
+                &ToolRouteRequest { job: job.clone() },
+                Instant::now() + DEFAULT_DEADLINE,
+            )
+            .await
+        {
+            Ok(answer) => answer.agent,
+            Err(ClientError::Refused(NodeRefusal::AlreadyDone)) => return Ok(None),
+            Err(ClientError::Refused(refusal)) => return Err(refusal_error(refusal)),
+            Err(error) => return Err(error.into()),
+        };
+        self.routes.lock().await.insert(job.session_id, agent);
+        Ok(Some(agent))
+    }
+
+    async fn open(
+        &self,
+        agent: AgentId,
+        job: &ToolJob,
+        occupancy: Arc<std::sync::Mutex<Occupancy>>,
+    ) -> Result<Option<Opening>> {
+        let previous_epoch = self.previous.lock().await.get(&agent).copied();
+        let sent = Instant::now();
+        let answer = match self
+            .client
+            .open_hosting(
+                &HostingOpenRequest {
+                    agent,
+                    job: job.clone(),
+                    previous_epoch,
+                },
+                sent + DEFAULT_DEADLINE,
+            )
+            .await
+        {
+            Ok(answer) => answer,
+            Err(ClientError::Refused(NodeRefusal::AlreadyDone)) => return Ok(None),
+            Err(ClientError::Refused(refusal)) => return Err(refusal_error(refusal)),
+            Err(error) => return Err(error.into()),
+        };
+        let answered = Answered {
+            sent,
+            server_now: answer.server_now,
+        };
+        let hold = self
+            .keeper
+            .hold_placement(answer.placement.clone(), answered, occupancy);
+        let writer = self
+            .keeper
+            .hold_writer(answer.volume, answer.writer, answered);
+        self.previous
+            .lock()
+            .await
+            .insert(agent, answer.placement.epoch);
+        Ok(Some(Opening {
+            placement: answer.placement,
+            hold,
+            volume: answer.volume,
+            writer: Some(writer),
+            head: answer.head,
+            header: answer.header,
+            spec: answer.spec,
         }))
     }
 
@@ -133,26 +210,8 @@ impl Hosting {
         turn: Option<MessageId>,
         delivered_ns: Option<i64>,
     ) -> Result<()> {
-        let agent = match self.store.tool_agent(&job, self.node).await {
-            Ok(Some(agent)) => agent,
-            Ok(None) => return Ok(()),
-            // The store's fence check is the guard; read placements afterwards
-            // only to explain a refusal for a job fenced to another node.
-            Err(swarmy_store::StoreError::Fence(swarmy_store::FenceError::PlacementMismatch)) => {
-                if let Some(dispatched) = self.store.tool_placement(job.request_id).await? {
-                    let current = self.store.get_by_agent(dispatched.agent_id).await?;
-                    if let Some(refusal) =
-                        crate::tools::placement_refusal(current.as_ref(), &dispatched, self.node)
-                    {
-                        return Err(refusal);
-                    }
-                }
-                return Err(swarmy_store::StoreError::Fence(
-                    swarmy_store::FenceError::PlacementMismatch,
-                )
-                .into());
-            }
-            Err(error) => return Err(error.into()),
+        let Some(agent) = self.route(&job).await? else {
+            return Ok(());
         };
         let (reply, response) = oneshot::channel();
         let (calls, activity) = {
@@ -168,6 +227,10 @@ impl Hosting {
                 .lock()
                 .await
                 .retain(|agent, _| live.contains(agent));
+            self.routes
+                .lock()
+                .await
+                .retain(|_, a| entries.contains_key(a) || *a == agent);
             let entry = entries.entry(agent).or_insert_with(|| {
                 let (calls, receive) = mpsc::channel(16);
                 let hosting = self.clone();
@@ -202,85 +265,90 @@ impl Hosting {
             .context("agent stopped serving; placement lease lost")?
     }
 
-    async fn placement(&self, agent: AgentId, job: &ToolJob) -> Result<PlacementRecord> {
-        let previous = self.previous.lock().await.get(&agent).copied();
-        let placement = match self
-            .store
-            .open_hosting(self.node, agent, job, previous, self.lease)
-            .await?
-        {
-            swarmy_store::OpenHosting::Opened(placement) => placement,
-            swarmy_store::OpenHosting::PlacedElsewhere { node, epoch } => {
-                bail!("agent is placed on another node {node} at epoch {epoch}")
-            }
-            swarmy_store::OpenHosting::EpochStopped { epoch } => {
-                bail!("placement epoch {epoch} stopped; waiting for lease expiry before rebuilding")
-            }
-        };
-        self.previous.lock().await.insert(agent, placement.epoch);
-        Ok(placement)
-    }
-
     #[expect(
         clippy::cast_precision_loss,
         reason = "fetch histogram reads are approximate, so floating-point display precision is sufficient"
     )]
-    fn observe_computer_boot(
+    fn report_ready(
         &self,
+        placement: PlacementRecord,
+        volume: VolumeId,
         session: SessionId,
         turn: Option<MessageId>,
-        volume: swarmy_core::VolumeId,
         times: BootTimes,
     ) {
-        let Some(turn) = turn else { return };
-        let store = self.store.clone();
+        let client = self.client.clone();
         let runtime = self.runtime.clone();
         tokio::spawn(async move {
-            if let Ok(stats) = runtime.volume_stats(volume).await {
-                store.observe_turn_metric(
-                    session,
-                    turn,
-                    swarmy_store::MetricPatch::Computer(swarmy_store::ComputerMetric {
-                        placement_ms: Some(times.placement),
-                        open_ms: Some(times.open),
-                        boot_ms: Some(times.boot),
-                        cold: Some(stats.fetched_chunks > 0),
-                        chunks_fetched: stats.fetched_chunks,
-                        bytes_fetched: stats.fetched_bytes,
-                        fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
-                        fetch_p95_ms: stats.fetch_p95_us.map(|us| us as f64 / 1_000.0),
-                        ..Default::default()
-                    }),
-                );
+            let metrics = if let Some(turn) = turn {
+                if let Ok(stats) = runtime.volume_stats(volume).await {
+                    vec![MetricBatch {
+                        session,
+                        turn,
+                        patches: vec![NodeMetric::Computer(swarmy_core::ComputerMetric {
+                            placement_ms: Some(times.placement),
+                            open_ms: Some(times.open),
+                            boot_ms: Some(times.boot),
+                            cold: Some(stats.fetched_chunks > 0),
+                            chunks_fetched: stats.fetched_chunks,
+                            bytes_fetched: stats.fetched_bytes,
+                            fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),
+                            fetch_p95_ms: stats.fetch_p95_us.map(|us| us as f64 / 1_000.0),
+                            ..Default::default()
+                        })],
+                    }]
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            };
+            if let Err(error) = client
+                .hosting_ready(
+                    &HostingReadyRequest {
+                        placement,
+                        address: RuncRuntime::NETWORK_ADDRESS,
+                        metrics,
+                    },
+                    Instant::now() + DEFAULT_DEADLINE,
+                )
+                .await
+            {
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "hosting ready report failed");
             }
         });
     }
 
     async fn boot_computer(
         &self,
-        agent: AgentId,
-        placement: &PlacementRecord,
+        opening: &mut Opening,
         first: &Call,
         placement_started: Instant,
+        open_ms: f64,
     ) -> Result<()> {
-        let volume = self
-            .store
-            .agent_volume(first.job.session_id, placement)
-            .await?;
-        let spec = self.store.sandbox_spec(agent, first.job.session_id).await?;
-        let open_ms = placement_started.elapsed().as_secs_f64() * 1_000.0;
+        let grant = WriterGrant {
+            volume: opening.volume,
+            head: opening.head,
+            header: opening.header.clone(),
+            lease: opening.writer.take().context("writer grant already used")?,
+            renewal: None,
+        };
         let booting = Instant::now();
         self.runtime
-            .create(spec, BlockDevice { volume_id: volume })
+            .create_with(
+                opening.spec.clone(),
+                BlockDevice {
+                    volume_id: opening.volume,
+                },
+                grant,
+            )
             .await?;
         let boot_ms = booting.elapsed().as_secs_f64() * 1_000.0;
-        self.store
-            .set_placement_address(placement, RuncRuntime::NETWORK_ADDRESS)
-            .await?;
-        self.observe_computer_boot(
+        self.report_ready(
+            opening.placement.clone(),
+            opening.volume,
             first.job.session_id,
             first.turn,
-            volume,
             BootTimes {
                 placement: placement_started.elapsed().as_secs_f64() * 1_000.0,
                 open: open_ms,
@@ -298,62 +366,65 @@ impl Hosting {
         };
         first.activity.start(first.job.session_id);
         let placement_started = Instant::now();
-        let placement = match self.placement(agent, &first.job).await {
-            Ok(placement) => placement,
+        let mut opening = match self
+            .open(agent, &first.job, first.activity.state.clone())
+            .await
+        {
+            Ok(Some(opening)) => opening,
+            Ok(None) => {
+                ignore_best_effort(first.reply.send(Ok(())), "reply to completed call");
+                return Ok(());
+            }
             Err(error) => {
                 ignore_best_effort(first.reply.send(Err(error)), "reply to waiter");
                 return Ok(());
             }
         };
-        first
-            .activity
-            .state
-            .lock()
-            .expect("activity lock poisoned")
-            .placement = Some(placement.clone());
+        let open_ms = placement_started.elapsed().as_secs_f64() * 1_000.0;
         let mut shutdown = self.shutdown.subscribe();
-        let (release, mut released) = watch::channel(false);
+        let mut released = opening.hold.clone();
+        let mut lost = opening.hold.clone();
+        let lost = lost.lost();
+        tokio::pin!(lost);
         let serving = async {
             anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
-            self.boot_computer(agent, &placement, &first, placement_started)
+            self.boot_computer(&mut opening, &first, placement_started, open_ms)
                 .await?;
-            self.execute(&placement, first).await?;
+            self.execute(&opening.placement, first).await?;
             loop {
-                if *shutdown.borrow() || *released.borrow() {
+                if *shutdown.borrow() || opening.hold.release_requested() {
                     break;
                 }
                 tokio::select! {
                     call = calls.recv() => {
                         let Some(mut call) = call else { break; };
                         call.activity.start(call.job.session_id);
-                        self.execute(&placement, call).await?;
+                        self.execute(&opening.placement, call).await?;
                     }
                     () = tokio::time::sleep(self.idle) => {
                         if !crate::tools::has_processes(&self.runtime, &placement).await? { break; }
                     },
                     _ = shutdown.changed() => break,
-                    _ = released.changed() => break,
+                    () = released.released() => break,
                 }
             }
             Ok::<_, anyhow::Error>(())
         };
-        let renew = self.renew(placement.clone(), &release);
-        tokio::pin!(renew);
         let serving = tokio::select! {
             result = serving => result,
-            error = &mut renew => {
+            reason = &mut lost => {
                 self.runtime.discard_if_present(agent).await?;
-                return Err(error);
+                return Err(anyhow::anyhow!("placement lease lost: {reason}"));
             }
         };
         // Keep renewing throughout the final checkpoint, which can take longer
         // than a lease on a heavily written disk.
-        let cause = if *released.borrow() {
+        let cause = if opening.hold.release_requested() {
             "requirement change"
         } else {
             "eviction"
         };
-        let cleanup = self.stop_and_release(agent, &placement, cause);
+        let cleanup = self.stop_and_release(agent, &opening, cause);
         tokio::select! {
             result = cleanup => {
                 if let Err(error) = result {
@@ -361,9 +432,9 @@ impl Hosting {
                     return Err(error);
                 }
             },
-            error = &mut renew => {
+            reason = &mut lost => {
                 self.runtime.discard_if_present(agent).await?;
-                return Err(error);
+                return Err(anyhow::anyhow!("placement lease lost: {reason}"));
             }
         }
         serving
@@ -378,9 +449,10 @@ impl Hosting {
     async fn stop_and_release(
         &self,
         agent: AgentId,
-        placement: &PlacementRecord,
+        opening: &Opening,
         cause: &'static str,
     ) -> Result<()> {
+        let writer = self.keeper.writer_lease(opening.volume);
         let hosted = self
             .runtime
             .list()
@@ -394,10 +466,25 @@ impl Hosting {
         } else {
             self.runtime.discard_if_present(agent).await?;
         }
-        self.store.release(placement).await?;
+        let deadline = opening
+            .hold
+            .deadline()
+            .context("placement lease lost before close")?;
+        self.client
+            .close_hosting(
+                &HostingCloseRequest {
+                    placement: opening.placement.clone(),
+                    writer: writer.map(|lease| WriterToken {
+                        volume: opening.volume,
+                        lease,
+                    }),
+                },
+                deadline,
+            )
+            .await?;
         self.previous.lock().await.remove(&agent);
         self.computer_sampled.lock().await.remove(&agent);
-        tracing::info!(%agent, epoch = placement.epoch, reason = cause, booted = hosted, "placement released");
+        tracing::info!(%agent, epoch = opening.placement.epoch, reason = cause, booted = hosted, "placement released");
         Ok(())
     }
 
@@ -423,6 +510,7 @@ impl Hosting {
         let result = tokio::select! {
             result = crate::tools::execute(
                 &self.store,
+                &self.keeper,
                 self.runtime.clone(),
                 self.node,
                 placement,
@@ -448,80 +536,6 @@ impl Hosting {
         Ok(())
     }
 
-    async fn renew(
-        &self,
-        mut placement: PlacementRecord,
-        release: &watch::Sender<bool>,
-    ) -> anyhow::Error {
-        loop {
-            let remaining: Duration = placement
-                .expires_at
-                .duration_since(jiff::Timestamp::now())
-                .try_into()
-                .unwrap_or(Duration::ZERO);
-            // Reserve time to stop local processes even when the store hangs or
-            // a renewal acknowledgement arrives near the old lease deadline.
-            let budget = remaining.saturating_sub(remaining / 10);
-            let renewal = async {
-                tokio::time::sleep(self.lease.min(remaining) / 3).await;
-                // One renewal also reports a requested release for this epoch.
-                let at_least = jiff::Timestamp::now().checked_add(self.lease)?;
-                Ok::<_, anyhow::Error>(self.store.renew_hosted(&placement, at_least).await?)
-            };
-            match tokio::time::timeout(budget, renewal).await {
-                Ok(Ok((current, requested))) => {
-                    placement = current;
-                    if requested {
-                        release.send_replace(true);
-                    }
-                }
-                Ok(Err(error)) => {
-                    return anyhow::anyhow!("placement lease renewal failed: {error}");
-                }
-                Err(_) => return anyhow::anyhow!("placement lease expired during renewal"),
-            }
-        }
-    }
-
-    /// Heartbeat observations expire independently of placement authority.
-    pub(crate) async fn report_status(&self, lifetime: Duration) -> Result<()> {
-        let observed_at = jiff::Timestamp::now();
-        let expires_at = observed_at.checked_add(lifetime)?;
-        let observations: Vec<_> = self
-            .entries
-            .lock()
-            .await
-            .values()
-            .filter(|entry| !entry.task.is_finished())
-            .filter_map(|entry| {
-                let activity = entry.activity.lock().expect("activity lock poisoned");
-                activity
-                    .placement
-                    .as_ref()
-                    .map(|placement| AgentCallStatus {
-                        agent_id: placement.agent_id,
-                        node_id: self.node,
-                        epoch: placement.epoch,
-                        holder_session_id: activity.holder,
-                        queued_calls: activity.queued,
-                        observed_at,
-                        expires_at,
-                    })
-            })
-            .collect();
-        for status in observations {
-            match self.store.put_agent_call_status(&status).await {
-                Ok(())
-                | Err(
-                    swarmy_store::StoreError::Fence(swarmy_store::FenceError::PlacementMismatch)
-                    | swarmy_store::StoreError::Domain(swarmy_store::DomainError::ComputerDeleted),
-                ) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(())
-    }
-
     pub(crate) async fn shutdown(&self) {
         self.shutdown.send_replace(true);
         let entries = std::mem::take(&mut *self.entries.lock().await);
@@ -529,6 +543,19 @@ impl Hosting {
             ignore_best_effort(entry.task.await, "await background task");
         }
         self.computer_sampled.lock().await.clear();
+        self.routes.lock().await.clear();
+    }
+}
+
+fn refusal_error(refusal: NodeRefusal) -> anyhow::Error {
+    match refusal {
+        NodeRefusal::PlacedElsewhere { node, epoch } => {
+            anyhow::anyhow!("agent is placed on another node {node} at epoch {epoch}")
+        }
+        NodeRefusal::EpochStopped { epoch } => anyhow::anyhow!(
+            "placement epoch {epoch} stopped; waiting for lease expiry before rebuilding"
+        ),
+        other => anyhow::anyhow!("node API refused: {other}"),
     }
 }
 

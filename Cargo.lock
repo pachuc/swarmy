@@ -4376,6 +4376,7 @@ name = "swarmyd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "clap",
  "jiff",
@@ -4387,6 +4388,7 @@ dependencies = [
  "swarmy-config",
  "swarmy-core",
  "swarmy-node-api",
+ "swarmy-node-protocol",
  "swarmy-sandbox",
  "swarmy-store",
  "swarmy-testkit",
