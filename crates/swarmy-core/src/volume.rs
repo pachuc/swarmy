@@ -108,7 +108,33 @@ pub fn blob_key(bytes: &[u8]) -> String {
 /// Whether `key` has the shape `blob_key` produces. It does not check content.
 #[must_use]
 pub fn is_blob_key(key: &str) -> bool {
-    key.strip_prefix("blobs/").is_some_and(|hash| {
+    is_hashed_key(key, "blobs/")
+}
+
+/// Most chunks a boot set records: 1 GiB of 256 KiB chunks.
+pub const MAX_BOOT_SET_CHUNKS: usize = 4096;
+
+/// Chunk hashes in first-read order and the manifest leaves that hold them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BootSet {
+    pub leaves: Vec<u32>,
+    pub chunks: Vec<ContentHash>,
+}
+
+/// Content-addressed object key of encoded boot-set bytes.
+#[must_use]
+pub fn boot_set_key(bytes: &[u8]) -> String {
+    format!("bootsets/{}", blake3::hash(bytes).to_hex())
+}
+
+/// Whether the key has the shape of a boot-set object key.
+#[must_use]
+pub fn is_boot_set_key(key: &str) -> bool {
+    is_hashed_key(key, "bootsets/")
+}
+
+fn is_hashed_key(key: &str, prefix: &str) -> bool {
+    key.strip_prefix(prefix).is_some_and(|hash| {
         hash.len() == 64
             && hash
                 .bytes()
@@ -120,6 +146,17 @@ pub fn is_blob_key(key: &str) -> bool {
 mod blob_key_tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
+    #[test]
+    fn boot_set_key_shape() {
+        assert!(is_boot_set_key(&boot_set_key(b"x")));
+        assert!(!is_boot_set_key(&blob_key(b"x")));
+        assert!(!is_blob_key(&boot_set_key(b"x")));
+        assert!(!is_boot_set_key("bootsets/"));
+        assert!(!is_boot_set_key(&format!("bootsets/{}", "A".repeat(64))));
+        assert!(!is_boot_set_key(&format!("bootsets/{}", "a".repeat(63))));
+        assert!(!is_boot_set_key(&"a".repeat(64)));
+        assert!(is_blob_key(&blob_key(b"x")));
+    }
     #[test]
     fn blob_key_shape() {
         assert!(is_blob_key(&blob_key(b"x")));

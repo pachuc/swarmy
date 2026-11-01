@@ -80,6 +80,8 @@ pub(crate) fn into_api_computer(value: &store::ComputerMetric) -> api::ComputerM
         first_tool_fetch_p95_ms: value.first_tool_fetch_p95_ms,
         open_ms: value.open_ms,
         boot_ms: value.boot_ms,
+        prefetch_bytes: value.prefetch_bytes,
+        prefetch_ms: value.prefetch_ms,
     }
 }
 
@@ -937,6 +939,8 @@ mod tests {
                 first_tool_fetch_p95_ms: Some(8.5),
                 open_ms: Some(1.25),
                 boot_ms: Some(1.75),
+                prefetch_bytes: Some(10),
+                prefetch_ms: Some(2.5),
             }),
             append_to_first_token_ms: Some(9.5),
             inference_duration_ms: Some(10.5),
@@ -1005,6 +1009,8 @@ mod tests {
                     "first_tool_fetch_p95_ms": 8.5,
                     "open_ms": 1.25,
                     "boot_ms": 1.75,
+                    "prefetch_bytes": 10,
+                    "prefetch_ms": 2.5,
                 },
                 "append_to_first_token_ms": 9.5,
                 "inference_duration_ms": 10.5,

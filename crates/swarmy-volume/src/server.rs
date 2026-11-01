@@ -36,13 +36,23 @@ struct Request {
 #[serde(rename_all = "snake_case")]
 enum Query {
     Stats,
+    BootSet,
 }
 #[derive(Serialize, Deserialize)]
 struct Reply {
     flush: Option<FlushResult>,
     #[serde(default)]
     stats: Option<crate::DeviceStats>,
+    #[serde(default)]
+    boot_set: Option<swarmy_core::BootSet>,
     error: Option<String>,
+}
+
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Shared attachment inputs. Both the CLI and swarmyd serve disks in process.
@@ -183,6 +193,32 @@ impl Drop for SocketGuard {
     }
 }
 
+/// Stop recording and return the boot set for this attachment.
+/// # Errors
+/// Transport or decoding failures.
+pub async fn boot_set(config: &ServerConfig, id: VolumeId) -> Result<swarmy_core::BootSet> {
+    let request = Request {
+        node: config.node,
+        mount: None,
+        detach: false,
+        discard: false,
+        freeze: false,
+        query: Some(Query::BootSet),
+    };
+    let mut socket = UnixStream::connect(config.directory.join(format!("{id}.sock"))).await?;
+    socket.write_all(&serde_json::to_vec(&request)?).await?;
+    socket.write_all(b"\n").await?;
+    let mut line = String::new();
+    BufReader::new(socket).read_line(&mut line).await?;
+    let reply: Reply = serde_json::from_str(&line)?;
+    if let Some(error) = reply.error {
+        return Err(Error::Message(error));
+    }
+    reply
+        .boot_set
+        .ok_or_else(|| Error::Message("attachment returned no boot set".into()))
+}
+
 /// Serve one kernel attachment until detached or shutdown is requested.
 /// The ready callback runs only after the kernel has published its capacity.
 /// # Errors
@@ -190,6 +226,7 @@ impl Drop for SocketGuard {
 pub async fn attach(
     config: ServerConfig,
     grant: crate::WriterGrant,
+    boot_set: Option<String>,
     path: Option<PathBuf>,
     background: bool,
     ready: impl FnOnce(&Path) -> Result<()> + Send,
@@ -224,6 +261,7 @@ pub async fn attach(
     let result = serve(
         &config,
         id,
+        boot_set,
         path,
         background,
         listener,
@@ -246,6 +284,7 @@ pub async fn attach(
 async fn serve(
     config: &ServerConfig,
     id: VolumeId,
+    boot_set: Option<String>,
     path: Option<PathBuf>,
     background: bool,
     listener: UnixListener,
@@ -267,17 +306,29 @@ async fn serve(
         .prefix(&format!("{id}-"))
         .tempdir_in(&config.directory)?;
     let device = VolumeDevice::open(
-        ChunkStore::new(objects),
+        ChunkStore::new(objects.clone()),
         manifest,
         config.directory.join("cache"),
         dirty.path(),
         4,
     )
     .await?;
-    let policy = swarmy_config::Settings::load()
+    let settings = swarmy_config::Settings::load()
         .map_err(|error| Error::Message(error.to_string()))?
-        .settings
-        .volume_snapshots;
+        .settings;
+    let policy = settings.volume_snapshots;
+    let _prefetch = boot_set.map(|key| {
+        let device = device.clone();
+        let concurrency = settings.sandbox.boot_prefetch_concurrency.max(1);
+        // The attachment owns and cancels the prefetch task on teardown.
+        // ast-grep-ignore: no-spawn-in-libraries
+        AbortOnDrop(tokio::spawn(async move {
+            match crate::get_boot_set(&*objects, &key).await {
+                Ok(set) => device.prefetch_boot_set(&set, concurrency).await,
+                Err(error) => tracing::warn!(error = %swarmy_core::error_chain(&error), "boot set prefetch failed; demand reads continue"),
+            }
+        }))
+    });
     let writer = VolumeWriter::with_retention(
         device.clone(),
         config.metadata.clone(),
@@ -384,7 +435,11 @@ async fn handle(
             "writer lease belongs to another node ({node})"
         );
         if request.query.is_some() {
-            return Ok((None, false, Some(writer.device_stats())));
+            return Ok(match request.query {
+                Some(Query::Stats) => (None, false, Some(writer.device_stats()), None),
+                Some(Query::BootSet) => (None, false, None, Some(writer.take_boot_set())),
+                None => unreachable!("query checked above"),
+            });
         }
         if request.discard {
             let detached = attachment
@@ -396,7 +451,7 @@ async fn handle(
             if let Err(error) = writer.release().await {
                 tracing::warn!(error = %swarmy_core::error_chain(&error), "writer lease release after discard failed");
             }
-            return Ok((None, true, None));
+            return Ok((None, true, None, None));
         }
         let manifest = if request.detach {
             finish(path, writer, attachment).await?
@@ -423,14 +478,15 @@ async fn handle(
                 .flush(if request.freeze { mount } else { None })
                 .await?
         };
-        Ok::<_, Error>((Some(manifest), request.detach, None))
+        Ok::<_, Error>((Some(manifest), request.detach, None, None))
     }
     .await;
     let (reply, detached) = match result {
-        Ok((manifest, detached, stats)) => (
+        Ok((manifest, detached, stats, boot_set)) => (
             Reply {
                 flush: manifest,
                 stats,
+                boot_set,
                 error: None,
             },
             detached,
@@ -439,6 +495,7 @@ async fn handle(
             Reply {
                 flush: None,
                 stats: None,
+                boot_set: None,
                 error: Some(format!("{error:#}")),
             },
             attachment.is_none(),

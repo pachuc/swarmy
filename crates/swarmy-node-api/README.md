@@ -56,3 +56,12 @@ the stack host issues its own token during provisioning. The token is stored in
 key when the node is removed. The SSH tunnel forwards local port 8743 to the
 primary's node API. Existing hosts receive credentials during `swarmy swarm
 upgrade` in NA11; this provisioning path only covers new joins.
+
+## Boot sets
+
+`hosting/open` returns the boot-set key recorded for the opened volume head,
+or falls back to the session's pinned image manifest. A node reports the
+object it wrote with `POST /node/v1/hosting/boot-set`, echoing its placement,
+session, head and content-addressed key. The API checks placement ownership
+and key shape, then records it against the head and image with first writer
+wins. Object bytes are read directly from object storage, not through the API.

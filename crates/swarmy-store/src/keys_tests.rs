@@ -59,6 +59,7 @@ fn family_key_layout_matches_checked_in_hex() {
         ("api_append", keys.api_append("value")),
         ("api_idempotency", keys.api_idempotency("value")),
         ("api_session_id", keys.api_session_id("value")),
+        ("boot_set", keys.boot_set(manifestid)),
         ("cache_affinity", keys.cache_affinity(sessionid)),
         ("chunk_reused", keys.chunk_reused(contenthash)),
         ("computer_deleted", keys.computer_deleted(agentid)),

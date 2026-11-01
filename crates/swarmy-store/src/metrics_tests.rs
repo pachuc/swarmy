@@ -294,3 +294,20 @@ fn boot_split_survives_the_first_tool_resample() {
     let row = state.computer.unwrap();
     assert_eq!((row.open_ms, row.boot_ms), (Some(4.0), Some(6.0)));
 }
+
+#[test]
+fn first_prefetch_metric_wins() {
+    let mut state = timing_state();
+    for (bytes, ms) in [(10, 2.5), (20, 5.0)] {
+        apply_one(
+            &mut state,
+            &MetricPatch::Computer(crate::metrics_model::ComputerMetric {
+                prefetch_bytes: Some(bytes),
+                prefetch_ms: Some(ms),
+                ..Default::default()
+            }),
+        );
+    }
+    let row = state.computer.unwrap();
+    assert_eq!((row.prefetch_bytes, row.prefetch_ms), (Some(10), Some(2.5)));
+}

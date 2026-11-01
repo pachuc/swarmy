@@ -917,6 +917,7 @@ impl RuncRuntime {
             config,
             grant,
             None,
+            None,
             true,
             move |path| {
                 std::fs::write(&device_journal, path.as_os_str().as_encoded_bytes())?;

@@ -356,6 +356,12 @@ fn apply_computer(computer: &mut Option<ComputerMetric>, value: &ComputerMetric)
     // The boot sample arrives before the first tool runs; the re-sampled
     // first-tool counters arrive after. The first re-sample wins so later
     // tools do not overwrite what the first command observed.
+    if current.prefetch_bytes.is_none() {
+        current.prefetch_bytes = value.prefetch_bytes;
+    }
+    if current.prefetch_ms.is_none() {
+        current.prefetch_ms = value.prefetch_ms;
+    }
     if current.first_tool_chunks_fetched.is_none() {
         current.first_tool_chunks_fetched = value.first_tool_chunks_fetched;
     }

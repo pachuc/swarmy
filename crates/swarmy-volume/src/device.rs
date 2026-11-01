@@ -3,7 +3,7 @@ use std::{
     num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -12,17 +12,22 @@ use std::time::{Duration, Instant};
 
 use crate::metrics::{MeteredStore, UploadCounters, UploadStats};
 use bytes::Bytes;
-use futures::{StreamExt, stream::FuturesUnordered};
-use swarmy_core::{CHUNK_SIZE, ContentHash, encode};
+use futures::{
+    StreamExt,
+    stream::{self, FuturesUnordered},
+};
+use swarmy_core::{BootSet, CHUNK_SIZE, ContentHash, MAX_BOOT_SET_CHUNKS, encode};
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    sync::{Mutex, MutexGuard, Notify},
+    sync::{Mutex, MutexGuard, Notify, OnceCell},
 };
 
 #[cfg(test)]
 use crate::ManifestBuilder;
 use crate::{BLOCKS_PER_LEAF, ChunkStore, Manifest, Result, VolumeError};
+
+const FILL_STRIPES: usize = 1024;
 
 const FETCH_BUCKET_US: [u64; 12] = [
     250, 500, 1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000, 128_000, 256_000, 512_000,
@@ -47,6 +52,42 @@ fn fetch_percentile(buckets: &[AtomicU64; 12], percentile: u64) -> Option<u64> {
     Some(FETCH_BUCKET_US[FETCH_BUCKET_US.len() - 1])
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fetch {
+    Demand,
+    Readahead,
+    Boot,
+}
+
+struct Recorder {
+    seen: HashSet<ContentHash>,
+    chunks: Vec<ContentHash>,
+    leaves: BTreeSet<u32>,
+    cap: usize,
+}
+impl Recorder {
+    fn new(cap: usize) -> Self {
+        Self {
+            seen: HashSet::new(),
+            chunks: Vec::new(),
+            leaves: BTreeSet::new(),
+            cap,
+        }
+    }
+    fn note(&mut self, leaf: u32, hash: ContentHash) {
+        if hash != ContentHash::ZERO && self.chunks.len() < self.cap && self.seen.insert(hash) {
+            self.chunks.push(hash);
+            self.leaves.insert(leaf);
+        }
+    }
+    fn finish(self) -> BootSet {
+        BootSet {
+            chunks: self.chunks,
+            leaves: self.leaves.into_iter().collect(),
+        }
+    }
+}
+
 pub const BLOCK_SIZE: u64 = 4096;
 pub(crate) const MAX_REQUEST: usize = 32 * 1024 * 1024;
 const DEFAULT_UPLOAD_CONCURRENCY: NonZeroUsize =
@@ -56,6 +97,12 @@ const DEFAULT_UPLOAD_CONCURRENCY: NonZeroUsize =
 /// readahead fetches count speculative object fetches separately.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DeviceStats {
+    #[serde(default)]
+    pub boot_prefetch_chunks: u64,
+    #[serde(default)]
+    pub boot_prefetch_bytes: u64,
+    #[serde(default)]
+    pub boot_prefetch_ms: Option<u64>,
     pub cache_hits: u64,
     pub cold_reads: u64,
     pub readahead_hits: u64,
@@ -75,6 +122,9 @@ pub struct DeviceStats {
 
 #[derive(Default)]
 struct Counters {
+    boot_prefetch_chunks: AtomicU64,
+    boot_prefetch_bytes: AtomicU64,
+    boot_prefetch_ms: AtomicU64,
     cache_hits: AtomicU64,
     cold_reads: AtomicU64,
     readahead_hits: AtomicU64,
@@ -158,9 +208,10 @@ pub struct VolumeDevice {
     // Serialize upload batches, including publication, without excluding writes.
     uploading: Mutex<()>,
     dirty_dir: PathBuf,
-    leaves: Mutex<HashMap<usize, Vec<ContentHash>>>,
+    leaves: Mutex<HashMap<usize, Arc<OnceCell<Vec<ContentHash>>>>>,
+    recorder: StdMutex<Option<Recorder>>,
     prefetched: Mutex<HashSet<ContentHash>>,
-    fills: [Mutex<()>; 64],
+    fills: Box<[Mutex<()>]>,
     readahead: Arc<Mutex<()>>,
     readahead_chunks: u32,
     counters: Counters,
@@ -191,6 +242,24 @@ impl VolumeDevice {
         .await
     }
 
+    async fn ensure_manifest_identity(
+        dirty_dir: &Path,
+        header: &swarmy_core::ManifestHeader,
+    ) -> Result<()> {
+        let identity = encode(header)?;
+        let identity_path = dirty_dir.join("manifest");
+        match fs::read(&identity_path).await {
+            Ok(existing) if existing != identity => return Err(VolumeError::Corrupt),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::write(&identity_path, identity).await?;
+                fs::File::open(&identity_path).await?.sync_all().await?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+
     /// Open with a maximum number of concurrent chunk uploads. The default in
     /// `open` is 32, limiting prepared chunk data to 8 MiB per batch. Object
     /// storage may allocate additional request buffers.
@@ -215,17 +284,7 @@ impl VolumeDevice {
             .write(true)
             .open(dirty_dir.join("lock"))?;
         fs2::FileExt::try_lock_exclusive(&lock)?;
-        let identity = encode(manifest.header())?;
-        let identity_path = dirty_dir.join("manifest");
-        match fs::read(&identity_path).await {
-            Ok(existing) if existing != identity => return Err(VolumeError::Corrupt),
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::write(&identity_path, identity).await?;
-                fs::File::open(&identity_path).await?.sync_all().await?;
-            }
-            Err(error) => return Err(error.into()),
-        }
+        Self::ensure_manifest_identity(dirty_dir, manifest.header()).await?;
         let count = usize::try_from(manifest.header().size / BLOCK_SIZE)
             .map_err(|_| VolumeError::InvalidDiskSize)?;
         let mut map = fs::OpenOptions::new()
@@ -292,8 +351,9 @@ impl VolumeDevice {
             uploading: Mutex::new(()),
             dirty_dir: dirty_dir.to_owned(),
             leaves: Mutex::new(HashMap::new()),
+            recorder: StdMutex::new(Some(Recorder::new(MAX_BOOT_SET_CHUNKS))),
             prefetched: Mutex::new(HashSet::new()),
-            fills: std::array::from_fn(|_| Mutex::new(())),
+            fills: (0..FILL_STRIPES).map(|_| Mutex::new(())).collect(),
             readahead: Arc::new(Mutex::new(())),
             readahead_chunks: readahead_chunks.min(32),
             upload_concurrency,
@@ -317,6 +377,12 @@ impl VolumeDevice {
     pub fn stats(&self) -> DeviceStats {
         let tool_active = crate::priority::tool_active();
         DeviceStats {
+            boot_prefetch_chunks: self.counters.boot_prefetch_chunks.load(Ordering::Relaxed),
+            boot_prefetch_bytes: self.counters.boot_prefetch_bytes.load(Ordering::Relaxed),
+            boot_prefetch_ms: match self.counters.boot_prefetch_ms.load(Ordering::Relaxed) {
+                0 => None,
+                ms => Some(ms),
+            },
             cache_hits: self.counters.cache_hits.load(Ordering::Relaxed),
             cold_reads: self.counters.cold_reads.load(Ordering::Relaxed),
             readahead_hits: self.counters.readahead_hits.load(Ordering::Relaxed),
@@ -339,6 +405,16 @@ impl VolumeDevice {
                 0
             },
         }
+    }
+
+    /// Stop recording demand reads. Later calls return an empty set.
+    #[must_use]
+    pub fn take_boot_set(&self) -> BootSet {
+        self.recorder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .map_or_else(BootSet::default, Recorder::finish)
     }
 
     /// Cumulative activity since this device was opened, including background work.
@@ -419,7 +495,7 @@ impl VolumeDevice {
                     .as_ref()
                     .is_none_or(|(previous, _)| *previous != number)
                 {
-                    chunk = Some((number, self.chunk(number, false).await?));
+                    chunk = Some((number, self.chunk(number, Fetch::Demand).await?));
                 }
                 if let Some((_, bytes)) = &chunk {
                     let start = usize::try_from(position % u64::from(CHUNK_SIZE))
@@ -586,7 +662,7 @@ impl VolumeDevice {
         let _priority = self.admit_upload().await;
         // Fetch immutable baseline data before locking the overlay: a cold GET
         // must not block sandbox writes either.
-        let mut bytes = self.chunk(number, false).await?.to_vec();
+        let mut bytes = self.chunk_without_recording(number).await?.to_vec();
         let generation = {
             let mut dirty = self.lock_upload_dirty().await;
             if !dirty.pending.contains(&number)
@@ -642,70 +718,164 @@ impl VolumeDevice {
         Ok(())
     }
 
+    async fn leaf(&self, index: usize) -> Result<Arc<OnceCell<Vec<ContentHash>>>> {
+        let cell = self.leaves.lock().await.entry(index).or_default().clone();
+        cell.get_or_try_init(|| self.manifest.leaf(&*self.store.inner, index))
+            .await?;
+        Ok(cell)
+    }
+
     async fn hash(&self, number: u64) -> Result<ContentHash> {
         let number = usize::try_from(number).map_err(|_| VolumeError::InvalidBlock(number))?;
         let index = number / BLOCKS_PER_LEAF;
-        let mut leaves = self.leaves.lock().await;
-        if let std::collections::hash_map::Entry::Vacant(entry) = leaves.entry(index) {
-            entry.insert(self.manifest.leaf(&*self.store.inner, index).await?);
-        }
-        Ok(leaves[&index][number % BLOCKS_PER_LEAF])
+        let cell = self.leaf(index).await?;
+        Ok(cell.get().expect("leaf initialized")[number % BLOCKS_PER_LEAF])
     }
 
-    async fn chunk(&self, number: u64, prefetch: bool) -> Result<Bytes> {
+    async fn chunk(&self, number: u64, mode: Fetch) -> Result<Bytes> {
+        let hash = self.hash(number).await?;
+        if mode == Fetch::Demand {
+            let leaf = u32::try_from(number / BLOCKS_PER_LEAF as u64).unwrap_or(u32::MAX);
+            if let Some(recorder) = self
+                .recorder
+                .lock()
+                .expect("recorder mutex poisoned")
+                .as_mut()
+            {
+                recorder.note(leaf, hash);
+            }
+        }
+        if hash == ContentHash::ZERO {
+            return self.store.get_chunk(hash).await;
+        }
+        self.fill(hash, mode).await?.ok_or(VolumeError::Corrupt)
+    }
+
+    async fn chunk_without_recording(&self, number: u64) -> Result<Bytes> {
         let hash = self.hash(number).await?;
         if hash == ContentHash::ZERO {
             return self.store.get_chunk(hash).await;
         }
-        // Striped locks prevent duplicate fetches without serializing the whole
-        // readahead batch behind one object-storage round trip.
-        let _fill = self.fills[usize::from(hash.0[0]) % self.fills.len()]
-            .lock()
-            .await;
+        self.fill(hash, Fetch::Demand)
+            .await?
+            .ok_or(VolumeError::Corrupt)
+    }
+
+    async fn fill(&self, hash: ContentHash, mode: Fetch) -> Result<Option<Bytes>> {
+        let stripe = usize::from(u16::from_le_bytes([hash.0[0], hash.0[1]])) % FILL_STRIPES;
+        let _fill = self.fills[stripe].lock().await;
         let path = self.cache_dir.join(hash.to_string());
-        match fs::read(&path).await {
-            Ok(bytes)
-                if bytes.len() == CHUNK_SIZE as usize && crate::content_hash(&bytes)? == hash =>
-            {
-                if !prefetch {
-                    self.counters.cache_hits.fetch_add(1, Ordering::Relaxed);
-                    if self.prefetched.lock().await.remove(&hash) {
-                        self.counters.readahead_hits.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-                return Ok(Bytes::from(bytes));
+        if mode == Fetch::Boot {
+            match fs::metadata(&path).await {
+                Ok(metadata) if metadata.len() == u64::from(CHUNK_SIZE) => return Ok(None),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
-            Ok(_) => {} // A corrupt cache entry is replaceable from object storage.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        let counter = if prefetch {
-            &self.counters.readahead_fetches
         } else {
-            &self.counters.cold_reads
-        };
-        counter.fetch_add(1, Ordering::Relaxed);
+            match fs::read(&path).await {
+                Ok(bytes)
+                    if bytes.len() == CHUNK_SIZE as usize
+                        && crate::content_hash(&bytes)? == hash =>
+                {
+                    if mode == Fetch::Demand {
+                        self.counters.cache_hits.fetch_add(1, Ordering::Relaxed);
+                        if self.prefetched.lock().await.remove(&hash) {
+                            self.counters.readahead_hits.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    return Ok(Some(Bytes::from(bytes)));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        match mode {
+            Fetch::Demand => {
+                self.counters.cold_reads.fetch_add(1, Ordering::Relaxed);
+            }
+            Fetch::Readahead => {
+                self.counters
+                    .readahead_fetches
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            Fetch::Boot => {}
+        }
         let start = Instant::now();
         let bytes = self.store.get_chunk(hash).await?;
         self.counters.fetched_chunks.fetch_add(1, Ordering::Relaxed);
         self.counters
             .fetched_bytes
             .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        if mode == Fetch::Boot {
+            self.counters
+                .boot_prefetch_chunks
+                .fetch_add(1, Ordering::Relaxed);
+            self.counters
+                .boot_prefetch_bytes
+                .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        }
         let elapsed = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
         let bucket = FETCH_BUCKET_US
             .partition_point(|bound| *bound < elapsed)
             .min(FETCH_BUCKET_US.len() - 1);
         self.counters.fetch_histogram[bucket].fetch_add(1, Ordering::Relaxed);
-        // Atomic replacement lets other devices share this directory safely.
         let temporary = self
             .cache_dir
             .join(format!("{}.{}", hash, ulid::Ulid::generate()));
         fs::write(&temporary, &bytes).await?;
         fs::rename(&temporary, &path).await?;
-        if prefetch {
+        if mode == Fetch::Readahead {
             self.prefetched.lock().await.insert(hash);
         }
-        Ok(bytes)
+        Ok((mode != Fetch::Boot).then_some(bytes))
+    }
+
+    async fn prefetch_leaves(&self, set: &BootSet) {
+        let leaf_count = self
+            .manifest
+            .header()
+            .size
+            .div_ceil(u64::from(CHUNK_SIZE) * BLOCKS_PER_LEAF as u64);
+        let results = futures::future::join_all(
+            set.leaves
+                .iter()
+                .copied()
+                .filter(|&index| u64::from(index) < leaf_count)
+                .filter_map(|index| usize::try_from(index).ok())
+                .map(|index| self.leaf(index)),
+        )
+        .await;
+        for result in results {
+            if let Err(error) = result {
+                tracing::debug!(error = %swarmy_core::error_chain(&error), "boot set leaf fetch failed");
+            }
+        }
+    }
+
+    /// Load leaves in parallel, then fill the shared chunk cache without blocking unrelated demand reads.
+    pub async fn prefetch_boot_set(self: &Arc<Self>, set: &BootSet, concurrency: usize) {
+        let start = Instant::now();
+        self.prefetch_leaves(set).await;
+        let mut requests = stream::iter(set.chunks.iter().copied())
+            .map(|hash| self.fill(hash, Fetch::Boot))
+            .buffer_unordered(concurrency.max(1));
+        while let Some(result) = requests.next().await {
+            if let Err(error) = result {
+                tracing::debug!(error = %swarmy_core::error_chain(&error), "boot set chunk fetch failed");
+            }
+        }
+        let ms = u64::try_from(start.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        self.counters.boot_prefetch_ms.store(ms, Ordering::Relaxed);
+        tracing::info!(
+            chunks = self.counters.boot_prefetch_chunks.load(Ordering::Relaxed),
+            bytes = self.counters.boot_prefetch_bytes.load(Ordering::Relaxed),
+            elapsed_ms = ms,
+            "boot set prefetched"
+        );
     }
 
     fn prefetch(self: &Arc<Self>, first: u64) {
@@ -722,9 +892,10 @@ impl VolumeDevice {
             let _guard = guard;
             let end = (first + u64::from(device.readahead_chunks))
                 .min(device.size() / u64::from(CHUNK_SIZE));
-            let results =
-                futures::future::join_all((first..end).map(|number| device.chunk(number, true)))
-                    .await;
+            let results = futures::future::join_all(
+                (first..end).map(|number| device.chunk(number, Fetch::Readahead)),
+            )
+            .await;
             for result in results {
                 if let Err(error) = result {
                     tracing::debug!(error = %swarmy_core::error_chain(&error), "readahead failed; demand reads will retry");
@@ -744,6 +915,205 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use object_store::memory::InMemory;
+
+    fn hash(byte: u8) -> ContentHash {
+        ContentHash([byte; 32])
+    }
+
+    #[test]
+    fn recorder_keeps_first_read_order_without_repeats_or_zeros() {
+        let mut recorder = Recorder::new(4096);
+        for (leaf, hash) in [
+            (3, hash(3)),
+            (1, hash(1)),
+            (3, hash(3)),
+            (2, ContentHash::ZERO),
+            (2, hash(2)),
+        ] {
+            recorder.note(leaf, hash);
+        }
+        assert_eq!(
+            recorder.finish(),
+            BootSet {
+                leaves: vec![1, 2, 3],
+                chunks: vec![hash(3), hash(1), hash(2)]
+            }
+        );
+        let mut capped = Recorder::new(2);
+        for hash in [hash(3), hash(1), hash(3), ContentHash::ZERO, hash(2)] {
+            capped.note(0, hash);
+        }
+        assert_eq!(capped.finish().chunks, vec![hash(3), hash(1)]);
+    }
+
+    async fn populated_device(
+        count: u8,
+        objects: Arc<dyn object_store::ObjectStore>,
+        dir: &tempfile::TempDir,
+    ) -> (Arc<VolumeDevice>, Vec<ContentHash>) {
+        let store = ChunkStore::new(objects.clone());
+        let mut builder = ManifestBuilder::new(
+            objects,
+            Manifest::empty(u64::from(count) * u64::from(CHUNK_SIZE)).unwrap(),
+        );
+        let mut hashes = Vec::new();
+        for number in 0..count {
+            let hash = store
+                .put_chunk(&vec![number + 1; CHUNK_SIZE as usize])
+                .await
+                .unwrap()
+                .hash;
+            builder.set_chunk(u64::from(number), hash).unwrap();
+            hashes.push(hash);
+        }
+        let manifest = builder.build().await.unwrap();
+        let device = VolumeDevice::open(
+            store,
+            manifest,
+            dir.path().join("cache"),
+            dir.path().join("dirty"),
+            0,
+        )
+        .await
+        .unwrap();
+        (device, hashes)
+    }
+
+    #[tokio::test]
+    async fn device_records_demand_reads_until_taken() {
+        let objects = Arc::new(InMemory::new());
+        let dir = tempfile::tempdir().unwrap();
+        let (device, hashes) = populated_device(8, objects, &dir).await;
+        for number in [5, 2, 5, 7] {
+            device
+                .read(number * u64::from(CHUNK_SIZE), 4096)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            device.take_boot_set(),
+            BootSet {
+                leaves: vec![0],
+                chunks: vec![hashes[5], hashes[2], hashes[7]]
+            }
+        );
+        device.read(0, 4096).await.unwrap();
+        assert_eq!(device.take_boot_set(), BootSet::default());
+    }
+
+    #[tokio::test]
+    async fn writes_are_not_recorded() {
+        let objects = Arc::new(InMemory::new());
+        let dir = tempfile::tempdir().unwrap();
+        let (device, _) = populated_device(8, objects, &dir).await;
+        device
+            .write(3 * u64::from(CHUNK_SIZE), &vec![9; CHUNK_SIZE as usize])
+            .await
+            .unwrap();
+        device.read(3 * u64::from(CHUNK_SIZE), 4096).await.unwrap();
+        assert_eq!(device.take_boot_set(), BootSet::default());
+    }
+
+    #[tokio::test]
+    async fn prefetch_fills_the_cache_and_counts() {
+        let objects = Arc::new(InMemory::new());
+        let dir = tempfile::tempdir().unwrap();
+        let (device, hashes) = populated_device(6, objects, &dir).await;
+        let set = BootSet {
+            leaves: vec![0],
+            chunks: hashes.clone(),
+        };
+        device.prefetch_boot_set(&set, 4).await;
+        for hash in hashes {
+            assert!(dir.path().join("cache").join(hash.to_string()).exists());
+        }
+        assert_eq!(device.stats().boot_prefetch_chunks, 6);
+        assert_eq!(
+            device.stats().boot_prefetch_bytes,
+            6 * u64::from(CHUNK_SIZE)
+        );
+        assert!(device.stats().boot_prefetch_ms.is_some());
+        for number in 0..6 {
+            device
+                .read(number * u64::from(CHUNK_SIZE), 4096)
+                .await
+                .unwrap();
+        }
+        assert_eq!(device.stats().cold_reads, 0);
+        assert_eq!(device.stats().cache_hits, 6);
+        device.prefetch_boot_set(&set, 4).await;
+        assert_eq!(device.stats().boot_prefetch_chunks, 6);
+    }
+
+    #[tokio::test]
+    async fn prefetch_runs_requests_in_parallel() {
+        use object_store::throttle::{ThrottleConfig, ThrottledStore};
+        let objects = Arc::new(ThrottledStore::new(
+            InMemory::new(),
+            ThrottleConfig {
+                wait_get_per_call: Duration::from_millis(50),
+                ..ThrottleConfig::default()
+            },
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let (device, hashes) = populated_device(32, objects, &dir).await;
+        let start = Instant::now();
+        device
+            .prefetch_boot_set(
+                &BootSet {
+                    leaves: vec![0],
+                    chunks: hashes,
+                },
+                8,
+            )
+            .await;
+        let elapsed = start.elapsed();
+        eprintln!("parallel boot prefetch elapsed: {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(1), "elapsed: {elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn demand_read_waits_for_an_in_flight_boot_fetch() {
+        use object_store::throttle::{ThrottleConfig, ThrottledStore};
+        let objects = Arc::new(ThrottledStore::new(
+            InMemory::new(),
+            ThrottleConfig {
+                wait_get_per_call: Duration::from_millis(50),
+                ..ThrottleConfig::default()
+            },
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let (device, hashes) = populated_device(8, objects, &dir).await;
+        device.read(0, 4096).await.unwrap();
+        let set = BootSet {
+            leaves: vec![],
+            chunks: vec![hashes[4]],
+        };
+        let ((), read) = tokio::join!(device.prefetch_boot_set(&set, 1), async {
+            tokio::task::yield_now().await;
+            device.read(4 * u64::from(CHUNK_SIZE), 4096).await
+        });
+        read.unwrap();
+        assert_eq!(device.stats().fetched_chunks, 2);
+        assert_eq!(device.stats().cold_reads, 1);
+    }
+
+    #[tokio::test]
+    async fn stale_entries_are_skipped() {
+        let objects = Arc::new(InMemory::new());
+        let dir = tempfile::tempdir().unwrap();
+        let (device, hashes) = populated_device(2, objects, &dir).await;
+        device
+            .prefetch_boot_set(
+                &BootSet {
+                    leaves: vec![u32::MAX],
+                    chunks: vec![hashes[0], hash(99)],
+                },
+                4,
+            )
+            .await;
+        assert_eq!(device.stats().boot_prefetch_chunks, 1);
+    }
 
     #[tokio::test]
     async fn publication_counts_new_deduplicated_zero_and_staged_chunks() {

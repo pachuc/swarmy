@@ -629,6 +629,8 @@ pub struct Settings {
 pub struct SandboxSettings {
     #[serde(with = "duration::secs")]
     pub idle_secs: Duration,
+    /// Concurrent boot-set object requests (clamped to one at use).
+    pub boot_prefetch_concurrency: usize,
     pub scratch_idle_days: u64,
     pub scratch_high_water: u8,
     pub scratch_low_water: u8,
@@ -638,6 +640,7 @@ impl Default for SandboxSettings {
     fn default() -> Self {
         Self {
             idle_secs: DEFAULT_SANDBOX_IDLE,
+            boot_prefetch_concurrency: 32,
             scratch_idle_days: 7,
             scratch_high_water: 80,
             scratch_low_water: 70,
@@ -1069,6 +1072,7 @@ static ENV_TABLE: &[EnvEntry] = &[
     e!("SWARMY_FAKE_CALL_LOG", |s, v, _| assign(&mut s.fake.call_log, v), |s| Some(s.fake.call_log.to_string_lossy().into_owned())),
     e!("SWARMY_IMAGE_UPLOAD_MAX_BYTES", |s, v, _| assign(&mut s.image.upload_max_bytes, v), |s| Some(s.image.upload_max_bytes.to_string())),
     e!("SWARMY_EPHEMERAL_RETENTION_SECONDS", |s, v, _| assign_duration(&mut s.scheduler.ephemeral_retention_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.scheduler.ephemeral_retention_secs, duration::Unit::Secs))),
+    e!("SWARMY_SANDBOX_BOOT_PREFETCH_CONCURRENCY", |s, v, _| assign(&mut s.sandbox.boot_prefetch_concurrency, v), |s| Some(s.sandbox.boot_prefetch_concurrency.to_string())),
     e!("SWARMY_SANDBOX_IDLE_SECONDS", |s, v, _| assign_duration(&mut s.sandbox.idle_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.sandbox.idle_secs, duration::Unit::Secs))),
     e!("SWARMY_PLACEMENT_LEASE_SECONDS", |s, v, _| assign_duration(&mut s.scheduler.placement_lease_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.scheduler.placement_lease_secs, duration::Unit::Secs))),
     e!("SWARMY_MAX_SESSION_WAIT_SECONDS", |s, v, _| assign_duration(&mut s.scheduler.max_session_wait_secs, v, duration::Unit::Secs), |s| Some(duration::format(s.scheduler.max_session_wait_secs, duration::Unit::Secs))),
@@ -1718,6 +1722,7 @@ mod tests {
             ("SWARMY_IMAGE_UPLOAD_MAX_BYTES", "12345"),
             ("SWARMY_EPHEMERAL_RETENTION_SECONDS", "123"),
             ("SWARMY_SANDBOX_IDLE_SECONDS", "124"),
+            ("SWARMY_SANDBOX_BOOT_PREFETCH_CONCURRENCY", "8"),
             ("SWARMY_PLACEMENT_LEASE_SECONDS", "125"),
             ("SWARMY_MAX_SESSION_WAIT_SECONDS", "126"),
             ("SWARMY_INFERENCE_MAX_BACKOFF_SECONDS", "127"),

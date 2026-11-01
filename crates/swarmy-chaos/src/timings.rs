@@ -36,6 +36,8 @@ pub(crate) struct PlacementTiming {
     pub(crate) cold_start_ms: Option<f64>,
     pub(crate) chunks_fetched: u64,
     pub(crate) bytes_fetched: u64,
+    pub(crate) prefetch_bytes: Option<u64>,
+    pub(crate) prefetch_ms: Option<f64>,
 }
 
 pub(crate) struct Report {
@@ -150,6 +152,8 @@ pub(crate) fn build(turns: &[TurnMetrics]) -> Report {
                 cold_start_ms,
                 chunks_fetched: computer.chunks_fetched,
                 bytes_fetched: computer.bytes_fetched,
+                prefetch_bytes: computer.prefetch_bytes,
+                prefetch_ms: computer.prefetch_ms,
             });
         }
     }
@@ -189,7 +193,7 @@ impl Report {
         let placements: Vec<_> = self.placements.iter().map(|p| serde_json::json!({
             "session": p.session, "turn": p.turn, "request_id": p.request_id,
             "placement_ms": p.placement_ms, "open_ms": p.open_ms, "boot_ms": p.boot_ms,
-            "cold_start_ms": p.cold_start_ms, "chunks_fetched": p.chunks_fetched, "bytes_fetched": p.bytes_fetched
+            "cold_start_ms": p.cold_start_ms, "chunks_fetched": p.chunks_fetched, "bytes_fetched": p.bytes_fetched, "prefetch_bytes": p.prefetch_bytes, "prefetch_ms": p.prefetch_ms
         })).collect();
         let warm = self.warm();
         serde_json::json!({"calls": calls, "placements": placements, "warm_overhead_ms": {
@@ -234,7 +238,7 @@ impl Report {
         for p in &self.placements {
             writeln!(
                 out,
-                "{} {} {} {} {} {} {} chunks={} bytes={}",
+                "{} {} {} {} {} {} {} chunks={} bytes={} prefetch_bytes={} prefetch_ms={}",
                 p.session,
                 p.turn,
                 p.request_id.as_deref().unwrap_or("-"),
@@ -243,7 +247,10 @@ impl Report {
                 number(p.open_ms),
                 number(p.boot_ms),
                 p.chunks_fetched,
-                p.bytes_fetched
+                p.bytes_fetched,
+                p.prefetch_bytes
+                    .map_or_else(|| "-".into(), |value| value.to_string()),
+                number(p.prefetch_ms)
             )
             .expect("writing to String cannot fail");
         }
@@ -389,6 +396,8 @@ mod tests {
             placement_ms: Some(900.0),
             open_ms: Some(400.0),
             boot_ms: Some(450.0),
+            prefetch_bytes: Some(4096),
+            prefetch_ms: Some(12.5),
             ..Default::default()
         });
         let mut second = t.tools[0].clone();
@@ -399,6 +408,9 @@ mod tests {
         assert!(r.calls[0].cold);
         assert!(!r.calls[1].cold);
         assert_eq!(r.placements[0].cold_start_ms, Some(470.0));
+        assert_eq!(r.placements[0].prefetch_bytes, Some(4096));
+        assert!(r.render().contains("prefetch_bytes=4096 prefetch_ms=12.5"));
+        assert_eq!(r.json()["placements"][0]["prefetch_ms"], 12.5);
     }
     #[test]
     fn rows_without_delivery_are_not_node_calls() {

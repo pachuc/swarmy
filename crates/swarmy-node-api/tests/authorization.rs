@@ -3,9 +3,9 @@ mod support;
 use std::{net::Ipv4Addr, time::Duration};
 use swarmy_core::LeaseOwnerId;
 use swarmy_node_protocol::{
-    ClientError, FenceKind, GithubTokenRequest, HostingCloseRequest, HostingOpenRequest,
-    HostingReadyRequest, NodeClient, NodeRefusal, ToolRouteRequest, VolumePublishRequest,
-    WriterToken,
+    ClientError, FenceKind, GithubTokenRequest, HostingBootSetRequest, HostingCloseRequest,
+    HostingOpenRequest, HostingReadyRequest, NodeClient, NodeRefusal, ToolRouteRequest,
+    VolumePublishRequest, WriterToken,
 };
 use ulid::Ulid;
 fn deadline() -> tokio::time::Instant {
@@ -121,6 +121,17 @@ async fn a_node_cannot_act_on_another_nodes_tokens() {
     let client_a = support::client(&base, &a.token);
     let client_b = support::client(&base, &b.token);
     foreign_hosting(&client_a, &a, &b).await;
+    let foreign_boot = HostingBootSetRequest {
+        placement: b.placement.clone(),
+        session: b.claim.job.session_id,
+        head: volume_before.head_manifest,
+        key: swarmy_core::boot_set_key(b"foreign"),
+    };
+    foreign(&client_a.report_boot_set(&foreign_boot, deadline()).await);
+    assert_eq!(
+        f.store.boot_set(volume_before.head_manifest).await.unwrap(),
+        None
+    );
     let header = f
         .store
         .get_manifest(volume_before.head_manifest)

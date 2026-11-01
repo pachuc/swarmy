@@ -29,6 +29,7 @@ const AGENT_GITHUB_TOKEN: &str = "agent_github_token";
 const API_APPEND: &str = "api_append";
 const API_IDEMPOTENCY: &str = "api_idempotency";
 const API_SESSION_ID: &str = "api_session_id";
+const BOOT_SET: &str = "boot_set";
 const CACHE_AFFINITY: &str = "cache_affinity";
 const CHUNK_REUSED: &str = "chunk_reused";
 const COMPUTER_DELETED: &str = "computer_deleted";
@@ -390,6 +391,11 @@ impl<'a> Keys<'a> {
     }
     pub(crate) fn lease_by_expiry_space_root(&self) -> Subspace {
         self.root.subspace(&(LEASE_BY_EXPIRY,))
+    }
+    pub(crate) fn boot_set(&self, manifest: ManifestId) -> Vec<u8> {
+        self.root
+            .subspace(&(BOOT_SET,))
+            .pack(&(manifest.as_ulid().to_bytes().as_slice(),))
     }
     pub(crate) fn manifest(&self, id: ManifestId) -> Vec<u8> {
         self.manifest_space()

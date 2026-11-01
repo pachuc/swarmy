@@ -14,7 +14,8 @@ mod volumes;
 pub use client::{ClientError, NodeClient};
 pub use credentials::{GithubTokenRequest, GithubTokenResponse};
 pub use hosting::{
-    HostingCloseRequest, HostingOpenRequest, HostingOpenResponse, HostingReadyRequest,
+    HostingBootSetRequest, HostingCloseRequest, HostingOpenRequest, HostingOpenResponse,
+    HostingReadyRequest,
 };
 pub use refusal::{Failure, FenceKind, NodeRefusal};
 pub use sync::{
@@ -55,6 +56,8 @@ pub const TOOL_COMPLETE_PATH: &str = "/node/v1/tool/complete";
 pub const TOOL_ROUTE_PATH: &str = "/node/v1/tool/route";
 /// Open agent hosting.
 pub const HOSTING_OPEN_PATH: &str = "/node/v1/hosting/open";
+/// Record a booted sandbox.
+pub const HOSTING_BOOT_SET_PATH: &str = "/node/v1/hosting/boot-set";
 /// Record a booted sandbox.
 pub const HOSTING_READY_PATH: &str = "/node/v1/hosting/ready";
 /// Release hosting.

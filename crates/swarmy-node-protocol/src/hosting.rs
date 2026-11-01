@@ -17,6 +17,7 @@ pub struct HostingOpenResponse {
     pub head: swarmy_core::ManifestId,
     pub header: swarmy_core::ManifestHeader,
     pub spec: swarmy_core::SandboxSpec,
+    /// Object key of the boot set to prefetch: the head's, else the session image's.
     pub boot_set: Option<String>,
 }
 /// Announce a booted sandbox and send its boot samples.
@@ -31,4 +32,15 @@ pub struct HostingReadyRequest {
 pub struct HostingCloseRequest {
     pub placement: swarmy_core::PlacementRecord,
     pub writer: Option<WriterToken>,
+}
+
+/// The first boot's demand reads, recorded for later cold starts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostingBootSetRequest {
+    pub placement: swarmy_core::PlacementRecord,
+    pub session: swarmy_core::SessionId,
+    /// The head returned by hosting/open.
+    pub head: swarmy_core::ManifestId,
+    /// Already stored under its content address by the node.
+    pub key: String,
 }
