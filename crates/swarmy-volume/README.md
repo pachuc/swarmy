@@ -228,7 +228,7 @@ without root or the required environment. Build without sudo:
 ```sh
 scripts/dev-stack.sh start
 source .dev/env
-cargo test -p swarmyd --test vol --no-run --message-format=json > /tmp/swarmy-vol-build.json
+cargo test -p swarmy-core-bin --test vol --no-run --message-format=json > /tmp/swarmy-vol-build.json
 sudo -E "$(jq -r 'select(.executable != null and .target.name == "vol") | .executable' /tmp/swarmy-vol-build.json)" --nocapture
 ```
 

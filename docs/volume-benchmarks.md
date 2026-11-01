@@ -709,7 +709,7 @@ cargo fmt --all --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test -p swarmy-volume --locked --no-run --message-format=json
-cargo test -p swarmyd --test vol --locked --no-run --message-format=json
+cargo test -p swarmy-core-bin --test vol --locked --no-run --message-format=json
 cargo test --workspace --locked --no-run --message-format=json
 ```
 
