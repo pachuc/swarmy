@@ -137,6 +137,19 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
     let mut node = Node::new(settings, &store).await;
     node.start();
     node.ready(&store, jiff::Timestamp::UNIX_EPOCH).await;
+    // The control socket creates this sandbox without a keeper hold; give the
+    // credential endpoint a live placement for the duration of the test.
+    let placement = store
+        .place(
+            agent.agent_id,
+            node.id,
+            jiff::Timestamp::now()
+                .checked_add(std::time::Duration::from_hours(1))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    store.claim_placement(&placement).await.unwrap();
     let sandbox = match node
         .request(Request::Create {
             spec: SandboxSpec {

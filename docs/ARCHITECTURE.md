@@ -8,7 +8,7 @@ and for checkout development see [DEV.md](DEV.md). Each section names its implem
 
 The workspace holds thirty-two crates (`members = ["crates/*"]` in
 [Cargo.toml](../Cargo.toml)). These are descriptive tiers, not strict acyclic
-boundaries: sandbox uses store and volume; chat and devtools use the HTTP
+boundaries: sandbox uses the node API for scratch and GitHub credentials and uses volume for disk; chat and devtools use the HTTP
 client. The individual manifests in `crates/*/Cargo.toml` are the
 source of truth for edges; this is a layering rule, not a claim that every
 crate in a tier depends on every lower tier.

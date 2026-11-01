@@ -1019,7 +1019,7 @@ mod tests {
             server_now: now,
         };
         let mut old = keeper.hold_placement(first.clone(), answered, Arc::default());
-        let (request, _) = keeper.request();
+        let (request, _, _) = keeper.request();
         let next = PlacementRecord {
             epoch: 2,
             ..first.clone()
