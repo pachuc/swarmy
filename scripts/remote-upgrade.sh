@@ -219,7 +219,9 @@ for unit in "${restart_units[@]}"; do
     unit_listed "$unit" "${restarted_units[@]}" || remaining+=("$unit")
 done
 if (( ${#remaining[@]} )); then printf '%s\n' "${remaining[@]}" > "$pending_file"; else rm -f "$pending_file"; fi
-remove_unreferenced_retired_binaries
+if [[ $services != services-only || $mode != node ]]; then
+    remove_unreferenced_retired_binaries
+fi
 python3 - "${changed[*]}" "${changed_units[*]}" "${restarted[*]}" "$((SECONDS - started))" <<'PY'
 import json, sys
 print(json.dumps(dict(node='', changed=sys.argv[1].split(), units=sys.argv[2].split(), restarted=sys.argv[3].split(), elapsed_seconds=float(sys.argv[4]))))

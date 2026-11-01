@@ -296,10 +296,12 @@ render_unit swarmy-tunnel.service > "$SWARMY_SYSTEMD_DIR/swarmy-tunnel.service"
 sed -i 's/8743/4500/g' "$SWARMY_SYSTEMD_DIR/swarmy-tunnel.service"
 printf 'SWARMY_S3_KEY=keep\nSWARMY_FDB_CLUSTER_FILE=/old/fdb.cluster\nLD_LIBRARY_PATH=/old/lib\n' > "$SWARMY_ETC_DIR/node.env"
 rm "$SWARMY_ETC_DIR/node-token"
+touch "$node_root/usr/local/bin/swarmy-core"
 : > "$node_root/systemctl.log"
 bash "$node_repo/scripts/remote-upgrade.sh" node services-only 0 prebuilt > "$scenario/services-only.json"
 [[ $(cat "$SWARMY_ETC_DIR/node.env") == *SWARMY_FDB_CLUSTER_FILE* ]]
 [[ ! -s $node_root/systemctl.log ]]
+[[ -f $node_root/usr/local/bin/swarmy-core ]]
 printf 'services_only_leaves_the_node_alone: ok\n'
 if bash "$node_repo/scripts/remote-upgrade.sh" node all 0 prebuilt > "$scenario/missing.json" 2> "$scenario/missing.err"; then
     echo 'accepted node upgrade without a token' >&2; exit 1
