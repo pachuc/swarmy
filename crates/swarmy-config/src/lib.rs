@@ -778,7 +778,7 @@ pub fn shutdown_signal() -> impl Future<Output = ()> + Send + 'static {
 /// a full round trip for that acknowledgement.
 pub fn without_nagle(stream: &mut tokio::net::TcpStream) {
     if let Err(error) = stream.set_nodelay(true) {
-        tracing::warn!(error = %error, "could not set TCP_NODELAY on an accepted connection");
+        tracing::warn!(error = %swarmy_core::error_chain(&error), "could not set TCP_NODELAY on an accepted connection");
     }
 }
 
