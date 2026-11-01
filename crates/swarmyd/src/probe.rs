@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use swarmy_bus::{Bus, WorkQueue};
+use swarmy_bus::{Bus, WorkMessage, WorkQueue};
 use swarmy_core::{BlockDevice, ImageProbe};
 use swarmy_node_protocol::{
     ClientError, DEFAULT_DEADLINE, ImageProbeFinishRequest, NodeClient, NodeRefusal,
@@ -48,20 +48,25 @@ async fn serve(
                 probe(&client, &keeper, &runtime, &message.value),
             )
             .await;
-        match outcome {
-            Ok(()) => {
-                if let Err(error) = message.acknowledge().await {
-                    tracing::warn!(error = %swarmy_core::error_chain(&error), "image probe acknowledgement failed");
-                }
+        settle(&message, outcome).await;
+    }
+}
+
+/// Acknowledge completed probes and release failed ones for redelivery.
+async fn settle(message: &WorkMessage<ImageProbe>, outcome: Result<()>) {
+    match outcome {
+        Ok(()) => {
+            if let Err(error) = message.acknowledge().await {
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "image probe acknowledgement failed");
             }
-            Err(error) => {
-                tracing::warn!(error = %swarmy_core::error_chain(&*error), "image probe failed");
-                if let Err(error) = message
-                    .negative_acknowledge(Some(Duration::from_secs(30)))
-                    .await
-                {
-                    tracing::warn!(error = %swarmy_core::error_chain(&error), "image probe release failed");
-                }
+        }
+        Err(error) => {
+            tracing::warn!(error = %swarmy_core::error_chain(&*error), "image probe failed");
+            if let Err(error) = message
+                .negative_acknowledge(Some(Duration::from_secs(30)))
+                .await
+            {
+                tracing::warn!(error = %swarmy_core::error_chain(&error), "image probe release failed");
             }
         }
     }
