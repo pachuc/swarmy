@@ -1,4 +1,4 @@
-//! Local swarms: the backing stack and four control services on this
+//! Local swarms: the backing stack and five control services on this
 //! machine, supervised by a background `swarmy swarm supervise` process.
 //! Local swarms share the stack's fixed ports, so one runs at a time.
 /// Process identities and graceful stopping for the local engine.
@@ -23,12 +23,13 @@ use tokio::{
     process::{Child, Command as Process},
     time::{sleep, timeout},
 };
-/// Service names and readiness messages for the four control services.
-pub(crate) const SERVICES: [(&str, &str); 4] = [
+/// Service names and readiness messages for the five control services.
+pub(crate) const SERVICES: [(&str, &str); 5] = [
     ("scheduler", "scheduler started"),
     ("worker", "worker ready"),
     ("gateway", "gateway ready"),
     ("api", "api ready"),
+    ("node-api", "node-api ready"),
 ];
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -39,6 +40,7 @@ pub(crate) enum Service {
     Worker,
     Gateway,
     Api,
+    NodeApi,
     Supervisor,
 }
 
@@ -174,7 +176,7 @@ pub(crate) async fn ensure_stack(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Stop the supervisor and all four control services.
+/// Stop the supervisor and all five control services.
 pub(crate) async fn stop_services(state: &Path) -> Result<()> {
     process::stop(&state.join("supervisor.pid"), Duration::from_secs(40)).await?;
     for (name, _) in SERVICES.into_iter().rev() {
@@ -283,7 +285,14 @@ pub(crate) async fn status(stack_dir: &Path, state: &Path) -> Result<()> {
         }
         println!("stack: {}", entries.join(", "));
     }
-    for name in ["scheduler", "worker", "gateway", "api", "supervisor"] {
+    for name in [
+        "scheduler",
+        "worker",
+        "gateway",
+        "api",
+        "node-api",
+        "supervisor",
+    ] {
         if let Some(identity) = Identity::read(&state.join(format!("{name}.pid"))) {
             println!(
                 "{name}: up (pid {}, uptime {}s)",
@@ -327,10 +336,17 @@ pub(crate) async fn logs(state: &Path, service: Option<Service>) -> Result<()> {
 
 /// Services with a live recorded pid, for the replacement message.
 pub(crate) fn survivors(state: &Path) -> Vec<&'static str> {
-    ["supervisor", "scheduler", "worker", "gateway", "api"]
-        .into_iter()
-        .filter(|name| Identity::read(&state.join(format!("{name}.pid"))).is_some())
-        .collect()
+    [
+        "supervisor",
+        "scheduler",
+        "worker",
+        "gateway",
+        "api",
+        "node-api",
+    ]
+    .into_iter()
+    .filter(|name| Identity::read(&state.join(format!("{name}.pid"))).is_some())
+    .collect()
 }
 /// Print the stack and service readiness lines and the supervisor pid.
 pub(crate) fn print_started(stack: &Path, state: &Path, pid: u32) -> Result<()> {

@@ -324,6 +324,7 @@ struct Services {
     files: tempfile::TempDir,
     children: Vec<tokio::process::Child>,
     bin: PathBuf,
+    node_api_listen: String,
 }
 
 impl Services {
@@ -340,8 +341,9 @@ impl Services {
             files,
             children: Vec::new(),
             bin: swarmy_testkit::bin("swarmy").parent().unwrap().to_owned(),
+            node_api_listen: free_node_api_listen(),
         };
-        for name in ["scheduler", "worker", "gateway"] {
+        for name in ["scheduler", "worker", "gateway", "node-api"] {
             services.launch(fixture, name);
         }
         wait_for_scheduler(fixture).await;
@@ -361,6 +363,7 @@ impl Services {
         command
             .env("SWARMY_FDB_CLUSTER_FILE", &fixture.cluster)
             .env("SWARMY_NATS_URL", &fixture.url)
+            .env("SWARMY_NODE_API_LISTEN", &self.node_api_listen)
             .env("SWARMY_STORE_DIRECTORY", &fixture.directory)
             .env("SWARMY_BUS_PREFIX", &fixture.prefix)
             .env("SWARMY_PROVIDER", "fake")
@@ -384,7 +387,7 @@ impl Services {
     /// partition ids and would otherwise flood the failure output.
     fn log_tails(&self) -> String {
         let mut tails = String::new();
-        for name in ["scheduler", "worker", "gateway"] {
+        for name in ["scheduler", "worker", "gateway", "node-api"] {
             ignore_best_effort(
                 writeln!(tails, "--- {name}.log (last 20 lines) ---"),
                 "append log tail line",
@@ -1120,11 +1123,18 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
         files,
         children: Vec::new(),
         bin: swarmy_testkit::bin("swarmy").parent().unwrap().to_owned(),
+        node_api_listen: free_node_api_listen(),
     };
-    for name in ["scheduler", "worker", "gateway"] {
+    for name in ["scheduler", "worker", "gateway", "node-api"] {
         services.launch(fixture, name);
     }
     wait_for_scheduler(fixture).await;
+    use std::os::unix::fs::PermissionsExt;
+    let id = swarmy_core::NodeId::from_ulid(Ulid::generate());
+    let token = fixture.store.issue_node_credential(id).await.unwrap();
+    let token_file = services.files.path().join("node-token");
+    std::fs::write(&token_file, format!("{}\n", token.reveal())).unwrap();
+    std::fs::set_permissions(&token_file, std::fs::Permissions::from_mode(0o600)).unwrap();
     let log = std::fs::File::create(services.files.path().join("node.log")).unwrap();
     let node = Node {
         root: services.files.path().join(".swarmy/node"),
@@ -1132,6 +1142,12 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
             .arg("node")
             .current_dir(services.files.path())
             .env("SWARMY_STATE_DIR", services.files.path().join(".swarmy"))
+            .env("SWARMY_NODE_ID", id.to_string())
+            .env(
+                "SWARMY_NODE_API_URL",
+                format!("http://{}", services.node_api_listen),
+            )
+            .env("SWARMY_NODE_TOKEN_FILE", &token_file)
             .env("SWARMY_FDB_CLUSTER_FILE", &fixture.cluster)
             .env("SWARMY_STORE_DIRECTORY", &fixture.directory)
             .env("SWARMY_BUS_PREFIX", &fixture.prefix)
@@ -1148,3 +1164,8 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
 
 #[path = "chat_named.rs"]
 mod named;
+
+fn free_node_api_listen() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().to_string()
+}

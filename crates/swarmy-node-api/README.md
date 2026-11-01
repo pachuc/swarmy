@@ -56,3 +56,10 @@ the stack host issues its own token during provisioning. The token is stored in
 key when the node is removed. The SSH tunnel forwards local port 8743 to the
 primary's node API. Existing hosts receive credentials during `swarmy swarm
 upgrade` in NA11; this provisioning path only covers new joins.
+
+## Tests
+
+The `test-support` feature provides `TestApi`, an in-process router behind a
+relay. Tests can pause and resume the relay on the same URL, dropping active
+connections, and use `drop_first_response` to simulate a response lost after
+work commits.

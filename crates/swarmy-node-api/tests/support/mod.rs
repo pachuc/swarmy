@@ -48,6 +48,10 @@ pub(crate) async fn serve(router: Router) -> String {
     dead_code,
     reason = "only retry integration targets use the response-drop helper"
 )]
+#[allow(
+    unused_imports,
+    reason = "only retry integration targets use this helper"
+)]
 pub(crate) use swarmy_node_api::test_support::drop_first_response;
 pub(crate) async fn node(store: &Store, sandboxes: u32) -> NodeRecord {
     let record = NodeRecord {

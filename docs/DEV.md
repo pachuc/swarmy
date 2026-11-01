@@ -337,7 +337,11 @@ the installer and process supervisor currently target Linux.
 Local Linux nodes also need `runc`, `passt` (which supplies `pasta`),
 `iproute2`, and `util-linux` (which supplies `nsenter`). Install them with
 `sudo apt-get install runc passt iproute2 util-linux` before
-starting `swarmy-core node`.
+starting `swarmy-core node`. Local swarms run the node API as the `node-api`
+control service. Issue a credential with `swarmy-core node-credential issue <node id>
+> ~/.swarmy/node-token`, run `chmod 600 ~/.swarmy/node-token`, and set
+`SWARMY_NODE_TOKEN_FILE` to that path. Set `SWARMY_NODE_API_URL` when the API
+is not on `127.0.0.1:8743`. Nodes use these settings from NA7b on.
 
 swarmy searches the caller's PATH first, then the build-time install prefix's
 `bin`, `~/.local/bin`, and `/usr/sbin`. It passes this path to the stack script.

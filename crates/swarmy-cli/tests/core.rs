@@ -78,7 +78,7 @@ fn local_core(path: &Path) {
 }
 fn core_script(identity: &str) -> String {
     format!(
-        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'swarmy-core {identity}'; exit 0; fi\ncase \"$1\" in scheduler) echo 'scheduler started';; worker) echo 'worker ready';; gateway) echo 'gateway ready';; api) if [ -n \"$SWARMY_CORE_TEST_DEFAULT_IMAGE_LOG\" ]; then printf '%s\n' \"$SWARMY_DEFAULT_IMAGE\" >> \"$SWARMY_CORE_TEST_DEFAULT_IMAGE_LOG\"; fi; echo 'api ready';; esac\nexec /bin/sleep 600\n"
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'swarmy-core {identity}'; exit 0; fi\ncase \"$1\" in scheduler) echo 'scheduler started';; worker) echo 'worker ready';; gateway) echo 'gateway ready';; api) if [ -n \"$SWARMY_CORE_TEST_DEFAULT_IMAGE_LOG\" ]; then printf '%s\n' \"$SWARMY_DEFAULT_IMAGE\" >> \"$SWARMY_CORE_TEST_DEFAULT_IMAGE_LOG\"; fi; echo 'api ready';; node-api) echo 'node-api ready';; esac\nexec /bin/sleep 600\n"
     )
 }
 fn release(identity: &str) -> String {
