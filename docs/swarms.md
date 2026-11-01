@@ -206,7 +206,7 @@ swarm can be provisioned again.
 
 Up builds an image recipe carried by the client on the primary, registers it
 as `DIRECTORY-NAME:SWARM` and makes it the swarm's default image:
-`images/base-ubuntu` by default, so `base-ubuntu:demo`. `--image-recipe
+`images/base-ubuntu` by default, so `base-ubuntu:demo`. The primary's node boots the new image once to record its boot set, so the first cold start on any node prefetches. `--image-recipe
 images/swarmy-dev` builds `swarmy-dev:demo` instead, and `--no-image` skips
 the build. To use a recipe the client does not carry, build it as root on a
 Linux machine and register it with the swarm through its API:

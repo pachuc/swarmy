@@ -57,9 +57,11 @@ key when the node is removed. The SSH tunnel forwards local port 8743 to the
 primary's node API. Existing hosts receive credentials during `swarmy swarm
 upgrade` on existing hosts as well.
 
+`POST /node/v1/image/probe/open` opens a throwaway writer volume for a newly registered image, returning its sandbox spec. `POST /node/v1/image/probe/finish` records its boot set and deletes the volume. Any authenticated node may probe.
+
 ## Boot sets
 
-`hosting/open` returns the boot-set key recorded for the opened volume head,
+Image probes record a new image's set before its first real hosting. `hosting/open` returns the boot-set key recorded for the opened volume head,
 or falls back to the session's pinned image manifest. A node reports the
 object it wrote with `POST /node/v1/hosting/boot-set`, echoing its placement,
 session, head and content-addressed key. The API checks placement ownership

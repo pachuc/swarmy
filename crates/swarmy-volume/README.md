@@ -329,6 +329,8 @@ and the dated procedure in `docs/volume-benchmarks.md`.
 
 ## Boot sets
 
+A new image gets its boot set from a node-run image probe at registration.
+
 An attachment records demand-read chunk hashes in first-read order, including
 cache hits but excluding zero blocks, dirty data and readahead. Recording stops
 at the `boot_set` control query and caps at 4,096 chunks (1 GiB). A set is

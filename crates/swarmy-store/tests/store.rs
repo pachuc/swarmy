@@ -12,7 +12,7 @@ use swarmy_core::{
 use swarmy_store::{
     CredentialKey, InterruptResult, Store, StoreError,
     blob::{BlobStore, MemoryBlobStore, ObjectBlobStore},
-    runnable_partition,
+    image_probe_volume, runnable_partition,
 };
 
 #[tokio::test]
@@ -27,6 +27,78 @@ async fn boot_set_first_writer_wins() {
     assert!(test.store.record_boot_set(manifest, &first).await.unwrap());
     assert!(!test.store.record_boot_set(manifest, &second).await.unwrap());
     assert_eq!(test.store.boot_set(manifest).await.unwrap(), Some(first));
+}
+
+#[tokio::test]
+async fn image_probe_opens_one_volume_and_finish_records_and_deletes_it() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let manifest = ManifestId::from_ulid(Ulid::generate());
+    test.store
+        .put_manifest(manifest, &manifest_header(u64::from(CHUNK_SIZE)))
+        .await
+        .unwrap();
+    let volume = image_probe_volume(manifest);
+    assert_eq!(
+        test.store.open_image_probe(manifest).await.unwrap(),
+        Some(volume)
+    );
+    assert_eq!(
+        test.store.open_image_probe(manifest).await.unwrap(),
+        Some(volume)
+    );
+    assert_eq!(
+        test.store
+            .get_volume(volume)
+            .await
+            .unwrap()
+            .unwrap()
+            .head_manifest,
+        manifest
+    );
+    let key = swarmy_core::boot_set_key(b"first");
+    assert!(
+        test.store
+            .finish_image_probe(manifest, Some(&key))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        test.store.boot_set(manifest).await.unwrap(),
+        Some(key.clone())
+    );
+    assert!(test.store.get_volume(volume).await.unwrap().is_none());
+    assert_eq!(test.store.open_image_probe(manifest).await.unwrap(), None);
+    assert!(
+        !test
+            .store
+            .finish_image_probe(manifest, Some(&swarmy_core::boot_set_key(b"other")))
+            .await
+            .unwrap()
+    );
+    assert_eq!(test.store.boot_set(manifest).await.unwrap(), Some(key));
+}
+
+#[tokio::test]
+async fn finish_without_a_key_deletes_the_volume_and_records_nothing() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let manifest = ManifestId::from_ulid(Ulid::generate());
+    test.store
+        .put_manifest(manifest, &manifest_header(u64::from(CHUNK_SIZE)))
+        .await
+        .unwrap();
+    let volume = test
+        .store
+        .open_image_probe(manifest)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!test.store.finish_image_probe(manifest, None).await.unwrap());
+    assert!(test.store.get_volume(volume).await.unwrap().is_none());
+    assert_eq!(test.store.boot_set(manifest).await.unwrap(), None);
 }
 
 #[tokio::test]

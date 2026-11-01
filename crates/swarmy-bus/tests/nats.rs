@@ -6,7 +6,7 @@ use futures_util::{FutureExt, TryStreamExt};
 use swarmy_bus::{
     Bus, Config, Error, LiveFeed, SubjectToken, WorkMessage, WorkMessages, WorkQueue,
 };
-use swarmy_core::{EncodingError, NodeId, SessionId, WakeReply};
+use swarmy_core::{EncodingError, ImageProbe, ImageTag, ManifestId, NodeId, SessionId, WakeReply};
 use tokio::time::{sleep, timeout};
 use ulid::Ulid;
 
@@ -22,8 +22,9 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn names(&self) -> [String; 3] {
-        ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE"].map(|name| format!("{}_{name}", self.prefix))
+    fn names(&self) -> [String; 4] {
+        ["INFER_REQ", "SCHED_RUNNABLE", "TOOL_NODE", "IMAGE_PROBE"]
+            .map(|name| format!("{}_{name}", self.prefix))
     }
 }
 
@@ -248,6 +249,7 @@ async fn setup_is_idempotent_and_rejects_configuration_drift() {
             WorkQueue::Runnable(7),
             WorkQueue::Runnable(3),
             WorkQueue::NodeTools(NodeId::from_ulid(Ulid::generate())),
+            WorkQueue::ImageProbes,
         ];
         f.bus.setup(&queues).await.unwrap();
         let context = jetstream::new(f.admin.clone());
@@ -484,6 +486,7 @@ async fn routes_and_prefixes_isolate_work() {
             WorkQueue::Runnable(3),
             WorkQueue::NodeTools(NodeId::from_ulid(Ulid::generate())),
             WorkQueue::NodeTools(NodeId::from_ulid(Ulid::generate())),
+            WorkQueue::ImageProbes,
         ];
         f.bus.setup(&routes).await.unwrap();
         for (value, route) in (0_u64..).zip(&routes) {
@@ -684,6 +687,44 @@ async fn nudges_deduplicate_the_same_head_but_not_fresh_steps_or_reaped_leases()
         sleep(resend).await;
         f.bus.nudge(id, 2, None, resend, false).await.unwrap();
         assert_eq!(stream.info().await.unwrap().state.messages, 4);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn image_probe_round_trips_on_shared_work_queue() {
+    run(|f| async move {
+        f.bus.setup(&[WorkQueue::ImageProbes]).await.unwrap();
+        let stream = jetstream::new(f.admin.clone())
+            .get_stream(&f.names()[3])
+            .await
+            .unwrap();
+        let consumer = stream.consumers().try_next().await.unwrap().unwrap();
+        assert_eq!(
+            consumer.config.durable_name.as_deref(),
+            Some("image_probes")
+        );
+        let probe = ImageProbe {
+            name: "test".into(),
+            tag: ImageTag("dev".into()),
+            manifest: ManifestId::from_ulid(Ulid::generate()),
+        };
+        f.bus
+            .publish_work(&WorkQueue::ImageProbes, &probe)
+            .await
+            .unwrap();
+        let mut messages = f
+            .bus
+            .consume::<ImageProbe>(&WorkQueue::ImageProbes)
+            .await
+            .unwrap();
+        let received = timeout(WAIT, messages.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(received.value, probe);
+        received.acknowledge().await.unwrap();
     })
     .await;
 }
