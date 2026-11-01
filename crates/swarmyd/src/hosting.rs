@@ -757,6 +757,7 @@ mod tests {
             volume,
             writer: Some(writer),
             head,
+            boot_set: None,
             header,
             spec: SandboxSpec {
                 agent_id: agent,
