@@ -181,11 +181,6 @@ impl Gateway {
             &event,
             streamed,
         );
-        if stored_result.is_ok() {
-            self.store
-                .clear_inference_wait(delivery.job.session_id)
-                .await?;
-        }
         delivery.message.acknowledge().await?;
         Ok(())
     }

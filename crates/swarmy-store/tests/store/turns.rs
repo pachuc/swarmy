@@ -420,6 +420,65 @@ async fn terminal_inference_commits_response_snapshot_and_idle_under_its_claim()
     assert!(store.scan_inflight(None, 64).await.unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn completion_clears_the_inference_wait_in_its_own_commit() {
+    let Some(test) = TestStore::memory() else {
+        return;
+    };
+    let store = &test.store;
+    let id = test.create().await;
+    // An earlier retryable failure parked the session; waking keeps the wait's
+    // history until an attempt completes.
+    let lease = store
+        .claim_lease(
+            id,
+            owner(),
+            Timestamp::now()
+                .checked_add(std::time::Duration::from_secs(60))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .park_inference(
+                id,
+                &lease,
+                &failure(1, "sat/a-key: 429", 160),
+                timestamp(100),
+                std::time::Duration::from_secs(3600),
+            )
+            .await
+            .unwrap()
+    );
+    assert!(store.wake_wait(id, timestamp(170)).await.unwrap());
+    assert!(store.session_wait(id).await.unwrap().is_some());
+    let mut completion = terminal_completion(store, id).await;
+    completion.claim.owner = owner();
+    completion.claim.expires_at = Timestamp::now()
+        .checked_add(std::time::Duration::from_secs(60))
+        .unwrap();
+    completion.now = Timestamp::now();
+    assert!(
+        store
+            .start_inference(&completion.claim, completion.now)
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .complete_inference(&completion, &"answer")
+            .await
+            .unwrap()
+    );
+    // The commit that makes the session runnable also ends the wait, so no
+    // separate clear can later delete a wait the next turn parks with.
+    assert!(store.session_wait(id).await.unwrap().is_none());
+    let session = store.fetch_session(id).await.unwrap().unwrap();
+    assert_eq!(session.state, SessionState::Runnable);
+    assert_eq!(session.route_step, 0);
+}
+
 async fn terminal_completion(store: &Store, id: SessionId) -> swarmy_store::InferenceCompletion {
     let lease = store
         .claim_lease(
