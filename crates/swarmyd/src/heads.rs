@@ -37,7 +37,8 @@ mod tests {
         let head = ManifestId::from_ulid(ulid::Ulid::generate());
         assert_eq!(heads.get(volume), None);
         heads.set(volume, head);
-        assert_eq!(heads.clone().get(volume), Some(head));
+        let shared = heads.clone();
+        assert_eq!(shared.get(volume), Some(head));
         heads.forget(volume);
         assert_eq!(heads.get(volume), None);
     }

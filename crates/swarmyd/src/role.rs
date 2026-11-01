@@ -79,14 +79,12 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
         registered.leases,
         settings.node.heartbeat_interval_ms,
     );
-    let heads = Heads::default();
-    let runtime = open_runtime(
+    let (runtime, heads) = open_runtime(
         &loaded,
         root.clone(),
         node,
         store.clone(),
         client.clone(),
-        heads.clone(),
         objects,
         node_gpu,
     )
@@ -208,12 +206,12 @@ async fn open_runtime(
     node: swarmy_core::NodeId,
     store: Store,
     client: NodeClient,
-    heads: Heads,
     objects: Arc<dyn object_store::ObjectStore>,
     gpu: swarmy_sandbox::NodeGpu,
-) -> Result<Arc<RuncRuntime>> {
+) -> Result<(Arc<RuncRuntime>, Heads)> {
     let settings = &loaded.settings;
-    Ok(Arc::new(
+    let heads = Heads::default();
+    let runtime = Arc::new(
         RuncRuntime::open_with(
             root,
             ServerConfig {
@@ -222,7 +220,7 @@ async fn open_runtime(
                 metadata: Arc::new(NodeVolumeMetadata::new(
                     client.clone(),
                     store.clone(),
-                    heads,
+                    heads.clone(),
                 )),
                 objects,
             },
@@ -237,7 +235,8 @@ async fn open_runtime(
             },
         )
         .await?,
-    ))
+    );
+    Ok((runtime, heads))
 }
 
 async fn storage(

@@ -344,6 +344,46 @@ impl Hosting {
         })
     }
 
+    /// Claim the first call while its sandbox boots, then report readiness.
+    async fn first_call(
+        &self,
+        opening: &mut Opening,
+        first: Call,
+        placement_started: Instant,
+        open_ms: f64,
+    ) -> Result<()> {
+        let placement = opening.placement.clone();
+        let deadline = opening
+            .hold
+            .deadline()
+            .context("placement lease lost before the first claim")?;
+        let (booted, claimed) = tokio::join!(
+            self.boot_computer(opening, placement_started, open_ms),
+            crate::tools::claim(
+                &self.client,
+                &self.keeper,
+                &placement,
+                first.job.clone(),
+                deadline
+            ),
+        );
+        let times = booted?;
+        let turn = claimed
+            .as_ref()
+            .ok()
+            .and_then(|c| c.as_ref())
+            .and_then(|c| c.turn);
+        self.report_ready(
+            placement.clone(),
+            opening.volume,
+            first.job.session_id,
+            turn,
+            times,
+        );
+        self.finish(&placement, first, claimed).await?;
+        Ok(())
+    }
+
     /// A requirement release stops hosting between calls even if processes run:
     /// card devices belong to the sandbox created for the old requirement.
     async fn host(&self, agent: AgentId, mut calls: mpsc::Receiver<Call>) -> Result<()> {
@@ -374,35 +414,8 @@ impl Hosting {
         tokio::pin!(lost);
         let serving = async {
             anyhow::ensure!(!*shutdown.borrow(), "node is shutting down");
-            let placement = opening.placement.clone();
-            let deadline = opening
-                .hold
-                .deadline()
-                .context("placement lease lost before the first claim")?;
-            let (booted, claimed) = tokio::join!(
-                self.boot_computer(&mut opening, placement_started, open_ms),
-                crate::tools::claim(
-                    &self.client,
-                    &self.keeper,
-                    &placement,
-                    first.job.clone(),
-                    deadline
-                ),
-            );
-            let times = booted?;
-            let turn = claimed
-                .as_ref()
-                .ok()
-                .and_then(|c| c.as_ref())
-                .and_then(|c| c.turn);
-            self.report_ready(
-                placement.clone(),
-                opening.volume,
-                first.job.session_id,
-                turn,
-                times,
-            );
-            self.finish(&placement, first, claimed).await?;
+            self.first_call(&mut opening, first, placement_started, open_ms)
+                .await?;
             loop {
                 if *shutdown.borrow() || opening.hold.release_requested() {
                     break;
@@ -559,7 +572,7 @@ impl Hosting {
             turn,
             needs_computer_sample: needs_sample,
             delivered_ns: call.delivered_ns,
-            claimed_ns: claimed.claimed_ns,
+            claimed_ns: claimed.stamp_ns,
         };
         let result = tokio::select! {
             result = crate::tools::run(

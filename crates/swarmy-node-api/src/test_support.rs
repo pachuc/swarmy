@@ -137,6 +137,8 @@ use swarmy_core::{NodeCapacity, NodeId, NodeRecord, NodeRole};
 use swarmy_store::Store;
 use ulid::Ulid;
 /// One node with two dispatched jobs and a claimed placement, before volume binding.
+/// # Panics
+/// Panics if the test fixture cannot be created.
 #[allow(dead_code, reason = "the fixture is shared across integration targets")]
 pub struct Dispatched {
     pub node: NodeRecord,
@@ -148,6 +150,9 @@ pub struct Dispatched {
     pub placement: swarmy_core::PlacementRecord,
 }
 #[allow(dead_code, reason = "the fixture is shared across integration targets")]
+/// Create dispatched tool calls for node API tests.
+/// # Panics
+/// Panics if the test store rejects the fixture.
 pub async fn dispatched(store: &Store) -> Dispatched {
     use std::time::Duration;
     use swarmy_core::{
@@ -242,6 +247,9 @@ pub async fn dispatched(store: &Store) -> Dispatched {
     }
 }
 
+/// Create a registered fixture node.
+/// # Panics
+/// Panics if the test store rejects the node.
 pub async fn node(store: &Store, sandboxes: u32) -> NodeRecord {
     let record = NodeRecord {
         node_id: NodeId::from_ulid(Ulid::generate()),
@@ -266,6 +274,9 @@ pub async fn node(store: &Store, sandboxes: u32) -> NodeRecord {
     dead_code,
     reason = "the shared fixture is used by the sync integration target only"
 )]
+/// Create a session whose agent has a test image.
+/// # Panics
+/// Panics if the test store rejects the session or image.
 pub async fn hosted_session(store: &Store) -> (swarmy_core::SessionId, swarmy_core::AgentId) {
     use swarmy_core::{
         AgentId, CHUNK_SIZE, ContentHash, ImageTag, ManifestHeader, ManifestId, SessionKind,

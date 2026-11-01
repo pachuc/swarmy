@@ -17,7 +17,7 @@ fn bash_result() -> ToolResult {
     ToolResult::Completed {
         title: "bash".into(),
         output: "{\"exit_code\":0}".into(),
-        metadata: Default::default(),
+        metadata: std::collections::BTreeMap::default(),
     }
 }
 async fn setup(

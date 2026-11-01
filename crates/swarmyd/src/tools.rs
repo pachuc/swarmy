@@ -132,7 +132,7 @@ pub(crate) struct Claimed {
     pub(crate) claim: PlacedToolClaim,
     pub(crate) hold: ClaimHold,
     pub(crate) turn: Option<swarmy_core::MessageId>,
-    pub(crate) claimed_ns: Option<i64>,
+    pub(crate) stamp_ns: Option<i64>,
 }
 
 pub(crate) async fn claim(
@@ -163,7 +163,7 @@ pub(crate) async fn claim(
                 claim: answer.claim,
                 hold,
                 turn: answer.turn,
-                claimed_ns: wall_ns(),
+                stamp_ns: wall_ns(),
             }))
         }
         Err(ClientError::Refused(NodeRefusal::AlreadyDone)) => Ok(None),
@@ -417,10 +417,6 @@ async fn run_command(
     Ok(CommandOutcome { result, summary })
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "fetch histogram reads are approximate, so floating-point display precision is sufficient"
-)]
 fn node_tool_metric(
     claim: &PlacedToolClaim,
     metrics: &CallMetrics,
