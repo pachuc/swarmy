@@ -507,7 +507,10 @@ mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
     use std::collections::VecDeque;
-    use swarmy_core::{GpuRequirement, NodeCapacity, NodeId, NodeRole, PlacementChangeReason};
+    use swarmy_core::{
+        BashArguments, GpuRequirement, NodeCapacity, NodeId, NodeRole, PlacementChangeReason,
+        RequestId, SandboxArguments, SessionId, ToolCallId, ToolJob,
+    };
     use swarmy_node_protocol::{FenceKind, NodeRefusal, PlacementRenewal};
     struct Script {
         requests: Mutex<Vec<SyncRequest>>,
@@ -815,5 +818,118 @@ mod tests {
         let new = keeper.hold_placement(next, answered, Arc::default());
         assert_eq!(old.lost().await, "replaced");
         assert_eq!(new.current().unwrap().epoch, 2);
+    }
+    #[tokio::test(start_paused = true)]
+    async fn one_sync_renews_placement_claim_and_writer() {
+        let (keeper, script) = fixture();
+        let now: jiff::Timestamp = "2001-01-01T00:00:00Z".parse().unwrap();
+        let placement = placement(now);
+        let sent = Instant::now();
+        let answered = Answered {
+            sent,
+            server_now: now,
+        };
+        let mut held = keeper.hold_placement(placement.clone(), answered, Arc::default());
+        let session = SessionId::from_ulid(ulid::Ulid::generate());
+        let claim = PlacedToolClaim {
+            job: ToolJob {
+                session_id: session,
+                step: 1,
+                request_id: RequestId::for_step(session, 1),
+                call_id: ToolCallId("call".into()),
+                arguments: SandboxArguments::Bash(BashArguments {
+                    command: "true".into(),
+                    timeout_ms: 1000,
+                    yield_seconds: 1,
+                    output_budget_bytes: 1024,
+                }),
+            },
+            owner: LeaseOwnerId::from_ulid(ulid::Ulid::generate()),
+            placement: placement.clone(),
+            expires_at: now.checked_add(Duration::from_secs(30)).unwrap(),
+        };
+        let claim_hold = keeper.hold_claim(claim, sent + Duration::from_secs(27));
+        let volume = VolumeId::from_ulid(ulid::Ulid::generate());
+        let lease = Lease {
+            owner: LeaseOwnerId::from(placement.node_id),
+            seq: 1,
+            expires_at: now.checked_add(Duration::from_secs(60)).unwrap(),
+        };
+        let writer = keeper.hold_writer(volume, lease.clone(), answered);
+        let mut response = answer(
+            now,
+            vec![Renewal::Renewed(PlacementRenewal {
+                placement,
+                release_requested: true,
+            })],
+        );
+        response.claims.push(Renewal::Renewed(
+            now.checked_add(Duration::from_secs(30)).unwrap(),
+        ));
+        response.writers.push(Renewal::Renewed(lease.clone()));
+        script.answers.lock().unwrap().push_back(Ok(response));
+        keeper.sync_once().await.unwrap();
+        {
+            let requests = script.requests.lock().unwrap();
+            let request = &requests[0];
+            assert_eq!(
+                (
+                    request.placements.len(),
+                    request.claims.len(),
+                    request.writers.len()
+                ),
+                (1, 1, 1)
+            );
+        }
+        assert_eq!(held.deadline(), Some(sent + Duration::from_secs(27)));
+        assert!(held.release_requested());
+        held.released().await;
+        assert_eq!(writer.current().unwrap(), lease);
+        drop(claim_hold);
+        drop(writer);
+        drop(held);
+        script
+            .answers
+            .lock()
+            .unwrap()
+            .push_back(Ok(answer(now, vec![])));
+        keeper.sync_once().await.unwrap();
+        let requests = script.requests.lock().unwrap();
+        let next = &requests[1];
+        assert!(next.placements.is_empty() && next.claims.is_empty() && next.writers.is_empty());
+    }
+    #[tokio::test(start_paused = true)]
+    async fn renewal_of_a_replaced_token_is_ignored() {
+        let (keeper, _) = fixture();
+        let now: jiff::Timestamp = "2001-01-01T00:00:00Z".parse().unwrap();
+        let first = placement(now);
+        let answered = Answered {
+            sent: Instant::now(),
+            server_now: now,
+        };
+        let mut old = keeper.hold_placement(first.clone(), answered, Arc::default());
+        let (request, _) = keeper.request();
+        let next = PlacementRecord {
+            epoch: 2,
+            ..first.clone()
+        };
+        let current = keeper.hold_placement(next, answered, Arc::default());
+        keeper.apply(
+            &request,
+            answer(
+                now,
+                vec![Renewal::Renewed(PlacementRenewal {
+                    placement: first,
+                    release_requested: false,
+                })],
+            ),
+            Instant::now(),
+        );
+        assert_eq!(old.lost().await, "replaced");
+        assert_eq!(current.current().unwrap().epoch, 2);
+        assert_eq!(
+            current.deadline(),
+            Some(answered.sent + Duration::from_secs(27))
+        );
     }
 }

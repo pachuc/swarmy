@@ -662,11 +662,6 @@ async fn restart_waits_for_its_old_epoch(
     written(&node, agent, "restart-started").await;
     assert!(!store.tool_completed(first.request_id).await.unwrap());
     let old = store.get_by_agent(agent).await.unwrap().unwrap();
-    node.kill();
-    node.start();
-    node.ready(store, jiff::Timestamp::now()).await;
-    // This direct NATS fixture has no worker to re-dispatch a job whose old
-    // placement expires. Wait before dispatching so its fence names the new epoch.
     let writer_expiry = store
         .get_volume(VolumeId::from_ulid(agent.as_ulid()))
         .await
@@ -675,6 +670,11 @@ async fn restart_waits_for_its_old_epoch(
         .writer_lease
         .unwrap()
         .expires_at;
+    node.kill();
+    node.start();
+    node.ready(store, jiff::Timestamp::now()).await;
+    // This direct NATS fixture has no worker to re-dispatch a job whose old
+    // placement expires. Wait before dispatching so its fence names the new epoch.
     swarmy_testkit::eventually(
         "restarted node leaves old epoch and writer to expire",
         Duration::from_secs(90),
