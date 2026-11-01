@@ -147,7 +147,10 @@ was lost and the next placement reports `eviction`. Only a failed final
 checkpoint, or a lost lease, leaves the placement to expire, and the node
 that takes it over then records a failure.
 Graceful shutdown does the same for hosted agents, keeping renewal active during
-checkpointing. Idle time starts after a call finishes, so an active call cannot
+checkpointing. The lease keeper stops last. When it stops it sends one last
+sync carrying the metric patches and scratch removals still queued, with no
+lease renewals, bounded by 10 seconds; a failure is logged and the reports
+are dropped. Idle time starts after a call finishes, so an active call cannot
 be evicted. Running managed processes prevent idle eviction; unmanaged background
 processes alone do not reset this timer.
 
@@ -224,7 +227,7 @@ live placement and epoch; memory cache keys use the content fingerprint, not
 the volume head. GitHub credentials come from the node API only for an agent
 placed live on this node. First-tool computer re-samples use a bounded 1,024
 patch keeper queue, which drops the oldest patch when full and retries after
-failed syncs; completion metrics are recorded by the node API.
+failed syncs and is flushed once at shutdown; completion metrics are recorded by the node API.
 
 On a cold start the node passes the boot set from `hosting/open` to the volume server. After the first completed tool call it records the new boot set, writes it directly to object storage and reports its key to the node API. The first boot of a new image remains slow until a set has been recorded.
 

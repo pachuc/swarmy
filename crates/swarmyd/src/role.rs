@@ -133,9 +133,12 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     while clients.join_next().await.is_some() {}
     // The keeper stops last: a scratch round waits for its next sync, and shutdown
     // flushes volumes and releases placements under leases only it renews.
+    // When it stops, the keeper sends one last sync with the metric patches and scratch
+    // removals queued during shutdown.
     sweeping.await?;
     hosting.shutdown().await;
     let cleanup = runtime.shutdown().await;
+    keeper.report_evicted(runtime.take_evicted());
     keeping_stop.send_replace(true);
     keeping.await?;
     std::fs::remove_file(socket)?;
