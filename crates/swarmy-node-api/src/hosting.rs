@@ -62,15 +62,19 @@ pub(crate) async fn open(
     };
     let volume =
         idempotent(|| state.store.agent_volume(request.job.session_id, &placement)).await?;
-    let (opening, spec) = tokio::try_join!(
+    let ((opening, boot_set), spec) = tokio::try_join!(
         async {
-            idempotent(|| {
+            let opening = idempotent(|| {
                 state
                     .store
                     .open_writer_lease(volume, LeaseOwnerId::from(node), WRITER_LEASE)
             })
             .await
-            .map_err(Answer::from)
+            .map_err(Answer::from)?;
+            let boot_set = boot_set_for(&state.store, opening.head, request.job.session_id)
+                .await
+                .map_err(Answer::from)?;
+            Ok::<_, Answer>((opening, boot_set))
         },
         async {
             state
@@ -80,7 +84,6 @@ pub(crate) async fn open(
                 .map_err(Answer::from)
         },
     )?;
-    let boot_set = boot_set_for(&state.store, opening.head, request.job.session_id).await?;
     Ok(Json(HostingOpenResponse {
         server_now: now,
         placement,
