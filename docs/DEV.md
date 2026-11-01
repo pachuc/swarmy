@@ -316,7 +316,7 @@ make install
 ```
 
 `make install` is `make install-client` plus `make install-core`. The client
-links no database library and needs no `libfdb_c`; `swarmy-core` (scheduler, worker, gateway, API, and vol) still links it. `swarmy-node` links no FoundationDB library; `make check-deps` verifies its normal dependency tree. Install only the client with
+links no database library and needs no `libfdb_c`; `swarmy-core` (scheduler, worker, gateway, API, and vol) still links it. `swarmy-node` links no FoundationDB library; `make check-deps` verifies normal dependency trees for `swarmyd`, `swarmy-volume`, and `swarmy-sandbox`. Install only the client with
 `make install-client` when the services live elsewhere. `make install-client`
 builds the client with `remote` and `chat`, plus the `swarmy-auth` helper for interactive provider login. `make install-node` builds the headless client with neither feature, and installs `swarmy-core`. The `remote` feature compiles the S3 client for swarm buckets. A plain
 `cargo build -p swarmy-cli` leaves that feature off for the slimmer node
@@ -341,7 +341,7 @@ starting `swarmy-node`. Local swarms run the node API as the `node-api`
 control service. Issue a credential with `swarmy-core node-credential issue <node id>
 > ~/.swarmy/node-token`, run `chmod 600 ~/.swarmy/node-token`, and set
 `SWARMY_NODE_TOKEN_FILE` to that path. Set `SWARMY_NODE_API_URL` when the API
-is not on `127.0.0.1:8743`. Nodes use these settings from NA7b on.
+is not on `127.0.0.1:8743`. Nodes use these settings for every registration and request.
 
 swarmy searches the caller's PATH first, then the build-time install prefix's
 `bin`, `~/.local/bin`, and `/usr/sbin`. It passes this path to the stack script.
@@ -786,3 +786,8 @@ has the same durability as other home-disk files: use `checkpoint` when facts
 must survive node failure. The default prompt explains how to save memory and
 that conversations may be summarized; `{memory_dir}` in a configured system
 prompt expands to the selected directory.
+
+The root-only `scripts/node-suites/latency.sh` checks warm tool overhead below
+1 s at 175 ms round trip and below 2 s at 400 ms. It gates cold start below
+60 s at 175 ms and every node API request below one round trip plus 150 ms;
+cold start at 400 ms is reported without a gate.

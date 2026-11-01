@@ -101,6 +101,7 @@ exit 0
 EOF
 cat > "$tmp/chaos/target/debug/swarmy-chaos" <<'EOF'
 #!/usr/bin/env bash
+[ -z "${FAKE_CHAOS_LOG:-}" ] || printf '%s\n' "$*" >> "$FAKE_CHAOS_LOG"
 [ "${FAKE_CHAOS_FAIL:-0}" = 1 ] && exit 1
 printf '== tool timings (ms)\nfake-timing-row\nTOOL_TIMINGS {"calls":[]}\n'
 printf 'chaos passed\n'
@@ -227,8 +228,11 @@ check_exit_and_marker "rerun checkout failure" 2 "checkout failed"
 
 # Latency suite exercises both links and never names a host interface.
 : > "$tmp/ip.log"
-run_case env HOME="$tmp" FAKE_IP_LOG="$tmp/ip.log" bash "$node_suites/latency.sh" b
+run_case env HOME="$tmp" FAKE_IP_LOG="$tmp/ip.log" FAKE_CHAOS_LOG="$tmp/chaos.log" bash "$node_suites/latency.sh" b
 check_exit_and_marker "latency pass" 0 "SUITES_EXIT=0"
+grep -q -- '--max-warm-overhead-ms 1000 --max-cold-start-ms 60000 --max-node-request-ms 325' "$tmp/chaos.log"
+grep -q -- '--max-warm-overhead-ms 2000 --max-node-request-ms 550' "$tmp/chaos.log"
+[ "$(grep -c -- '--max-cold-start-ms' "$tmp/chaos.log")" = 1 ]
 grep -q '^fake-timing-row' "$tmp/out.log" || { echo "node-suites test failed: timing row missing"; exit 1; }
 grep -q '^TOOL_TIMINGS ' "$tmp/out.log" || { echo "node-suites test failed: timing JSON missing"; exit 1; }
 grep -q 'tc qdisc replace dev swl-p root netem delay 87500us' "$tmp/ip.log"

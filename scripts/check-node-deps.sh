@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Normal node dependencies must not link the store or FoundationDB; tests may.
+# The node binary and its libraries must not link the store or FoundationDB through normal edges; tests may.
 set -euo pipefail
 cargo=${CARGO:-cargo}
-packages=(swarmyd)
+packages=(swarmyd swarmy-volume swarmy-sandbox)
 forbidden='^(foundationdb|foundationdb-sys|swarmy-store) '
 status=0
 for package in "${packages[@]}"; do

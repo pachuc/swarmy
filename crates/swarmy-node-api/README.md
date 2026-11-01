@@ -55,7 +55,7 @@ the stack host issues its own token during provisioning. The token is stored in
 `/etc/swarmy/node-token` (root-owned, mode 0600) and revoked with the tunnel
 key when the node is removed. The SSH tunnel forwards local port 8743 to the
 primary's node API. Existing hosts receive credentials during `swarmy swarm
-upgrade` in NA11; this provisioning path only covers new joins.
+upgrade` on existing hosts as well.
 
 ## Boot sets
 

@@ -8,7 +8,7 @@ and for checkout development see [DEV.md](DEV.md). Each section names its implem
 
 The workspace holds thirty-two crates (`members = ["crates/*"]` in
 [Cargo.toml](../Cargo.toml)). These are descriptive tiers, not strict acyclic
-boundaries: sandbox uses the node API for scratch and GitHub credentials and uses volume for disk; chat and devtools use the HTTP
+boundaries: the node uses the node API for durable metadata and object storage for disk; chat and devtools use the HTTP
 client. The individual manifests in `crates/*/Cargo.toml` are the
 source of truth for edges; this is a layering rule, not a claim that every
 crate in a tier depends on every lower tier.
@@ -54,6 +54,8 @@ crate in a tier depends on every lower tier.
   server and reaches durable metadata only through its `VolumeMetadata` trait
   ([source](../crates/swarmy-volume/src/lib.rs)).
 
+Normal dependency edges from `swarmyd`, `swarmy-volume` and `swarmy-sandbox` to the store are forbidden by `scripts/check-node-deps.sh`. Nodes hold no database client; they read and write chunks, manifests, boot sets and screenshot blobs directly in object storage.
+
 ### Services
 
 - **swarmy-scheduler** scans runnable sessions and dispatches work
@@ -65,7 +67,7 @@ crate in a tier depends on every lower tier.
 - **swarmy-node-api** authenticates sandbox nodes by their own token and runs their store operations on the primary ([source](../crates/swarmy-node-api/src/role.rs)).
 - **swarmy-api** exposes HTTP JSON mutations and cursor-based event streams
   ([source](../crates/swarmy-api/src/role.rs)).
-- **swarmyd** builds the `swarmy-node` binary with no `swarmy-store` dependency. It registers and opens hosting through the node API; one sync renews every placement, claim and writer lease. It claims and completes tool calls through the node API, which publishes the completion event and wakes the session. It hosts volumes and sandbox commands on a node
+- **swarmyd** builds the `swarmy-node` binary with no `swarmy-store` dependency. It registers and opens hosting through the node API; one sync every five seconds renews every placement, claim and writer lease. It claims and completes tool calls through the node API, which publishes the completion event and wakes the session. It uses HTTP/2 over the SSH tunnel for one request per action, consumes its own NATS queue, answers memory requests, and hosts volumes and sandbox commands on a node
   ([source](../crates/swarmyd/src/role.rs)).
 
 ### Client and cloud
@@ -82,11 +84,10 @@ crate in a tier depends on every lower tier.
 - **swarmy-provisioner** is the primary-only service that reconciles elastic groups with OpenTofu and the machine ledger, autoscales the one group with `autoscale = true` from parked GPU capacity waits (`session_wait` rows) and idle machines by changing desired only, and joins, drains and destroys machines through the client's SSH path ([source](../crates/swarmy-provisioner/src/reconcile.rs)).
 - **swarmy-infra** fetches a pinned, checksum-verified OpenTofu release, runs it in a per-swarm working directory with cloud credentials only in the environment, and owns the module output contract and the verified-download helper the swarmy release cache shares ([source](../crates/swarmy-infra/src/lib.rs)), and carries the OpenTofu machine-group modules from infra/modules ([modules](../crates/swarmy-infra/src/modules.rs)).
 
-Services share one bootstrap from `swarmy-config`: `Settings::load` for
-configuration, `init_tracing` for stderr logging, `Store::open_store` for the
-database handle, and `shutdown_signal` (SIGINT or SIGTERM), which the API, worker, scheduler,
-gateway, and swarmyd all wait on to shut down cleanly; the four
-control-plane services flush queued turn metrics before exit
+Control-plane services share a bootstrap from `swarmy-config`: `Settings::load`
+for configuration, `init_tracing` for stderr logging, `Store::open_store` for
+the database handle, and `shutdown_signal` (SIGINT or SIGTERM). The API,
+worker, scheduler and gateway flush queued turn metrics before exit
 ([config](../crates/swarmy-config/src/lib.rs),
 [store](../crates/swarmy-store/src/lib.rs)).
 
@@ -246,7 +247,7 @@ see [worker/summarize.rs](../crates/swarmy-worker/src/worker/summarize.rs) and
 A local checkout starts FoundationDB, NATS and SeaweedFS with
 [dev-stack.sh](../scripts/dev-stack.sh). The control node hosts these backing
 services and scheduler, worker, gateway and API processes; the sandbox node
-runs `swarmyd`, runc containers and the volume/NBD path
+runs the `swarmy-node` binary (from `swarmyd`), runc containers and the volume/NBD path
 ([remote-provision.sh](../scripts/remote-provision.sh),
 [swarmyd main](../crates/swarmyd/src/role.rs)). One machine can perform both
 roles. Groups supply machines: local, existing hosts, or OpenTofu modules

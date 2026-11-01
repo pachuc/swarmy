@@ -20,7 +20,7 @@ configuration at `.swarmy/config.toml`:
 Scripts match the client binary. Rebuild a development client after editing a
 script. Do not delete `.swarmy/` or `.dev/` when clearing unused checkout files.
 The core release bundle carries `swarmy-node` alongside the stack binaries.
-Node-only hosts install only `swarmy-node` from it. The node's binaries and scripts are
+Node-only hosts install only `swarmy-node` from it and hold neither the FoundationDB library nor a cluster file. The node's binaries and scripts are
 copied from a checkout for development builds, or fetched from the matching
 release for release builds. `SWARMY_RELEASE_BASE_URL` overrides the release
 archive source. Systemd is the Linux service manager that starts and
@@ -38,6 +38,10 @@ and systemd unit files in private node state. On a stack+services host, the unit
 | `swarmy-gateway` | Inference gateway |
 | `swarmy-provisioner` | Elastic machine groups; primary only |
 | `swarmy-tunnel` | Host tunnel endpoint |
+
+Without a bucket, the node tunnel forwards NATS (4222), the node API (8743),
+and object storage (8333), but never FoundationDB. The node token is revoked
+when its host is removed.
 
 The swarmy-provisioner service runs OpenTofu for elastic groups on the primary.
 It keeps local state under `~<service-user>/.local/share/swarmy/provisioner/tofu/GROUP/`
@@ -147,7 +151,7 @@ Run a full `swarmy swarm upgrade NAME` without `--services-only` from a
 matching client. The primary upgrades first because other nodes need its node
 API and credentials. A full upgrade issues missing node tokens, keeps the node
 API lines of `/etc/swarmy/node.env` current, restarts a node-only host's tunnel
-with its node, and removes its FoundationDB leftovers after the new node runs.
+with its node. Node tokens are revoked when a host is removed.
 After a store wipe, delete `/etc/swarmy/node-token` on every host before
 upgrading to issue fresh tokens. Follow node API logs on the primary with
 `swarmy swarm logs NAME --unit swarmy-node-api`. The `units` list should

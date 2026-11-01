@@ -361,7 +361,7 @@ the creation limit, so fix the group's size and scale again.
 
 ### Distance from the primary
 
-A node registers, renews leases and opens hosting through the primary node API. The node runs no store transactions on its start or tool path: each action is one node API request. The node reads disk chunks from the primary's object storage. Nodes are supported up to 400 ms round trip from the primary. `scripts/node-suites/latency.sh` (run on the suite node through `suite-queue.sh --latency`) checks sandbox start and the first tool call with the node in its own network namespace at 175 ms and 400 ms round trip, and fails when any node API request the node makes (other than its first registration) takes longer than four round trips plus 150 ms, or when the node made no tool claim and completion requests. After each round trip it prints a per-call timing table from the turn metrics (delivery, claim, run, complete, wake, total and overhead, which is the total minus the command's own time) and the cold start of each placement, ending with one `TOOL_TIMINGS` JSON line.
+A node registers, renews leases and opens hosting through the primary node API over its SSH tunnel. Joined nodes hold a revocable node token, not database access. The node reads disk chunks directly from object storage. Nodes are supported up to 400 ms round trip from the primary. `scripts/node-suites/latency.sh` runs on the suite node at 175 and 400 ms round trip. At 175 ms it gates warm tool overhead below 1,000 ms and cold start below 60 s; at 400 ms it gates warm overhead below 2,000 ms and reports cold start without a gate. Every node API request except first registration must complete within one round trip plus 150 ms at either distance (and at any other configured round trip). It prints a per-call timing table and cold-start times, ending with one `TOOL_TIMINGS` JSON line.
 
 ### Scaleway node groups
 
@@ -433,7 +433,7 @@ it), `attempts` (how many times FoundationDB ran it, counting conflict retries),
 service to log every transaction the same way. A node logs one `node request`
 line per node API request with its path, attempts, elapsed time and outcome.
 The chaos latency check uses `--max-node-request-ms` to bound those requests;
-the former node-transaction timing option is gone.
+the request bound is one round trip plus 150 ms.
 
 Host swarms default to the primary host's `swarmyd` journal. Pass
 `--host NAME` to select another recorded host, or `--unit swarmyd` to select
