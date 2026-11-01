@@ -10,10 +10,10 @@ use swarmy_core::{
 };
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct StoredPlacedClaim {
+pub(crate) struct StoredPlacedClaim {
     owner: LeaseOwnerId,
     placement: PlacementRecord,
-    expires_at: Timestamp,
+    pub(crate) expires_at: Timestamp,
     job_digest: [u8; 32],
 }
 

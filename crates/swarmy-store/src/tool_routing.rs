@@ -10,6 +10,18 @@ use swarmy_core::{
 
 use crate::{Result, Store, StoreError, read, scan, scan_all, write};
 
+/// What a recovery scan should do with a pending tool job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolRoute {
+    /// Completed or recovered; never publish it again.
+    Gone,
+    /// A node holds a live claim and is running it; republishing would only
+    /// queue a copy behind the running call.
+    Claimed,
+    /// Pending without a live claim; publish when the schedule says so.
+    Publish,
+}
+
 impl Store {
     /// Publish sampled call occupancy only for the current live placement.
     /// # Errors
@@ -139,17 +151,23 @@ impl Store {
     /// A changed epoch completes the old call as failed instead of repeating its effects.
     /// An unchanged fence is left as is, so routing writes nothing in the
     /// normal case and never conflicts with the node's claim.
-    /// Returns false when the job was completed or recovered and must not be published.
+    /// Reports whether the job is gone, claimed by a node right now, or
+    /// still to be published. Only the node's claim fences execution; this
+    /// read only spares the node copies of a call it is running.
     /// # Errors
     /// Rejects stale placements, changed job inputs, and storage failures.
-    pub async fn route_tool_job(&self, job: &ToolJob, placement: &PlacementRecord) -> Result<bool> {
+    pub async fn route_tool_job(
+        &self,
+        job: &ToolJob,
+        placement: &PlacementRecord,
+    ) -> Result<ToolRoute> {
         self.transaction(|trx| async move {
             self.check_live_placement(&trx, placement).await?;
             let Some(value) = trx
                 .get(&self.keys().tool_job(job.request_id), false)
                 .await?
             else {
-                return Ok(false);
+                return Ok(ToolRoute::Gone);
             };
             if !crate::stored_matches(&value, job)?
                 || self.session(&trx, job.session_id).await?.agent_id != placement.agent_id
@@ -157,7 +175,12 @@ impl Store {
                 return Err(StoreError::Fence(crate::FenceError::ToolJobMismatch));
             }
             let key = self.keys().tool_placement(job.request_id);
-            let dispatched: Option<PlacementRecord> = read(&trx, &key).await?;
+            let claim_key = self.keys().placed_tool_claim(job.request_id);
+            let (dispatched, claim) = futures::join!(
+                read::<PlacementRecord>(&trx, &key),
+                read::<crate::placed_tools::StoredPlacedClaim>(&trx, &claim_key),
+            );
+            let (dispatched, claim) = (dispatched?, claim?);
             let notice = self
                 .deliver_computer_notice(&trx, job.session_id, placement)
                 .await?;
@@ -168,13 +191,16 @@ impl Store {
                     let explanation =
                         notice.unwrap_or_else(|| swarmy_core::UNCLAIMED_DISPATCH_EXPIRED.into());
                     self.fail_lost_tool(&trx, job, explanation).await?;
-                    return Ok(false);
+                    return Ok(ToolRoute::Gone);
                 }
                 // Rewriting the same fence conflicts with claims and completions.
                 Some(_) => {}
                 None => write(&trx, &key, placement)?,
             }
-            Ok(true)
+            if claim.is_some_and(|claim| claim.expires_at > self.now()) {
+                return Ok(ToolRoute::Claimed);
+            }
+            Ok(ToolRoute::Publish)
         })
         .await
     }

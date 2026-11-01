@@ -500,7 +500,11 @@ impl Worker {
             self.observe_dispatch(id, turn, job.request_id, job.arguments.name())
                 .await;
             self.bus
-                .publish_work(&WorkQueue::NodeTools(placement.node_id), &job)
+                .publish_work_once(
+                    &WorkQueue::NodeTools(placement.node_id),
+                    &job,
+                    &job.request_id.to_string(),
+                )
                 .await?;
             self.republish.published(job.request_id, self.now()).await;
             Ok::<(), anyhow::Error>(())
@@ -561,9 +565,14 @@ impl Worker {
             return Ok(());
         }
         let placement = self.place(job.session_id).await?;
-        if !self.store.route_tool_job(job, &placement).await? {
-            self.republish.forget(job.request_id).await;
-            return Ok(());
+        match self.store.route_tool_job(job, &placement).await? {
+            swarmy_store::ToolRoute::Gone => {
+                self.republish.forget(job.request_id).await;
+                return Ok(());
+            }
+            // The node is running it; the schedule resumes if its claim lapses.
+            swarmy_store::ToolRoute::Claimed => return Ok(()),
+            swarmy_store::ToolRoute::Publish => {}
         }
         if !self.republish.due(job.request_id, self.now()).await {
             return Ok(());
@@ -571,8 +580,14 @@ impl Worker {
         let turn = self.store.request_turn_id(job.request_id).await?;
         self.observe_dispatch(job.session_id, turn, job.request_id, job.arguments.name())
             .await;
+        // Every worker and every republish shares the request id, so the
+        // stream drops copies inside its duplicate window.
         self.bus
-            .publish_work(&WorkQueue::NodeTools(placement.node_id), job)
+            .publish_work_once(
+                &WorkQueue::NodeTools(placement.node_id),
+                job,
+                &job.request_id.to_string(),
+            )
             .await?;
         self.republish.published(job.request_id, self.now()).await;
         Ok(())

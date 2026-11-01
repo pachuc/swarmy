@@ -812,8 +812,8 @@ async fn named_agent_node_loss_notifies_every_session_once() {
         f.store.route_tool_job(&claim.job, &current),
         f.store.route_tool_job(&claim.job, &current),
     );
-    assert!(!a.unwrap());
-    assert!(!b.unwrap());
+    assert_eq!(a.unwrap(), swarmy_store::ToolRoute::Gone);
+    assert_eq!(b.unwrap(), swarmy_store::ToolRoute::Gone);
     let first_events = f.store.read_events(first, 0, 64).await.unwrap();
     let notice = first_events
         .iter()
@@ -964,6 +964,76 @@ async fn unclaimed_dispatch_expires_without_a_rebuild_notice_or_stuck_job() {
     let claim = f.claim(delivery.value.clone(), current).await;
     f.complete(&claim).await.unwrap();
     delivery.acknowledge().await.unwrap();
+}
+
+/// Watches every publish to a node's tool subject. A core subscription sees
+/// each publish, including copies the stream then drops as duplicates, so it
+/// counts what workers send rather than what the node receives.
+struct Publishes(async_nats::Subscriber);
+
+impl Publishes {
+    async fn watch(f: &Fixture, node: NodeId) -> Self {
+        let client = async_nats::connect(&f.nats_url).await.unwrap();
+        let subject = swarmy_bus::subjects::TOOL_NODE.replace("{node_id}", &node.to_string());
+        let subscriber = client
+            .subscribe(format!("{}.{subject}", f.prefix))
+            .await
+            .unwrap();
+        client.flush().await.unwrap();
+        Self(subscriber)
+    }
+
+    async fn count(&mut self, wait: Duration) -> usize {
+        use futures::StreamExt;
+        let mut count = 0;
+        while let Ok(Some(_)) = timeout(wait, self.0.next()).await {
+            count += 1;
+        }
+        count
+    }
+}
+
+#[tokio::test]
+async fn claimed_tool_is_not_republished_until_its_claim_lapses() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let placement = f
+        .store
+        .place(
+            f.agent,
+            f.nodes[0],
+            f.now().checked_add(Duration::from_secs(60)).unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut publishes = Publishes::watch(&f, placement.node_id).await;
+    let id = f.session().await;
+    f.step(id).await;
+    let delivery = f.delivery(placement.node_id).await;
+    delivery.acknowledge().await.unwrap();
+    assert_eq!(publishes.count(Duration::from_millis(300)).await, 1);
+    f.store.claim_placement(&placement).await.unwrap();
+    let claimed_until = f.now().checked_add(Duration::from_secs(10)).unwrap();
+    assert!(
+        f.store
+            .claim_placed_tool(&PlacedToolClaim {
+                job: delivery.value.clone(),
+                owner: LeaseOwnerId::from_ulid(Ulid::generate()),
+                placement,
+                expires_at: claimed_until,
+            })
+            .await
+            .unwrap()
+    );
+    // Past the first republish delay: the node is running it, so no copy.
+    f.advance(crate::worker::republish::REPUBLISH_FIRST_DELAY + Duration::from_secs(1));
+    f.worker.recover_tools().await.unwrap();
+    assert_eq!(publishes.count(Duration::from_millis(300)).await, 0);
+    // The node stopped renewing: the claim lapsed and the schedule resumes.
+    f.advance(Duration::from_secs(5));
+    f.worker.recover_tools().await.unwrap();
+    assert_eq!(publishes.count(Duration::from_millis(300)).await, 1);
 }
 
 #[tokio::test]
@@ -2117,23 +2187,27 @@ async fn recovery_republishes_a_pending_job_with_backoff() {
         )
         .await
         .unwrap();
+    let mut publishes = Publishes::watch(&f, f.nodes[0]).await;
     let id = f.session().await;
     f.step(id).await;
     let first = f.delivery(f.nodes[0]).await;
     let job = first.value.clone();
     first.acknowledge().await.unwrap();
+    assert_eq!(publishes.count(Duration::from_millis(300)).await, 1);
     for _ in 0..3 {
         f.worker.recover_tools().await.unwrap();
     }
-    f.no_delivery(f.nodes[0], Duration::from_millis(500)).await;
+    assert_eq!(publishes.count(Duration::from_millis(300)).await, 0);
     f.advance(crate::worker::republish::REPUBLISH_FIRST_DELAY);
     f.worker.recover_tools().await.unwrap();
-    let second = f.delivery(f.nodes[0]).await;
-    assert_eq!(second.value.request_id, job.request_id);
-    second.acknowledge().await.unwrap();
-    f.worker.recover_tools().await.unwrap();
+    assert_eq!(publishes.count(Duration::from_millis(300)).await, 1);
+    // The republish shares the job's message id, so the stream keeps the
+    // copy it already delivered and the node is not handed the job again.
     f.no_delivery(f.nodes[0], Duration::from_millis(500)).await;
+    f.worker.recover_tools().await.unwrap();
+    assert_eq!(publishes.count(Duration::from_millis(300)).await, 0);
 
+    // A restarted worker has no schedule and republishes once on first sight.
     let mut config = config(f.nats_url.clone(), &f.prefix, Arc::default());
     config.partitions = (0..256).collect();
     config.bus.ack_wait = Duration::from_millis(200);
@@ -2147,9 +2221,7 @@ async fn recovery_republishes_a_pending_job_with_backoff() {
     )
     .with_clock(move || clock.now());
     fresh.recover_tools().await.unwrap();
-    let repaired = f.delivery(f.nodes[0]).await;
-    assert_eq!(repaired.value.request_id, job.request_id);
-    repaired.acknowledge().await.unwrap();
+    assert_eq!(publishes.count(Duration::from_millis(300)).await, 1);
     let claim = f.claim(job, placement).await;
     f.complete(&claim).await.unwrap();
 }

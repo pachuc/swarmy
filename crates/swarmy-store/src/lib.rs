@@ -90,6 +90,7 @@ mod plans;
 mod session_images;
 mod timers;
 mod tool_routing;
+pub use tool_routing::ToolRoute;
 mod tools;
 mod turns;
 pub use turns::{SubmitInferenceOptions, SubmitRouteStep};
