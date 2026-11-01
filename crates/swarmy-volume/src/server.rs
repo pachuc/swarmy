@@ -352,9 +352,17 @@ async fn serve(
             result = listener.accept() => {
                 let (socket, _) = result?;
                 let _operation = operations.lock().await;
-                if handle(socket, node, &path, &writer, &mut attachment).await? {
-                    drop(snapshots);
-                    break;
+                match handle(socket, node, &path, &writer, &mut attachment).await? {
+                    Handled::Attached => {}
+                    Handled::Detached => {
+                        drop(snapshots);
+                        break;
+                    }
+                    Handled::Discarded => {
+                        drop(snapshots);
+                        release_after_discard(&writer).await;
+                        break;
+                    }
                 }
             }
             error = watch.lost() => {
@@ -414,13 +422,40 @@ async fn attach_kernel(
     ))
 }
 
+/// What one control request left of the attachment.
+enum Handled {
+    Attached,
+    Detached,
+    /// Detached without publication; the writer lease is still held.
+    Discarded,
+}
+
+/// Placement authority is already gone when a disk is discarded, so releasing
+/// the writer lease only lets another node take the volume before the lease
+/// expires. It is best effort and bounded: during a node API outage the lease
+/// simply runs out, and nothing waits a full request deadline for it.
+const DISCARD_RELEASE_BUDGET: Duration = Duration::from_secs(2);
+
+async fn release_after_discard(writer: &VolumeWriter) {
+    match tokio::time::timeout(DISCARD_RELEASE_BUDGET, writer.release()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(error = %swarmy_core::error_chain(&error), "writer lease release after discard failed; the lease expires on its own");
+        }
+        Err(_) => tracing::warn!(
+            budget_ms = DISCARD_RELEASE_BUDGET.as_millis(),
+            "writer lease release after discard timed out; the lease expires on its own"
+        ),
+    }
+}
+
 async fn handle(
     socket: UnixStream,
     node: NodeId,
     path: &Path,
     writer: &VolumeWriter,
     attachment: &mut Option<Attachment>,
-) -> Result<bool> {
+) -> Result<Handled> {
     let (read, mut write) = socket.into_split();
     let mut line = String::new();
     let result = async {
@@ -436,8 +471,10 @@ async fn handle(
         );
         if request.query.is_some() {
             return Ok(match request.query {
-                Some(Query::Stats) => (None, false, Some(writer.device_stats()), None),
-                Some(Query::BootSet) => (None, false, None, Some(writer.take_boot_set())),
+                Some(Query::Stats) => (None, Handled::Attached, Some(writer.device_stats()), None),
+                Some(Query::BootSet) => {
+                    (None, Handled::Attached, None, Some(writer.take_boot_set()))
+                }
                 None => unreachable!("query checked above"),
             });
         }
@@ -448,10 +485,9 @@ async fn handle(
                 .detach()
                 .await;
             detached?;
-            if let Err(error) = writer.release().await {
-                tracing::warn!(error = %swarmy_core::error_chain(&error), "writer lease release after discard failed");
-            }
-            return Ok((None, true, None, None));
+            // Reply first: the caller holds the runtime's lifecycle gate, and the
+            // release goes to the node API.
+            return Ok((None, Handled::Discarded, None, None));
         }
         let manifest = if request.detach {
             finish(path, writer, attachment).await?
@@ -478,10 +514,15 @@ async fn handle(
                 .flush(if request.freeze { mount } else { None })
                 .await?
         };
-        Ok::<_, Error>((Some(manifest), request.detach, None, None))
+        let handled = if request.detach {
+            Handled::Detached
+        } else {
+            Handled::Attached
+        };
+        Ok::<_, Error>((Some(manifest), handled, None, None))
     }
     .await;
-    let (reply, detached) = match result {
+    let (reply, handled) = match result {
         Ok((manifest, detached, stats, boot_set)) => (
             Reply {
                 flush: manifest,
@@ -498,7 +539,11 @@ async fn handle(
                 boot_set: None,
                 error: Some(format!("{error:#}")),
             },
-            attachment.is_none(),
+            if attachment.is_none() {
+                Handled::Detached
+            } else {
+                Handled::Attached
+            },
         ),
     };
     // A caller may disconnect after submitting a command; completing publication
@@ -508,7 +553,7 @@ async fn handle(
         "write volume reply",
     );
     ignore_best_effort(write.write_all(b"\n").await, "write volume reply");
-    Ok(detached)
+    Ok(handled)
 }
 
 async fn mountpoint(path: &Path) -> Result<Option<PathBuf>> {
