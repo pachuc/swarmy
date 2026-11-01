@@ -3,7 +3,7 @@ use std::sync::Arc;
 use swarmy_core::{AgentId, LeaseOwnerId, NodeId, VolumeId};
 use swarmy_volume::{MetadataError, WriterGrant};
 
-use crate::{ScratchRecord, Store};
+use crate::Store;
 
 #[derive(Clone)]
 pub struct StoreSandboxMetadata {
@@ -26,31 +26,6 @@ impl swarmy_sandbox::SandboxMetadata for StoreSandboxMetadata {
             .store
             .open_volume_writer(volume, LeaseOwnerId::from_ulid(self.node.as_ulid()))
             .await?)
-    }
-    async fn computer_deleted(&self, agent: AgentId) -> Result<bool, MetadataError> {
-        Ok(self.store.is_computer_deleted(agent).await?)
-    }
-    async fn placement_node(&self, agent: AgentId) -> Result<Option<NodeId>, MetadataError> {
-        Ok(self
-            .store
-            .get_by_agent(agent)
-            .await?
-            .map(|placement| placement.node_id))
-    }
-    async fn report_scratch(&self, agent: AgentId, bytes: u64) -> Result<(), MetadataError> {
-        Ok(self
-            .store
-            .report_scratch(
-                agent,
-                &ScratchRecord {
-                    node_id: self.node,
-                    bytes,
-                },
-            )
-            .await?)
-    }
-    async fn clear_scratch(&self, agent: AgentId) -> Result<(), MetadataError> {
-        Ok(self.store.clear_scratch(agent, self.node).await?)
     }
     async fn github_token(&self, agent: AgentId) -> Result<Option<String>, MetadataError> {
         Ok(self.store.agent_github_token(agent).await?)

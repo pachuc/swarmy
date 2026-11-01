@@ -9,7 +9,7 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
     time::{Duration, SystemTime},
 };
 use swarmy_core::{AgentId, ignore_best_effort};
@@ -140,6 +140,16 @@ async fn rootfs_io<T: Send + 'static>(
         .map_err(|error| Error::Operation(error.to_string()))?
 }
 
+/// One scratch directory as this node sees it.
+#[derive(Clone, Debug)]
+pub struct ScratchUsage {
+    pub agent: AgentId,
+    pub bytes: u64,
+    pub hosted: bool,
+    pub idle: bool,
+    pub modified: SystemTime,
+}
+
 /// One runtime per node state directory. An exclusive lock fences local daemons.
 pub struct RuncRuntime {
     root: PathBuf,
@@ -150,6 +160,7 @@ pub struct RuncRuntime {
     metadata: Arc<dyn SandboxMetadata>,
     sandboxes: Mutex<BTreeMap<AgentId, Arc<Mutex<Running>>>>,
     lifecycle: Mutex<()>,
+    evicted: StdMutex<Vec<AgentId>>,
     _lock: File,
 }
 
@@ -240,6 +251,7 @@ impl RuncRuntime {
             metadata,
             sandboxes: Mutex::new(BTreeMap::new()),
             lifecycle: Mutex::new(()),
+            evicted: StdMutex::new(Vec::new()),
             _lock: lock,
         };
         for entry in std::fs::read_dir(runtime.root.join("bundles"))? {
@@ -262,14 +274,13 @@ impl RuncRuntime {
         Ok(runtime)
     }
 
-    /// Sweep deleted, moved, idle, and pressure-evicted scratch. Active sandboxes
-    /// are excluded, so no bind mount loses its source while in use.
+    /// Inventory local scratch, refreshing markers for active sandboxes.
     /// # Errors
-    /// Returns metadata, database, or filesystem failures.
-    pub async fn sweep_scratch(&self) -> Result<()> {
+    /// Returns filesystem failures.
+    pub async fn scratch_inventory(&self) -> Result<Vec<ScratchUsage>> {
         let active: std::collections::BTreeSet<_> =
             self.sandboxes.lock().await.keys().copied().collect();
-        let mut candidates = Vec::new();
+        let mut inventory = Vec::new();
         for entry in std::fs::read_dir(&self.scratch_root)? {
             let entry = entry?;
             if !entry.file_type()?.is_dir() {
@@ -278,70 +289,39 @@ impl RuncRuntime {
             let Ok(ulid) = ulid::Ulid::from_string(&entry.file_name().to_string_lossy()) else {
                 continue;
             };
-            let id = AgentId::from_ulid(ulid);
-            if active.contains(&id) {
-                self.refresh_hosted(id, &entry.path()).await?;
-                continue;
+            let agent = AgentId::from_ulid(ulid);
+            let hosted = active.contains(&agent);
+            let path = entry.path();
+            let marker = path.join(".hosted");
+            if hosted {
+                std::fs::write(&marker, b"")?;
             }
-            if let Some(candidate) = self.reap_stale(id, &entry).await? {
-                candidates.push(candidate);
+            let modified = std::fs::metadata(&marker)
+                .or_else(|_| entry.metadata())?
+                .modified()?;
+            inventory.push(ScratchUsage {
+                agent,
+                bytes: directory_bytes(&path)?,
+                hosted,
+                idle: modified.elapsed().unwrap_or_default()
+                    > Duration::from_secs(self.scratch_policy.idle_days.saturating_mul(86_400)),
+                modified,
+            });
+        }
+        Ok(inventory)
+    }
+
+    /// Apply server evictions and locally necessary pressure evictions.
+    /// # Errors
+    /// Returns filesystem failures.
+    pub async fn apply_scratch(&self, inventory: &[ScratchUsage], evict: &[AgentId]) -> Result<()> {
+        let active: std::collections::BTreeSet<_> =
+            self.sandboxes.lock().await.keys().copied().collect();
+        for usage in inventory {
+            if evict.contains(&usage.agent) && !usage.hosted && !active.contains(&usage.agent) {
+                self.evict_scratch(usage.agent, usage.bytes)?;
             }
         }
-        self.evict_under_pressure(candidates).await?;
-        Ok(())
-    }
-
-    /// Refresh the hosted marker and usage report for a scratch directory
-    /// whose sandbox still runs on this node.
-    async fn refresh_hosted(&self, id: AgentId, path: &Path) -> Result<()> {
-        std::fs::write(path.join(".hosted"), b"")?;
-        if self.metadata.computer_deleted(id).await? {
-            return Ok(());
-        }
-        let bytes = directory_bytes(path)?;
-        if let Err(error) = self.metadata.report_scratch(id, bytes).await {
-            tracing::warn!(%id, error = %swarmy_core::error_chain(&error), "scratch size report failed");
-        }
-        Ok(())
-    }
-
-    /// Evict a stale scratch directory that is deleted, moved, or idle, or
-    /// refresh its report and nominate it for pressure eviction. Returns the
-    /// pressure candidate when the directory survives this sweep.
-    async fn reap_stale(
-        &self,
-        id: AgentId,
-        entry: &std::fs::DirEntry,
-    ) -> Result<Option<(SystemTime, AgentId, u64)>> {
-        let path = entry.path();
-        let marker = path.join(".hosted");
-        let modified = std::fs::metadata(&marker)
-            .or_else(|_| entry.metadata())?
-            .modified()?;
-        let bytes = directory_bytes(&path)?;
-        let deleted = self.metadata.computer_deleted(id).await?;
-        let moved = self
-            .metadata
-            .placement_node(id)
-            .await?
-            .is_some_and(|node| node != self.config.node);
-        let idle = modified.elapsed().unwrap_or_default()
-            > Duration::from_secs(self.scratch_policy.idle_days.saturating_mul(86_400));
-        if deleted || moved || idle {
-            self.evict_scratch(id, bytes)?;
-            self.metadata.clear_scratch(id).await?;
-            return Ok(None);
-        }
-        self.metadata.report_scratch(id, bytes).await?;
-        Ok(pressure_eligible(modified).then_some((modified, id, bytes)))
-    }
-
-    /// Evict the oldest surviving scratch directories while free space stays
-    /// below the low-water mark.
-    async fn evict_under_pressure(
-        &self,
-        mut candidates: Vec<(SystemTime, AgentId, u64)>,
-    ) -> Result<()> {
         let total = fs2::total_space(&self.scratch_root)?;
         if total == 0
             || fs2::available_space(&self.scratch_root)?
@@ -349,21 +329,38 @@ impl RuncRuntime {
         {
             return Ok(());
         }
-        candidates.sort_by_key(|item| item.0);
-        for (_, id, bytes) in candidates {
+        let mut candidates: Vec<_> = inventory
+            .iter()
+            .filter(|usage| {
+                !usage.hosted
+                    && !active.contains(&usage.agent)
+                    && !evict.contains(&usage.agent)
+                    && pressure_eligible(usage.modified)
+            })
+            .collect();
+        candidates.sort_by_key(|usage| usage.modified);
+        for usage in candidates {
             if fs2::available_space(&self.scratch_root)?
                 > total.saturating_mul(u64::from(100 - self.scratch_policy.low_water)) / 100
             {
                 break;
             }
-            self.evict_scratch(id, bytes)?;
-            self.metadata.clear_scratch(id).await?;
+            self.evict_scratch(usage.agent, usage.bytes)?;
         }
         Ok(())
     }
 
+    /// Scratch removed since the previous call.
+    pub fn take_evicted(&self) -> Vec<AgentId> {
+        std::mem::take(&mut *self.evicted.lock().expect("scratch eviction lock poisoned"))
+    }
+
     fn evict_scratch(&self, id: AgentId, bytes: u64) -> Result<()> {
         std::fs::remove_dir_all(self.scratch_root.join(id.to_string()))?;
+        self.evicted
+            .lock()
+            .expect("scratch eviction lock poisoned")
+            .push(id);
         tracing::info!(computer = %id, bytes, "scratch evicted");
         Ok(())
     }
@@ -902,7 +899,8 @@ impl RuncRuntime {
             && fs2::available_space(&self.scratch_root)?
                 <= total.saturating_mul(u64::from(100 - self.scratch_policy.high_water)) / 100
         {
-            self.sweep_scratch().await?;
+            let inventory = self.scratch_inventory().await?;
+            self.apply_scratch(&inventory, &[]).await?;
         }
         let lifecycle = self.lifecycle.lock().await;
         let (id, scratch, requirements) = (spec.agent_id, spec.scratch.clone(), spec.requirements);
@@ -980,14 +978,6 @@ impl RuncRuntime {
             self.running(id).await?.lock().await.credentials = Some(credentials);
             self.prepare_scratch(id, &scratch).await?;
             self.start(id, &scratch, requirements).await?;
-            if !scratch.is_empty() {
-                self.metadata
-                    .report_scratch(
-                        id,
-                        directory_bytes(&self.scratch_root.join(id.to_string()))?,
-                    )
-                    .await?;
-            }
             Ok(())
         }
         .await;

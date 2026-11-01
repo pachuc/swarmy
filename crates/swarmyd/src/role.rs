@@ -1,6 +1,8 @@
 use crate::{
-    api_metadata::NodeVolumeMetadata, gpu, hosting, keeper::Keeper, memory, service, tools,
-    upgrade, vol,
+    api_metadata::{NodeSandboxMetadata, NodeVolumeMetadata},
+    gpu, hosting,
+    keeper::{Keeper, ScratchSkipped},
+    memory, service, tools, upgrade, vol,
 };
 use std::ffi::OsString;
 
@@ -8,7 +10,8 @@ use anyhow::{Result, ensure};
 use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
 use swarmy_core::ignore_best_effort;
 use swarmy_node_protocol::{
-    ClientError, NodeAdvert, NodeClient, RegisterRequest, RegisterResponse,
+    ClientError, NodeAdvert, NodeClient, RegisterRequest, RegisterResponse, ScratchEntry,
+    ScratchVerdict,
 };
 use swarmy_sandbox::{RuncRuntime, RuntimeOptions, ScratchPolicy};
 use swarmy_store::Store;
@@ -86,7 +89,7 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     .await?;
     let hosting = hosting::Hosting::new(
         store.clone(),
-        client,
+        client.clone(),
         keeper.clone(),
         runtime.clone(),
         node,
@@ -101,12 +104,18 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     tracing::info!(%node, socket = %socket.display(), "node registered and ready");
     let (keeping_stop, keeping_signal) = watch::channel(false);
-    let keeping = tokio::spawn(async move { keeper.run(keeping_signal).await });
-    let mut scratch_sweep = tokio::time::interval(Duration::from_secs(10));
-    scratch_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let keeping = tokio::spawn({
+        let keeper = keeper.clone();
+        async move { keeper.run(keeping_signal).await }
+    });
+    let sweeping = tokio::spawn(sweep_scratch(
+        runtime.clone(),
+        keeper.clone(),
+        keeping_stop.subscribe(),
+    ));
     let mut clients = JoinSet::new();
     let (shutdown, _) = watch::channel(false);
-    let mut memory_server = memory::spawn(bus.clone(), store.clone(), runtime.clone(), node);
+    let mut memory_server = memory::spawn(bus.clone(), keeper.clone(), runtime.clone(), node);
     let mut tool_server = tools::spawn(bus, &store, node, &hosting, settings);
     let serving: Result<()> = async {
         loop {
@@ -121,9 +130,6 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
                         if let Err(error) = service::handle(socket, runtime, shutdown).await { tracing::warn!(error = %swarmy_core::error_chain(&*error), "node control request failed"); }
                     });
                 }
-                _ = scratch_sweep.tick() => {
-                    if let Err(error) = runtime.sweep_scratch().await { tracing::warn!(error = %swarmy_core::error_chain(&error), "scratch sweep failed"); }
-                }
                 Some(result) = clients.join_next(), if !clients.is_empty() => { result?; }
                 () = &mut stop => break,
             }
@@ -137,13 +143,60 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     }
     ignore_best_effort(shutdown.send(true), "signal shutdown");
     while clients.join_next().await.is_some() {}
+    keeping_stop.send_replace(true);
+    sweeping.await?;
     hosting.shutdown().await;
     let cleanup = runtime.shutdown().await;
-    keeping_stop.send_replace(true);
     keeping.await?;
     std::fs::remove_file(socket)?;
     cleanup?;
     serving
+}
+
+/// Sweep independently so a sync wait cannot block control-socket accepts.
+async fn sweep_scratch(runtime: Arc<RuncRuntime>, keeper: Keeper, mut stop: watch::Receiver<bool>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(10));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                match scratch_round(&runtime, &keeper).await {
+                    Ok(()) => {},
+                    Err(error) if error.downcast_ref::<ScratchSkipped>().is_some() => {
+                        tracing::debug!("scratch round skipped after sync failure");
+                    }
+                    Err(error) => tracing::warn!(error = %swarmy_core::error_chain(&*error), "scratch round failed"),
+                }
+            }
+            changed = stop.changed() => { if changed.is_err() || *stop.borrow() { break; } }
+        }
+    }
+}
+
+async fn scratch_round(runtime: &RuncRuntime, keeper: &Keeper) -> Result<()> {
+    keeper.report_evicted(runtime.take_evicted());
+    let inventory = runtime.scratch_inventory().await?;
+    let entries = inventory
+        .iter()
+        .map(|usage| ScratchEntry {
+            agent: usage.agent,
+            bytes: usage.bytes,
+            hosted: usage.hosted,
+            idle: usage.idle,
+        })
+        .collect();
+    let verdicts = keeper.scratch_verdicts(entries).await?;
+    let evict = inventory
+        .iter()
+        .zip(verdicts)
+        .filter_map(|(usage, verdict)| {
+            (!usage.hosted && matches!(verdict, ScratchVerdict::Evict(_))).then_some(usage.agent)
+        })
+        .collect::<Vec<_>>();
+    let result = runtime.apply_scratch(&inventory, &evict).await;
+    keeper.report_evicted(runtime.take_evicted());
+    result?;
+    Ok(())
 }
 
 async fn open_runtime(
@@ -162,10 +215,10 @@ async fn open_runtime(
             ServerConfig {
                 directory: loaded.root.join(".swarmy/volumes"),
                 node,
-                metadata: Arc::new(NodeVolumeMetadata::new(client, store.clone())),
+                metadata: Arc::new(NodeVolumeMetadata::new(client.clone(), store.clone())),
                 objects,
             },
-            swarmy_store::StoreSandboxMetadata::new(store, node),
+            NodeSandboxMetadata::new(client, store, node),
             RuntimeOptions {
                 scratch: ScratchPolicy {
                     idle_days: settings.sandbox.scratch_idle_days,

@@ -1,19 +1,19 @@
+use crate::keeper::Keeper;
 use anyhow::{Context, Result, ensure};
 use std::{collections::HashMap, sync::Arc};
-use swarmy_core::{ManifestId, MemoryRequest, NodeId, Sandbox, VolumeId};
+use swarmy_core::{AgentId, MemoryRequest, NodeId, Sandbox};
 use swarmy_sandbox::{ExecRequest, RuncRuntime};
-use swarmy_store::Store;
 use tokio::sync::Mutex;
 
-type CacheKey = (swarmy_core::AgentId, u64, ManifestId, u64, String, usize);
+type CacheKey = (AgentId, u64, u64, String, usize);
 
 pub(crate) fn spawn(
     bus: swarmy_bus::Bus,
-    store: Store,
+    keeper: Keeper,
     runtime: Arc<RuncRuntime>,
     node: NodeId,
 ) -> tokio::task::JoinHandle<Result<(), swarmy_bus::Error>> {
-    let memory = Memory::new(store, runtime, node);
+    let memory = Memory::new(keeper, runtime, node);
     tokio::spawn(async move {
         tokio::try_join!(
             bus.serve_memory(node, |request| async {
@@ -34,39 +34,36 @@ pub(crate) fn spawn(
 }
 
 struct Memory {
-    store: Store,
+    keeper: Keeper,
     runtime: Arc<RuncRuntime>,
     node: NodeId,
     cache: Mutex<HashMap<CacheKey, String>>,
 }
 
 impl Memory {
-    fn new(store: Store, runtime: Arc<RuncRuntime>, node: NodeId) -> Self {
+    fn new(keeper: Keeper, runtime: Arc<RuncRuntime>, node: NodeId) -> Self {
         Self {
-            store,
+            keeper,
             runtime,
             node,
             cache: Mutex::default(),
         }
     }
 
-    async fn check(&self, request: &MemoryRequest) -> Result<()> {
+    fn check(&self, request: &MemoryRequest) -> Result<()> {
         let placement = self
-            .store
-            .get_by_agent(request.agent_id)
-            .await?
-            .context("computer is not placed")?;
+            .keeper
+            .placement(request.agent_id)
+            .context("computer is not placed on this node")?;
         ensure!(
-            placement.node_id == self.node
-                && placement.epoch == request.epoch
-                && placement.expires_at > jiff::Timestamp::now(),
+            placement.node_id == self.node && placement.epoch == request.epoch,
             "memory placement expired or changed"
         );
         Ok(())
     }
 
     async fn instructions(&self, request: MemoryRequest) -> Result<String> {
-        self.check(&request).await?;
+        self.check(&request)?;
         if !self.runtime.is_resident(request.agent_id).await {
             return Ok(String::new());
         }
@@ -93,22 +90,15 @@ impl Memory {
             exit.exit_code == 0 && !exit.timed_out,
             "instruction read failed: {error}"
         );
-        self.check(&request).await?;
+        self.check(&request)?;
         Ok(text)
     }
 
     async fn read(&self, request: MemoryRequest) -> Result<String> {
-        self.check(&request).await?;
+        self.check(&request)?;
         if !self.runtime.is_resident(request.agent_id).await {
             return Ok(String::new());
         }
-        let volume = self
-            .store
-            .get_volume(VolumeId::from_ulid(request.agent_id.as_ulid()))
-            .await?;
-        let Some(volume) = volume else {
-            return Ok(String::new());
-        };
         let fingerprint = self
             .runtime
             .memory_fingerprint(request.agent_id, &request.directory)
@@ -116,7 +106,6 @@ impl Memory {
         let key = (
             request.agent_id,
             request.epoch,
-            volume.head_manifest,
             fingerprint,
             request.directory.clone(),
             request.max_bytes,
@@ -147,7 +136,7 @@ impl Memory {
             exit.exit_code == 0 && !exit.timed_out,
             "memory read failed: {error}"
         );
-        self.check(&request).await?;
+        self.check(&request)?;
         // Do not cache an observation that overlapped a write or rebuild.
         if fingerprint
             == self

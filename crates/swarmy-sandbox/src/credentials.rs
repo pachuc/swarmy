@@ -66,7 +66,7 @@ impl Credentials {
 mod tests {
     #![deny(clippy::disallowed_methods)]
     use super::*;
-    use swarmy_core::{NodeId, VolumeId};
+    use swarmy_core::VolumeId;
     use swarmy_volume::{MetadataError, WriterGrant};
     use tokio::net::UnixStream;
 
@@ -78,18 +78,6 @@ mod tests {
     impl SandboxMetadata for FakeMetadata {
         async fn open_writer(&self, _: VolumeId) -> Result<WriterGrant, MetadataError> {
             Err(MetadataError::VolumeMissing)
-        }
-        async fn computer_deleted(&self, _: AgentId) -> Result<bool, MetadataError> {
-            Ok(false)
-        }
-        async fn placement_node(&self, _: AgentId) -> Result<Option<NodeId>, MetadataError> {
-            Ok(None)
-        }
-        async fn report_scratch(&self, _: AgentId, _: u64) -> Result<(), MetadataError> {
-            Ok(())
-        }
-        async fn clear_scratch(&self, _: AgentId) -> Result<(), MetadataError> {
-            Ok(())
         }
         async fn github_token(&self, _: AgentId) -> Result<Option<String>, MetadataError> {
             match &self.token {

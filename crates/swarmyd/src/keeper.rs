@@ -1,18 +1,21 @@
 //! One node API sync renews every locally held lease.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
     time::Duration,
 };
 use swarmy_core::{
-    AgentId, Lease, LeaseOwnerId, PlacedToolClaim, PlacementRecord, SessionId, VolumeId,
+    AgentId, Lease, LeaseOwnerId, MessageId, PlacedToolClaim, PlacementRecord, SessionId, VolumeId,
 };
 use swarmy_node_protocol::{
-    ClientError, HostedPlacement, LeaseLengths, NodeAdvert, Renewal, SyncRequest, SyncResponse,
-    WriterToken,
+    ClientError, HostedPlacement, LeaseLengths, MetricBatch, NodeAdvert, NodeMetric, Renewal,
+    ScratchEntry, ScratchVerdict, SyncRequest, SyncResponse, WriterToken,
 };
 use swarmy_volume::{LeaseStatus, WriterLease};
-use tokio::{sync::watch, time::Instant};
+use tokio::{
+    sync::{oneshot, watch},
+    time::Instant,
+};
 
 #[async_trait::async_trait]
 pub(crate) trait SyncTransport: Send + Sync {
@@ -177,12 +180,28 @@ struct Tokens {
     claims: BTreeMap<LeaseOwnerId, ClaimEntry>,
     writers: BTreeMap<VolumeId, WriterEntry>,
 }
+const MAX_QUEUED_METRICS: usize = 1024;
+
+#[derive(Debug)]
+pub(crate) struct ScratchSkipped;
+impl std::fmt::Display for ScratchSkipped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("scratch round skipped: the sync carrying it did not complete")
+    }
+}
+impl std::error::Error for ScratchSkipped {}
+
+type WaitingScratch = (Vec<ScratchEntry>, oneshot::Sender<Vec<ScratchVerdict>>);
+
 struct Inner {
     transport: Arc<dyn SyncTransport>,
     advert: NodeAdvert,
     leases: LeaseLengths,
     period: Duration,
     tokens: Mutex<Tokens>,
+    scratch: Mutex<Option<WaitingScratch>>,
+    evicted: Mutex<Vec<AgentId>>,
+    metrics: Mutex<VecDeque<MetricBatch>>,
 }
 #[derive(Clone)]
 pub(crate) struct Keeper {
@@ -203,6 +222,9 @@ impl Keeper {
                 leases,
                 period,
                 tokens: Mutex::new(Tokens::default()),
+                scratch: Mutex::new(None),
+                evicted: Mutex::new(Vec::new()),
+                metrics: Mutex::new(VecDeque::new()),
             }),
         }
     }
@@ -282,6 +304,47 @@ impl Keeper {
             );
         ClaimHold(receiver)
     }
+    pub(crate) fn placement(&self, agent: AgentId) -> Option<PlacementRecord> {
+        self.inner
+            .tokens
+            .lock()
+            .expect("keeper lock poisoned")
+            .placements
+            .get(&agent)
+            .filter(|entry| entry.deadline > Instant::now())
+            .map(|entry| entry.record.clone())
+    }
+    pub(crate) async fn scratch_verdicts(
+        &self,
+        inventory: Vec<ScratchEntry>,
+    ) -> Result<Vec<ScratchVerdict>, ScratchSkipped> {
+        let (sender, receiver) = oneshot::channel();
+        self.inner
+            .scratch
+            .lock()
+            .expect("scratch lock poisoned")
+            .replace((inventory, sender));
+        receiver.await.map_err(|_| ScratchSkipped)
+    }
+    pub(crate) fn report_evicted(&self, agents: Vec<AgentId>) {
+        self.inner
+            .evicted
+            .lock()
+            .expect("eviction lock poisoned")
+            .extend(agents);
+    }
+    pub(crate) fn queue_metric(&self, session: SessionId, turn: MessageId, metric: NodeMetric) {
+        let mut queue = self.inner.metrics.lock().expect("metric lock poisoned");
+        if queue.len() == MAX_QUEUED_METRICS {
+            queue.pop_front();
+            tracing::warn!("node metric queue full; dropping oldest patch");
+        }
+        queue.push_back(MetricBatch {
+            session,
+            turn,
+            patches: vec![metric],
+        });
+    }
     pub(crate) fn writer_lease(&self, volume: VolumeId) -> Option<Lease> {
         self.inner
             .tokens
@@ -292,7 +355,13 @@ impl Keeper {
             .filter(|e| e.deadline > Instant::now())
             .map(|e| e.lease.clone())
     }
-    fn request(&self) -> (SyncRequest, Instant) {
+    fn request(
+        &self,
+    ) -> (
+        SyncRequest,
+        Instant,
+        Option<oneshot::Sender<Vec<ScratchVerdict>>>,
+    ) {
         let mut tokens = self.inner.tokens.lock().expect("keeper lock poisoned");
         let now = Instant::now();
         tokens.placements.retain(|_, e| {
@@ -332,6 +401,12 @@ impl Keeper {
             .chain(tokens.writers.values().map(|e| e.deadline))
             .min()
             .unwrap_or(now + self.inner.period);
+        let scratch = self
+            .inner
+            .scratch
+            .lock()
+            .expect("scratch lock poisoned")
+            .take();
         let request = SyncRequest {
             node: self.inner.advert.clone(),
             placements: tokens
@@ -355,21 +430,57 @@ impl Keeper {
                     lease: e.lease.clone(),
                 })
                 .collect(),
-            scratch: vec![],
-            scratch_evicted: vec![],
-            metrics: vec![],
+            scratch: scratch
+                .as_ref()
+                .map_or_else(Vec::new, |(entries, _)| entries.clone()),
+            scratch_evicted: std::mem::take(
+                &mut *self.inner.evicted.lock().expect("eviction lock poisoned"),
+            ),
+            metrics: self
+                .inner
+                .metrics
+                .lock()
+                .expect("metric lock poisoned")
+                .drain(..)
+                .collect(),
         };
-        (request, deadline)
+        (request, deadline, scratch.map(|(_, sender)| sender))
     }
     pub(crate) async fn sync_once(&self) -> Result<(), ClientError> {
-        let (request, deadline) = self.request();
+        let (request, deadline, scratch) = self.request();
         let sent = Instant::now();
-        let answer = self.inner.transport.sync(&request, deadline).await?;
-        if !answer.heartbeat_recorded {
-            tracing::warn!("node sync did not record heartbeat");
+        match self.inner.transport.sync(&request, deadline).await {
+            Ok(mut answer) => {
+                if !answer.heartbeat_recorded {
+                    tracing::warn!("node sync did not record heartbeat");
+                }
+                if let Some(sender) = scratch {
+                    answer
+                        .scratch
+                        .resize(request.scratch.len(), ScratchVerdict::Keep);
+                    let _ = sender.send(answer.scratch.clone());
+                }
+                self.apply(&request, answer, sent);
+                Ok(())
+            }
+            Err(error) => {
+                drop(scratch);
+                let mut evicted = self.inner.evicted.lock().expect("eviction lock poisoned");
+                let mut pending = request.scratch_evicted;
+                pending.append(&mut evicted);
+                *evicted = pending;
+                let mut queue = self.inner.metrics.lock().expect("metric lock poisoned");
+                for batch in request.metrics.into_iter().rev() {
+                    queue.push_front(batch);
+                }
+                if queue.len() > MAX_QUEUED_METRICS {
+                    let dropped = queue.len() - MAX_QUEUED_METRICS;
+                    queue.drain(..dropped);
+                    tracing::warn!(dropped, "node metric queue full; dropping oldest patches");
+                }
+                Err(error)
+            }
         }
-        self.apply(&request, answer, sent);
-        Ok(())
     }
     fn apply(&self, request: &SyncRequest, answer: SyncResponse, sent: Instant) {
         let answered = Answered {
