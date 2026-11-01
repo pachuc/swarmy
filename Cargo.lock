@@ -3987,9 +3987,7 @@ dependencies = [
  "anyhow",
  "clap",
  "jiff",
- "object_store",
  "rustix",
- "serde",
  "serde_json",
  "swarmy-api",
  "swarmy-config",
@@ -4004,7 +4002,6 @@ dependencies = [
  "swarmy-worker",
  "tempfile",
  "tokio",
- "tracing",
  "ulid",
 ]
 
@@ -4393,10 +4390,8 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "clap",
  "jiff",
  "object_store",
- "rustix",
  "serde",
  "serde_json",
  "swarmy-bus",
