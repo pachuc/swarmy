@@ -84,11 +84,10 @@ Normal dependency edges from `swarmyd`, `swarmy-volume` and `swarmy-sandbox` to 
 - **swarmy-provisioner** is the primary-only service that reconciles elastic groups with OpenTofu and the machine ledger, autoscales the one group with `autoscale = true` from parked GPU capacity waits (`session_wait` rows) and idle machines by changing desired only, and joins, drains and destroys machines through the client's SSH path ([source](../crates/swarmy-provisioner/src/reconcile.rs)).
 - **swarmy-infra** fetches a pinned, checksum-verified OpenTofu release, runs it in a per-swarm working directory with cloud credentials only in the environment, and owns the module output contract and the verified-download helper the swarmy release cache shares ([source](../crates/swarmy-infra/src/lib.rs)), and carries the OpenTofu machine-group modules from infra/modules ([modules](../crates/swarmy-infra/src/modules.rs)).
 
-Services share one bootstrap from `swarmy-config`: `Settings::load` for
-configuration, `init_tracing` for stderr logging, `Store::open_store` for the
-database handle, and `shutdown_signal` (SIGINT or SIGTERM), which the API, worker, scheduler,
-and gateway all wait on to shut down cleanly; the four
-control-plane services flush queued turn metrics before exit
+Control-plane services share a bootstrap from `swarmy-config`: `Settings::load`
+for configuration, `init_tracing` for stderr logging, `Store::open_store` for
+the database handle, and `shutdown_signal` (SIGINT or SIGTERM). The API,
+worker, scheduler and gateway flush queued turn metrics before exit
 ([config](../crates/swarmy-config/src/lib.rs),
 [store](../crates/swarmy-store/src/lib.rs)).
 
