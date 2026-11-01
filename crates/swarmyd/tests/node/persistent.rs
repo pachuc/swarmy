@@ -229,7 +229,12 @@ pub(super) async fn start(
 }
 
 pub(crate) async fn run(settings: swarmy_config::Settings, store: &Store, base: ManifestId) {
-    image_probe_records_a_boot_set_before_the_first_session(settings.clone(), store, base).await;
+    Box::pin(image_probe_records_a_boot_set_before_the_first_session(
+        settings.clone(),
+        store,
+        base,
+    ))
+    .await;
     Box::pin(restart_waits_for_its_old_epoch(
         settings.clone(),
         store,
