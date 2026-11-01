@@ -420,7 +420,7 @@ macOS 15.
 
 Each client archive is named `swarmy-<target>.tar.gz` and contains
 `swarmy-<target>/swarmy`. The Linux core archives are named
-`swarmy-core-<target>.tar.gz` and contain `swarmy-core-<target>/swarmy-core`
+`swarmy-core-<target>.tar.gz` and contain `swarmy-core-<target>/swarmy-core`,
 `swarmy-core-<target>/swarmy-node` and `swarmy-core-<target>/libfdb_c.so`.
 The node binary loads no FoundationDB library. The core loads its bundled
 FoundationDB 7.3.79 client through an `$ORIGIN` rpath; keep the two files

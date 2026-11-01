@@ -221,6 +221,31 @@ while IFS= read -r binary; do
 done < <(retired_binary_names)
 [[ -f $fake_root/usr/local/bin/swarmy-core ]]
 unset -f sudo
+# Reprovisioning a joined node removes only swarmy-owned database leftovers.
+leftovers=$fake_root/leftovers
+mkdir -p "$leftovers/home/.local/bin" "$leftovers/home/.local/lib" "$leftovers/node/.dev" "$leftovers/node/.swarmy" "$fake_root/usr/local/lib/swarmy" "$fake_root/etc/ld.so.conf.d"
+touch "$leftovers/home/.local/bin/fdbserver" "$leftovers/home/.local/lib/libfdb_c.so" "$leftovers/node/.dev/fdb.cluster" "$leftovers/node/.swarmy/remote-tools-version" "$fake_root/usr/local/lib/swarmy/libfdb_c.so"
+swarmy_core_library_dir() { printf '%s/usr/local/lib/swarmy\n' "$fake_root"; }
+swarmy_library_conf() { printf '%s/etc/ld.so.conf.d/swarmy-provisioned.conf\n' "$fake_root"; }
+printf '%s\n' "$(swarmy_owned_marker)" > "$(swarmy_library_conf)"
+# The absolute binary paths are redirected by a fake sudo; other paths live under fake_root.
+sudo() {
+    [[ $1 == -n ]] && shift
+    if [[ $1 == ldconfig ]]; then return 0; fi
+    local arg
+    local args=()
+    for arg in "$@"; do
+        if [[ $arg == /usr/local/bin/* ]]; then arg=$fake_root$arg; fi
+        args+=("$arg")
+    done
+    "${args[@]}"
+}
+remove_node_host_leftovers "$leftovers/node" "$leftovers/home"
+[[ ! -e $fake_root/usr/local/lib/swarmy && ! -e $(swarmy_library_conf) && ! -e $leftovers/home/.local/bin/fdbserver && ! -e $leftovers/home/.local/lib/libfdb_c.so && ! -e $leftovers/node/.dev/fdb.cluster && ! -e $fake_root/usr/local/bin/swarmy-core ]]
+printf 'host owned\n' > "$(swarmy_library_conf)"
+remove_node_host_leftovers "$leftovers/node" "$leftovers/home"
+[[ $(cat "$(swarmy_library_conf)") == 'host owned' ]]
+unset -f sudo swarmy_core_library_dir swarmy_library_conf
 [[ $(node_source_dir /x) == /x/source ]]
 
 # Restore the table after testing its failure path.
