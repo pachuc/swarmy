@@ -200,8 +200,9 @@ if [[ $storage_is_mount == true ]]; then unit_mount=$local_mount; fi
 set_unit_inputs "$mode" "$service_user" "$tunnel_primary" "$tunnel_s3" "$unit_mount"
 record_unit_inputs
 provisioned_units=()
-units=("$stack_dependency")
-if [[ $mode == node ]]; then read_shared_list units swarmy_node_tunnel_units; fi
+units=()
+if [[ $mode == node ]]; then read_shared_list units swarmy_node_tunnel_units
+else units=("$stack_dependency"); fi
 write_units provisioned_units "${units[@]}" "$node_unit"
 if [[ $mode == node && $tunnel_s3 == false ]]; then sudo rm -f "$(swarmy_systemd_dir)/$(swarmy_objects_tunnel_unit)"; fi
 sudo systemctl daemon-reload
