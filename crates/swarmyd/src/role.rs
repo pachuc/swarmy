@@ -4,7 +4,7 @@ use crate::{
     heads::Heads,
     hosting,
     keeper::{Keeper, ScratchSkipped},
-    memory, service, tools, upgrade,
+    memory, probe, service, tools, upgrade,
 };
 use std::ffi::OsString;
 
@@ -103,12 +103,20 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     ));
     let mut clients = JoinSet::new();
     let mut memory_server = memory::spawn(bus.clone(), keeper.clone(), runtime.clone(), node);
+    let mut probe_server = probe::spawn(
+        bus.clone(),
+        client.clone(),
+        keeper.clone(),
+        runtime.clone(),
+        settings.bus.ack_wait_ms,
+    );
     let mut tool_server = tools::spawn(bus, node, &hosting, settings);
     let serving: Result<()> = async {
         loop {
             tokio::select! {
                 result = &mut memory_server => { result??; break; }
                 result = &mut tool_server => { result??; break; }
+                result = &mut probe_server => { result??; break; }
                 connection = listener.accept() => {
                     let (socket, _) = connection?;
                     let runtime = runtime.clone();
@@ -126,6 +134,7 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     }.await;
     memory_server.abort();
     tool_server.abort();
+    probe_server.abort();
     if !tool_server.is_finished() {
         ignore_best_effort(tool_server.await, "await tool server shutdown");
     }

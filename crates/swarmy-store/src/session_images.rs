@@ -14,30 +14,42 @@ impl Store {
     /// Storage and decoding failures.
     pub async fn sandbox_spec(&self, agent: AgentId, session: SessionId) -> Result<SandboxSpec> {
         let (record, image) = tokio::try_join!(self.get_agent(agent), self.pinned_image(session))?;
-        let requirements = if let Some(record) = record {
-            record.requirements
-        } else if let Some(ref image) = image {
-            SandboxRequirements {
+        let mut spec = if let Some(image) = image {
+            self.image_sandbox_spec(agent, &image).await?
+        } else {
+            SandboxSpec {
+                agent_id: agent,
+                scratch: Vec::new(),
+                requirements: SandboxRequirements::default(),
+            }
+        };
+        if let Some(record) = record {
+            spec.requirements = record.requirements;
+        }
+        Ok(spec)
+    }
+
+    /// Resolve the requirements and scratch paths for booting an image directly.
+    /// # Errors
+    /// Storage and decoding failures.
+    pub async fn image_sandbox_spec(
+        &self,
+        agent: AgentId,
+        image: &ImageRecord,
+    ) -> Result<SandboxSpec> {
+        Ok(SandboxSpec {
+            agent_id: agent,
+            scratch: self.image_scratch(image).await?,
+            requirements: SandboxRequirements {
                 memory_mib: self
                     .image_memory(image)
                     .await?
                     .unwrap_or(SandboxRequirements::default().memory_mib),
                 gpu: GpuRequirement::default(),
-            }
-        } else {
-            SandboxRequirements::default()
-        };
-        let scratch = if let Some(image) = image {
-            self.image_scratch(&image).await?
-        } else {
-            Vec::new()
-        };
-        Ok(SandboxSpec {
-            agent_id: agent,
-            scratch,
-            requirements,
+            },
         })
     }
+
     /// Return the image selected when a session was created.
     /// # Errors
     /// Returns storage or decoding failures.

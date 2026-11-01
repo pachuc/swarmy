@@ -8,9 +8,10 @@ use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use swarmy_bus::Bus;
 use swarmy_node_protocol::{
     GITHUB_TOKEN_PATH, HOSTING_BOOT_SET_PATH, HOSTING_CLOSE_PATH, HOSTING_OPEN_PATH,
-    HOSTING_READY_PATH, LeaseLengths, PLACEMENTS_PATH, REGISTER_PATH, SYNC_INTERVAL, SYNC_PATH,
-    TOOL_CLAIM_LEASE, TOOL_CLAIM_PATH, TOOL_COMPLETE_PATH, TOOL_ROUTE_PATH, VOLUME_PROTECT_PATH,
-    VOLUME_PUBLISH_PATH, VOLUME_RELEASE_PATH, WRITER_LEASE,
+    HOSTING_READY_PATH, IMAGE_PROBE_FINISH_PATH, IMAGE_PROBE_OPEN_PATH, LeaseLengths,
+    PLACEMENTS_PATH, REGISTER_PATH, SYNC_INTERVAL, SYNC_PATH, TOOL_CLAIM_LEASE, TOOL_CLAIM_PATH,
+    TOOL_COMPLETE_PATH, TOOL_ROUTE_PATH, VOLUME_PROTECT_PATH, VOLUME_PUBLISH_PATH,
+    VOLUME_RELEASE_PATH, WRITER_LEASE,
 };
 use swarmy_store::Store;
 mod auth;
@@ -19,6 +20,7 @@ mod credentials;
 mod explain;
 mod failure;
 mod hosting;
+mod images;
 mod placements;
 mod register;
 pub mod role;
@@ -92,6 +94,8 @@ pub fn router(state: NodeApiState) -> Router {
         .route(TOOL_CLAIM_PATH, post(tools::claim))
         .route(TOOL_COMPLETE_PATH, post(tools::complete))
         .route(HOSTING_OPEN_PATH, post(hosting::open))
+        .route(IMAGE_PROBE_OPEN_PATH, post(images::probe_open))
+        .route(IMAGE_PROBE_FINISH_PATH, post(images::probe_finish))
         .route(HOSTING_READY_PATH, post(hosting::ready))
         .route(HOSTING_BOOT_SET_PATH, post(hosting::boot_set))
         .route(HOSTING_CLOSE_PATH, post(hosting::close))

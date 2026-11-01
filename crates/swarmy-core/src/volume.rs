@@ -58,6 +58,14 @@ pub struct ImageRecord {
     pub manifest_id: ManifestId,
 }
 
+/// Work asking one node to boot a registered image and record its boot set.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageProbe {
+    pub name: String,
+    pub tag: crate::ImageTag,
+    pub manifest: ManifestId,
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     #![deny(clippy::disallowed_methods)]

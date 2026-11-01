@@ -7,7 +7,7 @@ use crate::{
     sync,
 };
 use axum::{Extension, Json, extract::State};
-use swarmy_core::{LeaseOwnerId, ManifestId, SessionId, is_boot_set_key};
+use swarmy_core::{LeaseOwnerId, ManifestId, SessionId};
 use swarmy_node_protocol::{
     Ack, FenceKind, HostingBootSetRequest, HostingCloseRequest, HostingOpenRequest,
     HostingOpenResponse, HostingReadyRequest, NodeRefusal, WRITER_LEASE,
@@ -158,11 +158,7 @@ pub(crate) async fn boot_set(
 ) -> Result<Json<Ack>, Answer> {
     let now = state.store.now();
     authorize_token(node, Echoed::Placement(&request.placement))?;
-    if !is_boot_set_key(&request.key) {
-        return Err(Answer(swarmy_node_protocol::Failure::Rejected {
-            message: "invalid boot set key".into(),
-        }));
-    }
+    super::images::validate_boot_set_key(&request.key)?;
     let head_recorded =
         idempotent(|| state.store.record_boot_set(request.head, &request.key)).await?;
     let image_recorded = if let Some(image) = state.store.pinned_image(request.session).await? {

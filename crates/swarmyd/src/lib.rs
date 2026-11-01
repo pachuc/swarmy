@@ -5,6 +5,7 @@ mod heads;
 mod hosting;
 mod keeper;
 mod memory;
+mod probe;
 pub mod role;
 mod service;
 mod tools;

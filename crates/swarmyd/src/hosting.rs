@@ -19,6 +19,19 @@ use swarmy_volume::{WriterGrant, WriterLease};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::time::Instant;
 
+/// Stop recording and store the nonempty boot set under its content address.
+pub(crate) async fn store_boot_set(
+    runtime: &RuncRuntime,
+    volume: VolumeId,
+) -> Result<Option<(String, swarmy_core::BootSet)>> {
+    let set = runtime.boot_set(volume).await?;
+    if set.chunks.is_empty() {
+        return Ok(None);
+    }
+    let key = swarmy_volume::put_boot_set(runtime.objects(), &set).await?;
+    Ok(Some((key, set)))
+}
+
 #[derive(Clone, Copy)]
 struct BootTimes {
     placement: f64,
@@ -399,11 +412,9 @@ impl Hosting {
         let head = opening.head;
         tokio::spawn(async move {
             let record = async {
-                let set = runtime.boot_set(volume).await?;
-                if set.chunks.is_empty() {
+                let Some((key, set)) = store_boot_set(&runtime, volume).await? else {
                     return Ok::<_, anyhow::Error>(());
-                }
-                let key = swarmy_volume::put_boot_set(runtime.objects(), &set).await?;
+                };
                 client
                     .report_boot_set(
                         &HostingBootSetRequest {

@@ -114,6 +114,7 @@ pub enum WorkQueue {
     Inference(SubjectToken),
     Runnable(u16),
     NodeTools(NodeId),
+    ImageProbes,
 }
 
 impl WorkQueue {
@@ -122,6 +123,7 @@ impl WorkQueue {
             Self::Inference(_) => 0,
             Self::Runnable(_) => 1,
             Self::NodeTools(_) => 2,
+            Self::ImageProbes => 3,
         }
     }
 
@@ -134,6 +136,7 @@ impl WorkQueue {
                 subjects::SCHED_RUNNABLE.replace("{partition}", &partition.to_string())
             }
             Self::NodeTools(node) => subjects::TOOL_NODE.replace("{node_id}", &node.to_string()),
+            Self::ImageProbes => subjects::IMAGE_PROBE.to_owned(),
         }
     }
 
@@ -142,6 +145,7 @@ impl WorkQueue {
             Self::Inference(provider) => format!("infer_{}", provider.0),
             Self::Runnable(partition) => format!("runnable_{partition}"),
             Self::NodeTools(node) => format!("node_{node}"),
+            Self::ImageProbes => "image_probes".into(),
         }
     }
 }
@@ -170,7 +174,7 @@ impl LiveFeed {
 }
 
 /// An absent prefix uses the design's subjects. Work stream names are `INFER_REQ`,
-/// `SCHED_RUNNABLE`, and `TOOL_NODE`. A prefix adds `prefix.` to
+/// `SCHED_RUNNABLE`, `TOOL_NODE`, and `IMAGE_PROBE`. A prefix adds `prefix.` to
 /// subjects and `prefix_` to stream names, isolating a deployment or test.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -197,7 +201,7 @@ impl Config {
         )
     }
 
-    fn streams(&self) -> [stream::Config; 3] {
+    fn streams(&self) -> [stream::Config; 4] {
         [
             (
                 "INFER_REQ",
@@ -208,6 +212,7 @@ impl Config {
                 subjects::SCHED_RUNNABLE.replace("{partition}", "*"),
             ),
             ("TOOL_NODE", subjects::TOOL_NODE.replace("{node_id}", "*")),
+            ("IMAGE_PROBE", subjects::IMAGE_PROBE.to_owned()),
         ]
         .map(|(name, subject)| stream::Config {
             name: self
@@ -339,7 +344,7 @@ impl Bus {
         })
     }
 
-    /// Create the three work streams and durable consumers for the supplied routes.
+    /// Create the four work streams and durable consumers for the supplied routes.
     /// Safe to repeat; existing resources are checked but never updated.
     ///
     /// # Errors

@@ -251,6 +251,38 @@ impl NodeClient {
         )
         .await
     }
+    /// Open an image probe before the caller's deadline.
+    /// # Errors
+    /// As `register`.
+    pub async fn open_image_probe(
+        &self,
+        request: &swarmy_core::ImageProbe,
+        deadline: Instant,
+    ) -> Result<crate::ImageProbeOpenResponse, ClientError> {
+        self.call(
+            reqwest::Method::POST,
+            crate::IMAGE_PROBE_OPEN_PATH,
+            Some(request),
+            deadline,
+        )
+        .await
+    }
+    /// Finish an image probe before the caller's deadline.
+    /// # Errors
+    /// As `register`.
+    pub async fn finish_image_probe(
+        &self,
+        request: &crate::ImageProbeFinishRequest,
+        deadline: Instant,
+    ) -> Result<crate::Ack, ClientError> {
+        self.call(
+            reqwest::Method::POST,
+            crate::IMAGE_PROBE_FINISH_PATH,
+            Some(request),
+            deadline,
+        )
+        .await
+    }
     /// Send close hosting before the caller's deadline.
     /// # Errors
     /// As `register`.

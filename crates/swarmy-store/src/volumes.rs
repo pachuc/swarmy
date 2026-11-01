@@ -552,7 +552,7 @@ impl Store {
             .ok_or(StoreError::Storage(crate::StorageError::Corrupt))
     }
 
-    async fn require_manifest(&self, trx: &Transaction, id: ManifestId) -> Result<()> {
+    pub(crate) async fn require_manifest(&self, trx: &Transaction, id: ManifestId) -> Result<()> {
         read::<ManifestHeader>(trx, &self.keys().manifest(id))
             .await?
             .ok_or(StoreError::Domain(crate::DomainError::ManifestMissing))?;
@@ -565,7 +565,7 @@ impl Store {
             .ok_or(StoreError::Domain(crate::DomainError::VolumeMissing))
     }
 
-    async fn insert_volume(
+    pub(crate) async fn insert_volume(
         &self,
         trx: &Transaction,
         id: VolumeId,
