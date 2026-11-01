@@ -837,7 +837,7 @@ impl VolumeDevice {
                 .iter()
                 .copied()
                 .filter(|&index| u64::from(index) < leaf_count)
-                .map(|index| self.leaf(index as usize)),
+                .map(|index| self.leaf(usize::try_from(index).expect("leaf index fits usize"))),
         )
         .await;
         for result in results {

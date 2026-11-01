@@ -38,7 +38,30 @@ async fn open_answers_the_recorded_boot_set() {
     let key = swarmy_core::boot_set_key(b"first");
     assert!(f.store.record_boot_set(image, &key).await.unwrap());
     let second = client.open_hosting(&open(&a), deadline()).await.unwrap();
-    assert_eq!(second.boot_set, Some(key));
+    assert_eq!(second.boot_set, Some(key.clone()));
+    let next = swarmy_core::ManifestId::from_ulid(Ulid::generate());
+    client
+        .publish_volume(
+            &swarmy_node_protocol::VolumePublishRequest {
+                writer: WriterToken {
+                    volume: second.volume,
+                    lease: second.writer.clone(),
+                },
+                previous: second.head,
+                next,
+                header: second.header.clone(),
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let third = client.open_hosting(&open(&a), deadline()).await.unwrap();
+    assert_eq!(third.head, next);
+    assert_eq!(third.boot_set, Some(key)); // Image fallback after a new head.
+    let head_key = swarmy_core::boot_set_key(b"head");
+    f.store.record_boot_set(next, &head_key).await.unwrap();
+    let fourth = client.open_hosting(&open(&a), deadline()).await.unwrap();
+    assert_eq!(fourth.boot_set, Some(head_key)); // Head wins over image.
 }
 
 #[tokio::test]
