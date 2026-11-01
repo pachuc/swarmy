@@ -145,9 +145,8 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     }
     ignore_best_effort(shutdown.send(true), "signal shutdown");
     while clients.join_next().await.is_some() {}
-    // The keeper stops last. A scratch round waits for the keeper's next
-    // sync to answer it, and hosting and runtime shutdown flush volumes and
-    // release placements under leases only the keeper renews.
+    // The keeper stops last: a scratch round waits for its next sync, and shutdown
+    // flushes volumes and releases placements under leases only it renews.
     sweeping_stop.send_replace(true);
     sweeping.await?;
     hosting.shutdown().await;
