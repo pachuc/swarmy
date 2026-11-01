@@ -485,7 +485,11 @@ fn upgrade_json_reports_completed_host_before_later_host_fails() {
     let lines = String::from_utf8(result.stdout).unwrap();
     let summaries = lines
         .lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap_or_else(|error| {
+                panic!("invalid summary {line:?}: {error}; all output: {lines:?}")
+            })
+        })
         .collect::<Vec<_>>();
     assert_eq!(summaries.len(), 1, "{lines}");
     assert_eq!(summaries[0]["node"], "box-box-1");

@@ -1473,15 +1473,15 @@ fn has_node_token_command() -> Result<String> {
 }
 
 async fn has_node_token(node: &Machine, address: &str) -> Result<bool> {
-    let status = node_command(node, address, &has_node_token_command()?)?
-        .status()
+    let output = node_command(node, address, &has_node_token_command()?)?
+        .output()
         .await?;
-    match status.code() {
+    match output.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
         _ => Err(crate::Error::other(format!(
-            "cannot check node token on host {}: {status}",
-            node.name
+            "cannot check node token on host {}: {}",
+            node.name, output.status
         ))),
     }
 }
