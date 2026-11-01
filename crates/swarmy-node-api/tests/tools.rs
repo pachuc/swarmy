@@ -121,7 +121,7 @@ async fn claim_repeat_later_raises_the_stored_expiry() {
 }
 #[tokio::test]
 async fn claim_refusals() {
-    let Some((_, a, client, placement)) = setup("na5b-refusals").await else {
+    let Some((_f, a, client, placement)) = setup("na5b-refusals").await else {
         return;
     };
     let request = support::claim_request(&a.jobs[0], &placement);
@@ -172,7 +172,7 @@ async fn completion_returns_the_interrupt_flag() {
 }
 #[tokio::test]
 async fn completion_takes_screenshots_only_as_blob_keys() {
-    let Some((_, a, client, placement)) = setup("na5b-blob").await else {
+    let Some((_f, a, client, placement)) = setup("na5b-blob").await else {
         return;
     };
     let claim = client
@@ -282,8 +282,18 @@ async fn completion_publishes_and_nudges_exactly_once() {
         .publish_work(&queue, &Nudge { session_id: other })
         .await
         .unwrap();
+    verify_completion_observations(&f, &a, &mut timeline, &mut nudges, other).await;
+}
+
+async fn verify_completion_observations(
+    f: &support::Fixture,
+    a: &support::Dispatched,
+    timeline: &mut swarmy_bus::LiveMessages<TurnEvent>,
+    nudges: &mut swarmy_bus::WorkMessages<Nudge>,
+    other: SessionId,
+) {
     let mut completed = [0; 2];
-    let mut nudged = 0;
+    let mut nudge_count = 0;
     loop {
         let event = tokio::time::timeout(Duration::from_secs(10), timeline.next())
             .await
@@ -302,11 +312,11 @@ async fn completion_publishes_and_nudges_exactly_once() {
             }
         }
         if event.stage == TurnStage::Nudged {
-            nudged += 1;
+            nudge_count += 1;
         }
     }
     assert_eq!(completed, [1, 1]);
-    assert_eq!(nudged, 1);
+    assert_eq!(nudge_count, 1);
     for expected in [a.session, other] {
         let delivery = tokio::time::timeout(Duration::from_secs(10), nudges.next())
             .await

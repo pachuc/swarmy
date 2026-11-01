@@ -109,18 +109,16 @@ async fn display_available(store: &Store, agent: AgentId) -> swarmy_store::Resul
 }
 
 fn check_result_blobs(result: &ToolResult) -> Result<(), Answer> {
-    if let ToolResult::Completed { metadata, .. } = result {
-        if metadata.contains_key("image_base64")
+    if let ToolResult::Completed { metadata, .. } = result
+        && (metadata.contains_key("image_base64")
             || metadata.get("image_object_key").is_some_and(|key| {
                 key.as_str()
                     .is_none_or(|key| !swarmy_core::is_blob_key(key))
-            })
-        {
-            return Err(Answer(Failure::Rejected {
-                message: "screenshot requires a valid image_object_key, not inline image_base64"
-                    .into(),
-            }));
-        }
+            }))
+    {
+        return Err(Answer(Failure::Rejected {
+            message: "screenshot requires a valid image_object_key, not inline image_base64".into(),
+        }));
     }
     Ok(())
 }
@@ -180,6 +178,16 @@ pub(crate) async fn complete(
     }
 }
 
+fn observed<T>(result: swarmy_store::Result<T>, message: &'static str, fallback: T) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(error = %swarmy_core::error_chain(&error), "{message}");
+            fallback
+        }
+    }
+}
+
 async fn after_commit(
     state: &NodeApiState,
     claim: &PlacedToolClaim,
@@ -200,30 +208,14 @@ async fn after_commit(
             }
         },
     );
-    let turn = match turn {
-        Ok(turn) => turn,
-        Err(error) => {
-            tracing::warn!(error = %swarmy_core::error_chain(&error), "tool completion turn lookup failed");
-            None
-        }
-    };
-    let interrupt = match interrupt {
-        Ok(flag) => flag,
-        Err(error) => {
-            tracing::warn!(error = %swarmy_core::error_chain(&error), "tool completion interrupt lookup failed");
-            false
-        }
-    };
-    let fallback = match fallback {
-        Ok(record) => record.map(|r| PlacedToolCompletion {
+    let turn = observed(turn, "tool completion turn lookup failed", None);
+    let interrupt = observed(interrupt, "tool completion interrupt lookup failed", false);
+    let fallback = observed(fallback, "tool completion session lookup failed", None).map(|r| {
+        PlacedToolCompletion {
             head_seq: r.head_seq,
             state: r.state,
-        }),
-        Err(error) => {
-            tracing::warn!(error = %swarmy_core::error_chain(&error), "tool completion session lookup failed");
-            None
         }
-    };
+    });
     if let Some(turn) = turn {
         let event = Bus::turn_event(session, turn, TurnStage::ToolCompleted, Some(request_id));
         tool.request_id = request_id.to_string();

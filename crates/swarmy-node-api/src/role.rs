@@ -76,7 +76,17 @@ async fn start() -> Result<(), Error> {
         result = server => result,
         () = async { swarmy_config::shutdown_signal().await; tokio::time::sleep(Duration::from_secs(5)).await; } => Ok(()),
     };
-    flush_metrics(&store).await;
+    finish(&store, heartbeat, heartbeat_id, started).await;
+    outcome?;
+    Ok(())
+}
+async fn finish(
+    store: &Store,
+    heartbeat: tokio::task::JoinHandle<()>,
+    heartbeat_id: String,
+    started: jiff::Timestamp,
+) {
+    flush_metrics(store).await;
     heartbeat.abort();
     swarmy_core::ignore_best_effort(heartbeat.await, "stop node API heartbeat task");
     if let Err(error) = store
@@ -85,8 +95,6 @@ async fn start() -> Result<(), Error> {
     {
         tracing::warn!(error = %swarmy_core::error_chain(&error), "node api heartbeat cleanup failed");
     }
-    outcome?;
-    Ok(())
 }
 #[derive(Parser)]
 struct CredentialArgs {

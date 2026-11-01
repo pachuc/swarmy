@@ -214,8 +214,8 @@ POST /v1/images/uploads added the new required `query` request parameter `size`
 
 # 2026-10-31: New service role swarmy-core node-api (crates swarmy-node-api and swarmy-node-protocol) and command swarmy-core node-credential issue|revoke. ServiceRole gains node_api, appended last, so stored service heartbeats stay readable. New settings [node_api] listen, [node] api_url, [node] token_file. /v1 additive: DoctorService.role may be node_api.
 
-# 2026-10-31: Node API gains POST /node/v1/sync (internal contract, not /v1). ToolMetric and ComputerMetric move to swarmy-core and stay re-exported by swarmy-store; no stored format change.
+# 2026-11-01: Node API gains POST /node/v1/sync (internal contract, not /v1). ToolMetric and ComputerMetric move to swarmy-core and stay re-exported by swarmy-store; no stored format change.
 
-# 2026-10-31: Node API gains tool/route, hosting/open, hosting/ready, hosting/close, volume/publish, volume/protect and credentials/github (internal contract, not /v1). New store functions sandbox_spec and open_writer_lease; no stored format change.
+# 2026-11-01: Node API gains tool/route, hosting/open, hosting/ready, hosting/close, volume/publish, volume/protect and credentials/github (internal contract, not /v1). New store functions sandbox_spec and open_writer_lease; no stored format change.
 
-# 2026-10-31: Node API gains tool/claim and tool/complete (internal contract, not /v1); the node-api service connects to NATS. A same-owner claim repeat raises the stored claim expiry; no stored format change.
+# 2026-11-01: Node API gains tool/claim and tool/complete (internal contract, not /v1); the node-api service connects to NATS. A same-owner claim repeat raises the stored claim expiry; no stored format change.

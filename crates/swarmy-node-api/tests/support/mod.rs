@@ -383,6 +383,6 @@ pub(crate) fn bash_result() -> swarmy_core::ToolResult {
     swarmy_core::ToolResult::Completed {
         title: "bash".into(),
         output: "{\"exit_code\":0}".into(),
-        metadata: Default::default(),
+        metadata: std::collections::BTreeMap::default(),
     }
 }
