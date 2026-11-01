@@ -69,6 +69,7 @@ async fn start() -> Result<(), Error> {
         .await
         .map_err(|source| Error::Bind { listen, source })?;
     tracing::info!(address = %listener.local_addr()?, "node-api ready");
+    let listener = axum::serve::ListenerExt::tap_io(listener, swarmy_config::without_nagle);
     let server = axum::serve(listener, router(state))
         .with_graceful_shutdown(swarmy_config::shutdown_signal())
         .into_future();
