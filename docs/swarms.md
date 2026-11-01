@@ -430,7 +430,10 @@ Every store transaction is timed. One that takes a second or more logs a warning
 `slow store transaction`, with `caller` (the source file, line and column that ran
 it), `attempts` (how many times FoundationDB ran it, counting conflict retries),
 `elapsed_ms` and `ok`. Set `RUST_LOG=info,swarmy_store::transaction=debug` on a
-service to log every transaction the same way. A node logs one `node request` line per node API request with its path, attempts, elapsed time and outcome.
+service to log every transaction the same way. A node logs one `node request`
+line per node API request with its path, attempts, elapsed time and outcome.
+The chaos latency check uses `--max-node-request-ms` to bound those requests;
+the former node-transaction timing option is gone.
 
 Host swarms default to the primary host's `swarmyd` journal. Pass
 `--host NAME` to select another recorded host, or `--unit swarmyd` to select
