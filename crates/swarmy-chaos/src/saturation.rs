@@ -220,9 +220,7 @@ struct Api {
 }
 impl Api {
     fn new() -> Result<Self> {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        let port = listener.local_addr()?.port();
-        drop(listener);
+        let port = crate::process::free_port(std::net::Ipv4Addr::LOCALHOST.into())?;
         Ok(Self {
             url: format!("http://127.0.0.1:{port}"),
             listen: format!("127.0.0.1:{port}"),

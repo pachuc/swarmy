@@ -1,9 +1,7 @@
 #![deny(clippy::disallowed_methods)]
 use axum::Router;
 use jiff::Timestamp;
-use std::sync::{
-    Arc, Mutex,
-};
+use std::sync::{Arc, Mutex};
 use swarmy_bus::{Bus, Config, SubjectToken};
 use swarmy_core::{NodeCapacity, NodeId, NodeRecord, NodeRole};
 use swarmy_node_protocol::NodeAdvert;
@@ -42,7 +40,9 @@ pub(crate) async fn fixture(tag: &str) -> Option<Fixture> {
     })
 }
 pub(crate) async fn serve(router: Router) -> String {
-    swarmy_node_api::test_support::TestApi::start(router).await.detach()
+    swarmy_node_api::test_support::TestApi::start(router)
+        .await
+        .detach()
 }
 #[allow(
     dead_code,

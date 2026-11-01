@@ -10,6 +10,7 @@ pub(crate) enum Kind {
     Worker,
     Gateway,
     Api,
+    NodeApi,
     Node,
 }
 
@@ -20,6 +21,7 @@ impl Kind {
             Self::Worker => "worker",
             Self::Gateway => "gateway",
             Self::Api => "api",
+            Self::NodeApi => "node-api",
             Self::Node => "node",
         }
     }
@@ -149,5 +151,21 @@ impl Process {
             }
         }
         Ok(())
+    }
+}
+
+/// A currently unused port; test harness callers accept the bind race.
+pub(crate) fn free_port(host: std::net::IpAddr) -> Result<u16> {
+    Ok(std::net::TcpListener::bind((host, 0))?.local_addr()?.port())
+}
+
+#[cfg(test)]
+mod tests {
+    #![deny(clippy::disallowed_methods)]
+    #[test]
+    fn free_port_is_bindable() {
+        let host = std::net::Ipv4Addr::LOCALHOST.into();
+        let port = super::free_port(host).unwrap();
+        let _listener = std::net::TcpListener::bind((host, port)).unwrap();
     }
 }

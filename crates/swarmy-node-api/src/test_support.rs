@@ -1,7 +1,16 @@
 //! In-process node API and response faults for tests.
 use axum::{Router, middleware, response::IntoResponse};
-use std::{net::SocketAddr, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
-use tokio::{net::{TcpListener, TcpStream}, task::{JoinHandle, JoinSet}};
+use std::{
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    task::{JoinHandle, JoinSet},
+};
 
 /// A router behind a relay whose existing connections can be dropped.
 pub struct TestApi {
@@ -17,15 +26,25 @@ impl TestApi {
     /// # Panics
     /// If a listener cannot bind.
     pub async fn start(router: Router) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("backend bind");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("backend bind");
         let backend = listener.local_addr().expect("backend address");
         // The test fixture owns this server until drop or detach.
         // ast-grep-ignore: no-spawn-in-libraries
-        let server = tokio::spawn(async move { axum::serve(listener, router).await.expect("serve node API"); });
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.expect("serve node API");
+        });
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("relay bind");
         let relay = listener.local_addr().expect("relay address");
         let relaying = Self::relay(listener, backend);
-        Self { url: format!("http://{relay}"), relay, backend, server: Some(server), relaying: Some(relaying) }
+        Self {
+            url: format!("http://{relay}"),
+            relay,
+            backend,
+            server: Some(server),
+            relaying: Some(relaying),
+        }
     }
 
     fn relay(listener: TcpListener, backend: SocketAddr) -> JoinHandle<()> {
@@ -38,7 +57,8 @@ impl TestApi {
                 // ast-grep-ignore: no-spawn-in-libraries
                 connections.spawn(async move {
                     if let Ok(mut outgoing) = TcpStream::connect(backend).await {
-                        let _copy = tokio::io::copy_bidirectional(&mut incoming, &mut outgoing).await;
+                        let _copy =
+                            tokio::io::copy_bidirectional(&mut incoming, &mut outgoing).await;
                     }
                 });
             }
@@ -47,11 +67,15 @@ impl TestApi {
 
     /// The relay URL, stable across pause and resume.
     #[must_use]
-    pub fn url(&self) -> &str { &self.url }
+    pub fn url(&self) -> &str {
+        &self.url
+    }
 
     /// Refuse new connections and drop all existing relay connections.
     pub fn pause(&mut self) {
-        if let Some(handle) = self.relaying.take() { handle.abort(); }
+        if let Some(handle) = self.relaying.take() {
+            handle.abort();
+        }
     }
 
     /// Rebind the original relay address.
@@ -75,16 +99,17 @@ impl TestApi {
 
 impl Drop for TestApi {
     fn drop(&mut self) {
-        if let Some(handle) = self.relaying.take() { handle.abort(); }
-        if let Some(handle) = self.server.take() { handle.abort(); }
+        if let Some(handle) = self.relaying.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.server.take() {
+            handle.abort();
+        }
     }
 }
 
 /// Replace the first successful response on `path` with a 503.
-pub fn drop_first_response(
-    router: Router,
-    path: &'static str,
-) -> (Router, Arc<AtomicUsize>) {
+pub fn drop_first_response(router: Router, path: &'static str) -> (Router, Arc<AtomicUsize>) {
     let count = Arc::new(AtomicUsize::new(0));
     let copy = count.clone();
     let wrapped = router.layer(middleware::from_fn(

@@ -1,10 +1,18 @@
 #![deny(clippy::disallowed_methods)]
 use axum::{Router, routing::get};
-use swarmy_node_api::test_support::TestApi;
 use std::time::Duration;
+use swarmy_node_api::test_support::TestApi;
 
-fn router() -> Router { Router::new().route("/ping", get(|| async { "pong" })) }
-fn client() -> reqwest::Client { reqwest::Client::builder().http2_prior_knowledge().timeout(Duration::from_secs(5)).build().unwrap() }
+fn router() -> Router {
+    Router::new().route("/ping", get(|| async { "pong" }))
+}
+fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .http2_prior_knowledge()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
+}
 
 #[tokio::test]
 async fn paused_api_refuses_and_resumes_on_the_same_url() {
@@ -21,5 +29,13 @@ async fn paused_api_refuses_and_resumes_on_the_same_url() {
 #[tokio::test]
 async fn detached_api_keeps_serving() {
     let url = TestApi::start(router()).await.detach();
-    assert!(client().get(format!("{url}/ping")).send().await.unwrap().status().is_success());
+    assert!(
+        client()
+            .get(format!("{url}/ping"))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
 }
