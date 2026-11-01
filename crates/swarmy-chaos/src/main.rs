@@ -921,3 +921,45 @@ impl Drop for Fixture {
         }
     }
 }
+
+#[cfg(test)]
+mod node_identity_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn node_identity_names_node_api_and_token() {
+        let Some(_stack) = swarmy_testkit::Stack::load("chaos-node-identity") else {
+            return;
+        };
+        let mut fixture = Fixture::new().await.unwrap();
+        fixture.node_api = Some("http://127.0.0.1:1".into());
+        let node = NodeId::from_ulid(Ulid::generate());
+        let env = fixture
+            .node_identity(node, fixture.files.path())
+            .await
+            .unwrap();
+        assert_eq!(env.len(), 3);
+        assert_eq!(env[0], ("SWARMY_NODE_ID".into(), node.to_string().into()));
+        assert_eq!(
+            env[1],
+            ("SWARMY_NODE_API_URL".into(), "http://127.0.0.1:1".into())
+        );
+        let file = fixture.files.path().join("node-token");
+        assert_eq!(
+            env[2],
+            (
+                "SWARMY_NODE_TOKEN_FILE".into(),
+                file.clone().into_os_string()
+            )
+        );
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let token = swarmy_core::NodeToken::parse(&std::fs::read_to_string(file).unwrap()).unwrap();
+        assert_eq!(token.node(), node);
+        assert!(fixture.store.verify_node_credential(&token).await.unwrap());
+    }
+}
