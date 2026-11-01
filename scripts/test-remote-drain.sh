@@ -18,7 +18,7 @@ is-active) [[ $(cat "$FAKE_ROOT/state") == active ]] ;;
 disable) echo inactive > "$FAKE_ROOT/state" ;;
 esac
 SH
-cat > "$root/bin/swarmy-core" <<'SH'
+cat > "$root/bin/swarmy-node" <<'SH'
 #!/usr/bin/env bash
 line=$(head -1 "$FAKE_ROOT/busy")
 printf '%s\n' "$line"
