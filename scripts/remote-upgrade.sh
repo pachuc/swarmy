@@ -21,7 +21,7 @@ export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 if [[ $source_mode == prebuilt ]]; then
     bin_dir=$(release_bundle_dir "$repo_dir")
     check_release_bundle "$bin_dir" "$mode"
-    install_core_library "$bin_dir/libfdb_c.so"
+    if [[ $mode == stack ]]; then install_core_library "$bin_dir/libfdb_c.so"; fi
 else
     command -v cargo >/dev/null || { echo 'This node has no Rust toolchain (it was provisioned from release binaries); upgrade it with a release client or SWARMY_RELEASE_BASE_URL' >&2; exit 1; }
     source_dir=$(node_source_dir "$repo_dir")
@@ -35,7 +35,11 @@ else
         SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked -p "$(swarmy_cli_package)" --no-default-features >&2
     fi
     read_shared_list build_args swarmy_mode_build_args "$mode"
-    SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}" >&2
+    if [[ $mode == stack ]]; then
+        SWARMY_FDB_LIB_DIR="$HOME/.local/lib" cargo build --release --locked "${build_args[@]}" >&2
+    else
+        cargo build --release --locked "${build_args[@]}" >&2
+    fi
     ) >&2
     bin_dir=$source_dir/target/release
 fi
@@ -135,14 +139,14 @@ if [[ $token_status == generated ]]; then
     fi
 fi
 node_role=$(swarmy_unit_role "$node_unit")
-node_binary_path="/usr/local/bin/$(swarmy_core_binary)"
+node_binary_path="/usr/local/bin/$(swarmy_node_binary)"
 if unit_restart_wanted "$node_unit" "$node_binary_path" "${restart_units[@]}"; then
     if [[ $services == services-only ]]; then
         echo "the $node_role role is out of date but --services-only skips its restart" >&2
     else
         deadline=$((SECONDS + drain_timeout))
         while true; do
-            busy=$(swarmy_busy_sandboxes "$repo_dir" "$bin_dir/$(swarmy_core_binary)")
+            busy=$(swarmy_busy_sandboxes "$repo_dir" "$bin_dir/$(swarmy_node_binary)")
             [[ $busy == '[]' ]] && break
             echo "Waiting for running sandbox commands: $busy" >&2
             if (( SECONDS >= deadline )); then

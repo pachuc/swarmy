@@ -395,41 +395,23 @@ pub enum Binaries {
         release: crate::release::Release,
         cache: PathBuf,
     },
-    /// The build this process runs: swarmy-core beside the current executable, and the
-    /// `libfdb_c.so` this process loaded. The provisioner uploads it to nodes it joins.
-    Installed { core: PathBuf, library: PathBuf },
+    /// The swarmy-node beside this executable, uploaded to joined nodes.
+    Installed { node: PathBuf },
     /// Development checkout copied into the node's source directory.
     Build { checkout: PathBuf },
 }
 
 impl Binaries {
-    /// Discover the running primary's core and loaded `FoundationDB` library.
+    /// Discover the node agent beside this executable.
     /// # Errors
-    /// Missing swarmy-core beside the executable, or no loaded `libfdb_c.so`.
+    /// Missing swarmy-node beside the executable.
     pub fn installed() -> Result<Self> {
-        Self::installed_from(
-            &std::env::current_exe()?,
-            &std::fs::read_to_string("/proc/self/maps")?,
-        )
+        Self::installed_from(&std::env::current_exe()?)
     }
-    fn installed_from(exe: &Path, maps: &str) -> Result<Self> {
-        let core = exe
-            .parent()
-            .ok_or_else(|| crate::Error::other("executable has no parent"))?
-            .join("swarmy-core");
-        crate::Error::ensure(
-            core.is_file(),
-            format!("missing swarmy-core at {}", core.display()),
-        )?;
-        let library = maps
-            .lines()
-            .filter_map(|line| line.split_whitespace().last())
-            .find(|path| Path::new(path).file_name() == Some(OsStr::new("libfdb_c.so")))
-            .ok_or_else(|| crate::Error::other("this process has no libfdb_c.so loaded"))?;
-        Ok(Self::Installed {
-            core,
-            library: library.into(),
-        })
+    fn installed_from(exe: &Path) -> Result<Self> {
+        let node = exe.parent().ok_or_else(|| crate::Error::other("executable has no parent"))?.join("swarmy-node");
+        crate::Error::ensure(node.is_file(), format!("missing swarmy-node at {}", node.display()))?;
+        Ok(Self::Installed { node })
     }
 }
 
@@ -515,8 +497,10 @@ impl Ssh {
         let core = release
             .ensure(cache, crate::release::Component::Core, target)
             .await?;
-        let mut sources = vec![core.join("swarmy-core"), core.join("libfdb_c.so")];
+        let mut sources = vec![core.join("swarmy-node")];
         if stack {
+            sources.push(core.join("swarmy-core"));
+            sources.push(core.join("libfdb_c.so"));
             sources.push(core.join("swarmy-provisioner"));
             let client = release
                 .ensure(cache, crate::release::Component::Client, target)
@@ -530,8 +514,7 @@ impl Ssh {
         node: &Machine,
         address: &str,
         node_dir: &str,
-        core: &Path,
-        library: &Path,
+        binary: &Path,
     ) -> Result<()> {
         let target = Self::node_target(node, address).await?;
         let host = crate::release::Target::host()?;
@@ -544,12 +527,12 @@ impl Ssh {
                 host.triple()
             ),
         )?;
-        cloud_out!("Uploading this primary's swarmy-core build");
+        cloud_out!("Uploading this primary's swarmy-node build");
         Self::upload_bundle(
             node,
             address,
             node_dir,
-            &[core.to_owned(), library.to_owned()],
+            &[binary.to_owned()],
         )
         .await
     }
@@ -664,9 +647,9 @@ impl Ssh {
                 Self::upload_release(node, address, &node_dir, release, cache, stack).await?;
                 Ok(true)
             }
-            Binaries::Installed { core, library } => {
+            Binaries::Installed { node: binary } => {
                 crate::Error::ensure(!stack, "installed binaries join sandbox nodes only")?;
-                Self::upload_installed(node, address, &node_dir, core, library).await?;
+                Self::upload_installed(node, address, &node_dir, binary).await?;
                 Ok(true)
             }
             Binaries::Build { checkout } => {
@@ -790,22 +773,6 @@ impl Ssh {
         let service_ip = primary.unwrap_or(Primary::Remote(node)).tunnel_address()?;
         let mode = if let Some(primary) = primary {
             let shell = primary.shell(90).await?;
-            let cluster = shell
-                .output(
-                    &read_cluster_command(&primary.user()?),
-                    "read primary cluster file",
-                )
-                .await?;
-            let cluster = String::from_utf8(cluster.stdout)?;
-            crate::Error::ensure(
-                cluster.trim().ends_with("@127.0.0.1:4500"),
-                "primary cluster file does not advertise loopback port 4500; recreate this remote",
-            )?;
-            checked(
-                &mut node_command(node, &address, &copy_cluster_command(node, &cluster)?)?,
-                "copy primary cluster file",
-            )
-            .await?;
             install_node_access(node, &address, primary, &shell, node_id).await?;
             "node"
         } else {
@@ -1287,19 +1254,6 @@ print('export SWARMY_API_TOKEN=' + shlex.quote(api.get('token', '')))";
 /// the provisioning futures. Each validates the service user first and
 /// resolves its home through `~user` on the host, keeping one path
 /// implementation in bash.
-fn read_cluster_command(user: &str) -> String {
-    format!("cat {}/.dev/fdb.cluster", tilde_repo(user))
-}
-
-fn copy_cluster_command(node: &Machine, cluster: &str) -> Result<String> {
-    let user = service_user(node)?;
-    let repo = tilde_repo(&user);
-    Ok(format!(
-        "mkdir -p {repo}/.dev && printf %s {} > {repo}/.dev/fdb.cluster && chown -R {user}:{user} {repo}/.dev",
-        shell_words::quote(cluster),
-    ))
-}
-
 fn node_id_command(node: &Machine, id: swarmy_core::NodeId) -> Result<String> {
     let user = service_user(node)?;
     let repo = tilde_repo(&user);
@@ -1506,7 +1460,7 @@ fn tunnel_authorization(public: &str, object_store_forward: bool) -> Result<Stri
         ""
     };
     Ok(format!(
-        "restrict,port-forwarding,command=\"/bin/false\",permitopen=\"127.0.0.1:4500\",permitopen=\"127.0.0.1:4222\",permitopen=\"127.0.0.1:8743\"{extra} {key}"
+        "restrict,port-forwarding,command=\"/bin/false\",permitopen=\"127.0.0.1:4222\",permitopen=\"127.0.0.1:8743\"{extra} {key}"
     ))
 }
 
@@ -1987,7 +1941,7 @@ mod provisioning_command_tests {
                 .contains("no libfdb_c.so loaded")
         );
         let maps = "00400000-00452000 r-xp 00000000 00:00 0 /opt/x/libfdb_c.so";
-        let super::Binaries::Installed { core, library } =
+        let super::Binaries::Installed { node: binary } =
             super::Binaries::installed_from(&exe, maps).unwrap()
         else {
             panic!("expected installed binaries")
