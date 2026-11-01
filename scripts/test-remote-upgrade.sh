@@ -298,12 +298,12 @@ printf 'SWARMY_S3_KEY=keep\nSWARMY_FDB_CLUSTER_FILE=/old/fdb.cluster\nLD_LIBRARY
 rm "$SWARMY_ETC_DIR/node-token"
 touch "$node_root/usr/local/bin/swarmy-core"
 : > "$node_root/systemctl.log"
-bash "$node_repo/scripts/remote-upgrade.sh" node services-only 0 prebuilt > "$scenario/services-only.json"
+HOME="$TEST_NODE_HOME" bash "$node_repo/scripts/remote-upgrade.sh" node services-only 0 prebuilt > "$scenario/services-only.json"
 [[ $(cat "$SWARMY_ETC_DIR/node.env") == *SWARMY_FDB_CLUSTER_FILE* ]]
 [[ ! -s $node_root/systemctl.log ]]
 [[ -f $node_root/usr/local/bin/swarmy-core ]]
 printf 'services_only_leaves_the_node_alone: ok\n'
-if bash "$node_repo/scripts/remote-upgrade.sh" node all 0 prebuilt > "$scenario/missing.json" 2> "$scenario/missing.err"; then
+if HOME="$TEST_NODE_HOME" bash "$node_repo/scripts/remote-upgrade.sh" node all 0 prebuilt > "$scenario/missing.json" 2> "$scenario/missing.err"; then
     echo 'accepted node upgrade without a token' >&2; exit 1
 fi
 grep -q 'swarmy swarm upgrade' "$scenario/missing.err"
@@ -316,7 +316,7 @@ export TEST_RUNNING_PID=$$
 touch "$node_root/usr/local/bin/swarmy-core"
 mkdir -p "$node_repo/.dev"
 touch "$node_repo/.dev/fdb.cluster"
-bash "$node_repo/scripts/remote-upgrade.sh" node all 0 prebuilt > "$scenario/node.json"
+HOME="$TEST_NODE_HOME" bash "$node_repo/scripts/remote-upgrade.sh" node all 0 prebuilt > "$scenario/node.json"
 stop_line=$(grep -n '^stop swarmyd.service$' "$node_root/systemctl.log" | tail -1 | cut -d: -f1)
 tunnel_line=$(grep -n '^restart swarmy-tunnel.service$' "$node_root/systemctl.log" | tail -1 | cut -d: -f1)
 start_line=$(grep -n '^start swarmyd.service$' "$node_root/systemctl.log" | tail -1 | cut -d: -f1)
