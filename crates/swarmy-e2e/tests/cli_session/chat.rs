@@ -1138,8 +1138,7 @@ async fn root_services(fixture: &Fixture, image: &str, script: &str) -> (Service
     let log = std::fs::File::create(services.files.path().join("node.log")).unwrap();
     let node = Node {
         root: services.files.path().join(".swarmy/node"),
-        child: std::process::Command::new(services.bin.join("swarmy-core"))
-            .arg("node")
+        child: std::process::Command::new(swarmy_testkit::bin("swarmy-node"))
             .current_dir(services.files.path())
             .env("SWARMY_STATE_DIR", services.files.path().join(".swarmy"))
             .env("SWARMY_NODE_ID", id.to_string())

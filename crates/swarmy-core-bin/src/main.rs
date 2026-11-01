@@ -1,6 +1,7 @@
 //! Dispatch one executable to the selected service role.
 use anyhow::{Result, bail};
 use std::ffi::OsString;
+mod vol;
 
 fn main() -> Result<()> {
     let mut args = std::env::args_os().skip(1);
@@ -13,8 +14,7 @@ fn main() -> Result<()> {
         Some("api") => Ok(swarmy_api::role::run(rest)?),
         Some("node-api") => Ok(swarmy_node_api::role::run(rest)?),
         Some("node-credential") => Ok(swarmy_node_api::role::credential(rest)?),
-        Some("node") => swarmyd::role::run(rest),
-        Some("vol") => swarmyd::role::vol(rest),
+        Some("vol") => vol::run(rest),
         Some(role) if role.starts_with('-') => {
             swarmy_version::parse_from::<swarmy_version::ServiceArgs>(
                 "swarmy-core",
@@ -23,10 +23,10 @@ fn main() -> Result<()> {
             Ok(())
         }
         None => bail!(
-            "usage: swarmy-core <ROLE> [ARGS]...; roles: scheduler, worker, gateway, api, node-api, node, vol; commands: node-credential"
+            "usage: swarmy-core <ROLE> [ARGS]...; roles: scheduler, worker, gateway, api, node-api, vol; commands: node-credential"
         ),
         Some(role) => bail!(
-            "unknown role {role:?}; expected one of: scheduler, worker, gateway, api, node-api, node, vol, node-credential"
+            "unknown role {role:?}; expected one of: scheduler, worker, gateway, api, node-api, vol, node-credential"
         ),
     }
 }

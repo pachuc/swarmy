@@ -229,3 +229,5 @@ POST /v1/images/uploads added the new required `query` request parameter `size`
 # 2026-11-01: swarmyd claims and completes tool calls through the node API (tool/claim, tool/complete), pulls 16 node tool jobs per NATS pull, and no longer publishes ToolCompleted or nudges; ToolMetric.completed_ns is the primary's commit time. No stored format change.
 
 # 2026-11-01: Node API gains volume/release (internal). The node control socket's Create and Resume carry a caller-acquired writer lease (WriterOpening moves to swarmy-core); swarmyd opens no store. No stored format change.
+
+# 2026-10-31: The node agent is the swarmy-node binary (package swarmyd); swarmy-core has no node role. swarmy-core vol is unchanged for users. Provisioned hosts need NA11 to switch their units.

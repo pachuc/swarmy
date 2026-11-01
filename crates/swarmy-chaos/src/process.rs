@@ -15,6 +15,26 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
+    /// The binary this service runs.
+    pub(crate) const fn executable(self) -> &'static str {
+        match self {
+            Self::Node => "swarmy-node",
+            _ => "swarmy-core",
+        }
+    }
+
+    /// The role argument for core services; the node has none.
+    pub(crate) const fn arguments(self) -> &'static [&'static str] {
+        match self {
+            Self::Node => &[],
+            Self::Scheduler => &["scheduler"],
+            Self::Worker => &["worker"],
+            Self::Gateway => &["gateway"],
+            Self::Api => &["api"],
+            Self::NodeApi => &["node-api"],
+        }
+    }
+
     pub(crate) const fn role(self) -> &'static str {
         match self {
             Self::Scheduler => "scheduler",
@@ -63,7 +83,7 @@ impl Process {
             .create(true)
             .append(true)
             .open(files.join(format!("{name}.log")))?;
-        let binary = binaries.join("swarmy-core");
+        let binary = binaries.join(kind.executable());
         let mut command = if let Some(netns) = netns {
             let mut command = Command::new("nsenter");
             command.arg(format!("--net=/run/netns/{netns}")).arg(binary);
@@ -72,7 +92,7 @@ impl Process {
             Command::new(binary)
         };
         command
-            .arg(kind.role())
+            .args(kind.arguments())
             .current_dir(files)
             .envs(environment.iter().cloned())
             .env_remove("SWARMY_WORKER_KILL_POINT")
@@ -162,6 +182,23 @@ pub(crate) fn free_port(host: std::net::IpAddr) -> Result<u16> {
 #[cfg(test)]
 mod tests {
     #![deny(clippy::disallowed_methods)]
+    #[test]
+    fn node_runs_swarmy_node_and_services_run_swarmy_core() {
+        use super::Kind;
+        assert_eq!(
+            (Kind::Node.executable(), Kind::Node.arguments()),
+            ("swarmy-node", &[][..])
+        );
+        assert_eq!(
+            (Kind::Worker.executable(), Kind::Worker.arguments()),
+            ("swarmy-core", &["worker"][..])
+        );
+        assert_eq!(
+            (Kind::NodeApi.executable(), Kind::NodeApi.arguments()),
+            ("swarmy-core", &["node-api"][..])
+        );
+    }
+
     #[test]
     fn free_port_is_bindable() {
         let host = std::net::Ipv4Addr::LOCALHOST.into();

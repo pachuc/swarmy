@@ -12,6 +12,7 @@ python3 -m unittest discover -s images/base-desktop/tests -p 'test_*.py'
 python3 -m unittest discover -s images/common/tests -p 'test_*.py'
 bash scripts/test-desktop-agent-check.sh
 python3 crates/swarmyd/tests/files_test.py
+bash scripts/test-check-node-deps.sh
 bash scripts/test-check-openapi-compat.sh
 bash scripts/test-check-anyhow-in-libraries.sh
 bash scripts/test-check-test-sleep-ban.sh

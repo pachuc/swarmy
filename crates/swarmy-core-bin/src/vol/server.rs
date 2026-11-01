@@ -6,7 +6,7 @@ use swarmy_volume::server::{self, ServerConfig};
 async fn config() -> Result<(ServerConfig, swarmy_store::Store)> {
     let loaded = swarmy_config::Settings::load()?;
     let settings = &loaded.settings;
-    let store = crate::vol::store().await?;
+    let store = super::store().await?;
     Ok((
         ServerConfig {
             directory: loaded.root.join(".swarmy/volumes"),
@@ -28,7 +28,7 @@ pub(crate) async fn control(
     let mut value = serde_json::to_value(&flushed)?;
     value["volume_id"] = serde_json::to_value(id)?;
     value["detached"] = serde_json::json!(detach);
-    crate::vol::output(&value, &flushed.manifest_id.to_string(), json)?;
+    super::output(&value, &flushed.manifest_id.to_string(), json)?;
     Ok(())
 }
 
@@ -55,7 +55,7 @@ pub(crate) async fn attach(
         path,
         background,
         move |path| {
-            crate::vol::output(
+            super::output(
                 &serde_json::json!({"volume_id": id, "node_id": node, "device": path}),
                 &path.display().to_string(),
                 json,
@@ -78,6 +78,6 @@ pub(crate) async fn flush(
         server::control_flush_with_freeze(&config().await?.0, id, mount, false, freeze).await?;
     let mut value = serde_json::to_value(&flushed)?;
     value["volume_id"] = serde_json::to_value(id)?;
-    crate::vol::output(&value, &flushed.manifest_id.to_string(), json)?;
+    super::output(&value, &flushed.manifest_id.to_string(), json)?;
     Ok(())
 }

@@ -4,7 +4,7 @@ use crate::{
     heads::Heads,
     hosting,
     keeper::{Keeper, ScratchSkipped},
-    memory, service, tools, upgrade, vol,
+    memory, service, tools, upgrade,
 };
 use std::ffi::OsString;
 
@@ -27,7 +27,7 @@ use tokio::{net::UnixListener, task::JoinSet};
 pub fn run(args: Vec<OsString>) -> Result<()> {
     let upgrade_processes = args.first().is_some_and(|arg| arg == "--upgrade-processes");
     if !upgrade_processes {
-        swarmy_version::parse_from::<swarmy_version::ServiceArgs>("swarmy-core node", args)?;
+        swarmy_version::parse_from::<swarmy_version::ServiceArgs>("swarmy-node", args)?;
     }
     swarmy_config::init_tracing();
     let loaded = swarmy_config::Settings::load()?;
@@ -39,17 +39,6 @@ pub fn run(args: Vec<OsString>) -> Result<()> {
     } else {
         runtime.block_on(serve(loaded))
     }
-}
-
-/// Run local volume commands.
-///
-/// # Errors
-/// Returns startup or volume operation failures.
-pub fn vol(args: Vec<OsString>) -> Result<()> {
-    swarmy_config::init_tracing();
-    let _settings = swarmy_config::Settings::load()?;
-    let _network = swarmy_store::boot();
-    tokio::runtime::Runtime::new()?.block_on(vol::run_cli(args))
 }
 
 async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
