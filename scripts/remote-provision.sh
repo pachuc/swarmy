@@ -219,17 +219,5 @@ else
         sleep 10
     done
 fi
-sudo systemctl enable "$node_unit"
-sudo systemctl restart "$node_unit"
-invocation=$(sudo systemctl show -p InvocationID --value "$node_unit")
-for _ in $(seq 1 60); do
-    if sudo test -S "$repo_dir/.swarmy/node/control.sock" && sudo journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager | grep -q 'node registered and ready'; then
-        sudo systemctl is-active "$node_unit"
-        if [[ $mode == stack ]]; then sudo systemctl is-active "$stack_dependency"; fi
-        echo "node agent (swarmy-node) registered and ready; $mode mode enabled at boot"
-        exit 0
-    fi
-    sleep 2
-done
-sudo journalctl -u "$node_unit" -n 50 --no-pager
-exit 1
+provision_node_agent "$mode" "$repo_dir"
+if [[ $mode == stack ]]; then sudo systemctl is-active "$stack_dependency"; fi
