@@ -939,7 +939,7 @@ pub struct UpgradeOptions {
     pub json: bool,
     pub cache: PathBuf,
 }
-/// Upgrade provisioned nodes before the primary host.
+/// Upgrade the primary first, then the other provisioned hosts.
 /// # Errors
 /// Reports an incomplete record, dirty checkout, or host failure.
 pub async fn upgrade_swarm(

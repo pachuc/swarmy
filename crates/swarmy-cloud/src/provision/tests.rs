@@ -977,7 +977,7 @@ async fn node_config_keeps_fake_call_log_relative_to_the_checkout() {
 #[derive(Default)]
 struct FakeUpgradeHost {
     events: Mutex<Vec<String>>,
-    upgrades: Mutex<Vec<(String, bool, bool, Duration)>>,
+    upgrades: Mutex<Vec<(String, bool, bool, Duration, Option<String>)>>,
 }
 impl upgrade::UpgradeHost for FakeUpgradeHost {
     fn version(&self, node: &Machine) -> impl Future<Output = Result<String>> {
@@ -988,7 +988,7 @@ impl upgrade::UpgradeHost for FakeUpgradeHost {
         std::future::ready(Ok("swarmy-core 0.1.0 (test)".into()))
     }
     fn has_service_units(&self, node: &Machine) -> impl Future<Output = Result<bool>> {
-        std::future::ready(Ok(node.name != "fleet-workers-1"))
+        std::future::ready(Ok(node.name == "fleet-control-1"))
     }
     fn upgrade(
         &self,
@@ -996,6 +996,7 @@ impl upgrade::UpgradeHost for FakeUpgradeHost {
         services_only: bool,
         drain_timeout: Duration,
         stack: bool,
+        primary: Option<&Machine>,
     ) -> impl Future<Output = Result<Summary>> {
         self.events
             .lock()
@@ -1006,6 +1007,7 @@ impl upgrade::UpgradeHost for FakeUpgradeHost {
             services_only,
             stack,
             drain_timeout,
+            primary.map(|node| node.name.clone()),
         ));
         std::future::ready(Ok(Summary {
             node: node.name.clone(),
@@ -1033,7 +1035,7 @@ async fn upgrade_fixture() -> (tempfile::TempDir, Registry, SwarmSpec, Vec<Machi
     (dir, registry, spec, machines)
 }
 #[tokio::test]
-async fn upgrade_orders_nodes_and_respects_drain_and_dirty_checkout() {
+async fn upgrade_orders_primary_first_and_respects_drain_and_dirty_checkout() {
     let (_dir, _registry, _spec, machines) = upgrade_fixture().await;
     let host = FakeUpgradeHost::default();
     let mut policy = upgrade::Options::new(false, false, 600, false);
@@ -1054,12 +1056,12 @@ async fn upgrade_orders_nodes_and_respects_drain_and_dirty_checkout() {
     assert_eq!(
         host.events.lock().unwrap().as_slice(),
         [
-            "version:fleet-workers-2",
-            "version:fleet-workers-1",
             "version:fleet-control-1",
-            "upgrade:fleet-workers-2",
-            "upgrade:fleet-workers-1",
+            "version:fleet-workers-1",
+            "version:fleet-workers-2",
             "upgrade:fleet-control-1",
+            "upgrade:fleet-workers-1",
+            "upgrade:fleet-workers-2",
         ]
     );
     let upgrades = host.upgrades.lock().unwrap();
@@ -1068,7 +1070,7 @@ async fn upgrade_orders_nodes_and_respects_drain_and_dirty_checkout() {
             .iter()
             .map(|row| row.0.as_str())
             .collect::<Vec<_>>(),
-        ["fleet-workers-2", "fleet-workers-1", "fleet-control-1"]
+        ["fleet-control-1", "fleet-workers-1", "fleet-workers-2"]
     );
     assert!(
         upgrades
@@ -1077,7 +1079,14 @@ async fn upgrade_orders_nodes_and_respects_drain_and_dirty_checkout() {
     );
     assert_eq!(
         upgrades.iter().map(|row| row.2).collect::<Vec<_>>(),
-        [true, false, true]
+        [true, false, false]
+    );
+    assert_eq!(
+        upgrades
+            .iter()
+            .map(|row| row.4.as_deref())
+            .collect::<Vec<_>>(),
+        [None, Some("fleet-control-1"), Some("fleet-control-1")]
     );
     assert_eq!(summaries[0].changed, ["swarmy-core"]);
     assert!(
@@ -1086,6 +1095,52 @@ async fn upgrade_orders_nodes_and_respects_drain_and_dirty_checkout() {
             .all(|summary| !summary.restarted.contains(&"node".to_owned()))
     );
 }
+#[tokio::test]
+async fn upgrade_refuses_a_swarm_without_a_primary() {
+    struct NoPrimary(FakeUpgradeHost);
+    impl upgrade::UpgradeHost for NoPrimary {
+        async fn version(&self, node: &Machine) -> Result<String> {
+            self.0.version(node).await
+        }
+        async fn has_service_units(&self, _node: &Machine) -> Result<bool> {
+            Ok(false)
+        }
+        async fn upgrade(
+            &self,
+            _node: &Machine,
+            _services_only: bool,
+            _drain_timeout: Duration,
+            _stack: bool,
+            _primary: Option<&Machine>,
+        ) -> Result<Summary> {
+            panic!("upgrade must not start without a primary")
+        }
+    }
+    let (_dir, _registry, _spec, machines) = upgrade_fixture().await;
+    let host = NoPrimary(FakeUpgradeHost::default());
+    let error = upgrade::run(
+        &host,
+        &machines,
+        upgrade::Options::new(false, false, 17, false),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("has no stack host with services")
+    );
+    assert!(
+        !host
+            .0
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.starts_with("upgrade:"))
+    );
+}
+
 #[tokio::test]
 async fn upgrade_json_has_one_complete_object_per_node() {
     let (_dir, _registry, _spec, machines) = upgrade_fixture().await;
@@ -1126,7 +1181,7 @@ async fn upgrade_callback_reports_completed_hosts_before_failure() {
     .await
     .unwrap_err();
     assert!(err.to_string().contains("first completed host"));
-    assert_eq!(seen, ["fleet-workers-2"]);
+    assert_eq!(seen, ["fleet-control-1"]);
     assert_eq!(host.upgrades.lock().unwrap().len(), 1);
 }
 

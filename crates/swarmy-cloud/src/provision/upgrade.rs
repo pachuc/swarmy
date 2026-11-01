@@ -92,7 +92,14 @@ impl UpgradeHost for ssh::Ssh {
         let address = ssh::reachable_address(node).await?;
         let started = Instant::now();
         let value = self
-            .upgrade(node, &address, services_only, drain_timeout, stack, primary.map(ssh::Primary::Remote))
+            .upgrade(
+                node,
+                &address,
+                services_only,
+                drain_timeout,
+                stack,
+                primary.map(ssh::Primary::Remote),
+            )
             .await?;
         let mut summary: Summary = serde_json::from_value(value)?;
         summary.node.clone_from(&node.name);
@@ -148,10 +155,16 @@ pub(super) async fn run_with(
             break;
         }
     }
-    let primary = primary.ok_or_else(|| crate::Error::other(format!(
-        "swarm {} has no stack host with services; upgrade needs the primary's node API",
-        nodes.first().map_or("unknown", |node| node.name.split('-').next().unwrap_or("unknown"))
-    )))?;
+    let primary = primary.ok_or_else(|| {
+        crate::Error::other(format!(
+            "swarm {} has no stack host with services; upgrade needs the primary's node API",
+            nodes.first().map_or("unknown", |node| node
+                .name
+                .split('-')
+                .next()
+                .unwrap_or("unknown"))
+        ))
+    })?;
     let mut summaries = Vec::new();
     for node in nodes {
         print_version(

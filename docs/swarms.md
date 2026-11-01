@@ -188,7 +188,7 @@ group may be extended with:
 swarmy swarm node add demo box --host 203.0.113.11 --ssh-key <bootstrap-key>
 ```
 
-The primary is provisioned first; upgrade and teardown visit nodes first.
+The primary is provisioned and upgraded first; teardown visits nodes first.
 Remove existing node hosts with `swarmy swarm scale`.
 
 After provisioning, client commands such as `swarmy --swarm demo doctor` and
@@ -448,8 +448,13 @@ swarmy swarm upgrade demo --services-only
 swarmy swarm upgrade demo --drain-timeout 600
 ```
 
-Upgrade reconciles binaries and units in place. It drains sandboxes before
-restarting nodes and upgrades the primary last. Development checkouts with
+Upgrade reconciles binaries and units in place. It upgrades the primary first
+because other nodes need its node API and credentials, then drains sandboxes
+before restarting other nodes. A full upgrade issues a node token on hosts
+without one, keeps the node API lines in `node.env` current, restarts a node
+host's tunnel with its node, and removes FoundationDB leftovers on node-only
+hosts. After a store wipe, delete `/etc/swarmy/node-token` on every host before
+upgrading so fresh credentials are issued. Development checkouts with
 uncommitted changes are refused unless `--allow-dirty` is set. Machines
 provisioned before the `swarmy-core` binary should be upgraded with the same
 command; the installed units are reconciled.

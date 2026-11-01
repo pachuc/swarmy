@@ -1401,7 +1401,12 @@ async fn install_node_access(
     issue_node_token(node, address, primary, shell, node_id).await
 }
 
-async fn authorize_tunnel(node: &Machine, address: &str, primary: Primary<'_>, shell: &PrimaryShell<'_>) -> Result<()> {
+async fn authorize_tunnel(
+    node: &Machine,
+    address: &str,
+    primary: Primary<'_>,
+    shell: &PrimaryShell<'_>,
+) -> Result<()> {
     let output = run_output(
         &mut node_command(node, address, &tunnel_key_command(node)?)?,
         "generate joining node tunnel key",
@@ -1432,7 +1437,11 @@ async fn authorize_tunnel(node: &Machine, address: &str, primary: Primary<'_>, s
 }
 
 async fn issue_node_token(
-    node: &Machine, address: &str, primary: Primary<'_>, shell: &PrimaryShell<'_>, node_id: swarmy_core::NodeId,
+    node: &Machine,
+    address: &str,
+    primary: Primary<'_>,
+    shell: &PrimaryShell<'_>,
+    node_id: swarmy_core::NodeId,
 ) -> Result<()> {
     let user = primary.user()?;
     let output = shell
@@ -1457,20 +1466,31 @@ async fn issue_node_token(
 
 fn has_node_token_command() -> Result<String> {
     let path = swarmy_config::NodeSettings::default().token_file;
-    let path = path.to_str().ok_or_else(|| crate::Error::other("node token path must be UTF-8"))?;
+    let path = path
+        .to_str()
+        .ok_or_else(|| crate::Error::other("node token path must be UTF-8"))?;
     Ok(format!("sudo -n test -s {}", shell_words::quote(path)))
 }
 
 async fn has_node_token(node: &Machine, address: &str) -> Result<bool> {
-    let status = node_command(node, address, &has_node_token_command()?)?.status().await?;
+    let status = node_command(node, address, &has_node_token_command()?)?
+        .status()
+        .await?;
     match status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
-        _ => Err(crate::Error::other(format!("cannot check node token on host {}: {status}", node.name))),
+        _ => Err(crate::Error::other(format!(
+            "cannot check node token on host {}: {status}",
+            node.name
+        ))),
     }
 }
 
-pub(crate) async fn refresh_node_access(node: &Machine, address: &str, primary: Primary<'_>) -> Result<()> {
+pub(crate) async fn refresh_node_access(
+    node: &Machine,
+    address: &str,
+    primary: Primary<'_>,
+) -> Result<()> {
     let node_id = ensure_node_id(node, address).await?;
     let shell = primary.shell(90).await?;
     authorize_tunnel(node, address, primary, &shell).await?;
@@ -2042,6 +2062,15 @@ mod provisioning_command_tests {
                 "exec /usr/local/bin/swarmy-core node-credential {name} {id}"
             )));
         }
+    }
+
+    #[test]
+    fn has_node_token_command_tests_the_token_file() {
+        let command = super::has_node_token_command().unwrap();
+        assert_eq!(
+            command.split_whitespace().collect::<Vec<_>>(),
+            ["sudo", "-n", "test", "-s", "/etc/swarmy/node-token"]
+        );
     }
 
     #[test]
