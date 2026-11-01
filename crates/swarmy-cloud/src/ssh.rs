@@ -1926,7 +1926,7 @@ mod provisioning_command_tests {
     #[test]
     fn installed_binaries_come_from_the_executable_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("swarmy-provisioner");
+        let exe = dir.path().join("swarmy");
         std::fs::write(&exe, "binary").unwrap();
         assert!(
             super::Binaries::installed_from(&exe)
