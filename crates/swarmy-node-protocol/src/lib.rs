@@ -30,7 +30,9 @@ pub use types::{
     Ack, LeaseLengths, NodeAdvert, PlacementOccupancy, PlacementsResponse, RegisterRequest,
     RegisterResponse,
 };
-pub use volumes::{VolumeProtectRequest, VolumeProtectResponse, VolumePublishRequest};
+pub use volumes::{
+    VolumeProtectRequest, VolumeProtectResponse, VolumePublishRequest, VolumeReleaseRequest,
+};
 /// Sync all periodic node state.
 pub const SYNC_PATH: &str = "/node/v1/sync";
 /// Register a node.
@@ -64,6 +66,8 @@ pub const HOSTING_READY_PATH: &str = "/node/v1/hosting/ready";
 pub const HOSTING_CLOSE_PATH: &str = "/node/v1/hosting/close";
 /// Publish a volume head.
 pub const VOLUME_PUBLISH_PATH: &str = "/node/v1/volume/publish";
+/// `POST`: release a writer lease this node owns.
+pub const VOLUME_RELEASE_PATH: &str = "/node/v1/volume/release";
 /// Protect reused chunks.
 pub const VOLUME_PROTECT_PATH: &str = "/node/v1/volume/protect";
 /// Read a hosted agent's GitHub token.

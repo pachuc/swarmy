@@ -43,7 +43,7 @@ pub use store::{IdempotencyRecord, IdempotencyState, InflightRecord, RunnableEnt
 
 pub use volume::{
     BootSet, CHUNK_SIZE, ContentHash, GcRun, ImageRecord, MAX_BOOT_SET_CHUNKS, ManifestHeader,
-    VolumeRecord, blob_key, boot_set_key, is_blob_key, is_boot_set_key,
+    VolumeRecord, WriterOpening, blob_key, boot_set_key, is_blob_key, is_boot_set_key,
 };
 
 mod node;

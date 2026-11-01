@@ -159,6 +159,7 @@ async fn root_github_credentials_never_enter_disk_or_snapshot() {
                 requirements: swarmy_core::SandboxRequirements::default(),
             },
             disk: BlockDevice { volume_id: volume },
+            writer: node.writer(volume).await,
         })
         .await
     {

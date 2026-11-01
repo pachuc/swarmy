@@ -1,40 +1,24 @@
 //! Volume metadata served by the primary node API.
 use crate::heads::Heads;
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
-use swarmy_core::{
-    AgentId, ContentHash, FenceKind, Lease, LeaseOwnerId, ManifestHeader, ManifestId, NodeId,
-    VolumeId,
-};
+use swarmy_core::{AgentId, ContentHash, FenceKind, Lease, ManifestHeader, ManifestId, VolumeId};
 use swarmy_node_protocol::{
     ClientError, DEFAULT_DEADLINE, GithubTokenRequest, NodeClient, NodeRefusal,
-    VolumePublishRequest, WriterToken,
+    VolumePublishRequest, VolumeReleaseRequest, WriterToken,
 };
-use swarmy_store::Store;
-use swarmy_volume::{MetadataError, VolumeMetadata, WriterGrant};
+use swarmy_volume::{MetadataError, VolumeMetadata};
 
-/// Node API credentials and store-backed control-socket writer opening until NA10.
+/// Node API credentials for sandbox metadata.
 pub(crate) struct NodeSandboxMetadata {
     client: NodeClient,
-    store: Store,
-    node: NodeId,
 }
 impl NodeSandboxMetadata {
-    pub(crate) fn new(client: NodeClient, store: Store, node: NodeId) -> Arc<Self> {
-        Arc::new(Self {
-            client,
-            store,
-            node,
-        })
+    pub(crate) fn new(client: NodeClient) -> Arc<Self> {
+        Arc::new(Self { client })
     }
 }
 #[async_trait::async_trait]
 impl swarmy_sandbox::SandboxMetadata for NodeSandboxMetadata {
-    async fn open_writer(&self, volume: VolumeId) -> Result<WriterGrant, MetadataError> {
-        self.store
-            .open_volume_writer(volume, LeaseOwnerId::from(self.node))
-            .await
-            .map_err(MetadataError::from)
-    }
     async fn github_token(&self, agent: AgentId) -> Result<Option<String>, MetadataError> {
         match self
             .client
@@ -53,16 +37,11 @@ impl swarmy_sandbox::SandboxMetadata for NodeSandboxMetadata {
 
 pub(crate) struct NodeVolumeMetadata {
     client: NodeClient,
-    store: Store,
     heads: Heads,
 }
 impl NodeVolumeMetadata {
-    pub(crate) fn new(client: NodeClient, store: Store, heads: Heads) -> Self {
-        Self {
-            client,
-            store,
-            heads,
-        }
+    pub(crate) fn new(client: NodeClient, heads: Heads) -> Self {
+        Self { client, heads }
     }
 }
 #[async_trait::async_trait]
@@ -108,10 +87,20 @@ impl VolumeMetadata for NodeVolumeMetadata {
         volume: VolumeId,
         lease: &Lease,
     ) -> Result<(), MetadataError> {
-        self.store
-            .release_writer_lease(volume, lease)
+        self.client
+            .release_volume(
+                &VolumeReleaseRequest {
+                    writer: WriterToken {
+                        volume,
+                        lease: lease.clone(),
+                    },
+                },
+                tokio::time::Instant::now() + DEFAULT_DEADLINE,
+            )
             .await
-            .map_err(MetadataError::from)
+            .map_err(metadata_error)?;
+        self.heads.forget(volume);
+        Ok(())
     }
 }
 pub(crate) fn metadata_error(error: ClientError) -> MetadataError {
@@ -144,7 +133,7 @@ mod tests {
     async fn publish_records_the_head_only_when_accepted() {
         use axum::{Json, Router, response::IntoResponse, routing::post};
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use swarmy_core::{ContentHash, NodeToken};
+        use swarmy_core::{ContentHash, LeaseOwnerId, NodeId, NodeToken};
         use swarmy_node_api::test_support::TestApi;
         use swarmy_node_protocol::{Ack, Failure, VOLUME_PUBLISH_PATH};
         use swarmy_store::blob::MemoryBlobStore;
@@ -180,7 +169,7 @@ mod tests {
         let node = NodeId::from_ulid(ulid::Ulid::generate());
         let client = NodeClient::new(api.url(), &NodeToken::new(node, [1; 32])).unwrap();
         let heads = Heads::default();
-        let metadata = NodeVolumeMetadata::new(client, store, heads.clone());
+        let metadata = NodeVolumeMetadata::new(client, heads.clone());
         let volume = VolumeId::from_ulid(ulid::Ulid::generate());
         let previous = ManifestId::from_ulid(ulid::Ulid::generate());
         let a = ManifestId::from_ulid(ulid::Ulid::generate());

@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Lease, ManifestId, VolumeId};
 
+/// Writer lease and the manifest head it starts from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriterOpening {
+    pub lease: Lease,
+    pub head: ManifestId,
+    pub header: ManifestHeader,
+}
+
 pub const CHUNK_SIZE: u32 = 256 * 1024;
 
 /// BLAKE3 content address. Zero is reserved for implicit zero data.

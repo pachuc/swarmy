@@ -3,7 +3,8 @@
 use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
-use swarmy_core::{AgentId, ExecOutput, ExecRequest, NodeId, Sandbox};
+use swarmy_core::{AgentId, ExecOutput, ExecRequest, Sandbox};
+use swarmy_node_protocol::{NodeClient, PlacementOccupancy};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
@@ -110,32 +111,26 @@ pub(crate) async fn run(
     loaded: &swarmy_config::Loaded,
     warn: impl Fn(&str),
 ) -> Result<Vec<String>> {
-    let node: NodeId = loaded.node_id()?;
-    let opened = swarmy_store::Store::open_store(&loaded.settings).await?;
-    let store = opened.store;
+    let settings = &loaded.settings;
+    let client = NodeClient::from_token_file(&settings.node.api_url, &settings.node.token_file)?;
     let socket = loaded.root.join(".swarmy/node/control.sock");
-    let mut after = None;
+    busy_placements(&client, &socket, warn).await
+}
+
+async fn busy_placements(
+    client: &NodeClient,
+    socket: &Path,
+    warn: impl Fn(&str),
+) -> Result<Vec<String>> {
+    let answer = client.placements().await?;
     let mut busy = Vec::new();
-    loop {
-        let page = store
-            .list_by_node(node, after, swarmy_store::MAX_SCAN_LIMIT)
-            .await?;
-        if page.is_empty() {
-            break;
-        }
-        after = page.last().map(|placement| placement.agent_id);
-        for placement in page {
-            let occupied = store
-                .agent_call_status(placement.agent_id)
-                .await?
-                .is_some_and(|status| {
-                    status.holder_session_id.is_some() || status.queued_calls > 0
-                });
-            let running = occupied
-                || placement_busy(&socket, placement.agent_id, placement.epoch, &warn).await;
-            if running {
-                busy.push(placement.agent_id.to_string());
-            }
+    for PlacementOccupancy {
+        placement,
+        occupied,
+    } in answer.placements
+    {
+        if occupied || placement_busy(socket, placement.agent_id, placement.epoch, &warn).await {
+            busy.push(placement.agent_id.to_string());
         }
     }
     Ok(busy)

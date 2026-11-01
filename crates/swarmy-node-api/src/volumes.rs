@@ -7,7 +7,7 @@ use crate::{
 use axum::{Extension, Json, extract::State};
 use swarmy_node_protocol::{
     Ack, Failure, MAX_PROTECT_HASHES, VolumeProtectRequest, VolumeProtectResponse,
-    VolumePublishRequest,
+    VolumePublishRequest, VolumeReleaseRequest,
 };
 /// Publish a head using server-side retention.
 pub(crate) async fn publish(
@@ -26,6 +26,22 @@ pub(crate) async fn publish(
             &request.header,
             state.snapshot_retention,
         )
+    })
+    .await?;
+    Ok(Json(Ack { server_now: now }))
+}
+/// Release the calling node's writer lease, including a repeated release.
+pub(crate) async fn release(
+    State(state): State<NodeApiState>,
+    Extension(AuthenticatedNode(node)): Extension<AuthenticatedNode>,
+    Json(request): Json<VolumeReleaseRequest>,
+) -> Result<Json<Ack>, Answer> {
+    let now = state.store.now();
+    authorize_token(node, Echoed::WriterLease(&request.writer.lease))?;
+    idempotent(|| {
+        state
+            .store
+            .release_writer_lease(request.writer.volume, &request.writer.lease)
     })
     .await?;
     Ok(Json(Ack { server_now: now }))
