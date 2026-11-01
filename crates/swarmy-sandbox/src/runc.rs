@@ -9,7 +9,7 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
     time::{Duration, SystemTime},
 };
 use swarmy_core::{AgentId, ignore_best_effort};
@@ -140,6 +140,16 @@ async fn rootfs_io<T: Send + 'static>(
         .map_err(|error| Error::Operation(error.to_string()))?
 }
 
+/// One scratch directory as this node sees it.
+#[derive(Clone, Debug)]
+pub struct ScratchUsage {
+    pub agent: AgentId,
+    pub bytes: u64,
+    pub hosted: bool,
+    pub idle: bool,
+    pub modified: SystemTime,
+}
+
 /// One runtime per node state directory. An exclusive lock fences local daemons.
 pub struct RuncRuntime {
     root: PathBuf,
@@ -150,6 +160,7 @@ pub struct RuncRuntime {
     metadata: Arc<dyn SandboxMetadata>,
     sandboxes: Mutex<BTreeMap<AgentId, Arc<Mutex<Running>>>>,
     lifecycle: Mutex<()>,
+    evicted: StdMutex<Vec<AgentId>>,
     _lock: File,
 }
 
@@ -240,6 +251,7 @@ impl RuncRuntime {
             metadata,
             sandboxes: Mutex::new(BTreeMap::new()),
             lifecycle: Mutex::new(()),
+            evicted: StdMutex::new(Vec::new()),
             _lock: lock,
         };
         for entry in std::fs::read_dir(runtime.root.join("bundles"))? {
@@ -262,14 +274,13 @@ impl RuncRuntime {
         Ok(runtime)
     }
 
-    /// Sweep deleted, moved, idle, and pressure-evicted scratch. Active sandboxes
-    /// are excluded, so no bind mount loses its source while in use.
+    /// Inventory local scratch, refreshing markers for active sandboxes.
     /// # Errors
-    /// Returns metadata, database, or filesystem failures.
-    pub async fn sweep_scratch(&self) -> Result<()> {
+    /// Returns filesystem failures.
+    pub async fn scratch_inventory(&self) -> Result<Vec<ScratchUsage>> {
         let active: std::collections::BTreeSet<_> =
             self.sandboxes.lock().await.keys().copied().collect();
-        let mut candidates = Vec::new();
+        let mut inventory = Vec::new();
         for entry in std::fs::read_dir(&self.scratch_root)? {
             let entry = entry?;
             if !entry.file_type()?.is_dir() {
@@ -278,70 +289,39 @@ impl RuncRuntime {
             let Ok(ulid) = ulid::Ulid::from_string(&entry.file_name().to_string_lossy()) else {
                 continue;
             };
-            let id = AgentId::from_ulid(ulid);
-            if active.contains(&id) {
-                self.refresh_hosted(id, &entry.path()).await?;
-                continue;
+            let agent = AgentId::from_ulid(ulid);
+            let hosted = active.contains(&agent);
+            let path = entry.path();
+            let marker = path.join(".hosted");
+            if hosted {
+                std::fs::write(&marker, b"")?;
             }
-            if let Some(candidate) = self.reap_stale(id, &entry).await? {
-                candidates.push(candidate);
+            let modified = std::fs::metadata(&marker)
+                .or_else(|_| entry.metadata())?
+                .modified()?;
+            inventory.push(ScratchUsage {
+                agent,
+                bytes: directory_bytes(&path)?,
+                hosted,
+                idle: modified.elapsed().unwrap_or_default()
+                    > Duration::from_secs(self.scratch_policy.idle_days.saturating_mul(86_400)),
+                modified,
+            });
+        }
+        Ok(inventory)
+    }
+
+    /// Apply server evictions and locally necessary pressure evictions.
+    /// # Errors
+    /// Returns filesystem failures.
+    pub async fn apply_scratch(&self, inventory: &[ScratchUsage], evict: &[AgentId]) -> Result<()> {
+        let active: std::collections::BTreeSet<_> =
+            self.sandboxes.lock().await.keys().copied().collect();
+        for usage in inventory {
+            if evict.contains(&usage.agent) && !usage.hosted && !active.contains(&usage.agent) {
+                self.evict_scratch(usage.agent, usage.bytes)?;
             }
         }
-        self.evict_under_pressure(candidates).await?;
-        Ok(())
-    }
-
-    /// Refresh the hosted marker and usage report for a scratch directory
-    /// whose sandbox still runs on this node.
-    async fn refresh_hosted(&self, id: AgentId, path: &Path) -> Result<()> {
-        std::fs::write(path.join(".hosted"), b"")?;
-        if self.metadata.computer_deleted(id).await? {
-            return Ok(());
-        }
-        let bytes = directory_bytes(path)?;
-        if let Err(error) = self.metadata.report_scratch(id, bytes).await {
-            tracing::warn!(%id, error = %swarmy_core::error_chain(&error), "scratch size report failed");
-        }
-        Ok(())
-    }
-
-    /// Evict a stale scratch directory that is deleted, moved, or idle, or
-    /// refresh its report and nominate it for pressure eviction. Returns the
-    /// pressure candidate when the directory survives this sweep.
-    async fn reap_stale(
-        &self,
-        id: AgentId,
-        entry: &std::fs::DirEntry,
-    ) -> Result<Option<(SystemTime, AgentId, u64)>> {
-        let path = entry.path();
-        let marker = path.join(".hosted");
-        let modified = std::fs::metadata(&marker)
-            .or_else(|_| entry.metadata())?
-            .modified()?;
-        let bytes = directory_bytes(&path)?;
-        let deleted = self.metadata.computer_deleted(id).await?;
-        let moved = self
-            .metadata
-            .placement_node(id)
-            .await?
-            .is_some_and(|node| node != self.config.node);
-        let idle = modified.elapsed().unwrap_or_default()
-            > Duration::from_secs(self.scratch_policy.idle_days.saturating_mul(86_400));
-        if deleted || moved || idle {
-            self.evict_scratch(id, bytes)?;
-            self.metadata.clear_scratch(id).await?;
-            return Ok(None);
-        }
-        self.metadata.report_scratch(id, bytes).await?;
-        Ok(pressure_eligible(modified).then_some((modified, id, bytes)))
-    }
-
-    /// Evict the oldest surviving scratch directories while free space stays
-    /// below the low-water mark.
-    async fn evict_under_pressure(
-        &self,
-        mut candidates: Vec<(SystemTime, AgentId, u64)>,
-    ) -> Result<()> {
         let total = fs2::total_space(&self.scratch_root)?;
         if total == 0
             || fs2::available_space(&self.scratch_root)?
@@ -349,21 +329,40 @@ impl RuncRuntime {
         {
             return Ok(());
         }
-        candidates.sort_by_key(|item| item.0);
-        for (_, id, bytes) in candidates {
+        let mut candidates: Vec<_> = inventory
+            .iter()
+            .filter(|usage| {
+                !usage.hosted
+                    && !active.contains(&usage.agent)
+                    && !evict.contains(&usage.agent)
+                    && pressure_eligible(usage.modified)
+            })
+            .collect();
+        candidates.sort_by_key(|usage| usage.modified);
+        for usage in candidates {
             if fs2::available_space(&self.scratch_root)?
                 > total.saturating_mul(u64::from(100 - self.scratch_policy.low_water)) / 100
             {
                 break;
             }
-            self.evict_scratch(id, bytes)?;
-            self.metadata.clear_scratch(id).await?;
+            self.evict_scratch(usage.agent, usage.bytes)?;
         }
         Ok(())
     }
 
+    /// Scratch removed since the previous call.
+    /// # Panics
+    /// Panics if the eviction lock was poisoned.
+    pub fn take_evicted(&self) -> Vec<AgentId> {
+        std::mem::take(&mut *self.evicted.lock().expect("scratch eviction lock poisoned"))
+    }
+
     fn evict_scratch(&self, id: AgentId, bytes: u64) -> Result<()> {
         std::fs::remove_dir_all(self.scratch_root.join(id.to_string()))?;
+        self.evicted
+            .lock()
+            .expect("scratch eviction lock poisoned")
+            .push(id);
         tracing::info!(computer = %id, bytes, "scratch evicted");
         Ok(())
     }
@@ -902,7 +901,8 @@ impl RuncRuntime {
             && fs2::available_space(&self.scratch_root)?
                 <= total.saturating_mul(u64::from(100 - self.scratch_policy.high_water)) / 100
         {
-            self.sweep_scratch().await?;
+            let inventory = self.scratch_inventory().await?;
+            self.apply_scratch(&inventory, &[]).await?;
         }
         let lifecycle = self.lifecycle.lock().await;
         let (id, scratch, requirements) = (spec.agent_id, spec.scratch.clone(), spec.requirements);
@@ -980,14 +980,6 @@ impl RuncRuntime {
             self.running(id).await?.lock().await.credentials = Some(credentials);
             self.prepare_scratch(id, &scratch).await?;
             self.start(id, &scratch, requirements).await?;
-            if !scratch.is_empty() {
-                self.metadata
-                    .report_scratch(
-                        id,
-                        directory_bytes(&self.scratch_root.join(id.to_string()))?,
-                    )
-                    .await?;
-            }
             Ok(())
         }
         .await;
@@ -1369,5 +1361,113 @@ mod tests {
             super::ipv4_nameservers(text),
             ["192.0.2.53", "198.51.100.53"]
         );
+    }
+}
+#[cfg(test)]
+mod scratch_inventory_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::num::NonZeroUsize;
+    use swarmy_core::{ContentHash, Lease, ManifestHeader, ManifestId, NodeId, VolumeId};
+    use swarmy_volume::{MetadataError, VolumeMetadata, WriterGrant};
+
+    struct Metadata;
+    #[async_trait::async_trait]
+    impl SandboxMetadata for Metadata {
+        async fn open_writer(
+            &self,
+            _: VolumeId,
+        ) -> std::result::Result<WriterGrant, MetadataError> {
+            Err(MetadataError::VolumeMissing)
+        }
+        async fn github_token(
+            &self,
+            _: AgentId,
+        ) -> std::result::Result<Option<String>, MetadataError> {
+            Ok(None)
+        }
+    }
+    #[async_trait::async_trait]
+    impl VolumeMetadata for Metadata {
+        async fn publish(
+            &self,
+            _: VolumeId,
+            _: &Lease,
+            _: ManifestId,
+            _: ManifestId,
+            _: &ManifestHeader,
+            _: NonZeroUsize,
+        ) -> std::result::Result<(), MetadataError> {
+            Err(MetadataError::VolumeMissing)
+        }
+        async fn protect_reused_chunks(
+            &self,
+            _: &[ContentHash],
+        ) -> std::result::Result<Vec<ContentHash>, MetadataError> {
+            Ok(Vec::new())
+        }
+        async fn release_writer_lease(
+            &self,
+            _: VolumeId,
+            _: &Lease,
+        ) -> std::result::Result<(), MetadataError> {
+            Ok(())
+        }
+    }
+    async fn fixture() -> (tempfile::TempDir, RuncRuntime) {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = RuncRuntime::open_with(
+            root.path().join("runc"),
+            ServerConfig {
+                directory: root.path().join("volumes"),
+                node: NodeId::from_ulid(ulid::Ulid::generate()),
+                metadata: Arc::new(Metadata),
+                objects: Arc::new(object_store::memory::InMemory::new()),
+            },
+            Arc::new(Metadata),
+            RuntimeOptions::default(),
+        )
+        .await
+        .unwrap();
+        (root, runtime)
+    }
+    #[tokio::test]
+    async fn scratch_inventory_flags_idle_and_skips_foreign_names() {
+        let (_root, runtime) = fixture().await;
+        let a = AgentId::from_ulid(ulid::Ulid::generate());
+        let b = AgentId::from_ulid(ulid::Ulid::generate());
+        for (id, old) in [(a, false), (b, true)] {
+            let path = runtime.scratch_root.join(id.to_string());
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("data"), b"hello").unwrap();
+            let marker = File::create(path.join(".hosted")).unwrap();
+            if old {
+                marker
+                    .set_modified(SystemTime::now() - Duration::from_hours(192))
+                    .unwrap();
+            }
+        }
+        std::fs::create_dir(runtime.scratch_root.join("not-an-id")).unwrap();
+        let inventory = runtime.scratch_inventory().await.unwrap();
+        assert_eq!(inventory.len(), 2);
+        let usage_a = inventory.iter().find(|u| u.agent == a).unwrap();
+        let usage_b = inventory.iter().find(|u| u.agent == b).unwrap();
+        assert!(!usage_a.hosted && !usage_a.idle && usage_a.bytes >= 5);
+        assert!(usage_b.idle && !usage_b.hosted && usage_b.bytes >= 5);
+    }
+    #[tokio::test]
+    async fn apply_scratch_evicts_listed_and_reports_once() {
+        let (_root, runtime) = fixture().await;
+        let a = AgentId::from_ulid(ulid::Ulid::generate());
+        let b = AgentId::from_ulid(ulid::Ulid::generate());
+        for id in [a, b] {
+            std::fs::create_dir(runtime.scratch_root.join(id.to_string())).unwrap();
+        }
+        let inventory = runtime.scratch_inventory().await.unwrap();
+        runtime.apply_scratch(&inventory, &[b]).await.unwrap();
+        assert!(runtime.scratch_root.join(a.to_string()).exists());
+        assert!(!runtime.scratch_root.join(b.to_string()).exists());
+        assert_eq!(runtime.take_evicted(), vec![b]);
+        assert!(runtime.take_evicted().is_empty());
     }
 }

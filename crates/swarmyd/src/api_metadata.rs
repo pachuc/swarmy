@@ -1,11 +1,54 @@
 //! Volume metadata served by the primary node API.
-use std::num::NonZeroUsize;
-use swarmy_core::{ContentHash, FenceKind, Lease, ManifestHeader, ManifestId, VolumeId};
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use swarmy_core::{
+    AgentId, ContentHash, FenceKind, Lease, LeaseOwnerId, ManifestHeader, ManifestId, NodeId,
+    VolumeId,
+};
 use swarmy_node_protocol::{
-    ClientError, DEFAULT_DEADLINE, NodeClient, NodeRefusal, VolumePublishRequest, WriterToken,
+    ClientError, DEFAULT_DEADLINE, GithubTokenRequest, NodeClient, NodeRefusal,
+    VolumePublishRequest, WriterToken,
 };
 use swarmy_store::Store;
-use swarmy_volume::{MetadataError, VolumeMetadata};
+use swarmy_volume::{MetadataError, VolumeMetadata, WriterGrant};
+
+/// Node API credentials and store-backed control-socket writer opening until NA10.
+pub(crate) struct NodeSandboxMetadata {
+    client: NodeClient,
+    store: Store,
+    node: NodeId,
+}
+impl NodeSandboxMetadata {
+    pub(crate) fn new(client: NodeClient, store: Store, node: NodeId) -> Arc<Self> {
+        Arc::new(Self {
+            client,
+            store,
+            node,
+        })
+    }
+}
+#[async_trait::async_trait]
+impl swarmy_sandbox::SandboxMetadata for NodeSandboxMetadata {
+    async fn open_writer(&self, volume: VolumeId) -> Result<WriterGrant, MetadataError> {
+        self.store
+            .open_volume_writer(volume, LeaseOwnerId::from(self.node))
+            .await
+            .map_err(MetadataError::from)
+    }
+    async fn github_token(&self, agent: AgentId) -> Result<Option<String>, MetadataError> {
+        match self
+            .client
+            .github_token(
+                &GithubTokenRequest { agent },
+                tokio::time::Instant::now() + Duration::from_secs(10),
+            )
+            .await
+        {
+            Ok(answer) => Ok(answer.token),
+            Err(ClientError::Refused(NodeRefusal::NotYours)) => Ok(None),
+            Err(error) => Err(metadata_error(error)),
+        }
+    }
+}
 
 pub(crate) struct NodeVolumeMetadata {
     client: NodeClient,

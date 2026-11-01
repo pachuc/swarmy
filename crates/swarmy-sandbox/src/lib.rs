@@ -5,7 +5,7 @@ mod metadata;
 mod runc;
 pub use cdi::{GpuEdits, NodeGpu};
 pub use metadata::SandboxMetadata;
-pub use runc::{RuncRuntime, RuntimeOptions, ScratchPolicy, pasta_pid_file};
+pub use runc::{RuncRuntime, RuntimeOptions, ScratchPolicy, ScratchUsage, pasta_pid_file};
 pub use swarmy_core::{
     BlockDevice, ExecOutput, ExecRequest, ExecResult, PauseHandle, RuntimeCaps, Sandbox,
     SandboxSpec,

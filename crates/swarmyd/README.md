@@ -214,3 +214,14 @@ and hides observations after sample expiry, placement expiry, release, deletion,
 or takeover. A missing observation means occupancy is unknown. It must not be
 displayed as an idle computer. These fields report activity and grant no sandbox
 authority. Existing node and placement binary records keep their encoding.
+
+Scratch inventory runs every ten seconds in a separate task. The keeper includes
+sizes, hosted state and idle state in its next node API sync; the server returns
+keep or evict verdicts. The node also evicts oldest eligible scratch under local
+disk pressure and reports all removals in a later sync. Failed syncs skip the
+round without guessing. Memory and instruction requests validate the keeper's
+live placement and epoch; memory cache keys use the content fingerprint, not
+the volume head. GitHub credentials come from the node API only for an agent
+placed live on this node. First-tool computer re-samples use a bounded 1,024
+patch keeper queue, which drops the oldest patch when full and retries after
+failed syncs; completion patches still use the store until NA8.

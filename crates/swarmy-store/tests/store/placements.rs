@@ -1976,11 +1976,8 @@ async fn open_hosting_refuses_a_stopped_epoch_without_renewing() {
 }
 
 #[tokio::test]
-async fn store_sandbox_metadata_reports_and_clears_scratch_for_its_node() {
-    use swarmy_core::FenceKind;
-    use swarmy_sandbox::SandboxMetadata;
-    use swarmy_store::StoreSandboxMetadata;
-    use swarmy_volume::MetadataError;
+async fn store_reports_and_clears_scratch_for_its_node() {
+    use swarmy_store::{FenceError, ScratchRecord, StoreError};
 
     let Some(test) = TestStore::memory() else {
         return;
@@ -1989,20 +1986,42 @@ async fn store_sandbox_metadata_reports_and_clears_scratch_for_its_node() {
     let b = node(&test.store, 1).await.node_id;
     let agent = session().agent_id;
     test.store.place(agent, a, future(60)).await.unwrap();
-    let primary = StoreSandboxMetadata::new(test.store.clone(), a);
-    let other = StoreSandboxMetadata::new(test.store.clone(), b);
-    primary.report_scratch(agent, 123).await.unwrap();
+    test.store
+        .report_scratch(
+            agent,
+            &ScratchRecord {
+                node_id: a,
+                bytes: 123,
+            },
+        )
+        .await
+        .unwrap();
     let record = test.store.scratch(agent).await.unwrap().unwrap();
     assert_eq!(record.node_id, a);
     assert_eq!(record.bytes, 123);
     assert!(matches!(
-        other.report_scratch(agent, 456).await,
-        Err(MetadataError::Fenced(FenceKind::Placement))
+        test.store
+            .report_scratch(
+                agent,
+                &ScratchRecord {
+                    node_id: b,
+                    bytes: 456
+                }
+            )
+            .await,
+        Err(StoreError::Fence(FenceError::PlacementMismatch))
     ));
-    other.clear_scratch(agent).await.unwrap();
+    test.store.clear_scratch(agent, b).await.unwrap();
     assert!(test.store.scratch(agent).await.unwrap().is_some());
-    assert_eq!(primary.placement_node(agent).await.unwrap(), Some(a));
-    primary.clear_scratch(agent).await.unwrap();
+    assert_eq!(
+        test.store
+            .get_by_agent(agent)
+            .await
+            .unwrap()
+            .map(|p| p.node_id),
+        Some(a)
+    );
+    test.store.clear_scratch(agent, a).await.unwrap();
     assert!(test.store.scratch(agent).await.unwrap().is_none());
 }
 

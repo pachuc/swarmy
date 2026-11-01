@@ -1,6 +1,8 @@
 use crate::{
-    api_metadata::NodeVolumeMetadata, gpu, hosting, keeper::Keeper, memory, service, tools,
-    upgrade, vol,
+    api_metadata::{NodeSandboxMetadata, NodeVolumeMetadata},
+    gpu, hosting,
+    keeper::{Keeper, ScratchSkipped},
+    memory, service, tools, upgrade, vol,
 };
 use std::ffi::OsString;
 
@@ -8,7 +10,8 @@ use anyhow::{Result, ensure};
 use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
 use swarmy_core::ignore_best_effort;
 use swarmy_node_protocol::{
-    ClientError, NodeAdvert, NodeClient, RegisterRequest, RegisterResponse,
+    ClientError, NodeAdvert, NodeClient, RegisterRequest, RegisterResponse, ScratchEntry,
+    ScratchVerdict,
 };
 use swarmy_sandbox::{RuncRuntime, RuntimeOptions, ScratchPolicy};
 use swarmy_store::Store;
@@ -86,7 +89,7 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     .await?;
     let hosting = hosting::Hosting::new(
         store.clone(),
-        client,
+        client.clone(),
         keeper.clone(),
         runtime.clone(),
         node,
@@ -101,12 +104,18 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     tracing::info!(%node, socket = %socket.display(), "node registered and ready");
     let (keeping_stop, keeping_signal) = watch::channel(false);
-    let keeping = tokio::spawn(async move { keeper.run(keeping_signal).await });
-    let mut scratch_sweep = tokio::time::interval(Duration::from_secs(10));
-    scratch_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let keeping = tokio::spawn({
+        let keeper = keeper.clone();
+        async move { keeper.run(keeping_signal).await }
+    });
+    let sweeping = tokio::spawn(sweep_scratch(
+        runtime.clone(),
+        keeper.clone(),
+        keeping_stop.subscribe(),
+    ));
     let mut clients = JoinSet::new();
     let (shutdown, _) = watch::channel(false);
-    let mut memory_server = memory::spawn(bus.clone(), store.clone(), runtime.clone(), node);
+    let mut memory_server = memory::spawn(bus.clone(), keeper.clone(), runtime.clone(), node);
     let mut tool_server = tools::spawn(bus, &store, node, &hosting, settings);
     let serving: Result<()> = async {
         loop {
@@ -121,9 +130,6 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
                         if let Err(error) = service::handle(socket, runtime, shutdown).await { tracing::warn!(error = %swarmy_core::error_chain(&*error), "node control request failed"); }
                     });
                 }
-                _ = scratch_sweep.tick() => {
-                    if let Err(error) = runtime.sweep_scratch().await { tracing::warn!(error = %swarmy_core::error_chain(&error), "scratch sweep failed"); }
-                }
                 Some(result) = clients.join_next(), if !clients.is_empty() => { result?; }
                 () = &mut stop => break,
             }
@@ -137,13 +143,60 @@ async fn serve(loaded: swarmy_config::Loaded) -> Result<()> {
     }
     ignore_best_effort(shutdown.send(true), "signal shutdown");
     while clients.join_next().await.is_some() {}
+    keeping_stop.send_replace(true);
+    sweeping.await?;
     hosting.shutdown().await;
     let cleanup = runtime.shutdown().await;
-    keeping_stop.send_replace(true);
     keeping.await?;
     std::fs::remove_file(socket)?;
     cleanup?;
     serving
+}
+
+/// Sweep independently so a sync wait cannot block control-socket accepts.
+async fn sweep_scratch(runtime: Arc<RuncRuntime>, keeper: Keeper, mut stop: watch::Receiver<bool>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(10));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                match scratch_round(&runtime, &keeper).await {
+                    Ok(()) => {},
+                    Err(error) if error.downcast_ref::<ScratchSkipped>().is_some() => {
+                        tracing::debug!("scratch round skipped after sync failure");
+                    }
+                    Err(error) => tracing::warn!(error = %swarmy_core::error_chain(&*error), "scratch round failed"),
+                }
+            }
+            changed = stop.changed() => { if changed.is_err() || *stop.borrow() { break; } }
+        }
+    }
+}
+
+async fn scratch_round(runtime: &RuncRuntime, keeper: &Keeper) -> Result<()> {
+    keeper.report_evicted(runtime.take_evicted());
+    let inventory = runtime.scratch_inventory().await?;
+    let entries = inventory
+        .iter()
+        .map(|usage| ScratchEntry {
+            agent: usage.agent,
+            bytes: usage.bytes,
+            hosted: usage.hosted,
+            idle: usage.idle,
+        })
+        .collect();
+    let verdicts = keeper.scratch_verdicts(entries).await?;
+    let evict = inventory
+        .iter()
+        .zip(verdicts)
+        .filter_map(|(usage, verdict)| {
+            (!usage.hosted && matches!(verdict, ScratchVerdict::Evict(_))).then_some(usage.agent)
+        })
+        .collect::<Vec<_>>();
+    let result = runtime.apply_scratch(&inventory, &evict).await;
+    keeper.report_evicted(runtime.take_evicted());
+    result?;
+    Ok(())
 }
 
 async fn open_runtime(
@@ -162,10 +215,10 @@ async fn open_runtime(
             ServerConfig {
                 directory: loaded.root.join(".swarmy/volumes"),
                 node,
-                metadata: Arc::new(NodeVolumeMetadata::new(client, store.clone())),
+                metadata: Arc::new(NodeVolumeMetadata::new(client.clone(), store.clone())),
                 objects,
             },
-            swarmy_store::StoreSandboxMetadata::new(store, node),
+            NodeSandboxMetadata::new(client, store, node),
             RuntimeOptions {
                 scratch: ScratchPolicy {
                     idle_days: settings.sandbox.scratch_idle_days,
@@ -256,4 +309,233 @@ fn node_client(
         client.node()
     );
     Ok(client)
+}
+#[cfg(test)]
+mod node_api_tests {
+    #![deny(clippy::disallowed_methods)]
+    use super::*;
+    use std::num::NonZeroUsize;
+    use swarmy_bus::{Bus, Config, SubjectToken};
+    use swarmy_core::{AgentId, NodeCapacity, NodeId, NodeRecord, NodeRole};
+    use swarmy_node_api::{NodeApiPolicy, NodeApiState, router, test_support::TestApi};
+    use swarmy_node_protocol::RegisterRequest;
+    use swarmy_sandbox::SandboxMetadata;
+    use swarmy_store::{CreateAgentOptions, blob::MemoryBlobStore};
+
+    async fn fixture(
+        tag: &str,
+    ) -> Option<(
+        Store,
+        NodeClient,
+        Keeper,
+        NodeId,
+        TestApi,
+        swarmy_testkit::StackGuard,
+    )> {
+        let stack = swarmy_testkit::Stack::load(tag)?;
+        let (store, guard) = stack.open_store(Arc::new(MemoryBlobStore::default())).await;
+        let node = NodeId::from_ulid(ulid::Ulid::generate());
+        let record = NodeRecord {
+            node_id: node,
+            roles: vec![NodeRole::Sandbox],
+            capacity: NodeCapacity {
+                cpu_millis: 1000,
+                memory_bytes: 1 << 30,
+                disk_bytes: 1 << 30,
+                sandboxes: 1,
+            },
+            last_heartbeat: store.now(),
+            cached_images: vec![],
+            gpu: None,
+        };
+        store.put_node(&record).await.unwrap();
+        let token = store.issue_node_credential(node).await.unwrap();
+        let bus = Bus::connect(
+            &stack.nats_url,
+            Config {
+                prefix: Some(SubjectToken::new(&stack.prefix).unwrap()),
+                ..Config::default()
+            },
+        )
+        .await
+        .unwrap();
+        bus.setup(&[]).await.unwrap();
+        let api = TestApi::start(router(NodeApiState::new(
+            store.clone(),
+            bus,
+            NodeApiPolicy {
+                placement_lease: Duration::from_secs(60),
+                snapshot_retention: NonZeroUsize::new(10).unwrap(),
+                resend_interval: Duration::from_secs(5),
+            },
+        )))
+        .await;
+        let client = NodeClient::new(api.url(), &token).unwrap();
+        let advert = NodeAdvert {
+            roles: record.roles,
+            capacity: record.capacity,
+            gpu: None,
+        };
+        let registered = client
+            .register(&RegisterRequest {
+                node: advert.clone(),
+            })
+            .await
+            .unwrap();
+        let keeper = Keeper::new(
+            Arc::new(client.clone()),
+            advert,
+            registered.leases,
+            Duration::from_secs(5),
+        );
+        Some((store, client, keeper, node, api, guard))
+    }
+
+    #[tokio::test]
+    async fn github_token_through_the_node_api() {
+        let Some((store, client, _keeper, node, _api, _guard)) = fixture("na7c-github").await
+        else {
+            return;
+        };
+        let agent = store
+            .create_agent(
+                "na7c-github",
+                swarmy_testkit::image(&store).await,
+                "",
+                store.now(),
+                Some(CreateAgentOptions {
+                    github_token: Some("ghp_test_token"),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        store
+            .place(
+                agent.agent_id,
+                node,
+                store.now().checked_add(Duration::from_secs(30)).unwrap(),
+            )
+            .await
+            .unwrap();
+        let metadata = NodeSandboxMetadata::new(client, store.clone(), node);
+        assert_eq!(
+            metadata
+                .github_token(agent.agent_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("ghp_test_token")
+        );
+        let other = NodeId::from_ulid(ulid::Ulid::generate());
+        let record = NodeRecord {
+            node_id: other,
+            roles: vec![NodeRole::Sandbox],
+            capacity: NodeCapacity {
+                cpu_millis: 1000,
+                memory_bytes: 1 << 30,
+                disk_bytes: 1 << 30,
+                sandboxes: 1,
+            },
+            last_heartbeat: store.now(),
+            cached_images: vec![],
+            gpu: None,
+        };
+        store.put_node(&record).await.unwrap();
+        let moved = store
+            .create_agent(
+                "na7c-moved",
+                swarmy_testkit::image(&store).await,
+                "",
+                store.now(),
+                Some(CreateAgentOptions {
+                    github_token: Some("ghp_test_token"),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        store
+            .place(
+                moved.agent_id,
+                other,
+                store.now().checked_add(Duration::from_secs(30)).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(metadata.github_token(moved.agent_id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn node_scratch_round_reports_and_evicts() {
+        let Some((store, client, keeper, node, _api, _guard)) = fixture("na7c-scratch").await
+        else {
+            return;
+        };
+        let deleted = AgentId::from_ulid(ulid::Ulid::generate());
+        let moved = AgentId::from_ulid(ulid::Ulid::generate());
+        store.delete_computer(deleted).await.unwrap();
+        let other = NodeId::from_ulid(ulid::Ulid::generate());
+        store
+            .put_node(&NodeRecord {
+                node_id: other,
+                roles: vec![NodeRole::Sandbox],
+                capacity: NodeCapacity {
+                    cpu_millis: 1000,
+                    memory_bytes: 1 << 30,
+                    disk_bytes: 1 << 30,
+                    sandboxes: 1,
+                },
+                last_heartbeat: store.now(),
+                cached_images: vec![],
+                gpu: None,
+            })
+            .await
+            .unwrap();
+        store
+            .place(
+                moved,
+                other,
+                store.now().checked_add(Duration::from_secs(30)).unwrap(),
+            )
+            .await
+            .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let runtime = RuncRuntime::open(
+            root.path().join("runtime"),
+            ServerConfig {
+                directory: root.path().join("volumes"),
+                node,
+                metadata: Arc::new(NodeVolumeMetadata::new(client.clone(), store.clone())),
+                objects: Arc::new(object_store::memory::InMemory::new()),
+            },
+            NodeSandboxMetadata::new(client, store.clone(), node),
+        )
+        .await
+        .unwrap();
+        let scratch = root.path().join("scratch");
+        for agent in [deleted, moved] {
+            std::fs::create_dir(scratch.join(agent.to_string())).unwrap();
+        }
+        let round = tokio::spawn({
+            let keeper = keeper.clone();
+            async move { scratch_round(&runtime, &keeper).await }
+        });
+        // Wait for the inventory to be handed to the keeper rather than racing sync.
+        swarmy_testkit::eventually(
+            "scratch inventory pending",
+            Duration::from_secs(5),
+            async || keeper.scratch_pending().then_some(()),
+        )
+        .await;
+        keeper.sync_once().await.unwrap();
+        round.await.unwrap().unwrap();
+        for agent in [deleted, moved] {
+            assert!(!scratch.join(agent.to_string()).exists());
+        }
+        keeper.sync_once().await.unwrap();
+        for agent in [deleted, moved] {
+            assert!(store.scratch(agent).await.unwrap().is_none());
+        }
+    }
 }

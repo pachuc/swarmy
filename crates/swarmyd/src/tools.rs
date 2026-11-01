@@ -225,11 +225,12 @@ pub(crate) async fn execute(
         claim.clone(),
         sent + keeper.leases().tool_claim - keeper::margin(keeper.leases().tool_claim),
     );
-    run(store, runtime, &claim, hold, &metrics).await
+    run(store, keeper, runtime, &claim, hold, &metrics).await
 }
 
 async fn run(
     store: &Store,
+    keeper: &Keeper,
     runtime: Arc<RuncRuntime>,
     claim: &PlacedToolClaim,
     mut hold: ClaimHold,
@@ -250,7 +251,7 @@ async fn run(
     // through `started_ns` and `process_wall_ms`. The output cap above
     // applies before the metrics patch so the recorded size matches what
     // the worker stored.
-    observe_tool_completion(store, runtime, claim, metrics, &result, &summary);
+    observe_tool_completion(store, keeper, runtime, claim, metrics, &result, &summary);
     tracing::info!(request_id = %claim.job.request_id, "committed sandbox tool output");
     Ok(())
 }
@@ -455,6 +456,7 @@ async fn run_command(
 )]
 fn observe_tool_completion(
     store: &Store,
+    keeper: &Keeper,
     runtime: Arc<RuncRuntime>,
     claim: &PlacedToolClaim,
     metrics: &CallMetrics,
@@ -504,15 +506,15 @@ fn observe_tool_completion(
     // completion per turn carries it; the store keeps the first re-sample
     // per turn as well.
     if metrics.needs_computer_sample {
-        let store = store.clone();
+        let keeper = keeper.clone();
         let session = claim.job.session_id;
         let volume = VolumeId::from_ulid(claim.placement.agent_id.as_ulid());
         tokio::spawn(async move {
             if let Ok(stats) = runtime.volume_stats(volume).await {
-                store.observe_turn_metric(
+                keeper.queue_metric(
                     session,
                     turn,
-                    swarmy_store::MetricPatch::Computer(swarmy_store::ComputerMetric {
+                    swarmy_node_protocol::NodeMetric::Computer(swarmy_core::ComputerMetric {
                         first_tool_chunks_fetched: Some(stats.fetched_chunks),
                         first_tool_bytes_fetched: Some(stats.fetched_bytes),
                         first_tool_fetch_p50_ms: stats.fetch_p50_us.map(|us| us as f64 / 1_000.0),

@@ -1,18 +1,21 @@
 //! One node API sync renews every locally held lease.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
     time::Duration,
 };
 use swarmy_core::{
-    AgentId, Lease, LeaseOwnerId, PlacedToolClaim, PlacementRecord, SessionId, VolumeId,
+    AgentId, Lease, LeaseOwnerId, MessageId, PlacedToolClaim, PlacementRecord, SessionId, VolumeId,
 };
 use swarmy_node_protocol::{
-    ClientError, HostedPlacement, LeaseLengths, NodeAdvert, Renewal, SyncRequest, SyncResponse,
-    WriterToken,
+    ClientError, HostedPlacement, LeaseLengths, MetricBatch, NodeAdvert, NodeMetric, Renewal,
+    ScratchEntry, ScratchVerdict, SyncRequest, SyncResponse, WriterToken,
 };
 use swarmy_volume::{LeaseStatus, WriterLease};
-use tokio::{sync::watch, time::Instant};
+use tokio::{
+    sync::{oneshot, watch},
+    time::Instant,
+};
 
 #[async_trait::async_trait]
 pub(crate) trait SyncTransport: Send + Sync {
@@ -177,12 +180,28 @@ struct Tokens {
     claims: BTreeMap<LeaseOwnerId, ClaimEntry>,
     writers: BTreeMap<VolumeId, WriterEntry>,
 }
+const MAX_QUEUED_METRICS: usize = 1024;
+
+#[derive(Debug)]
+pub(crate) struct ScratchSkipped;
+impl std::fmt::Display for ScratchSkipped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("scratch round skipped: the sync carrying it did not complete")
+    }
+}
+impl std::error::Error for ScratchSkipped {}
+
+type WaitingScratch = (Vec<ScratchEntry>, oneshot::Sender<Vec<ScratchVerdict>>);
+
 struct Inner {
     transport: Arc<dyn SyncTransport>,
     advert: NodeAdvert,
     leases: LeaseLengths,
     period: Duration,
     tokens: Mutex<Tokens>,
+    scratch: Mutex<Option<WaitingScratch>>,
+    evicted: Mutex<Vec<AgentId>>,
+    metrics: Mutex<VecDeque<MetricBatch>>,
 }
 #[derive(Clone)]
 pub(crate) struct Keeper {
@@ -203,6 +222,9 @@ impl Keeper {
                 leases,
                 period,
                 tokens: Mutex::new(Tokens::default()),
+                scratch: Mutex::new(None),
+                evicted: Mutex::new(Vec::new()),
+                metrics: Mutex::new(VecDeque::new()),
             }),
         }
     }
@@ -282,6 +304,55 @@ impl Keeper {
             );
         ClaimHold(receiver)
     }
+    pub(crate) fn placement(&self, agent: AgentId) -> Option<PlacementRecord> {
+        self.inner
+            .tokens
+            .lock()
+            .expect("keeper lock poisoned")
+            .placements
+            .get(&agent)
+            .filter(|entry| entry.deadline > Instant::now())
+            .map(|entry| entry.record.clone())
+    }
+    pub(crate) async fn scratch_verdicts(
+        &self,
+        inventory: Vec<ScratchEntry>,
+    ) -> Result<Vec<ScratchVerdict>, ScratchSkipped> {
+        let (sender, receiver) = oneshot::channel();
+        self.inner
+            .scratch
+            .lock()
+            .expect("scratch lock poisoned")
+            .replace((inventory, sender));
+        receiver.await.map_err(|_| ScratchSkipped)
+    }
+    #[cfg(test)]
+    pub(crate) fn scratch_pending(&self) -> bool {
+        self.inner
+            .scratch
+            .lock()
+            .expect("scratch lock poisoned")
+            .is_some()
+    }
+    pub(crate) fn report_evicted(&self, agents: Vec<AgentId>) {
+        self.inner
+            .evicted
+            .lock()
+            .expect("eviction lock poisoned")
+            .extend(agents);
+    }
+    pub(crate) fn queue_metric(&self, session: SessionId, turn: MessageId, metric: NodeMetric) {
+        let mut queue = self.inner.metrics.lock().expect("metric lock poisoned");
+        if queue.len() == MAX_QUEUED_METRICS {
+            queue.pop_front();
+            tracing::warn!("node metric queue full; dropping oldest patch");
+        }
+        queue.push_back(MetricBatch {
+            session,
+            turn,
+            patches: vec![metric],
+        });
+    }
     pub(crate) fn writer_lease(&self, volume: VolumeId) -> Option<Lease> {
         self.inner
             .tokens
@@ -292,7 +363,13 @@ impl Keeper {
             .filter(|e| e.deadline > Instant::now())
             .map(|e| e.lease.clone())
     }
-    fn request(&self) -> (SyncRequest, Instant) {
+    fn request(
+        &self,
+    ) -> (
+        SyncRequest,
+        Instant,
+        Option<oneshot::Sender<Vec<ScratchVerdict>>>,
+    ) {
         let mut tokens = self.inner.tokens.lock().expect("keeper lock poisoned");
         let now = Instant::now();
         tokens.placements.retain(|_, e| {
@@ -332,6 +409,12 @@ impl Keeper {
             .chain(tokens.writers.values().map(|e| e.deadline))
             .min()
             .unwrap_or(now + self.inner.period);
+        let scratch = self
+            .inner
+            .scratch
+            .lock()
+            .expect("scratch lock poisoned")
+            .take();
         let request = SyncRequest {
             node: self.inner.advert.clone(),
             placements: tokens
@@ -355,21 +438,57 @@ impl Keeper {
                     lease: e.lease.clone(),
                 })
                 .collect(),
-            scratch: vec![],
-            scratch_evicted: vec![],
-            metrics: vec![],
+            scratch: scratch
+                .as_ref()
+                .map_or_else(Vec::new, |(entries, _)| entries.clone()),
+            scratch_evicted: std::mem::take(
+                &mut *self.inner.evicted.lock().expect("eviction lock poisoned"),
+            ),
+            metrics: self
+                .inner
+                .metrics
+                .lock()
+                .expect("metric lock poisoned")
+                .drain(..)
+                .collect(),
         };
-        (request, deadline)
+        (request, deadline, scratch.map(|(_, sender)| sender))
     }
     pub(crate) async fn sync_once(&self) -> Result<(), ClientError> {
-        let (request, deadline) = self.request();
+        let (request, deadline, scratch) = self.request();
         let sent = Instant::now();
-        let answer = self.inner.transport.sync(&request, deadline).await?;
-        if !answer.heartbeat_recorded {
-            tracing::warn!("node sync did not record heartbeat");
+        match self.inner.transport.sync(&request, deadline).await {
+            Ok(mut answer) => {
+                if !answer.heartbeat_recorded {
+                    tracing::warn!("node sync did not record heartbeat");
+                }
+                if let Some(sender) = scratch {
+                    answer
+                        .scratch
+                        .resize(request.scratch.len(), ScratchVerdict::Keep);
+                    drop(sender.send(answer.scratch.clone()));
+                }
+                self.apply(&request, answer, sent);
+                Ok(())
+            }
+            Err(error) => {
+                drop(scratch);
+                let mut evicted = self.inner.evicted.lock().expect("eviction lock poisoned");
+                let mut pending = request.scratch_evicted;
+                pending.append(&mut evicted);
+                *evicted = pending;
+                let mut queue = self.inner.metrics.lock().expect("metric lock poisoned");
+                for batch in request.metrics.into_iter().rev() {
+                    queue.push_front(batch);
+                }
+                if queue.len() > MAX_QUEUED_METRICS {
+                    let dropped = queue.len() - MAX_QUEUED_METRICS;
+                    queue.drain(..dropped);
+                    tracing::warn!(dropped, "node metric queue full; dropping oldest patches");
+                }
+                Err(error)
+            }
         }
-        self.apply(&request, answer, sent);
-        Ok(())
     }
     fn apply(&self, request: &SyncRequest, answer: SyncResponse, sent: Instant) {
         let answered = Answered {
@@ -575,6 +694,164 @@ mod tests {
             writers: vec![],
             scratch: vec![],
         }
+    }
+    fn scratch(agent: AgentId) -> ScratchEntry {
+        ScratchEntry {
+            agent,
+            bytes: 7,
+            hosted: false,
+            idle: false,
+        }
+    }
+    fn outage() -> ClientError {
+        ClientError::Deadline {
+            path: "sync",
+            attempts: 1,
+            last: "outage".into(),
+        }
+    }
+    #[tokio::test(start_paused = true)]
+    async fn scratch_rides_the_next_sync() {
+        let (keeper, script) = fixture();
+        let a = placement(jiff::Timestamp::now()).agent_id;
+        let b = placement(jiff::Timestamp::now()).agent_id;
+        let waiting = tokio::spawn({
+            let keeper = keeper.clone();
+            async move { keeper.scratch_verdicts(vec![scratch(a), scratch(b)]).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        let expected = vec![
+            ScratchVerdict::Keep,
+            ScratchVerdict::Evict(swarmy_node_protocol::EvictReason::Idle),
+        ];
+        let mut response = answer(jiff::Timestamp::now(), vec![]);
+        response.scratch = expected.clone();
+        script.answers.lock().unwrap().push_back(Ok(response));
+        keeper.sync_once().await.unwrap();
+        assert_eq!(
+            script.requests.lock().unwrap()[0].scratch,
+            vec![scratch(a), scratch(b)]
+        );
+        assert_eq!(waiting.await.unwrap().unwrap(), expected);
+    }
+    #[tokio::test(start_paused = true)]
+    async fn failed_sync_skips_scratch_and_keeps_reports() {
+        let (keeper, script) = fixture();
+        let a = placement(jiff::Timestamp::now()).agent_id;
+        let c = placement(jiff::Timestamp::now()).agent_id;
+        keeper.report_evicted(vec![c]);
+        let waiting = tokio::spawn({
+            let keeper = keeper.clone();
+            async move { keeper.scratch_verdicts(vec![scratch(a)]).await }
+        });
+        tokio::task::yield_now().await;
+        script.answers.lock().unwrap().push_back(Err(outage()));
+        assert!(keeper.sync_once().await.is_err());
+        assert!(waiting.await.unwrap().is_err());
+        for _ in 0..2 {
+            script
+                .answers
+                .lock()
+                .unwrap()
+                .push_back(Ok(answer(jiff::Timestamp::now(), vec![])));
+            keeper.sync_once().await.unwrap();
+        }
+        let requests = script.requests.lock().unwrap();
+        assert_eq!(requests[0].scratch, vec![scratch(a)]);
+        assert_eq!(requests[1].scratch_evicted, vec![c]);
+        assert!(requests[1].scratch.is_empty());
+        assert!(requests[2].scratch_evicted.is_empty());
+    }
+    #[tokio::test(start_paused = true)]
+    async fn metric_queue_is_bounded_and_survives_a_failed_sync() {
+        let (keeper, script) = fixture();
+        let session = SessionId::from_ulid(ulid::Ulid::generate());
+        for _ in 0..=MAX_QUEUED_METRICS {
+            keeper.queue_metric(
+                session,
+                MessageId::from_ulid(ulid::Ulid::generate()),
+                NodeMetric::Computer(swarmy_core::ComputerMetric::default()),
+            );
+        }
+        script.answers.lock().unwrap().push_back(Err(outage()));
+        assert!(keeper.sync_once().await.is_err());
+        for _ in 0..2 {
+            script
+                .answers
+                .lock()
+                .unwrap()
+                .push_back(Ok(answer(jiff::Timestamp::now(), vec![])));
+            keeper.sync_once().await.unwrap();
+        }
+        let requests = script.requests.lock().unwrap();
+        assert_eq!(requests[0].metrics.len(), MAX_QUEUED_METRICS);
+        assert_eq!(requests[1].metrics, requests[0].metrics);
+        assert!(requests[2].metrics.is_empty());
+    }
+    #[tokio::test(start_paused = true)]
+    async fn memory_check_follows_the_keeper() {
+        let (keeper, script) = fixture();
+        let now = jiff::Timestamp::now();
+        let mut record = placement(now);
+        record.epoch = 4;
+        let _hold = keeper.hold_placement(
+            record.clone(),
+            Answered {
+                sent: Instant::now(),
+                server_now: now,
+            },
+            Arc::default(),
+        );
+        assert!(
+            crate::memory::placement_matches(&keeper, record.node_id, record.agent_id, 4).is_ok()
+        );
+        assert!(
+            crate::memory::placement_matches(&keeper, record.node_id, record.agent_id, 3).is_err()
+        );
+        script
+            .answers
+            .lock()
+            .unwrap()
+            .push_back(Ok(answer(now, vec![Renewal::Lost(NodeRefusal::NotYours)])));
+        keeper.sync_once().await.unwrap();
+        assert!(
+            crate::memory::placement_matches(&keeper, record.node_id, record.agent_id, 4).is_err()
+        );
+    }
+    #[tokio::test(start_paused = true)]
+    async fn placement_lookup_sees_only_live_holds() {
+        let (keeper, script) = fixture();
+        let now = jiff::Timestamp::now();
+        let record = placement(now);
+        let hold = keeper.hold_placement(
+            record.clone(),
+            Answered {
+                sent: Instant::now(),
+                server_now: now,
+            },
+            Arc::default(),
+        );
+        assert_eq!(keeper.placement(record.agent_id), Some(record.clone()));
+        tokio::time::advance(Duration::from_secs(28)).await;
+        assert!(keeper.placement(record.agent_id).is_none());
+        drop(hold);
+        let record = placement(now);
+        let _hold = keeper.hold_placement(
+            record.clone(),
+            Answered {
+                sent: Instant::now(),
+                server_now: now,
+            },
+            Arc::default(),
+        );
+        script
+            .answers
+            .lock()
+            .unwrap()
+            .push_back(Ok(answer(now, vec![Renewal::Lost(NodeRefusal::NotYours)])));
+        keeper.sync_once().await.unwrap();
+        assert!(keeper.placement(record.agent_id).is_none());
     }
     #[tokio::test(start_paused = true)]
     async fn deadline_comes_from_server_time_only() {
@@ -908,7 +1185,7 @@ mod tests {
             server_now: now,
         };
         let mut old = keeper.hold_placement(first.clone(), answered, Arc::default());
-        let (request, _) = keeper.request();
+        let (request, _, _) = keeper.request();
         let next = PlacementRecord {
             epoch: 2,
             ..first.clone()
